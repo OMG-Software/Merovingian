@@ -103,10 +103,8 @@ struct ValidatedMakeLeaveResponse final
 // spec defines any event with a "state_key" field as a state event, regardless
 // of whether that value is empty. Returns the user IDs found with
 // membership="join" among the ingested state entries.
-[[nodiscard]] auto ingest_send_join_state(HomeserverRuntime& runtime,
-                                          canonicaljson::Array const& state_arr,
-                                          rooms::RoomVersionPolicy const& policy)
-    -> std::vector<std::string>;
+[[nodiscard]] auto ingest_send_join_state(HomeserverRuntime& runtime, canonicaljson::Array const& state_arr,
+                                          rooms::RoomVersionPolicy const& policy) -> std::vector<std::string>;
 
 [[nodiscard]] auto ensure_runtime_server_signing_key(HomeserverRuntime& runtime)
     -> std::optional<database::PersistentServerSigningKey>;
@@ -122,6 +120,26 @@ struct ValidatedMakeLeaveResponse final
                               std::string_view event_json) -> OperationResult;
 [[nodiscard]] auto fetch_room_state(HomeserverRuntime const& runtime, std::string_view access_token,
                                     std::string_view room_id) -> OperationResult;
+
+struct FetchRelationsRequest final
+{
+    std::string room_id{};
+    std::string event_id{};
+    std::optional<std::string> rel_type{};
+    std::optional<std::string> event_type{};
+    std::optional<std::string> dir{};
+    std::optional<std::string> from{};
+    std::optional<std::uint64_t> limit{};
+    std::optional<bool> recurse{};
+    std::optional<std::string> to{};
+};
+
+// Retrieve child events that relate to a given parent event, optionally
+// filtered by rel_type and event_type. Implements the three GET
+// /_matrix/client/v1/rooms/{roomId}/relations/... endpoints from Matrix v1.18.
+[[nodiscard]] auto fetch_relations(HomeserverRuntime const& runtime, std::string_view access_token,
+                                   FetchRelationsRequest const& request) -> OperationResult;
+
 [[nodiscard]] auto audit_event_count(HomeserverRuntime const& runtime) noexcept -> std::size_t;
 
 } // namespace merovingian::homeserver

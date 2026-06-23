@@ -115,6 +115,17 @@ namespace
     return percent_encode_colons(std::move(value));
 }
 
+[[nodiscard]] auto percent_encode_event_identifier(std::string value) -> std::string
+{
+    auto dollar = value.find('$');
+    while (dollar != std::string::npos)
+    {
+        value.replace(dollar, 1U, "%24");
+        dollar = value.find('$', dollar + 3U);
+    }
+    return percent_encode_colons(std::move(value));
+}
+
 [[nodiscard]] auto event_id(std::string const& body) -> std::string
 {
     auto const key = std::string{"\"event_id\":\""};
@@ -1689,6 +1700,208 @@ SCENARIO("Client-server room initialSync returns RoomInfo for members and peekab
             {
                 REQUIRE(response.response.status == 403U);
                 REQUIRE(response.response.body.find("M_FORBIDDEN") != std::string::npos);
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.18
+// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv1roomsroomidrelationseventid
+SCENARIO("Client-server relations endpoint returns child events for a parent", "[homeserver][client-server][relations]")
+{
+    GIVEN("a logged-in user in a room with related events")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+
+        auto const room = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", token, {}});
+        REQUIRE(room.response.status == 200U);
+        auto const room_id = ::room_id(room.response.body);
+
+        auto const parent = merovingian::homeserver::handle_client_server_request(
+            runtime, {"PUT", "/_matrix/client/v3/rooms/" + room_id + "/send/m.room.message/txn-relations-parent", token,
+                      R"({"msgtype":"m.text","body":"poll"})"});
+        REQUIRE(parent.response.status == 200U);
+        auto const parent_id = event_id(parent.response.body);
+        auto const encoded_parent = percent_encode_event_identifier(parent_id);
+
+        auto const reference_body =
+            std::string{"{\"msgtype\":\"m.text\",\"body\":\"vote\",\"m.relates_to\":{\"event_id\":\""} + parent_id +
+            "\",\"rel_type\":\"m.reference\"}}";
+        auto const reference_event = merovingian::homeserver::handle_client_server_request(
+            runtime, {"PUT", "/_matrix/client/v3/rooms/" + room_id + "/send/m.room.message/txn-relations-ref", token,
+                      reference_body});
+        REQUIRE(reference_event.response.status == 200U);
+        auto const reference_id = event_id(reference_event.response.body);
+
+        auto const annotation_body =
+            std::string{"{\"msgtype\":\"m.text\",\"body\":\"react\",\"m.relates_to\":{\"event_id\":\""} + parent_id +
+            "\",\"rel_type\":\"m.annotation\"}}";
+        auto const annotation_event = merovingian::homeserver::handle_client_server_request(
+            runtime, {"PUT", "/_matrix/client/v3/rooms/" + room_id + "/send/m.room.message/txn-relations-ann", token,
+                      annotation_body});
+        REQUIRE(annotation_event.response.status == 200U);
+        auto const annotation_id = event_id(annotation_event.response.body);
+
+        auto const unrelated = merovingian::homeserver::handle_client_server_request(
+            runtime, {"PUT", "/_matrix/client/v3/rooms/" + room_id + "/send/m.room.message/txn-relations-unrel", token,
+                      R"({"msgtype":"m.text","body":"unrelated"})"});
+        REQUIRE(unrelated.response.status == 200U);
+
+        auto const relation_event_ids = [&](std::string const& body) {
+            auto const obj = parse_object(body);
+            auto const* chunk = object_member_as_array(obj, "chunk");
+            REQUIRE(chunk != nullptr);
+            auto ids = std::vector<std::string>{};
+            for (auto const& entry : *chunk)
+            {
+                auto const* entry_obj = std::get_if<merovingian::canonicaljson::Object>(&entry.storage());
+                REQUIRE(entry_obj != nullptr);
+                auto const* id = string_member(*entry_obj, "event_id");
+                REQUIRE(id != nullptr);
+                ids.push_back(*id);
+            }
+            return ids;
+        };
+
+        WHEN("requesting all child relations")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v1/rooms/" + room_id + "/relations/" + encoded_parent, token, {}});
+
+            THEN("the response is 200 with both related events, ordered most-recent first")
+            {
+                REQUIRE(response.response.status == 200U);
+                auto const ids = relation_event_ids(response.response.body);
+                REQUIRE(ids.size() == 2U);
+                REQUIRE(ids[0] == annotation_id);
+                REQUIRE(ids[1] == reference_id);
+            }
+        }
+
+        WHEN("requesting relations filtered by rel_type")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET",
+                          "/_matrix/client/v1/rooms/" + room_id + "/relations/" + encoded_parent + "/m.reference",
+                          token,
+                          {}});
+
+            THEN("only the matching reference event is returned")
+            {
+                REQUIRE(response.response.status == 200U);
+                auto const ids = relation_event_ids(response.response.body);
+                REQUIRE(ids.size() == 1U);
+                REQUIRE(ids[0] == reference_id);
+            }
+        }
+
+        WHEN("requesting relations filtered by rel_type and event_type")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"GET",
+                 "/_matrix/client/v1/rooms/" + room_id + "/relations/" + encoded_parent + "/m.reference/m.room.message",
+                 token,
+                 {}});
+
+            THEN("only the matching reference message event is returned")
+            {
+                REQUIRE(response.response.status == 200U);
+                auto const ids = relation_event_ids(response.response.body);
+                REQUIRE(ids.size() == 1U);
+                REQUIRE(ids[0] == reference_id);
+            }
+        }
+
+        WHEN("requesting a rel_type that has no matches")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET",
+                          "/_matrix/client/v1/rooms/" + room_id + "/relations/" + encoded_parent + "/m.thread",
+                          token,
+                          {}});
+
+            THEN("the response is 200 with an empty chunk")
+            {
+                REQUIRE(response.response.status == 200U);
+                auto const obj = parse_object(response.response.body);
+                auto const* chunk = object_member_as_array(obj, "chunk");
+                REQUIRE(chunk != nullptr);
+                REQUIRE(chunk->empty());
+            }
+        }
+
+        WHEN("requesting relations with a limit")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET",
+                          "/_matrix/client/v1/rooms/" + room_id + "/relations/" + encoded_parent + "?limit=1",
+                          token,
+                          {}});
+
+            THEN("only one event is returned")
+            {
+                REQUIRE(response.response.status == 200U);
+                auto const ids = relation_event_ids(response.response.body);
+                REQUIRE(ids.size() == 1U);
+            }
+        }
+
+        WHEN("a non-member requests relations")
+        {
+            REQUIRE(merovingian::homeserver::handle_client_server_request(
+                        runtime, {"POST",
+                                  "/_matrix/client/v3/register",
+                                  {},
+                                  merovingian::tests::registration_json("bob", "CorrectHorse7!")})
+                        .response.status == 200U);
+            auto const bob_login = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST",
+                 "/_matrix/client/v3/login",
+                 {},
+                 R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@bob:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE2"})"});
+            REQUIRE(bob_login.response.status == 200U);
+            auto const bob_token = login_token(bob_login.response.body);
+
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"GET", "/_matrix/client/v1/rooms/" + room_id + "/relations/" + encoded_parent, bob_token, {}});
+
+            THEN("the response is 404 M_NOT_FOUND")
+            {
+                REQUIRE(response.response.status == 404U);
+                REQUIRE(response.response.body.find("M_NOT_FOUND") != std::string::npos);
+            }
+        }
+
+        WHEN("requesting relations for an unknown parent event")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"GET", "/_matrix/client/v1/rooms/" + room_id + "/relations/%24unknown%3Aexample.org", token, {}});
+
+            THEN("the response is 404 M_NOT_FOUND")
+            {
+                REQUIRE(response.response.status == 404U);
+                REQUIRE(response.response.body.find("M_NOT_FOUND") != std::string::npos);
             }
         }
     }

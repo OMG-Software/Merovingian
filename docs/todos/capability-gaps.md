@@ -1,4 +1,4 @@
-# Capability Gaps
+#Capability Gaps
 
 Open work per capability area. Status column reflects the current level in the
 `not-started → planned → scaffolded → unit-covered → integrated → runtime-wired
@@ -56,6 +56,9 @@ Open work per capability area. Status column reflects the current level in the
 | Push rule CRUD | `spec-covered` | Writable push-rule CRUD (PUT/DELETE/enabled/actions). |
 | `PUT /_matrix/client/v3/profile/{userId}/avatar_url` | `spec-covered` | Integration tests only; needs v1.18 conformance fixture. |
 | `GET /_matrix/client/v1/rooms/{roomId}/hierarchy` | `spec-covered` | Paginated depth-first space tree with `max_depth`, `suggested_only`, and `limit`. |
+| `GET /_matrix/client/v1/rooms/{roomId}/relations/{eventId}` | `spec-covered` | Direct relation scan with `dir`, `from`, `to`, `limit`, and `recurse` query parameters; supports encrypted poll responses via `m.reference`. |
+| `GET /_matrix/client/v1/rooms/{roomId}/relations/{eventId}/{relType}` | `spec-covered` | Filtered by `rel_type`. |
+| `GET /_matrix/client/v1/rooms/{roomId}/relations/{eventId}/{relType}/{eventType}` | `spec-covered` | Filtered by `rel_type` and child `event_type`. |
 
 ### Federation API
 

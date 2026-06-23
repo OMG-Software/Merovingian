@@ -1,16 +1,41 @@
-## 0.9.17
+##0.9.17
 
-### Added
-- **feat(homeserver): implement Matrix space hierarchy endpoints:** `GET /_matrix/client/v1/rooms/{roomId}/hierarchy` now returns a paginated, depth-first list of rooms in a space tree, honouring `max_depth`, `suggested_only`, and `limit`, with URL-safe base64 pagination tokens. `GET /_matrix/federation/v1/hierarchy/{roomId}` is also wired so remote servers can fetch a space summary. Both endpoints use the local persistent state (`m.space.child`, `m.room.create`, `m.room.join_rules`) and apply visibility rules before exposing rooms.
+    ## #Added -
+    **feat(homeserver)
+    : implement Matrix space hierarchy endpoints : ** `GET
+        / _matrix / client / v1 / rooms / {roomId} / hierarchy` now returns a paginated,
+    depth - first list of rooms in a space tree, honouring `max_depth`, `suggested_only`,
+    and `limit`, with URL - safe base64 pagination tokens. `GET / _matrix / federation / v1 / hierarchy /
+{
+    roomId
+}` is also wired so remote servers can fetch a space summary. Both endpoints use the local persistent state (`m.space.child`, `m.room.create`, `m.room.join_rules`) and apply visibility rules before exposing rooms.
+- **feat(homeserver): implement Matrix v1.18 event relations endpoints:** `GET /_matrix/client/v1/rooms/{roomId}/relations/{eventId}[/{relType}[/{eventType}]]` is now wired for joined members. The endpoint scans local room events for `m.relates_to` references to the parent event, optionally filters by `rel_type` and child `event_type`, supports `dir`, `from`, `to`, `limit`, and `recurse` query parameters, and returns a spec-shaped paginated `chunk` with optional `next_batch`, `prev_batch`, and `recursion_depth` fields. Encrypted poll responses that relate via `m.reference` are now returned as `m.room.encrypted` events, fixing Element polls that previously failed with `404 M_UNRECOGNIZED`.
 
 ### Fixed
-- **fix(media): encrypted-room attachments no longer quarantined on upload and authenticated `POST /_matrix/client/v1/media/upload` is wired:** E2EE clients (Element/Web) upload encrypted attachments as opaque `application/octet-stream` ciphertext, which was missing from the default `security.media.allowed_mime_types` allow-list and caused uploads to be quarantined; downloads of those quarantined files later returned `451 Unavailable For Legal Reasons`. The default allow-list now includes `application/octet-stream`, and operators can override the list via the new `security.media.allowed_mime_types` configuration key. The authenticated v1 upload endpoint was also absent from the client-server dispatcher and has been added, using the same raw-binary-to-pipe-format translation as the unauthenticated v3 path.
+- **fix(media): encrypted-room attachments no longer quarantined on upload and authenticated `POST /_matrix/client/v1/media/upload` is wired:** E2EE clients (Element/Web) upload encrypted attachments as opaque `application/octet-stream` ciphertext, which was missing from the default `security.media.allowed_mime_types` allow-list and caused uploads to be quarantined;
+downloads of those quarantined files later returned `451 Unavailable For Legal Reasons`. The default allow-list now includes `application/octet-stream`, and operators can override the list via the new `security.media.allowed_mime_types` configuration key. The authenticated v1 upload endpoint was also absent from the client-server dispatcher and has been added, using the same raw-binary-to-pipe-format translation as the unauthenticated v3 path.
 - **fix(config): example configuration now includes all recognised keys:** `config/merovingian.conf.example` was missing `security.access_token_lifetime_ms`, `security.refresh_token_lifetime_ms`, `security.media.allowed_mime_types`, `security.media.remote_fetch_enabled`, and `security.secrets.master_key_file`. Each is now documented with its default and, where relevant, the security implications of changing it.
 
 ## 0.9.16
 
 ### Fixed
-- **fix(media): media download and thumbnail endpoints no longer 404 on query parameters and now return raw bytes with Content-Type:** `GET /_matrix/media/v3/download/{serverName}/{mediaId}`, `GET /_matrix/client/v1/media/download/{serverName}/{mediaId}`, and the equivalent thumbnail routes failed when clients appended `?allow_redirect=true` (or `?width=...&height=...`) because `local_media_download_parts` parsed the query string as part of the media ID. The helper now strips the query component before splitting `server_name`/`media_id`. Additionally, successful download/thumbnail results were returned in the internal `content_type|bytes` pipe format to clients instead of the raw bytes the Matrix spec requires; `client_server.cpp` now splits that payload and emits a `Content-Type` header.
+- **fix(media): media download and thumbnail endpoints no longer 404 on query parameters and now return raw bytes with Content-Type:** `GET /_matrix/media/v3/download/{serverName}/
+{
+    mediaId
+}
+`, `GET / _matrix / client / v1 / media / download / {serverName} /
+{
+    mediaId
+}
+`, and the equivalent thumbnail routes failed when clients appended `
+    ? allow_redirect = true` (
+          or `? width = ...& height =
+                    ...`)
+                        because `local_media_download_parts` parsed the query string as part of the media ID.The helper
+                            now strips the query component before splitting `server_name`/`media_id`.Additionally,
+          successful download / thumbnail results were returned in the internal `content_type |
+              bytes` pipe format to clients instead of the raw bytes the Matrix spec
+                  requires; `client_server.cpp` now splits that payload and emits a `Content-Type` header.
 
 ## 0.9.15
 
@@ -18,12 +43,20 @@
 - **test(events): add BDD coverage for event_signer.cpp** — new `tests/unit/test_event_signer.cpp` exercises `signing_key_id_is_valid` (valid, empty server_name, empty key_id, control chars, space, DEL), `matrix_base64_from_bytes`/`matrix_bytes_from_base64` (round-trip, empty input, invalid base64), `make_event_signing_payload` without and with `RoomVersionPolicy` (success and non-object error paths), `attach_event_signature` (success, invalid key ID, short-decoded signature, non-object event), `sign_event_for_server` (success, non-object event, no key for server), `verify_event_signature_presence` (invalid key ID, non-object, missing signatures, missing server), and `verify_event_signature` (end-to-end success, provider-failure path).
 - **test(crypto): expand signing_service.cpp coverage** — six new scenarios appended to `tests/unit/test_crypto.cpp`: `signing_key_record_is_usable` directly tested for active, inactive, empty server_name, non-Ed25519 key_id, and wrong-size public key; `sign_for_server` with empty server name ("server name is empty"), key store error propagation, server-name mismatch ("active signing key server mismatch"), provider error propagation, and provider returning invalid signature shape ("provider returned invalid Ed25519 signature shape").
 - **test(media): expand media/security.cpp coverage** — eleven new scenarios appended to `tests/unit/test_media_security.cpp`: `media_disposition_name` for all three enum values, `media_mime_type_is_allowed` direct call with allowed and unlisted types, `evaluate_media_upload` for zero size limit, zero byte_size, missing content sniff result, reject (not quarantine) for unknown MIME with `quarantine_unknown_mime=false`, and reject (not quarantine) for scanner failure with `quarantine_scanner_failures=false`; `remote_media_fetch_policy` for invalid origin server and empty resolved_host, and SSRF-blocking-disabled path; `admin_quarantine_policy` for invalid admin user ID and invalid media ID; `evaluate_decoder_safety` for input bytes exceeding the limit and pixel count exceeding the limit.
-- **test(auth): expand key_api.cpp coverage** — five new scenarios appended to `tests/unit/test_key_api.cpp`: `key_payload_is_loggable("")` and `redacted_key_payload_summary("")` for the empty-payload branch; `key_api_endpoint_name` exhaustive coverage for all 19 enum values confirming no "unknown" fallback; `match_key_api_route` no-match cases (wrong path, wrong method); full GET and DELETE backup-route matching for version-by-id, room-key batch, room-key-by-session, room-key-by-room, and delete-version; `key_api_database_statements` for update, delete, get backup-version, claim-keys, and upload-signatures endpoints.
+- **test(auth): expand key_api.cpp coverage** — five new scenarios appended to `tests/unit/test_key_api.cpp`: `key_payload_is_loggable("")` and `redacted_key_payload_summary("")` for the empty-payload branch; `key_api_endpoint_name` exhaustive coverage for all 19 enum values confirming no "unknown" fallback;
+`match_key_api_route` no - match cases(wrong path, wrong method); full GET and DELETE backup-route matching for version-by-id, room-key batch, room-key-by-session, room-key-by-room, and delete-version; `key_api_database_statements` for update, delete, get backup-version, claim-keys, and upload-signatures endpoints.
 - **test(database): add BDD coverage for schema identifier quoting, core-table introspection, migration-step validation, and migration-plan validation error paths:** `tests/unit/test_database_schema.cpp` exercises `quote_sqlite_identifier` rejection of empty inputs and SQL-injection characters (semicolons, embedded quotes, spaces), `schema_table_is_core` and `schema_table_definition` for known vs unknown table names, `create_table_sql` DDL generation and non-core rejection, `current_schema_version` non-zero invariant, `initial_schema_tables` non-empty invariant, `migration_step_is_valid` rejecting version-zero upgrade steps, hyphenated names, empty statement lists, and multi-statement SQL, `migration_direction_name` round-trips, `migration_rollback_policy` non-empty policy string, `migration_plan_between` same-version no-op and beyond-catalog empty-plan cases, `apply_migration_plan` state-version-mismatch failure, and `migration_plan_is_valid` covering no-op-with-steps rejected, upgrade-with-no-steps rejected, direction-mismatch rejected, and catalog-derived plan accepted.
 - **test(homeserver): add BDD coverage for authentication and HTTP-dispatch failure paths:** `tests/unit/test_homeserver_error_paths.cpp` exercises login with wrong password, login for unknown user, duplicate username registration, logout with unknown/empty token, `verify_local_user_password` with wrong password, `handle_local_http_request` returning 4xx for unrecognised routes, `handle_local_http_request` returning 401 for auth-required routes with no access token, and `handle_federation_http_request` returning 4xx for non-federation paths.
 - **test(homeserver): add BDD coverage for auth_service functions not previously tested:** `tests/unit/test_homeserver_auth_service.cpp` exercises `bootstrap_admin_user` success and duplicate rejection, admin privilege confirmed via `authenticated_admin_user` and denied for regular users, `account_state_for_user` returning nullopt for unknown/empty user IDs and `AccountState::active` for new registrations, `logout_all_local_user` rejecting unknown/empty tokens and revoking all sessions, `change_local_user_password` rejecting unknown tokens and verifying old token invalidation + old password rejection + new password acceptance, `delete_local_device` rejecting unknown user and unknown device and confirming session invalidation on valid deletion, `issue_refresh_token_for_session` failing for unknown users, `refresh_local_session` rejecting empty/unknown tokens, issuing new tokens on valid exchange, and enforcing single-use, and `access_token_is_soft_logout` returning false for empty and unknown tokens.
-- **test(homeserver): add BDD coverage for room_service operations not previously tested:** `tests/unit/test_homeserver_room_service.cpp` exercises `ban_user` rejecting unauthenticated callers, non-existent rooms, and non-privileged members; confirming the room creator can ban a member; `kick_user` rejecting unauthenticated callers and non-privileged members; confirming the room creator can kick; `unban_user` rejecting unauthenticated callers and confirming the room creator can lift a ban; `forget_room` rejecting unauthenticated callers, rejecting forget-while-joined, and succeeding after leave; `knock_room` rejecting unauthenticated callers and non-existent rooms.
-- **test(federation): add BDD coverage for server-name validation boundaries and PDU envelope parsing error paths:** `tests/unit/test_federation_server_name.cpp` exercises `server_name_is_valid` accepting valid domains and domain-with-port, rejecting empty strings, dot-free single-label names, names exceeding 255 characters, names with embedded spaces, newlines, and tabs; `federation_discovery_policy` rejecting unresolved hosts, empty address sets, invalid server names, and TLS-not-required remotes; `parse_inbound_pdu_envelope` returning nullopt for empty input, JSON arrays, JSON string literals, and malformed JSON.
+- **test(homeserver): add BDD coverage for room_service operations not previously tested:** `tests/unit/test_homeserver_room_service.cpp` exercises `ban_user` rejecting unauthenticated callers, non-existent rooms, and non-privileged members;
+confirming the room creator can ban a member;
+`kick_user` rejecting unauthenticated callers and non - privileged members;
+confirming the room creator can kick;
+`unban_user` rejecting unauthenticated callers and confirming the room creator can lift a ban;
+`forget_room` rejecting unauthenticated callers, rejecting forget - while - joined, and succeeding after leave; `knock_room` rejecting unauthenticated callers and non-existent rooms.
+- **test(federation): add BDD coverage for server-name validation boundaries and PDU envelope parsing error paths:** `tests/unit/test_federation_server_name.cpp` exercises `server_name_is_valid` accepting valid domains and domain-with-port, rejecting empty strings, dot-free single-label names, names exceeding 255 characters, names with embedded spaces, newlines, and tabs;
+`federation_discovery_policy` rejecting unresolved hosts, empty address sets, invalid server names,
+    and TLS - not -required remotes; `parse_inbound_pdu_envelope` returning nullopt for empty input, JSON arrays, JSON string literals, and malformed JSON.
 
 ## 0.9.14
 
@@ -38,11 +71,34 @@
 ## 0.9.13
 
 ### Added
-- **feat(homeserver): implement Matrix space hierarchy endpoints:** `GET /_matrix/client/v1/rooms/{roomId}/hierarchy` now returns a paginated, depth-first list of rooms in a space tree, honouring `max_depth`, `suggested_only`, and `limit`, with URL-safe base64 pagination tokens. `GET /_matrix/federation/v1/hierarchy/{roomId}` is also wired so remote servers can fetch a space summary. Both endpoints use the local persistent state (`m.space.child`, `m.room.create`, `m.room.join_rules`) and apply visibility rules before exposing rooms.
+- **feat(homeserver): implement Matrix space hierarchy endpoints:** `GET /_matrix/client/v1/rooms/{roomId}/hierarchy` now returns a paginated, depth-first list of rooms in a space tree, honouring `max_depth`, `suggested_only`, and `limit`, with URL-safe base64 pagination tokens. `GET /_matrix/federation/v1/hierarchy/
+{
+    roomId
+}
+` is also wired so remote servers can fetch a space summary.Both endpoints use the local persistent
+        state(`m.space.child`, `m.room.create`, `m.room.join_rules`) and
+    apply visibility rules before exposing rooms.
 
-### Fixed
-- **fix(tests): repair compile errors in 3PID test suite introduced in v0.9.13:** five occurrences of `R"("})"}` in conformance tests were parsed as raw string `"}` plus a stray `}` due to C++ raw-string early termination (the empty delimiter closes at the first `)"` sequence); fixed to `R"("})"`. Two WHEN/GIVEN blocks in the integration and unit tests had missing `;` on string-concatenation declarations, causing `};` on the next line to close the enclosing scope prematurely and make all subsequent variables undeclared; fixed by adding the missing semicolons and re-indenting action code inside the WHEN blocks. `integer_member` helper calls in conformance tests renamed to the correct `int_member`. Integration test assertion for `bob_duplicate_add` relaxed from `== 400U` to `!= 200U` since UIA correctly rejects with 401 before the duplicate check is reached. Unit test assertion that the `M_SESSION_NOT_VALIDATED` error body contains the `sid` value removed — the Matrix spec does not require the sid to be echoed in error bodies.
-- **fix(client-server): remote room aliases now resolve over federation for room-directory lookups and joins:** `GET /_matrix/client/v3/directory/room/{roomAlias}` previously only searched the local alias table, so looking up `#alias:remote.example.org` returned a misleading local `M_NOT_FOUND` instead of querying the alias-owning homeserver via federation. `POST /_matrix/client/v3/join/{roomIdOrAlias}` had the same gap: when given a remote room alias it rewrote directly to `/rooms/{roomId}/join`, treating the alias text as though it were already a room ID and never resolving the remote alias to the room ID plus `via` servers required for the join. The client-server handler now federates `/_matrix/federation/v1/query/directory` for remote aliases, rewrites remote-alias joins to the resolved room ID with merged `via` servers, and includes joined-member server names in local alias responses.
+        ## #Fixed
+        - **fix(tests)
+    : repair compile errors in 3PID test suite introduced in v0.9.13 : **five occurrences of `R"("})"
+}` in conformance tests were parsed as raw string `"}` plus a stray `}` due to C++ raw-string early termination (the empty delimiter closes at the first `)"` sequence);
+fixed to `R"("})"`.Two WHEN / GIVEN blocks in the integration and unit tests had missing `;
+` on string - concatenation declarations, causing `
+}
+;
+` on the next line to close the enclosing scope prematurely and make all subsequent variables undeclared; fixed by adding the missing semicolons and re-indenting action code inside the WHEN blocks. `integer_member` helper calls in conformance tests renamed to the correct `int_member`. Integration test assertion for `bob_duplicate_add` relaxed from `== 400U` to `!= 200U` since UIA correctly rejects with 401 before the duplicate check is reached. Unit test assertion that the `M_SESSION_NOT_VALIDATED` error body contains the `sid` value removed — the Matrix spec does not require the sid to be echoed in error bodies.
+- **fix(client-server): remote room aliases now resolve over federation for room-directory lookups and joins:** `GET /_matrix/client/v3/directory/room/
+{
+    roomAlias
+}
+` previously only searched the local alias table,
+    so looking up `#alias
+    : remote.example.org` returned a misleading local `M_NOT_FOUND` instead of querying the alias -
+        owning homeserver via federation. `POST / _matrix / client / v3 / join /
+{
+    roomIdOrAlias
+}` had the same gap: when given a remote room alias it rewrote directly to `/rooms/{roomId}/join`, treating the alias text as though it were already a room ID and never resolving the remote alias to the room ID plus `via` servers required for the join. The client-server handler now federates `/_matrix/federation/v1/query/directory` for remote aliases, rewrites remote-alias joins to the resolved room ID with merged `via` servers, and includes joined-member server names in local alias responses.
 - **fix(client-server): account 3PID management now works end-to-end:** Merovingian now implements the client-account 3PID flow instead of stopping at the auth-gate workaround. `POST /_matrix/client/v3/account/3pid/email/requestToken` and `.../msisdn/requestToken` remain unauthenticated per Matrix v1.18, reject identifiers already in use with `M_THREEPID_IN_USE`, and issue validation `sid` values. Authenticated clients can now complete `POST /_matrix/client/v3/account/3pid/add`, `POST /_matrix/client/v3/account/3pid`, `POST /_matrix/client/v3/account/3pid/bind`, `POST /_matrix/client/v3/account/3pid/unbind`, and `POST /_matrix/client/v3/account/3pid/delete`, while `GET /_matrix/client/v3/account/3pid` returns the spec-shaped `threepids` array with `added_at`, `address`, `medium`, and `validated_at`. `GET /_matrix/client/v3/capabilities` now also advertises `m.3pid_changes`.
 - **fix(media): media uploads now accept real HTTP clients (raw binary body + Content-Type header):** `POST /_matrix/media/v3/upload` previously delegated the raw client request directly to the local media router, which expected an internal pipe-delimited body (`declared_mime|sniffed_mime|scanner_clean|bytes`). Real Matrix clients (Element X, Element Web) send a raw binary body with a `Content-Type` header, causing every real upload to fail with 400 `upload body must be declared_mime|sniffed_mime|scanner_clean|bytes`. The handler now extracts the `Content-Type` header from the request and constructs the correct pipe-delimited body before forwarding to the local router. Missing `Content-Type` defaults to `application/octet-stream`. The route match is also widened from an exact string check to handle the `?filename=...` query parameter (e.g. `/_matrix/media/v3/upload?filename=avatar.jpg`), which previously fell through to the general body-size gate and returned 413 for any upload larger than 64 KiB. Media upload requests are now governed by the configured `security.media.max_upload_size` (default 100 MiB) instead of the general 64 KiB client-API body cap. Quarantined uploads (internal MIME policy, 202 from the local router) are mapped to 200 toward the client with the assigned `content_uri`, since quarantine is a server-internal moderation action not defined in the Matrix spec response contract.
 - **fix(sync): sync pool no longer exhausted by zombie timeout=30000 connections from rapid SDK reconnects:** when a sliding-sync client (e.g. matrix-rust-sdk) sends a new `timeout=30000` long-poll every ~90 ms while abandoning the previous TCP connection, each parked sync-pool thread was blocked in `wait_for_change` for a full 5-second poll slice before detecting the dead socket — even though the peer had already closed. With 11 new connections per second and a 5-second hold time, the 32-thread sync pool became exhausted within ~3 seconds, causing subsequent long-polls to queue behind zombie tasks or fall through to the main pool, stalling all other traffic. The fix reduces the poll-interval from 5 s to 1 s and adds a non-blocking `recv(MSG_PEEK | MSG_DONTWAIT)` liveness check after each slice timeout: a return value of 0 (TCP FIN) or a connection error (not EAGAIN/EWOULDBLOCK) causes the thread to exit immediately and close the fd without building or logging a response. Steady-state thread consumption drops from ~55 to ~11 for this pattern.
@@ -54,7 +110,9 @@
 - **test(client-server): add BDD coverage for remote alias federation failures:** two scenarios in `tests/unit/test_client_server.cpp` verify the repaired path. Remote room-directory lookups now fail as federation errors rather than false local alias misses, and alias-based joins now fail only after remote alias resolution is attempted instead of treating the alias itself as a room ID.
 - **test(client-server): add 3PID unit, integration, and conformance coverage:** unit and integration scenarios now cover the account 3PID lifecycle across request-token, UIA add, bind, list, unbind, delete, and duplicate-rejection paths. Conformance coverage now asserts the spec-shaped unauthenticated request-token behavior, UIA challenge semantics for `POST /account/3pid/add`, and the required `GET /account/3pid` response shape.
 - **test(sync): add BDD unit tests for sync pool zombie-connection detection:** three scenarios in `tests/unit/test_sync_pool_liveness.cpp` validate the `recv(MSG_PEEK | MSG_DONTWAIT)` liveness mechanism using Unix socket pairs — peer-closed detection (returns 0), live-connection non-detection (returns EAGAIN/EWOULDBLOCK), and abrupt-reset detection via SO_LINGER with l_linger=0.
-- **test(sync): add BDD unit tests for sliding sync no-pos delta behavior:** two scenarios in `test_client_server.cpp` verify the root-cause fix — that a second `timeout=0` poll on the same `conn_id` with no intervening events returns `rooms: {}` and the same `pos`, and that a poll after a new message event returns an advanced `pos` and includes the new timeline event.
+- **test(sync): add BDD unit tests for sliding sync no-pos delta behavior:** two scenarios in `test_client_server.cpp` verify the root-cause fix — that a second `timeout=0` poll on the same `conn_id` with no intervening events returns `rooms:
+{
+}` and the same `pos`, and that a poll after a new message event returns an advanced `pos` and includes the new timeline event.
 
 ## 0.9.11
 
@@ -65,11 +123,26 @@
 
 ### Fixed
 - **fix(sync): MSC4186 sliding sync long-poll no longer returns early when only another user's device keys were uploaded:** `handle_key_upload` fans out `PersistentDeviceListChange` rows to every co-member when a user uploads keys, and each write fires the global `SyncNotifier`. This woke the uploading user's own sliding sync immediately, causing matrix-rust-sdk to reset to a full `timeout=0` initial sync and loop at ~5 cycles/second. The fix adds a relevance check in `sliding_sync_json`: when only `sync_stream_id` has advanced (no new room events), the handler inspects whether any new device-list-change, to-device-message, or account-data row is actually addressed to the waiting user. If not, it returns `needs_wait` with `since_sync_stream_id` advanced to the current counter, so the notifier must fire again before the next wakeup. All three wait paths in the HTTP server (`dispatch_local_http_request`, inline blocking, sync_pool lambda) are updated to loop with `can_wait=true` after each notifier fire, continuing if the handler re-parks.
-- **fix(sync): incremental MSC4186 sliding sync no longer returns unchanged rooms, ending the Element X tight-poll loop:** two complementary bugs caused matrix-rust-sdk to treat every incremental response as carrying new data and immediately re-poll with `timeout=0`. First, `build_room_response` included all `required_state` events unconditionally; it now filters to only events whose `stream_ordering > since_event_ordering` on incremental responses (initial syncs are unaffected). Second, `sliding_sync_json` included every windowed room in the `rooms{}` object regardless of whether anything changed; rooms are now gated by `has_room_updates` — a room appears in `rooms{}` only when it is being seen for the first time, has new timeline events, has changed required_state, or has non-zero notification/highlight counts. Together these ensure that when nothing has changed since the `pos` the incremental response carries `rooms: {}`, which causes the client to honour the 30-second long-poll timeout instead of looping.
+- **fix(sync): incremental MSC4186 sliding sync no longer returns unchanged rooms, ending the Element X tight-poll loop:** two complementary bugs caused matrix-rust-sdk to treat every incremental response as carrying new data and immediately re-poll with `timeout=0`. First, `build_room_response` included all `required_state` events unconditionally;
+it now filters to only events whose `stream_ordering > since_event_ordering` on incremental responses (initial syncs are unaffected). Second, `sliding_sync_json` included every windowed room in the `rooms
+{
+}
+` object regardless of whether anything changed;
+rooms are now gated by `has_room_updates` — a room appears in `rooms
+{
+}` only when it is being seen for the first time, has new timeline events, has changed required_state, or has non-zero notification/highlight counts. Together these ensure that when nothing has changed since the `pos` the incremental response carries `rooms:
+{
+}
+`, which causes the client to honour the 30 - second long -
+       poll timeout instead of looping.
 
-### Added
-- **test(sync): add BDD test verifying sliding sync spurious-wakeup suppression:** two scenarios in `test_client_server.cpp` cover the device-key-upload case: when alice uploads keys (creating DLCs only for co-members as observers), `handle_client_server_request(can_wait=true)` returns `needs_wait` with an advanced `since_sync_stream_id`; when bob uploads keys (creating a DLC with alice as observer), the same call returns `complete` with `device_lists.changed` populated.
-- **test(sync): add BDD unit tests for `build_room_response` incremental filtering:** six scenarios in `tests/unit/test_sliding_sync_room_builder.cpp` cover the initial-vs-incremental `required_state` filtering: all matching state included on initial sync; state predating the pos omitted on incremental; only post-pos state included when mixed; wildcard `*/*` filter respects the same ordering gate; no-update responses produce empty `required_state_json` and `timeline_json`; new timeline events correctly populate `timeline_json`.
+       ## #Added -
+       **test(sync)
+    : add BDD test verifying sliding sync spurious
+       - wakeup suppression : **two scenarios in `test_client_server.cpp` cover the device - key - upload case: when alice uploads keys (creating DLCs only for co-members as observers), `handle_client_server_request(can_wait=true)` returns `needs_wait` with an advanced `since_sync_stream_id`; when bob uploads keys (creating a DLC with alice as observer), the same call returns `complete` with `device_lists.changed` populated.
+- **test(sync): add BDD unit tests for `build_room_response` incremental filtering:** six scenarios in `tests/unit/test_sliding_sync_room_builder.cpp` cover the initial-vs-incremental `required_state` filtering: all matching state included on initial sync;
+state predating the pos omitted on incremental;
+only post - pos state included when mixed; wildcard `*/*` filter respects the same ordering gate; no-update responses produce empty `required_state_json` and `timeline_json`; new timeline events correctly populate `timeline_json`.
 
 ## 0.9.8
 
@@ -121,8 +194,15 @@
 ## 0.9.0
 
 ### Fixed
-- **fix(auth): include `soft_logout: true` in 401 responses for expired access tokens (spec §5.7.2):** when an access token is found-but-expired the server now returns `{"errcode":"M_UNKNOWN_TOKEN","error":"unauthenticated","soft_logout":true}` so Matrix clients use their refresh token rather than performing a full session logout. Revoked tokens continue to return a plain 401 without `soft_logout`, preserving hard-logout semantics for explicit revocations.
+- **fix(auth): include `soft_logout: true` in 401 responses for expired access tokens (spec §5.7.2):** when an access token is found-but-expired the server now returns `
+{
+    "errcode" : "M_UNKNOWN_TOKEN", "error" : "unauthenticated", "soft_logout" : true
+}` so Matrix clients use their refresh token rather than performing a full session logout. Revoked tokens continue to return a plain 401 without `soft_logout`, preserving hard-logout semantics for explicit revocations.
 
 ### Changed
-- **chore(release): beta milestone — promote from pre-beta (0.8.x) to beta phase (0.9.0):** version number advanced to 0.9.0 per the versioning scheme phase markers. No functional changes; this commit updates all version strings across `meson.build`, source files, packaging metadata, and build scripts.
-- **docs: update README to reflect beta status:** banner note and Project Status section updated from pre-beta/in-development language to beta; pre-beta changelog history archived to `CHANGELOG-pre-beta.md`.
+- **chore(release): beta milestone — promote from pre-beta (0.8.x) to beta phase (0.9.0):** version number advanced to 0.9.0 per the versioning scheme phase markers. No functional changes;
+this commit updates all version strings across `meson.build`, source files, packaging metadata,
+    and build scripts.-
+        **docs : update README to reflect beta status : **banner note and Project Status section updated from pre -
+        beta / in - development language to beta;
+pre - beta changelog history archived to `CHANGELOG - pre - beta.md`.

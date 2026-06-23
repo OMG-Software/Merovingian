@@ -941,6 +941,14 @@ namespace
         std::string event_id{};
     };
 
+    struct RoomRelationsPathParts final
+    {
+        std::string room_id{};
+        std::string event_id{};
+        std::optional<std::string> rel_type{};
+        std::optional<std::string> event_type{};
+    };
+
     struct AdminReviewPathParts final
     {
         trust_safety::ReviewTarget target{trust_safety::ReviewTarget::media};
@@ -4966,6 +4974,38 @@ namespace
         return starts_with(target, prefix) ? target.substr(prefix.size()) : std::string_view{};
     }
 
+    [[nodiscard]] auto parse_query_bool(std::optional<std::string> const& value) -> std::optional<bool>
+    {
+        if (!value.has_value())
+        {
+            return std::nullopt;
+        }
+        if (*value == "true")
+        {
+            return true;
+        }
+        if (*value == "false")
+        {
+            return false;
+        }
+        return std::nullopt;
+    }
+
+    [[nodiscard]] auto parse_query_uint(std::optional<std::string> const& value) -> std::optional<std::uint64_t>
+    {
+        if (!value.has_value() || value->empty())
+        {
+            return std::nullopt;
+        }
+        auto result = std::uint64_t{0U};
+        auto const [ptr, error] = std::from_chars(value->data(), value->data() + value->size(), result);
+        if (error == std::errc{} && ptr == value->data() + value->size())
+        {
+            return result;
+        }
+        return std::nullopt;
+    }
+
     [[nodiscard]] auto room_send_path_parts(std::string_view target) -> std::optional<RoomSendPathParts>
     {
         auto constexpr prefix = std::string_view{"/_matrix/client/v3/rooms/"};
@@ -5037,6 +5077,62 @@ namespace
         }
         return RoomEventPathParts{core::percent_decode_path_component(suffix.substr(0U, marker_pos)),
                                   core::percent_decode_path_component(event_id)};
+    }
+
+    [[nodiscard]] auto room_relations_path_parts(std::string_view target) -> std::optional<RoomRelationsPathParts>
+    {
+        auto constexpr prefix = std::string_view{"/_matrix/client/v1/rooms/"};
+        auto constexpr marker = std::string_view{"/relations/"};
+        auto const path = target.substr(0U, target.find('?'));
+        auto const suffix = route_suffix(path, prefix);
+        auto const marker_pos = suffix.find(marker);
+        if (suffix.empty() || marker_pos == std::string_view::npos || marker_pos == 0U ||
+            marker_pos + marker.size() >= suffix.size())
+        {
+            return std::nullopt;
+        }
+
+        auto const remainder = suffix.substr(marker_pos + marker.size());
+        if (remainder.empty() || remainder[0U] == '/')
+        {
+            return std::nullopt;
+        }
+        auto segments = std::vector<std::string_view>{};
+        {
+            auto cursor = std::size_t{0U};
+            while (cursor < remainder.size())
+            {
+                auto const slash = remainder.find('/', cursor);
+                if (slash == std::string_view::npos)
+                {
+                    segments.push_back(remainder.substr(cursor));
+                    break;
+                }
+                if (slash == cursor)
+                {
+                    return std::nullopt;
+                }
+                segments.push_back(remainder.substr(cursor, slash - cursor));
+                cursor = slash + 1U;
+            }
+        }
+        if (segments.empty() || segments.size() > 3U)
+        {
+            return std::nullopt;
+        }
+
+        auto result = RoomRelationsPathParts{};
+        result.room_id = core::percent_decode_path_component(suffix.substr(0U, marker_pos));
+        result.event_id = core::percent_decode_path_component(segments[0U]);
+        if (segments.size() >= 2U)
+        {
+            result.rel_type = core::percent_decode_path_component(segments[1U]);
+        }
+        if (segments.size() == 3U)
+        {
+            result.event_type = core::percent_decode_path_component(segments[2U]);
+        }
+        return result;
     }
 
     [[nodiscard]] auto room_joined_members_path_room_id(std::string_view target) -> std::optional<std::string>
@@ -7980,6 +8076,35 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                                     {"device_id", device_id_4186, false}
         });
         return sliding_sync_json(rt, *user, device_id_4186, *sliding_req, pos, timeout, can_wait);
+    }
+
+    // GET /_matrix/client/v1/rooms/{roomId}/relations/{eventId}[/{relType}[/{eventType}]]
+    // Spec: retrieve child events that relate to the given parent event.
+    auto constexpr relations_prefix = std::string_view{"/_matrix/client/v1/rooms/"};
+    if (req.method == "GET" && starts_with(req.target, relations_prefix))
+    {
+        if (auto const path = room_relations_path_parts(req.target); path.has_value())
+        {
+            auto const request = FetchRelationsRequest{
+                path->room_id,
+                path->event_id,
+                path->rel_type,
+                path->event_type,
+                query_param_value(req.target, "dir"),
+                query_param_value(req.target, "from"),
+                parse_query_uint(query_param_value(req.target, "limit")),
+                parse_query_bool(query_param_value(req.target, "recurse")),
+                query_param_value(req.target, "to"),
+            };
+            auto const result = fetch_relations(rt.homeserver, req.access_token, request);
+            if (!result.ok)
+            {
+                auto const code =
+                    result.status == 404U ? std::string_view{"M_NOT_FOUND"} : error_code_for_status(result.status);
+                return dispatch_err(req, rt, result.status, code, result.reason);
+            }
+            return complete({200U, result.value});
+        }
     }
 
     auto constexpr room_prefix = std::string_view{"/_matrix/client/v3/rooms/"};
