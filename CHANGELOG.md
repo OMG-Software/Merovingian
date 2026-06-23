@@ -1,3 +1,8 @@
+## 0.9.19
+
+### Fixed
+- **fix(sync): stop ElementX sliding-sync loop caused by repeated room re-inclusion:** MSC4186 `/_matrix/client/unstable/org.matrix.msc4186/sync` now tracks the last stream ordering at which each room was returned per connection (`SlidingSyncConnectionState::rooms_seen` is a `std::unordered_map<std::string, std::uint64_t>`).  The per-room delta floor is `max(request_since, per_room_last_inclusion)`, so a room is not pulled back into `rooms{}` by unread counts alone.  Unread counts are now sent only when the room is already included because its timeline or `required_state` changed.  Added diagnostic logging (`sliding_sync.response`) and BDD unit coverage for the repeated-poll case.
+
 ## 0.9.18
 
 ### Added

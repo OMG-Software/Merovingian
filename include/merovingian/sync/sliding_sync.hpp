@@ -7,7 +7,7 @@
 #include <map>
 #include <optional>
 #include <string>
-#include <unordered_set>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -253,9 +253,11 @@ struct SlidingSyncConnectionState final
     // Previous window contents per list — used to generate incremental ops.
     // Key: list name, value: ordered room IDs returned in the last response.
     std::map<std::string, std::vector<std::string>> list_prev_windows{};
-    // Room IDs that have appeared in at least one response for this connection.
-    // A room not in this set gets initial=true in the next response.
-    std::unordered_set<std::string> rooms_seen{};
+    // Rooms that have appeared in at least one response for this connection,
+    // mapped to the event ordering at which they were last returned.  This lets
+    // the server compute per-room deltas and avoid re-sending unchanged rooms
+    // when the global pos lags behind a room's last inclusion.
+    std::unordered_map<std::string, std::uint64_t> rooms_seen{};
     // Stream position at the end of the last response (used for delta queries).
     std::uint64_t last_event_ordering{0U};
     std::uint64_t last_sync_stream_id{0U};

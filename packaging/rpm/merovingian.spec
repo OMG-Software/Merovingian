@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.9.18
+Version:        0.9.19
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -100,6 +100,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Tue Jun 23 2026 James Chapman <claude@ping.me.uk> - 0.9.19-1
+- fix(sync): stop ElementX sliding-sync loop caused by repeated room re-inclusion
+
 * Mon Jun 22 2026 James Chapman <claude@ping.me.uk> - 0.9.18-1
 - feat(client-server): implement room tag endpoints and general JSON double support
 

@@ -3615,15 +3615,24 @@ namespace
                     }
                 }
             }
-            auto const is_initial = conn.rooms_seen.find(room_id) == conn.rooms_seen.end();
-            auto room =
-                sync::build_room_response(rt.homeserver, room_id, user, sub, since_event_ordering, is_initial, store);
+            auto const room_seen_it = conn.rooms_seen.find(room_id);
+            auto const is_initial = room_seen_it == conn.rooms_seen.end();
+            auto const room_last_ordering = is_initial ? std::uint64_t{0U} : room_seen_it->second;
+            // Use the per-room last inclusion ordering as the delta floor.  This
+            // prevents re-delivering a room when the request pos lags behind the
+            // ordering at which the room was already returned on this connection,
+            // which was causing matrix-rust-sdk / ElementX to see the same payload
+            // with a non-advancing pos and reset into a polling loop.
+            auto const room_since = std::max(since_event_ordering, room_last_ordering);
+            auto room = sync::build_room_response(rt.homeserver, room_id, user, sub, room_since, is_initial, store);
             // Per MSC4186, only include a room in rooms{} when it has actual
-            // changes: first appearance (initial), post-pos timeline events, changed
-            // required_state, or non-zero unread counts.
+            // changes: first appearance (initial), post-pos timeline events, or changed
+            // required_state.  Unread counts are sent when the room is included for
+            // another reason; they must not pull an unchanged room back into the
+            // response, otherwise the client receives identical data under the same
+            // pos and may loop.
             auto const has_room_updates =
-                is_initial || !room.timeline_json.empty() || !room.required_state_json.empty() ||
-                room.notification_count.value_or(0U) > 0U || room.highlight_count.value_or(0U) > 0U;
+                is_initial || !room.timeline_json.empty() || !room.required_state_json.empty();
             if (has_room_updates)
             {
                 rooms_obj.push_back(json_member(room_id, sliding_sync_room_to_value(std::move(room))));
@@ -3672,11 +3681,24 @@ namespace
         }
         auto const body = json_serialize(json_obj(std::move(response_obj)));
 
+        log_diagnostic("sliding_sync.response", {
+                                                    {"actor",          std::string{user},                        false},
+                                                    {"device_id",      std::string{device_id},                   false},
+                                                    {"pos",            new_pos,                                  false},
+                                                    {"timeout_ms",     std::to_string(timeout_ms),               false},
+                                                    {"rooms_returned", std::to_string(response_room_ids.size()), false},
+                                                    {"rooms_seen",     std::to_string(conn.rooms_seen.size()),   false},
+                                                    {"lists_returned", std::to_string(list_results.size()),      false}
+        });
+
         // ── Update connection state ──────────────────────────────────────────
 
         for (auto const& room_id : response_room_ids)
         {
-            conn.rooms_seen.insert(room_id);
+            // Record the snapshot ordering at which this room was last returned to
+            // this connection.  Future requests on the same connection will treat
+            // this as the delta floor, not the global request pos.
+            conn.rooms_seen[room_id] = cur_event;
         }
         for (auto& [lname, result] : list_results)
         {

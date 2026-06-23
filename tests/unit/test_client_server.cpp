@@ -93,6 +93,23 @@ namespace
     return body.substr(value_begin, value_end - value_begin);
 }
 
+[[nodiscard]] auto extract_pos(std::string const& body) -> std::string
+{
+    auto const key = std::string{"\"pos\":\""};
+    auto const begin = body.find(key);
+    if (begin == std::string::npos)
+    {
+        return {};
+    }
+    auto const value_begin = begin + key.size();
+    auto const value_end = body.find('"', value_begin);
+    if (value_end == std::string::npos)
+    {
+        return {};
+    }
+    return body.substr(value_begin, value_end - value_begin);
+}
+
 [[nodiscard]] auto percent_encode_colons(std::string value) -> std::string
 {
     auto pos = value.find(':');
@@ -7720,6 +7737,90 @@ SCENARIO("Sliding sync with can_wait returns needs_wait when sync_stream_id adva
                     return uid != nullptr && *uid == "@bob:example.org";
                 });
                 REQUIRE(saw_bob);
+            }
+        }
+    }
+}
+
+// ─── MSC4186 sliding sync repeated pos poll does not re-include rooms for unread counts only ──
+// matrix-rust-sdk re-uses the pos from a previous response for the next long-poll.
+// If the server re-included a room because notification_count/highlight_count were
+// non-zero, the client received the same payload under an unchanged pos and reset
+// into a polling loop.  After the fix, unread counts alone must not pull a room
+// back into rooms{}.
+
+SCENARIO("Sliding sync repeated pos poll suppresses room re-inclusion from unread counts",
+         "[sync][sliding-sync][msc4186]")
+{
+    // Spec: MSC4186 — the response must contain a room only when the room's
+    // timeline or required_state changed; counts ride along when the room is
+    // already present for another reason.
+    GIVEN("alice and bob in a room, and alice has done an initial sliding sync")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const alice_reg = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/register", {}, registration_json("alice", "CorrectHorse7!")});
+        REQUIRE(alice_reg.response.status == 200U);
+        auto const alice_token = login_token(alice_reg.response.body);
+
+        auto const bob_reg = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/register", {}, registration_json("bob", "CorrectHorse8!")});
+        REQUIRE(bob_reg.response.status == 200U);
+        auto const bob_token = login_token(bob_reg.response.body);
+
+        // Alice creates a room and bob joins.
+        auto const create_resp = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", alice_token, R"({"preset":"public_chat"})"});
+        REQUIRE(create_resp.response.status == 200U);
+        auto const rid = room_id(create_resp.response.body);
+
+        auto const join_url = "/_matrix/client/v3/rooms/" + percent_encode_room_identifier(rid) + "/join";
+        auto const bob_join =
+            merovingian::homeserver::handle_client_server_request(runtime, {"POST", join_url, bob_token, "{}"});
+        REQUIRE(bob_join.response.status == 200U);
+
+        // Initial sliding sync seeds the connection state.
+        auto const init_resp = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST", "/_matrix/client/unstable/org.matrix.msc4186/sync?timeout=0", alice_token,
+             R"({"conn_id":"unread-test","lists":{"0":{"ranges":[[0,19]],"required_state":[],"timeline_limit":1}}})"});
+        REQUIRE(init_resp.response.status == 200U);
+        auto const pos_p = extract_pos(init_resp.response.body);
+        REQUIRE_FALSE(pos_p.empty());
+
+        WHEN("bob sends a message and alice polls once with pos")
+        {
+            auto const send_url =
+                "/_matrix/client/v3/rooms/" + percent_encode_room_identifier(rid) + "/send/m.room.message/txn1";
+            auto const send_resp = merovingian::homeserver::handle_client_server_request(
+                runtime, {"PUT", send_url, bob_token, R"({"msgtype":"m.text","body":"ping"})"});
+            REQUIRE(send_resp.response.status == 200U);
+
+            auto const inc_url = "/_matrix/client/unstable/org.matrix.msc4186/sync?pos=" + pos_p + "&timeout=0";
+            auto const inc_resp = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST", inc_url, alice_token,
+                 R"({"conn_id":"unread-test","lists":{"0":{"ranges":[[0,19]],"required_state":[],"timeline_limit":1}}})"});
+            REQUIRE(inc_resp.response.status == 200U);
+            auto const pos2 = extract_pos(inc_resp.response.body);
+            REQUIRE_FALSE(pos2.empty());
+            REQUIRE(pos2 != pos_p);
+
+            THEN("re-polling with the new pos returns an empty rooms object")
+            {
+                auto const re_url = "/_matrix/client/unstable/org.matrix.msc4186/sync?pos=" + pos2 + "&timeout=0";
+                auto const re_resp = merovingian::homeserver::handle_client_server_request(
+                    runtime,
+                    {"POST", re_url, alice_token,
+                     R"({"conn_id":"unread-test","lists":{"0":{"ranges":[[0,19]],"required_state":[],"timeline_limit":1}}})"});
+
+                REQUIRE(re_resp.response.status == 200U);
+                // Even though alice has an unread highlight, the room must not be
+                // re-included when its timeline and required_state are unchanged.
+                REQUIRE(re_resp.response.body.find("\"rooms\":{}") != std::string::npos);
             }
         }
     }
