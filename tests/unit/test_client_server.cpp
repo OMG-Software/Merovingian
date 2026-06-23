@@ -1554,6 +1554,146 @@ SCENARIO("Client-server typing and messages routes dispatch through the room blo
     }
 }
 
+SCENARIO("Client-server room initialSync returns RoomInfo for members and peekable rooms",
+         "[homeserver][client-server][initial-sync]")
+{
+    GIVEN("a logged-in user with a private room and a world_readable public room")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+
+        auto const private_room = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", token, {}});
+        REQUIRE(private_room.response.status == 200U);
+        auto const private_id = room_id(private_room.response.body);
+
+        auto const public_room = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST", "/_matrix/client/v3/createRoom", token,
+             R"({"visibility":"public","initial_state":[{"type":"m.room.history_visibility","state_key":"","content":{"history_visibility":"world_readable"}}]})"});
+        REQUIRE(public_room.response.status == 200U);
+        auto const public_id = room_id(public_room.response.body);
+
+        auto const message = merovingian::homeserver::handle_client_server_request(
+            runtime, {"PUT", "/_matrix/client/v3/rooms/" + private_id + "/send/m.room.message/txn-initialsync-1", token,
+                      R"({"msgtype":"m.text","body":"hello"})"});
+        REQUIRE(message.response.status == 200U);
+
+        WHEN("the creator requests initialSync for their room with a limit")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/rooms/" + private_id + "/initialSync?limit=1", token, {}});
+
+            THEN("the response is 200 with RoomInfo fields and membership join")
+            {
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+                REQUIRE(string_member(body, "room_id") != nullptr);
+                REQUIRE(*string_member(body, "room_id") == private_id);
+                REQUIRE(string_member(body, "membership") != nullptr);
+                REQUIRE(*string_member(body, "membership") == "join");
+                REQUIRE(string_member(body, "visibility") != nullptr);
+                auto const* messages = object_member_as_object(body, "messages");
+                REQUIRE(messages != nullptr);
+                auto const* chunk = object_member_as_array(*messages, "chunk");
+                REQUIRE(chunk != nullptr);
+                REQUIRE(chunk->size() == 1U);
+                auto const* state = object_member_as_array(body, "state");
+                REQUIRE(state != nullptr);
+                REQUIRE(!state->empty());
+            }
+        }
+
+        WHEN("another user requests initialSync for a private room")
+        {
+            REQUIRE(merovingian::homeserver::handle_client_server_request(
+                        runtime, {"POST",
+                                  "/_matrix/client/v3/register",
+                                  {},
+                                  merovingian::tests::registration_json("bob", "CorrectHorse7!")})
+                        .response.status == 200U);
+            auto const bob_login = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST",
+                 "/_matrix/client/v3/login",
+                 {},
+                 R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@bob:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE2"})"});
+            REQUIRE(bob_login.response.status == 200U);
+            auto const bob_token = login_token(bob_login.response.body);
+
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/rooms/" + private_id + "/initialSync", bob_token, {}});
+
+            THEN("the response is 403 M_FORBIDDEN")
+            {
+                REQUIRE(response.response.status == 403U);
+                REQUIRE(response.response.body.find("M_FORBIDDEN") != std::string::npos);
+            }
+        }
+
+        WHEN("another user requests initialSync for a world_readable public room")
+        {
+            REQUIRE(merovingian::homeserver::handle_client_server_request(
+                        runtime, {"POST",
+                                  "/_matrix/client/v3/register",
+                                  {},
+                                  merovingian::tests::registration_json("carol", "CorrectHorse7!")})
+                        .response.status == 200U);
+            auto const carol_login = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST",
+                 "/_matrix/client/v3/login",
+                 {},
+                 R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@carol:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE3"})"});
+            REQUIRE(carol_login.response.status == 200U);
+            auto const carol_token = login_token(carol_login.response.body);
+
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/rooms/" + public_id + "/initialSync", carol_token, {}});
+
+            THEN("the response is 200 and allows peeking with membership leave")
+            {
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+                REQUIRE(string_member(body, "membership") != nullptr);
+                REQUIRE(*string_member(body, "membership") == "leave");
+                auto const* messages = object_member_as_object(body, "messages");
+                REQUIRE(messages != nullptr);
+                auto const* state = object_member_as_array(body, "state");
+                REQUIRE(state != nullptr);
+                REQUIRE(!state->empty());
+            }
+        }
+
+        WHEN("initialSync is requested for a non-existent room")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/rooms/!nonexistent:example.org/initialSync", token, {}});
+
+            THEN("the response is 403 M_FORBIDDEN so the client can fall back to joining")
+            {
+                REQUIRE(response.response.status == 403U);
+                REQUIRE(response.response.body.find("M_FORBIDDEN") != std::string::npos);
+            }
+        }
+    }
+}
+
 SCENARIO("Client-server leave and read_markers routes", "[homeserver][client-server][leave][read_markers]")
 {
     GIVEN("a logged-in user with a created room")
@@ -2543,11 +2683,11 @@ SCENARIO("Account 3PID lifecycle adds lists unbinds and deletes contact identifi
                 runtime, {"POST", "/_matrix/client/v3/account/3pid/add", token,
                           std::string{R"({"client_secret":"secret123","sid":")"} + *email_sid + R"("})"});
             auto const add_email_body = std::string{R"({"client_secret":"secret123","sid":")"} + *email_sid +
-                                        R"(","auth":{"type":"m.login.password","password":"CorrectHorse7!"}})" ;
+                                        R"(","auth":{"type":"m.login.password","password":"CorrectHorse7!"}})";
             auto const add_email = merovingian::homeserver::handle_client_server_request(
                 runtime, {"POST", "/_matrix/client/v3/account/3pid/add", token, add_email_body});
             auto const bind_msisdn_body = std::string{R"({"client_secret":"secret123","sid":")"} + *msisdn_sid +
-                                          R"(","id_server":"id.example.org","id_access_token":"opaque"})" ;
+                                          R"(","id_server":"id.example.org","id_access_token":"opaque"})";
             auto const bind_msisdn = merovingian::homeserver::handle_client_server_request(
                 runtime, {"POST", "/_matrix/client/v3/account/3pid/bind", token, bind_msisdn_body});
             auto const list_after_add = merovingian::homeserver::handle_client_server_request(
@@ -2580,9 +2720,11 @@ SCENARIO("Account 3PID lifecycle adds lists unbinds and deletes contact identifi
                 REQUIRE(list_after_add.response.body.find("\"validated_at\"") != std::string::npos);
 
                 REQUIRE(unbind_msisdn.response.status == 200U);
-                REQUIRE(unbind_msisdn.response.body.find("\"id_server_unbind_result\":\"success\"") != std::string::npos);
+                REQUIRE(unbind_msisdn.response.body.find("\"id_server_unbind_result\":\"success\"") !=
+                        std::string::npos);
                 REQUIRE(delete_email.response.status == 200U);
-                REQUIRE(delete_email.response.body.find("\"id_server_unbind_result\":\"success\"") != std::string::npos);
+                REQUIRE(delete_email.response.body.find("\"id_server_unbind_result\":\"success\"") !=
+                        std::string::npos);
 
                 REQUIRE(list_after_delete.response.status == 200U);
                 REQUIRE(list_after_delete.response.body.find("user@example.org") == std::string::npos);
@@ -2650,15 +2792,16 @@ SCENARIO("Account 3PID request tokens reject identifiers already in use", "[home
         auto const* sid = string_member(token_request_body, "sid");
         REQUIRE(sid != nullptr);
         auto const add_threepid_body = std::string{R"({"client_secret":"secret123","sid":")"} + *sid +
-                                       R"(","auth":{"type":"m.login.password","password":"CorrectHorse7!"}})" ;
+                                       R"(","auth":{"type":"m.login.password","password":"CorrectHorse7!"}})";
         REQUIRE(merovingian::homeserver::handle_client_server_request(
                     runtime, {"POST", "/_matrix/client/v3/account/3pid/add", alice_token, add_threepid_body})
                     .response.status == 200U);
-        REQUIRE(
-            merovingian::homeserver::handle_client_server_request(
-                runtime,
-                {"POST", "/_matrix/client/v3/register", {}, merovingian::tests::registration_json("bob", "CorrectHorse8!")})
-                .response.status == 200U);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("bob", "CorrectHorse8!")})
+                    .response.status == 200U);
 
         WHEN("another client requests validation for the same identifier")
         {
@@ -2709,7 +2852,7 @@ SCENARIO("Account 3PID email handling treats addresses case-insensitively for du
         auto const* sid = string_member(initial_body, "sid");
         REQUIRE(sid != nullptr);
         auto const add_body = std::string{R"({"client_secret":"secret123","sid":")"} + *sid +
-                              R"(","auth":{"type":"m.login.password","password":"CorrectHorse7!"}})" ;
+                              R"(","auth":{"type":"m.login.password","password":"CorrectHorse7!"}})";
         REQUIRE(merovingian::homeserver::handle_client_server_request(
                     runtime, {"POST", "/_matrix/client/v3/account/3pid/add", token, add_body})
                     .response.status == 200U);
@@ -2793,7 +2936,7 @@ SCENARIO("Account 3PID unbind and delete report no-support for mismatched identi
         auto const* sid = string_member(token_request_body, "sid");
         REQUIRE(sid != nullptr);
         auto const bind_body = std::string{R"({"client_secret":"secret123","sid":")"} + *sid +
-                               R"(","id_server":"id.example.org","id_access_token":"opaque"})" ;
+                               R"(","id_server":"id.example.org","id_access_token":"opaque"})";
         REQUIRE(merovingian::homeserver::handle_client_server_request(
                     runtime, {"POST", "/_matrix/client/v3/account/3pid/bind", token, bind_body})
                     .response.status == 200U);
@@ -3650,6 +3793,70 @@ SCENARIO("Media upload accepts a raw binary body with a Content-Type header", "[
                 REQUIRE(response.response.status >= 200U);
                 REQUIRE(response.response.status < 300U);
                 REQUIRE(response.response.body.find("content_uri") != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("Media download returns raw bytes with Content-Type and ignores query parameters",
+         "[homeserver][client-server][media]")
+{
+    GIVEN("a registered and logged-in user who has uploaded a small text file")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const reg = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST",
+                      "/_matrix/client/v3/register",
+                      {},
+                      merovingian::tests::registration_json("alice", "CorrectHorse7!")});
+        REQUIRE(reg.response.status == 200U);
+        auto const token = login_token(reg.response.body);
+
+        auto constexpr uploaded_bytes = "hello world";
+        auto const upload = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST",
+                      "/_matrix/media/v3/upload?filename=greeting.txt",
+                      token,
+                      uploaded_bytes,
+                      {merovingian::http::Header{"Content-Type", "text/plain"}}});
+        REQUIRE(upload.response.status == 200U);
+        auto const media_id = json_value(upload.response.body, "\"content_uri\":\"mxc://example.org/");
+        REQUIRE(!media_id.empty());
+
+        WHEN("the v3 download endpoint is called with ?allow_redirect=true")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"GET", "/_matrix/media/v3/download/example.org/" + media_id + "?allow_redirect=true", token, {}});
+
+            THEN("the response is 200 with the raw bytes and a matching Content-Type header")
+            {
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(response.response.body == uploaded_bytes);
+                REQUIRE(!response.response.body.empty());
+                REQUIRE(response.response.body.find('|') == std::string::npos);
+                REQUIRE(response_header(response.response, "Content-Type") == "text/plain");
+            }
+        }
+
+        WHEN("the authenticated v1 download endpoint is called with ?allow_redirect=true")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET",
+                          "/_matrix/client/v1/media/download/example.org/" + media_id + "?allow_redirect=true",
+                          token,
+                          {}});
+
+            THEN("the response is 200 with the raw bytes and a matching Content-Type header")
+            {
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(response.response.body == uploaded_bytes);
+                REQUIRE(!response.response.body.empty());
+                REQUIRE(response.response.body.find('|') == std::string::npos);
+                REQUIRE(response_header(response.response, "Content-Type") == "text/plain");
             }
         }
     }

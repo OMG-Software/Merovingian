@@ -5096,6 +5096,24 @@ namespace
         return core::percent_decode_path_component(suffix.substr(0U, suffix.size() - marker.size()));
     }
 
+    [[nodiscard]] auto room_initial_sync_path_room_id(std::string_view target) -> std::optional<std::string>
+    {
+        auto constexpr prefix = std::string_view{"/_matrix/client/v3/rooms/"};
+        auto constexpr marker = std::string_view{"/initialSync"};
+        auto const path = target.substr(0U, target.find('?'));
+        auto const suffix = route_suffix(path, prefix);
+        if (suffix.empty() || suffix.size() <= marker.size() || suffix.substr(suffix.size() - marker.size()) != marker)
+        {
+            return std::nullopt;
+        }
+        auto const room_id = suffix.substr(0U, suffix.size() - marker.size());
+        if (room_id.empty() || room_id.find('/') != std::string_view::npos)
+        {
+            return std::nullopt;
+        }
+        return core::percent_decode_path_component(room_id);
+    }
+
     [[nodiscard]] auto messages_query_value(std::string_view target, std::string_view name) -> std::string
     {
         auto const query_start = target.find('?');
@@ -5241,6 +5259,104 @@ namespace
         }));
     }
 
+    struct InitialSyncMessages final
+    {
+        canonicaljson::Array chunk{};
+        std::string start{};
+        std::string end{};
+    };
+
+    // Builds the recent-messages chunk for GET /rooms/{roomId}/initialSync.
+    // Defaults to the most recent 20 events, capped at 100, and honours the
+    // ?limit= query parameter used by Element Web when previewing rooms.
+    [[nodiscard]] auto build_initial_sync_messages(ClientServerRuntime const& rt, std::string_view room_id,
+                                                   std::string_view target) -> InitialSyncMessages
+    {
+        auto limit = std::size_t{20U};
+        if (auto const parsed = parse_u64(messages_query_value(target, "limit")); parsed.has_value())
+        {
+            limit = static_cast<std::size_t>(std::min<std::uint64_t>(*parsed, std::uint64_t{100U}));
+        }
+
+        auto entries = std::vector<database::PersistentEvent const*>{};
+        for (auto const& event : rt.homeserver.database.persistent_store.events)
+        {
+            if (event.room_id == room_id)
+            {
+                entries.push_back(&event);
+            }
+        }
+        std::ranges::sort(entries, [](auto const* lhs, auto const* rhs) noexcept {
+            return lhs->stream_ordering < rhs->stream_ordering;
+        });
+
+        auto chunk = canonicaljson::Array{};
+        auto start_token = std::string{};
+        auto end_token = std::string{};
+        for (auto it = entries.rbegin(); it != entries.rend(); ++it)
+        {
+            if (chunk.size() >= limit)
+            {
+                break;
+            }
+            if (chunk.empty())
+            {
+                start_token = std::to_string((*it)->stream_ordering);
+            }
+            end_token = std::to_string((*it)->stream_ordering);
+            chunk.push_back(client_event_value(**it));
+        }
+        return {std::move(chunk), std::move(start_token), std::move(end_token)};
+    }
+
+    // Build the RoomInfo response for GET /rooms/{roomId}/initialSync.
+    // The caller has already verified that the requester is a current/previous
+    // member or is permitted to peek a world_readable room.
+    [[nodiscard]] auto room_initial_sync_json(ClientServerRuntime const& rt, std::string_view room_id,
+                                              std::string_view user_id, std::string_view target,
+                                              std::string_view membership) -> std::string
+    {
+        auto const& store = rt.homeserver.database.persistent_store;
+        auto const index = build_state_index(store);
+
+        auto const messages = build_initial_sync_messages(rt, room_id, target);
+        auto state_events = build_current_state_events_array(store, sync::EventTypeFilter{}, room_id);
+
+        auto account_data = canonicaljson::Array{};
+        for (auto const& row : store.account_data)
+        {
+            if (row.user_id != user_id || row.room_id != room_id)
+            {
+                continue;
+            }
+            auto parsed = canonicaljson::parse_lossless(row.content_json);
+            auto content = parsed.error == canonicaljson::ParseError::none
+                               ? std::move(parsed.value)
+                               : canonicaljson::Value{canonicaljson::Object{}};
+            account_data.push_back(json_obj({
+                json_member("type", json_str(row.event_type)),
+                json_member("content", std::move(content)),
+            }));
+        }
+
+        auto const join_rule = room_state_string(store, index, room_id, "m.room.join_rules", "join_rule");
+        auto const visibility = (join_rule.has_value() && *join_rule == "public") ? std::string_view{"public"}
+                                                                                  : std::string_view{"private"};
+
+        return json_serialize(json_obj({
+            json_member("room_id", json_str(room_id)),
+            json_member("membership", json_str(membership)),
+            json_member("visibility", json_str(visibility)),
+            json_member("account_data", json_arr(std::move(account_data))),
+            json_member("messages", json_obj({
+                                        json_member("chunk", json_arr(std::move(messages.chunk))),
+                                        json_member("start", json_str(messages.start)),
+                                        json_member("end", json_str(messages.end)),
+                                    })),
+            json_member("state", json_arr(std::move(state_events))),
+        }));
+    }
+
     [[nodiscard]] auto event_body_from_content(std::string_view event_type, std::string_view content,
                                                std::optional<std::string> state_key = std::nullopt)
         -> std::optional<std::string>
@@ -5268,6 +5384,31 @@ namespace
         auto const content_uri =
             content_uri_end == std::string_view::npos ? operation_value : operation_value.substr(0U, content_uri_end);
         return json_serialize(json_obj({json_member("content_uri", json_str(content_uri))}));
+    }
+
+    // The local media router returns successful download/thumbnail results as
+    // "content_type|bytes" so that both pieces survive the internal request
+    // boundary. This converts that pipe-delimited payload into the raw HTTP
+    // response the Matrix spec expects: bytes in the body and Content-Type in a
+    // header. Non-200 local responses are turned into Matrix errors.
+    [[nodiscard]] auto media_download_dispatch_result(LocalHttpRequest const& req, ClientServerRuntime const& rt,
+                                                      LocalHttpResponse const& local_response) -> DispatchResult
+    {
+        if (local_response.status != 200U)
+        {
+            return dispatch_err(req, rt, local_response.status,
+                                local_response.status == 404U ? "M_NOT_FOUND" : "M_UNKNOWN", local_response.body);
+        }
+        auto const pipe_pos = local_response.body.find('|');
+        if (pipe_pos == std::string::npos)
+        {
+            return dispatch_err(req, rt, 500U, "M_UNKNOWN", "malformed media download result");
+        }
+        auto const content_type = std::string_view{local_response.body}.substr(0U, pipe_pos);
+        auto const bytes = std::string_view{local_response.body}.substr(pipe_pos + 1U);
+        auto response = LocalHttpResponse{200U, std::string{bytes}, {{"Content-Type", std::string{content_type}}}};
+        apply_cors_headers(req, response, rt.cors);
+        return DispatchResult{DispatchResult::Status::complete, std::move(response), {}};
     }
 
     [[nodiscard]] auto report_path_parts(std::string_view target) -> std::optional<ReportPathParts>
@@ -6779,10 +6920,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     auto constexpr media_download_prefix = std::string_view{"/_matrix/media/v3/download/"};
     if (req.method == "GET" && starts_with(req.target, media_download_prefix))
     {
-        auto const r = call_local(req);
-        return r.status == 200U
-                   ? dispatch_resp(req, rt, 200U, r.body)
-                   : dispatch_err(req, rt, r.status, r.status == 404U ? "M_NOT_FOUND" : "M_UNKNOWN", r.body);
+        return media_download_dispatch_result(req, rt, call_local(req));
     }
 
     // GET /_matrix/media/v3/thumbnail/{serverName}/{mediaId}
@@ -6794,10 +6932,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     if (req.method == "GET" &&
         (starts_with(req.target, media_v3_thumbnail_prefix) || starts_with(req.target, media_v1_thumbnail_prefix)))
     {
-        auto const r = call_local(req);
-        return r.status == 200U
-                   ? dispatch_resp(req, rt, 200U, r.body)
-                   : dispatch_err(req, rt, r.status, r.status == 404U ? "M_NOT_FOUND" : "M_UNKNOWN", r.body);
+        return media_download_dispatch_result(req, rt, call_local(req));
     }
 
     // GET /_matrix/client/v1/media/download/{serverName}/{mediaId}
@@ -6805,10 +6940,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     auto constexpr media_v1_download_prefix = std::string_view{"/_matrix/client/v1/media/download/"};
     if (req.method == "GET" && starts_with(req.target, media_v1_download_prefix))
     {
-        auto const r = call_local(req);
-        return r.status == 200U
-                   ? dispatch_resp(req, rt, 200U, r.body)
-                   : dispatch_err(req, rt, r.status, r.status == 404U ? "M_NOT_FOUND" : "M_UNKNOWN", r.body);
+        return media_download_dispatch_result(req, rt, call_local(req));
     }
 
     // GET /_matrix/client/v3/profile/{userId}            (getUserProfile)
@@ -8464,6 +8596,96 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 return dispatch_resp(req, rt, 200U, json_serialize(json_obj({})));
             }
         }
+        // GET /_matrix/client/v3/rooms/{roomId}/initialSync
+        // Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3roomsroomidinitialsync
+        // Returns RoomInfo for members (or previous members) and allows
+        // non-member peeking when the room is world_readable.
+        if (req.method == "GET")
+        {
+            if (auto const initial_sync_room = room_initial_sync_path_room_id(req.target);
+                initial_sync_room.has_value())
+            {
+                auto const& store = rt.homeserver.database.persistent_store;
+
+                auto const room_exists = std::ranges::find_if(store.rooms, [&initial_sync_room](auto const& r) {
+                                             return r.room_id == *initial_sync_room;
+                                         }) != store.rooms.end();
+                if (!room_exists)
+                {
+                    // Spec v1.18 only defines 200 and 403 for this endpoint. A room
+                    // that is not resident locally (e.g. a remote public room the
+                    // client discovered via the directory) is treated the same as a
+                    // non-member request so the client can fall back to joining.
+                    log_diagnostic("room.initial_sync.rejected",
+                                   {
+                                       {"actor",   *user,                               false},
+                                       {"room_id", *initial_sync_room,                  false},
+                                       {"reason",  "user is not a member of this room", false}
+                    });
+                    return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "not a member of this room");
+                }
+
+                auto membership = std::optional<std::string>{};
+                auto const membership_it =
+                    std::ranges::find_if(store.memberships, [&initial_sync_room, &user](auto const& m) {
+                        return m.room_id == *initial_sync_room && m.user_id == *user;
+                    });
+                if (membership_it != store.memberships.end())
+                {
+                    membership = membership_it->membership;
+                }
+                else
+                {
+                    // Fall back to the durable m.room.member state event for previous members.
+                    auto const state_member =
+                        std::ranges::find_if(store.state, [&initial_sync_room, &user](auto const& s) {
+                            return s.room_id == *initial_sync_room && s.event_type == "m.room.member" &&
+                                   s.state_key == *user;
+                        });
+                    if (state_member != store.state.end())
+                    {
+                        auto const member_json = event_json_for_id(store, state_member->event_id);
+                        if (member_json.has_value())
+                        {
+                            membership = event_content_string(*member_json, "membership");
+                        }
+                    }
+                }
+
+                auto const is_banned = membership.has_value() && *membership == "ban";
+                auto const is_or_was_member = membership.has_value();
+
+                auto can_peek = false;
+                if (!is_or_was_member && !is_banned)
+                {
+                    auto const index = build_state_index(store);
+                    auto const history_visibility = room_state_string(
+                        store, index, *initial_sync_room, "m.room.history_visibility", "history_visibility");
+                    can_peek = history_visibility.has_value() && *history_visibility == "world_readable";
+                }
+
+                if (!is_or_was_member && !can_peek)
+                {
+                    log_diagnostic("room.initial_sync.rejected",
+                                   {
+                                       {"actor",   *user,                               false},
+                                       {"room_id", *initial_sync_room,                  false},
+                                       {"reason",  "user is not a member of this room", false}
+                    });
+                    return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "not a member of this room");
+                }
+
+                auto const membership_value = membership.value_or("leave");
+                log_diagnostic("room.initial_sync.response", {
+                                                                 {"actor",      *user,              false},
+                                                                 {"room_id",    *initial_sync_room, false},
+                                                                 {"membership", membership_value,   false}
+                });
+                return dispatch_resp(
+                    req, rt, 200U, room_initial_sync_json(rt, *initial_sync_room, *user, req.target, membership_value));
+            }
+        }
+
         if (req.method == "GET")
         {
             if (auto const messages_room = room_messages_room_id(req.target); messages_room.has_value())

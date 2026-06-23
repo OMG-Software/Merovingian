@@ -109,6 +109,29 @@ SCENARIO("HTTP request head parser rejects unsupported transfer encoding", "[htt
     }
 }
 
+SCENARIO("HTTP request head parser accepts large Content-Length without error", "[http][request]")
+{
+    GIVEN("a POST request head with a Content-Length exceeding the old 1 MiB default cap")
+    {
+        // 2 MiB — previously rejected at parse time, which prevented the
+        // media-upload handler from applying the higher max_upload_size limit.
+        auto const input =
+            std::string{"POST /_matrix/media/v3/upload HTTP/1.1\r\nContent-Length: 2097152\r\n\r\n"};
+
+        WHEN("the request head is parsed")
+        {
+            auto const parsed = merovingian::http::parse_request_head(input);
+
+            THEN("the parser succeeds and reports the declared content length")
+            {
+                REQUIRE(parsed.error == merovingian::http::RequestErrorCode::none);
+                REQUIRE(parsed.request.has_content_length);
+                REQUIRE(parsed.request.content_length == 2097152U);
+            }
+        }
+    }
+}
+
 SCENARIO("HTTP request errors have stable names", "[http][request]")
 {
     GIVEN("request error codes")
