@@ -6,6 +6,7 @@ plans/
 __pycache__/
 *.py[cod]
 native.ini
+*.log
 
 # Local scratch / scan files
 .goosehints
