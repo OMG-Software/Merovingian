@@ -35,6 +35,11 @@ struct ParseResult final
 
 [[nodiscard]] auto parse_error_name(ParseError error) noexcept -> char const*;
 [[nodiscard]] auto utf8_is_valid(std::string_view value) noexcept -> bool;
+// Canonical JSON parser: rejects floating-point/exponent numbers per Matrix v1.18.
 [[nodiscard]] auto parse_lossless(std::string_view input) -> ParseResult;
+// General JSON parser: accepts doubles/exponents while still enforcing depth,
+// UTF-8, and duplicate-key constraints. Use for non-signing payloads such as
+// account data and room tags.
+[[nodiscard]] auto parse_json(std::string_view input) -> ParseResult;
 
 } // namespace merovingian::canonicaljson

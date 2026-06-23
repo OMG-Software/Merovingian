@@ -31,8 +31,7 @@ namespace merovingian::tests
     return v == nullptr ? nullptr : std::get_if<std::string>(&v->storage());
 }
 
-[[nodiscard]] inline auto bool_member(canonicaljson::Object const& object, std::string_view key) noexcept
-    -> bool const*
+[[nodiscard]] inline auto bool_member(canonicaljson::Object const& object, std::string_view key) noexcept -> bool const*
 {
     auto const* v = object_member(object, key);
     return v == nullptr ? nullptr : std::get_if<bool>(&v->storage());
@@ -45,16 +44,21 @@ namespace merovingian::tests
     return v == nullptr ? nullptr : std::get_if<std::int64_t>(&v->storage());
 }
 
-[[nodiscard]] inline auto object_member_as_object(canonicaljson::Object const& object,
-                                                   std::string_view key) noexcept
+[[nodiscard]] inline auto double_member(canonicaljson::Object const& object, std::string_view key) noexcept
+    -> double const*
+{
+    auto const* v = object_member(object, key);
+    return v == nullptr ? nullptr : std::get_if<double>(&v->storage());
+}
+
+[[nodiscard]] inline auto object_member_as_object(canonicaljson::Object const& object, std::string_view key) noexcept
     -> canonicaljson::Object const*
 {
     auto const* v = object_member(object, key);
     return v == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&v->storage());
 }
 
-[[nodiscard]] inline auto object_member_as_array(canonicaljson::Object const& object,
-                                                  std::string_view key) noexcept
+[[nodiscard]] inline auto object_member_as_array(canonicaljson::Object const& object, std::string_view key) noexcept
     -> canonicaljson::Array const*
 {
     auto const* v = object_member(object, key);
@@ -64,6 +68,17 @@ namespace merovingian::tests
 [[nodiscard]] inline auto parse_object(std::string const& json) -> canonicaljson::Object
 {
     auto const parsed = canonicaljson::parse_lossless(json);
+    REQUIRE(parsed.error == canonicaljson::ParseError::none);
+    auto const* obj = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+    REQUIRE(obj != nullptr);
+    return *obj;
+}
+
+// Like parse_object, but uses the general JSON parser so non-canonical doubles
+// (e.g. room tag order values) are accepted.
+[[nodiscard]] inline auto parse_object_json(std::string const& json) -> canonicaljson::Object
+{
+    auto const parsed = canonicaljson::parse_json(json);
     REQUIRE(parsed.error == canonicaljson::ParseError::none);
     auto const* obj = std::get_if<canonicaljson::Object>(&parsed.value.storage());
     REQUIRE(obj != nullptr);

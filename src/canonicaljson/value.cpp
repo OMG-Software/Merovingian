@@ -70,6 +70,11 @@ Value::Value(std::int64_t value)
 {
 }
 
+Value::Value(double value)
+    : m_storage{value}
+{
+}
+
 Value::Value(std::string value)
     : m_storage{std::move(value)}
 {

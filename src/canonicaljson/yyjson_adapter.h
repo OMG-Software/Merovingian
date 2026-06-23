@@ -39,6 +39,7 @@ extern "C"
         MEROVINGIAN_YYJSON_TYPE_STRING = 3,
         MEROVINGIAN_YYJSON_TYPE_ARRAY = 4,
         MEROVINGIAN_YYJSON_TYPE_OBJECT = 5,
+        MEROVINGIAN_YYJSON_TYPE_NUMBER = 7,
         MEROVINGIAN_YYJSON_TYPE_UNKNOWN = 6,
     } MerovingianYyjsonValueType;
 
@@ -48,6 +49,11 @@ extern "C"
 
     MerovingianYyjsonDoc* merovingian_yyjson_read_raw_numbers(char const* data, size_t length,
                                                               MerovingianYyjsonReadCode* error_code);
+    // Parse JSON allowing floating-point and exponent notation. Numbers are
+    // surfaced as MEROVINGIAN_YYJSON_TYPE_NUMBER and must be read with the
+    // number accessor functions below.
+    MerovingianYyjsonDoc* merovingian_yyjson_read_numbers(char const* data, size_t length,
+                                                          MerovingianYyjsonReadCode* error_code);
     void merovingian_yyjson_doc_free(MerovingianYyjsonDoc* document);
     MerovingianYyjsonValue* merovingian_yyjson_doc_root(MerovingianYyjsonDoc* document);
     // Number of input bytes yyjson consumed while parsing the document. Used
@@ -59,6 +65,9 @@ extern "C"
     int merovingian_yyjson_bool_value(MerovingianYyjsonValue* value);
     char const* merovingian_yyjson_raw_data(MerovingianYyjsonValue* value, size_t* length);
     char const* merovingian_yyjson_string_data(MerovingianYyjsonValue* value, size_t* length);
+    int merovingian_yyjson_number_is_integer(MerovingianYyjsonValue* value);
+    long long merovingian_yyjson_number_as_int64(MerovingianYyjsonValue* value);
+    double merovingian_yyjson_number_as_double(MerovingianYyjsonValue* value);
     size_t merovingian_yyjson_array_size(MerovingianYyjsonValue* value);
     size_t merovingian_yyjson_object_size(MerovingianYyjsonValue* value);
     int merovingian_yyjson_array_foreach(MerovingianYyjsonValue* value, MerovingianYyjsonArrayCallback callback,

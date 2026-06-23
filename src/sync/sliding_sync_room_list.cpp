@@ -35,8 +35,7 @@ namespace
         return nullptr;
     }
 
-    [[nodiscard]] auto as_object(canonicaljson::Value const& v) noexcept
-        -> canonicaljson::Object const*
+    [[nodiscard]] auto as_object(canonicaljson::Value const& v) noexcept -> canonicaljson::Object const*
     {
         return std::get_if<canonicaljson::Object>(&v.storage());
     }
@@ -46,8 +45,7 @@ namespace
         return std::get_if<std::string>(&v.storage());
     }
 
-    [[nodiscard]] auto as_array(canonicaljson::Value const& v) noexcept
-        -> canonicaljson::Array const*
+    [[nodiscard]] auto as_array(canonicaljson::Value const& v) noexcept -> canonicaljson::Array const*
     {
         return std::get_if<canonicaljson::Array>(&v.storage());
     }
@@ -55,8 +53,8 @@ namespace
     // ── Filter helpers ─────────────────────────────────────────────────────
 
     // True when the room has an m.room.encryption state event.
-    [[nodiscard]] auto room_is_encrypted(database::PersistentStore const& store,
-                                         std::string_view room_id) noexcept -> bool
+    [[nodiscard]] auto room_is_encrypted(database::PersistentStore const& store, std::string_view room_id) noexcept
+        -> bool
     {
         return std::ranges::any_of(store.state, [&](database::PersistentStateEvent const& s) {
             return s.room_id == room_id && s.event_type == "m.room.encryption";
@@ -64,8 +62,7 @@ namespace
     }
 
     // True when user has an invite membership in the room.
-    [[nodiscard]] auto user_is_invited(database::PersistentStore const& store,
-                                       std::string_view room_id,
+    [[nodiscard]] auto user_is_invited(database::PersistentStore const& store, std::string_view room_id,
                                        std::string_view user) noexcept -> bool
     {
         return std::ranges::any_of(store.memberships, [&](database::PersistentMembership const& m) {
@@ -74,8 +71,7 @@ namespace
     }
 
     // True when room_id appears in the user's m.direct global account-data.
-    [[nodiscard]] auto room_is_dm(database::PersistentStore const& store,
-                                  std::string_view room_id,
+    [[nodiscard]] auto room_is_dm(database::PersistentStore const& store, std::string_view room_id,
                                   std::string_view user) noexcept -> bool
     {
         for (auto const& ad : store.account_data)
@@ -115,8 +111,7 @@ namespace
     }
 
     // True when room_id is tagged m.favourite in the user's room account-data.
-    [[nodiscard]] auto room_is_favourite(database::PersistentStore const& store,
-                                         std::string_view room_id,
+    [[nodiscard]] auto room_is_favourite(database::PersistentStore const& store, std::string_view room_id,
                                          std::string_view user) noexcept -> bool
     {
         for (auto const& ad : store.account_data)
@@ -125,7 +120,8 @@ namespace
             {
                 continue;
             }
-            auto const parsed = canonicaljson::parse_lossless(ad.content_json);
+            // m.tag content may contain non-canonical doubles such as order:0.5.
+            auto const parsed = canonicaljson::parse_json(ad.content_json);
             if (parsed.error != canonicaljson::ParseError::none)
             {
                 continue;
@@ -154,8 +150,7 @@ namespace
     }
 
     // Returns the value of m.room.create content.type, or "" if absent.
-    [[nodiscard]] auto room_type(database::PersistentStore const& store,
-                                 std::string_view room_id) -> std::string
+    [[nodiscard]] auto room_type(database::PersistentStore const& store, std::string_view room_id) -> std::string
     {
         for (auto const& se : store.state)
         {
@@ -202,10 +197,8 @@ namespace
         return {};
     }
 
-    [[nodiscard]] auto passes_filters(database::PersistentStore const& store,
-                                      std::string_view room_id,
-                                      std::string_view user,
-                                      SlidingSyncFilters const& f) -> bool
+    [[nodiscard]] auto passes_filters(database::PersistentStore const& store, std::string_view room_id,
+                                      std::string_view user, SlidingSyncFilters const& f) -> bool
     {
         if (f.is_encrypted.has_value())
         {
@@ -240,8 +233,9 @@ namespace
             auto const type = room_type(store, room_id);
             if (!f.room_types.empty())
             {
-                auto const match = std::ranges::any_of(f.room_types,
-                                                       [&](std::string const& t) { return t == type; });
+                auto const match = std::ranges::any_of(f.room_types, [&](std::string const& t) {
+                    return t == type;
+                });
                 if (!match)
                 {
                     return false;
@@ -249,8 +243,9 @@ namespace
             }
             if (!f.not_room_types.empty())
             {
-                auto const match = std::ranges::any_of(f.not_room_types,
-                                                       [&](std::string const& t) { return t == type; });
+                auto const match = std::ranges::any_of(f.not_room_types, [&](std::string const& t) {
+                    return t == type;
+                });
                 if (match)
                 {
                     return false;
@@ -264,8 +259,7 @@ namespace
 
     // Maximum stream_ordering among events in the room whose type is in
     // bump_types (or all events when bump_types is empty).
-    [[nodiscard]] auto recency_key(database::PersistentStore const& store,
-                                   std::string_view room_id,
+    [[nodiscard]] auto recency_key(database::PersistentStore const& store, std::string_view room_id,
                                    std::vector<std::string> const& bump_types) noexcept -> std::uint64_t
     {
         auto max = std::uint64_t{0U};
@@ -298,8 +292,9 @@ namespace
                 {
                     continue;
                 }
-                auto const bumps = std::ranges::any_of(bump_types,
-                                                       [&](std::string const& t) { return t == *type_s; });
+                auto const bumps = std::ranges::any_of(bump_types, [&](std::string const& t) {
+                    return t == *type_s;
+                });
                 if (!bumps)
                 {
                     continue;
@@ -315,8 +310,7 @@ namespace
 
     // Total number of unread m.room.message / m.room.encrypted events in the
     // room since the user's last m.read receipt.
-    [[nodiscard]] auto notification_key(database::PersistentStore const& store,
-                                        std::string_view room_id,
+    [[nodiscard]] auto notification_key(database::PersistentStore const& store, std::string_view room_id,
                                         std::string_view user) noexcept -> std::uint64_t
     {
         // Find the stream_ordering of the user's last read receipt in the room.
@@ -350,7 +344,7 @@ namespace
                 continue;
             }
             auto const* type_val = find_member(*root, "type");
-            auto const* type_s   = type_val != nullptr ? as_string(*type_val) : nullptr;
+            auto const* type_s = type_val != nullptr ? as_string(*type_val) : nullptr;
             if (type_s == nullptr)
             {
                 continue;
@@ -363,8 +357,8 @@ namespace
         return count;
     }
 
-    [[nodiscard]] auto room_display_name(database::PersistentStore const& store,
-                                         std::string_view room_id) -> std::string
+    [[nodiscard]] auto room_display_name(database::PersistentStore const& store, std::string_view room_id)
+        -> std::string
     {
         for (auto const& se : store.state)
         {
@@ -413,15 +407,14 @@ namespace
     // ── Ops generation ─────────────────────────────────────────────────────
 
     // Build the windowed room IDs for the given ranges from the full sorted list.
-    [[nodiscard]] auto window_rooms(std::vector<std::string> const& sorted,
-                                    std::vector<SlidingSyncRange> const& ranges)
+    [[nodiscard]] auto window_rooms(std::vector<std::string> const& sorted, std::vector<SlidingSyncRange> const& ranges)
         -> std::vector<std::string>
     {
         auto out = std::vector<std::string>{};
         for (auto const& range : ranges)
         {
             auto const start = static_cast<std::size_t>(range.start);
-            auto const end   = static_cast<std::size_t>(range.end);
+            auto const end = static_cast<std::size_t>(range.end);
             for (auto i = start; i <= end && i < sorted.size(); ++i)
             {
                 out.push_back(sorted[i]);
@@ -432,17 +425,16 @@ namespace
 
     // Emit SYNC ops covering all requested ranges.
     [[nodiscard]] auto make_sync_ops(std::vector<std::string> const& sorted,
-                                     std::vector<SlidingSyncRange> const& ranges)
-        -> std::vector<SlidingSyncOp>
+                                     std::vector<SlidingSyncRange> const& ranges) -> std::vector<SlidingSyncOp>
     {
         auto ops = std::vector<SlidingSyncOp>{};
         for (auto const& range : ranges)
         {
-            auto op      = SlidingSyncOp{};
-            op.op        = "SYNC";
-            op.range     = range;
+            auto op = SlidingSyncOp{};
+            op.op = "SYNC";
+            op.range = range;
             auto const start = static_cast<std::size_t>(range.start);
-            auto const end   = static_cast<std::size_t>(range.end);
+            auto const end = static_cast<std::size_t>(range.end);
             for (auto i = start; i <= end && i < sorted.size(); ++i)
             {
                 op.room_ids.push_back(sorted[i]);
@@ -454,22 +446,17 @@ namespace
 
 } // namespace
 
-auto compute_room_list(homeserver::HomeserverRuntime const& rt,
-                       std::string_view                     user,
-                       SlidingSyncList const&               list,
-                       std::vector<std::string> const&      prev_window,
-                       database::PersistentStore const&     store) -> RoomListResult
+auto compute_room_list(homeserver::HomeserverRuntime const& rt, std::string_view user, SlidingSyncList const& list,
+                       std::vector<std::string> const& prev_window, database::PersistentStore const& store)
+    -> RoomListResult
 {
     // Step 1 — enumerate rooms where the user is joined.
     auto joined_room_ids = std::vector<std::string>{};
     for (auto const& room : rt.database.rooms)
     {
-        auto const joined = std::ranges::any_of(store.memberships,
-                                                [&](database::PersistentMembership const& m) {
-                                                    return m.room_id == room.room_id &&
-                                                           m.user_id == user &&
-                                                           m.membership == "join";
-                                                });
+        auto const joined = std::ranges::any_of(store.memberships, [&](database::PersistentMembership const& m) {
+            return m.room_id == room.room_id && m.user_id == user && m.membership == "join";
+        });
         if (joined)
         {
             joined_room_ids.push_back(room.room_id);
@@ -489,50 +476,49 @@ auto compute_room_list(homeserver::HomeserverRuntime const& rt,
 
     // Step 3 — sort.
     // Sort keys are applied left-to-right; ties fall through to the next key.
-    std::stable_sort(joined_room_ids.begin(), joined_room_ids.end(),
-                     [&](std::string const& a, std::string const& b) {
-                         for (auto const& key : list.sort)
-                         {
-                             if (key == "by_notification_count")
-                             {
-                                 auto const na = notification_key(store, a, user);
-                                 auto const nb = notification_key(store, b, user);
-                                 if (na != nb)
-                                 {
-                                     return na > nb;  // descending
-                                 }
-                             }
-                             else if (key == "by_recency")
-                             {
-                                 auto const ra = recency_key(store, a, list.bump_event_types);
-                                 auto const rb = recency_key(store, b, list.bump_event_types);
-                                 if (ra != rb)
-                                 {
-                                     return ra > rb;  // most-recent first
-                                 }
-                             }
-                             else if (key == "by_name")
-                             {
-                                 auto const na = room_display_name(store, a);
-                                 auto const nb = room_display_name(store, b);
-                                 // Unnamed rooms sort last.
-                                 if (na.empty() != nb.empty())
-                                 {
-                                     return !na.empty();
-                                 }
-                                 if (na != nb)
-                                 {
-                                     return na < nb;
-                                 }
-                             }
-                         }
-                         // Final tie-break: room_id lexicographic (stable).
-                         return a < b;
-                     });
+    std::stable_sort(joined_room_ids.begin(), joined_room_ids.end(), [&](std::string const& a, std::string const& b) {
+        for (auto const& key : list.sort)
+        {
+            if (key == "by_notification_count")
+            {
+                auto const na = notification_key(store, a, user);
+                auto const nb = notification_key(store, b, user);
+                if (na != nb)
+                {
+                    return na > nb; // descending
+                }
+            }
+            else if (key == "by_recency")
+            {
+                auto const ra = recency_key(store, a, list.bump_event_types);
+                auto const rb = recency_key(store, b, list.bump_event_types);
+                if (ra != rb)
+                {
+                    return ra > rb; // most-recent first
+                }
+            }
+            else if (key == "by_name")
+            {
+                auto const na = room_display_name(store, a);
+                auto const nb = room_display_name(store, b);
+                // Unnamed rooms sort last.
+                if (na.empty() != nb.empty())
+                {
+                    return !na.empty();
+                }
+                if (na != nb)
+                {
+                    return na < nb;
+                }
+            }
+        }
+        // Final tie-break: room_id lexicographic (stable).
+        return a < b;
+    });
 
     // Step 4 — window and generate ops.
     auto const current_window = window_rooms(joined_room_ids, list.ranges);
-    auto ops                  = std::vector<SlidingSyncOp>{};
+    auto ops = std::vector<SlidingSyncOp>{};
 
     if (prev_window.empty())
     {
@@ -546,8 +532,8 @@ auto compute_room_list(homeserver::HomeserverRuntime const& rt,
         for (auto const& range : list.ranges)
         {
             auto const start = static_cast<std::size_t>(range.start);
-            auto const end   = static_cast<std::size_t>(range.end);
-            auto const len   = end >= start ? (end - start + 1U) : 0U;
+            auto const end = static_cast<std::size_t>(range.end);
+            auto const len = end >= start ? (end - start + 1U) : 0U;
 
             // Slice of current window for this range.
             auto current_slice = std::vector<std::string>{};
@@ -566,10 +552,10 @@ auto compute_room_list(homeserver::HomeserverRuntime const& rt,
 
             if (current_slice != prev_slice)
             {
-                auto op      = SlidingSyncOp{};
-                op.op        = "SYNC";
-                op.range     = range;
-                op.room_ids  = current_slice;
+                auto op = SlidingSyncOp{};
+                op.op = "SYNC";
+                op.range = range;
+                op.room_ids = current_slice;
                 ops.push_back(std::move(op));
             }
         }

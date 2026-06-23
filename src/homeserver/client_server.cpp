@@ -2658,12 +2658,59 @@ namespace
         {
             return canonicaljson::Value{canonicaljson::Object{}};
         }
-        auto parsed = canonicaljson::parse_lossless(encoded);
-        if (parsed.error != canonicaljson::ParseError::none)
+        // Room account data (e.g. m.tag) may contain non-canonical JSON doubles,
+        // so use the general JSON parser rather than the strict canonical parser.
+        auto parsed = canonicaljson::parse_json(encoded);
+        if (parsed.error != canonicaljson::ParseError::none ||
+            std::get_if<canonicaljson::Object>(&parsed.value.storage()) == nullptr)
         {
             return canonicaljson::Value{canonicaljson::Object{}};
         }
         return std::move(parsed.value);
+    }
+
+    // Loads the existing per-room tag object for a user/room, returning the
+    // content of the `tags` key from the m.tag room account-data row. The
+    // empty object means no tags have been set yet.
+    [[nodiscard]] auto room_tag_content(database::PersistentStore const& store, std::string_view user_id,
+                                        std::string_view room_id) -> canonicaljson::Object
+    {
+        for (auto const& data : store.account_data)
+        {
+            if (data.user_id != user_id || data.room_id != room_id || data.event_type != "m.tag")
+            {
+                continue;
+            }
+            auto const parsed = canonicaljson::parse_json(data.content_json);
+            if (parsed.error != canonicaljson::ParseError::none)
+            {
+                break;
+            }
+            auto const* root = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+            if (root == nullptr)
+            {
+                break;
+            }
+            auto const* tags = object_member_as_object(*root, "tags");
+            if (tags == nullptr)
+            {
+                break;
+            }
+            return *tags;
+        }
+        return canonicaljson::Object{};
+    }
+
+    // Stores the per-room m.tag account-data row for a user/room. If `tags`
+    // is empty the row still exists with {"tags":{}} so clients see an explicit
+    // empty tag list.
+    [[nodiscard]] auto store_room_tag_content(ClientServerRuntime& runtime, std::string_view user_id,
+                                              std::string_view room_id, canonicaljson::Object tags) -> bool
+    {
+        auto content = canonicaljson::Object{};
+        content.push_back(json_member("tags", json_obj(std::move(tags))));
+        auto const serialized = json_serialize(json_obj(std::move(content)));
+        return set_account_data(runtime, {std::string{user_id}, std::string{room_id}, "m.tag", serialized, 0U});
     }
 
     [[nodiscard]] auto build_current_state_events_array(database::PersistentStore const& store,
@@ -9589,6 +9636,99 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                                                  {"type",  type,  false}
                     });
                     return dispatch_resp(req, rt, 200U, found->content_json);
+                }
+            }
+        }
+
+        // Room-scoped tags: GET /user/{userId}/rooms/{roomId}/tags,
+        // PUT /user/{userId}/rooms/{roomId}/tags/{tag},
+        // DELETE /user/{userId}/rooms/{roomId}/tags/{tag}.
+        // Implemented as room account data with event_type "m.tag" and content
+        // {"tags":{"m.favourite":{"order":0.5}, ...}} so /sync surfaces it
+        // automatically through the room account-data path.
+        auto constexpr rooms_tags_m = std::string_view{"/rooms/"};
+        if (auto const rooms_pos = suffix.find(rooms_tags_m); rooms_pos != std::string_view::npos)
+        {
+            auto const encoded_user = suffix.substr(0U, rooms_pos);
+            auto const after_rooms = suffix.substr(rooms_pos + rooms_tags_m.size());
+            auto const tags_pos = after_rooms.find("/tags");
+            if (tags_pos != std::string_view::npos)
+            {
+                auto const encoded_room = after_rooms.substr(0U, tags_pos);
+                auto const path_user = core::percent_decode_path_component(encoded_user);
+                auto const path_room = core::percent_decode_path_component(encoded_room);
+                auto const remainder = after_rooms.substr(tags_pos + std::string_view{"/tags"}.size());
+                if (path_user != *user)
+                {
+                    return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "cannot access tags for another user");
+                }
+                if (path_room.empty())
+                {
+                    return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "room id must not be empty");
+                }
+
+                // Verify the caller is currently joined to the room; tags are only
+                // meaningful for rooms the user participates in.
+                auto const room_iter =
+                    std::ranges::find_if(rt.homeserver.database.rooms, [&path_room](LocalRoom const& r) {
+                        return r.room_id == path_room;
+                    });
+                auto const* room = room_iter == rt.homeserver.database.rooms.end() ? nullptr : &(*room_iter);
+                if (room == nullptr || !joined(*room, *user))
+                {
+                    return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "room not found or user not joined");
+                }
+
+                if (req.method == "GET" && remainder.empty())
+                {
+                    auto tags = room_tag_content(rt.homeserver.database.persistent_store, path_user, path_room);
+                    auto response = canonicaljson::Object{};
+                    response.push_back(json_member("tags", json_obj(std::move(tags))));
+                    return dispatch_resp(req, rt, 200U, json_serialize(json_obj(std::move(response))));
+                }
+
+                if (req.method == "PUT" && remainder.size() > 1U && remainder.front() == '/')
+                {
+                    auto const tag = core::percent_decode_path_component(remainder.substr(1U));
+                    if (tag.empty())
+                    {
+                        return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "tag must not be empty");
+                    }
+                    if (req.body.empty())
+                    {
+                        return dispatch_err(req, rt, 400U, "M_BAD_JSON", "tag body must not be empty");
+                    }
+                    auto const parsed = canonicaljson::parse_json(req.body);
+                    if (parsed.error != canonicaljson::ParseError::none ||
+                        std::get_if<canonicaljson::Object>(&parsed.value.storage()) == nullptr)
+                    {
+                        return dispatch_err(req, rt, 400U, "M_BAD_JSON", "tag body must be a JSON object");
+                    }
+                    auto tags = room_tag_content(rt.homeserver.database.persistent_store, path_user, path_room);
+                    set_object_member(tags, tag, std::move(parsed.value));
+                    if (!store_room_tag_content(rt, path_user, path_room, std::move(tags)))
+                    {
+                        return dispatch_err(req, rt, 500U, "M_UNKNOWN", "failed to store tag");
+                    }
+                    return dispatch_resp(req, rt, 200U, "{}");
+                }
+
+                if (req.method == "DELETE" && remainder.size() > 1U && remainder.front() == '/')
+                {
+                    auto const tag = core::percent_decode_path_component(remainder.substr(1U));
+                    if (tag.empty())
+                    {
+                        return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "tag must not be empty");
+                    }
+                    auto tags = room_tag_content(rt.homeserver.database.persistent_store, path_user, path_room);
+                    std::erase_if(tags, [&tag](canonicaljson::ObjectMember const& member) {
+                        return member.key == tag;
+                    });
+                    if (!store_room_tag_content(rt, path_user, path_room, std::move(tags)))
+                    {
+                        return dispatch_err(req, rt, 500U, "M_UNKNOWN", "failed to remove tag");
+                    }
+                    return dispatch_resp(req, rt, 200U, "{}");
                 }
             }
         }

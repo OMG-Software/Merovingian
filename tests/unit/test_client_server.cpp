@@ -4563,6 +4563,118 @@ SCENARIO("Account data endpoint percent-decodes the type path segment for secret
     }
 }
 
+// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3useruserIdroomsroomIdtags
+SCENARIO("Room tag endpoints store, retrieve, and remove per-room tags", "[homeserver][client-server][room-tags]")
+{
+    GIVEN("a logged-in client-server user with a created room")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+
+        auto const created = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", token, {}});
+        REQUIRE(created.response.status == 200U);
+        auto const rid = room_id(created.response.body);
+        auto const tags_base = std::string{"/_matrix/client/v3/user/%40alice%3Aexample.org/rooms/"} +
+                               percent_encode_room_identifier(rid) + "/tags";
+
+        WHEN("PUT /user/{userId}/rooms/{roomId}/tags/{tag} is called with an order")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"PUT", tags_base + "/m.favourite", token, R"({"order":0.5})"});
+
+            THEN("the response is 200")
+            {
+                REQUIRE(response.response.status == 200U);
+            }
+        }
+
+        WHEN("GET /user/{userId}/rooms/{roomId}/tags is called after adding a tag")
+        {
+            REQUIRE(merovingian::homeserver::handle_client_server_request(
+                        runtime, {"PUT", tags_base + "/m.favourite", token, R"({"order":0.5})"})
+                        .response.status == 200U);
+            auto const response =
+                merovingian::homeserver::handle_client_server_request(runtime, {"GET", tags_base, token, {}});
+
+            THEN("the response is 200 and returns the stored tags object")
+            {
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object_json(response.response.body);
+                auto const* tags = object_member_as_object(body, "tags");
+                REQUIRE(tags != nullptr);
+                auto const* favourite = object_member_as_object(*tags, "m.favourite");
+                REQUIRE(favourite != nullptr);
+                auto const* order = merovingian::tests::double_member(*favourite, "order");
+                REQUIRE(order != nullptr);
+                REQUIRE(*order == 0.5);
+            }
+        }
+
+        WHEN("DELETE /user/{userId}/rooms/{roomId}/tags/{tag} is called after adding a tag")
+        {
+            REQUIRE(merovingian::homeserver::handle_client_server_request(
+                        runtime, {"PUT", tags_base + "/m.favourite", token, R"({"order":0.5})"})
+                        .response.status == 200U);
+            auto const delete_response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"DELETE", tags_base + "/m.favourite", token, {}});
+            auto const get_response =
+                merovingian::homeserver::handle_client_server_request(runtime, {"GET", tags_base, token, {}});
+
+            THEN("DELETE is 200 and the tag no longer appears in the tags list")
+            {
+                REQUIRE(delete_response.response.status == 200U);
+                REQUIRE(get_response.response.status == 200U);
+                auto const body = parse_object_json(get_response.response.body);
+                auto const* tags = object_member_as_object(body, "tags");
+                REQUIRE(tags != nullptr);
+                REQUIRE(object_member_as_object(*tags, "m.favourite") == nullptr);
+            }
+        }
+
+        WHEN("PUT is called for another user")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"PUT",
+                          "/_matrix/client/v3/user/%40bob%3Aexample.org/rooms/" + percent_encode_room_identifier(rid) +
+                              "/tags/m.favourite",
+                          token, R"({"order":0.5})"});
+
+            THEN("the response is 403")
+            {
+                REQUIRE(response.response.status == 403U);
+            }
+        }
+
+        WHEN("PUT is called without an access token")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"PUT", tags_base + "/m.favourite", {}, R"({"order":0.5})"});
+
+            THEN("the response is 401")
+            {
+                REQUIRE(response.response.status == 401U);
+            }
+        }
+    }
+}
+
 // Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3room_keysversion
 SCENARIO("POST /room_keys/version returns a version identifier to the client",
          "[homeserver][client-server][key-api][key-backup]")

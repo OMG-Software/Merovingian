@@ -53,6 +53,7 @@ Open work per capability area. Status column reflects the current level in the
 | `POST /_matrix/client/v3/join/{roomIdOrAlias}` | `spec-covered` | Room-alias resolution, `?server_name` hint, federation-aware joins. |
 | `POST /_matrix/client/v3/rooms/{roomId}/send` | `spec-covered` | Third-party invite auth. Restricted and restricted_v2 join rule evaluation landed in `events/authorization.cpp`. |
 | `PUT /_matrix/client/v3/user/{userId}/account_data/{type}` | `spec-covered` | Room-scoped account data (`/rooms/{roomId}/account_data/{type}`). |
+| `GET/PUT/DELETE /_matrix/client/v3/user/{userId}/rooms/{roomId}/tags[/{tag}]` | `spec-covered` | Room tagging via `m.tag` account data; `order` doubles supported in general JSON parser. |
 | Push rule CRUD | `spec-covered` | Writable push-rule CRUD (PUT/DELETE/enabled/actions). |
 | `PUT /_matrix/client/v3/profile/{userId}/avatar_url` | `spec-covered` | Integration tests only; needs v1.18 conformance fixture. |
 | `GET /_matrix/client/v1/rooms/{roomId}/hierarchy` | `spec-covered` | Paginated depth-first space tree with `max_depth`, `suggested_only`, and `limit`. |

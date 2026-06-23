@@ -171,6 +171,23 @@ namespace
         {
             return {std::to_string(*integer), CanonicalJsonError::none};
         }
+        if (auto const* number = std::get_if<double>(&storage); number != nullptr)
+        {
+            // Use the shortest decimal representation that round-trips. This
+            // keeps non-canonical responses compact and avoids exposing extra
+            // precision to clients.
+            auto output = std::to_string(*number);
+            // Strip trailing zeros and a dangling decimal point.
+            while (!output.empty() && output.back() == '0')
+            {
+                output.pop_back();
+            }
+            if (!output.empty() && output.back() == '.')
+            {
+                output.push_back('0');
+            }
+            return {std::move(output), CanonicalJsonError::none};
+        }
         if (auto const* string = std::get_if<std::string>(&storage); string != nullptr)
         {
             if (!string_is_valid_for_json(*string))
