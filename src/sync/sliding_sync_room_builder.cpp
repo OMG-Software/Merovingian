@@ -36,8 +36,7 @@ namespace
         return nullptr;
     }
 
-    [[nodiscard]] auto as_object(canonicaljson::Value const& v) noexcept
-        -> canonicaljson::Object const*
+    [[nodiscard]] auto as_object(canonicaljson::Value const& v) noexcept -> canonicaljson::Object const*
     {
         return std::get_if<canonicaljson::Object>(&v.storage());
     }
@@ -54,20 +53,17 @@ namespace
 
     // ── required_state wildcard matching ───────────────────────────────────
 
-    [[nodiscard]] auto matches_required_state_pair(std::string_view req_type,
-                                                    std::string_view req_key,
-                                                    std::string_view event_type,
-                                                    std::string_view state_key) noexcept -> bool
+    [[nodiscard]] auto matches_required_state_pair(std::string_view req_type, std::string_view req_key,
+                                                   std::string_view event_type, std::string_view state_key) noexcept
+        -> bool
     {
         auto const type_match = (req_type == "*") || (req_type == event_type);
-        auto const key_match  = (req_key  == "*") || (req_key  == state_key);
+        auto const key_match = (req_key == "*") || (req_key == state_key);
         return type_match && key_match;
     }
 
-    [[nodiscard]] auto state_event_matches_any(
-        std::vector<std::pair<std::string, std::string>> const& pairs,
-        std::string_view event_type,
-        std::string_view state_key) noexcept -> bool
+    [[nodiscard]] auto state_event_matches_any(std::vector<std::pair<std::string, std::string>> const& pairs,
+                                               std::string_view event_type, std::string_view state_key) noexcept -> bool
     {
         return std::ranges::any_of(pairs, [&](auto const& p) {
             return matches_required_state_pair(p.first, p.second, event_type, state_key);
@@ -76,10 +72,9 @@ namespace
 
     // ── Name / avatar from state ────────────────────────────────────────────
 
-    [[nodiscard]] auto state_content_string(database::PersistentStore const& store,
-                                             std::string_view room_id,
-                                             std::string_view event_type,
-                                             std::string_view content_field) -> std::optional<std::string>
+    [[nodiscard]] auto state_content_string(database::PersistentStore const& store, std::string_view room_id,
+                                            std::string_view event_type, std::string_view content_field)
+        -> std::optional<std::string>
     {
         for (auto const& se : store.state)
         {
@@ -131,9 +126,8 @@ namespace
 
     // ── Member counts ───────────────────────────────────────────────────────
 
-    [[nodiscard]] auto count_memberships(database::PersistentStore const& store,
-                                          std::string_view room_id,
-                                          std::string_view membership_value) noexcept -> std::uint64_t
+    [[nodiscard]] auto count_memberships(database::PersistentStore const& store, std::string_view room_id,
+                                         std::string_view membership_value) noexcept -> std::uint64_t
     {
         auto count = std::uint64_t{0U};
         for (auto const& m : store.memberships)
@@ -148,9 +142,8 @@ namespace
 
     // ── Heroes ──────────────────────────────────────────────────────────────
 
-    [[nodiscard]] auto build_heroes(database::PersistentStore const& store,
-                                     std::string_view room_id,
-                                     std::string_view self_user_id) -> std::vector<SlidingSyncHero>
+    [[nodiscard]] auto build_heroes(database::PersistentStore const& store, std::string_view room_id,
+                                    std::string_view self_user_id) -> std::vector<SlidingSyncHero>
     {
         constexpr std::size_t max_heroes = 5U;
         auto heroes = std::vector<SlidingSyncHero>{};
@@ -171,8 +164,7 @@ namespace
             // Look up display_name and avatar_url from the member state event.
             for (auto const& se : store.state)
             {
-                if (se.room_id != room_id || se.event_type != "m.room.member" ||
-                    se.state_key != m.user_id)
+                if (se.room_id != room_id || se.event_type != "m.room.member" || se.state_key != m.user_id)
                 {
                     continue;
                 }
@@ -193,7 +185,7 @@ namespace
                         break;
                     }
                     auto const* content_val = find_member(*root, "content");
-                    auto const* content     = content_val != nullptr ? as_object(*content_val) : nullptr;
+                    auto const* content = content_val != nullptr ? as_object(*content_val) : nullptr;
                     if (content == nullptr)
                     {
                         break;
@@ -223,10 +215,9 @@ namespace
 
     // ── Notification / highlight counts ─────────────────────────────────────
 
-    [[nodiscard]] auto count_notifications(database::PersistentStore const& store,
-                                            std::string_view room_id,
-                                            std::string_view user,
-                                            std::uint64_t since_ordering) noexcept -> std::uint64_t
+    [[nodiscard]] auto count_notifications(database::PersistentStore const& store, std::string_view room_id,
+                                           std::string_view user, std::uint64_t since_ordering) noexcept
+        -> std::uint64_t
     {
         auto count = std::uint64_t{0U};
         for (auto const& ev : store.events)
@@ -246,7 +237,7 @@ namespace
                 continue;
             }
             auto const* type_val = find_member(*root, "type");
-            auto const* type_s   = type_val != nullptr ? as_string(*type_val) : nullptr;
+            auto const* type_s = type_val != nullptr ? as_string(*type_val) : nullptr;
             if (type_s == nullptr)
             {
                 continue;
@@ -255,15 +246,13 @@ namespace
             {
                 ++count;
             }
-            std::ignore = user;  // future: filter by push rules
+            std::ignore = user; // future: filter by push rules
         }
         return count;
     }
 
-    [[nodiscard]] auto count_highlights(database::PersistentStore const& store,
-                                         std::string_view room_id,
-                                         std::string_view user,
-                                         std::uint64_t since_ordering) noexcept -> std::uint64_t
+    [[nodiscard]] auto count_highlights(database::PersistentStore const& store, std::string_view room_id,
+                                        std::string_view user, std::uint64_t since_ordering) noexcept -> std::uint64_t
     {
         // Simple mention scan: check m.mentions.user_ids or body for @user_id.
         auto count = std::uint64_t{0U};
@@ -284,7 +273,7 @@ namespace
                 continue;
             }
             auto const* content_val = find_member(*root, "content");
-            auto const* content     = content_val != nullptr ? as_object(*content_val) : nullptr;
+            auto const* content = content_val != nullptr ? as_object(*content_val) : nullptr;
             if (content == nullptr)
             {
                 continue;
@@ -296,8 +285,7 @@ namespace
                 {
                     if (auto const* uids_val = find_member(*mentions, "user_ids"); uids_val != nullptr)
                     {
-                        if (auto const* arr = std::get_if<canonicaljson::Array>(&uids_val->storage());
-                            arr != nullptr)
+                        if (auto const* arr = std::get_if<canonicaljson::Array>(&uids_val->storage()); arr != nullptr)
                         {
                             for (auto const& uid_val : *arr)
                             {
@@ -316,8 +304,8 @@ namespace
     }
 
     // Latest origin_server_ts in the room's timeline.
-    [[nodiscard]] auto latest_timestamp(database::PersistentStore const& store,
-                                         std::string_view room_id) noexcept -> std::uint64_t
+    [[nodiscard]] auto latest_timestamp(database::PersistentStore const& store, std::string_view room_id) noexcept
+        -> std::uint64_t
     {
         auto ts = std::uint64_t{0U};
         for (auto const& ev : store.events)
@@ -357,20 +345,16 @@ namespace
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
-auto build_room_response(homeserver::HomeserverRuntime const& rt,
-                         std::string_view                     room_id,
-                         std::string_view                     user,
-                         SlidingSyncRoomSubscription const&   sub,
-                         std::uint64_t                        since_event_ordering,
-                         bool                                 is_initial,
-                         database::PersistentStore const&     store) -> SlidingSyncRoomResponse
+auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_view room_id, std::string_view user,
+                         SlidingSyncRoomSubscription const& sub, std::uint64_t room_since_event_ordering,
+                         bool is_initial, database::PersistentStore const& store) -> SlidingSyncRoomResponse
 {
     auto resp = SlidingSyncRoomResponse{};
 
     resp.initial = is_initial;
 
     // ── Name and avatar ─────────────────────────────────────────────────────
-    resp.name   = state_content_string(store, room_id, "m.room.name",   "name");
+    resp.name = state_content_string(store, room_id, "m.room.name", "name");
     resp.avatar = state_content_string(store, room_id, "m.room.avatar", "url");
 
     // ── is_dm ───────────────────────────────────────────────────────────────
@@ -410,10 +394,10 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt,
     }
 
     // ── Counts ──────────────────────────────────────────────────────────────
-    resp.joined_count  = count_memberships(store, room_id, "join");
+    resp.joined_count = count_memberships(store, room_id, "join");
     resp.invited_count = count_memberships(store, room_id, "invite");
-    resp.notification_count = count_notifications(store, room_id, user, since_event_ordering);
-    resp.highlight_count    = count_highlights(store, room_id, user, since_event_ordering);
+    resp.notification_count = count_notifications(store, room_id, user, room_since_event_ordering);
+    resp.highlight_count = count_highlights(store, room_id, user, room_since_event_ordering);
 
     // ── Timestamp ───────────────────────────────────────────────────────────
     resp.timestamp = latest_timestamp(store, room_id);
@@ -444,7 +428,7 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt,
                 {
                     continue;
                 }
-                if (!is_initial && ev.stream_ordering <= since_event_ordering)
+                if (!is_initial && ev.stream_ordering <= room_since_event_ordering)
                 {
                     break; // unchanged since last pos — skip
                 }
@@ -463,14 +447,15 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt,
         {
             continue;
         }
-        if (!is_initial && ev.stream_ordering <= since_event_ordering)
+        if (!is_initial && ev.stream_ordering <= room_since_event_ordering)
         {
             continue;
         }
         timeline_events.emplace_back(ev.stream_ordering, ev.json);
     }
-    std::sort(timeline_events.begin(), timeline_events.end(),
-              [](auto const& a, auto const& b) { return a.first < b.first; });
+    std::sort(timeline_events.begin(), timeline_events.end(), [](auto const& a, auto const& b) {
+        return a.first < b.first;
+    });
 
     auto const limit = static_cast<std::size_t>(sub.timeline_limit);
     if (timeline_events.size() > limit)
@@ -480,8 +465,8 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt,
         auto const drop_count = timeline_events.size() - limit;
         // prev_batch points to just before the first kept event.
         auto const first_kept_ordering = timeline_events[drop_count].first;
-        resp.prev_batch = encode_stream_token(
-            StreamToken{first_kept_ordering > 0U ? first_kept_ordering - 1U : 0U, 0U, 0U});
+        resp.prev_batch =
+            encode_stream_token(StreamToken{first_kept_ordering > 0U ? first_kept_ordering - 1U : 0U, 0U, 0U});
         timeline_events.erase(timeline_events.begin(),
                               timeline_events.begin() + static_cast<std::ptrdiff_t>(drop_count));
     }
@@ -491,7 +476,7 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt,
         std::ignore = ordering;
     }
 
-    std::ignore = rt;  // rt available for future extensions (e.g. runtime state)
+    std::ignore = rt; // rt available for future extensions (e.g. runtime state)
     return resp;
 }
 
