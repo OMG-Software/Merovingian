@@ -535,10 +535,13 @@ namespace
                 // A missing or empty via list removes the child from the space.
                 continue;
             }
+            auto const suggested_ptr = bool_member(*content, "suggested");
+            auto const suggested = suggested_ptr != nullptr && *suggested_ptr;
+
             auto child = SpaceChild{};
             child.room_id = std::string{state.state_key};
             child.via = string_array_values(*via);
-            child.suggested = bool_member(*content, "suggested") != nullptr && *bool_member(*content, "suggested");
+            child.suggested = suggested;
             child.origin_server_ts = state_event_origin_server_ts(store, room_id, "m.space.child", state.state_key);
             child.sender = std::string{state_event_sender(store, room_id, "m.space.child", state.state_key)};
             child.content = *content;
