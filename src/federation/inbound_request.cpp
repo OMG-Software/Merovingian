@@ -877,6 +877,36 @@ namespace
         return {200U, std::move(body)};
     }
 
+    [[nodiscard]] auto handle_space_hierarchy(FederationRuntimeState& runtime, SignedFederationRequest const& request)
+        -> FederationResponse
+    {
+        if (!runtime.space_hierarchy_provider)
+        {
+            return {501U, "space_hierarchy not implemented"};
+        }
+        auto const room_id = extract_path_segment(request.target, "/_matrix/federation/v1/hierarchy/");
+        if (room_id.empty())
+        {
+            return {400U, "hierarchy path is malformed"};
+        }
+        auto const suggested_only_param = query_param_value(request.target, "suggested_only");
+        auto suggested_only = bool{false};
+        if (!suggested_only_param.empty() && suggested_only_param != "false" && suggested_only_param != "true")
+        {
+            return {400U, homeserver::matrix_error("M_INVALID_PARAM", "suggested_only must be true or false")};
+        }
+        if (suggested_only_param == "true")
+        {
+            suggested_only = true;
+        }
+        auto body = runtime.space_hierarchy_provider(room_id, suggested_only);
+        if (body.empty())
+        {
+            return {404U, homeserver::matrix_error("M_NOT_FOUND", "Room not found")};
+        }
+        return {200U, std::move(body)};
+    }
+
     [[nodiscard]] auto dispatch_non_transaction_endpoint(FederationRuntimeState& runtime,
                                                          SignedFederationRequest const& request,
                                                          FederationRoute const& route, FederationRemoteRuntime& remote)
@@ -915,6 +945,8 @@ namespace
             return handle_query_state_ids(runtime, request);
         case FederationEndpoint::get_missing_events:
             return handle_get_missing_events(runtime, request);
+        case FederationEndpoint::space_hierarchy:
+            return handle_space_hierarchy(runtime, request);
         case FederationEndpoint::edu:
             // Plain send_edu requests have always been a 200 stub; ingestion
             // happens through the transaction path which carries EDUs.

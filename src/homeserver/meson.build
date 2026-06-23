@@ -8,6 +8,7 @@ homeserver_sources = files(
   'media_service.cpp',
   'room_service.cpp',
   'runtime.cpp',
+  'space_hierarchy.cpp',
   'tls.cpp',
 )
 

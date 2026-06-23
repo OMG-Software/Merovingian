@@ -1,3 +1,8 @@
+## 0.9.17
+
+### Added
+- **feat(homeserver): implement Matrix space hierarchy endpoints:** `GET /_matrix/client/v1/rooms/{roomId}/hierarchy` now returns a paginated, depth-first list of rooms in a space tree, honouring `max_depth`, `suggested_only`, and `limit`, with URL-safe base64 pagination tokens. `GET /_matrix/federation/v1/hierarchy/{roomId}` is also wired so remote servers can fetch a space summary. Both endpoints use the local persistent state (`m.space.child`, `m.room.create`, `m.room.join_rules`) and apply visibility rules before exposing rooms.
+
 ## 0.9.16
 
 ### Fixed
@@ -27,6 +32,9 @@
 - **test(http): add BDD scenario verifying parser accepts large Content-Length without error:** `test_http_request.cpp` now includes a scenario asserting that `POST /_matrix/media/v3/upload` with `Content-Length: 2097152` (2 MiB) parses without error, confirming the parser no longer rejects bodies above 1 MiB.
 
 ## 0.9.13
+
+### Added
+- **feat(homeserver): implement Matrix space hierarchy endpoints:** `GET /_matrix/client/v1/rooms/{roomId}/hierarchy` now returns a paginated, depth-first list of rooms in a space tree, honouring `max_depth`, `suggested_only`, and `limit`, with URL-safe base64 pagination tokens. `GET /_matrix/federation/v1/hierarchy/{roomId}` is also wired so remote servers can fetch a space summary. Both endpoints use the local persistent state (`m.space.child`, `m.room.create`, `m.room.join_rules`) and apply visibility rules before exposing rooms.
 
 ### Fixed
 - **fix(tests): repair compile errors in 3PID test suite introduced in v0.9.13:** five occurrences of `R"("})"}` in conformance tests were parsed as raw string `"}` plus a stray `}` due to C++ raw-string early termination (the empty delimiter closes at the first `)"` sequence); fixed to `R"("})"`. Two WHEN/GIVEN blocks in the integration and unit tests had missing `;` on string-concatenation declarations, causing `};` on the next line to close the enclosing scope prematurely and make all subsequent variables undeclared; fixed by adding the missing semicolons and re-indenting action code inside the WHEN blocks. `integer_member` helper calls in conformance tests renamed to the correct `int_member`. Integration test assertion for `bob_duplicate_add` relaxed from `== 400U` to `!= 200U` since UIA correctly rejects with 401 before the duplicate check is reached. Unit test assertion that the `M_SESSION_NOT_VALIDATED` error body contains the `sid` value removed — the Matrix spec does not require the sid to be echoed in error bodies.

@@ -55,6 +55,7 @@ Open work per capability area. Status column reflects the current level in the
 | `PUT /_matrix/client/v3/user/{userId}/account_data/{type}` | `spec-covered` | Room-scoped account data (`/rooms/{roomId}/account_data/{type}`). |
 | Push rule CRUD | `spec-covered` | Writable push-rule CRUD (PUT/DELETE/enabled/actions). |
 | `PUT /_matrix/client/v3/profile/{userId}/avatar_url` | `spec-covered` | Integration tests only; needs v1.18 conformance fixture. |
+| `GET /_matrix/client/v1/rooms/{roomId}/hierarchy` | `spec-covered` | Paginated depth-first space tree with `max_depth`, `suggested_only`, and `limit`. |
 
 ### Federation API
 
@@ -67,6 +68,7 @@ Open work per capability area. Status column reflects the current level in the
 | Request and event signing/verification | `spec-covered` | Live signed-request interop test against a real Synapse peer landed in 0.8.6 (opt-in). Inbound PDU content-hash verification wired and conformance-covered. |
 | `GET /_matrix/federation/v1/query/profile` | `spec-covered` | |
 | `GET /_matrix/federation/v1/query/directory` | `spec-covered` | |
+| `GET /_matrix/federation/v1/hierarchy/{roomId}` | `spec-covered` | Space summary for remote servers. |
 | Event-graph queries | `spec-covered` | `auth_chain`/`auth_chain_ids` transitive-closure reconstruction landed in 0.8.9; historical state-at-event reconstruction for `/state` and `/state_ids` landed in 0.8.10 with conformance fixtures; `resolve_state_v2` with full conflicted/unconflicted partitioning is implemented and conformance-covered. |
 | Outbound federation queues | `spec-covered` | Live federation delivery coverage under realistic load. |
 | Key publication (`GET /_matrix/key/v2/server`) | `spec-covered` | Key-ID format, valid_until_ts expiry, old_verify_keys structural contract, and key-rotation publication (new key active, retired key in old_verify_keys) now covered by conformance fixtures. |

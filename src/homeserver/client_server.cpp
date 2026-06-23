@@ -25,6 +25,7 @@
 #include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/homeserver/media_service.hpp"
 #include "merovingian/homeserver/room_service.hpp"
+#include "merovingian/homeserver/space_hierarchy.hpp"
 #include "merovingian/http/rate_limit.hpp"
 #include "merovingian/http/request.hpp"
 #include "merovingian/observability/logger.hpp"
@@ -9521,6 +9522,50 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
         }
         return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "room summary not found");
+    }
+
+    // GET /_matrix/client/v1/rooms/{roomId}/hierarchy
+    // Spec: returns a paginated depth-first list of rooms in the space hierarchy.
+    auto constexpr hierarchy_prefix = std::string_view{"/_matrix/client/v1/rooms/"};
+    auto constexpr hierarchy_suffix = std::string_view{"/hierarchy"};
+    if (req.method == "GET" && request_path.size() > hierarchy_prefix.size() + hierarchy_suffix.size() &&
+        starts_with(request_path, hierarchy_prefix) && request_path.ends_with(hierarchy_suffix))
+    {
+        auto const encoded_room_id = request_path.substr(
+            hierarchy_prefix.size(), request_path.size() - hierarchy_prefix.size() - hierarchy_suffix.size());
+        if (encoded_room_id.find('/') == std::string_view::npos)
+        {
+            auto request = SpaceHierarchyRequest{};
+            request.room_id = core::percent_decode_path_component(encoded_room_id);
+
+            if (auto const from = query_param_value(req.target, "from"); from.has_value())
+            {
+                request.from = *from;
+            }
+            auto const parse_size = [](std::optional<std::string> const& text) -> std::optional<std::size_t> {
+                if (!text.has_value() || text->empty())
+                {
+                    return std::nullopt;
+                }
+                try
+                {
+                    return static_cast<std::size_t>(std::stoull(*text));
+                }
+                catch (...)
+                {
+                    return std::nullopt;
+                }
+            };
+            request.limit = parse_size(query_param_value(req.target, "limit"));
+            request.max_depth = parse_size(query_param_value(req.target, "max_depth"));
+            if (auto const suggested = query_param_value(req.target, "suggested_only"); suggested == "true")
+            {
+                request.suggested_only = true;
+            }
+
+            auto const result = handle_client_space_hierarchy(rt.homeserver, *user, request);
+            return dispatch_resp(req, rt, result.status, result.body);
+        }
     }
 
     // Account moderation endpoints (spec v1.18 §"Account locking" / §"Account

@@ -19,6 +19,7 @@
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/media_service.hpp"
 #include "merovingian/homeserver/room_service.hpp"
+#include "merovingian/homeserver/space_hierarchy.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
@@ -1521,6 +1522,10 @@ namespace
         runtime.federation.missing_events_query_provider = [rt](std::string_view room_id,
                                                                 std::string_view body) -> std::string {
             return federation::build_get_missing_events_response(rt->database.persistent_store, room_id, body);
+        };
+
+        runtime.federation.space_hierarchy_provider = [rt](std::string_view room_id, bool suggested_only) -> std::string {
+            return build_federation_space_hierarchy_response(*rt, room_id, suggested_only);
         };
 
         // Resolve the room version from the stored m.room.create state event so

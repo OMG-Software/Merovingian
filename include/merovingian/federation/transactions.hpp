@@ -30,6 +30,7 @@ enum class FederationEndpoint
     query_state,
     query_state_ids,
     get_missing_events,
+    space_hierarchy,
 };
 
 struct FederationTransaction final

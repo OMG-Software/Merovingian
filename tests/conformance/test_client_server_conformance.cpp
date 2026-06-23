@@ -11237,7 +11237,9 @@ SCENARIO("GET /.well-known/matrix/support conformance")
 // 20     Spaces — GET /v1/rooms/{roomId}/hierarchy
 // ============================================================================
 // Spec: Matrix v1.18 §20 GET /_matrix/client/v1/rooms/{roomId}/hierarchy
-//       IMPLEMENTATION GAP: not yet implemented. Must return 404 M_UNRECOGNIZED.
+//       Implemented: returns 200 with a SpaceHierarchyRoomsChunk list. A room
+//       with no children still includes itself, so the list contains exactly the
+//       requested room and no next_batch.
 
 SCENARIO("GET /v1/rooms/{roomId}/hierarchy conformance")
 {
@@ -11253,13 +11255,20 @@ SCENARIO("GET /v1/rooms/{roomId}/hierarchy conformance")
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"GET", "/_matrix/client/v1/rooms/" + room_id + "/hierarchy", token, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED")
+            THEN("the server returns 200 with the requested room")
             {
-                REQUIRE(response.response.status == 404);
+                REQUIRE(response.response.status == 200U);
                 auto const body = parse_object(response.response.body);
-                auto const* err = string_member(body, "errcode");
-                REQUIRE(err != nullptr);
-                REQUIRE(*err == "M_UNRECOGNIZED");
+                auto const* rooms = object_member_as_array(body, "rooms");
+                REQUIRE(rooms != nullptr);
+                REQUIRE(rooms->size() == 1U);
+                auto const* first_room = std::get_if<merovingian::canonicaljson::Object>(&rooms->at(0).storage());
+                REQUIRE(first_room != nullptr);
+                REQUIRE(*string_member(*first_room, "room_id") == room_id);
+                auto const* children_state = object_member_as_array(*first_room, "children_state");
+                REQUIRE(children_state != nullptr);
+                REQUIRE(children_state->empty());
+                REQUIRE(object_member_as_array(body, "next_batch") == nullptr);
             }
         }
     }
