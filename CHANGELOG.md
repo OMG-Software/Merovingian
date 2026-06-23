@@ -5,6 +5,7 @@
 
 ### Fixed
 - **fix(media): encrypted-room attachments no longer quarantined on upload and authenticated `POST /_matrix/client/v1/media/upload` is wired:** E2EE clients (Element/Web) upload encrypted attachments as opaque `application/octet-stream` ciphertext, which was missing from the default `security.media.allowed_mime_types` allow-list and caused uploads to be quarantined; downloads of those quarantined files later returned `451 Unavailable For Legal Reasons`. The default allow-list now includes `application/octet-stream`, and operators can override the list via the new `security.media.allowed_mime_types` configuration key. The authenticated v1 upload endpoint was also absent from the client-server dispatcher and has been added, using the same raw-binary-to-pipe-format translation as the unauthenticated v3 path.
+- **fix(config): example configuration now includes all recognised keys:** `config/merovingian.conf.example` was missing `security.access_token_lifetime_ms`, `security.refresh_token_lifetime_ms`, `security.media.allowed_mime_types`, `security.media.remote_fetch_enabled`, and `security.secrets.master_key_file`. Each is now documented with its default and, where relevant, the security implications of changing it.
 
 ## 0.9.16
 
