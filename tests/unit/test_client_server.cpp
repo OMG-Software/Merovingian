@@ -3783,8 +3783,8 @@ SCENARIO("Media upload accepts a raw binary body with a Content-Type header", "[
         WHEN("POST /_matrix/media/v3/upload is called without a Content-Type header")
         {
             // Missing Content-Type defaults to application/octet-stream.
-            // The server must not return 400 or 500; the upload is accepted
-            // (200) or quarantined by MIME policy (202) depending on config.
+            // The default allow-list now includes application/octet-stream so
+            // encrypted-room attachments (opaque ciphertext) are not quarantined.
             auto const response = merovingian::homeserver::handle_client_server_request(
                 runtime, {"POST", "/_matrix/media/v3/upload", token, "raw bytes with no content type"});
 
@@ -3793,6 +3793,40 @@ SCENARIO("Media upload accepts a raw binary body with a Content-Type header", "[
                 REQUIRE(response.response.status >= 200U);
                 REQUIRE(response.response.status < 300U);
                 REQUIRE(response.response.body.find("content_uri") != std::string::npos);
+            }
+        }
+
+        WHEN("POST /_matrix/client/v1/media/upload is called with an encrypted-style binary body")
+        {
+            // Element/Web uses the authenticated v1 media endpoint in encrypted
+            // rooms and sends the ciphertext as application/octet-stream.  The
+            // payload starts with a NUL byte, so it must be created with an
+            // explicit length rather than a C-string literal (which would be
+            // truncated at the first embedded NUL).
+            auto constexpr encrypted_literal = "\x00\x01\x02\x03 encrypted ciphertext bytes";
+            auto constexpr encrypted_size = std::size_t{31U};
+            auto const encrypted_bytes = std::string{encrypted_literal, encrypted_size};
+            auto const upload = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST",
+                          "/_matrix/client/v1/media/upload?filename=image.jpg",
+                          token,
+                          encrypted_bytes,
+                          {merovingian::http::Header{"Content-Type", "application/octet-stream"}}});
+
+            THEN("the upload succeeds and the file can be downloaded without a 451 quarantine")
+            {
+                REQUIRE(upload.response.status == 200U);
+                auto const media_id = json_value(upload.response.body, "\"content_uri\":\"mxc://example.org/");
+                REQUIRE(!media_id.empty());
+
+                auto const download = merovingian::homeserver::handle_client_server_request(
+                    runtime, {"GET",
+                              "/_matrix/client/v1/media/download/example.org/" + media_id + "?allow_redirect=true",
+                              token,
+                              {}});
+                REQUIRE(download.response.status == 200U);
+                REQUIRE(download.response.body == encrypted_bytes);
+                REQUIRE(response_header(download.response, "Content-Type") == "application/octet-stream");
             }
         }
     }

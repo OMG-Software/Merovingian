@@ -350,6 +350,10 @@ namespace
         {
             security.media.max_upload_size = std::string{value};
         }
+        else if (key == "security.media.allowed_mime_types")
+        {
+            security.media.allowed_mime_types = parse_string_list(value);
+        }
         else if (key == "security.media.quarantine_unknown_mime")
         {
             if (!parse_bool_value(value, security.media.quarantine_unknown_mime))

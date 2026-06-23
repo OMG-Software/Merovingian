@@ -7595,12 +7595,18 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         return dispatch_resp(req, rt, 200U,
                              json_serialize(json_obj({json_member("m.upload.size", json_int(max_upload_bytes))})));
     }
-    if (req.method == "POST" &&
-        (req.target == "/_matrix/media/v3/upload" || starts_with(req.target, "/_matrix/media/v3/upload?")))
+    // Matrix clients upload media as raw binary with a Content-Type header,
+    // while the local router expects declared_mime|sniffed_mime|scanner_clean|bytes.
+    // Both the unauthenticated v3 endpoint and the authenticated v1 endpoint need
+    // the same body translation so encrypted-room attachments work regardless of
+    // which path the client prefers.
+    auto const is_v3_media_upload = req.method == "POST" && (req.target == "/_matrix/media/v3/upload" ||
+                                                             starts_with(req.target, "/_matrix/media/v3/upload?"));
+    auto const is_v1_media_upload =
+        req.method == "POST" && (req.target == "/_matrix/client/v1/media/upload" ||
+                                 starts_with(req.target, "/_matrix/client/v1/media/upload?"));
+    if (is_v3_media_upload || is_v1_media_upload)
     {
-        // Real clients send a raw binary body with Content-Type in the request
-        // headers, not the pipe-delimited format the local router expects.
-        // Build declared_mime|sniffed_mime|scanner_clean|bytes from headers + body.
         auto const ct = request_header(req, "Content-Type");
         auto const declared_mime = ct.empty() ? std::string_view{"application/octet-stream"} : ct;
         auto inner = req;

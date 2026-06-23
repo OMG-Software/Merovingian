@@ -3,6 +3,9 @@
 ### Added
 - **feat(homeserver): implement Matrix space hierarchy endpoints:** `GET /_matrix/client/v1/rooms/{roomId}/hierarchy` now returns a paginated, depth-first list of rooms in a space tree, honouring `max_depth`, `suggested_only`, and `limit`, with URL-safe base64 pagination tokens. `GET /_matrix/federation/v1/hierarchy/{roomId}` is also wired so remote servers can fetch a space summary. Both endpoints use the local persistent state (`m.space.child`, `m.room.create`, `m.room.join_rules`) and apply visibility rules before exposing rooms.
 
+### Fixed
+- **fix(media): encrypted-room attachments no longer quarantined on upload and authenticated `POST /_matrix/client/v1/media/upload` is wired:** E2EE clients (Element/Web) upload encrypted attachments as opaque `application/octet-stream` ciphertext, which was missing from the default `security.media.allowed_mime_types` allow-list and caused uploads to be quarantined; downloads of those quarantined files later returned `451 Unavailable For Legal Reasons`. The default allow-list now includes `application/octet-stream`, and operators can override the list via the new `security.media.allowed_mime_types` configuration key. The authenticated v1 upload endpoint was also absent from the client-server dispatcher and has been added, using the same raw-binary-to-pipe-format translation as the unauthenticated v3 path.
+
 ## 0.9.16
 
 ### Fixed
