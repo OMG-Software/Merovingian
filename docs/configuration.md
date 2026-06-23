@@ -1033,6 +1033,18 @@ is the default; setting it to `true` enables the repository remote-ingest
 boundary, while private and loopback resolved addresses remain blocked when
 `security.media.block_private_ip_fetches=true`.
 
+`security.media.allowed_mime_types` is a comma-separated list of MIME types the
+server accepts without quarantining. The default list is:
+
+```text
+image/png,image/jpeg,image/gif,text/plain,application/pdf,application/octet-stream
+```
+
+`application/octet-stream` is included because encrypted-room attachments are
+uploaded by clients as opaque ciphertext; without it, every encrypted image or
+file is quarantined and later downloads return 451. Operators who want a stricter
+policy can override the list explicitly.
+
 Two `security.media.*` keys are not fully wired end to end yet:
 
 - `security.media.enable_av_scanner` is parsed, but it does **not** configure

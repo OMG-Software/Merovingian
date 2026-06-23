@@ -19,7 +19,11 @@ namespace
 
     [[nodiscard]] auto default_allowed_mime_types() -> std::vector<std::string>
     {
-        return {"image/png", "image/jpeg", "image/gif", "text/plain", "application/pdf"};
+        // application/octet-stream is intentionally included so encrypted-room
+        // attachments (which clients upload as opaque ciphertext) are not
+        // quarantined by default. The server cannot sniff the underlying format
+        // without decrypting the attachment.
+        return {"image/png", "image/jpeg", "image/gif", "text/plain", "application/pdf", "application/octet-stream"};
     }
 
 } // namespace
@@ -28,10 +32,13 @@ auto make_runtime_media_config(config::Config const& config) -> RuntimeMediaConf
 {
     auto const upload_limit = config::parse_size_limit(config.security().media.max_upload_size);
     auto const remote_timeout = config::parse_duration_seconds(config.security().media.remote_fetch_timeout);
+    auto const& configured_types = config.security().media.allowed_mime_types;
+    auto allowed_types =
+        configured_types.empty() ? default_allowed_mime_types() : std::vector<std::string>{configured_types};
 
     return {
         upload_limit.valid ? upload_limit.bytes : 0U,
-        default_allowed_mime_types(),
+        std::move(allowed_types),
         config.security().media.quarantine_unknown_mime,
         config.security().media.enable_av_scanner,
         config.security().media.block_private_ip_fetches,

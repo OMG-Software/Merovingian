@@ -118,6 +118,7 @@ struct FederationSecurityConfig final
 struct MediaSecurityConfig final
 {
     std::string max_upload_size{"50MiB"};
+    std::vector<std::string> allowed_mime_types{};
     bool quarantine_unknown_mime{true};
     bool enable_av_scanner{true};
     bool block_private_ip_fetches{true};

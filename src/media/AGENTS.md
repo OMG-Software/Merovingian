@@ -29,12 +29,14 @@ The 4th field is split on the 3rd `|` — binary bodies containing `|` are safe.
 ## MIME policy
 
 `security.cpp` enforces:
-- `allowed_mime_types` — list from config; defaults to `{"image/png", "image/jpeg", "image/gif", "text/plain", "application/pdf"}`
+- `allowed_mime_types` — list from config; defaults to `{"image/png", "image/jpeg", "image/gif", "text/plain", "application/pdf", "application/octet-stream"}`
 - `quarantine_unknown_mime = true` — unknown MIME types stored but flagged (status 202 internally); mapped to 200 externally
 - `max_upload_size` — from `security.media.max_upload_size` in config (default 100 MiB)
 
-Note: `application/octet-stream` is **not** in the default allow-list; uploads without a
-recognizable MIME type are quarantined, not rejected.
+Note: `application/octet-stream` is in the default allow-list because encrypted-room
+attachments are uploaded as opaque ciphertext and must not be quarantined. Operators
+can override the list with `security.media.allowed_mime_types` if they need a stricter
+policy.
 
 ## Thumbnail worker
 

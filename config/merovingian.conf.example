@@ -92,6 +92,12 @@ security.registration.enabled=false
 security.registration.require_token=true
 security.registration.token_file=/etc/merovingian/registration-token
 
+# Token lifetimes. Values are in milliseconds; 0 disables expiry for that token
+# kind. The advertised expires_in_ms matches access_token_lifetime_ms so the
+# TTL the client receives equals the TTL the server enforces.
+security.access_token_lifetime_ms=3600000
+security.refresh_token_lifetime_ms=2592000000
+
 # Room encryption policy
 # New private/direct rooms require encryption by default. Public unencrypted
 # rooms are allowed for compatibility, while federated private rooms must not
@@ -122,14 +128,22 @@ security.federation.remote_timeout=30s
 # scanning is expected, private-IP remote fetches are blocked, and decoding is
 # treated as sandbox-only work.
 security.media.max_upload_size=50MiB
+# allowed_mime_types is a comma-separated allow-list. When empty (the default),
+# Merovingian uses its built-in default list, which includes image/png,
+# image/jpeg, image/gif, text/plain, application/pdf, and application/octet-stream
+# so encrypted-room attachments (opaque ciphertext) are accepted. Override only
+# if you need a stricter policy; do not remove application/octet-stream unless
+# you intend to block E2EE media uploads.
+# security.media.allowed_mime_types=image/png,image/jpeg,image/gif,text/plain,application/pdf,application/octet-stream
 security.media.quarantine_unknown_mime=true
 # Commented out: no AV engine integration is wired yet. This flag only changes
 # how Merovingian treats a scanner verdict supplied by an upstream caller/test
 # harness; it does not invoke or configure an antivirus scanner itself.
 # security.media.enable_av_scanner=true
 security.media.block_private_ip_fetches=true
-# Commented out: the config parser accepts this, but the live remote-fetch path
-# still uses hard-coded discovery/HTTP timeouts instead of this value.
+# Commented out: remote media fetch is not implemented in this milestone and
+# these values are not consulted by the live code path.
+# security.media.remote_fetch_enabled=false
 # security.media.remote_fetch_timeout=30s
 security.media.decode_in_sandbox=true
 
@@ -148,6 +162,13 @@ security.media.decode_in_sandbox=true
 security.logging.redact_tokens=true
 security.logging.redact_event_content=true
 security.logging.structured=true
+
+# At-rest secret protection
+# master_key_file must point to an owner-only file containing the raw key
+# material used to encrypt the Ed25519 signing secret before it is stored in
+# the database. When empty, fresh signing keys cannot be created; legacy
+# plaintext keys may still be loaded for migration.
+security.secrets.master_key_file=/etc/merovingian/master-key
 
 # Client-server rate limits
 # Wall-clock per-IP and per-user caps keyed by request target prefix. The

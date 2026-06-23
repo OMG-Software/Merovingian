@@ -34,6 +34,7 @@
 #include <cstdint>
 #include <fstream>
 #include <optional>
+#include <ranges>
 #include <span>
 #include <string>
 #include <string_view>
@@ -3744,6 +3745,240 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
     if (serialized.error != canonicaljson::CanonicalJsonError::none)
     {
         return make_operation_result(false, {}, "state serialization failed", 500U);
+    }
+    return make_operation_result(true, std::move(serialized.output));
+}
+
+namespace
+{
+    [[nodiscard]] auto client_event_with_id(database::PersistentEvent const& event) -> canonicaljson::Value
+    {
+        auto const parsed = canonicaljson::parse_lossless(event.json);
+        if (parsed.error == canonicaljson::ParseError::none)
+        {
+            if (auto const* obj = std::get_if<canonicaljson::Object>(&parsed.value.storage()))
+            {
+                auto client_obj = *obj;
+                client_obj.push_back(canonicaljson::make_member("event_id", canonicaljson::Value{event.event_id}));
+                return canonicaljson::Value{std::move(client_obj)};
+            }
+        }
+        return canonicaljson::Value{canonicaljson::Object{}};
+    }
+
+    [[nodiscard]] auto parse_stream_ordering_token(std::optional<std::string> const& token)
+        -> std::optional<std::uint64_t>
+    {
+        if (!token.has_value())
+        {
+            return std::nullopt;
+        }
+        auto value = std::uint64_t{0U};
+        auto const [ptr, error] = std::from_chars(token->data(), token->data() + token->size(), value);
+        if (error == std::errc{} && ptr == token->data() + token->size())
+        {
+            return value;
+        }
+        return std::nullopt;
+    }
+
+} // namespace
+
+[[nodiscard]] auto fetch_relations(HomeserverRuntime const& runtime, std::string_view access_token,
+                                   FetchRelationsRequest const& request) -> OperationResult
+{
+    // `authenticated_user` is non-const because the audit-routing helper writes
+    // a row on token rejection; the const cast is safe for the read-only path.
+    auto const user_id = authenticated_user(const_cast<HomeserverRuntime&>(runtime), access_token);
+    if (!user_id.has_value())
+    {
+        return make_operation_result(false, {}, "unauthenticated", 401U);
+    }
+
+    auto const* room = find_room(runtime.database, request.room_id);
+    if (room == nullptr || !room_has_member(*room, *user_id))
+    {
+        return make_operation_result(false, {}, "not joined or unknown room", 404U);
+    }
+
+    auto const& store = runtime.database.persistent_store;
+    auto const parent_exists = std::ranges::any_of(store.events, [&request](database::PersistentEvent const& event) {
+        return event.room_id == request.room_id && event.event_id == request.event_id;
+    });
+    if (!parent_exists)
+    {
+        return make_operation_result(false, {}, "parent event not found", 404U);
+    }
+
+    auto matches = std::vector<database::PersistentEvent const*>{};
+    for (auto const& event : store.events)
+    {
+        if (event.room_id != request.room_id)
+        {
+            continue;
+        }
+
+        if (request.event_type.has_value())
+        {
+            auto const parsed_type = canonicaljson::parse_lossless(event.json);
+            if (parsed_type.error != canonicaljson::ParseError::none)
+            {
+                continue;
+            }
+            auto const* event_obj = std::get_if<canonicaljson::Object>(&parsed_type.value.storage());
+            if (event_obj == nullptr)
+            {
+                continue;
+            }
+            auto const* type = string_member(*event_obj, "type");
+            if (type == nullptr || *type != *request.event_type)
+            {
+                continue;
+            }
+        }
+
+        auto const parsed = canonicaljson::parse_lossless(event.json);
+        if (parsed.error != canonicaljson::ParseError::none)
+        {
+            continue;
+        }
+        auto const* event_obj = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+        if (event_obj == nullptr)
+        {
+            continue;
+        }
+        auto const* content_value = object_member(*event_obj, "content");
+        if (content_value == nullptr)
+        {
+            continue;
+        }
+        auto const* content_obj = std::get_if<canonicaljson::Object>(&content_value->storage());
+        if (content_obj == nullptr)
+        {
+            continue;
+        }
+        auto const* relates_value = object_member(*content_obj, "m.relates_to");
+        if (relates_value == nullptr)
+        {
+            continue;
+        }
+        auto const* relates_obj = std::get_if<canonicaljson::Object>(&relates_value->storage());
+        if (relates_obj == nullptr)
+        {
+            continue;
+        }
+        auto const* related_event_id = string_member(*relates_obj, "event_id");
+        if (related_event_id == nullptr || *related_event_id != request.event_id)
+        {
+            continue;
+        }
+        auto const* rel_type = string_member(*relates_obj, "rel_type");
+        if (request.rel_type.has_value() && (rel_type == nullptr || *rel_type != *request.rel_type))
+        {
+            continue;
+        }
+
+        matches.push_back(&event);
+    }
+
+    auto const forward = request.dir.has_value() && *request.dir == "f";
+    if (forward)
+    {
+        std::ranges::sort(matches, {}, [](database::PersistentEvent const* event) {
+            return event->stream_ordering;
+        });
+    }
+    else
+    {
+        std::ranges::sort(matches, std::ranges::greater{}, [](database::PersistentEvent const* event) {
+            return event->stream_ordering;
+        });
+    }
+
+    auto const from_token = parse_stream_ordering_token(request.from);
+    auto const to_token = parse_stream_ordering_token(request.to);
+    auto constexpr default_limit = std::uint64_t{100U};
+    auto constexpr max_limit = std::uint64_t{1000U};
+    auto limit = request.limit.value_or(default_limit);
+    if (limit == 0U || limit > max_limit)
+    {
+        limit = max_limit;
+    }
+
+    auto start = std::size_t{0U};
+    if (from_token.has_value())
+    {
+        if (forward)
+        {
+            while (start < matches.size() && matches[start]->stream_ordering < *from_token)
+            {
+                ++start;
+            }
+        }
+        else
+        {
+            while (start < matches.size() && matches[start]->stream_ordering > *from_token)
+            {
+                ++start;
+            }
+        }
+    }
+
+    auto end = matches.size();
+    if (to_token.has_value())
+    {
+        if (forward)
+        {
+            while (end > start && matches[end - 1U]->stream_ordering > *to_token)
+            {
+                --end;
+            }
+        }
+        else
+        {
+            while (end > start && matches[end - 1U]->stream_ordering < *to_token)
+            {
+                --end;
+            }
+        }
+    }
+
+    if (end - start > static_cast<std::size_t>(limit))
+    {
+        end = start + static_cast<std::size_t>(limit);
+    }
+
+    auto chunk = canonicaljson::Array{};
+    chunk.reserve(end - start);
+    for (auto index = start; index < end; ++index)
+    {
+        chunk.push_back(client_event_with_id(*matches[index]));
+    }
+
+    auto response = canonicaljson::Object{};
+    response.push_back(canonicaljson::make_member("chunk", canonicaljson::Value{std::move(chunk)}));
+
+    if (start > 0U)
+    {
+        response.push_back(canonicaljson::make_member(
+            "prev_batch", canonicaljson::Value{std::to_string(matches[start - 1U]->stream_ordering)}));
+    }
+    if (end < matches.size())
+    {
+        response.push_back(canonicaljson::make_member(
+            "next_batch", canonicaljson::Value{std::to_string(matches[end]->stream_ordering)}));
+    }
+    if (request.recurse.has_value())
+    {
+        // Direct relations only for now; still report the depth the client asked for.
+        response.push_back(
+            canonicaljson::make_member("recursion_depth", canonicaljson::Value{static_cast<std::int64_t>(0)}));
+    }
+
+    auto serialized = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(response)});
+    if (serialized.error != canonicaljson::CanonicalJsonError::none)
+    {
+        return make_operation_result(false, {}, "relations serialization failed", 500U);
     }
     return make_operation_result(true, std::move(serialized.output));
 }

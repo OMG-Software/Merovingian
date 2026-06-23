@@ -339,11 +339,11 @@ auto deliver_federated_direct_to_device(merovingian::homeserver::ClientServerRun
     auto const r = merovingian::homeserver::handle_client_server_request(
         runtime, {"PUT", "/_matrix/client/v3/rooms/" + room_id + "/send/m.room.message/" + txn, token,
                   std::string{R"({"msgtype":"m.text","body":")"} + text + R"("})"});
-REQUIRE(r.response.status == 200U);
-auto const body = parse_object(r.response.body);
-auto const* eid = string_member(body, "event_id");
-REQUIRE(eid != nullptr);
-return *eid;
+    REQUIRE(r.response.status == 200U);
+    auto const body = parse_object(r.response.body);
+    auto const* eid = string_member(body, "event_id");
+    REQUIRE(eid != nullptr);
+    return *eid;
 }
 
 // Collects the event_id of every event object in a timeline/chunk "events" array.
@@ -2810,29 +2810,29 @@ SCENARIO("POST /refresh returns a new access_token and refresh_token", "[conform
                                   {},
                                   std::string{R"({"refresh_token":")"} + refresh_tok + R"("})"});
 
-        THEN("the response is 200 with access_token, refresh_token, and expires_in_ms")
-        {
-            // Spec MUST: 200 on valid refresh token.
-            REQUIRE(response.response.status == 200U);
-            auto const body = parse_object(response.response.body);
+            THEN("the response is 200 with access_token, refresh_token, and expires_in_ms")
+            {
+                // Spec MUST: 200 on valid refresh token.
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
 
-            // Spec MUST: the refreshed access_token is a non-empty string.
-            auto const* access_token = string_member(body, "access_token");
-            REQUIRE(access_token != nullptr);
-            REQUIRE(!access_token->empty());
+                // Spec MUST: the refreshed access_token is a non-empty string.
+                auto const* access_token = string_member(body, "access_token");
+                REQUIRE(access_token != nullptr);
+                REQUIRE(!access_token->empty());
 
-            // Spec MUST: the refreshed refresh_token is returned for next rotation.
-            auto const* new_rt = string_member(body, "refresh_token");
-            REQUIRE(new_rt != nullptr);
-            REQUIRE(!new_rt->empty());
+                // Spec MUST: the refreshed refresh_token is returned for next rotation.
+                auto const* new_rt = string_member(body, "refresh_token");
+                REQUIRE(new_rt != nullptr);
+                REQUIRE(!new_rt->empty());
 
-            // Spec MUST: expires_in_ms is a positive integer.
-            auto const* expires = int_member(body, "expires_in_ms");
-            REQUIRE(expires != nullptr);
-            REQUIRE(*expires > 0);
+                // Spec MUST: expires_in_ms is a positive integer.
+                auto const* expires = int_member(body, "expires_in_ms");
+                REQUIRE(expires != nullptr);
+                REQUIRE(*expires > 0);
+            }
         }
     }
-}
 }
 
 // --- POST /_matrix/client/v3/refresh — advertised TTL matches enforced TTL ---
@@ -2923,17 +2923,16 @@ SCENARIO("POST /refresh rejects an expired refresh token", "[conformance][client
                 started.runtime, {"POST",
                                   "/_matrix/client/v3/refresh",
                                   {},
-                                  std::string{R"({"refresh_token":")"} + refresh_tok + R"("})"
-        });
+                                  std::string{R"({"refresh_token":")"} + refresh_tok + R"("})"});
 
-        THEN("the response is 401 M_UNKNOWN_TOKEN, not a rotation")
-        {
-            // Spec MUST: an expired/invalid refresh token MUST be rejected.
-            REQUIRE(response.response.status == 401U);
-            REQUIRE(response.response.body.find("M_UNKNOWN_TOKEN") != std::string::npos);
+            THEN("the response is 401 M_UNKNOWN_TOKEN, not a rotation")
+            {
+                // Spec MUST: an expired/invalid refresh token MUST be rejected.
+                REQUIRE(response.response.status == 401U);
+                REQUIRE(response.response.body.find("M_UNKNOWN_TOKEN") != std::string::npos);
+            }
         }
     }
-}
 }
 
 // --- POST /_matrix/client/v3/logout/all ---------------------------------------
@@ -6820,15 +6819,15 @@ SCENARIO("PUT /directory/room/{alias} maps an alias to a room", "[conformance][c
                 started.runtime, {"PUT", "/_matrix/client/v3/directory/room/%23myalias%3Aexample.org", token,
                                   R"({"room_id":")" + room_id + R"("})"});
 
-        THEN("the server returns 200 with an empty JSON object")
-        {
-            // Spec MUST: 200 {} on success.
-            REQUIRE(response.response.status == 200U);
-            auto const body = parse_object(response.response.body);
-            REQUIRE(body.empty());
+            THEN("the server returns 200 with an empty JSON object")
+            {
+                // Spec MUST: 200 {} on success.
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+                REQUIRE(body.empty());
+            }
         }
     }
-}
 }
 
 // --- DELETE /_matrix/client/v3/directory/room/{roomAlias} --------------------
@@ -8192,15 +8191,15 @@ SCENARIO("POST /rooms/{roomId}/read_markers returns 200 empty object",
                 started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/read_markers", token,
                                   R"({"m.read":")" + event_id + R"("})"});
 
-        THEN("the server returns 200 with an empty JSON object")
-        {
-            // Spec MUST: 200 {} on success.
-            REQUIRE(response.response.status == 200U);
-            auto const body = parse_object(response.response.body);
-            REQUIRE(body.empty());
+            THEN("the server returns 200 with an empty JSON object")
+            {
+                // Spec MUST: 200 {} on success.
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+                REQUIRE(body.empty());
+            }
         }
     }
-}
 }
 
 // --- POST /_matrix/client/v3/rooms/{roomId}/receipt/{receiptType}/{eventId} --
@@ -10528,7 +10527,6 @@ SCENARIO("DELETE /user/{userId}/rooms/{roomId}/tags/{tag} conformance")
 // 15     Event relationships — GET /v1/rooms/{roomId}/relations/{eventId}
 // ============================================================================
 // Spec: Matrix v1.18 §15 GET /_matrix/client/v1/rooms/{roomId}/relations/{eventId}[/{relType}[/{eventType}]]
-//       IMPLEMENTATION GAP: not yet implemented. Must return 404 M_UNRECOGNIZED.
 
 SCENARIO("GET /v1/rooms/{roomId}/relations/{eventId} conformance")
 {
@@ -10539,18 +10537,18 @@ SCENARIO("GET /v1/rooms/{roomId}/relations/{eventId} conformance")
         auto const token = logged_in_token(started.runtime);
         auto const room_id = create_room(started.runtime, token);
 
-        WHEN("GET /v1/rooms/{roomId}/relations/{eventId} is called")
+        WHEN("GET /v1/rooms/{roomId}/relations/{eventId} is called for an unknown parent event")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"GET", "/_matrix/client/v1/rooms/" + room_id + "/relations/$event_id", token, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED")
+            THEN("the server returns 404 M_NOT_FOUND")
             {
                 REQUIRE(response.response.status == 404);
                 auto const body = parse_object(response.response.body);
                 auto const* err = string_member(body, "errcode");
                 REQUIRE(err != nullptr);
-                REQUIRE(*err == "M_UNRECOGNIZED");
+                REQUIRE(*err == "M_NOT_FOUND");
             }
         }
     }
@@ -10565,19 +10563,19 @@ SCENARIO("GET /v1/rooms/{roomId}/relations/{eventId}/{relType} conformance")
         auto const token = logged_in_token(started.runtime);
         auto const room_id = create_room(started.runtime, token);
 
-        WHEN("GET /v1/rooms/{roomId}/relations/{eventId}/m.replace is called")
+        WHEN("GET /v1/rooms/{roomId}/relations/{eventId}/m.replace is called for an unknown parent event")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
                 {"GET", "/_matrix/client/v1/rooms/" + room_id + "/relations/$event_id/m.replace", token, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED")
+            THEN("the server returns 404 M_NOT_FOUND")
             {
                 REQUIRE(response.response.status == 404);
                 auto const body = parse_object(response.response.body);
                 auto const* err = string_member(body, "errcode");
                 REQUIRE(err != nullptr);
-                REQUIRE(*err == "M_UNRECOGNIZED");
+                REQUIRE(*err == "M_NOT_FOUND");
             }
         }
     }
@@ -10592,7 +10590,7 @@ SCENARIO("GET /v1/rooms/{roomId}/relations/{eventId}/{relType}/{eventType} confo
         auto const token = logged_in_token(started.runtime);
         auto const room_id = create_room(started.runtime, token);
 
-        WHEN("GET /v1/rooms/{roomId}/relations/{eventId}/m.annotation/m.reaction is called")
+        WHEN("GET /v1/rooms/{roomId}/relations/{eventId}/m.annotation/m.reaction is called for an unknown parent event")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
@@ -10601,13 +10599,13 @@ SCENARIO("GET /v1/rooms/{roomId}/relations/{eventId}/{relType}/{eventType} confo
                  token,
                  {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED")
+            THEN("the server returns 404 M_NOT_FOUND")
             {
                 REQUIRE(response.response.status == 404);
                 auto const body = parse_object(response.response.body);
                 auto const* err = string_member(body, "errcode");
                 REQUIRE(err != nullptr);
-                REQUIRE(*err == "M_UNRECOGNIZED");
+                REQUIRE(*err == "M_NOT_FOUND");
             }
         }
     }
@@ -11617,7 +11615,6 @@ SCENARIO("GET /rooms/{roomId}/context/{eventId} conformance")
         }
     }
 }
-
 
 SCENARIO("GET /initialSync conformance")
 {

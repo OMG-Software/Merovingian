@@ -313,8 +313,7 @@ SCENARIO("media_disposition_name returns a distinct non-empty string for every d
 // media_mime_type_is_allowed
 // ---------------------------------------------------------------------------
 
-SCENARIO("media_mime_type_is_allowed correctly gates MIME types against the allow-list",
-         "[media][security][mime]")
+SCENARIO("media_mime_type_is_allowed correctly gates MIME types against the allow-list", "[media][security][mime]")
 {
     GIVEN("a policy with an explicit MIME allow-list")
     {
@@ -335,6 +334,25 @@ SCENARIO("media_mime_type_is_allowed correctly gates MIME types against the allo
             {
                 REQUIRE_FALSE(merovingian::media::media_mime_type_is_allowed(policy, "application/pdf"));
                 REQUIRE_FALSE(merovingian::media::media_mime_type_is_allowed(policy, ""));
+            }
+        }
+    }
+
+    GIVEN("the default server allow-list including application/octet-stream")
+    {
+        auto const policy = merovingian::media::MediaUploadPolicy{
+            1024U,
+            {"image/png", "image/jpeg", "image/gif", "text/plain", "application/pdf", "application/octet-stream"},
+            true,
+            true,
+            true,
+        };
+
+        WHEN("an encrypted attachment MIME type is checked")
+        {
+            THEN("application/octet-stream is accepted")
+            {
+                REQUIRE(merovingian::media::media_mime_type_is_allowed(policy, "application/octet-stream"));
             }
         }
     }
@@ -374,8 +392,7 @@ SCENARIO("evaluate_media_upload rejects when the policy has no size limit config
     }
 }
 
-SCENARIO("evaluate_media_upload rejects a zero-byte upload",
-         "[media][security][upload][error]")
+SCENARIO("evaluate_media_upload rejects a zero-byte upload", "[media][security][upload][error]")
 {
     GIVEN("a policy and a request with byte_size == 0")
     {
@@ -485,8 +502,7 @@ SCENARIO("evaluate_media_upload rejects (not quarantines) scanner failures when 
 // remote_media_fetch_policy — uncovered branch paths
 // ---------------------------------------------------------------------------
 
-SCENARIO("remote_media_fetch_policy rejects an invalid origin server name",
-         "[media][security][remote][error]")
+SCENARIO("remote_media_fetch_policy rejects an invalid origin server name", "[media][security][remote][error]")
 {
     GIVEN("a fetch request whose origin_server has no dot")
     {
@@ -511,8 +527,7 @@ SCENARIO("remote_media_fetch_policy rejects an invalid origin server name",
     }
 }
 
-SCENARIO("remote_media_fetch_policy rejects when resolved_host is empty",
-         "[media][security][remote][error]")
+SCENARIO("remote_media_fetch_policy rejects when resolved_host is empty", "[media][security][remote][error]")
 {
     GIVEN("a fetch request with an empty resolved_host")
     {
@@ -566,8 +581,7 @@ SCENARIO("remote_media_fetch_policy allows private addresses when SSRF blocking 
 // admin_quarantine_policy — uncovered branch paths
 // ---------------------------------------------------------------------------
 
-SCENARIO("admin_quarantine_policy rejects an invalid admin user ID",
-         "[media][security][quarantine][error]")
+SCENARIO("admin_quarantine_policy rejects an invalid admin user ID", "[media][security][quarantine][error]")
 {
     GIVEN("a quarantine request with a user ID that has no '@' or ':'")
     {
@@ -590,8 +604,7 @@ SCENARIO("admin_quarantine_policy rejects an invalid admin user ID",
     }
 }
 
-SCENARIO("admin_quarantine_policy rejects an invalid media ID",
-         "[media][security][quarantine][error]")
+SCENARIO("admin_quarantine_policy rejects an invalid media ID", "[media][security][quarantine][error]")
 {
     GIVEN("a quarantine request with a media_id containing a path traversal sequence")
     {
