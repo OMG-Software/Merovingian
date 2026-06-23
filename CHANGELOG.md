@@ -4,6 +4,9 @@
 - **feat(client-server): implement Matrix room tag endpoints:** `GET/PUT/DELETE /_matrix/client/v3/user/{userId}/rooms/{roomId}/tags[/{tag}]` is now wired for joined members, storing tags as per-user/per-room `m.tag` room account data. `PUT` accepts an empty body or `{ "order": <double> }`; `DELETE` removes a tag; `GET` returns the spec-shaped `{ "tags": { "<tag>": { ... } } }` map.
 - **feat(canonicaljson): add general JSON parser/serializer with `double` support:** `canonicaljson::parse_json()` parses arbitrary Matrix client JSON (using yyjson) into a new `canonicaljson::Value::double_` alternative, and the serializer emits doubles with shortest round-trippable output. This lets room account data such as `m.tag` contain non-integer values without breaking the signing-focused canonical JSON pipeline, which still rejects non-integer numbers.
 
+### Fixed
+- **ci: fix coverage and sanitizer jobs on the new branch:** `gcovr` now runs with `--gcov-ignore-parse-errors` so clang-generated branch-heavy `.gcov` output for `client_server.cpp` no longer aborts coverage report generation. The ASan/UBSan job now sets `MESON_TEST_TIMEOUT_MULTIPLIER=3` so the seccomp/SQLite integration test is not killed by the default 600 s timeout under sanitizer-induced slowdown.
+
 ## 0.9.17
 
 ### Added

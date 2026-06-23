@@ -72,6 +72,7 @@ jobs:
           gcovr \
             --root . \
             --gcov-executable "llvm-cov gcov" \
+            --gcov-ignore-parse-errors \
             --filter 'src/' \
             --filter 'include/merovingian/' \
             --exclude 'src/main.cpp' \
