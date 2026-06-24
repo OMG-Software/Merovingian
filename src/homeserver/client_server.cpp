@@ -3034,6 +3034,17 @@ namespace
             request.filter.has_value() ? sync::parse_filter_argument(*request.filter) : sync::SyncFilter{};
         auto& store = rt.homeserver.database.persistent_store;
 
+        // Recover from a counter rollback: if the client's since-token is
+        // ahead of the server's sync_stream_id (for example because typing/
+        // receipts advanced the in-memory counter before the watermark table
+        // existed), advance the counter to the client's position so that future
+        // ephemeral events get IDs the client will accept.
+        if (since_sync_stream_id > 0U && !database::ensure_sync_stream_id_ahead_of(store, since_sync_stream_id))
+        {
+            return DispatchResult{
+                DispatchResult::Status::complete, err(500U, "M_UNKNOWN", "unable to advance sync stream counter"), {}};
+        }
+
         // Long-poll: when the caller passes `timeout` and there's nothing
         // new to deliver, block until the SyncNotifier fires or the timeout
         // expires. The check is "is anything past since visible?"; we wake

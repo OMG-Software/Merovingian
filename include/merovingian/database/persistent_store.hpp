@@ -576,6 +576,12 @@ auto restore_sync_stream_id(PersistentStore& store) -> void;
 // sync-surface ID allocation must flow through this helper so a restart
 // cannot roll the counter backward behind a client's since-token.
 [[nodiscard]] auto allocate_sync_stream_id(PersistentStore& store) -> std::uint64_t;
+// If `since_sync_stream_id` is greater than the server's current counter,
+// advance the counter to that value and persist it. This recovers live
+// deployments where the in-memory counter reached a higher value than the
+// persisted watermark (for example, after adding the watermark table to a
+// database whose typing/receipt surfaces advanced the counter).
+[[nodiscard]] auto ensure_sync_stream_id_ahead_of(PersistentStore& store, std::uint64_t since_sync_stream_id) -> bool;
 [[nodiscard]] auto sensitive_values_are_redacted(PersistentStore const& store) noexcept -> bool;
 
 namespace detail

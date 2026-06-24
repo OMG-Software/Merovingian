@@ -74,6 +74,16 @@ remaining work before PostgreSQL-backed production operation.
   and is updated by `database::allocate_sync_stream_id()` before the ID is
   used for ephemeral events such as typing notifications and read receipts. This
   prevents the monotonic sync stream counter from rolling back across restarts.
+- `database::restore_sync_stream_id()` writes the highest `sync_stream_id` found
+  in durable rows (account data, to-device messages, device-list changes,
+  presence) into the watermark on startup, so fresh upgrades start from the
+  maximum persisted value rather than the table default.
+- `/sync` calls `database::ensure_sync_stream_id_ahead_of()` when the client's
+  `since` token is ahead of the server's counter. This recovers live deployments
+  whose counter rolled back below a stored token (for example, when the watermark
+  table did not yet exist and ephemeral typing/receipt events advanced the
+  in-memory counter), ensuring the next ephemeral event gets an ID the client
+  will accept.
 - Offline `merovingian-db-migrate` planning scaffold.
 - Database `runtime` and `migration` role separation.
 - Runtime hydration for users, sessions, rooms, memberships, events, client
