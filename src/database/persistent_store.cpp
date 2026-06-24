@@ -2129,6 +2129,17 @@ namespace
     return it == store.room_aliases.end() ? std::nullopt : std::optional<PersistentRoomAlias>{*it};
 }
 
+[[nodiscard]] auto persist_sync_stream_watermark(PersistentStore& store, std::uint64_t watermark) -> bool
+{
+    return record_and_persist(
+        store, record_statement("upsert_sync_stream_watermark",
+                                "INSERT INTO sync_stream_watermark (singleton, watermark) VALUES (1, $1) "
+                                "ON CONFLICT (singleton) DO UPDATE SET watermark = excluded.watermark",
+                                {
+                                    {std::to_string(watermark), false}
+    }));
+}
+
 auto restore_sync_stream_id(PersistentStore& store) -> void
 {
     auto observed = store.next_sync_stream_id;
@@ -2157,6 +2168,11 @@ auto restore_sync_stream_id(PersistentStore& store) -> void
         consider(row.stream_id);
     }
     store.next_sync_stream_id = observed;
+    // Persist the floor so the watermark reflects the highest sync_stream_id
+    // found in durable rows. This prevents fresh upgrades from starting the
+    // counter at the table default ('0') and keeps restarts monotonic even if
+    // no new sync-surface allocation happens immediately after startup.
+    std::ignore = persist_sync_stream_watermark(store, observed);
 }
 
 [[nodiscard]] auto allocate_sync_stream_id(PersistentStore& store) -> std::uint64_t
@@ -2165,14 +2181,23 @@ auto restore_sync_stream_id(PersistentStore& store) -> void
     auto const new_id = store.next_sync_stream_id;
     // Persist the new high-water mark immediately so ephemeral sync surfaces
     // (typing, receipts) cannot roll the counter backward across a restart.
-    std::ignore = record_and_persist(
-        store, record_statement("upsert_sync_stream_watermark",
-                                "INSERT INTO sync_stream_watermark (singleton, watermark) VALUES (1, $1) "
-                                "ON CONFLICT (singleton) DO UPDATE SET watermark = excluded.watermark",
-                                {
-                                    {std::to_string(new_id), false}
-    }));
+    std::ignore = persist_sync_stream_watermark(store, new_id);
     return new_id;
+}
+
+[[nodiscard]] auto ensure_sync_stream_id_ahead_of(PersistentStore& store, std::uint64_t since_sync_stream_id) -> bool
+{
+    if (since_sync_stream_id <= store.next_sync_stream_id)
+    {
+        return true;
+    }
+    // The client presents a since-token whose sync_stream_id exceeds our
+    // current counter. This can happen when previously-ephemeral surfaces
+    // (typing, receipts) advanced the in-memory counter before the watermark
+    // table existed. Advance the counter to the client's position so the next
+    // ephemeral event gets an ID strictly greater than the since token.
+    store.next_sync_stream_id = since_sync_stream_id;
+    return persist_sync_stream_watermark(store, store.next_sync_stream_id);
 }
 
 [[nodiscard]] auto store_filter(PersistentStore& store, PersistentFilter filter) -> bool

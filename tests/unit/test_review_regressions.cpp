@@ -885,7 +885,13 @@ SCENARIO("SQLite persistent transactions roll back failed statement groups",
             THEN("the first insert is rolled back with the failing insert")
             {
                 REQUIRE_FALSE(committed);
-                REQUIRE(store.prepared_statements.empty());
+                // `restore_sync_stream_id()` may have persisted the sync-stream watermark
+                // on startup; any such housekeeping statement is unrelated to this transaction.
+                auto const transaction_statements = std::ranges::count_if(
+                    store.prepared_statements, [](merovingian::database::PreparedStatement const& statement) {
+                        return statement.name != "upsert_sync_stream_watermark";
+                    });
+                REQUIRE(transaction_statements == 0U);
                 REQUIRE(reopened.store.rooms.empty());
             }
         }

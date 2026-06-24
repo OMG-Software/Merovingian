@@ -10,6 +10,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -1079,7 +1080,13 @@ SCENARIO("Persistent store transactions commit all rows or no rows", "[database]
             THEN("the successful first statement is rolled back with the failed statement")
             {
                 REQUIRE_FALSE(committed);
-                REQUIRE(store.prepared_statements.empty());
+                // `restore_sync_stream_id()` may have persisted the sync-stream watermark
+                // on startup; any such housekeeping statement is unrelated to this transaction.
+                auto const transaction_statements = std::ranges::count_if(
+                    store.prepared_statements, [](merovingian::database::PreparedStatement const& statement) {
+                        return statement.name != "upsert_sync_stream_watermark";
+                    });
+                REQUIRE(transaction_statements == 0U);
                 REQUIRE(reopened.store.rooms.empty());
             }
         }
@@ -2039,6 +2046,68 @@ SCENARIO("Sync stream watermark prevents sync-stream id rollback across SQLite r
                 sqlite3_finalize(statement);
                 sqlite3_close(raw);
                 REQUIRE(watermark == next_id);
+            }
+        }
+
+        std::filesystem::remove(sqlite_path);
+    }
+}
+
+SCENARIO("ensure_sync_stream_id_ahead_of recovers from a counter rollback",
+         "[database][persistence][sync-stream][watermark][regression]")
+{
+    GIVEN("a SQLite persistent store whose watermark is lower than a client's since-token")
+    {
+        auto const sqlite_path = unique_sqlite_path();
+        std::filesystem::remove(sqlite_path);
+
+        {
+            auto opened = merovingian::database::open_sqlite_persistent_store(sqlite_path.string());
+            REQUIRE(opened.ok);
+            auto& store = opened.store;
+
+            // Push the watermark up to a known value.
+            REQUIRE(merovingian::database::allocate_sync_stream_id(store) == 1U);
+            REQUIRE(merovingian::database::allocate_sync_stream_id(store) == 2U);
+            REQUIRE(merovingian::database::allocate_sync_stream_id(store) == 3U);
+        }
+
+        WHEN("the store is reopened and a client presents a since-token ahead of the watermark")
+        {
+            auto reopened = merovingian::database::open_sqlite_persistent_store(sqlite_path.string());
+            REQUIRE(reopened.ok);
+            auto& store = reopened.store;
+            REQUIRE(store.next_sync_stream_id == 3U);
+
+            auto const client_since = std::uint64_t{10U};
+            REQUIRE(merovingian::database::ensure_sync_stream_id_ahead_of(store, client_since));
+
+            THEN("the counter advances to the client's position and the watermark is persisted")
+            {
+                REQUIRE(store.next_sync_stream_id == client_since);
+
+                sqlite3* raw = nullptr;
+                REQUIRE(sqlite3_open(sqlite_path.string().c_str(), &raw) == SQLITE_OK);
+                auto const* select_sql = "SELECT watermark FROM sync_stream_watermark WHERE singleton = 1";
+                sqlite3_stmt* statement = nullptr;
+                REQUIRE(sqlite3_prepare_v2(raw, select_sql, -1, &statement, nullptr) == SQLITE_OK);
+                auto watermark = std::uint64_t{0U};
+                if (sqlite3_step(statement) == SQLITE_ROW)
+                {
+                    auto const* text = reinterpret_cast<char const*>(sqlite3_column_text(statement, 0));
+                    if (text != nullptr)
+                    {
+                        watermark = static_cast<std::uint64_t>(std::stoull(text));
+                    }
+                }
+                sqlite3_finalize(statement);
+                sqlite3_close(raw);
+                REQUIRE(watermark == client_since);
+            }
+
+            THEN("the next allocated sync-stream id is strictly greater than the client's since-token")
+            {
+                REQUIRE(merovingian::database::allocate_sync_stream_id(store) == client_since + 1U);
             }
         }
 
