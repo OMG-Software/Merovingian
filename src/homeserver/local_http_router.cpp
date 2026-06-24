@@ -1520,7 +1520,8 @@ namespace
             return federation::build_get_missing_events_response(rt->database.persistent_store, room_id, body);
         };
 
-        runtime.federation.space_hierarchy_provider = [rt](std::string_view room_id, bool suggested_only) -> std::string {
+        runtime.federation.space_hierarchy_provider = [rt](std::string_view room_id,
+                                                           bool suggested_only) -> std::string {
             return build_federation_space_hierarchy_response(*rt, room_id, suggested_only);
         };
 

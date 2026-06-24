@@ -371,13 +371,13 @@ auto hydrate_local_database(LocalDatabase& database) -> void
 
     log_diagnostic("database.hydrated",
                    {
-                       {"rooms_total",       std::to_string(database.rooms.size()),                       false},
-                       {"memberships_total", std::to_string(database.persistent_store.memberships.size()),    false},
+                       {"rooms_total",       std::to_string(database.rooms.size()),                         false},
+                       {"memberships_total", std::to_string(database.persistent_store.memberships.size()),  false},
                        {"users_total",       std::to_string(database.users.size()),                         false},
                        {"sessions_total",    std::to_string(database.sessions.size()),                      false},
                        {"events_total",      std::to_string(database.persistent_store.events.size()),       false},
                        {"sync_stream_id",    std::to_string(database.persistent_store.next_sync_stream_id), false}
-                   },
+    },
                    observability::LogEventSeverity::info);
 
     // Repair state entries that older code failed to create for events with
@@ -461,8 +461,9 @@ auto start_runtime(config::Config const& config, database::SchemaState existing_
         });
         return {false, "no runtime listeners configured", {}};
     }
-    log_diagnostic("start.listeners_ready", {
-                                                {"listener_count", std::to_string(runtime.listeners.count()), false}
+    log_diagnostic("start.listeners_ready",
+                   {
+                       {"listener_count", std::to_string(runtime.listeners.count()), false}
     },
                    observability::LogEventSeverity::info);
 
@@ -521,9 +522,10 @@ auto start_runtime(config::Config const& config, database::SchemaState existing_
         return platform::apply_runtime_hardening_controls(platform::default_portable_hardening_profile());
 #endif
     }();
-    log_diagnostic("start.hardening_controls", {
-                                                   {"accepted", hardening_controls.accepted ? "true" : "false", false},
-                                                   {"reason",   hardening_controls.reason,                      false},
+    log_diagnostic("start.hardening_controls",
+                   {
+                       {"accepted", hardening_controls.accepted ? "true" : "false", false},
+                       {"reason",   hardening_controls.reason,                      false},
     },
                    observability::LogEventSeverity::info);
     runtime.hardening = platform::run_startup_hardening_self_check();

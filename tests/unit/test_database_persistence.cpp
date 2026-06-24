@@ -1550,8 +1550,7 @@ SCENARIO("Physical migration files load into validated migration plans", "[datab
     }
 }
 
-SCENARIO("Checked-in migrations cover the v1 bootstrap and v2 sync-stream watermark",
-         "[database][migration][files]")
+SCENARIO("Checked-in migrations cover the v1 bootstrap and v2 sync-stream watermark", "[database][migration][files]")
 {
     GIVEN("the repository migration directory")
     {
@@ -1568,8 +1567,7 @@ SCENARIO("Checked-in migrations cover the v1 bootstrap and v2 sync-stream waterm
                 REQUIRE(loaded.steps.size() == 2U);
                 REQUIRE(loaded.steps[0].version == 1U);
                 REQUIRE(loaded.steps[0].name == "initial_schema");
-                REQUIRE(loaded.steps[0].statements.size() ==
-                        merovingian::database::initial_schema_tables().size());
+                REQUIRE(loaded.steps[0].statements.size() == merovingian::database::initial_schema_tables().size());
                 REQUIRE(loaded.steps[1].version == 2U);
                 REQUIRE(loaded.steps[1].name == "sync_stream_watermark");
                 REQUIRE(loaded.steps[1].statements.size() == 1U);
@@ -2002,8 +2000,8 @@ SCENARIO("Sync stream watermark prevents sync-stream id rollback across SQLite r
                 store, {"@alice:example.org", "!room:example.org", "m.tag", R"({\"tags\":{}})", 0U}));
             REQUIRE(merovingian::database::record_device_list_change(
                 store, {0U, "@alice:example.org", "@bob:example.org", "changed"}));
-            REQUIRE(merovingian::database::upsert_presence(
-                store, {0U, "@alice:example.org", "online", "here", 0, true}));
+            REQUIRE(
+                merovingian::database::upsert_presence(store, {0U, "@alice:example.org", "online", "here", 0, true}));
 
             REQUIRE(store.next_sync_stream_id == 4U);
         }
@@ -2014,7 +2012,8 @@ SCENARIO("Sync stream watermark prevents sync-stream id rollback across SQLite r
             REQUIRE(reopened.ok);
             auto& store = reopened.store;
 
-            THEN("the restored counter is at least the previously persisted watermark and allocations continue monotonically")
+            THEN("the restored counter is at least the previously persisted watermark and allocations continue "
+                 "monotonically")
             {
                 REQUIRE(store.next_sync_stream_id >= 4U);
 

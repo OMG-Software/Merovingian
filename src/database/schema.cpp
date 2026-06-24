@@ -34,10 +34,10 @@ namespace
                                          "PRIMARY KEY (user_id, device_id)"                                            },
         SchemaTableDefinition{
                               "access_tokens",           "user_id TEXT NOT NULL, device_id TEXT NOT NULL, token_hash TEXT PRIMARY KEY, revoked TEXT NOT NULL, "
-                                       "expires_at TEXT NOT NULL DEFAULT ''"                            },
+            "expires_at TEXT NOT NULL DEFAULT ''"                                                                },
         SchemaTableDefinition{
                               "refresh_tokens",          "token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, device_id TEXT NOT NULL, revoked TEXT NOT NULL, "
-                                       "expires_at TEXT NOT NULL DEFAULT ''"                            },
+            "expires_at TEXT NOT NULL DEFAULT ''"                                                               },
         SchemaTableDefinition{"server_signing_keys",
                               "server_name TEXT NOT NULL, key_id TEXT NOT NULL, public_key TEXT NOT NULL, "
                               "valid_until_ts TEXT NOT NULL, secret_key TEXT, PRIMARY KEY (server_name, key_id)"                                               },
@@ -135,8 +135,8 @@ namespace
                               "user_id TEXT PRIMARY KEY, stream_id TEXT NOT NULL DEFAULT '0', presence TEXT NOT NULL "
                               "DEFAULT 'offline', status_msg TEXT NOT NULL DEFAULT '', last_active_ago TEXT NOT NULL "
                               "DEFAULT '0', currently_active TEXT NOT NULL DEFAULT 'false'"                                                                    },
-        SchemaTableDefinition{"sync_stream_watermark",
-                              "singleton INTEGER PRIMARY KEY CHECK (singleton = 1), watermark TEXT NOT NULL DEFAULT '0'"                                       },
+        SchemaTableDefinition{
+                              "sync_stream_watermark",   "singleton INTEGER PRIMARY KEY CHECK (singleton = 1), watermark TEXT NOT NULL DEFAULT '0'"            },
         SchemaTableDefinition{"profiles",                "user_id TEXT PRIMARY KEY, displayname TEXT NOT NULL DEFAULT '', "
                                           "avatar_url TEXT NOT NULL DEFAULT ''"                                       },
         SchemaTableDefinition{"client_txn_ids",

@@ -161,7 +161,7 @@ SCENARIO("Integrated client-server flow covers account 3PID request add list and
             REQUIRE(email_sid != nullptr);
 
             auto const add_body = std::string{R"({"client_secret":"secret123","sid":")"} + *email_sid +
-                                  R"(","auth":{"type":"m.login.password","password":"CorrectHorse7!"}})" ;
+                                  R"(","auth":{"type":"m.login.password","password":"CorrectHorse7!"}})";
             auto const add = merovingian::homeserver::handle_client_server_request(
                 runtime, {"POST", "/_matrix/client/v3/account/3pid/add", alice, add_body});
             auto const listed = merovingian::homeserver::handle_client_server_request(
@@ -215,7 +215,7 @@ SCENARIO("Integrated client-server flow rejects invalid and duplicate account 3P
                 {"POST", "/_matrix/client/v3/account/3pid/add", alice,
                  R"({"client_secret":"secret123","sid":"missing-session","auth":{"type":"m.login.password","password":"CorrectHorse7!"}})"});
             auto const add_body = std::string{R"({"client_secret":"secret123","sid":")"} + *email_sid +
-                                  R"(","auth":{"type":"m.login.password","password":"CorrectHorse7!"}})" ;
+                                  R"(","auth":{"type":"m.login.password","password":"CorrectHorse7!"}})";
             auto const alice_add = merovingian::homeserver::handle_client_server_request(
                 runtime, {"POST", "/_matrix/client/v3/account/3pid/add", alice, add_body});
             auto const duplicate_request = merovingian::homeserver::handle_client_server_request(
@@ -1166,11 +1166,8 @@ SCENARIO("Typing notifications are delivered via ephemeral events in /sync",
         {
             auto const typing_body = std::string{"{\"typing\":true,\"timeout\":30000}"};
             auto const typing = merovingian::homeserver::handle_client_server_request(
-                runtime,
-                {"PUT",
-                 "/_matrix/client/v3/rooms/" + room_id + "/typing/" + bob.user_id,
-                 bob.access_token,
-                 typing_body});
+                runtime, {"PUT", "/_matrix/client/v3/rooms/" + room_id + "/typing/" + bob.user_id, bob.access_token,
+                          typing_body});
             REQUIRE(typing.response.status == 200U);
 
             auto const alice_sync = merovingian::homeserver::handle_client_server_request(
@@ -1194,8 +1191,7 @@ SCENARIO("Typing notifications are delivered via ephemeral events in /sync",
                     auto const* event = std::get_if<merovingian::canonicaljson::Object>(&value.storage());
                     auto const* type = event == nullptr ? nullptr : string_member(*event, "type");
                     auto const* content = event == nullptr ? nullptr : object_member_as_object(*event, "content");
-                    auto const* user_ids =
-                        content == nullptr ? nullptr : object_member_as_array(*content, "user_ids");
+                    auto const* user_ids = content == nullptr ? nullptr : object_member_as_array(*content, "user_ids");
                     return type != nullptr && *type == "m.typing" && user_ids != nullptr &&
                            std::ranges::any_of(*user_ids, [&bob](merovingian::canonicaljson::Value const& id) {
                                auto const* text = std::get_if<std::string>(&id.storage());

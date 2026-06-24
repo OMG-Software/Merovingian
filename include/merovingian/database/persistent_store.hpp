@@ -421,8 +421,7 @@ struct PersistentStoreOpenResult final
 // the SQLite/PostgreSQL store hydration so the encoding stays consistent.
 [[nodiscard]] auto expires_at_text(std::optional<std::chrono::system_clock::time_point> const& expires_at)
     -> std::string;
-[[nodiscard]] auto parse_expires_at(std::string_view text)
-    -> std::optional<std::chrono::system_clock::time_point>;
+[[nodiscard]] auto parse_expires_at(std::string_view text) -> std::optional<std::chrono::system_clock::time_point>;
 
 [[nodiscard]] auto open_persistent_store(SchemaState existing_state = {}) -> PersistentStoreOpenResult;
 [[nodiscard]] auto open_sqlite_persistent_store(std::string const& path) -> PersistentStoreOpenResult;
@@ -437,8 +436,8 @@ struct PersistentStoreOpenResult final
 // change and mirrors it into the in-memory store. Returns false if the user is
 // not found. Does NOT revoke access tokens — per spec v1.18, locking and
 // suspending keep existing sessions intact and enforce via request-path gates.
-[[nodiscard]] auto set_user_account_state(PersistentStore& store, std::string_view user_id, bool suspended,
-                                          bool locked) -> bool;
+[[nodiscard]] auto set_user_account_state(PersistentStore& store, std::string_view user_id, bool suspended, bool locked)
+    -> bool;
 [[nodiscard]] auto store_device(PersistentStore& store, PersistentDevice device) -> bool;
 [[nodiscard]] auto store_access_token(PersistentStore& store, PersistentAccessToken token) -> bool;
 [[nodiscard]] auto store_refresh_token(PersistentStore& store, PersistentRefreshToken token) -> bool;
