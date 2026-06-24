@@ -7825,3 +7825,87 @@ SCENARIO("Sliding sync repeated pos poll suppresses room re-inclusion from unrea
         }
     }
 }
+
+// ─── MSC4186 sliding sync long-poll wakes on typing/receipt in joined room ─────
+// The spurious-wakeup suppression code only considered device-list changes,
+// to-device messages, and account-data as relevant sync_stream_id advances.  That
+// meant typing notifications and read receipts in the user's joined rooms
+// advanced the stream id without waking the long-poll, so ElementX stayed stale.
+
+SCENARIO("Sliding sync long-poll returns when a typing notification is posted in a joined room",
+         "[sync][sliding-sync][msc4186][typing]")
+{
+    // Spec: MSC4186 §long-polling — the server must return promptly when data
+    // relevant to the connection changes.  A typing notification in a joined
+    // room is relevant data.
+    GIVEN("alice and bob sharing a room, with alice's sliding sync parked at pos P")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const alice_reg = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/register", {}, registration_json("alice", "CorrectHorse7!")});
+        REQUIRE(alice_reg.response.status == 200U);
+        auto const alice_token = login_token(alice_reg.response.body);
+
+        auto const bob_reg = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/register", {}, registration_json("bob", "CorrectHorse8!")});
+        REQUIRE(bob_reg.response.status == 200U);
+        auto const bob_token = login_token(bob_reg.response.body);
+
+        auto const create_resp = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", alice_token, R"({"preset":"public_chat"})"});
+        REQUIRE(create_resp.response.status == 200U);
+        auto const rid = room_id(create_resp.response.body);
+
+        auto const join_url = "/_matrix/client/v3/rooms/" + percent_encode_room_identifier(rid) + "/join";
+        auto const bob_join =
+            merovingian::homeserver::handle_client_server_request(runtime, {"POST", join_url, bob_token, "{}"});
+        REQUIRE(bob_join.response.status == 200U);
+
+        // Alice does an initial sliding sync (timeout=0) to seed connection state.
+        auto const init_resp = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST", "/_matrix/client/unstable/org.matrix.msc4186/sync?timeout=0", alice_token,
+             R"({"conn_id":"typing-wake","lists":{"0":{"ranges":[[0,19]],"required_state":[],"timeline_limit":1}},"extensions":{"typing":{"enabled":true}}})"});
+        REQUIRE(init_resp.response.status == 200U);
+        auto const pos_p = extract_pos(init_resp.response.body);
+        REQUIRE_FALSE(pos_p.empty());
+
+        WHEN("bob posts a typing notification in the shared room")
+        {
+            auto const typing_url =
+                "/_matrix/client/v3/rooms/" + percent_encode_room_identifier(rid) + "/typing/@bob:example.org";
+            auto const typing_resp = merovingian::homeserver::handle_client_server_request(
+                runtime, {"PUT", typing_url, bob_token, R"({"typing":true,"timeout":30000})"});
+            REQUIRE(typing_resp.response.status == 200U);
+
+            THEN("alice's sliding sync long-poll returns complete with the typing extension")
+            {
+                auto const inc_url = "/_matrix/client/unstable/org.matrix.msc4186/sync?pos=" + pos_p + "&timeout=5000";
+                auto const result = merovingian::homeserver::handle_client_server_request(
+                    runtime,
+                    {"POST", inc_url, alice_token,
+                     R"({"conn_id":"typing-wake","lists":{"0":{"ranges":[[0,19]],"required_state":[],"timeline_limit":1}},"extensions":{"typing":{"enabled":true}}})"},
+                    true);
+
+                REQUIRE(result.status == merovingian::homeserver::DispatchResult::Status::complete);
+                REQUIRE(result.response.status == 200U);
+
+                auto const body = parse_object(result.response.body);
+                auto const* ext = object_member_as_object(body, "extensions");
+                REQUIRE(ext != nullptr);
+                auto const* typing_obj = object_member_as_object(*ext, "typing");
+                REQUIRE(typing_obj != nullptr);
+                auto const* rooms = object_member_as_object(*typing_obj, "rooms");
+                REQUIRE(rooms != nullptr);
+                auto const room_found =
+                    std::ranges::any_of(*rooms, [&rid](merovingian::canonicaljson::ObjectMember const& m) {
+                        return m.key == rid;
+                    });
+                REQUIRE(room_found);
+            }
+        }
+    }
+}

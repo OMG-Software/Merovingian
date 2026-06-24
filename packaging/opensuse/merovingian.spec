@@ -113,6 +113,7 @@ fi
 %changelog
 * Tue Jun 23 2026 James Chapman <claude@ping.me.uk> - 0.9.19-1
 - fix(sync): stop ElementX sliding-sync loop caused by repeated room re-inclusion
+- fix(sync): wake MSC4186 sliding sync long-poll on typing and read receipts in joined rooms
 
 * Mon Jun 22 2026 James Chapman <claude@ping.me.uk> - 0.9.18-1
 - feat(client-server): implement room tag endpoints and general JSON double support

@@ -2438,6 +2438,16 @@ namespace
         });
     }
 
+    // True when the persistent store records a "join" membership for the user in
+    // the given room.  Used by handlers that only have a room_id, not a LocalRoom.
+    [[nodiscard]] auto user_is_joined(database::PersistentStore const& store, std::string_view room_id,
+                                      std::string_view user) noexcept -> bool
+    {
+        return std::ranges::any_of(store.memberships, [&](database::PersistentMembership const& m) {
+            return m.room_id == room_id && m.user_id == user && m.membership == "join";
+        });
+    }
+
     // Keyed by (room_id, event_type, state_key) → event_id. Built once per request
     // so all state lookups within the same response are O(log n) rather than O(n).
     using StateIndex = std::map<std::tuple<std::string_view, std::string_view, std::string_view>, std::string_view>;
@@ -3533,6 +3543,10 @@ namespace
                 //   - device-list changes where this user is the observer
                 //   - to-device messages addressed to this device
                 //   - account-data rows owned by this user
+                //   - receipts or typing updates in any room the user has joined
+                // Typing/receipts were previously ignored, so a typing event or
+                // read receipt in the user's room would advance sync_stream_id
+                // without waking this long-poll, leaving ElementX stale.
                 bool const has_relevant_dlc = std::ranges::any_of(store.device_list_changes, [&](auto const& c) {
                     return c.observer_user_id == user && c.stream_id > since_sync_stream_id;
                 });
@@ -3543,7 +3557,14 @@ namespace
                 bool const has_relevant_ad = std::ranges::any_of(store.account_data, [&](auto const& ad) {
                     return ad.user_id == user && ad.stream_id > since_sync_stream_id;
                 });
-                if (!has_relevant_dlc && !has_relevant_tdm && !has_relevant_ad)
+                bool const has_relevant_receipts = std::ranges::any_of(rt.homeserver.receipts, [&](auto const& r) {
+                    return r.stream_id > since_sync_stream_id && user_is_joined(store, r.room_id, user);
+                });
+                bool const has_relevant_typing = std::ranges::any_of(rt.homeserver.typing_users, [&](auto const& t) {
+                    return t.typing && t.stream_id > since_sync_stream_id && user_is_joined(store, t.room_id, user);
+                });
+                if (!has_relevant_dlc && !has_relevant_tdm && !has_relevant_ad && !has_relevant_receipts &&
+                    !has_relevant_typing)
                 {
                     // Advance the wait cursor past this irrelevant bump so the
                     // notifier must fire again before the next wakeup attempt.
@@ -3592,6 +3613,7 @@ namespace
         // ── Per-room responses ───────────────────────────────────────────────
 
         auto rooms_obj = canonicaljson::Object{};
+        auto rooms_skipped = std::size_t{0U};
         for (auto const& room_id : response_room_ids)
         {
             auto sub = sync::SlidingSyncRoomSubscription{};
@@ -3637,6 +3659,10 @@ namespace
             {
                 rooms_obj.push_back(json_member(room_id, sliding_sync_room_to_value(std::move(room))));
             }
+            else
+            {
+                ++rooms_skipped;
+            }
         }
 
         // ── Extensions ──────────────────────────────────────────────────────
@@ -3669,6 +3695,8 @@ namespace
             lists_obj.push_back(json_member(lname, json_obj(std::move(list_resp))));
         }
 
+        auto const rooms_in_response = rooms_obj.size();
+
         // ── Assemble response body ───────────────────────────────────────────
 
         auto response_obj = canonicaljson::Object{};
@@ -3682,13 +3710,15 @@ namespace
         auto const body = json_serialize(json_obj(std::move(response_obj)));
 
         log_diagnostic("sliding_sync.response", {
-                                                    {"actor",          std::string{user},                        false},
-                                                    {"device_id",      std::string{device_id},                   false},
-                                                    {"pos",            new_pos,                                  false},
-                                                    {"timeout_ms",     std::to_string(timeout_ms),               false},
-                                                    {"rooms_returned", std::to_string(response_room_ids.size()), false},
-                                                    {"rooms_seen",     std::to_string(conn.rooms_seen.size()),   false},
-                                                    {"lists_returned", std::to_string(list_results.size()),      false}
+                                                    {"actor",             std::string{user},                        false},
+                                                    {"device_id",         std::string{device_id},                   false},
+                                                    {"pos",               new_pos,                                  false},
+                                                    {"timeout_ms",        std::to_string(timeout_ms),               false},
+                                                    {"rooms_window",      std::to_string(response_room_ids.size()), false},
+                                                    {"rooms_in_response", std::to_string(rooms_in_response),        false},
+                                                    {"rooms_skipped",     std::to_string(rooms_skipped),            false},
+                                                    {"rooms_seen",        std::to_string(conn.rooms_seen.size()),   false},
+                                                    {"lists_returned",    std::to_string(list_results.size()),      false}
         });
 
         // ── Update connection state ──────────────────────────────────────────
