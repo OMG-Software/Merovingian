@@ -908,6 +908,20 @@ namespace
                 store.client_txn_ids.push_back({row[0], row[1], row[2], row[3], row[4]});
             }
         }
+
+        auto const watermark = query_rows(connection, "postgresql_load_sync_stream_watermark",
+                                          "SELECT watermark FROM sync_stream_watermark");
+        if (!watermark.ok)
+        {
+            return false;
+        }
+        for (auto const& row : watermark.rows)
+        {
+            if (!row.empty())
+            {
+                store.next_sync_stream_id = parse_u64(row[0]);
+            }
+        }
         return true;
     }
 

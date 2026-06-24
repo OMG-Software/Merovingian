@@ -566,11 +566,17 @@ enum class MembershipStoreResult
 // Sets `store.next_sync_stream_id` to the maximum stream_id observed
 // across every sync-surface row already loaded into memory (account_data,
 // room account_data, to_device_messages, device_list_changes,
-// presence_state). Backend hydration paths call this after populating
-// the in-memory mirrors so a process restart preserves the monotonic
-// invariant that next_sync_stream_id is strictly greater than every
-// stream id a client has ever seen.
+// presence_state) and the persisted `sync_stream_watermark` singleton.
+// Backend hydration paths call this after populating the in-memory mirrors
+// so a process restart preserves the monotonic invariant that
+// next_sync_stream_id is strictly greater than every stream id a client
+// has ever seen.
 auto restore_sync_stream_id(PersistentStore& store) -> void;
+// Atomically increments `store.next_sync_stream_id`, persists the new
+// value to the `sync_stream_watermark` singleton, and returns it. Every
+// sync-surface ID allocation must flow through this helper so a restart
+// cannot roll the counter backward behind a client's since-token.
+[[nodiscard]] auto allocate_sync_stream_id(PersistentStore& store) -> std::uint64_t;
 [[nodiscard]] auto sensitive_values_are_redacted(PersistentStore const& store) noexcept -> bool;
 
 namespace detail

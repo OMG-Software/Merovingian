@@ -369,6 +369,17 @@ auto hydrate_local_database(LocalDatabase& database) -> void
         }
     }
 
+    log_diagnostic("database.hydrated",
+                   {
+                       {"rooms_total",       std::to_string(database.rooms.size()),                       false},
+                       {"memberships_total", std::to_string(database.persistent_store.memberships.size()),    false},
+                       {"users_total",       std::to_string(database.users.size()),                         false},
+                       {"sessions_total",    std::to_string(database.sessions.size()),                      false},
+                       {"events_total",      std::to_string(database.persistent_store.events.size()),       false},
+                       {"sync_stream_id",    std::to_string(database.persistent_store.next_sync_stream_id), false}
+                   },
+                   observability::LogEventSeverity::info);
+
     // Repair state entries that older code failed to create for events with
     // state_key="" (m.room.create, m.room.join_rules, m.room.power_levels, …).
     // Without these entries build_pdu_auth_event_map cannot find the create event

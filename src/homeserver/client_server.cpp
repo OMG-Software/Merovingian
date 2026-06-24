@@ -3060,6 +3060,14 @@ namespace
         auto join_members = canonicaljson::Object{};
         auto join_count = std::size_t{0U};
 
+        log_diagnostic("sync.request",
+                       {{"user",                    std::string{user},                              false},
+                        {"since_event_ordering",    std::to_string(since_ordering),                 false},
+                        {"since_sync_stream_id",    std::to_string(since_sync_stream_id),           false},
+                        {"sync_stream_upper_bound", std::to_string(sync_stream_upper_bound),          false},
+                        {"filter_present",          filter.present ? "true" : "false",            false},
+                        {"rooms_total",             std::to_string(rt.homeserver.database.rooms.size()), false}});
+
         for (auto const& room : rt.homeserver.database.rooms)
         {
             if (join_count >= rt.limits.max_sync_rooms || !joined(room, user))
@@ -3231,6 +3239,14 @@ namespace
                 }
             }
         }
+
+        log_diagnostic("sync.response",
+                       {{"user",                std::string{user},                              false},
+                        {"join_count",          std::to_string(join_count),                     false},
+                        {"invite_count",        std::to_string(invite_count),                   false},
+                        {"leave_count",         std::to_string(leave_count),                    false},
+                        {"knock_count",         std::to_string(knock_count),                    false},
+                        {"max_observed_sync_id", std::to_string(max_observed_sync_stream_id),   false}});
 
         auto to_device_events = build_to_device_events_array(store, user, device_id, since_sync_stream_id,
                                                              sync_stream_upper_bound, max_observed_sync_stream_id);
@@ -8291,8 +8307,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                         });
                     if (typing_it != rt.homeserver.typing_users.end())
                     {
-                        rt.homeserver.database.persistent_store.next_sync_stream_id += 1U;
-                        auto const stream_id = rt.homeserver.database.persistent_store.next_sync_stream_id;
+                        auto const stream_id = database::allocate_sync_stream_id(rt.homeserver.database.persistent_store);
                         typing_it->typing = false;
                         typing_it->stream_id = stream_id;
                         // Federate typing:false only if the room has remote members
@@ -8805,8 +8820,14 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     auto existing = std::ranges::find_if(rt.homeserver.typing_users, [&typing, user](auto const& t) {
                         return t.room_id == typing->room_id && t.user_id == *user;
                     });
-                    rt.homeserver.database.persistent_store.next_sync_stream_id += 1U;
-                    auto const stream_id = rt.homeserver.database.persistent_store.next_sync_stream_id;
+                    auto const stream_id = database::allocate_sync_stream_id(rt.homeserver.database.persistent_store);
+                    log_diagnostic("room.typing.stream_id",
+                                   {
+                                       {"actor",      *user,                          false},
+                                       {"room_id",    typing->room_id,                false},
+                                       {"stream_id",  std::to_string(stream_id),      false},
+                                       {"typing",     is_typing ? "true" : "false",   false}
+                    });
                     if (existing != rt.homeserver.typing_users.end())
                     {
                         existing->typing = is_typing;
@@ -9115,8 +9136,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 auto existing = std::ranges::find_if(rt.homeserver.receipts, [&](auto const& r) {
                     return r.room_id == room_id && r.user_id == *user && r.receipt_type == receipt_type;
                 });
-                rt.homeserver.database.persistent_store.next_sync_stream_id += 1U;
-                auto const stream_id = rt.homeserver.database.persistent_store.next_sync_stream_id;
+                auto const stream_id = database::allocate_sync_stream_id(rt.homeserver.database.persistent_store);
                 if (existing != rt.homeserver.receipts.end())
                 {
                     existing->event_id = event_id;
@@ -9247,8 +9267,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                         auto existing_receipt = std::ranges::find_if(rt.homeserver.receipts, [&](auto const& r) {
                             return r.room_id == room_id && r.user_id == *user && r.receipt_type == receipt_type;
                         });
-                        rt.homeserver.database.persistent_store.next_sync_stream_id += 1U;
-                        auto const stream_id = rt.homeserver.database.persistent_store.next_sync_stream_id;
+                        auto const stream_id = database::allocate_sync_stream_id(rt.homeserver.database.persistent_store);
                         if (existing_receipt != rt.homeserver.receipts.end())
                         {
                             existing_receipt->event_id = std::string{event_id};

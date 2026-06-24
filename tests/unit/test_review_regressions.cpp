@@ -713,7 +713,7 @@ SCENARIO("Migration application reapplies upgrade statements after downgrade", "
             {
                 REQUIRE(reapplied.ok);
                 REQUIRE(reapplied.state.version == merovingian::database::current_schema_version());
-                REQUIRE(reapplied.state.tables.size() == merovingian::database::initial_schema_tables().size());
+                REQUIRE(reapplied.state.tables.size() == merovingian::database::current_schema_tables().size());
             }
         }
     }

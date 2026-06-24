@@ -17,12 +17,13 @@ remaining work before PostgreSQL-backed production operation.
 - Contiguous upgrade and explicit downgrade migration-plan validation.
 - Initial schema deployed at version `1` in its final shape: 45 core
   tables covering every Matrix storage area from the project plan. There
-  are no live databases to upgrade, so historical per-version migrations
-  have been collapsed into the single `initial_schema` step. Until the
-  project reaches production-ready `v1.0.0`, pre-release schema changes are
-  folded into version `1` and no `ALTER TABLE` migration files are kept.
-  After `v1.0.0`, deployed databases become compatibility targets and schema
-  changes will add their own forward migrations.
+  were no live databases at that time, so historical per-version migrations
+  were collapsed into the single `initial_schema` step. Once live
+  pre-production deployments existed, subsequent schema changes started
+  receiving their own numbered migration files; schema version `2` adds the
+  `sync_stream_watermark` table via `migrations/002_sync_stream_watermark.sql`.
+  After the project reaches production-ready `v1.0.0`, every schema change
+  must add a forward migration and keep deployed databases compatible.
 - SQLite RAII wrappers around database connections and prepared statements.
 - SQLite current-schema bootstrap for new database files.
 - SQLite row hydration for users, devices, access tokens, rooms, memberships,
@@ -66,8 +67,13 @@ remaining work before PostgreSQL-backed production operation.
   keys, cross-signing keys, key signatures, key backup versions, and key
   backup sessions.
 - Physical migration-file loading for SQL files with explicit metadata and
-  statement names; the checked-in pre-production migration directory currently
-  contains only the complete version-1 `initial_schema` create-table file.
+  statement names; the checked-in pre-production migration directory now
+  contains the version-1 `initial_schema` create-table file and numbered
+  migrations such as `002_sync_stream_watermark.sql`.
+- `sync_stream_watermark` table stores the highest allocated `sync_stream_id`
+  and is updated by `database::allocate_sync_stream_id()` before the ID is
+  used for ephemeral events such as typing notifications and read receipts. This
+  prevents the monotonic sync stream counter from rolling back across restarts.
 - Offline `merovingian-db-migrate` planning scaffold.
 - Database `runtime` and `migration` role separation.
 - Runtime hydration for users, sessions, rooms, memberships, events, client

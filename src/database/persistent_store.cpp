@@ -1918,8 +1918,7 @@ namespace
     {
         return false;
     }
-    store.next_sync_stream_id += 1U;
-    data.stream_id = store.next_sync_stream_id;
+    data.stream_id = allocate_sync_stream_id(store);
     // Per-room rows go to the dedicated `room_account_data` table whose
     // primary key includes room_id. Global rows continue to use the
     // legacy `account_data` table whose PK is (user_id, event_type).
@@ -1962,8 +1961,7 @@ namespace
     {
         return false;
     }
-    store.next_sync_stream_id += 1U;
-    message.stream_id = store.next_sync_stream_id;
+    message.stream_id = allocate_sync_stream_id(store);
     if (!record_and_persist(
             store,
             record_statement("insert_to_device_message",
@@ -2058,8 +2056,7 @@ namespace
     {
         return false;
     }
-    store.next_sync_stream_id += 1U;
-    change.stream_id = store.next_sync_stream_id;
+    change.stream_id = allocate_sync_stream_id(store);
     if (!record_and_persist(
             store,
             record_statement("insert_device_list_change",
@@ -2080,8 +2077,7 @@ namespace
     {
         return false;
     }
-    store.next_sync_stream_id += 1U;
-    state.stream_id = store.next_sync_stream_id;
+    state.stream_id = allocate_sync_stream_id(store);
     if (!record_and_persist(
             store, record_statement(
                        "upsert_presence",
@@ -2142,6 +2138,8 @@ auto restore_sync_stream_id(PersistentStore& store) -> void
             observed = candidate;
         }
     };
+    // account_data vector holds both global and per-room rows; both carry a
+    // monotonic sync stream id and must be considered on restart.
     for (auto const& row : store.account_data)
     {
         consider(row.stream_id);
@@ -2159,6 +2157,21 @@ auto restore_sync_stream_id(PersistentStore& store) -> void
         consider(row.stream_id);
     }
     store.next_sync_stream_id = observed;
+}
+
+[[nodiscard]] auto allocate_sync_stream_id(PersistentStore& store) -> std::uint64_t
+{
+    store.next_sync_stream_id += 1U;
+    auto const new_id = store.next_sync_stream_id;
+    // Persist the new high-water mark immediately so ephemeral sync surfaces
+    // (typing, receipts) cannot roll the counter backward across a restart.
+    std::ignore = record_and_persist(
+        store,
+        record_statement("upsert_sync_stream_watermark",
+                         "INSERT INTO sync_stream_watermark (singleton, watermark) VALUES (1, $1) "
+                         "ON CONFLICT (singleton) DO UPDATE SET watermark = excluded.watermark",
+                         {{std::to_string(new_id), false}}));
+    return new_id;
 }
 
 [[nodiscard]] auto store_filter(PersistentStore& store, PersistentFilter filter) -> bool

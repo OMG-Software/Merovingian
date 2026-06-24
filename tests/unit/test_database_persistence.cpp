@@ -429,9 +429,14 @@ SCENARIO("Device-list change records validate inputs and advance the sync stream
                 REQUIRE(store.device_list_changes[1].subject_user_id == "@carol:example.org");
                 REQUIRE(store.device_list_changes[1].change_type == "left");
                 REQUIRE(store.next_sync_stream_id == 2U);
-                REQUIRE(store.prepared_statements.size() == 2U);
-                REQUIRE(store.prepared_statements[0].name == "insert_device_list_change");
+                // Each device-list change allocates a sync-stream id, so the
+                // prepared statements include one watermark upsert per change
+                // plus the actual insert_device_list_change statements.
+                REQUIRE(store.prepared_statements.size() == 4U);
+                REQUIRE(store.prepared_statements[0].name == "upsert_sync_stream_watermark");
                 REQUIRE(store.prepared_statements[1].name == "insert_device_list_change");
+                REQUIRE(store.prepared_statements[2].name == "upsert_sync_stream_watermark");
+                REQUIRE(store.prepared_statements[3].name == "insert_device_list_change");
             }
         }
 
@@ -481,9 +486,14 @@ SCENARIO("Presence snapshots upsert per user and keep only the latest stream-sha
                 REQUIRE_FALSE(store.presence_states[0].currently_active);
                 REQUIRE(store.presence_states[0].stream_id == 2U);
                 REQUIRE(store.next_sync_stream_id == 2U);
-                REQUIRE(store.prepared_statements.size() == 2U);
-                REQUIRE(store.prepared_statements[0].name == "upsert_presence");
+                // Each presence update allocates a sync-stream id, so the
+                // prepared statements include one watermark upsert per update
+                // plus the actual upsert_presence statements.
+                REQUIRE(store.prepared_statements.size() == 4U);
+                REQUIRE(store.prepared_statements[0].name == "upsert_sync_stream_watermark");
                 REQUIRE(store.prepared_statements[1].name == "upsert_presence");
+                REQUIRE(store.prepared_statements[2].name == "upsert_sync_stream_watermark");
+                REQUIRE(store.prepared_statements[3].name == "upsert_presence");
             }
         }
 
@@ -591,15 +601,22 @@ SCENARIO("Account data upserts global and room-scoped rows while advancing the s
                 REQUIRE(room->content_json == R"({"tags":{"u.work":{"order":0.2}}})");
                 REQUIRE(room->stream_id == 4U);
                 REQUIRE(store.next_sync_stream_id == 4U);
-                REQUIRE(store.prepared_statements.size() == 4U);
-                REQUIRE(store.prepared_statements[0].name == "upsert_account_data");
-                REQUIRE(store.prepared_statements[1].name == "upsert_room_account_data");
-                REQUIRE(store.prepared_statements[2].name == "upsert_account_data");
+                // Every account-data write now allocates a persisted sync-stream
+                // id, so each store call produces a watermark upsert followed by
+                // the account-data upsert.
+                REQUIRE(store.prepared_statements.size() == 8U);
+                REQUIRE(store.prepared_statements[0].name == "upsert_sync_stream_watermark");
+                REQUIRE(store.prepared_statements[1].name == "upsert_account_data");
+                REQUIRE(store.prepared_statements[2].name == "upsert_sync_stream_watermark");
                 REQUIRE(store.prepared_statements[3].name == "upsert_room_account_data");
-                REQUIRE(store.prepared_statements[0].parameters.size() == 4U);
-                REQUIRE(store.prepared_statements[0].parameters[2].sensitive);
-                REQUIRE(store.prepared_statements[1].parameters.size() == 5U);
-                REQUIRE(store.prepared_statements[1].parameters[4].sensitive);
+                REQUIRE(store.prepared_statements[4].name == "upsert_sync_stream_watermark");
+                REQUIRE(store.prepared_statements[5].name == "upsert_account_data");
+                REQUIRE(store.prepared_statements[6].name == "upsert_sync_stream_watermark");
+                REQUIRE(store.prepared_statements[7].name == "upsert_room_account_data");
+                REQUIRE(store.prepared_statements[1].parameters.size() == 4U);
+                REQUIRE(store.prepared_statements[1].parameters[2].sensitive);
+                REQUIRE(store.prepared_statements[3].parameters.size() == 5U);
+                REQUIRE(store.prepared_statements[3].parameters[4].sensitive);
             }
         }
 
@@ -908,19 +925,23 @@ SCENARIO("Database migration runner applies the current schema and the matching 
                 REQUIRE(upgrade_plan.direction == merovingian::database::MigrationDirection::upgrade);
                 REQUIRE(upgrade_plan.current_version == 0U);
                 REQUIRE(upgrade_plan.target_version == merovingian::database::current_schema_version());
-                REQUIRE(upgrade_plan.steps.size() == 1U);
-                REQUIRE(upgrade_plan.steps.front().version == 1U);
-                REQUIRE(upgrade_plan.steps.front().name == "initial_schema");
+                REQUIRE(upgrade_plan.steps.size() == 2U);
+                REQUIRE(upgrade_plan.steps[0].version == 1U);
+                REQUIRE(upgrade_plan.steps[0].name == "initial_schema");
+                REQUIRE(upgrade_plan.steps[1].version == 2U);
+                REQUIRE(upgrade_plan.steps[1].name == "sync_stream_watermark");
                 REQUIRE(upgraded.ok);
                 REQUIRE(upgraded.state.version == merovingian::database::current_schema_version());
-                REQUIRE(upgraded.state.applied_migrations.size() == 1U);
-                REQUIRE(upgraded.state.applied_migrations.front().name == "initial_schema");
-                REQUIRE(upgraded.state.tables.size() == merovingian::database::initial_schema_tables().size());
+                REQUIRE(upgraded.state.applied_migrations.size() == 2U);
+                REQUIRE(upgraded.state.applied_migrations[0].name == "initial_schema");
+                REQUIRE(upgraded.state.applied_migrations[1].name == "sync_stream_watermark");
+                REQUIRE(upgraded.state.tables.size() == merovingian::database::current_schema_tables().size());
                 REQUIRE(compatible.valid);
                 REQUIRE(second_plan.steps.empty());
                 REQUIRE(downgrade_plan.direction == merovingian::database::MigrationDirection::downgrade);
-                REQUIRE(downgrade_plan.steps.size() == 1U);
-                REQUIRE(downgrade_plan.steps.front().name == "drop_initial_schema");
+                REQUIRE(downgrade_plan.steps.size() == 2U);
+                REQUIRE(downgrade_plan.steps[0].name == "drop_sync_stream_watermark");
+                REQUIRE(downgrade_plan.steps[1].name == "drop_initial_schema");
                 REQUIRE(downgraded.ok);
                 REQUIRE(downgraded.state.version == 0U);
                 REQUIRE(downgraded.state.tables.empty());
@@ -1529,7 +1550,8 @@ SCENARIO("Physical migration files load into validated migration plans", "[datab
     }
 }
 
-SCENARIO("Checked-in pre-production migrations remain a single v1 create-table schema", "[database][migration][files]")
+SCENARIO("Checked-in migrations cover the v1 bootstrap and v2 sync-stream watermark",
+         "[database][migration][files]")
 {
     GIVEN("the repository migration directory")
     {
@@ -1540,16 +1562,19 @@ SCENARIO("Checked-in pre-production migrations remain a single v1 create-table s
             REQUIRE_FALSE(directory.empty());
             auto const loaded = merovingian::database::load_migration_files(directory.string());
 
-            THEN("only the full initial schema exists before production migrations begin")
+            THEN("the v1 bootstrap creates the initial schema and a numbered v2 migration adds the watermark table")
             {
                 REQUIRE(loaded.ok);
-                REQUIRE(loaded.steps.size() == 1U);
-                REQUIRE(loaded.steps.front().version == 1U);
-                REQUIRE(loaded.steps.front().name == "initial_schema");
-                REQUIRE(loaded.steps.front().statements.size() ==
+                REQUIRE(loaded.steps.size() == 2U);
+                REQUIRE(loaded.steps[0].version == 1U);
+                REQUIRE(loaded.steps[0].name == "initial_schema");
+                REQUIRE(loaded.steps[0].statements.size() ==
                         merovingian::database::initial_schema_tables().size());
+                REQUIRE(loaded.steps[1].version == 2U);
+                REQUIRE(loaded.steps[1].name == "sync_stream_watermark");
+                REQUIRE(loaded.steps[1].statements.size() == 1U);
 
-                for (auto const& statement : loaded.steps.front().statements)
+                for (auto const& statement : loaded.steps[0].statements)
                 {
                     // Before v1.0.0 there are no live databases to migrate; the
                     // checked-in v1 file must create the whole schema directly.
@@ -1611,9 +1636,12 @@ SCENARIO("Database schema inventory covers the core Matrix tables", "[database][
                 // plus durable media blob storage plus the user profiles table
                 // plus the durable room-alias registry plus client_txn_ids
                 // (room_account_data, to_device_messages, device_list_changes,
-                // presence_state) folded into the initial schema.
+                // presence_state) folded into the v1 initial schema.
+                // sync_stream_watermark arrives in migration v2 and is counted in
+                // the current schema inventory instead.
                 REQUIRE(tables.size() == 45U);
-                REQUIRE(merovingian::database::current_schema_version() == 1U);
+                REQUIRE(merovingian::database::current_schema_version() == 2U);
+                REQUIRE(merovingian::database::current_schema_tables().size() == 46U);
                 REQUIRE(users_definition.has_value());
                 REQUIRE(current_state_definition.has_value());
                 REQUIRE(room_aliases_definition.has_value());
@@ -1946,6 +1974,72 @@ SCENARIO("SQLite migration bootstrap records the applied migration in schema_mig
                 sqlite3_finalize(statement);
                 sqlite3_close(raw);
                 REQUIRE(saw_initial_schema);
+            }
+        }
+
+        std::filesystem::remove(sqlite_path);
+    }
+}
+
+SCENARIO("Sync stream watermark prevents sync-stream id rollback across SQLite restart",
+         "[database][persistence][sync-stream][watermark][regression]")
+{
+    GIVEN("a SQLite persistent store that has advanced the sync stream counter")
+    {
+        auto const sqlite_path = unique_sqlite_path();
+        std::filesystem::remove(sqlite_path);
+
+        {
+            auto opened = merovingian::database::open_sqlite_persistent_store(sqlite_path.string());
+            REQUIRE(opened.ok);
+            auto& store = opened.store;
+
+            // Allocate several sync-stream ids through different surfaces so the
+            // watermark table records a value greater than zero.
+            REQUIRE(merovingian::database::store_account_data(
+                store, {"@alice:example.org", "", "m.push_rules", R"({\"global\":{\"override\":[]}})", 0U}));
+            REQUIRE(merovingian::database::store_account_data(
+                store, {"@alice:example.org", "!room:example.org", "m.tag", R"({\"tags\":{}})", 0U}));
+            REQUIRE(merovingian::database::record_device_list_change(
+                store, {0U, "@alice:example.org", "@bob:example.org", "changed"}));
+            REQUIRE(merovingian::database::upsert_presence(
+                store, {0U, "@alice:example.org", "online", "here", 0, true}));
+
+            REQUIRE(store.next_sync_stream_id == 4U);
+        }
+
+        WHEN("the store is reopened after all handles are dropped")
+        {
+            auto reopened = merovingian::database::open_sqlite_persistent_store(sqlite_path.string());
+            REQUIRE(reopened.ok);
+            auto& store = reopened.store;
+
+            THEN("the restored counter is at least the previously persisted watermark and allocations continue monotonically")
+            {
+                REQUIRE(store.next_sync_stream_id >= 4U);
+
+                auto const next_id = merovingian::database::allocate_sync_stream_id(store);
+                REQUIRE(next_id > 4U);
+                REQUIRE(store.next_sync_stream_id == next_id);
+
+                // Confirm the watermark row itself was updated to the new value.
+                sqlite3* raw = nullptr;
+                REQUIRE(sqlite3_open(sqlite_path.string().c_str(), &raw) == SQLITE_OK);
+                auto const* select_sql = "SELECT watermark FROM sync_stream_watermark WHERE singleton = 1";
+                sqlite3_stmt* statement = nullptr;
+                REQUIRE(sqlite3_prepare_v2(raw, select_sql, -1, &statement, nullptr) == SQLITE_OK);
+                auto watermark = std::uint64_t{0U};
+                if (sqlite3_step(statement) == SQLITE_ROW)
+                {
+                    auto const* text = reinterpret_cast<char const*>(sqlite3_column_text(statement, 0));
+                    if (text != nullptr)
+                    {
+                        watermark = static_cast<std::uint64_t>(std::stoull(text));
+                    }
+                }
+                sqlite3_finalize(statement);
+                sqlite3_close(raw);
+                REQUIRE(watermark == next_id);
             }
         }
 
