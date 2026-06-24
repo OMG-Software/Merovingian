@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <string>
+#include <vector>
 
 namespace
 {
@@ -110,6 +111,70 @@ auto upload_one_time_key(merovingian::homeserver::ClientServerRuntime& runtime, 
 [[nodiscard]] auto sync_next_batch(std::string const& body) -> std::string
 {
     return response_string_field(body, "next_batch");
+}
+
+[[nodiscard]] auto typing_user_ids_from_sync(std::string const& body, std::string const& room_id)
+    -> std::vector<std::string>
+{
+    auto const root = parse_object(body);
+    auto const* rooms = object_member_as_object(root, "rooms");
+    if (rooms == nullptr)
+    {
+        return {};
+    }
+    auto const* joins = object_member_as_object(*rooms, "join");
+    if (joins == nullptr)
+    {
+        return {};
+    }
+    auto const* room = object_member_as_object(*joins, room_id);
+    if (room == nullptr)
+    {
+        return {};
+    }
+    auto const* ephemeral = object_member_as_object(*room, "ephemeral");
+    if (ephemeral == nullptr)
+    {
+        return {};
+    }
+    auto const* events = object_member_as_array(*ephemeral, "events");
+    if (events == nullptr)
+    {
+        return {};
+    }
+    for (auto const& ev : *events)
+    {
+        auto const* obj = std::get_if<merovingian::canonicaljson::Object>(&ev.storage());
+        if (obj == nullptr)
+        {
+            continue;
+        }
+        auto const* type = string_member(*obj, "type");
+        if (type == nullptr || *type != "m.typing")
+        {
+            continue;
+        }
+        auto const* content = object_member_as_object(*obj, "content");
+        if (content == nullptr)
+        {
+            continue;
+        }
+        auto const* user_ids = object_member_as_array(*content, "user_ids");
+        if (user_ids == nullptr)
+        {
+            return {};
+        }
+        auto out = std::vector<std::string>{};
+        for (auto const& id : *user_ids)
+        {
+            if (auto const* s = std::get_if<std::string>(&id.storage()))
+            {
+                out.push_back(*s);
+            }
+        }
+        return out;
+    }
+    return {};
 }
 
 } // namespace
@@ -1198,6 +1263,81 @@ SCENARIO("Typing notifications are delivered via ephemeral events in /sync",
                                return text != nullptr && *text == bob.user_id;
                            });
                 }));
+            }
+        }
+    }
+}
+
+SCENARIO("Typing notifications can stop and restart via ephemeral events in /sync",
+         "[homeserver][client-server][integration][sync][typing][regression]")
+{
+    GIVEN("two joined users with active sync streams")
+    {
+        auto const config = registration_enabled_config();
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const alice = register_session(runtime, "alice_typing_restart", "CorrectHorse7!");
+        auto const bob = register_session(runtime, "bob_typing_restart", "CorrectHorse8!");
+
+        auto const create_body = std::string{"{\"preset\":\"private_chat\",\"invite\":[\""} + bob.user_id + "\"]}";
+        auto const create = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", alice.access_token, create_body});
+        REQUIRE(create.response.status == 200U);
+        auto const room_id = response_string_field(create.response.body, "room_id");
+
+        auto const bob_initial_sync = merovingian::homeserver::handle_client_server_request(
+            runtime, {"GET", "/_matrix/client/v3/sync", bob.access_token, {}});
+        REQUIRE(bob_initial_sync.response.status == 200U);
+        std::ignore = sync_next_batch(bob_initial_sync.response.body);
+
+        auto const join = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/join", bob.access_token, "{}"});
+        REQUIRE(join.response.status == 200U);
+
+        auto const alice_initial_sync = merovingian::homeserver::handle_client_server_request(
+            runtime, {"GET", "/_matrix/client/v3/sync", alice.access_token, {}});
+        REQUIRE(alice_initial_sync.response.status == 200U);
+        auto const alice_from = sync_next_batch(alice_initial_sync.response.body);
+
+        WHEN("one user starts typing, stops, and starts typing again")
+        {
+            auto const do_typing = [&runtime, &room_id, &bob](bool const typing) {
+                auto const body = std::string{"{\"typing\":"} + (typing ? "true" : "false") + ",\"timeout\":30000}";
+                return merovingian::homeserver::handle_client_server_request(
+                    runtime,
+                    {"PUT", "/_matrix/client/v3/rooms/" + room_id + "/typing/" + bob.user_id, bob.access_token, body});
+            };
+            auto const do_sync = [&runtime, &alice](std::string const& since) {
+                return merovingian::homeserver::handle_client_server_request(
+                    runtime, {"GET", "/_matrix/client/v3/sync?since=" + since, alice.access_token, {}});
+            };
+
+            auto const start = do_typing(true);
+            REQUIRE(start.response.status == 200U);
+            auto const sync_start = do_sync(alice_from);
+            REQUIRE(sync_start.response.status == 200U);
+            auto const after_start = sync_next_batch(sync_start.response.body);
+
+            auto const stop = do_typing(false);
+            REQUIRE(stop.response.status == 200U);
+            auto const sync_stop = do_sync(after_start);
+            REQUIRE(sync_stop.response.status == 200U);
+            auto const after_stop = sync_next_batch(sync_stop.response.body);
+
+            auto const restart = do_typing(true);
+            REQUIRE(restart.response.status == 200U);
+            auto const sync_restart = do_sync(after_stop);
+            REQUIRE(sync_restart.response.status == 200U);
+
+            THEN("each transition is delivered as a distinct ephemeral event")
+            {
+                REQUIRE(typing_user_ids_from_sync(sync_start.response.body, room_id) ==
+                        std::vector<std::string>{bob.user_id});
+                REQUIRE(typing_user_ids_from_sync(sync_stop.response.body, room_id).empty());
+                REQUIRE(typing_user_ids_from_sync(sync_restart.response.body, room_id) ==
+                        std::vector<std::string>{bob.user_id});
             }
         }
     }

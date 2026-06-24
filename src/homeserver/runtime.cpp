@@ -22,6 +22,7 @@
 #include <fstream>
 #include <memory>
 #include <optional>
+#include <ranges>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -271,6 +272,7 @@ HomeserverRuntime::HomeserverRuntime(HomeserverRuntime&& other) noexcept
     , sync_notifier(std::exchange(other.sync_notifier, nullptr))
     , typing_users(std::move(other.typing_users))
     , receipts(std::move(other.receipts))
+    , room_typing_stream_id(std::move(other.room_typing_stream_id))
 {
 }
 
@@ -302,7 +304,42 @@ auto HomeserverRuntime::operator=(HomeserverRuntime&& other) noexcept -> Homeser
     sync_notifier = std::exchange(other.sync_notifier, nullptr);
     typing_users = std::move(other.typing_users);
     receipts = std::move(other.receipts);
+    room_typing_stream_id = std::move(other.room_typing_stream_id);
     return *this;
+}
+
+[[nodiscard]] auto current_typing_users_in_room(HomeserverRuntime const& rt, std::string_view room_id)
+    -> std::vector<std::string>
+{
+    auto users = std::vector<std::string>{};
+    for (auto const& entry : rt.typing_users)
+    {
+        if (entry.room_id == room_id && entry.typing)
+        {
+            users.push_back(entry.user_id);
+        }
+    }
+    std::ranges::sort(users);
+    return users;
+}
+
+[[nodiscard]] auto room_typing_stream_id_for(HomeserverRuntime const& rt, std::string_view room_id) -> std::uint64_t
+{
+    auto const it = rt.room_typing_stream_id.find(std::string{room_id});
+    return it == rt.room_typing_stream_id.end() ? std::uint64_t{0U} : it->second;
+}
+
+[[nodiscard]] auto update_room_typing_stream_id_if_changed(HomeserverRuntime& rt, std::string_view room_id,
+                                                           std::vector<std::string> const& previous) -> std::uint64_t
+{
+    auto const current = current_typing_users_in_room(rt, room_id);
+    if (previous == current)
+    {
+        return room_typing_stream_id_for(rt, room_id);
+    }
+    auto const new_id = database::allocate_sync_stream_id(rt.database.persistent_store);
+    rt.room_typing_stream_id[std::string{room_id}] = new_id;
+    return new_id;
 }
 
 auto bootstrap_local_database(config::Config const& config) -> LocalDatabase

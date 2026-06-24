@@ -70,12 +70,9 @@ namespace
 
     // ── to_device extension ───────────────────────────────────────────────────
 
-    [[nodiscard]] auto build_to_device(
-        database::PersistentStore& store,
-        std::string_view           user,
-        std::string_view           device_id,
-        ExtToDeviceRequest const&  req,
-        std::uint64_t              current_sync_stream_id) -> ExtToDeviceResponse
+    [[nodiscard]] auto build_to_device(database::PersistentStore& store, std::string_view user,
+                                       std::string_view device_id, ExtToDeviceRequest const& req,
+                                       std::uint64_t current_sync_stream_id) -> ExtToDeviceResponse
     {
         // The `since` token is a decimal string representation of a stream_id.
         auto since_stream_id = std::uint64_t{0U};
@@ -91,11 +88,11 @@ namespace
             }
         }
 
-        auto const limit   = req.limit > 0U ? req.limit : 20U;
-        auto const drained = database::drain_to_device_messages(
-            store, user, device_id, since_stream_id, current_sync_stream_id);
+        auto const limit = req.limit > 0U ? req.limit : 20U;
+        auto const drained =
+            database::drain_to_device_messages(store, user, device_id, since_stream_id, current_sync_stream_id);
 
-        auto resp  = ExtToDeviceResponse{};
+        auto resp = ExtToDeviceResponse{};
         auto count = std::uint64_t{0U};
         for (auto const& msg : drained)
         {
@@ -104,8 +101,8 @@ namespace
                 break;
             }
             auto event = canonicaljson::Object{};
-            event.push_back(canonicaljson::make_member("type",    jstr(msg.message_type)));
-            event.push_back(canonicaljson::make_member("sender",  jstr(msg.sender_user_id)));
+            event.push_back(canonicaljson::make_member("type", jstr(msg.message_type)));
+            event.push_back(canonicaljson::make_member("sender", jstr(msg.sender_user_id)));
             event.push_back(canonicaljson::make_member("content", parse_content(msg.content_json)));
             resp.events_json.push_back(jserialize(jobj(std::move(event))));
             ++count;
@@ -116,12 +113,9 @@ namespace
 
     // ── e2ee extension ────────────────────────────────────────────────────────
 
-    [[nodiscard]] auto build_e2ee(
-        homeserver::HomeserverRuntime const& rt,
-        database::PersistentStore const&     store,
-        std::string_view                     user,
-        std::string_view                     device_id,
-        std::uint64_t                        since_sync_stream_id) -> ExtE2eeResponse
+    [[nodiscard]] auto build_e2ee(homeserver::HomeserverRuntime const& rt, database::PersistentStore const& store,
+                                  std::string_view user, std::string_view device_id, std::uint64_t since_sync_stream_id)
+        -> ExtE2eeResponse
     {
         auto resp = ExtE2eeResponse{};
 
@@ -178,11 +172,9 @@ namespace
 
     // ── account_data extension ────────────────────────────────────────────────
 
-    [[nodiscard]] auto build_account_data(
-        database::PersistentStore const& store,
-        std::string_view                 user,
-        std::uint64_t                    since_sync_stream_id,
-        std::vector<std::string> const&  response_room_ids) -> ExtAccountDataResponse
+    [[nodiscard]] auto build_account_data(database::PersistentStore const& store, std::string_view user,
+                                          std::uint64_t since_sync_stream_id,
+                                          std::vector<std::string> const& response_room_ids) -> ExtAccountDataResponse
     {
         auto resp = ExtAccountDataResponse{};
 
@@ -193,7 +185,7 @@ namespace
                 continue;
             }
             auto event = canonicaljson::Object{};
-            event.push_back(canonicaljson::make_member("type",    jstr(data.event_type)));
+            event.push_back(canonicaljson::make_member("type", jstr(data.event_type)));
             event.push_back(canonicaljson::make_member("content", parse_content(data.content_json)));
             auto json = jserialize(jobj(std::move(event)));
 
@@ -204,8 +196,7 @@ namespace
             else
             {
                 // Room-scoped account data is only surfaced for rooms in the response.
-                auto const in_resp =
-                    std::ranges::find(response_room_ids, data.room_id) != response_room_ids.end();
+                auto const in_resp = std::ranges::find(response_room_ids, data.room_id) != response_room_ids.end();
                 if (in_resp)
                 {
                     resp.rooms_json[data.room_id].push_back(std::move(json));
@@ -219,30 +210,26 @@ namespace
 
     // When an extension names explicit rooms, scope to those. Otherwise fall
     // back to all rooms that appear in the current response.
-    [[nodiscard]] auto effective_rooms(
-        std::vector<std::string> const& ext_rooms,
-        std::vector<std::string> const& response_rooms) -> std::vector<std::string> const&
+    [[nodiscard]] auto effective_rooms(std::vector<std::string> const& ext_rooms,
+                                       std::vector<std::string> const& response_rooms)
+        -> std::vector<std::string> const&
     {
         return ext_rooms.empty() ? response_rooms : ext_rooms;
     }
 
     // ── receipts extension ────────────────────────────────────────────────────
 
-    [[nodiscard]] auto build_receipts(
-        homeserver::HomeserverRuntime const& rt,
-        std::uint64_t                        since_sync_stream_id,
-        std::vector<std::string> const&      ext_rooms,
-        std::vector<std::string> const&      response_room_ids) -> ExtReceiptsResponse
+    [[nodiscard]] auto build_receipts(homeserver::HomeserverRuntime const& rt, std::uint64_t since_sync_stream_id,
+                                      std::vector<std::string> const& ext_rooms,
+                                      std::vector<std::string> const& response_room_ids) -> ExtReceiptsResponse
     {
         auto const& rooms = effective_rooms(ext_rooms, response_room_ids);
-        auto resp         = ExtReceiptsResponse{};
+        auto resp = ExtReceiptsResponse{};
 
         for (auto const& room_id : rooms)
         {
             // Index: event_id → receipt_type → user_id → ts
-            auto idx = std::map<std::string,
-                        std::map<std::string,
-                        std::map<std::string, std::uint64_t>>>{};
+            auto idx = std::map<std::string, std::map<std::string, std::map<std::string, std::uint64_t>>>{};
 
             for (auto const& receipt : rt.receipts)
             {
@@ -282,28 +269,33 @@ namespace
 
     // ── typing extension ──────────────────────────────────────────────────────
 
-    [[nodiscard]] auto build_typing(
-        homeserver::HomeserverRuntime const& rt,
-        std::uint64_t                        since_sync_stream_id,
-        std::vector<std::string> const&      ext_rooms,
-        std::vector<std::string> const&      response_room_ids) -> ExtTypingResponse
+    [[nodiscard]] auto build_typing(homeserver::HomeserverRuntime const& rt, std::uint64_t since_sync_stream_id,
+                                    std::vector<std::string> const& ext_rooms,
+                                    std::vector<std::string> const& response_room_ids) -> ExtTypingResponse
     {
         auto const& rooms = effective_rooms(ext_rooms, response_room_ids);
-        auto resp         = ExtTypingResponse{};
+        auto resp = ExtTypingResponse{};
 
         for (auto const& room_id : rooms)
         {
+            auto const room_typing_id = homeserver::room_typing_stream_id_for(rt, room_id);
+            if (room_typing_id <= since_sync_stream_id)
+            {
+                continue;
+            }
             auto user_ids = canonicaljson::Array{};
             for (auto const& entry : rt.typing_users)
             {
-                if (entry.room_id != room_id || !entry.typing ||
-                    entry.stream_id <= since_sync_stream_id)
+                if (entry.room_id != room_id || !entry.typing)
                 {
                     continue;
                 }
                 user_ids.push_back(jstr(entry.user_id));
             }
-            if (user_ids.empty())
+            // Suppress empty typing lists on the first sync (since == 0); for
+            // every subsequent position emit the current list even when empty so
+            // clients can clear stale indicators.
+            if (user_ids.empty() && since_sync_stream_id == std::uint64_t{0U})
             {
                 continue;
             }
@@ -320,15 +312,10 @@ namespace
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
-auto build_extensions(
-    homeserver::HomeserverRuntime const& rt,
-    std::string_view                     user,
-    std::string_view                     device_id,
-    SlidingSyncExtensionRequests const&  ext_req,
-    std::uint64_t                        since_sync_stream_id,
-    std::uint64_t                        current_sync_stream_id,
-    database::PersistentStore&           store,
-    std::vector<std::string> const&      response_room_ids) -> SlidingSyncExtensionResponses
+auto build_extensions(homeserver::HomeserverRuntime const& rt, std::string_view user, std::string_view device_id,
+                      SlidingSyncExtensionRequests const& ext_req, std::uint64_t since_sync_stream_id,
+                      std::uint64_t current_sync_stream_id, database::PersistentStore& store,
+                      std::vector<std::string> const& response_room_ids) -> SlidingSyncExtensionResponses
 {
     auto resp = SlidingSyncExtensionResponses{};
 

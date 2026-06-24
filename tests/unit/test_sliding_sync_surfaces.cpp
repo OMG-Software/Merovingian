@@ -61,11 +61,8 @@ using merovingian::canonicaljson::Value;
     return *object;
 }
 
-auto append_event(merovingian::database::PersistentStore& store,
-                  std::string_view                        event_id,
-                  std::string_view                        room_id,
-                  std::string_view                        json,
-                  std::uint64_t                           stream_ordering) -> void
+auto append_event(merovingian::database::PersistentStore& store, std::string_view event_id, std::string_view room_id,
+                  std::string_view json, std::uint64_t stream_ordering) -> void
 {
     store.events.push_back({
         std::string{event_id},
@@ -80,11 +77,8 @@ auto append_event(merovingian::database::PersistentStore& store,
     });
 }
 
-auto append_state(merovingian::database::PersistentStore& store,
-                  std::string_view                        room_id,
-                  std::string_view                        event_type,
-                  std::string_view                        state_key,
-                  std::string_view                        event_id) -> void
+auto append_state(merovingian::database::PersistentStore& store, std::string_view room_id, std::string_view event_type,
+                  std::string_view state_key, std::string_view event_id) -> void
 {
     store.state.push_back({
         std::string{room_id},
@@ -96,30 +90,29 @@ auto append_state(merovingian::database::PersistentStore& store,
 
 } // namespace
 
-SCENARIO("Sliding sync room lists apply DM and room metadata filters before sorting",
-         "[sync][sliding-sync][room-list]")
+SCENARIO("Sliding sync room lists apply DM and room metadata filters before sorting", "[sync][sliding-sync][room-list]")
 {
     GIVEN("three joined rooms with different encryption, direct-message, favourite, and type metadata")
     {
         auto runtime = merovingian::homeserver::HomeserverRuntime{};
         runtime.database.rooms = {
             {"!alpha:example.org", "@alice:example.org", {}, {}, false},
-            {"!beta:example.org", "@alice:example.org", {}, {}, false},
+            {"!beta:example.org",  "@alice:example.org", {}, {}, false},
             {"!gamma:example.org", "@alice:example.org", {}, {}, false},
         };
 
         auto store = merovingian::database::PersistentStore{};
         store.memberships = {
             {"!alpha:example.org", "@alice:example.org", "join", 1U},
-            {"!beta:example.org", "@alice:example.org", "join", 2U},
+            {"!beta:example.org",  "@alice:example.org", "join", 2U},
             {"!gamma:example.org", "@alice:example.org", "join", 3U},
         };
 
         append_event(store, "$alpha-create", "!alpha:example.org",
                      R"({"type":"m.room.create","content":{"type":"m.space"}})", 10U);
         append_state(store, "!alpha:example.org", "m.room.create", "", "$alpha-create");
-        append_event(store, "$alpha-name", "!alpha:example.org",
-                     R"({"type":"m.room.name","content":{"name":"Alpha"}})", 11U);
+        append_event(store, "$alpha-name", "!alpha:example.org", R"({"type":"m.room.name","content":{"name":"Alpha"}})",
+                     11U);
         append_state(store, "!alpha:example.org", "m.room.name", "", "$alpha-name");
         append_event(store, "$alpha-encryption", "!alpha:example.org",
                      R"({"type":"m.room.encryption","content":{"algorithm":"m.megolm.v1.aes-sha2"}})", 12U);
@@ -128,49 +121,39 @@ SCENARIO("Sliding sync room lists apply DM and room metadata filters before sort
         append_event(store, "$beta-create", "!beta:example.org",
                      R"({"type":"m.room.create","content":{"type":"m.server_notice"}})", 20U);
         append_state(store, "!beta:example.org", "m.room.create", "", "$beta-create");
-        append_event(store, "$beta-name", "!beta:example.org",
-                     R"({"type":"m.room.name","content":{"name":"Beta"}})", 21U);
+        append_event(store, "$beta-name", "!beta:example.org", R"({"type":"m.room.name","content":{"name":"Beta"}})",
+                     21U);
         append_state(store, "!beta:example.org", "m.room.name", "", "$beta-name");
 
         append_event(store, "$gamma-create", "!gamma:example.org",
                      R"({"type":"m.room.create","content":{"type":"m.space"}})", 30U);
         append_state(store, "!gamma:example.org", "m.room.create", "", "$gamma-create");
-        append_event(store, "$gamma-name", "!gamma:example.org",
-                     R"({"type":"m.room.name","content":{"name":"Gamma"}})", 31U);
+        append_event(store, "$gamma-name", "!gamma:example.org", R"({"type":"m.room.name","content":{"name":"Gamma"}})",
+                     31U);
         append_state(store, "!gamma:example.org", "m.room.name", "", "$gamma-name");
         append_event(store, "$gamma-encryption", "!gamma:example.org",
                      R"({"type":"m.room.encryption","content":{"algorithm":"m.megolm.v1.aes-sha2"}})", 32U);
         append_state(store, "!gamma:example.org", "m.room.encryption", "", "$gamma-encryption");
 
         store.account_data = {
-            {"@alice:example.org", "", "m.direct",
+            {"@alice:example.org", "",                   "m.direct",
              R"({"@bob:example.org":["!alpha:example.org"],"@carol:example.org":["!elsewhere:example.org"]})", 1U},
-            {"@alice:example.org", "!alpha:example.org", "m.tag",
-             R"({"tags":{"m.favourite":{}}})", 2U},
-            {"@alice:example.org", "!gamma:example.org", "m.tag",
-             R"({"tags":{"m.lowpriority":{}}})", 3U},
+            {"@alice:example.org", "!alpha:example.org", "m.tag",    R"({"tags":{"m.favourite":{}}})",         2U},
+            {"@alice:example.org", "!gamma:example.org", "m.tag",    R"({"tags":{"m.lowpriority":{}}})",       3U},
         };
 
         auto list = merovingian::sync::SlidingSyncList{};
-        list.ranges = {{0U, 9U}};
+        list.ranges = {
+            {0U, 9U}
+        };
         list.sort = {"by_name"};
         list.filters = merovingian::sync::SlidingSyncFilters{
-            true,
-            false,
-            true,
-            true,
-            {"m.space"},
-            {"m.server_notice"},
+            true, false, true, true, {"m.space"}, {"m.server_notice"},
         };
 
         WHEN("the room list is computed for Alice")
         {
-            auto const result = merovingian::sync::compute_room_list(
-                runtime,
-                "@alice:example.org",
-                list,
-                {},
-                store);
+            auto const result = merovingian::sync::compute_room_list(runtime, "@alice:example.org", list, {}, store);
 
             THEN("only the favourited encrypted DM with the allowed room type remains")
             {
@@ -195,25 +178,25 @@ SCENARIO("Sliding sync room lists emit incremental sync ops when notification an
         auto runtime = merovingian::homeserver::HomeserverRuntime{};
         runtime.database.rooms = {
             {"!alpha:example.org", "@alice:example.org", {}, {}, false},
-            {"!beta:example.org", "@alice:example.org", {}, {}, false},
+            {"!beta:example.org",  "@alice:example.org", {}, {}, false},
             {"!gamma:example.org", "@alice:example.org", {}, {}, false},
         };
 
         auto store = merovingian::database::PersistentStore{};
         store.memberships = {
             {"!alpha:example.org", "@alice:example.org", "join", 1U},
-            {"!beta:example.org", "@alice:example.org", "join", 2U},
+            {"!beta:example.org",  "@alice:example.org", "join", 2U},
             {"!gamma:example.org", "@alice:example.org", "join", 3U},
         };
 
-        append_event(store, "$alpha-name", "!alpha:example.org",
-                     R"({"type":"m.room.name","content":{"name":"Alpha"}})", 1U);
+        append_event(store, "$alpha-name", "!alpha:example.org", R"({"type":"m.room.name","content":{"name":"Alpha"}})",
+                     1U);
         append_state(store, "!alpha:example.org", "m.room.name", "", "$alpha-name");
-        append_event(store, "$beta-name", "!beta:example.org",
-                     R"({"type":"m.room.name","content":{"name":"Beta"}})", 2U);
+        append_event(store, "$beta-name", "!beta:example.org", R"({"type":"m.room.name","content":{"name":"Beta"}})",
+                     2U);
         append_state(store, "!beta:example.org", "m.room.name", "", "$beta-name");
-        append_event(store, "$gamma-name", "!gamma:example.org",
-                     R"({"type":"m.room.name","content":{"name":"Gamma"}})", 3U);
+        append_event(store, "$gamma-name", "!gamma:example.org", R"({"type":"m.room.name","content":{"name":"Gamma"}})",
+                     3U);
         append_state(store, "!gamma:example.org", "m.room.name", "", "$gamma-name");
 
         append_event(store, "$alpha-message", "!alpha:example.org",
@@ -226,35 +209,33 @@ SCENARIO("Sliding sync room lists emit incremental sync ops when notification an
                      R"({"type":"m.room.encrypted","content":{"ciphertext":"..."}})", 7U);
 
         auto list = merovingian::sync::SlidingSyncList{};
-        list.ranges = {{0U, 1U}};
+        list.ranges = {
+            {0U, 1U}
+        };
         list.sort = {"by_notification_count", "by_recency", "by_name"};
         list.bump_event_types = {"m.room.encrypted"};
 
         WHEN("the previous window no longer matches the sorted order")
         {
             auto const result = merovingian::sync::compute_room_list(
-                runtime,
-                "@alice:example.org",
-                list,
-                {"!alpha:example.org", "!beta:example.org"},
-                store);
+                runtime, "@alice:example.org", list, {"!alpha:example.org", "!beta:example.org"}, store);
 
             THEN("the changed window is re-synced in the new notification and recency order")
             {
                 REQUIRE(result.count == 3U);
                 REQUIRE(result.windowed_room_ids == std::vector<std::string>{
-                    "!beta:example.org",
-                    "!gamma:example.org",
-                });
+                                                        "!beta:example.org",
+                                                        "!gamma:example.org",
+                                                    });
                 REQUIRE(result.ops.size() == 1U);
                 REQUIRE(result.ops.front().op == "SYNC");
                 REQUIRE(result.ops.front().range.has_value());
                 REQUIRE(result.ops.front().range->start == 0U);
                 REQUIRE(result.ops.front().range->end == 1U);
                 REQUIRE(result.ops.front().room_ids == std::vector<std::string>{
-                    "!beta:example.org",
-                    "!gamma:example.org",
-                });
+                                                           "!beta:example.org",
+                                                           "!gamma:example.org",
+                                                       });
             }
         }
     }
@@ -267,44 +248,44 @@ SCENARIO("Sliding sync extensions build scoped to-device e2ee account-data recei
     {
         auto runtime = merovingian::homeserver::HomeserverRuntime{};
         runtime.receipts = {
-            {"!room-a:example.org", "m.read", "@alice:example.org", "$event-a", 111U, 3U},
-            {"!room-b:example.org", "m.read", "@bob:example.org", "$event-b", 222U, 4U},
-            {"!room-a:example.org", "m.read", "@carol:example.org", "$event-old", 99U, 1U},
+            {"!room-a:example.org", "m.read", "@alice:example.org", "$event-a",   111U, 3U},
+            {"!room-b:example.org", "m.read", "@bob:example.org",   "$event-b",   222U, 4U},
+            {"!room-a:example.org", "m.read", "@carol:example.org", "$event-old", 99U,  1U},
         };
         runtime.typing_users = {
-            {"!room-a:example.org", "@alice:example.org", true, 1U},
-            {"!room-b:example.org", "@bob:example.org", true, 3U},
+            {"!room-a:example.org", "@alice:example.org", true,  1U},
+            {"!room-b:example.org", "@bob:example.org",   true,  3U},
             {"!room-b:example.org", "@carol:example.org", false, 4U},
+        };
+        runtime.room_typing_stream_id = {
+            {"!room-a:example.org", 1U},
+            {"!room-b:example.org", 3U},
         };
 
         auto store = merovingian::database::PersistentStore{};
         REQUIRE(merovingian::database::enqueue_to_device_message(
-            store,
-            {0U, "@bob:example.org", "@alice:example.org", "ALICE", "m.room.encrypted", "{not-json"}));
+            store, {0U, "@bob:example.org", "@alice:example.org", "ALICE", "m.room.encrypted", "{not-json"}));
         REQUIRE(merovingian::database::enqueue_to_device_message(
-            store,
-            {0U, "@bob:example.org", "@alice:example.org", "ALICE", "m.room_key", R"({"session":"two"})"}));
+            store, {0U, "@bob:example.org", "@alice:example.org", "ALICE", "m.room_key", R"({"session":"two"})"}));
 
         store.device_list_changes = {
             {1U, "@alice:example.org", "@ignored:example.org", "changed"},
             {3U, "@alice:example.org", "@changed:example.org", "changed"},
-            {4U, "@alice:example.org", "@left:example.org", "left"},
+            {4U, "@alice:example.org", "@left:example.org",    "left"   },
         };
         store.one_time_keys = {
             {"@alice:example.org", "ALICE", "signed_curve25519:AAAA", "{}"},
-            {"@alice:example.org", "ALICE", "curve25519:BBBB", "{}"},
+            {"@alice:example.org", "ALICE", "curve25519:BBBB",        "{}"},
         };
         store.fallback_keys = {
             {"@alice:example.org", "ALICE", "signed_curve25519:FFFF", "{}"},
             {"@alice:example.org", "ALICE", "signed_curve25519:GGGG", "{}"},
-            {"@alice:example.org", "ALICE", "curve25519:HHHH", "{}"},
+            {"@alice:example.org", "ALICE", "curve25519:HHHH",        "{}"},
         };
         store.account_data = {
-            {"@alice:example.org", "", "m.push_rules", R"({"global":{"content":[]}})", 3U},
-            {"@alice:example.org", "!room-a:example.org", "m.tag",
-             R"({"tags":{"m.favourite":{}}})", 4U},
-            {"@alice:example.org", "!room-b:example.org", "m.tag",
-             R"({"tags":{"m.lowpriority":{}}})", 5U},
+            {"@alice:example.org", "",                    "m.push_rules", R"({"global":{"content":[]}})",     3U},
+            {"@alice:example.org", "!room-a:example.org", "m.tag",        R"({"tags":{"m.favourite":{}}})",   4U},
+            {"@alice:example.org", "!room-b:example.org", "m.tag",        R"({"tags":{"m.lowpriority":{}}})", 5U},
         };
 
         auto requests = merovingian::sync::SlidingSyncExtensionRequests{};
@@ -316,15 +297,8 @@ SCENARIO("Sliding sync extensions build scoped to-device e2ee account-data recei
 
         WHEN("the enabled extensions are built for the current response")
         {
-            auto const responses = merovingian::sync::build_extensions(
-                runtime,
-                "@alice:example.org",
-                "ALICE",
-                requests,
-                2U,
-                2U,
-                store,
-                {"!room-a:example.org"});
+            auto const responses = merovingian::sync::build_extensions(runtime, "@alice:example.org", "ALICE", requests,
+                                                                       2U, 2U, store, {"!room-a:example.org"});
 
             THEN("each extension returns only the expected scoped data")
             {
@@ -356,15 +330,13 @@ SCENARIO("Sliding sync extensions build scoped to-device e2ee account-data recei
                 REQUIRE(responses.receipts->rooms_json.size() == 1U);
                 REQUIRE(responses.receipts->rooms_json.contains("!room-a:example.org"));
                 REQUIRE_FALSE(responses.receipts->rooms_json.contains("!room-b:example.org"));
-                auto const receipt_content = parse_object(
-                    responses.receipts->rooms_json.at("!room-a:example.org"));
+                auto const receipt_content = parse_object(responses.receipts->rooms_json.at("!room-a:example.org"));
                 REQUIRE(object_member(receipt_content, "$event-a") != nullptr);
 
                 REQUIRE(responses.typing.has_value());
                 REQUIRE(responses.typing->rooms_json.size() == 1U);
                 REQUIRE(responses.typing->rooms_json.contains("!room-b:example.org"));
-                auto const typing_content = parse_object(
-                    responses.typing->rooms_json.at("!room-b:example.org"));
+                auto const typing_content = parse_object(responses.typing->rooms_json.at("!room-b:example.org"));
                 auto const* user_ids = array_member(typing_content, "user_ids");
                 REQUIRE(user_ids != nullptr);
                 REQUIRE(user_ids->size() == 1U);
