@@ -1,3 +1,14 @@
+## 0.9.20
+
+### Fixed
+- **fix(database): persist sync_stream_watermark so sync stream IDs cannot roll back across restart:** `sync_stream_id` is the monotonically-increasing third component of the `/sync` stream token triplet and is used for to-device messages, device-list changes, presence, global account data, room account data, typing notifications, and read receipts. In-memory-only sync surfaces (`rt.homeserver.typing_users` and `rt.homeserver.receipts`) previously advanced the counter without persisting it, so a server restart could reset `next_sync_stream_id` to a value the client had already seen. This caused `/sync` long-polls to skip new ephemeral events and, in some clients, to return an empty `rooms.join`. A new `sync_stream_watermark` table stores the highest allocated ID, and `database::allocate_sync_stream_id()` atomically increments the in-memory counter and persists it before returning the ID. Fresh installs bootstrap schema version `1` and apply migration `002_sync_stream_watermark.sql`; existing version-`1` deployments migrate cleanly to version `2`.
+- **fix(sync): ensure ephemeral typing and receipt events advance the persistent sync stream counter:** the `PUT /typing/{userId}` endpoint, receipt handling, and account-data/account-data paths previously advanced `rt.database.next_sync_stream_id` directly, which was both un-persisted and leaked counter-management details across modules. They now call `database::allocate_sync_stream_id(store)` so every typing notification, read receipt, and account-data write bumps the durable watermark, keeping the ordering stable across restarts.
+- **fix(sync): deliver typing notifications to `/sync` recipients after homeserver restart:** because the sync stream counter could roll back after restart, a typing event written after restart could carry an ID less than or equal to the recipient's `since` token. The `/sync` response builder therefore ignored it and the recipient saw no `m.typing` ephemeral event. With the watermark in place, allocated IDs are always strictly greater than any ID previously returned to clients, so typing notifications are delivered correctly after restart.
+
+### Added
+- **test(database): add regression coverage for sync stream watermark persistence:** `tests/unit/test_database_persistence.cpp` adds `SCENARIO("Sync stream watermark prevents sync-stream id rollback across SQLite restart")`, which writes a watermark via `allocate_sync_stream_id()`, re-opens the SQLite persistent store, and asserts the restored counter is greater than the pre-restart value.
+- **test(sync): add typing notification delivery regression test:** `tests/integration/test_client_server_flow.cpp` adds `SCENARIO("Typing notifications are delivered via ephemeral events in /sync")`, which creates a room, starts typing, waits for the recipient's `/sync` to return the `m.typing` ephemeral event, and asserts it contains the sender.
+
 ## 0.9.19
 
 ### Fixed

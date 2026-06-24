@@ -421,8 +421,7 @@ struct PersistentStoreOpenResult final
 // the SQLite/PostgreSQL store hydration so the encoding stays consistent.
 [[nodiscard]] auto expires_at_text(std::optional<std::chrono::system_clock::time_point> const& expires_at)
     -> std::string;
-[[nodiscard]] auto parse_expires_at(std::string_view text)
-    -> std::optional<std::chrono::system_clock::time_point>;
+[[nodiscard]] auto parse_expires_at(std::string_view text) -> std::optional<std::chrono::system_clock::time_point>;
 
 [[nodiscard]] auto open_persistent_store(SchemaState existing_state = {}) -> PersistentStoreOpenResult;
 [[nodiscard]] auto open_sqlite_persistent_store(std::string const& path) -> PersistentStoreOpenResult;
@@ -437,8 +436,8 @@ struct PersistentStoreOpenResult final
 // change and mirrors it into the in-memory store. Returns false if the user is
 // not found. Does NOT revoke access tokens — per spec v1.18, locking and
 // suspending keep existing sessions intact and enforce via request-path gates.
-[[nodiscard]] auto set_user_account_state(PersistentStore& store, std::string_view user_id, bool suspended,
-                                          bool locked) -> bool;
+[[nodiscard]] auto set_user_account_state(PersistentStore& store, std::string_view user_id, bool suspended, bool locked)
+    -> bool;
 [[nodiscard]] auto store_device(PersistentStore& store, PersistentDevice device) -> bool;
 [[nodiscard]] auto store_access_token(PersistentStore& store, PersistentAccessToken token) -> bool;
 [[nodiscard]] auto store_refresh_token(PersistentStore& store, PersistentRefreshToken token) -> bool;
@@ -566,11 +565,17 @@ enum class MembershipStoreResult
 // Sets `store.next_sync_stream_id` to the maximum stream_id observed
 // across every sync-surface row already loaded into memory (account_data,
 // room account_data, to_device_messages, device_list_changes,
-// presence_state). Backend hydration paths call this after populating
-// the in-memory mirrors so a process restart preserves the monotonic
-// invariant that next_sync_stream_id is strictly greater than every
-// stream id a client has ever seen.
+// presence_state) and the persisted `sync_stream_watermark` singleton.
+// Backend hydration paths call this after populating the in-memory mirrors
+// so a process restart preserves the monotonic invariant that
+// next_sync_stream_id is strictly greater than every stream id a client
+// has ever seen.
 auto restore_sync_stream_id(PersistentStore& store) -> void;
+// Atomically increments `store.next_sync_stream_id`, persists the new
+// value to the `sync_stream_watermark` singleton, and returns it. Every
+// sync-surface ID allocation must flow through this helper so a restart
+// cannot roll the counter backward behind a client's since-token.
+[[nodiscard]] auto allocate_sync_stream_id(PersistentStore& store) -> std::uint64_t;
 [[nodiscard]] auto sensitive_values_are_redacted(PersistentStore const& store) noexcept -> bool;
 
 namespace detail

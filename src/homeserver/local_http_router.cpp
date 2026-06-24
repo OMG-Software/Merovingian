@@ -861,10 +861,9 @@ namespace
                 auto existing = std::ranges::find_if(rt->typing_users, [&](auto const& t) {
                     return t.room_id == room_id && t.user_id == user_id;
                 });
+                auto const stream_id = database::allocate_sync_stream_id(rt->database.persistent_store);
                 if (typing)
                 {
-                    rt->database.persistent_store.next_sync_stream_id += 1U;
-                    auto const stream_id = rt->database.persistent_store.next_sync_stream_id;
                     if (existing != rt->typing_users.end())
                     {
                         existing->typing = true;
@@ -877,7 +876,6 @@ namespace
                 }
                 else
                 {
-                    rt->database.persistent_store.next_sync_stream_id += 1U;
                     if (existing != rt->typing_users.end())
                     {
                         rt->typing_users.erase(existing);
@@ -946,8 +944,7 @@ namespace
                                 return current.room_id == room_member.key && current.user_id == user_member.key &&
                                        current.receipt_type == receipt_type_member.key;
                             });
-                            rt->database.persistent_store.next_sync_stream_id += 1U;
-                            auto const stream_id = rt->database.persistent_store.next_sync_stream_id;
+                            auto const stream_id = database::allocate_sync_stream_id(rt->database.persistent_store);
                             if (existing != rt->receipts.end())
                             {
                                 existing->event_id = *first_event_id;
@@ -1273,14 +1270,14 @@ namespace
                     membership_changed = true;
                 }
             }
+            auto sync_stream_id = rt->database.persistent_store.next_sync_stream_id;
             if (membership_changed)
             {
-                rt->database.persistent_store.next_sync_stream_id += 1U;
+                sync_stream_id = database::allocate_sync_stream_id(rt->database.persistent_store);
             }
             if (rt->sync_notifier != nullptr)
             {
-                rt->sync_notifier->publish(rt->database.next_stream_ordering - 1U,
-                                           rt->database.persistent_store.next_sync_stream_id);
+                rt->sync_notifier->publish(rt->database.next_stream_ordering - 1U, sync_stream_id);
             }
             auto auth_chain = std::vector<std::string>{};
             auto state_events = std::vector<std::string>{};
@@ -1438,11 +1435,10 @@ namespace
                     return {false, 500U, "invite event persistence failed", {}};
                 }
             }
-            rt->database.persistent_store.next_sync_stream_id += 1U;
+            auto const sync_stream_id = database::allocate_sync_stream_id(rt->database.persistent_store);
             if (rt->sync_notifier != nullptr)
             {
-                rt->sync_notifier->publish(rt->database.next_stream_ordering - 1U,
-                                           rt->database.persistent_store.next_sync_stream_id);
+                rt->sync_notifier->publish(rt->database.next_stream_ordering - 1U, sync_stream_id);
             }
             return {true, 200U, {}, std::move(*signed_event)};
         };
@@ -1524,7 +1520,8 @@ namespace
             return federation::build_get_missing_events_response(rt->database.persistent_store, room_id, body);
         };
 
-        runtime.federation.space_hierarchy_provider = [rt](std::string_view room_id, bool suggested_only) -> std::string {
+        runtime.federation.space_hierarchy_provider = [rt](std::string_view room_id,
+                                                           bool suggested_only) -> std::string {
             return build_federation_space_hierarchy_response(*rt, room_id, suggested_only);
         };
 

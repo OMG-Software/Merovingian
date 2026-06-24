@@ -1,14 +1,13 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "merovingian/database/postgresql_store.hpp"
+
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
-#include "merovingian/database/postgresql_store.hpp"
 #include "merovingian/database/schema.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
-
-#include <libpq-fe.h>
 
 #include <algorithm>
 #include <cstddef>
@@ -21,6 +20,8 @@
 #include <tuple>
 #include <utility>
 #include <vector>
+
+#include <libpq-fe.h>
 
 namespace merovingian::database
 {
@@ -362,9 +363,9 @@ namespace
             }
         }
 
-        auto tokens =
-            query_rows(connection, "postgresql_load_access_tokens",
-                       "SELECT user_id, device_id, token_hash, revoked, expires_at FROM access_tokens ORDER BY token_hash");
+        auto tokens = query_rows(
+            connection, "postgresql_load_access_tokens",
+            "SELECT user_id, device_id, token_hash, revoked, expires_at FROM access_tokens ORDER BY token_hash");
         if (!tokens.ok)
         {
             return false;
@@ -378,9 +379,9 @@ namespace
             }
         }
 
-        auto refresh_tokens =
-            query_rows(connection, "postgresql_load_refresh_tokens",
-                       "SELECT user_id, device_id, token_hash, revoked, expires_at FROM refresh_tokens ORDER BY token_hash");
+        auto refresh_tokens = query_rows(
+            connection, "postgresql_load_refresh_tokens",
+            "SELECT user_id, device_id, token_hash, revoked, expires_at FROM refresh_tokens ORDER BY token_hash");
         if (!refresh_tokens.ok)
         {
             return false;
@@ -906,6 +907,20 @@ namespace
             if (row.size() >= 5U)
             {
                 store.client_txn_ids.push_back({row[0], row[1], row[2], row[3], row[4]});
+            }
+        }
+
+        auto const watermark = query_rows(connection, "postgresql_load_sync_stream_watermark",
+                                          "SELECT watermark FROM sync_stream_watermark");
+        if (!watermark.ok)
+        {
+            return false;
+        }
+        for (auto const& row : watermark.rows)
+        {
+            if (!row.empty())
+            {
+                store.next_sync_stream_id = parse_u64(row[0]);
             }
         }
         return true;

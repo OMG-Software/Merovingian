@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.9.19
+Version:        0.9.20
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -111,6 +111,13 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Tue Jun 23 2026 James Chapman <claude@ping.me.uk> - 0.9.20-1
+- fix(database): persist sync_stream_watermark so sync stream IDs cannot roll back across restart
+- fix(sync): ensure ephemeral typing and receipt events advance the persistent sync stream counter
+- fix(sync): deliver typing notifications to /sync recipients after homeserver restart
+- test(database): add regression coverage for sync stream watermark persistence
+- test(sync): add typing notification delivery regression test
+
 * Tue Jun 23 2026 James Chapman <claude@ping.me.uk> - 0.9.19-1
 - fix(sync): stop ElementX sliding-sync loop caused by repeated room re-inclusion
 - fix(sync): wake MSC4186 sliding sync long-poll on typing and read receipts in joined rooms

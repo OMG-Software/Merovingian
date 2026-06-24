@@ -11,14 +11,13 @@ NNN_snake_case_description.sql
 
 `NNN` is a zero-padded three-digit integer: `001`, `002`, ..., `010`, `011`, ...
 The next migration number is always `max(existing) + 1`.
-Current highest: `001`.
+Current highest: `002`.
 
-Until the project reaches production-ready `v1.0.0`, the checked-in schema
-remains a single version-1 initial schema. Fold pre-production table additions
-into `001_initial_schema.sql`; do not add `ALTER TABLE` migration files for
-pre-beta/pre-1.0 schema churn. After `v1.0.0`, deployed databases become a
-compatibility boundary and schema changes must be added as new forward
-migration files instead of modifying already-applied migrations.
+Schema version `2` introduced the `sync_stream_watermark` table via
+`002_sync_stream_watermark.sql` to support live pre-production deployments that
+must upgrade in place. After `v1.0.0`, deployed databases become a strict
+compatibility boundary and schema changes must be added as new forward migration
+files instead of modifying already-applied migrations.
 
 ## File format
 

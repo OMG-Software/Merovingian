@@ -232,10 +232,10 @@ auto migration_plan_summary(MigrationPlan const& plan) -> std::string
 
 auto initial_schema_migration() -> MigrationStep
 {
-    // The schema deploys at version 1 in its final shape. There are no live
-    // databases to upgrade — every install lands on this initial schema and
-    // remains there until a future schema change is required, at which
-    // point a new migration step will be added.
+    // The schema deploys at version 1. Later numbered migrations bring the
+    // store up to current_schema_version(). Fresh installs create the v1 shape
+    // first so that the same migration chain upgrades both new and existing
+    // databases.
     auto statements = std::vector<PreparedStatement>{};
     for (auto const& table : initial_schema_definitions())
     {
@@ -261,14 +261,28 @@ auto downgrade_initial_schema_migration() -> MigrationStep
     return {0U, "drop_initial_schema", std::move(statements), MigrationDirection::downgrade};
 }
 
+[[nodiscard]] auto upgrade_sync_stream_watermark_migration() -> MigrationStep
+{
+    auto statements = std::vector<PreparedStatement>{};
+    statements.push_back(make_create_table_statement(schema_table_definition("sync_stream_watermark").value()).value());
+    return {2U, "sync_stream_watermark", std::move(statements), MigrationDirection::upgrade};
+}
+
 auto upgrade_migration_catalog() -> std::vector<MigrationStep>
 {
-    return {initial_schema_migration()};
+    return {initial_schema_migration(), upgrade_sync_stream_watermark_migration()};
+}
+
+[[nodiscard]] auto downgrade_sync_stream_watermark_migration() -> MigrationStep
+{
+    auto statements = std::vector<PreparedStatement>{};
+    statements.push_back(make_drop_table_statement("sync_stream_watermark").value());
+    return {1U, "drop_sync_stream_watermark", std::move(statements), MigrationDirection::downgrade};
 }
 
 auto downgrade_migration_catalog() -> std::vector<MigrationStep>
 {
-    return {downgrade_initial_schema_migration()};
+    return {downgrade_sync_stream_watermark_migration(), downgrade_initial_schema_migration()};
 }
 
 auto migration_plan_between(std::uint32_t current_version, std::uint32_t target_version) -> MigrationPlan
@@ -392,7 +406,7 @@ auto schema_state_is_compatible(SchemaState const& state) -> MigrationValidation
     {
         return {false, "current schema migration is not recorded"};
     }
-    for (auto const table : initial_schema_tables())
+    for (auto const table : current_schema_tables())
     {
         if (!has_table(state, table))
         {

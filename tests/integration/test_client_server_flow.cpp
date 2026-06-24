@@ -161,7 +161,7 @@ SCENARIO("Integrated client-server flow covers account 3PID request add list and
             REQUIRE(email_sid != nullptr);
 
             auto const add_body = std::string{R"({"client_secret":"secret123","sid":")"} + *email_sid +
-                                  R"(","auth":{"type":"m.login.password","password":"CorrectHorse7!"}})" ;
+                                  R"(","auth":{"type":"m.login.password","password":"CorrectHorse7!"}})";
             auto const add = merovingian::homeserver::handle_client_server_request(
                 runtime, {"POST", "/_matrix/client/v3/account/3pid/add", alice, add_body});
             auto const listed = merovingian::homeserver::handle_client_server_request(
@@ -215,7 +215,7 @@ SCENARIO("Integrated client-server flow rejects invalid and duplicate account 3P
                 {"POST", "/_matrix/client/v3/account/3pid/add", alice,
                  R"({"client_secret":"secret123","sid":"missing-session","auth":{"type":"m.login.password","password":"CorrectHorse7!"}})"});
             auto const add_body = std::string{R"({"client_secret":"secret123","sid":")"} + *email_sid +
-                                  R"(","auth":{"type":"m.login.password","password":"CorrectHorse7!"}})" ;
+                                  R"(","auth":{"type":"m.login.password","password":"CorrectHorse7!"}})";
             auto const alice_add = merovingian::homeserver::handle_client_server_request(
                 runtime, {"POST", "/_matrix/client/v3/account/3pid/add", alice, add_body});
             auto const duplicate_request = merovingian::homeserver::handle_client_server_request(
@@ -1123,6 +1123,81 @@ SCENARIO("GET /_merovingian/admin/audit filters by category and event_type query
             {
                 REQUIRE(response.status == 400U);
                 REQUIRE(response.body.find("unknown audit category") != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("Typing notifications are delivered via ephemeral events in /sync",
+         "[homeserver][client-server][integration][sync][typing][regression]")
+{
+    GIVEN("two joined users with active sync streams")
+    {
+        auto const config = registration_enabled_config();
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const alice = register_session(runtime, "alice_typing", "CorrectHorse7!");
+        auto const bob = register_session(runtime, "bob_typing", "CorrectHorse8!");
+
+        auto const create_body = std::string{"{\"preset\":\"private_chat\",\"invite\":[\""} + bob.user_id + "\"]}";
+        auto const create = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", alice.access_token, create_body});
+        REQUIRE(create.response.status == 200U);
+        auto const room_id = response_string_field(create.response.body, "room_id");
+
+        auto const bob_initial_sync = merovingian::homeserver::handle_client_server_request(
+            runtime, {"GET", "/_matrix/client/v3/sync", bob.access_token, {}});
+        REQUIRE(bob_initial_sync.response.status == 200U);
+        auto const bob_from = sync_next_batch(bob_initial_sync.response.body);
+
+        auto const join = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/join", bob.access_token, "{}"});
+        REQUIRE(join.response.status == 200U);
+
+        // Drain alice's initial sync so she has a since token to detect new ephemeral data.
+        auto const alice_initial_sync = merovingian::homeserver::handle_client_server_request(
+            runtime, {"GET", "/_matrix/client/v3/sync", alice.access_token, {}});
+        REQUIRE(alice_initial_sync.response.status == 200U);
+        auto const alice_from = sync_next_batch(alice_initial_sync.response.body);
+
+        WHEN("one user starts typing in the room")
+        {
+            auto const typing_body = std::string{"{\"typing\":true,\"timeout\":30000}"};
+            auto const typing = merovingian::homeserver::handle_client_server_request(
+                runtime, {"PUT", "/_matrix/client/v3/rooms/" + room_id + "/typing/" + bob.user_id, bob.access_token,
+                          typing_body});
+            REQUIRE(typing.response.status == 200U);
+
+            auto const alice_sync = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/sync?since=" + alice_from, alice.access_token, {}});
+            REQUIRE(alice_sync.response.status == 200U);
+            auto const alice_sync_body = parse_object(alice_sync.response.body);
+            auto const* rooms = object_member_as_object(alice_sync_body, "rooms");
+            REQUIRE(rooms != nullptr);
+            auto const* joins = object_member_as_object(*rooms, "join");
+            REQUIRE(joins != nullptr);
+            auto const* room = object_member_as_object(*joins, room_id);
+            REQUIRE(room != nullptr);
+            auto const* ephemeral = object_member_as_object(*room, "ephemeral");
+            REQUIRE(ephemeral != nullptr);
+            auto const* events = object_member_as_array(*ephemeral, "events");
+            REQUIRE(events != nullptr);
+
+            THEN("the recipient's /sync includes an m.typing ephemeral event naming the typing user")
+            {
+                REQUIRE(std::ranges::any_of(*events, [&bob](merovingian::canonicaljson::Value const& value) {
+                    auto const* event = std::get_if<merovingian::canonicaljson::Object>(&value.storage());
+                    auto const* type = event == nullptr ? nullptr : string_member(*event, "type");
+                    auto const* content = event == nullptr ? nullptr : object_member_as_object(*event, "content");
+                    auto const* user_ids = content == nullptr ? nullptr : object_member_as_array(*content, "user_ids");
+                    return type != nullptr && *type == "m.typing" && user_ids != nullptr &&
+                           std::ranges::any_of(*user_ids, [&bob](merovingian::canonicaljson::Value const& id) {
+                               auto const* text = std::get_if<std::string>(&id.storage());
+                               return text != nullptr && *text == bob.user_id;
+                           });
+                }));
             }
         }
     }

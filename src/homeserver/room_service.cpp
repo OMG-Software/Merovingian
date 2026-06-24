@@ -10,6 +10,7 @@
 #include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/crypto/secret_box.hpp"
 #include "merovingian/crypto/signing_service.hpp"
+#include "merovingian/database/persistent_store.hpp"
 #include "merovingian/events/authorization.hpp"
 #include "merovingian/events/event.hpp"
 #include "merovingian/events/event_id.hpp"
@@ -798,11 +799,10 @@ namespace
             return make_operation_result(false, {}, "invite metadata cleanup failed", 500U);
         }
 
-        runtime.database.persistent_store.next_sync_stream_id += 1U;
+        auto const sync_stream_id = database::allocate_sync_stream_id(runtime.database.persistent_store);
         if (runtime.sync_notifier != nullptr)
         {
-            runtime.sync_notifier->publish(runtime.database.next_stream_ordering - 1U,
-                                           runtime.database.persistent_store.next_sync_stream_id);
+            runtime.sync_notifier->publish(runtime.database.next_stream_ordering - 1U, sync_stream_id);
         }
         return make_operation_result(true, std::string{room_id});
     }
@@ -2172,15 +2172,14 @@ namespace
     });
     // Room creation changes membership which is visible in /sync;
     // advance the sync stream counter so the publish wakes clients.
-    runtime.database.persistent_store.next_sync_stream_id += 1U;
+    auto sync_stream_id = database::allocate_sync_stream_id(runtime.database.persistent_store);
     if (invited_anyone)
     {
-        runtime.database.persistent_store.next_sync_stream_id += 1U;
+        sync_stream_id = database::allocate_sync_stream_id(runtime.database.persistent_store);
     }
     if (runtime.sync_notifier != nullptr)
     {
-        runtime.sync_notifier->publish(runtime.database.next_stream_ordering - 1U,
-                                       runtime.database.persistent_store.next_sync_stream_id);
+        runtime.sync_notifier->publish(runtime.database.next_stream_ordering - 1U, sync_stream_id);
     }
     return make_operation_result(true, room_id);
 }
@@ -2892,11 +2891,10 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
         });
         // Membership change from remote join is visible in /sync; advance
         // the sync stream counter so the publish wakes clients.
-        runtime.database.persistent_store.next_sync_stream_id += 1U;
+        auto const sync_stream_id = database::allocate_sync_stream_id(runtime.database.persistent_store);
         if (runtime.sync_notifier != nullptr)
         {
-            runtime.sync_notifier->publish(runtime.database.next_stream_ordering - 1U,
-                                           runtime.database.persistent_store.next_sync_stream_id);
+            runtime.sync_notifier->publish(runtime.database.next_stream_ordering - 1U, sync_stream_id);
         }
         return make_operation_result(true, std::string{room_id});
     }
@@ -3029,11 +3027,10 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
     });
     // Membership change from local join is visible in /sync; advance
     // the sync stream counter so the publish wakes clients.
-    runtime.database.persistent_store.next_sync_stream_id += 1U;
+    auto const sync_stream_id = database::allocate_sync_stream_id(runtime.database.persistent_store);
     if (runtime.sync_notifier != nullptr)
     {
-        runtime.sync_notifier->publish(runtime.database.next_stream_ordering - 1U,
-                                       runtime.database.persistent_store.next_sync_stream_id);
+        runtime.sync_notifier->publish(runtime.database.next_stream_ordering - 1U, sync_stream_id);
     }
     return make_operation_result(true, std::string{room_id});
 }
@@ -3315,11 +3312,10 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
         }
         apply_runtime_membership(runtime.database, room_id, *user_id, "leave");
         std::ignore = database::delete_invite(runtime.database.persistent_store, room_id, *user_id);
-        runtime.database.persistent_store.next_sync_stream_id += 1U;
+        auto const sync_stream_id = database::allocate_sync_stream_id(runtime.database.persistent_store);
         if (runtime.sync_notifier != nullptr)
         {
-            runtime.sync_notifier->publish(runtime.database.next_stream_ordering - 1U,
-                                           runtime.database.persistent_store.next_sync_stream_id);
+            runtime.sync_notifier->publish(runtime.database.next_stream_ordering - 1U, sync_stream_id);
         }
         append_local_audit(runtime.database, observability::AuditCategory::admin, "room.left_remote", *user_id, room_id,
                            "left via federation");
@@ -3513,11 +3509,10 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
         return make_operation_result(false, {}, "invite metadata cleanup failed", 500U);
     }
 
-    runtime.database.persistent_store.next_sync_stream_id += 1U;
+    auto const sync_stream_id = database::allocate_sync_stream_id(runtime.database.persistent_store);
     if (runtime.sync_notifier != nullptr)
     {
-        runtime.sync_notifier->publish(runtime.database.next_stream_ordering - 1U,
-                                       runtime.database.persistent_store.next_sync_stream_id);
+        runtime.sync_notifier->publish(runtime.database.next_stream_ordering - 1U, sync_stream_id);
     }
     append_local_audit(runtime.database, observability::AuditCategory::admin, "room.forgotten", *user_id, room_id,
                        "forgotten");
