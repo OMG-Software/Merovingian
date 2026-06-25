@@ -1,3 +1,11 @@
+## 0.9.22
+
+### Fixed
+- **fix(client-server): implement `POST /_matrix/client/v3/pushers/set` so Element X stops showing "route not found" when registering for push notifications:** the endpoint was unimplemented and returned `404 M_UNRECOGNIZED`, causing Element X to report that it could not receive notifications. The handler now validates the request body per Matrix v1.18 (required `app_id`, `pushkey`, and `kind`; additional `app_display_name`, `data`, `device_display_name`, and `lang` for non-null kinds; HTTPS `/_matrix/push/v1/notify` URL for HTTP pushers) and returns `200 {}`. Merovingian still does not deliver push notifications, but clients can now register without error.
+
+### Added
+- **test(client-server): add BDD coverage for `POST /_matrix/client/v3/pushers/set`:** `tests/unit/test_client_server.cpp` exercises valid HTTP pusher registration, pusher deletion (`kind:null`), missing required fields, non-HTTPS URL rejection, missing notify-path rejection, and unauthenticated rejection. `tests/conformance/test_client_server_conformance.cpp` asserts the spec-required `200 {}` response shape for both registration and deletion.
+
 ## 0.9.21
 
 ### Fixed

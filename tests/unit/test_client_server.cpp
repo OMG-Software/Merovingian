@@ -3681,6 +3681,123 @@ SCENARIO("Push rules endpoint returns the spec default global ruleset for authen
     }
 }
 
+SCENARIO("Pushers set endpoint accepts registrations and deletions from authenticated clients",
+         "[homeserver][client-server][pushers]")
+{
+    GIVEN("a started runtime with a registered and logged-in user")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const reg = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST",
+                      "/_matrix/client/v3/register",
+                      {},
+                      merovingian::tests::registration_json("alice", "CorrectHorse7!")});
+        REQUIRE(reg.response.status == 200U);
+
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+
+        auto constexpr valid_http_pusher = R"({
+            "app_display_name":"Element X",
+            "app_id":"io.element.elementx",
+            "append":false,
+            "data":{"format":"event_id_only","url":"https://push.example.org/_matrix/push/v1/notify"},
+            "device_display_name":"Phone",
+            "kind":"http",
+            "lang":"en",
+            "profile_tag":"tag1",
+            "pushkey":"APA91bHPRgkF3JUikC4ENAHEeMrd41Zxv3hVZjC9KtT8OvPVGJ-hQMRKRrZuJAEcl7B338qju59zJMjw2DELjzEvxwYv7hH5Ynpc1ODQ0aT4U4OFEeco8ohsN5PjL1iC2dNtk2BAokeMCg2ZXKqpc8FXKmhX94kIxQ"
+        })";
+
+        WHEN("POST /_matrix/client/v3/pushers/set is called with a valid HTTP pusher")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/pushers/set", token, valid_http_pusher});
+
+            THEN("the response is 200 with an empty JSON object")
+            {
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(response.response.body == "{}");
+            }
+        }
+
+        WHEN("POST /_matrix/client/v3/pushers/set is called with kind:null to delete a pusher")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST", "/_matrix/client/v3/pushers/set", token,
+                 R"({"app_id":"io.element.elementx","kind":null,"pushkey":"APA91bHPRgkF3JUikC4ENAHEeMrd41Zxv3hVZjC9KtT8OvPVGJ-hQMRKRrZuJAEcl7B338qju59zJMjw2DELjzEvxwYv7hH5Ynpc1ODQ0aT4U4OFEeco8ohsN5PjL1iC2dNtk2BAokeMCg2ZXKqpc8FXKmhX94kIxQ"})"});
+
+            THEN("the response is 200 with an empty JSON object")
+            {
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(response.response.body == "{}");
+            }
+        }
+
+        WHEN("POST /_matrix/client/v3/pushers/set is missing required fields")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST", "/_matrix/client/v3/pushers/set", token, R"({"app_id":"io.element.elementx","kind":"http"})"});
+
+            THEN("the response is 400 M_BAD_JSON")
+            {
+                REQUIRE(response.response.status == 400U);
+                REQUIRE(response.response.body.find("M_BAD_JSON") != std::string::npos);
+            }
+        }
+
+        WHEN("POST /_matrix/client/v3/pushers/set has an HTTP pusher with a non-HTTPS URL")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST", "/_matrix/client/v3/pushers/set", token,
+                 R"({"app_display_name":"Element X","app_id":"io.element.elementx","data":{"url":"http://insecure.example.org/_matrix/push/v1/notify"},"device_display_name":"Phone","kind":"http","lang":"en","pushkey":"key1"})"});
+
+            THEN("the response is 400 M_BAD_JSON")
+            {
+                REQUIRE(response.response.status == 400U);
+                REQUIRE(response.response.body.find("M_BAD_JSON") != std::string::npos);
+            }
+        }
+
+        WHEN("POST /_matrix/client/v3/pushers/set has an HTTP pusher with a URL missing the notify path")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST", "/_matrix/client/v3/pushers/set", token,
+                 R"({"app_display_name":"Element X","app_id":"io.element.elementx","data":{"url":"https://push.example.org/wrong/path"},"device_display_name":"Phone","kind":"http","lang":"en","pushkey":"key1"})"});
+
+            THEN("the response is 400 M_BAD_JSON")
+            {
+                REQUIRE(response.response.status == 400U);
+                REQUIRE(response.response.body.find("M_BAD_JSON") != std::string::npos);
+            }
+        }
+
+        WHEN("POST /_matrix/client/v3/pushers/set is requested without a token")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/pushers/set", {}, valid_http_pusher});
+
+            THEN("the response is 401")
+            {
+                REQUIRE(response.response.status == 401U);
+            }
+        }
+    }
+}
+
 SCENARIO("Keys upload accepts bodies larger than 4 KiB", "[homeserver][client-server][key-api]")
 {
     GIVEN("a started runtime with a registered and logged-in user")

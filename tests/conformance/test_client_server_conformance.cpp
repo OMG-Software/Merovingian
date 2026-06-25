@@ -9583,36 +9583,6 @@ SCENARIO("GET /pushers returns 200 with empty pushers array", "[conformance][cli
     }
 }
 
-// --- POST /_matrix/client/v3/pushers/set -------------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3pushersset
-// IMPLEMENTATION GAP: pusher configuration not yet implemented.
-SCENARIO("POST /pushers/set returns 404 M_UNRECOGNIZED (implementation gap)", "[conformance][client-server][push]")
-{
-    GIVEN("a running client-server and a logged-in user")
-    {
-        auto started = merovingian::homeserver::start_client_server(conformance_config());
-        REQUIRE(started.started);
-        auto const token = logged_in_token(started.runtime);
-
-        WHEN("POST /pushers/set is called")
-        {
-            auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime, {"POST", "/_matrix/client/v3/pushers/set", token,
-                                  R"({"kind":null,"app_id":"org.example","pushkey":"key1"})"});
-
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
-            {
-                // IMPLEMENTATION GAP: pusher configuration not supported.
-                REQUIRE(response.response.status == 404U);
-                auto const body = parse_object(response.response.body);
-                auto const* errcode = string_member(body, "errcode");
-                REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
-            }
-        }
-    }
-}
-
 // =============================================================================
 // REPORTING
 // =============================================================================
@@ -13708,6 +13678,54 @@ SCENARIO("GET /sync with an unknown filter_id returns 400", "[conformance][clien
                 auto const* errcode = string_member(body, "errcode");
                 REQUIRE(errcode != nullptr);
                 REQUIRE(*errcode == "M_NOT_FOUND");
+            }
+        }
+    }
+}
+
+// --- POST /_matrix/client/v3/pushers/set --------------------------------------
+// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3pushersset
+//
+// MUST return HTTP 200 with an empty JSON object {} when the pusher is set.
+// Merovingian does not yet deliver push notifications, but the endpoint must be
+// present so clients (Element X) do not fail to register their push gateway.
+SCENARIO("POST /pushers/set returns 200 with empty JSON object", "[conformance][client-server][pushers]")
+{
+    GIVEN("a logged-in device")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+
+        WHEN("the device registers an HTTP pusher")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/pushers/set", token,
+                 R"({"app_display_name":"Element X","app_id":"io.element.elementx","append":false,"data":{"format":"event_id_only","url":"https://push.example.org/_matrix/push/v1/notify"},"device_display_name":"Phone","kind":"http","lang":"en","profile_tag":"tag1","pushkey":"APA91bHPRgkF3JUikC4ENAHEeMrd41Zxv3hVZjC9KtT8OvPVGJ-hQMRKRrZuJAEcl7B338qju59zJMjw2DELjzEvxwYv7hH5Ynpc1ODQ0aT4U4OFEeco8ohsN5PjL1iC2dNtk2BAokeMCg2ZXKqpc8FXKmhX94kIxQ"})"});
+
+            THEN("the response is 200 with an empty object")
+            {
+                // Spec MUST: success returns {}.
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+                REQUIRE(body.empty());
+            }
+        }
+
+        WHEN("the device deletes a pusher with kind:null")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/pushers/set", token,
+                 R"({"app_id":"io.element.elementx","kind":null,"pushkey":"APA91bHPRgkF3JUikC4ENAHEeMrd41Zxv3hVZjC9KtT8OvPVGJ-hQMRKRrZuJAEcl7B338qju59zJMjw2DELjzEvxwYv7hH5Ynpc1ODQ0aT4U4OFEeco8ohsN5PjL1iC2dNtk2BAokeMCg2ZXKqpc8FXKmhX94kIxQ"})"});
+
+            THEN("the response is 200 with an empty object")
+            {
+                // Spec MUST: deletion also returns {}.
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+                REQUIRE(body.empty());
             }
         }
     }
