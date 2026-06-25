@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.9.20
+Version:        0.9.21
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -100,6 +100,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Wed Jun 24 2026 James Chapman <claude@ping.me.uk> - 0.9.21-1
+- fix(sync): emit explicit m.typing stop events so typing notifications can restart after a user stops typing
+
 * Tue Jun 23 2026 James Chapman <claude@ping.me.uk> - 0.9.20-1
 - fix(database): persist sync_stream_watermark so sync stream IDs cannot roll back across restart
 - fix(sync): ensure ephemeral typing and receipt events advance the persistent sync stream counter

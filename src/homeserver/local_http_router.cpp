@@ -19,6 +19,7 @@
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/media_service.hpp"
 #include "merovingian/homeserver/room_service.hpp"
+#include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/homeserver/space_hierarchy.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
@@ -858,20 +859,19 @@ namespace
                 {
                     return {federation::EduDispositionStatus::rejected_invalid, "empty room_id or user_id"};
                 }
+                auto const previous_users = current_typing_users_in_room(*rt, room_id);
                 auto existing = std::ranges::find_if(rt->typing_users, [&](auto const& t) {
                     return t.room_id == room_id && t.user_id == user_id;
                 });
-                auto const stream_id = database::allocate_sync_stream_id(rt->database.persistent_store);
                 if (typing)
                 {
                     if (existing != rt->typing_users.end())
                     {
                         existing->typing = true;
-                        existing->stream_id = stream_id;
                     }
                     else
                     {
-                        rt->typing_users.push_back({room_id, user_id, true, stream_id});
+                        rt->typing_users.push_back({room_id, user_id, true, std::uint64_t{0U}});
                     }
                 }
                 else
@@ -881,7 +881,8 @@ namespace
                         rt->typing_users.erase(existing);
                     }
                 }
-                if (rt->sync_notifier != nullptr)
+                auto const room_stream_id = update_room_typing_stream_id_if_changed(*rt, room_id, previous_users);
+                if (room_stream_id != std::uint64_t{0U} && rt->sync_notifier != nullptr)
                 {
                     rt->sync_notifier->publish(rt->database.next_stream_ordering - 1U,
                                                rt->database.persistent_store.next_sync_stream_id);

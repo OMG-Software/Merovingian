@@ -174,6 +174,10 @@ struct HomeserverRuntime final
     sync::SyncNotifier* sync_notifier{nullptr};
     std::vector<InboundTypingUser> typing_users{};
     std::vector<InboundReceipt> receipts{};
+    // Per-room monotonic cursor advanced whenever the set of typing users in
+    // the room changes.  Used by /sync and MSC4186 typing extensions to emit
+    // the current (possibly empty) typing list on every change.
+    std::map<std::string, std::uint64_t> room_typing_stream_id{};
     // Per-connection MSC4186 sliding sync state.
     // Key: user_id + "/" + device_id + "/" + conn_id (or "__default__").
     std::map<std::string, sync::SlidingSyncConnectionState> sliding_sync_connections{};
@@ -183,6 +187,13 @@ struct HomeserverRuntime final
     // requests can continue while a federation round-trip is in flight.
     mutable std::recursive_mutex mutex{};
 };
+
+// Typing-state helpers used by client-server and federation handlers.
+[[nodiscard]] auto current_typing_users_in_room(HomeserverRuntime const& rt, std::string_view room_id)
+    -> std::vector<std::string>;
+[[nodiscard]] auto room_typing_stream_id_for(HomeserverRuntime const& rt, std::string_view room_id) -> std::uint64_t;
+[[nodiscard]] auto update_room_typing_stream_id_if_changed(HomeserverRuntime& rt, std::string_view room_id,
+                                                           std::vector<std::string> const& previous) -> std::uint64_t;
 
 struct RuntimeStartResult final
 {

@@ -1,3 +1,11 @@
+## 0.9.21
+
+### Fixed
+- **fix(sync): emit explicit m.typing stop events so typing notifications can restart after a user stops typing:** previously `/sync` only emitted an `m.typing` ephemeral event when the current list of typing users was non-empty. A stop-typing request removed the user from the list but sent nothing, so clients that replace their typing knowledge only on received events still believed the user was typing; the next start-typing event therefore appeared unchanged and clients did not surface a new notification. The server now tracks a per-room `room_typing_stream_id` cursor that advances whenever the set of typing users changes, and `/sync` (and the MSC4186 typing extension) emits the current list for that room on every change, including an empty `user_ids` array when the user stops. This also fixes transitions where one of several typing users stops but another continues, because the response now carries the full current list rather than only users whose individual cursor is newer than `since`.
+
+### Added
+- **test(sync): typing stop/restart regression coverage:** `tests/integration/test_client_server_flow.cpp` adds `SCENARIO("Typing notifications can stop and restart via ephemeral events in /sync")`, which asserts start -> non-empty list, stop -> empty list, restart -> non-empty list.
+
 ## 0.9.20
 
 ### Fixed

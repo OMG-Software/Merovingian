@@ -25,6 +25,7 @@
 #include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/homeserver/media_service.hpp"
 #include "merovingian/homeserver/room_service.hpp"
+#include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/homeserver/space_hierarchy.hpp"
 #include "merovingian/http/rate_limit.hpp"
 #include "merovingian/http/request.hpp"
@@ -2753,25 +2754,32 @@ namespace
     {
         auto events = canonicaljson::Array{};
 
-        auto typing_user_ids = canonicaljson::Array{};
-        for (auto const& typing : runtime.typing_users)
+        auto const room_typing_id = room_typing_stream_id_for(runtime, room_id);
+        if (room_typing_id > since_sync_stream_id)
         {
-            if (typing.room_id != room_id || !typing.typing || typing.stream_id <= since_sync_stream_id)
+            auto typing_user_ids = canonicaljson::Array{};
+            for (auto const& typing : runtime.typing_users)
             {
-                continue;
+                if (typing.room_id != room_id || !typing.typing)
+                {
+                    continue;
+                }
+                typing_user_ids.push_back(json_str(typing.user_id));
             }
-            typing_user_ids.push_back(json_str(typing.user_id));
-            if (typing.stream_id > max_observed_stream_id)
+            // Only emit an empty list for incremental syncs; initial sync omits
+            // the event when nobody is typing so the room is not pulled in solely
+            // to report no state.
+            if (!typing_user_ids.empty() || since_sync_stream_id > std::uint64_t{0U})
             {
-                max_observed_stream_id = typing.stream_id;
+                events.push_back(json_obj({
+                    json_member("type", json_str("m.typing")),
+                    json_member("content", json_obj({json_member("user_ids", json_arr(std::move(typing_user_ids)))})),
+                }));
+                if (room_typing_id > max_observed_stream_id)
+                {
+                    max_observed_stream_id = room_typing_id;
+                }
             }
-        }
-        if (!typing_user_ids.empty())
-        {
-            events.push_back(json_obj({
-                json_member("type", json_str("m.typing")),
-                json_member("content", json_obj({json_member("user_ids", json_arr(std::move(typing_user_ids)))})),
-            }));
         }
 
         auto receipt_index = std::map<std::string, std::map<std::string, std::map<std::string, std::uint64_t>>>{};
@@ -3591,9 +3599,10 @@ namespace
                 bool const has_relevant_receipts = std::ranges::any_of(rt.homeserver.receipts, [&](auto const& r) {
                     return r.stream_id > since_sync_stream_id && user_is_joined(store, r.room_id, user);
                 });
-                bool const has_relevant_typing = std::ranges::any_of(rt.homeserver.typing_users, [&](auto const& t) {
-                    return t.typing && t.stream_id > since_sync_stream_id && user_is_joined(store, t.room_id, user);
-                });
+                bool const has_relevant_typing =
+                    std::ranges::any_of(rt.homeserver.room_typing_stream_id, [&](auto const& kv) {
+                        return kv.second > since_sync_stream_id && user_is_joined(store, kv.first, user);
+                    });
                 if (!has_relevant_dlc && !has_relevant_tdm && !has_relevant_ad && !has_relevant_receipts &&
                     !has_relevant_typing)
                 {
@@ -8316,16 +8325,16 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                             }
                         }
                     }
+                    auto const previous_users = current_typing_users_in_room(rt.homeserver, path->room_id);
                     auto const typing_it =
                         std::ranges::find_if(rt.homeserver.typing_users, [&path, user](auto const& t) {
                             return t.room_id == path->room_id && t.user_id == *user && t.typing;
                         });
                     if (typing_it != rt.homeserver.typing_users.end())
                     {
-                        auto const stream_id =
-                            database::allocate_sync_stream_id(rt.homeserver.database.persistent_store);
                         typing_it->typing = false;
-                        typing_it->stream_id = stream_id;
+                        auto const room_stream_id =
+                            update_room_typing_stream_id_if_changed(rt.homeserver, path->room_id, previous_users);
                         // Federate typing:false only if the room has remote members
                         auto const room_it = std::ranges::find_if(rt.homeserver.database.rooms, [&path](auto const& r) {
                             return r.room_id == path->room_id;
@@ -8349,7 +8358,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                 });
                             }
                         }
-                        if (rt.sync_notifier != nullptr)
+                        if (room_stream_id != std::uint64_t{0U} && rt.sync_notifier != nullptr)
                         {
                             rt.sync_notifier->publish(rt.homeserver.database.next_stream_ordering - 1U,
                                                       rt.homeserver.database.persistent_store.next_sync_stream_id);
@@ -8831,33 +8840,41 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     }
                 }
                 // Update local in-memory typing state so /sync returns the
-                // change for other local users in the room.
+                // change for other local users in the room.  Only advance the
+                // per-room typing cursor when the set of typing users actually
+                // changes; duplicate refresh requests must not re-emit the same
+                // list and starve other sync traffic.
                 {
+                    auto const previous_users = current_typing_users_in_room(rt.homeserver, typing->room_id);
                     auto existing = std::ranges::find_if(rt.homeserver.typing_users, [&typing, user](auto const& t) {
                         return t.room_id == typing->room_id && t.user_id == *user;
-                    });
-                    auto const stream_id = database::allocate_sync_stream_id(rt.homeserver.database.persistent_store);
-                    log_diagnostic("room.typing.stream_id", {
-                                                                {"actor",     *user,                        false},
-                                                                {"room_id",   typing->room_id,              false},
-                                                                {"stream_id", std::to_string(stream_id),    false},
-                                                                {"typing",    is_typing ? "true" : "false", false}
                     });
                     if (existing != rt.homeserver.typing_users.end())
                     {
                         existing->typing = is_typing;
-                        existing->stream_id = stream_id;
                     }
-                    else
+                    else if (is_typing)
                     {
                         rt.homeserver.typing_users.push_back(
-                            {typing->room_id, std::string{*user}, is_typing, stream_id});
+                            {typing->room_id, std::string{*user}, true, std::uint64_t{0U}});
                     }
-                }
-                if (rt.sync_notifier != nullptr)
-                {
-                    rt.sync_notifier->publish(rt.homeserver.database.next_stream_ordering - 1U,
-                                              rt.homeserver.database.persistent_store.next_sync_stream_id);
+                    auto const room_stream_id =
+                        update_room_typing_stream_id_if_changed(rt.homeserver, typing->room_id, previous_users);
+                    if (room_stream_id != std::uint64_t{0U})
+                    {
+                        log_diagnostic("room.typing.room_stream_id",
+                                       {
+                                           {"actor",     *user,                          false},
+                                           {"room_id",   typing->room_id,                false},
+                                           {"stream_id", std::to_string(room_stream_id), false},
+                                           {"typing",    is_typing ? "true" : "false",   false}
+                        });
+                        if (rt.sync_notifier != nullptr)
+                        {
+                            rt.sync_notifier->publish(rt.homeserver.database.next_stream_ordering - 1U,
+                                                      rt.homeserver.database.persistent_store.next_sync_stream_id);
+                        }
+                    }
                 }
                 return dispatch_resp(req, rt, 200U, json_serialize(json_obj({})));
             }
