@@ -9840,20 +9840,31 @@ SCENARIO("POST /pushers/set conformance")
         REQUIRE(started.started);
         auto const token = logged_in_token(started.runtime);
 
-        WHEN("POST /pushers/set is called")
+        WHEN("POST /pushers/set is called with a valid HTTP pusher")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
                 {"POST", "/_matrix/client/v3/pushers/set", token,
-                 R"({"pushkey":"key","kind":"http","app_id":"app","app_display_name":"App","device_display_name":"Phone"})"});
+                 R"({"app_display_name":"Element X","app_id":"io.element.elementx","data":{"url":"https://push.example.org/_matrix/push/v1/notify"},"device_display_name":"Phone","kind":"http","lang":"en","pushkey":"key1"})"});
 
-            THEN("the server returns 404 M_UNRECOGNIZED")
+            THEN("the server returns 200 with an empty JSON object")
             {
-                REQUIRE(response.response.status == 404);
-                auto const body = parse_object(response.response.body);
-                auto const* err = string_member(body, "errcode");
-                REQUIRE(err != nullptr);
-                REQUIRE(*err == "M_UNRECOGNIZED");
+                REQUIRE(response.response.status == 200);
+                REQUIRE(response.response.body == "{}");
+            }
+        }
+
+        WHEN("POST /pushers/set is called with kind:null to delete a pusher")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/pushers/set", token,
+                 R"({"app_id":"io.element.elementx","kind":null,"pushkey":"key1"})"});
+
+            THEN("the server returns 200 with an empty JSON object")
+            {
+                REQUIRE(response.response.status == 200);
+                REQUIRE(response.response.body == "{}");
             }
         }
     }
