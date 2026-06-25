@@ -900,6 +900,13 @@ namespace
         std::string display_name{};
     };
 
+    struct MatrixPusherSetBody final
+    {
+        std::string app_id{};
+        std::string pushkey{};
+        std::optional<std::string> kind{}; // nullopt when the request body has kind:null (delete)
+    };
+
     struct MatrixSafetyReportBody final
     {
         std::string reason{};
@@ -2086,6 +2093,101 @@ namespace
             return std::nullopt;
         }
         return MatrixDeviceUpdateBody{*display_name};
+    }
+
+    // Spec: Matrix v1.18 CS API §push-notifications — POST /pushers/set
+    // Validates the body. A kind:null request deletes the pusher and only
+    // requires app_id and pushkey. Non-null kinds require the full set of
+    // display-name, data, and lang fields; http pushers additionally require a
+    // valid HTTPS notify URL. Merovingian does not yet deliver notifications,
+    // so the handler only validates and returns 200 {}.
+    [[nodiscard]] auto matrix_pusher_url_is_valid(std::string_view url) noexcept -> bool
+    {
+        auto const scheme_end = url.find("://");
+        if (scheme_end == std::string_view::npos)
+        {
+            return false;
+        }
+        if (url.substr(0, scheme_end) != "https")
+        {
+            return false;
+        }
+        auto const path_start = url.find('/', scheme_end + 3U);
+        if (path_start == std::string_view::npos)
+        {
+            return false;
+        }
+        auto const query_start = url.find('?', path_start);
+        auto const fragment_start = url.find('#', path_start);
+        auto const path_end = std::min(query_start, fragment_start);
+        auto const path = url.substr(path_start, path_end - path_start);
+        return path == "/_matrix/push/v1/notify";
+    }
+
+    [[nodiscard]] auto parse_pusher_set_body(std::string_view body) -> std::optional<MatrixPusherSetBody>
+    {
+        auto const object = parsed_json_object(body);
+        if (!object.has_value())
+        {
+            return std::nullopt;
+        }
+
+        auto const* app_id = string_member(*object, "app_id");
+        auto const* pushkey = string_member(*object, "pushkey");
+        if (app_id == nullptr || pushkey == nullptr || app_id->empty() || pushkey->empty() || app_id->size() > 64U ||
+            pushkey->size() > 512U)
+        {
+            return std::nullopt;
+        }
+
+        auto const* append_value = object_member(*object, "append");
+        if (append_value != nullptr && !std::holds_alternative<bool>(append_value->storage()))
+        {
+            return std::nullopt;
+        }
+
+        auto const* kind_value = object_member(*object, "kind");
+        if (kind_value == nullptr)
+        {
+            return std::nullopt;
+        }
+        auto const* kind_string = std::get_if<std::string>(&kind_value->storage());
+        auto const kind_is_null = std::holds_alternative<std::nullptr_t>(kind_value->storage());
+        if (kind_string == nullptr && !kind_is_null)
+        {
+            return std::nullopt;
+        }
+
+        if (kind_is_null)
+        {
+            return MatrixPusherSetBody{std::string{*app_id}, std::string{*pushkey}, std::nullopt};
+        }
+
+        auto const* app_display_name = string_member(*object, "app_display_name");
+        auto const* device_display_name = string_member(*object, "device_display_name");
+        auto const* lang = string_member(*object, "lang");
+        auto const* data = object_member_object(*object, "data");
+        if (app_display_name == nullptr || app_display_name->empty() || device_display_name == nullptr ||
+            device_display_name->empty() || lang == nullptr || lang->empty() || data == nullptr)
+        {
+            return std::nullopt;
+        }
+
+        if (*kind_string == "http")
+        {
+            auto const* url = string_member(*data, "url");
+            if (url == nullptr || !matrix_pusher_url_is_valid(*url))
+            {
+                return std::nullopt;
+            }
+        }
+        else if (*kind_string != "email")
+        {
+            // Only "http" and "email" are defined by Matrix v1.18.
+            return std::nullopt;
+        }
+
+        return MatrixPusherSetBody{std::string{*app_id}, std::string{*pushkey}, std::string{*kind_string}};
     }
 
     [[nodiscard]] auto parse_safety_report_body(std::string_view body) -> std::optional<MatrixSafetyReportBody>
@@ -7665,6 +7767,19 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     if (req.method == "GET" && req.target == "/_matrix/client/v3/pushers")
     {
         return dispatch_resp(req, rt, 200U, R"({"pushers":[]})");
+    }
+    // Spec: POST /pushers/set creates, updates, or deletes a pusher for the
+    // authenticated user. Merovingian does not yet deliver push notifications,
+    // but accepts and validates the request so clients can register without
+    // error. Real delivery will be implemented later.
+    if (req.method == "POST" && req.target == "/_matrix/client/v3/pushers/set")
+    {
+        if (!parse_pusher_set_body(req.body).has_value())
+        {
+            return dispatch_err(req, rt, 400U, "M_BAD_JSON",
+                                "pusher body must contain app_id, pushkey, and kind with required fields");
+        }
+        return dispatch_resp(req, rt, 200U, "{}");
     }
     // Clients (Cinny, Element) fetch /capabilities immediately after login to
     // discover what the server supports. Return a minimal stable set; extend
