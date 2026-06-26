@@ -424,10 +424,11 @@ auto hydrate_local_database(LocalDatabase& database) -> void
     auto const repaired = database::repair_missing_state_entries(database.persistent_store);
     if (repaired > 0U)
     {
-        LOG_WARNING(observability::diagnostic_log_summary("runtime", "database.state.repaired",
-                                                          {
-                                                              {"count", std::to_string(repaired), false}
-        }));
+        log_diagnostic("database.state.repaired",
+                       {
+                           {"count", std::to_string(repaired), false}
+        },
+                       observability::LogEventSeverity::warning);
     }
 }
 

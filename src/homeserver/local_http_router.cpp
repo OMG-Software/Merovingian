@@ -49,13 +49,14 @@ namespace merovingian::homeserver
 namespace
 {
 
-    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields,
+                        observability::LogEventSeverity severity = observability::LogEventSeverity::debug) -> void
     {
         if (auto const* correlation = observability::current_correlation_context(); correlation != nullptr)
         {
             fields = observability::with_correlation_fields(*correlation, std::move(fields));
         }
-        LOG_DEBUG(observability::diagnostic_log_summary("local_router", event, std::move(fields)));
+        observability::log_diagnostic("local_router", event, fields, severity);
     }
 
     [[nodiscard]] auto traceparent(observability::CorrelationContext const& correlation) -> std::string

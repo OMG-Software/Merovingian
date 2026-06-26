@@ -24,9 +24,10 @@ namespace merovingian::homeserver
 namespace
 {
 
-    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields,
+                        observability::LogEventSeverity severity = observability::LogEventSeverity::debug) -> void
     {
-        LOG_DEBUG(observability::diagnostic_log_summary("tls", event, std::move(fields)));
+        observability::log_diagnostic("tls", event, fields, severity);
     }
 
 
@@ -217,7 +218,8 @@ auto make_tls_server_context(std::string const& certificate_file, std::string co
     }
 
     log_diagnostic("context.ready",
-                   {{"cert_file", certificate_file, false}});
+                   {{"cert_file", certificate_file, false}},
+                   observability::LogEventSeverity::info);
     return {std::optional<TlsServerContext>{std::move(context)}, {}};
 }
 

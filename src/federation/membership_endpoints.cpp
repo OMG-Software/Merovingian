@@ -22,9 +22,10 @@ namespace merovingian::federation
 namespace
 {
 
-    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields,
+                        observability::LogEventSeverity severity = observability::LogEventSeverity::debug) -> void
     {
-        LOG_DEBUG(observability::diagnostic_log_summary("membership_endpoints", event, std::move(fields)));
+        observability::log_diagnostic("membership_endpoints", event, fields, severity);
     }
 
     [[nodiscard]] auto split_two(std::string_view suffix) -> std::optional<std::pair<std::string, std::string>>

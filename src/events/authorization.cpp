@@ -93,11 +93,11 @@ namespace
 
     [[nodiscard]] auto make_denied(std::string step, std::string reason) -> EventAuthorizationDecision
     {
-        LOG_DEBUG(observability::diagnostic_log_summary("event_auth", "authorization.rejected",
-                                                        {
-                                                            {"rule_step", step,   false},
-                                                            {"reason",    reason, false}
-        }));
+        observability::log_diagnostic("event_auth", "authorization.rejected",
+                                  {
+                                      {"rule_step", step,   false},
+                                      {"reason",    reason, false}
+                                  });
         return {false, {}, std::move(step), std::move(reason)};
     }
 

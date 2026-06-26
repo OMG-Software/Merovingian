@@ -379,9 +379,10 @@ namespace
     // failed to resolve. Resolution failures are otherwise invisible: the
     // resolver only ever returns std::nullopt, which the inbound handler
     // surfaces as a flat "remote is unknown" 403.
-    auto log_resolver(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
+    auto log_resolver(std::string_view event, std::vector<observability::StructuredLogField> fields,
+                      observability::LogEventSeverity severity = observability::LogEventSeverity::debug) -> void
     {
-        LOG_DEBUG(observability::diagnostic_log_summary("remote_key_resolver", event, std::move(fields)));
+        observability::log_diagnostic("remote_key_resolver", event, fields, severity);
     }
 
     [[nodiscard]] auto default_wall_clock_ms() -> std::uint64_t

@@ -25,9 +25,10 @@ namespace merovingian::media
 namespace
 {
 
-    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields,
+                        observability::LogEventSeverity severity = observability::LogEventSeverity::debug) -> void
     {
-        LOG_DEBUG(observability::diagnostic_log_summary("media_repository", event, std::move(fields)));
+        observability::log_diagnostic("media_repository", event, fields, severity);
     }
 
     auto constexpr media_digest_bytes = std::size_t{crypto_generichash_BYTES};

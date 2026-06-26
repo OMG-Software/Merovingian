@@ -27,9 +27,10 @@ namespace merovingian::federation
 namespace
 {
 
-    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields,
+                        observability::LogEventSeverity severity = observability::LogEventSeverity::debug) -> void
     {
-        LOG_DEBUG(observability::diagnostic_log_summary("event_query", event, std::move(fields)));
+        observability::log_diagnostic("event_query", event, fields, severity);
     }
 
     [[nodiscard]] auto parsed_value(std::string_view json) -> std::optional<canonicaljson::Value>

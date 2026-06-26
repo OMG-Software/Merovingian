@@ -491,6 +491,12 @@ namespace
         std::ignore = database::store_profile(runtime.database.persistent_store, {user_id, {}, {}});
         append_local_audit(runtime.database, observability::AuditCategory::auth, "auth.user_registered", user_id,
                            user_id, audit_outcome);
+        log_diagnostic("registration.accepted",
+                       {
+                           {"user_id", user_id,                    false},
+                           {"outcome", std::string{audit_outcome}, false}
+        },
+                       observability::LogEventSeverity::info);
         return make_operation_result(true, user_id);
     }
 
@@ -968,6 +974,12 @@ auto logout_local_user(HomeserverRuntime& runtime, std::string_view access_token
     }
     append_local_audit(runtime.database, observability::AuditCategory::auth, "auth.logout", user_id, device_id,
                        "revoked");
+    log_diagnostic("logout.accepted",
+                   {
+                       {"user_id",   user_id,   false},
+                       {"device_id", device_id, false}
+    },
+                   observability::LogEventSeverity::info);
     return make_operation_result(true, user_id);
 }
 
@@ -995,6 +1007,12 @@ auto logout_all_local_user(HomeserverRuntime& runtime, std::string_view access_t
     }
     append_local_audit(runtime.database, observability::AuditCategory::auth, "auth.logout_all", session->user_id,
                        session->device_id, "revoked");
+    log_diagnostic("logout_all.accepted",
+                   {
+                       {"user_id",   session->user_id,   false},
+                       {"device_id", session->device_id, false}
+    },
+                   observability::LogEventSeverity::info);
     return make_operation_result(true, session->user_id);
 }
 

@@ -72,9 +72,10 @@ namespace
             {}, HardeningStatus::alpha_exception, std::move(reason) + " " + alpha_exception_doc_reference};
     }
 
-    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields,
+                        observability::LogEventSeverity severity = observability::LogEventSeverity::debug) -> void
     {
-        LOG_DEBUG(observability::diagnostic_log_summary("hardening_self_check", event, std::move(fields)));
+        observability::log_diagnostic("hardening_self_check", event, fields, severity);
     }
 
 #ifdef __linux__

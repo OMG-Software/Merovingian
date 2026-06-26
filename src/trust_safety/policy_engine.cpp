@@ -36,9 +36,10 @@ namespace
         return enforcement_reason(code, summary, summary);
     }
 
-    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields,
+                        observability::LogEventSeverity severity = observability::LogEventSeverity::debug) -> void
     {
-        LOG_DEBUG(observability::diagnostic_log_summary("policy_engine", event, std::move(fields)));
+        observability::log_diagnostic("policy_engine", event, fields, severity);
     }
 
     [[nodiscard]] auto allow(PolicySurface surface) -> PolicyDecision

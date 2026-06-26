@@ -68,9 +68,10 @@ namespace merovingian::homeserver
 namespace
 {
 
-    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields,
+                        observability::LogEventSeverity severity = observability::LogEventSeverity::debug) -> void
     {
-        LOG_DEBUG(observability::diagnostic_log_summary("client_server", event, std::move(fields)));
+        observability::log_diagnostic("client_server", event, fields, severity);
     }
 
     [[nodiscard]] auto starts_with(std::string_view v, std::string_view p) noexcept -> bool

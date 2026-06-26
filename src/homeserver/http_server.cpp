@@ -43,9 +43,10 @@ namespace merovingian::homeserver
 namespace
 {
 
-    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields,
+                        observability::LogEventSeverity severity = observability::LogEventSeverity::debug) -> void
     {
-        LOG_DEBUG(observability::diagnostic_log_summary("http_server", event, std::move(fields)));
+        observability::log_diagnostic("http_server", event, fields, severity);
     }
 
     // Convert the peer sockaddr captured at accept() time to a dotted-decimal

@@ -39,9 +39,10 @@ namespace merovingian::federation
 namespace
 {
 
-    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields,
+                        observability::LogEventSeverity severity = observability::LogEventSeverity::debug) -> void
     {
-        LOG_DEBUG(observability::diagnostic_log_summary("server_discovery", event, std::move(fields)));
+        observability::log_diagnostic("server_discovery", event, fields, severity);
     }
 
     auto constexpr default_federation_port = std::uint16_t{8448U};
