@@ -34,6 +34,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -1582,7 +1583,24 @@ namespace
                     std::move(dispatch_config), *outbound, std::move(resolver), std::move(clock), std::move(sleep_fn),
                     &runtime.database.persistent_store);
                 std::ignore = runtime.dispatch_worker->replay_pending();
-                runtime.dispatch_worker->start();
+                try
+                {
+                    runtime.dispatch_worker->start();
+                }
+                catch (std::system_error const& e)
+                {
+                    // Thread creation failed (e.g. TasksMax exhausted, RLIMIT_NPROC).
+                    // Destroy the worker so the next call re-attempts construction
+                    // rather than using a worker stuck in a not-started state.
+                    log_diagnostic("dispatch.start.failed",
+                                   {{"reason", e.what(), false},
+                                    {"code", std::to_string(e.code().value()), false}});
+                    runtime.dispatch_worker.reset();
+                    // Do not propagate — let the caller's operation fail cleanly
+                    // with a federation-unavailable error rather than an uncaught
+                    // exception that kills the thread pool worker.
+                    return;
+                }
             }
         }
     }

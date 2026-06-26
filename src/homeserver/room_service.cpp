@@ -1285,6 +1285,89 @@ namespace
         return persist_composed_event(runtime, room_id, sender, *composed);
     }
 
+    // Upserts m.direct global account data for `user_id` to record that
+    // `room_id` is a direct message room with each invitee. Reads the existing
+    // m.direct mapping (if any), appends room_id under each invitee key without
+    // duplicating, and persists the result. Called when create_room is invoked
+    // with is_direct:true so that a second device can classify the room via
+    // sliding sync without relying on the first client to PUT m.direct itself.
+    [[nodiscard]] auto upsert_m_direct(HomeserverRuntime& runtime, std::string_view user_id,
+                                       std::string_view room_id,
+                                       std::vector<std::string> const& invitees) -> bool
+    {
+        if (invitees.empty())
+        {
+            return true;
+        }
+
+        auto mapping = canonicaljson::Object{};
+        auto const& account_data = runtime.database.persistent_store.account_data;
+        auto const existing = std::ranges::find_if(
+            account_data, [user_id](database::PersistentAccountData const& entry) {
+                return entry.user_id == user_id && entry.room_id.empty() && entry.event_type == "m.direct";
+            });
+        if (existing != account_data.end())
+        {
+            auto const parsed = canonicaljson::parse_lossless(existing->content_json);
+            if (parsed.error == canonicaljson::ParseError::none)
+            {
+                if (auto const* obj = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+                    obj != nullptr)
+                {
+                    mapping = *obj;
+                }
+            }
+        }
+
+        for (auto const& invitee : invitees)
+        {
+            auto const member_it =
+                std::ranges::find_if(mapping, [&invitee](canonicaljson::ObjectMember const& m) {
+                    return m.key == invitee;
+                });
+            if (member_it == mapping.end())
+            {
+                auto arr = canonicaljson::Array{};
+                arr.push_back(canonicaljson::Value{std::string{room_id}});
+                mapping.push_back(canonicaljson::make_member(invitee, canonicaljson::Value{std::move(arr)}));
+            }
+            else
+            {
+                auto const* existing_arr =
+                    std::get_if<canonicaljson::Array>(&member_it->value->storage());
+                if (existing_arr == nullptr)
+                {
+                    // Key exists but is not an array; replace it.
+                    auto new_arr = canonicaljson::Array{};
+                    new_arr.push_back(canonicaljson::Value{std::string{room_id}});
+                    member_it->value = std::make_unique<canonicaljson::Value>(std::move(new_arr));
+                }
+                else
+                {
+                    auto const already =
+                        std::ranges::any_of(*existing_arr, [room_id](canonicaljson::Value const& v) {
+                            auto const* s = std::get_if<std::string>(&v.storage());
+                            return s != nullptr && *s == room_id;
+                        });
+                    if (!already)
+                    {
+                        auto new_arr = *existing_arr;
+                        new_arr.push_back(canonicaljson::Value{std::string{room_id}});
+                        member_it->value = std::make_unique<canonicaljson::Value>(std::move(new_arr));
+                    }
+                }
+            }
+        }
+
+        auto const serialized = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(mapping)});
+        if (serialized.error != canonicaljson::CanonicalJsonError::none)
+        {
+            return false;
+        }
+        return database::store_account_data(runtime.database.persistent_store,
+                                            {std::string{user_id}, {}, "m.direct", serialized.output, 0U});
+    }
+
 } // namespace
 
 // Perform a single synchronous outbound federation call. Returns the raw
@@ -2162,6 +2245,14 @@ namespace
         }
         apply_runtime_membership(runtime.database, room_id, invitee, "invite");
         invited_anyone = true;
+    }
+
+    if (options.is_direct && !options.invitees.empty())
+    {
+        if (!upsert_m_direct(runtime, *user_id, room_id, options.invitees))
+        {
+            return make_operation_result(false, {}, "m.direct account data update failed", 500U);
+        }
     }
 
     append_local_audit(runtime.database, observability::AuditCategory::admin, "room.created", *user_id, room_id,

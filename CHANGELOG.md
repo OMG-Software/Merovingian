@@ -1,3 +1,12 @@
+## 0.9.23
+
+### Fixed
+- **fix(federation): start the outbound dispatch worker eagerly at server startup instead of lazily on the first join request:** `DispatchWorker::start()` was called inside `wire_federation_callbacks_impl()`, which was itself wired lazily on the first client-server request that needed federation. On Fedora/RHEL deployments with `TasksMax=` set, `pthread_create` returned `EPERM` and the resulting `std::system_error` propagated through the thread-pool worker, killing the worker and leaving federation permanently broken for that request. The fix has three parts: (1) `DispatchWorker::start()` now resets the `started_` flag on exception so a retry is possible; (2) `wire_federation_callbacks_impl()` catches `std::system_error` from `start()`, logs the failure, and resets the worker instead of propagating; (3) `main.cpp` calls `wire_federation_callbacks()` eagerly immediately after the runtime reaches its final stable location so thread-creation failures surface at startup as a clear log entry rather than inside a request handler.
+- **fix(rooms): auto-write `m.direct` account data when `POST /createRoom` is called with `is_direct:true`:** when a DM room was created from one device (e.g. Element), the Matrix spec requires the *client* to subsequently `PUT` the `m.direct` global account data mapping the invitee to the new room. If that `PUT` never arrived — because the client manages it locally, or the server dropped it — a second device (e.g. ElementX) would see no `m.direct` entry and its `is_dm:true` sliding-sync list would return empty, causing it to create a duplicate DM room instead of showing the existing one. `create_room()` now calls a new `upsert_m_direct()` helper immediately after emitting the invite events: it reads any pre-existing `m.direct` mapping, appends the new `room_id` under each invitee's key (without duplicating), serialises, and persists via `database::store_account_data()`. Rooms created without `is_direct:true` are unaffected.
+
+### Added
+- **test(rooms): BDD coverage for `m.direct` upsert on DM room creation:** `tests/unit/test_homeserver_room_service.cpp` gains three scenarios — `m.direct` written when absent, second room appended without duplication, and non-DM room creation leaves `m.direct` untouched.
+
 ## 0.9.22
 
 ### Fixed

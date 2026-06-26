@@ -11,6 +11,7 @@
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/homeserver/http_server.hpp"
+#include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/tls.hpp"
 #include "merovingian/media/runtime_media.hpp"
 #include "merovingian/net/listener.hpp"
@@ -39,7 +40,7 @@
 namespace
 {
 
-constexpr auto version = std::string_view{"0.9.22"};
+constexpr auto version = std::string_view{"0.9.23"};
 
 struct BootstrapConfigResult final
 {
@@ -794,6 +795,12 @@ struct ListenerBinding final
 
     LOG_INFO("Listeners active; awaiting traffic. Send SIGINT or SIGTERM to stop.");
     auto runtime = std::move(runtime_result.runtime);
+    // Wire federation callbacks and start the outbound dispatch worker now that
+    // the runtime is in its final stable location (no further moves). Doing this
+    // eagerly means thread-creation failure surfaces at startup with a clear log
+    // entry rather than being silently swallowed inside a thread-pool worker when
+    // the first join request triggers the lazy init path.
+    merovingian::homeserver::wire_federation_callbacks(runtime.homeserver);
     auto const stats = serve_until_shutdown(runtime, bindings, shutdown);
 
     merovingian::net::uninstall_shutdown_signal_handlers();
