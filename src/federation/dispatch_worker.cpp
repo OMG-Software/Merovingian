@@ -145,9 +145,17 @@ auto DispatchWorker::start() -> void
     {
         return;
     }
-    thread_ = std::thread{[this] {
-        loop();
-    }};
+    try
+    {
+        thread_ = std::thread{[this] { loop(); }};
+    }
+    catch (...)
+    {
+        // Reset so a subsequent start() attempt (after the caller resolves
+        // the underlying cause) can try again rather than silently no-oping.
+        started_.store(false, std::memory_order_release);
+        throw;
+    }
 }
 
 auto DispatchWorker::request_shutdown() noexcept -> void

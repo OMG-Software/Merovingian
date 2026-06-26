@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.9.22
+Version:        0.9.23
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -100,7 +100,7 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
-* Thu Jun 25 2026 James Chapman <claude@ping.me.uk> - 0.9.22-1
+* Thu Jun 25 2026 James Chapman <claude@ping.me.uk> - 0.9.23-1
 - fix(client-server): implement POST /_matrix/client/v3/pushers/set so Element X can register push notifications without route-not-found errors
 
 * Wed Jun 24 2026 James Chapman <claude@ping.me.uk> - 0.9.21-1

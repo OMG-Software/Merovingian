@@ -323,6 +323,35 @@ SCENARIO("Dispatch worker respects shutdown after drain", "[federation][dispatch
     }
 }
 
+SCENARIO("Dispatch worker start is idempotent — calling start twice does not spawn a second thread",
+         "[federation][dispatch-worker][start]")
+{
+    GIVEN("a running worker with an immediate-shutdown resolver")
+    {
+        auto client = merovingian::http::OutboundClient{};
+        auto resolver = merovingian::federation::DispatchResolver{[](std::string_view) {
+            return std::optional<merovingian::federation::ServerDiscoveryResult>{};
+        }};
+        auto sleep_for =
+            merovingian::federation::DispatchSleep{[](std::chrono::milliseconds) { /* no real sleep in tests */ }};
+        auto worker = merovingian::federation::DispatchWorker{worker_config(), client, std::move(resolver), {}, std::move(sleep_for)};
+
+        WHEN("start() is called twice before shutdown")
+        {
+            worker.start();
+            worker.start(); // must not throw or spawn a second thread
+            worker.request_shutdown();
+            worker.join();
+
+            THEN("the worker exits cleanly — no crash, no double-join hang, summary is accessible")
+            {
+                auto const summary = worker.summary();
+                REQUIRE(summary.enqueued == 0U);
+            }
+        }
+    }
+}
+
 SCENARIO("Dispatch worker enforces queue depth", "[federation][dispatch-worker][bounds]")
 {
     GIVEN("a worker with a queue depth of 2")
