@@ -16,9 +16,10 @@ namespace merovingian::auth
 namespace
 {
 
-    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields,
+                        observability::LogEventSeverity severity = observability::LogEventSeverity::debug) -> void
     {
-        LOG_DEBUG(observability::diagnostic_log_summary("identity", event, std::move(fields)));
+        observability::log_diagnostic("identity", event, fields, severity);
     }
 
     [[nodiscard]] auto is_ascii_digit(char value) noexcept -> bool

@@ -1,3 +1,12 @@
+## 0.9.25
+
+### Fixed
+- **fix(observability): eliminate duplicate fields in structured log lines:** all 42 modules were using `LOG_DEBUG(diagnostic_log_summary(...))`, which produced lines with the level word appearing twice (`<DEBUG> ... debug module event=...`) and the real module name hidden behind the wrapper function name `log_diagnostic:`. The public `log_diagnostic` free-function in `logger.hpp` now calls the appropriate named method (`debug()`, `info()`, etc.) using the logger name as the module, so the line format is `<LEVEL>  <module>:  event=<event> key=value ...` with no redundancy. All 42 modules migrated to use `observability::log_diagnostic()` directly.
+- **fix(observability): missing timestamp on auth diagnostic lines:** `auth_service.cpp` was the only module calling the public `observability::log_diagnostic()` directly, which passed a raw summary string to `SingleLog::log()` without going through `make_log_line()`. The same fix above routes all calls through the named methods, restoring the timestamp header on every log line.
+
+### Changed
+- **feat(observability): promote major lifecycle events to INFO level:** the following events are now logged at INFO rather than DEBUG so operators see them without enabling verbose logging: `login.accepted`, `logout.accepted`, `logout_all.accepted`, `registration.accepted` (auth); `room.create.accepted`, `room.join.accepted`, `room.join.accepted_remote`, `room.leave.accepted` (rooms); `signing_key.loaded`, `signing_key.generated`, `signing_key.rotated` (crypto); `migration.step.applied`, `migration.plan.complete` (database); `tls.context.ready`, `start.listeners_ready`, `start.database_ready`, `start.hardening_controls`, `start.complete`, `database.hydrated` (server startup — already INFO, now correctly formatted). The `database.state.repaired` warning is also correctly emitted at WARNING via the structured path rather than the old `LOG_WARNING(diagnostic_log_summary(...))` pattern.
+
 ## 0.9.24
 
 ### Fixed

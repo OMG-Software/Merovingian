@@ -16,9 +16,10 @@ namespace merovingian::media
 namespace
 {
 
-    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields,
+                        observability::LogEventSeverity severity = observability::LogEventSeverity::debug) -> void
     {
-        LOG_DEBUG(observability::diagnostic_log_summary("media_security", event, std::move(fields)));
+        observability::log_diagnostic("media_security", event, fields, severity);
     }
 
     [[nodiscard]] auto matrix_id_is_valid(std::string_view id) noexcept -> bool

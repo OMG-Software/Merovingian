@@ -15,9 +15,10 @@ namespace merovingian::federation
 namespace
 {
 
-    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields,
+                        observability::LogEventSeverity severity = observability::LogEventSeverity::debug) -> void
     {
-        LOG_DEBUG(observability::diagnostic_log_summary("federation_policy", event, std::move(fields)));
+        observability::log_diagnostic("federation_policy", event, fields, severity);
     }
 
     [[nodiscard]] auto contains_server(std::vector<std::string> const& servers, std::string_view server_name) noexcept

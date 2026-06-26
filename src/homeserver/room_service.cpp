@@ -51,9 +51,10 @@ namespace merovingian::homeserver
 namespace
 {
 
-    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields,
+                        observability::LogEventSeverity severity = observability::LogEventSeverity::debug) -> void
     {
-        LOG_DEBUG(observability::diagnostic_log_summary("rooms", event, std::move(fields)));
+        observability::log_diagnostic("rooms", event, fields, severity);
     }
 
     [[nodiscard]] auto json_object_member(canonicaljson::Object const& object, std::string_view key) noexcept
@@ -1507,7 +1508,7 @@ namespace
                                                  {"key_id",      it->key_id,                         false},
                                                  {"public_key",  it->public_key,                     false},
                                                  {"secret_size", std::to_string(raw_secret->size()), false}
-        });
+        }, observability::LogEventSeverity::info);
         return *it;
     }
 
@@ -1585,7 +1586,7 @@ namespace
                                                 {"key_id",      key_id,                   false},
                                                 {"public_key",  key.public_key,           false},
                                                 {"encrypted",   encrypted,                false}
-    });
+    }, observability::LogEventSeverity::info);
     if (!database::store_server_signing_key(runtime.database.persistent_store, key))
     {
         return std::nullopt;
@@ -1764,7 +1765,7 @@ namespace
                                               {"retired_key_id", current->key_id,      false},
                                               {"new_key_id",     key_id,               false},
                                               {"encrypted",      encrypted,            false}
-    });
+    }, observability::LogEventSeverity::info);
 
     // Refresh the cached key-server response so federation peers immediately observe
     // the rotation on their next GET /_matrix/key/v2/server.
@@ -2260,7 +2261,7 @@ namespace
     log_diagnostic("room.create.accepted", {
                                                {"actor",   *user_id, false},
                                                {"room_id", room_id,  false}
-    });
+    }, observability::LogEventSeverity::info);
     // Room creation changes membership which is visible in /sync;
     // advance the sync stream counter so the publish wakes clients.
     auto sync_stream_id = database::allocate_sync_stream_id(runtime.database.persistent_store);
@@ -2979,7 +2980,7 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
                            {"remote_server", std::string{remote_server},                                   false},
                            {"event_id",      event_id_result.event_id,                                     false},
                            {"member_count",  std::to_string(runtime.database.rooms.back().members.size()), false}
-        });
+        }, observability::LogEventSeverity::info);
         // Membership change from remote join is visible in /sync; advance
         // the sync stream counter so the publish wakes clients.
         auto const sync_stream_id = database::allocate_sync_stream_id(runtime.database.persistent_store);
@@ -3115,7 +3116,7 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
                                              {"actor",        *user_id,                             false},
                                              {"room_id",      std::string{room_id},                 false},
                                              {"member_count", std::to_string(room->members.size()), false}
-    });
+    }, observability::LogEventSeverity::info);
     // Membership change from local join is visible in /sync; advance
     // the sync stream counter so the publish wakes clients.
     auto const sync_stream_id = database::allocate_sync_stream_id(runtime.database.persistent_store);
@@ -3202,7 +3203,7 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
                        {
                            {"actor",   *user_id,             false},
                            {"room_id", std::string{room_id}, false}
-        });
+        }, observability::LogEventSeverity::info);
         return make_operation_result(true, std::string{room_id});
     }
     if (membership_it->membership != "join" && membership_it->membership != "invite")
@@ -3211,7 +3212,7 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
                        {
                            {"actor",   *user_id,             false},
                            {"room_id", std::string{room_id}, false}
-        });
+        }, observability::LogEventSeverity::info);
         return make_operation_result(true, std::string{room_id});
     }
 
@@ -3414,7 +3415,7 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
                        {
                            {"actor",   *user_id,             false},
                            {"room_id", std::string{room_id}, false}
-        });
+        }, observability::LogEventSeverity::info);
         return make_operation_result(true, std::string{room_id});
     }
 
@@ -3436,7 +3437,7 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
     log_diagnostic("room.leave.accepted", {
                                               {"actor",   *user_id,             false},
                                               {"room_id", std::string{room_id}, false}
-    });
+    }, observability::LogEventSeverity::info);
     return make_operation_result(true, std::string{room_id});
 }
 

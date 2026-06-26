@@ -29,9 +29,10 @@ namespace
     constexpr auto max_retry_interval_ms = std::uint64_t{300000U};
     constexpr auto max_consecutive_failures_before_circuit_open = std::uint32_t{3U};
 
-    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields,
+                        observability::LogEventSeverity severity = observability::LogEventSeverity::debug) -> void
     {
-        LOG_DEBUG(observability::diagnostic_log_summary("outbound_transaction", event, std::move(fields)));
+        observability::log_diagnostic("outbound_transaction", event, fields, severity);
     }
 
     [[nodiscard]] auto build_url(OutboundCall const& call) -> std::string

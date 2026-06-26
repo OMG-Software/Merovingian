@@ -17,9 +17,10 @@ namespace merovingian::database
 namespace
 {
 
-    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields,
+                        observability::LogEventSeverity severity = observability::LogEventSeverity::debug) -> void
     {
-        LOG_DEBUG(observability::diagnostic_log_summary("migration", event, std::move(fields)));
+        observability::log_diagnostic("migration", event, fields, severity);
     }
 
     constexpr auto initial_schema_version = std::uint32_t{1U};
@@ -383,7 +384,7 @@ auto apply_migration_plan(SchemaState state, MigrationPlan const& plan) -> Migra
                                            {"version",    std::to_string(step.version),                          false},
                                            {"direction",  std::string{migration_direction_name(step.direction)}, false},
                                            {"statements", std::to_string(step.statements.size()),                false}
-        });
+        }, observability::LogEventSeverity::info);
         state.applied_migrations.push_back({step.version, step.name, step.direction});
         state.version = step.version;
     }
@@ -392,7 +393,7 @@ auto apply_migration_plan(SchemaState state, MigrationPlan const& plan) -> Migra
                                         {"current_version", std::to_string(plan.current_version),                  false},
                                         {"target_version",  std::to_string(plan.target_version),                   false},
                                         {"steps_applied",   std::to_string(plan.steps.size()),                     false}
-    });
+    }, observability::LogEventSeverity::info);
     return {true, {}, std::move(state)};
 }
 

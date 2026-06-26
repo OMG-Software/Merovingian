@@ -14,9 +14,10 @@ namespace merovingian::crypto
 namespace
 {
 
-    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields,
+                        observability::LogEventSeverity severity = observability::LogEventSeverity::debug) -> void
     {
-        LOG_DEBUG(observability::diagnostic_log_summary("signing_service", event, std::move(fields)));
+        observability::log_diagnostic("signing_service", event, fields, severity);
     }
 
 } // namespace

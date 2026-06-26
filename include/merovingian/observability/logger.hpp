@@ -611,10 +611,24 @@ auto string_format(std::string const& format, Args&&... args) -> std::string
     return static_cast<LogLevel>(static_cast<int>(severity));
 }
 
-// Public free-function entry point. Emits the diagnostic line at the
-// requested severity, but only if the per-module level filter (or the
-// default level) admits it. Today every existing call site omits the
-// severity arg, so it defaults to debug and behaviour is preserved.
+// Build the message body for a diagnostic log line: "event=<event> key=value ...".
+// The module name and level header are added by the SingleLog named methods via
+// make_log_line, so they must not be included here.
+[[nodiscard]] inline auto diagnostic_message(std::string_view event,
+                                             std::vector<StructuredLogField> const& fields) -> std::string
+{
+    auto msg = std::string{"event="} + std::string{event};
+    for (auto const& field : fields)
+    {
+        msg += " " + field.key + "=" + redact_log_value(field);
+    }
+    return msg;
+}
+
+// Public free-function entry point. Emits a properly formatted log line at the
+// requested severity using the logger name as the module, so the output is:
+//   <timestamp>  <LEVEL>  <logger>:  event=<event> key=value ...
+// Every existing call site omits the severity arg so it defaults to debug.
 inline auto log_diagnostic(std::string_view logger, std::string_view event,
                            std::vector<StructuredLogField> const& fields = {},
                            LogEventSeverity severity = LogEventSeverity::debug) -> void
@@ -625,7 +639,19 @@ inline auto log_diagnostic(std::string_view logger, std::string_view event,
     {
         return;
     }
-    SingleLog::instance().log(level, diagnostic_log_summary(logger, event, fields));
+    auto const mod = std::string{logger};
+    auto const msg = diagnostic_message(event, fields);
+    auto& log = SingleLog::instance();
+    switch (severity)
+    {
+    case LogEventSeverity::trace:    log.trace(mod, msg);    break;
+    case LogEventSeverity::debug:    log.debug(mod, msg);    break;
+    case LogEventSeverity::info:     log.info(mod, msg);     break;
+    case LogEventSeverity::notice:   log.notice(mod, msg);   break;
+    case LogEventSeverity::warning:  log.warning(mod, msg);  break;
+    case LogEventSeverity::error:    log.error(mod, msg);    break;
+    case LogEventSeverity::critical: log.critical(mod, msg); break;
+    }
 }
 
 // +-------------------------------------------------------------------------+
@@ -682,6 +708,7 @@ inline auto log_diagnostic_audit(std::string_view logger, std::string_view event
         the_audit_sink()(audit_fields);
     }
 }
+
 
 
 } // namespace merovingian::observability

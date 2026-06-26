@@ -15,9 +15,10 @@ namespace merovingian::auth
 namespace
 {
 
-    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields,
+                        observability::LogEventSeverity severity = observability::LogEventSeverity::debug) -> void
     {
-        LOG_DEBUG(observability::diagnostic_log_summary("token", event, std::move(fields)));
+        observability::log_diagnostic("token", event, fields, severity);
     }
 
 } // namespace

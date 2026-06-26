@@ -993,9 +993,10 @@ namespace
         return std::move(applied.state);
     }
 
-    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields,
+                        observability::LogEventSeverity severity = observability::LogEventSeverity::debug) -> void
     {
-        LOG_DEBUG(observability::diagnostic_log_summary("postgresql_store", event, std::move(fields)));
+        observability::log_diagnostic("postgresql_store", event, fields, severity);
     }
 
 } // namespace

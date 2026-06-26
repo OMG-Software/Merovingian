@@ -19,9 +19,10 @@ namespace merovingian::federation
 namespace
 {
 
-    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields,
+                        observability::LogEventSeverity severity = observability::LogEventSeverity::debug) -> void
     {
-        LOG_DEBUG(observability::diagnostic_log_summary("dispatch_worker", event, std::move(fields)));
+        observability::log_diagnostic("dispatch_worker", event, fields, severity);
     }
 
     [[nodiscard]] auto transaction_is_well_formed(OutboundTransaction const& transaction) noexcept -> bool
