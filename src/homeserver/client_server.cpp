@@ -9655,6 +9655,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 guard.unlock();
                 auto const [ok, body] = perform_sync_outbound_call(outbound_client, discovery_network, tx, key_id,
                                                                    secret, "room.join.alias_lookup_failed");
+                guard.lock();
                 if (!ok)
                 {
                     return dispatch_err(req, rt, 502U, "M_UNKNOWN", "Failed to resolve room alias on remote server");

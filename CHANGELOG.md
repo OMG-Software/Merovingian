@@ -1,3 +1,11 @@
+## 0.9.24
+
+### Fixed
+- **fix(client-server): re-acquire homeserver mutex after alias directory lookup in `POST /join/{roomIdOrAlias}`:** when joining a room by alias, the handler unlocked the homeserver guard before the outbound federation directory query (`/_matrix/federation/v1/query/directory`) but never re-locked it afterwards. Any subsequent call into `call_local` invoked `guard.unlock()` on an already-unowned `std::unique_lock`, throwing `std::system_error(EPERM)`. The exception was swallowed by the thread-pool worker (`action=swallowed, type=St12system_error, what=Operation not permitted`), silently aborting the join. The fix adds a single `guard.lock()` immediately after `perform_sync_outbound_call` returns, before processing the response body. Joining by room ID (which bypasses the alias lookup path) was unaffected.
+
+### Added
+- **test(client-server): BDD regression coverage for `POST /join` via room alias guard unlock bug:** `tests/unit/test_client_server.cpp` adds a scenario asserting that joining via a `#alias:server` form succeeds without throwing and returns the expected room ID.
+
 ## 0.9.23
 
 ### Fixed

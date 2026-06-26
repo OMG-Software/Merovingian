@@ -1450,6 +1450,55 @@ SCENARIO("Remote room alias lookups surface federation errors rather than local 
     }
 }
 
+SCENARIO("POST /join via room alias does not throw when federation is disabled",
+         "[homeserver][client-server][join][federation][regression]")
+{
+    // Regression: guard.unlock() was called before the alias directory lookup but
+    // guard.lock() was never called after it. call_local() then invoked unlock() on
+    // an already-unowned unique_lock, throwing std::system_error(EPERM). The thread
+    // pool swallowed the exception; in direct call contexts the test would throw.
+    GIVEN("a started runtime with outbound federation disabled")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        runtime.homeserver.outbound_client    = nullptr;
+        runtime.homeserver.discovery_network  = nullptr;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+
+        WHEN("the client attempts to join a remote room by alias")
+        {
+            // %23dev%3Agrapheneos.org decodes to #dev:grapheneos.org
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST", "/_matrix/client/v3/join/%23dev%3Agrapheneos.org", token, {}});
+
+            THEN("the handler returns a federation error response rather than throwing")
+            {
+                // 502 because outbound_client is null — federation call cannot proceed.
+                // Before the fix this threw std::system_error(EPERM) from
+                // unique_lock::unlock() inside call_local().
+                REQUIRE(response.response.status == 502U);
+                REQUIRE(response.response.body.find("M_UNKNOWN") != std::string::npos);
+            }
+        }
+    }
+}
+
 SCENARIO("Client-server im.nheko.summary endpoints return room membership summaries",
          "[homeserver][client-server][nheko-summary]")
 {
