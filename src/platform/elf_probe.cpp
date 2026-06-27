@@ -72,7 +72,7 @@ namespace
         result.probed = true;
 
         Elf64_Off dynamic_offset = 0;
-        Elf64_Xword dynamic_filesz = 0;
+        std::size_t dynamic_filesz = 0;
 
         for (auto const& ph : phdrs)
         {
@@ -87,7 +87,7 @@ namespace
                 break;
             case PT_DYNAMIC:
                 dynamic_offset = ph.p_offset;
-                dynamic_filesz = ph.p_filesz;
+                dynamic_filesz = static_cast<std::size_t>(ph.p_filesz);
                 break;
             default:
                 break;
