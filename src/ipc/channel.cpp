@@ -329,7 +329,7 @@ auto IpcChannel::reader_loop() -> void
         if (reply_to.has_value())
         {
             // Response to one of our pending send_request calls.
-            std::shared_ptr<PendingEntry> entry;
+            std::shared_ptr<PendingEntry> entry; // SHARED_PTR: reviewed — keeps pending entry alive after lock is released so the condition variable can be notified outside the critical section.
             {
                 auto const lk = std::lock_guard{pending_mu_};
                 auto const it = pending_.find(*reply_to);

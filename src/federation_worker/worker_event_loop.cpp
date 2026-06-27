@@ -327,8 +327,12 @@ auto WorkerEventLoop::run() -> void
         }
         else if (type == "shutdown")
         {
+            // Do NOT call channel->stop() here: this handler runs on the IPC
+            // reader thread, and IpcChannel::stop() joins that thread.  A thread
+            // cannot join itself; doing so throws std::system_error(EDEADLK).
+            // Signal shutdown so the main worker thread wakes and stops the
+            // channel from a different thread.
             signal_shutdown();
-            channel_ptr->stop();
         }
         else
         {

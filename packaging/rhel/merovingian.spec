@@ -91,6 +91,7 @@ fi
 %{_bindir}/merovingian-db-migrate
 %dir %{_libexecdir}/merovingian
 %{_libexecdir}/merovingian/merovingian-thumbnail-worker
+%{_libexecdir}/merovingian/merovingian-fed-worker
 %{_unitdir}/merovingian.service
 %dir %{_sysconfdir}/merovingian
 %{_sysconfdir}/merovingian/merovingian.conf.example
