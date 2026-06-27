@@ -12,11 +12,11 @@
 
 #include <array>
 #include <cerrno>
+
 #include <sys/socket.h>
 #include <unistd.h>
 
-SCENARIO("sync pool liveness check detects a closed peer connection",
-         "[sync][pool][liveness]")
+SCENARIO("sync pool liveness check detects a closed peer connection", "[sync][pool][liveness]")
 {
     GIVEN("a Unix socket pair representing the server fd and the client fd")
     {
@@ -31,7 +31,7 @@ SCENARIO("sync pool liveness check detects a closed peer connection",
 
             THEN("MSG_PEEK | MSG_DONTWAIT recv on the server fd returns 0 (EOF)")
             {
-                auto buf     = std::array<char, 1>{};
+                auto buf = std::array<char, 1>{};
                 auto const n = ::recv(server_fd, buf.data(), 1, MSG_PEEK | MSG_DONTWAIT);
                 CHECK(n == 0);
                 ::close(server_fd);
@@ -40,8 +40,7 @@ SCENARIO("sync pool liveness check detects a closed peer connection",
     }
 }
 
-SCENARIO("sync pool liveness check does not falsely report a live connection as closed",
-         "[sync][pool][liveness]")
+SCENARIO("sync pool liveness check does not falsely report a live connection as closed", "[sync][pool][liveness]")
 {
     GIVEN("a Unix socket pair with both ends open and no data pending")
     {
@@ -52,8 +51,8 @@ SCENARIO("sync pool liveness check does not falsely report a live connection as 
 
         WHEN("MSG_PEEK | MSG_DONTWAIT recv is called with no pending data")
         {
-            auto buf         = std::array<char, 1>{};
-            auto const n     = ::recv(server_fd, buf.data(), 1, MSG_PEEK | MSG_DONTWAIT);
+            auto buf = std::array<char, 1>{};
+            auto const n = ::recv(server_fd, buf.data(), 1, MSG_PEEK | MSG_DONTWAIT);
             auto const saved = errno;
 
             THEN("recv returns -1 with EAGAIN or EWOULDBLOCK, signalling connection is alive")
@@ -67,8 +66,7 @@ SCENARIO("sync pool liveness check does not falsely report a live connection as 
     }
 }
 
-SCENARIO("sync pool liveness check detects connection reset by peer",
-         "[sync][pool][liveness]")
+SCENARIO("sync pool liveness check detects connection reset by peer", "[sync][pool][liveness]")
 {
     GIVEN("a Unix socket pair where the client sends RST (SO_LINGER with l_linger=0)")
     {
@@ -85,7 +83,7 @@ SCENARIO("sync pool liveness check detects connection reset by peer",
 
             THEN("peek-recv on server fd returns 0 or error — not EAGAIN — indicating peer is gone")
             {
-                auto buf     = std::array<char, 1>{};
+                auto buf = std::array<char, 1>{};
                 auto const n = ::recv(server_fd, buf.data(), 1, MSG_PEEK | MSG_DONTWAIT);
                 auto const e = errno;
                 // n==0 (FIN) or n<0 with connection error — either signals peer closed

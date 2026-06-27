@@ -38,6 +38,7 @@ flowchart TB
     peer["Malicious federated server"]
     proxy["Malicious reverse proxy"]
     uploader["Media upload attacker"]
+    localproc["Malicious local process<br/>(on same host)"]
 
     subgraph trusted["Trusted: validated server state"]
         state[("Persistent store + runtime state")]
@@ -47,11 +48,13 @@ flowchart TB
     fedgate["Federation edge gate<br/>X-Matrix sig · PDU hash+sig · auth rules"]
     headergate["Header/transport validation<br/>no test-only auth on prod listener"]
     mediagate["Media decode boundary<br/>sandboxed worker · decode-bomb guard"]
+    ipcgate["IPC channel gate<br/>ephemeral KX · AEAD frames · no secrets in transit"]
 
     localuser --> clientgate --> state
     peer --> fedgate --> state
     proxy --> headergate --> clientgate
     uploader --> mediagate --> state
+    localproc --> ipcgate --> state
 ```
 
 | Attacker | Primary surface | Key mitigation |
@@ -61,6 +64,7 @@ flowchart TB
 | Remote exhaustion attacker | Listeners, queues, parsers | Bounded queues, rate limiting, resource limits, circuit breakers |
 | Media upload attacker | Image decoding | Out-of-process seccomp/rlimit-sandboxed worker, pixel-count decode-bomb guard, MIME sniffing, quarantine |
 | Malicious reverse proxy | Header/transport trust | Production listener rejects test-only credential encodings; response header validation |
+| Malicious local process | IPC channel sniffing | Ephemeral `crypto_kx` + AEAD encryption; no filesystem socket path; signing key never loaded in worker and never forwarded over IPC; access tokens stripped |
 | DB exfiltration attacker | Persistence | Prepared statements only, runtime/migration role separation, audit redaction; at-rest encryption for the server signing secret when a master key is configured; Argon2id hashing for registration tokens |
 | Supply-chain attacker | Dependencies, release | Vendored/pinned subprojects, secret scanning, SBOM; signing/provenance tracked in production milestone |
 | Compromised administrator | Admin surface | Audited admin actions; richer admin authZ tracked as a gap |
@@ -269,6 +273,39 @@ threat it closes; the controls above are the standing defences these reinforce.
   `sodium_mlock`-ing on construction and `sodium_munlock`-ing (which zeroises
   and unpins, an optimisation barrier) on destruction, with custom move-ctor /
   move-assign that transfer the mlock to the destination and wipe the source.
+
+- **Federation work starving client threads (out-of-process worker, v0.10.1):**
+  joining a large room via federation saturated the main thread pool with PDU
+  verification, state resolution, and membership work, making all connected
+  clients unresponsive. The attack surface is the IPC channel between the main
+  process and the new `merovingian-fed-worker` child. Mitigations: (a) the
+  channel uses an ephemeral `crypto_kx` key exchange and
+  `crypto_secretstream_xchacha20poly1305` AEAD so a local process that can
+  read the socket pair sees only ciphertext; (b) client access tokens are
+  stripped before serialisation so the worker receives only the validated
+  context it needs; (c) the channel uses an `AF_UNIX` socket pair inherited at
+  spawn with `SOCK_CLOEXEC` and no filesystem path, removing the impersonation
+  surface; (d) PDU writes to the persistent store remain exclusively in the main
+  process so stream-ordering integrity is preserved.
+
+- **Signing secret in federation worker address space (v0.10.2):**
+  in Phase 1 the worker loaded the server signing secret from the database, so a
+  compromised worker could forge federation signatures. Phase 2 removes the
+  secret from the worker entirely: the worker delegates signing to the main
+  process over the existing encrypted IPC channel via `sign_request` /
+  `sign_response` frames, and `IpcEd25519Provider::verify` is unsupported in
+  the worker. The private key exists only in the main process's locked
+  `SecretBuffer`; worker compromise now leaks no long-lived signing material.
+
+- **Single worker as a chokepoint (v0.10.3):**
+  Phase 1 used one federation worker for every room. A CPU-heavy room could
+  still delay federation traffic for all other rooms because that single process
+  had to process every inbound PDU. Phase 3 shards rooms across N independent
+  `merovingian-fed-worker` processes using `fnv1a_32(room_id) % shards`;
+  non-room requests route to shard 0. A crash or resource exhaustion in one
+  shard only affects the rooms owned by that shard, and `fallback_in_process`
+  keeps the rest of federation available in the main process while the
+  supervisor restarts the failed worker.
 
 ## Security principles
 

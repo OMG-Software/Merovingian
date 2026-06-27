@@ -19,11 +19,11 @@ namespace merovingian::sync
 // allow/deny lists, room id allow/deny lists, and a `timeline.limit`.
 struct EventTypeFilter final
 {
-    std::vector<std::string> types{};       // included if non-empty AND matched
-    std::vector<std::string> not_types{};   // excluded
+    std::vector<std::string> types{};     // included if non-empty AND matched
+    std::vector<std::string> not_types{}; // excluded
     std::vector<std::string> senders{};
     std::vector<std::string> not_senders{};
-    std::size_t limit{0U};                  // 0 == no cap
+    std::size_t limit{0U}; // 0 == no cap
 };
 
 struct RoomFilter final
@@ -42,7 +42,7 @@ struct SyncFilter final
     RoomFilter room{};
     EventTypeFilter presence{};
     EventTypeFilter account_data{};
-    bool present{false};                    // false when no filter was supplied
+    bool present{false}; // false when no filter was supplied
 };
 
 // Parse a filter argument as either a raw JSON object (Matrix allows the

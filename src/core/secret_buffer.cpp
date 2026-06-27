@@ -3,8 +3,9 @@
 
 #include "merovingian/core/secret_buffer.hpp"
 
-#include <sodium.h>
 #include <utility>
+
+#include <sodium.h>
 
 namespace merovingian::core
 {

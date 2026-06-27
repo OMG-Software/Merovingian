@@ -176,46 +176,6 @@ namespace
         database::PersistentServerSigningKey key_{};
     };
 
-    class RuntimeEd25519Provider final : public crypto::Ed25519Provider
-    {
-    public:
-        explicit RuntimeEd25519Provider(std::array<unsigned char, crypto_sign_SECRETKEYBYTES> secret_key)
-            : secret_key_{std::move(secret_key)}
-        {
-        }
-
-        [[nodiscard]] auto sign(crypto::Ed25519SecretKeyHandle const& /*key*/, std::string_view message)
-            -> crypto::SignatureResult override
-        {
-            auto signature = std::string(crypto_sign_BYTES, '\0');
-            if (crypto_sign_detached(reinterpret_cast<unsigned char*>(signature.data()), nullptr,
-                                     reinterpret_cast<unsigned char const*>(message.data()), message.size(),
-                                     secret_key_.data()) != 0)
-            {
-                return {{}, "Ed25519 signing failed"};
-            }
-            return {crypto::Ed25519Signature{std::move(signature)}, {}};
-        }
-
-        [[nodiscard]] auto verify(crypto::Ed25519PublicKey const& public_key, std::string_view message,
-                                  crypto::Ed25519Signature const& signature) -> crypto::VerificationResult override
-        {
-            if (!crypto::ed25519_public_key_shape_is_valid(public_key) ||
-                !crypto::ed25519_signature_shape_is_valid(signature))
-            {
-                return {false, "invalid Ed25519 material"};
-            }
-            auto const ok =
-                crypto_sign_verify_detached(reinterpret_cast<unsigned char const*>(signature.bytes.data()),
-                                            reinterpret_cast<unsigned char const*>(message.data()), message.size(),
-                                            reinterpret_cast<unsigned char const*>(public_key.bytes.data())) == 0;
-            return {ok, ok ? std::string{} : std::string{"signature verification failed"}};
-        }
-
-    private:
-        std::array<unsigned char, crypto_sign_SECRETKEYBYTES> secret_key_{};
-    };
-
     [[nodiscard]] auto starts_with(std::string_view value, std::string_view prefix) noexcept -> bool
     {
         return value.size() >= prefix.size() && value.substr(0U, prefix.size()) == prefix;
@@ -342,22 +302,21 @@ namespace
     [[nodiscard]] auto sign_invite_event(HomeserverRuntime& runtime, canonicaljson::Value const& event_value,
                                          std::string_view room_version) -> std::optional<std::string>
     {
-        auto key = ensure_runtime_server_signing_key(runtime);
-        if (!key.has_value() || runtime.database.signing_secret_key.bytes().size() != crypto_sign_SECRETKEYBYTES)
+        // Use the active key record without loading the signing secret. In the main
+        // process the secret is held by runtime.crypto_provider; in the federation
+        // worker it is held by the main process and reached via IPC.
+        auto key = find_active_server_signing_key(runtime);
+        if (!key.has_value() || runtime.crypto_provider == nullptr)
         {
             return std::nullopt;
         }
-        auto secret_key = std::array<unsigned char, crypto_sign_SECRETKEYBYTES>{};
-        std::copy(runtime.database.signing_secret_key.bytes().begin(),
-                  runtime.database.signing_secret_key.bytes().end(), secret_key.begin());
         auto const* policy = rooms::find_room_version_policy(room_version.empty() ? "12" : room_version);
         if (policy == nullptr)
         {
             return std::nullopt;
         }
         auto key_store = RuntimeSigningKeyStore{runtime.config.server().server_name, *key};
-        auto provider = RuntimeEd25519Provider{std::move(secret_key)};
-        auto signed_event = events::sign_event_for_server(event_value, *policy, key_store, provider,
+        auto signed_event = events::sign_event_for_server(event_value, *policy, key_store, *runtime.crypto_provider,
                                                           runtime.config.server().server_name);
         return signed_event.error.empty() ? std::optional<std::string>{std::move(signed_event.event_json)}
                                           : std::nullopt;
@@ -1594,8 +1553,10 @@ namespace
                     // Destroy the worker so the next call re-attempts construction
                     // rather than using a worker stuck in a not-started state.
                     log_diagnostic("dispatch.start.failed",
-                                   {{"reason", e.what(), false},
-                                    {"code", std::to_string(e.code().value()), false}});
+                                   {
+                                       {"reason", e.what(),                         false},
+                                       {"code",   std::to_string(e.code().value()), false}
+                    });
                     runtime.dispatch_worker.reset();
                     // Do not propagate — let the caller's operation fail cleanly
                     // with a federation-unavailable error rather than an uncaught

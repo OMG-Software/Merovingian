@@ -8,12 +8,11 @@
 //   - Federation GET /_matrix/federation/v1/hierarchy/{roomId} response builder
 //   - Depth-first traversal, pagination tokens, suggested_only filter, max_depth
 
+#include "../support/json_test_support.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/homeserver/space_hierarchy.hpp"
-
-#include "../support/json_test_support.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -27,16 +26,16 @@ namespace canonicaljson = merovingian::canonicaljson;
 namespace
 {
 
-[[nodiscard]] auto make_room_json(std::string_view event_type, std::string_view sender,
-                                    std::int64_t origin_server_ts, std::string_view content) -> std::string
+[[nodiscard]] auto make_room_json(std::string_view event_type, std::string_view sender, std::int64_t origin_server_ts,
+                                  std::string_view content) -> std::string
 {
     return std::string{"{\"type\":\""} + std::string{event_type} + "\",\"sender\":\"" + std::string{sender} +
            "\",\"origin_server_ts\":" + std::to_string(origin_server_ts) + ",\"content\":" + std::string{content} + "}";
 }
 
-auto append_event(merovingian::database::PersistentStore& store, std::string_view event_id,
-                  std::string_view room_id, std::string_view sender, std::int64_t origin_server_ts,
-                  std::string_view event_type, std::string_view content_json) -> void
+auto append_event(merovingian::database::PersistentStore& store, std::string_view event_id, std::string_view room_id,
+                  std::string_view sender, std::int64_t origin_server_ts, std::string_view event_type,
+                  std::string_view content_json) -> void
 {
     store.events.push_back({
         std::string{event_id},
@@ -51,11 +50,11 @@ auto append_event(merovingian::database::PersistentStore& store, std::string_vie
     });
 }
 
-auto append_state(merovingian::database::PersistentStore& store, std::string_view room_id,
-                  std::string_view event_type, std::string_view state_key, std::string_view event_id) -> void
+auto append_state(merovingian::database::PersistentStore& store, std::string_view room_id, std::string_view event_type,
+                  std::string_view state_key, std::string_view event_id) -> void
 {
-    store.state.push_back({std::string{room_id}, std::string{event_type}, std::string{state_key},
-                           std::string{event_id}});
+    store.state.push_back(
+        {std::string{room_id}, std::string{event_type}, std::string{state_key}, std::string{event_id}});
 }
 
 [[nodiscard]] auto setup_space_runtime() -> merovingian::homeserver::HomeserverRuntime
@@ -65,71 +64,66 @@ auto append_state(merovingian::database::PersistentStore& store, std::string_vie
 
     // Three rooms: a space with two children, one of which is itself a space.
     store.rooms = {
-        {"!space:example.org", "@alice:example.org"},
-        {"!child1:example.org", "@alice:example.org"},
-        {"!child2:example.org", "@alice:example.org"},
+        {"!space:example.org",      "@alice:example.org"},
+        {"!child1:example.org",     "@alice:example.org"},
+        {"!child2:example.org",     "@alice:example.org"},
         {"!grandchild:example.org", "@alice:example.org"},
     };
 
     auto constexpr alice = std::string_view{"@alice:example.org"};
 
     // Root space.
-    append_event(store, "$space-create", "!space:example.org", alice, 1'000,
-                 "m.room.create", R"({"type":"m.space"})");
+    append_event(store, "$space-create", "!space:example.org", alice, 1'000, "m.room.create", R"({"type":"m.space"})");
     append_state(store, "!space:example.org", "m.room.create", "", "$space-create");
-    append_event(store, "$space-join", "!space:example.org", alice, 1'001,
-                 "m.room.member", R"({"membership":"join"})");
+    append_event(store, "$space-join", "!space:example.org", alice, 1'001, "m.room.member", R"({"membership":"join"})");
     append_state(store, "!space:example.org", "m.room.member", "@alice:example.org", "$space-join");
-    append_event(store, "$space-rules", "!space:example.org", alice, 1'002,
-                 "m.room.join_rules", R"({"join_rule":"public"})");
+    append_event(store, "$space-rules", "!space:example.org", alice, 1'002, "m.room.join_rules",
+                 R"({"join_rule":"public"})");
     append_state(store, "!space:example.org", "m.room.join_rules", "", "$space-rules");
 
     // Child 1 — normal room.
-    append_event(store, "$child1-create", "!child1:example.org", alice, 2'000,
-                 "m.room.create", "{}");
+    append_event(store, "$child1-create", "!child1:example.org", alice, 2'000, "m.room.create", "{}");
     append_state(store, "!child1:example.org", "m.room.create", "", "$child1-create");
-    append_event(store, "$child1-join", "!child1:example.org", alice, 2'001,
-                 "m.room.member", R"({"membership":"join"})");
+    append_event(store, "$child1-join", "!child1:example.org", alice, 2'001, "m.room.member",
+                 R"({"membership":"join"})");
     append_state(store, "!child1:example.org", "m.room.member", "@alice:example.org", "$child1-join");
-    append_event(store, "$child1-rules", "!child1:example.org", alice, 2'002,
-                 "m.room.join_rules", R"({"join_rule":"public"})");
+    append_event(store, "$child1-rules", "!child1:example.org", alice, 2'002, "m.room.join_rules",
+                 R"({"join_rule":"public"})");
     append_state(store, "!child1:example.org", "m.room.join_rules", "", "$child1-rules");
-    append_event(store, "$child1-name", "!child1:example.org", alice, 2'003,
-                 "m.room.name", R"({"name":"Child One"})");
+    append_event(store, "$child1-name", "!child1:example.org", alice, 2'003, "m.room.name", R"({"name":"Child One"})");
     append_state(store, "!child1:example.org", "m.room.name", "", "$child1-name");
 
     // Child 2 — another space.
-    append_event(store, "$child2-create", "!child2:example.org", alice, 3'000,
-                 "m.room.create", R"({"type":"m.space"})");
+    append_event(store, "$child2-create", "!child2:example.org", alice, 3'000, "m.room.create",
+                 R"({"type":"m.space"})");
     append_state(store, "!child2:example.org", "m.room.create", "", "$child2-create");
-    append_event(store, "$child2-join", "!child2:example.org", alice, 3'001,
-                 "m.room.member", R"({"membership":"join"})");
+    append_event(store, "$child2-join", "!child2:example.org", alice, 3'001, "m.room.member",
+                 R"({"membership":"join"})");
     append_state(store, "!child2:example.org", "m.room.member", "@alice:example.org", "$child2-join");
-    append_event(store, "$child2-rules", "!child2:example.org", alice, 3'002,
-                 "m.room.join_rules", R"({"join_rule":"public"})");
+    append_event(store, "$child2-rules", "!child2:example.org", alice, 3'002, "m.room.join_rules",
+                 R"({"join_rule":"public"})");
     append_state(store, "!child2:example.org", "m.room.join_rules", "", "$child2-rules");
 
     // Grandchild — nested under child2.
-    append_event(store, "$grandchild-create", "!grandchild:example.org", alice, 4'000,
-                 "m.room.create", "{}");
+    append_event(store, "$grandchild-create", "!grandchild:example.org", alice, 4'000, "m.room.create", "{}");
     append_state(store, "!grandchild:example.org", "m.room.create", "", "$grandchild-create");
-    append_event(store, "$grandchild-join", "!grandchild:example.org", alice, 4'001,
-                 "m.room.member", R"({"membership":"join"})");
+    append_event(store, "$grandchild-join", "!grandchild:example.org", alice, 4'001, "m.room.member",
+                 R"({"membership":"join"})");
     append_state(store, "!grandchild:example.org", "m.room.member", "@alice:example.org", "$grandchild-join");
-    append_event(store, "$grandchild-rules", "!grandchild:example.org", alice, 4'002,
-                 "m.room.join_rules", R"({"join_rule":"public"})");
+    append_event(store, "$grandchild-rules", "!grandchild:example.org", alice, 4'002, "m.room.join_rules",
+                 R"({"join_rule":"public"})");
     append_state(store, "!grandchild:example.org", "m.room.join_rules", "", "$grandchild-rules");
 
     // Space child events linking the tree.
-    append_event(store, "$root-child1", "!space:example.org", alice, 1'100,
-                 "m.space.child", R"({"via":["example.org"],"suggested":true,"order":"a"})");
+    append_event(store, "$root-child1", "!space:example.org", alice, 1'100, "m.space.child",
+                 R"({"via":["example.org"],"suggested":true,"order":"a"})");
     append_state(store, "!space:example.org", "m.space.child", "!child1:example.org", "$root-child1");
-    append_event(store, "$root-child2", "!space:example.org", alice, 1'101,
-                 "m.space.child", R"({"via":["example.org"],"suggested":false})");
+    append_event(store, "$root-child2", "!space:example.org", alice, 1'101, "m.space.child",
+                 R"({"via":["example.org"],"suggested":false})");
     append_state(store, "!space:example.org", "m.space.child", "!child2:example.org", "$root-child2");
 
-    append_event(store, "$child2-grandchild", "!child2:example.org", alice, 3'100,
-                 "m.space.child", R"({"via":["example.org"],"suggested":true})");
+    append_event(store, "$child2-grandchild", "!child2:example.org", alice, 3'100, "m.space.child",
+                 R"({"via":["example.org"],"suggested":true})");
     append_state(store, "!child2:example.org", "m.space.child", "!grandchild:example.org", "$child2-grandchild");
 
     return runtime;
@@ -137,8 +131,7 @@ auto append_state(merovingian::database::PersistentStore& store, std::string_vie
 
 } // namespace
 
-SCENARIO("handle_client_space_hierarchy returns 404 for a missing room",
-         "[homeserver][space-hierarchy][error]")
+SCENARIO("handle_client_space_hierarchy returns 404 for a missing room", "[homeserver][space-hierarchy][error]")
 {
     GIVEN("a runtime with no rooms")
     {
@@ -159,19 +152,19 @@ SCENARIO("handle_client_space_hierarchy returns 404 for a missing room",
     }
 }
 
-SCENARIO("handle_client_space_hierarchy returns 403 for an inaccessible room",
-         "[homeserver][space-hierarchy][error]")
+SCENARIO("handle_client_space_hierarchy returns 403 for an inaccessible room", "[homeserver][space-hierarchy][error]")
 {
     GIVEN("a private room alice is not in")
     {
         auto runtime = merovingian::homeserver::HomeserverRuntime{};
         auto& store = runtime.database.persistent_store;
-        store.rooms = {{"!private:example.org", "@bob:example.org"}};
-        append_event(store, "$create", "!private:example.org", "@bob:example.org", 1'000,
-                     "m.room.create", "{}");
+        store.rooms = {
+            {"!private:example.org", "@bob:example.org"}
+        };
+        append_event(store, "$create", "!private:example.org", "@bob:example.org", 1'000, "m.room.create", "{}");
         append_state(store, "!private:example.org", "m.room.create", "", "$create");
-        append_event(store, "$rules", "!private:example.org", "@bob:example.org", 1'001,
-                     "m.room.join_rules", R"({"join_rule":"invite"})");
+        append_event(store, "$rules", "!private:example.org", "@bob:example.org", 1'001, "m.room.join_rules",
+                     R"({"join_rule":"invite"})");
         append_state(store, "!private:example.org", "m.room.join_rules", "", "$rules");
         WHEN("alice requests the hierarchy")
         {
@@ -188,8 +181,7 @@ SCENARIO("handle_client_space_hierarchy returns 403 for an inaccessible room",
     }
 }
 
-SCENARIO("handle_client_space_hierarchy returns rooms depth-first",
-         "[homeserver][space-hierarchy]")
+SCENARIO("handle_client_space_hierarchy returns rooms depth-first", "[homeserver][space-hierarchy]")
 {
     GIVEN("a public space tree with two levels")
     {
@@ -229,8 +221,7 @@ SCENARIO("handle_client_space_hierarchy returns rooms depth-first",
     }
 }
 
-SCENARIO("handle_client_space_hierarchy paginates with next_batch",
-         "[homeserver][space-hierarchy]")
+SCENARIO("handle_client_space_hierarchy paginates with next_batch", "[homeserver][space-hierarchy]")
 {
     GIVEN("a public space tree")
     {
@@ -253,10 +244,9 @@ SCENARIO("handle_client_space_hierarchy paginates with next_batch",
 
                 WHEN("the next page is requested with the token")
                 {
-                    auto next_request = merovingian::homeserver::SpaceHierarchyRequest{
-                        "!space:example.org", *next, 1U};
-                    auto const second =
-                        merovingian::homeserver::handle_client_space_hierarchy(runtime, "@alice:example.org", next_request);
+                    auto next_request = merovingian::homeserver::SpaceHierarchyRequest{"!space:example.org", *next, 1U};
+                    auto const second = merovingian::homeserver::handle_client_space_hierarchy(
+                        runtime, "@alice:example.org", next_request);
                     THEN("the second page contains the next depth-first room")
                     {
                         REQUIRE(second.status == 200U);
@@ -274,8 +264,7 @@ SCENARIO("handle_client_space_hierarchy paginates with next_batch",
     }
 }
 
-SCENARIO("handle_client_space_hierarchy honours suggested_only",
-         "[homeserver][space-hierarchy]")
+SCENARIO("handle_client_space_hierarchy honours suggested_only", "[homeserver][space-hierarchy]")
 {
     GIVEN("a public space tree with one suggested child")
     {
@@ -294,10 +283,10 @@ SCENARIO("handle_client_space_hierarchy honours suggested_only",
                 REQUIRE(rooms != nullptr);
                 REQUIRE(rooms->size() == 2U);
                 auto const ids = std::vector<std::string>{
-                    *merovingian::tests::string_member(
-                        *std::get_if<canonicaljson::Object>(&rooms->at(0).storage()), "room_id"),
-                    *merovingian::tests::string_member(
-                        *std::get_if<canonicaljson::Object>(&rooms->at(1).storage()), "room_id"),
+                    *merovingian::tests::string_member(*std::get_if<canonicaljson::Object>(&rooms->at(0).storage()),
+                                                       "room_id"),
+                    *merovingian::tests::string_member(*std::get_if<canonicaljson::Object>(&rooms->at(1).storage()),
+                                                       "room_id"),
                 };
                 REQUIRE(ids[0] == "!space:example.org");
                 REQUIRE(ids[1] == "!child1:example.org");
@@ -306,8 +295,7 @@ SCENARIO("handle_client_space_hierarchy honours suggested_only",
     }
 }
 
-SCENARIO("handle_client_space_hierarchy honours max_depth",
-         "[homeserver][space-hierarchy]")
+SCENARIO("handle_client_space_hierarchy honours max_depth", "[homeserver][space-hierarchy]")
 {
     GIVEN("a public two-level space tree")
     {
@@ -341,8 +329,8 @@ SCENARIO("build_federation_space_hierarchy_response returns the room and immedia
         auto runtime = setup_space_runtime();
         WHEN("the federation response is built for the root space")
         {
-            auto const body =
-                merovingian::homeserver::build_federation_space_hierarchy_response(runtime, "!space:example.org", false);
+            auto const body = merovingian::homeserver::build_federation_space_hierarchy_response(
+                runtime, "!space:example.org", false);
             THEN("it contains the root room and both children")
             {
                 REQUIRE(!body.empty());

@@ -554,8 +554,7 @@ SCENARIO("Homeserver rejects expired access tokens even when the session is not 
         WHEN("the session's access-token expiry is forced into the past")
         {
             auto const fresh = merovingian::homeserver::authenticated_user(runtime, login.body);
-            runtime.database.sessions.front().expires_at =
-                std::chrono::system_clock::now() - std::chrono::hours{1};
+            runtime.database.sessions.front().expires_at = std::chrono::system_clock::now() - std::chrono::hours{1};
             auto const expired = merovingian::homeserver::authenticated_user(runtime, login.body);
 
             // A legacy / non-expiring session must still authenticate.
@@ -1469,16 +1468,15 @@ SCENARIO("Audit log never captures raw access token material on auth rejection",
 
 // Spec: CS API §5.6.2 — "Servers SHOULD NOT expire access tokens without having
 //                        also issued refresh tokens for those sessions."
-SCENARIO("access token issued without refresh-token consent carries no expiry",
-         "[auth][token][spec]")
+SCENARIO("access token issued without refresh-token consent carries no expiry", "[auth][token][spec]")
 {
     GIVEN("a runtime configured with a short access-token lifetime")
     {
         auto started = merovingian::homeserver::start_runtime(config_with_short_token_lifetime());
         REQUIRE(started.started);
         auto& runtime = started.runtime;
-        auto const user = merovingian::homeserver::register_local_user(
-            runtime, "bob", "CorrectHorse7!", merovingian::tests::registration_token);
+        auto const user = merovingian::homeserver::register_local_user(runtime, "bob", "CorrectHorse7!",
+                                                                       merovingian::tests::registration_token);
         REQUIRE(user.ok);
 
         WHEN("the user logs in without requesting refresh-token support")
@@ -1507,8 +1505,8 @@ SCENARIO("access token issued with refresh-token consent carries a finite expiry
         auto started = merovingian::homeserver::start_runtime(config_with_short_token_lifetime());
         REQUIRE(started.started);
         auto& runtime = started.runtime;
-        auto const user = merovingian::homeserver::register_local_user(
-            runtime, "carol", "CorrectHorse7!", merovingian::tests::registration_token);
+        auto const user = merovingian::homeserver::register_local_user(runtime, "carol", "CorrectHorse7!",
+                                                                       merovingian::tests::registration_token);
         REQUIRE(user.ok);
 
         WHEN("the user logs in requesting refresh-token support")

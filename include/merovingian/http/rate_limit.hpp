@@ -127,12 +127,10 @@ public:
             return RateLimitDecision{.allowed = true, .deny_reason = "invalid_policy"};
         }
 
-        auto const ip_decision = ip_bucket.empty()
-                                      ? RateLimitDecision{true, 0U, 0U, 0U, 0U, 0U, 0U, ""}
-                                      : check_bucket(m_ip_buckets, ip_bucket, per_ip, now);
-        auto const user_decision = user_bucket.empty()
-                                       ? RateLimitDecision{true, 0U, 0U, 0U, 0U, 0U, 0U, ""}
-                                       : check_bucket(m_user_buckets, user_bucket, per_user, now);
+        auto const ip_decision = ip_bucket.empty() ? RateLimitDecision{true, 0U, 0U, 0U, 0U, 0U, 0U, ""}
+                                                   : check_bucket(m_ip_buckets, ip_bucket, per_ip, now);
+        auto const user_decision = user_bucket.empty() ? RateLimitDecision{true, 0U, 0U, 0U, 0U, 0U, 0U, ""}
+                                                       : check_bucket(m_user_buckets, user_bucket, per_user, now);
 
         if (!user_decision.allowed)
         {
@@ -199,13 +197,15 @@ private:
     }
 
     [[nodiscard]] auto check_bucket(std::vector<Bucket>& table, std::string_view bucket_key,
-                                     std::optional<RateLimitPolicy> const& policy, TimePoint now) -> RateLimitDecision
+                                    std::optional<RateLimitPolicy> const& policy, TimePoint now) -> RateLimitDecision
     {
         if (!policy.has_value() || bucket_key.empty())
         {
             return RateLimitDecision{true, 0U, 0U, 0U, 0U, 0U, 0U, ""};
         }
-        auto it = std::ranges::find_if(table, [bucket_key](Bucket const& b) { return b.key == bucket_key; });
+        auto it = std::ranges::find_if(table, [bucket_key](Bucket const& b) {
+            return b.key == bucket_key;
+        });
         if (it == table.end())
         {
             table.push_back({std::string{bucket_key}, 1U, now});
@@ -218,7 +218,8 @@ private:
         }
         if (it->count >= policy->max_requests)
         {
-            return RateLimitDecision{false, policy->max_requests, policy->window_seconds, it->count, it->count, 0U, 0U, "per_ip_cap"};
+            return RateLimitDecision{false, policy->max_requests, policy->window_seconds, it->count, it->count, 0U,
+                                     0U,    "per_ip_cap"};
         }
         ++it->count;
         return RateLimitDecision{true, policy->max_requests, policy->window_seconds, it->count, it->count, 0U, 0U, ""};

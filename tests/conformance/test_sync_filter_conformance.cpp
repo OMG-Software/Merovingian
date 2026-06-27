@@ -49,8 +49,10 @@ SCENARIO("An absent filter allows all events through", "[sync][filter][conforman
         THEN("all event types pass the room timeline filter")
         {
             // Spec MUST: absent filter = no restriction.
-            REQUIRE(merovingian::sync::event_passes_filter(filter.room.timeline, "m.room.message", "@alice:example.org"));
-            REQUIRE(merovingian::sync::event_passes_filter(filter.room.timeline, "m.room.member", "@alice:example.org"));
+            REQUIRE(
+                merovingian::sync::event_passes_filter(filter.room.timeline, "m.room.message", "@alice:example.org"));
+            REQUIRE(
+                merovingian::sync::event_passes_filter(filter.room.timeline, "m.room.member", "@alice:example.org"));
             REQUIRE(merovingian::sync::event_passes_filter(filter.room.timeline, "m.custom.event", "@bob:example.org"));
         }
     }
@@ -62,8 +64,7 @@ SCENARIO("An absent filter allows all events through", "[sync][filter][conforman
 // "types": A list of event types to include. If this list is absent then all
 // event types are included. If the list is present, only events whose type
 // matches one of the listed types are included.
-SCENARIO("Filter with 'types' list includes only matching event types",
-         "[sync][filter][conformance]")
+SCENARIO("Filter with 'types' list includes only matching event types", "[sync][filter][conformance]")
 {
     GIVEN("a filter that requests only m.room.message events")
     {
@@ -78,7 +79,8 @@ SCENARIO("Filter with 'types' list includes only matching event types",
         THEN("m.room.message events pass")
         {
             // Spec MUST: event type in the types list passes the filter.
-            REQUIRE(merovingian::sync::event_passes_filter(filter.room.timeline, "m.room.message", "@alice:example.org"));
+            REQUIRE(
+                merovingian::sync::event_passes_filter(filter.room.timeline, "m.room.message", "@alice:example.org"));
         }
 
         THEN("m.room.member events are excluded")
@@ -102,8 +104,7 @@ SCENARIO("Filter with 'types' list includes only matching event types",
 //
 // "not_types": A list of event types to exclude. Events whose type matches
 // any entry in not_types are excluded regardless of the types list.
-SCENARIO("Filter with 'not_types' list excludes matching event types",
-         "[sync][filter][conformance]")
+SCENARIO("Filter with 'not_types' list excludes matching event types", "[sync][filter][conformance]")
 {
     GIVEN("a filter that excludes m.room.member events")
     {
@@ -154,8 +155,7 @@ SCENARIO("Filter not_types takes precedence over types", "[sync][filter][conform
 //
 // "senders": A list of senders to include. When present, only events from
 // a sender in this list are included.
-SCENARIO("Filter with 'senders' list includes only events from listed senders",
-         "[sync][filter][conformance]")
+SCENARIO("Filter with 'senders' list includes only events from listed senders", "[sync][filter][conformance]")
 {
     GIVEN("a filter that only includes events from @alice:example.org")
     {
@@ -165,7 +165,8 @@ SCENARIO("Filter with 'senders' list includes only events from listed senders",
         THEN("events from @alice:example.org pass")
         {
             // Spec MUST: sender in the senders list passes the filter.
-            REQUIRE(merovingian::sync::event_passes_filter(filter.room.timeline, "m.room.message", "@alice:example.org"));
+            REQUIRE(
+                merovingian::sync::event_passes_filter(filter.room.timeline, "m.room.message", "@alice:example.org"));
         }
 
         THEN("events from @bob:example.org are excluded")
@@ -182,17 +183,17 @@ SCENARIO("Filter with 'senders' list includes only events from listed senders",
 //
 // "not_senders": A list of senders to exclude. Takes precedence over "senders".
 // Events from a sender in not_senders are excluded regardless of senders.
-SCENARIO("Filter with 'not_senders' excludes events from listed senders",
-         "[sync][filter][conformance]")
+SCENARIO("Filter with 'not_senders' excludes events from listed senders", "[sync][filter][conformance]")
 {
     GIVEN("a filter that excludes events from @spam:example.org")
     {
-        auto const filter = merovingian::sync::parse_filter_argument(
-            R"({"room":{"timeline":{"not_senders":["@spam:example.org"]}}})");
+        auto const filter =
+            merovingian::sync::parse_filter_argument(R"({"room":{"timeline":{"not_senders":["@spam:example.org"]}}})");
 
         THEN("events from @alice:example.org pass")
         {
-            REQUIRE(merovingian::sync::event_passes_filter(filter.room.timeline, "m.room.message", "@alice:example.org"));
+            REQUIRE(
+                merovingian::sync::event_passes_filter(filter.room.timeline, "m.room.message", "@alice:example.org"));
         }
 
         THEN("events from @spam:example.org are excluded")
@@ -229,8 +230,7 @@ SCENARIO("Filter not_senders takes precedence over senders", "[sync][filter][con
 //
 // A filter JSON object with no nested restriction fields is valid. The
 // SyncFilter.present flag must be true when a filter was supplied.
-SCENARIO("An empty JSON filter object {} is present but unrestricted",
-         "[sync][filter][conformance]")
+SCENARIO("An empty JSON filter object {} is present but unrestricted", "[sync][filter][conformance]")
 {
     GIVEN("an empty JSON object as filter")
     {
@@ -247,8 +247,7 @@ SCENARIO("An empty JSON filter object {} is present but unrestricted",
             // Spec MUST: an empty filter object imposes no restriction.
             REQUIRE(
                 merovingian::sync::event_passes_filter(filter.room.timeline, "m.room.message", "@alice:example.org"));
-            REQUIRE(
-                merovingian::sync::event_passes_filter(filter.room.timeline, "m.room.member", "@bob:example.org"));
+            REQUIRE(merovingian::sync::event_passes_filter(filter.room.timeline, "m.room.member", "@bob:example.org"));
         }
     }
 }
@@ -258,8 +257,7 @@ SCENARIO("An empty JSON filter object {} is present but unrestricted",
 //
 // Multiple filter criteria are AND-combined: an event must satisfy both the
 // type filter and the sender filter to pass.
-SCENARIO("Filter combines type and sender restrictions with AND logic",
-         "[sync][filter][conformance]")
+SCENARIO("Filter combines type and sender restrictions with AND logic", "[sync][filter][conformance]")
 {
     GIVEN("a filter with both types and senders restrictions")
     {
@@ -269,7 +267,8 @@ SCENARIO("Filter combines type and sender restrictions with AND logic",
         THEN("events from @alice:example.org of type m.room.message pass")
         {
             // Spec MUST: event passes only when it satisfies ALL restrictions.
-            REQUIRE(merovingian::sync::event_passes_filter(filter.room.timeline, "m.room.message", "@alice:example.org"));
+            REQUIRE(
+                merovingian::sync::event_passes_filter(filter.room.timeline, "m.room.message", "@alice:example.org"));
         }
 
         THEN("events from @alice:example.org of type m.room.member are excluded")
@@ -320,7 +319,8 @@ SCENARIO("parse_filter_argument handles invalid JSON gracefully", "[sync][filter
 
         THEN("all events still pass through")
         {
-            REQUIRE(merovingian::sync::event_passes_filter(filter.room.timeline, "m.room.message", "@alice:example.org"));
+            REQUIRE(
+                merovingian::sync::event_passes_filter(filter.room.timeline, "m.room.message", "@alice:example.org"));
         }
     }
 }
@@ -337,8 +337,7 @@ SCENARIO("parse_filter_argument handles invalid JSON gracefully", "[sync][filter
 // this validation via canonicaljson::parse_lossless() before calling sync_json().
 // The parse_filter_argument() helper is intentionally lenient so that it can
 // be reused in non-HTTP contexts; the API-level error lives in the route.
-SCENARIO("Sync API route: invalid inline JSON filter is identified as a parse error",
-         "[sync][filter][conformance]")
+SCENARIO("Sync API route: invalid inline JSON filter is identified as a parse error", "[sync][filter][conformance]")
 {
     GIVEN("a filter argument that starts with '{' but contains invalid JSON")
     {
@@ -382,13 +381,11 @@ SCENARIO("Sync API route: invalid inline JSON filter is identified as a parse er
 // ---------------------------------------------------------------------------
 
 // Spec: "rooms": A list of room IDs to include. If absent all rooms are included.
-SCENARIO("Filter with 'rooms' list includes only events from specified rooms",
-         "[sync][filter][conformance]")
+SCENARIO("Filter with 'rooms' list includes only events from specified rooms", "[sync][filter][conformance]")
 {
     GIVEN("a filter that specifies a rooms include-list")
     {
-        auto const filter = merovingian::sync::parse_filter_argument(
-            R"({"room":{"rooms":["!alpha:example.org"]}})");
+        auto const filter = merovingian::sync::parse_filter_argument(R"({"room":{"rooms":["!alpha:example.org"]}})");
 
         THEN("events from the listed room pass the room filter")
         {
@@ -405,13 +402,11 @@ SCENARIO("Filter with 'rooms' list includes only events from specified rooms",
 }
 
 // Spec: "not_rooms": A list of room IDs to exclude. Takes precedence over rooms.
-SCENARIO("Filter with 'not_rooms' excludes events from specified rooms",
-         "[sync][filter][conformance]")
+SCENARIO("Filter with 'not_rooms' excludes events from specified rooms", "[sync][filter][conformance]")
 {
     GIVEN("a filter that excludes !spam:example.org")
     {
-        auto const filter = merovingian::sync::parse_filter_argument(
-            R"({"room":{"not_rooms":["!spam:example.org"]}})");
+        auto const filter = merovingian::sync::parse_filter_argument(R"({"room":{"not_rooms":["!spam:example.org"]}})");
 
         THEN("events from an unlisted room pass")
         {
@@ -427,8 +422,7 @@ SCENARIO("Filter with 'not_rooms' excludes events from specified rooms",
 }
 
 // Spec: not_rooms takes precedence over rooms.
-SCENARIO("Filter not_rooms takes precedence over rooms",
-         "[sync][filter][conformance]")
+SCENARIO("Filter not_rooms takes precedence over rooms", "[sync][filter][conformance]")
 {
     GIVEN("a filter with the same room in both rooms and not_rooms")
     {
@@ -450,73 +444,68 @@ SCENARIO("Filter not_rooms takes precedence over rooms",
 // ---------------------------------------------------------------------------
 
 // Spec: room.state — filter applied to the state events included in the /sync response.
-SCENARIO("Filter room.state subfilter restricts state event types",
-         "[sync][filter][conformance]")
+SCENARIO("Filter room.state subfilter restricts state event types", "[sync][filter][conformance]")
 {
     GIVEN("a filter with state restricted to m.room.member")
     {
-        auto const filter = merovingian::sync::parse_filter_argument(
-            R"({"room":{"state":{"types":["m.room.member"]}}})");
+        auto const filter =
+            merovingian::sync::parse_filter_argument(R"({"room":{"state":{"types":["m.room.member"]}}})");
 
         THEN("m.room.member state events pass")
         {
             // Spec MUST: state event type in the types list passes the state filter.
-            REQUIRE(merovingian::sync::event_passes_filter(
-                filter.room.state, "m.room.member", "@alice:example.org"));
+            REQUIRE(merovingian::sync::event_passes_filter(filter.room.state, "m.room.member", "@alice:example.org"));
         }
 
         THEN("m.room.power_levels state events are excluded")
         {
             // Spec MUST: state event type not in the types list is excluded.
-            REQUIRE_FALSE(merovingian::sync::event_passes_filter(
-                filter.room.state, "m.room.power_levels", "@alice:example.org"));
+            REQUIRE_FALSE(
+                merovingian::sync::event_passes_filter(filter.room.state, "m.room.power_levels", "@alice:example.org"));
         }
     }
 }
 
 // Spec: room.ephemeral — filter applied to ephemeral events (typing, read receipts).
-SCENARIO("Filter room.ephemeral subfilter restricts ephemeral event types",
-         "[sync][filter][conformance]")
+SCENARIO("Filter room.ephemeral subfilter restricts ephemeral event types", "[sync][filter][conformance]")
 {
     GIVEN("a filter that excludes m.typing from ephemeral events")
     {
-        auto const filter = merovingian::sync::parse_filter_argument(
-            R"({"room":{"ephemeral":{"not_types":["m.typing"]}}})");
+        auto const filter =
+            merovingian::sync::parse_filter_argument(R"({"room":{"ephemeral":{"not_types":["m.typing"]}}})");
 
         THEN("m.receipt events pass the ephemeral filter")
         {
-            REQUIRE(merovingian::sync::event_passes_filter(
-                filter.room.ephemeral, "m.receipt", "@alice:example.org"));
+            REQUIRE(merovingian::sync::event_passes_filter(filter.room.ephemeral, "m.receipt", "@alice:example.org"));
         }
 
         THEN("m.typing events are excluded from the ephemeral stream")
         {
             // Spec MUST: event type in not_types is excluded from the ephemeral stream.
-            REQUIRE_FALSE(merovingian::sync::event_passes_filter(
-                filter.room.ephemeral, "m.typing", "@alice:example.org"));
+            REQUIRE_FALSE(
+                merovingian::sync::event_passes_filter(filter.room.ephemeral, "m.typing", "@alice:example.org"));
         }
     }
 }
 
 // Spec: room.account_data — filter for per-room account data events.
-SCENARIO("Filter room.account_data subfilter restricts room-level account data events",
-         "[sync][filter][conformance]")
+SCENARIO("Filter room.account_data subfilter restricts room-level account data events", "[sync][filter][conformance]")
 {
     GIVEN("a filter with room account_data restricted to m.fully_read")
     {
-        auto const filter = merovingian::sync::parse_filter_argument(
-            R"({"room":{"account_data":{"types":["m.fully_read"]}}})");
+        auto const filter =
+            merovingian::sync::parse_filter_argument(R"({"room":{"account_data":{"types":["m.fully_read"]}}})");
 
         THEN("m.fully_read room account_data events pass")
         {
-            REQUIRE(merovingian::sync::event_passes_filter(
-                filter.room.account_data, "m.fully_read", "@alice:example.org"));
+            REQUIRE(
+                merovingian::sync::event_passes_filter(filter.room.account_data, "m.fully_read", "@alice:example.org"));
         }
 
         THEN("m.tag room account_data events are excluded")
         {
-            REQUIRE_FALSE(merovingian::sync::event_passes_filter(
-                filter.room.account_data, "m.tag", "@alice:example.org"));
+            REQUIRE_FALSE(
+                merovingian::sync::event_passes_filter(filter.room.account_data, "m.tag", "@alice:example.org"));
         }
     }
 }
@@ -528,48 +517,42 @@ SCENARIO("Filter room.account_data subfilter restricts room-level account data e
 // ---------------------------------------------------------------------------
 
 // Spec: presence — filter applied to presence events in the /sync response.
-SCENARIO("Top-level presence filter restricts presence events by sender",
-         "[sync][filter][conformance]")
+SCENARIO("Top-level presence filter restricts presence events by sender", "[sync][filter][conformance]")
 {
     GIVEN("a filter that excludes presence from @bot:example.org")
     {
-        auto const filter = merovingian::sync::parse_filter_argument(
-            R"({"presence":{"not_senders":["@bot:example.org"]}})");
+        auto const filter =
+            merovingian::sync::parse_filter_argument(R"({"presence":{"not_senders":["@bot:example.org"]}})");
 
         THEN("presence from a regular user passes")
         {
-            REQUIRE(merovingian::sync::event_passes_filter(
-                filter.presence, "m.presence", "@alice:example.org"));
+            REQUIRE(merovingian::sync::event_passes_filter(filter.presence, "m.presence", "@alice:example.org"));
         }
 
         THEN("presence from the excluded bot is filtered")
         {
             // Spec MUST: sender in not_senders is excluded from the presence stream.
-            REQUIRE_FALSE(merovingian::sync::event_passes_filter(
-                filter.presence, "m.presence", "@bot:example.org"));
+            REQUIRE_FALSE(merovingian::sync::event_passes_filter(filter.presence, "m.presence", "@bot:example.org"));
         }
     }
 }
 
 // Spec: account_data (top-level) — filter for global (non-room) account data events.
-SCENARIO("Top-level account_data filter restricts global account data events",
-         "[sync][filter][conformance]")
+SCENARIO("Top-level account_data filter restricts global account data events", "[sync][filter][conformance]")
 {
     GIVEN("a top-level account_data filter restricted to m.push_rules")
     {
-        auto const filter = merovingian::sync::parse_filter_argument(
-            R"({"account_data":{"types":["m.push_rules"]}})");
+        auto const filter = merovingian::sync::parse_filter_argument(R"({"account_data":{"types":["m.push_rules"]}})");
 
         THEN("m.push_rules account_data events pass")
         {
-            REQUIRE(merovingian::sync::event_passes_filter(
-                filter.account_data, "m.push_rules", "@alice:example.org"));
+            REQUIRE(merovingian::sync::event_passes_filter(filter.account_data, "m.push_rules", "@alice:example.org"));
         }
 
         THEN("m.identity_server account_data events are excluded")
         {
-            REQUIRE_FALSE(merovingian::sync::event_passes_filter(
-                filter.account_data, "m.identity_server", "@alice:example.org"));
+            REQUIRE_FALSE(
+                merovingian::sync::event_passes_filter(filter.account_data, "m.identity_server", "@alice:example.org"));
         }
     }
 }
@@ -585,13 +568,11 @@ SCENARIO("Top-level account_data filter restricts global account data events",
 //
 // When a filter supplies a "limit" field, parse_filter_argument must carry the
 // value through so the sync route can honour it.
-SCENARIO("Filter timeline limit field is parsed from the JSON filter",
-         "[sync][filter][conformance]")
+SCENARIO("Filter timeline limit field is parsed from the JSON filter", "[sync][filter][conformance]")
 {
     GIVEN("a filter with timeline limit set to 50")
     {
-        auto const filter = merovingian::sync::parse_filter_argument(
-            R"({"room":{"timeline":{"limit":50}}})");
+        auto const filter = merovingian::sync::parse_filter_argument(R"({"room":{"timeline":{"limit":50}}})");
 
         THEN("the parsed limit value is 50")
         {
@@ -614,13 +595,12 @@ SCENARIO("Filter timeline limit field is parsed from the JSON filter",
 //   whenever filter.room.timeline.limit == 0.
 // That route-level behaviour is tested via the conformance scenarios in
 //   test_client_server_conformance.cpp — "GET /sync incremental timeline …".
-SCENARIO("Absent filter limit is represented internally as 0 (implementation sentinel)",
-         "[sync][filter][helper]")
+SCENARIO("Absent filter limit is represented internally as 0 (implementation sentinel)", "[sync][filter][helper]")
 {
     GIVEN("a filter with no limit field")
     {
-        auto const filter = merovingian::sync::parse_filter_argument(
-            R"({"room":{"timeline":{"types":["m.room.message"]}}})");
+        auto const filter =
+            merovingian::sync::parse_filter_argument(R"({"room":{"timeline":{"types":["m.room.message"]}}})");
 
         THEN("the limit field is 0, signalling no client-imposed cap to the route handler")
         {
@@ -633,13 +613,11 @@ SCENARIO("Absent filter limit is represented internally as 0 (implementation sen
 
 // Spec: "include_leave": Whether to include rooms the user has left in the sync response.
 // Default is false per the spec.
-SCENARIO("Filter include_leave defaults to false and is set correctly when present",
-         "[sync][filter][conformance]")
+SCENARIO("Filter include_leave defaults to false and is set correctly when present", "[sync][filter][conformance]")
 {
     GIVEN("a filter with include_leave set to true")
     {
-        auto const filter = merovingian::sync::parse_filter_argument(
-            R"({"room":{"include_leave":true}})");
+        auto const filter = merovingian::sync::parse_filter_argument(R"({"room":{"include_leave":true}})");
 
         THEN("include_leave is true")
         {
@@ -650,8 +628,7 @@ SCENARIO("Filter include_leave defaults to false and is set correctly when prese
 
     GIVEN("a filter without include_leave specified")
     {
-        auto const filter = merovingian::sync::parse_filter_argument(
-            R"({"room":{"timeline":{"limit":10}}})");
+        auto const filter = merovingian::sync::parse_filter_argument(R"({"room":{"timeline":{"limit":10}}})");
 
         THEN("include_leave defaults to false")
         {
@@ -671,23 +648,21 @@ SCENARIO("Filter include_leave defaults to false and is set correctly when prese
 // ---------------------------------------------------------------------------
 
 // Spec: bare "*" in types matches every event type.
-SCENARIO("Filter type wildcard '*' matches any event type",
-         "[sync][filter][conformance][wildcard]")
+SCENARIO("Filter type wildcard '*' matches any event type", "[sync][filter][conformance][wildcard]")
 {
     GIVEN("a filter whose types list contains only '*'")
     {
-        auto const filter = merovingian::sync::parse_filter_argument(
-            R"({"room":{"timeline":{"types":["*"]}}})");
+        auto const filter = merovingian::sync::parse_filter_argument(R"({"room":{"timeline":{"types":["*"]}}})");
 
         THEN("any event type passes the filter")
         {
             // Spec MUST: bare * matches all event types.
-            REQUIRE(merovingian::sync::event_passes_filter(
-                filter.room.timeline, "m.room.message", "@alice:example.org"));
-            REQUIRE(merovingian::sync::event_passes_filter(
-                filter.room.timeline, "m.room.member", "@alice:example.org"));
-            REQUIRE(merovingian::sync::event_passes_filter(
-                filter.room.timeline, "com.example.custom", "@alice:example.org"));
+            REQUIRE(
+                merovingian::sync::event_passes_filter(filter.room.timeline, "m.room.message", "@alice:example.org"));
+            REQUIRE(
+                merovingian::sync::event_passes_filter(filter.room.timeline, "m.room.member", "@alice:example.org"));
+            REQUIRE(merovingian::sync::event_passes_filter(filter.room.timeline, "com.example.custom",
+                                                           "@alice:example.org"));
         }
     }
 }
@@ -698,23 +673,22 @@ SCENARIO("Filter type prefix wildcard 'm.room.*' matches only room event types",
 {
     GIVEN("a filter whose types list contains 'm.room.*'")
     {
-        auto const filter = merovingian::sync::parse_filter_argument(
-            R"({"room":{"timeline":{"types":["m.room.*"]}}})");
+        auto const filter = merovingian::sync::parse_filter_argument(R"({"room":{"timeline":{"types":["m.room.*"]}}})");
 
         THEN("room event types pass the filter; non-room types are excluded")
         {
             // Spec MUST: prefix* matches any type starting with prefix.
-            REQUIRE(merovingian::sync::event_passes_filter(
-                filter.room.timeline, "m.room.message", "@alice:example.org"));
-            REQUIRE(merovingian::sync::event_passes_filter(
-                filter.room.timeline, "m.room.member", "@alice:example.org"));
-            REQUIRE(merovingian::sync::event_passes_filter(
-                filter.room.timeline, "m.room.power_levels", "@alice:example.org"));
+            REQUIRE(
+                merovingian::sync::event_passes_filter(filter.room.timeline, "m.room.message", "@alice:example.org"));
+            REQUIRE(
+                merovingian::sync::event_passes_filter(filter.room.timeline, "m.room.member", "@alice:example.org"));
+            REQUIRE(merovingian::sync::event_passes_filter(filter.room.timeline, "m.room.power_levels",
+                                                           "@alice:example.org"));
             // Spec MUST: non-matching types are excluded.
-            REQUIRE_FALSE(merovingian::sync::event_passes_filter(
-                filter.room.timeline, "m.typing", "@alice:example.org"));
-            REQUIRE_FALSE(merovingian::sync::event_passes_filter(
-                filter.room.timeline, "com.example.custom", "@alice:example.org"));
+            REQUIRE_FALSE(
+                merovingian::sync::event_passes_filter(filter.room.timeline, "m.typing", "@alice:example.org"));
+            REQUIRE_FALSE(merovingian::sync::event_passes_filter(filter.room.timeline, "com.example.custom",
+                                                                 "@alice:example.org"));
         }
     }
 }
@@ -725,19 +699,18 @@ SCENARIO("Filter not_types wildcard 'm.*' excludes all Matrix protocol event typ
 {
     GIVEN("a filter whose not_types list contains 'm.*'")
     {
-        auto const filter = merovingian::sync::parse_filter_argument(
-            R"({"room":{"timeline":{"not_types":["m.*"]}}})");
+        auto const filter = merovingian::sync::parse_filter_argument(R"({"room":{"timeline":{"not_types":["m.*"]}}})");
 
         THEN("Matrix protocol types are excluded; third-party types pass through")
         {
             // Spec MUST: not_types wildcard exclusion works identically to types inclusion.
-            REQUIRE_FALSE(merovingian::sync::event_passes_filter(
-                filter.room.timeline, "m.room.message", "@alice:example.org"));
-            REQUIRE_FALSE(merovingian::sync::event_passes_filter(
-                filter.room.timeline, "m.typing", "@alice:example.org"));
+            REQUIRE_FALSE(
+                merovingian::sync::event_passes_filter(filter.room.timeline, "m.room.message", "@alice:example.org"));
+            REQUIRE_FALSE(
+                merovingian::sync::event_passes_filter(filter.room.timeline, "m.typing", "@alice:example.org"));
             // A third-party type that does not start with "m." must pass through.
-            REQUIRE(merovingian::sync::event_passes_filter(
-                filter.room.timeline, "com.example.custom", "@alice:example.org"));
+            REQUIRE(merovingian::sync::event_passes_filter(filter.room.timeline, "com.example.custom",
+                                                           "@alice:example.org"));
         }
     }
 }
@@ -754,15 +727,15 @@ SCENARIO("Filter types list with exact type and wildcard both applied correctly"
         THEN("exact matches and wildcard matches both pass; other types are excluded")
         {
             // Spec MUST: multiple patterns are ORed together.
-            REQUIRE(merovingian::sync::event_passes_filter(
-                filter.room.timeline, "m.room.message", "@alice:example.org"));
-            REQUIRE(merovingian::sync::event_passes_filter(
-                filter.room.timeline, "com.example.custom", "@alice:example.org"));
-            REQUIRE(merovingian::sync::event_passes_filter(
-                filter.room.timeline, "com.example.other", "@alice:example.org"));
+            REQUIRE(
+                merovingian::sync::event_passes_filter(filter.room.timeline, "m.room.message", "@alice:example.org"));
+            REQUIRE(merovingian::sync::event_passes_filter(filter.room.timeline, "com.example.custom",
+                                                           "@alice:example.org"));
+            REQUIRE(merovingian::sync::event_passes_filter(filter.room.timeline, "com.example.other",
+                                                           "@alice:example.org"));
             // A type matching neither pattern must be excluded.
-            REQUIRE_FALSE(merovingian::sync::event_passes_filter(
-                filter.room.timeline, "m.room.member", "@alice:example.org"));
+            REQUIRE_FALSE(
+                merovingian::sync::event_passes_filter(filter.room.timeline, "m.room.member", "@alice:example.org"));
         }
     }
 }

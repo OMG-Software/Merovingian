@@ -34,7 +34,8 @@ namespace
     // URL: ../../docs/matrix-v1.18-spec/server-server-api.md#authorization-rules
     return "{\"type\":\"m.room.create\",\"state_key\":\"\",\"sender\":\"" + std::string{creator} +
            "\",\"content\":{\"creator\":\"" + std::string{creator} +
-           "\",\"m.federate\":false,\"room_version\":\"12\"},\"origin_server_ts\":1,\"depth\":0,\"prev_events\":[],\"auth_"
+           "\",\"m.federate\":false,\"room_version\":\"12\"},\"origin_server_ts\":1,\"depth\":0,\"prev_events\":[],"
+           "\"auth_"
            "events\":[],\"hashes\":{\"sha256\":\"hash\"}}";
 }
 
@@ -81,10 +82,12 @@ namespace
            "\"sha256\":\"hash\"}}";
 }
 
-[[nodiscard]] auto make_power_levels_event_users(
-    std::string_view sender, std::int64_t ban_level, std::int64_t invite_level, std::int64_t kick_level,
-    std::int64_t redact_level, std::int64_t users_default, std::int64_t state_default,
-    std::int64_t events_default, std::vector<std::pair<std::string, std::int64_t>> const& users) -> std::string
+[[nodiscard]] auto make_power_levels_event_users(std::string_view sender, std::int64_t ban_level,
+                                                 std::int64_t invite_level, std::int64_t kick_level,
+                                                 std::int64_t redact_level, std::int64_t users_default,
+                                                 std::int64_t state_default, std::int64_t events_default,
+                                                 std::vector<std::pair<std::string, std::int64_t>> const& users)
+    -> std::string
 {
     // Like make_power_levels_event() but allows multiple entries in content.users,
     // so auth-rule 9.8 ("changed in, or removed from") can be exercised by omitting
@@ -108,8 +111,8 @@ namespace
            "\"hash\"}}";
 }
 
-[[nodiscard]] auto make_member_event(std::string_view sender, std::string_view state_key,
-                                     std::string_view membership) -> std::string
+[[nodiscard]] auto make_member_event(std::string_view sender, std::string_view state_key, std::string_view membership)
+    -> std::string
 {
     return "{\"type\":\"m.room.member\",\"state_key\":\"" + std::string{state_key} + "\",\"sender\":\"" +
            std::string{sender} +
@@ -137,8 +140,8 @@ namespace
            "\"hashes\":{\"sha256\":\"hash\"}}";
 }
 
-[[nodiscard]] auto make_state_event(std::string_view sender, std::string_view type,
-                                    std::string_view state_key) -> std::string
+[[nodiscard]] auto make_state_event(std::string_view sender, std::string_view type, std::string_view state_key)
+    -> std::string
 {
     return "{\"type\":\"" + std::string{type} + "\",\"state_key\":\"" + std::string{state_key} + "\",\"sender\":\"" +
            std::string{sender} +
@@ -287,8 +290,7 @@ SCENARIO("Auth rules allow cross-domain senders when m.federate is absent (v6+)"
         REQUIRE(policy != nullptr);
         auto auth_events = merovingian::events::AuthEventMap{};
         // Standard create event — no m.federate key — room is federated by default.
-        auth_events.create =
-            merovingian::canonicaljson::parse_lossless(make_create_event("@alice:example.org")).value;
+        auth_events.create = merovingian::canonicaljson::parse_lossless(make_create_event("@alice:example.org")).value;
         auth_events.power_levels =
             merovingian::canonicaljson::parse_lossless(
                 make_power_levels_event("@alice:example.org", 50, 0, 50, 50, 0, 50, 0, "@eve:evil.org", 0))
@@ -688,7 +690,8 @@ SCENARIO("Auth rules reject state events when sender lacks state_default power",
 // A room creator (with effectively infinite power) is permitted to send a
 // m.room.power_levels event, provided the new event does NOT list any creator
 // in content.users (creators cannot be represented as an integer power level).
-SCENARIO("Auth rules allow m.room.power_levels events from users with sufficient power", "[events][auth][power-levels][conformance]")
+SCENARIO("Auth rules allow m.room.power_levels events from users with sufficient power",
+         "[events][auth][power-levels][conformance]")
 {
     GIVEN("a v12 room where @alice is the creator and she sets @bob's power to 50")
     {
@@ -828,10 +831,10 @@ SCENARIO("Auth rules reject a sender self-elevating their own power above their 
         auto auth_events = merovingian::events::AuthEventMap{};
         // @alice must NOT be the creator (creators have infinite power in v12).
         auth_events.create = merovingian::canonicaljson::parse_lossless(make_create_event("@admin:example.org")).value;
-        auth_events.power_levels = merovingian::canonicaljson::parse_lossless(
-                                       make_power_levels_event("@alice:example.org", 50, 0, 50, 50, 0, 50, 0,
-                                                               "@alice:example.org", 50))
-                                       .value;
+        auth_events.power_levels =
+            merovingian::canonicaljson::parse_lossless(
+                make_power_levels_event("@alice:example.org", 50, 0, 50, 50, 0, 50, 0, "@alice:example.org", 50))
+                .value;
         auth_events.sender_member = merovingian::canonicaljson::parse_lossless(
                                         make_member_event("@alice:example.org", "@alice:example.org", "join"))
                                         .value;
@@ -861,10 +864,10 @@ SCENARIO("Auth rules reject a sender self-elevating their own power above their 
         REQUIRE(policy != nullptr);
         auto auth_events = merovingian::events::AuthEventMap{};
         auth_events.create = merovingian::canonicaljson::parse_lossless(make_create_event("@admin:example.org")).value;
-        auth_events.power_levels = merovingian::canonicaljson::parse_lossless(
-                                       make_power_levels_event("@alice:example.org", 50, 0, 50, 50, 0, 50, 0,
-                                                               "@alice:example.org", 50))
-                                       .value;
+        auth_events.power_levels =
+            merovingian::canonicaljson::parse_lossless(
+                make_power_levels_event("@alice:example.org", 50, 0, 50, 50, 0, 50, 0, "@alice:example.org", 50))
+                .value;
         auth_events.sender_member = merovingian::canonicaljson::parse_lossless(
                                         make_member_event("@alice:example.org", "@alice:example.org", "join"))
                                         .value;
@@ -898,7 +901,9 @@ SCENARIO("Auth rules reject removal or demotion of a user at or above the sender
         // Prior power_levels: @admin=100, @alice=50. New event from @alice (50, meeting
         // state_default=50) lists only herself — @admin is REMOVED from content.users.
         auto const pl_json = make_power_levels_event_users("@alice:example.org", 50, 0, 50, 50, 0, 50, 0,
-                                                           {{"@alice:example.org", 50}});
+                                                           {
+                                                               {"@alice:example.org", 50}
+        });
         auto const parsed = merovingian::canonicaljson::parse_lossless(pl_json);
         REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
         auto const* policy = merovingian::rooms::find_room_version_policy("12");
@@ -908,7 +913,10 @@ SCENARIO("Auth rules reject removal or demotion of a user at or above the sender
         auth_events.power_levels =
             merovingian::canonicaljson::parse_lossless(
                 make_power_levels_event_users("@admin:example.org", 50, 0, 50, 50, 0, 50, 0,
-                                              {{"@admin:example.org", 100}, {"@alice:example.org", 50}}))
+                                              {
+                                                  {"@admin:example.org", 100},
+                                                  {"@alice:example.org", 50 }
+        }))
                 .value;
         auth_events.sender_member = merovingian::canonicaljson::parse_lossless(
                                         make_member_event("@alice:example.org", "@alice:example.org", "join"))
@@ -936,7 +944,10 @@ SCENARIO("Auth rules reject removal or demotion of a user at or above the sender
         // room creator @admin (infinite power) is intentionally absent from users so
         // that the only rule in play is 9.8's "greater than or equal to" demotion check.
         auto const pl_json = make_power_levels_event_users("@alice:example.org", 50, 0, 50, 50, 0, 50, 0,
-                                                           {{"@alice:example.org", 50}, {"@bob:example.org", 0}});
+                                                           {
+                                                               {"@alice:example.org", 50},
+                                                               {"@bob:example.org",   0 }
+        });
         auto const parsed = merovingian::canonicaljson::parse_lossless(pl_json);
         REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
         auto const* policy = merovingian::rooms::find_room_version_policy("12");
@@ -946,7 +957,10 @@ SCENARIO("Auth rules reject removal or demotion of a user at or above the sender
         auth_events.power_levels =
             merovingian::canonicaljson::parse_lossless(
                 make_power_levels_event_users("@admin:example.org", 50, 0, 50, 50, 0, 50, 0,
-                                              {{"@alice:example.org", 50}, {"@bob:example.org", 50}}))
+                                              {
+                                                  {"@alice:example.org", 50},
+                                                  {"@bob:example.org",   50}
+        }))
                 .value;
         auth_events.sender_member = merovingian::canonicaljson::parse_lossless(
                                         make_member_event("@alice:example.org", "@alice:example.org", "join"))
@@ -970,7 +984,10 @@ SCENARIO("Auth rules reject removal or demotion of a user at or above the sender
     GIVEN("a v12 room where @alice has power=50 and demotes a lower-power @carol from 20 to 0")
     {
         auto const pl_json = make_power_levels_event_users("@alice:example.org", 50, 0, 50, 50, 0, 50, 0,
-                                                           {{"@alice:example.org", 50}, {"@carol:example.org", 0}});
+                                                           {
+                                                               {"@alice:example.org", 50},
+                                                               {"@carol:example.org", 0 }
+        });
         auto const parsed = merovingian::canonicaljson::parse_lossless(pl_json);
         REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
         auto const* policy = merovingian::rooms::find_room_version_policy("12");
@@ -982,7 +999,10 @@ SCENARIO("Auth rules reject removal or demotion of a user at or above the sender
         auth_events.power_levels =
             merovingian::canonicaljson::parse_lossless(
                 make_power_levels_event_users("@admin:example.org", 50, 0, 50, 50, 0, 50, 0,
-                                              {{"@alice:example.org", 50}, {"@carol:example.org", 20}}))
+                                              {
+                                                  {"@alice:example.org", 50},
+                                                  {"@carol:example.org", 20}
+        }))
                 .value;
         auth_events.sender_member = merovingian::canonicaljson::parse_lossless(
                                         make_member_event("@alice:example.org", "@alice:example.org", "join"))
@@ -1006,8 +1026,7 @@ SCENARIO("Auth rules reject removal or demotion of a user at or above the sender
         // empty users map — @alice (50) is removed and the creator is NOT listed (a
         // creator must not appear in content.users). Since 50 < infinite, rule 9.8 does
         // not forbid the removal.
-        auto const pl_json = make_power_levels_event_users("@admin:example.org", 50, 0, 50, 50, 0, 50, 0,
-                                                           {});
+        auto const pl_json = make_power_levels_event_users("@admin:example.org", 50, 0, 50, 50, 0, 50, 0, {});
         auto const parsed = merovingian::canonicaljson::parse_lossless(pl_json);
         REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
         auto const* policy = merovingian::rooms::find_room_version_policy("12");
@@ -1017,7 +1036,10 @@ SCENARIO("Auth rules reject removal or demotion of a user at or above the sender
         auth_events.power_levels =
             merovingian::canonicaljson::parse_lossless(
                 make_power_levels_event_users("@admin:example.org", 50, 0, 50, 50, 0, 50, 0,
-                                              {{"@admin:example.org", 100}, {"@alice:example.org", 50}}))
+                                              {
+                                                  {"@admin:example.org", 100},
+                                                  {"@alice:example.org", 50 }
+        }))
                 .value;
         auth_events.sender_member = merovingian::canonicaljson::parse_lossless(
                                         make_member_event("@admin:example.org", "@admin:example.org", "join"))
@@ -1054,12 +1076,11 @@ SCENARIO("Room creators hold privileged power only in room version 12 (MSC4289)"
         // Neither @bob nor a high state_default entry appears in power_levels: @bob
         // has only users_default (0) power under the ordinary rules.
         // Spec: v12 m.room.create MUST NOT include room_id — omitted here.
-        auto const create_json =
-            std::string{R"({"type":"m.room.create","state_key":"","sender":"@alice:example.org",)"
-                        R"("content":{"creator":"@alice:example.org",)"
-                        R"("room_version":"12","additional_creators":["@bob:example.org"]},)"
-                        R"("origin_server_ts":1,"depth":0,"prev_events":[],"auth_events":[],)"
-                        R"("hashes":{"sha256":"hash"}})"};
+        auto const create_json = std::string{R"({"type":"m.room.create","state_key":"","sender":"@alice:example.org",)"
+                                             R"("content":{"creator":"@alice:example.org",)"
+                                             R"("room_version":"12","additional_creators":["@bob:example.org"]},)"
+                                             R"("origin_server_ts":1,"depth":0,"prev_events":[],"auth_events":[],)"
+                                             R"("hashes":{"sha256":"hash"}})"};
         // state_default = 50, users_default = 0. @alice is the room creator (infinite
         // power in v12) so she MUST NOT appear in content.users; use @moderator instead.
         auto const power_json =
@@ -1460,7 +1481,7 @@ SCENARIO("Auth rules v1: cross-domain sender is NOT rejected (no domain check be
         // In v6+ this would be rejected at rule step 3 (domain mismatch).
         // In v1 there is no such rule, so the event MUST be allowed.
         auto const msg_json = make_message_event("@eve:evil.org");
-        auto const parsed   = merovingian::canonicaljson::parse_lossless(msg_json);
+        auto const parsed = merovingian::canonicaljson::parse_lossless(msg_json);
         REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
 
         auto const* policy_v1 = merovingian::rooms::find_room_version_policy("1");
@@ -1475,8 +1496,7 @@ SCENARIO("Auth rules v1: cross-domain sender is NOT rejected (no domain check be
                 make_power_levels_event("@alice:example.org", 50, 0, 50, 50, 0, 50, 0, "@eve:evil.org", 0))
                 .value;
         auth_events.sender_member =
-            merovingian::canonicaljson::parse_lossless(
-                make_member_event("@eve:evil.org", "@eve:evil.org", "join"))
+            merovingian::canonicaljson::parse_lossless(make_member_event("@eve:evil.org", "@eve:evil.org", "join"))
                 .value;
 
         WHEN("the event is authorized under room version 1 rules")
@@ -1502,14 +1522,14 @@ SCENARIO("Auth rules v1: cross-domain sender is NOT rejected (no domain check be
             REQUIRE(policy_v6 != nullptr);
             auto auth_events_nonfed = merovingian::events::AuthEventMap{};
             auth_events_nonfed.create =
-                merovingian::canonicaljson::parse_lossless(make_v1_non_federated_create_event("@alice:example.org")).value;
+                merovingian::canonicaljson::parse_lossless(make_v1_non_federated_create_event("@alice:example.org"))
+                    .value;
             auth_events_nonfed.power_levels =
                 merovingian::canonicaljson::parse_lossless(
                     make_power_levels_event("@alice:example.org", 50, 0, 50, 50, 0, 50, 0, "@eve:evil.org", 0))
                     .value;
             auth_events_nonfed.sender_member =
-                merovingian::canonicaljson::parse_lossless(
-                    make_member_event("@eve:evil.org", "@eve:evil.org", "join"))
+                merovingian::canonicaljson::parse_lossless(make_member_event("@eve:evil.org", "@eve:evil.org", "join"))
                     .value;
             auto const decision =
                 merovingian::events::authorize_event_against_auth_events(parsed.value, *policy_v6, auth_events_nonfed);
@@ -1553,14 +1573,11 @@ SCENARIO("Auth rules v1: create event is allowed even when sender domain differs
     }
 }
 
-SCENARIO("Auth rules: room version policies exist for all stable versions",
-         "[events][auth][room-version]")
+SCENARIO("Auth rules: room version policies exist for all stable versions", "[events][auth][room-version]")
 {
     GIVEN("a request for each stable Matrix room version")
     {
-        auto constexpr stable_versions = std::array<char const*, 10>{
-            "1", "2", "3", "4", "5", "6", "7", "8", "9", "10"
-        };
+        auto constexpr stable_versions = std::array<char const*, 10>{"1", "2", "3", "4", "5", "6", "7", "8", "9", "10"};
 
         WHEN("each version policy is looked up")
         {
@@ -1577,8 +1594,7 @@ SCENARIO("Auth rules: room version policies exist for all stable versions",
     }
 }
 
-SCENARIO("Auth rules: room version 11 and 12 are supported",
-         "[events][auth][room-version]")
+SCENARIO("Auth rules: room version 11 and 12 are supported", "[events][auth][room-version]")
 {
     GIVEN("a request for room versions 11 and 12")
     {
@@ -1605,7 +1621,7 @@ SCENARIO("Auth rules reject a non-create event when auth_events contains no crea
     GIVEN("a message event and an empty auth event map (no create event)")
     {
         auto const message_json = make_message_event("@alice:example.org");
-        auto const parsed       = merovingian::canonicaljson::parse_lossless(message_json);
+        auto const parsed = merovingian::canonicaljson::parse_lossless(message_json);
         REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
         auto const* policy = merovingian::rooms::find_room_version_policy("10");
         REQUIRE(policy != nullptr);
@@ -1638,10 +1654,10 @@ SCENARIO("Auth rules allow a knock when join_rule is knock and sender matches st
 {
     GIVEN("a room with join_rule=knock and a user who wishes to knock")
     {
-        auto const create_json     = make_create_event("@alice:example.org");
+        auto const create_json = make_create_event("@alice:example.org");
         auto const join_rules_json = make_join_rules_event("knock");
 
-        auto const parsed_create     = merovingian::canonicaljson::parse_lossless(create_json);
+        auto const parsed_create = merovingian::canonicaljson::parse_lossless(create_json);
         auto const parsed_join_rules = merovingian::canonicaljson::parse_lossless(join_rules_json);
         REQUIRE(parsed_create.error == merovingian::canonicaljson::ParseError::none);
         REQUIRE(parsed_join_rules.error == merovingian::canonicaljson::ParseError::none);
@@ -1649,9 +1665,9 @@ SCENARIO("Auth rules allow a knock when join_rule is knock and sender matches st
         auto const* policy = merovingian::rooms::find_room_version_policy("10");
         REQUIRE(policy != nullptr);
 
-        auto auth_events           = merovingian::events::AuthEventMap{};
-        auth_events.create         = parsed_create.value;
-        auth_events.join_rules     = parsed_join_rules.value;
+        auto auth_events = merovingian::events::AuthEventMap{};
+        auth_events.create = parsed_create.value;
+        auth_events.join_rules = parsed_join_rules.value;
         // sender_member is absent — the user is not yet in the room.
 
         // Knock event: sender and state_key are the same user.
@@ -1679,10 +1695,10 @@ SCENARIO("Auth rules reject a knock when join_rule is not knock or knock_restric
 {
     GIVEN("a room with join_rule=public and a knock event")
     {
-        auto const create_json     = make_create_event("@alice:example.org");
+        auto const create_json = make_create_event("@alice:example.org");
         auto const join_rules_json = make_join_rules_event("public");
 
-        auto const parsed_create     = merovingian::canonicaljson::parse_lossless(create_json);
+        auto const parsed_create = merovingian::canonicaljson::parse_lossless(create_json);
         auto const parsed_join_rules = merovingian::canonicaljson::parse_lossless(join_rules_json);
         REQUIRE(parsed_create.error == merovingian::canonicaljson::ParseError::none);
         REQUIRE(parsed_join_rules.error == merovingian::canonicaljson::ParseError::none);
@@ -1690,11 +1706,11 @@ SCENARIO("Auth rules reject a knock when join_rule is not knock or knock_restric
         auto const* policy = merovingian::rooms::find_room_version_policy("10");
         REQUIRE(policy != nullptr);
 
-        auto auth_events       = merovingian::events::AuthEventMap{};
-        auth_events.create     = parsed_create.value;
+        auto auth_events = merovingian::events::AuthEventMap{};
+        auth_events.create = parsed_create.value;
         auth_events.join_rules = parsed_join_rules.value;
 
-        auto const knock_json   = make_member_event("@bob:example.org", "@bob:example.org", "knock");
+        auto const knock_json = make_member_event("@bob:example.org", "@bob:example.org", "knock");
         auto const parsed_knock = merovingian::canonicaljson::parse_lossless(knock_json);
         REQUIRE(parsed_knock.error == merovingian::canonicaljson::ParseError::none);
 
@@ -1724,15 +1740,14 @@ SCENARIO("Auth rules reject a kick when the sender's power level equals the targ
 {
     GIVEN("a room where both sender and target hold power level 50")
     {
-        auto const create_json  = make_create_event("@alice:example.org");
+        auto const create_json = make_create_event("@alice:example.org");
         // Sender @kicker and target @target both at PL 50; kick level is also 50.
-        auto const pl_json      = make_power_levels_event(
-            "@alice:example.org", 50, 50, 50, 50, 0, 100, 0, "@kicker:example.org", 50);
-        auto const target_member_json =
-            make_member_event("@target:example.org", "@target:example.org", "join");
+        auto const pl_json =
+            make_power_levels_event("@alice:example.org", 50, 50, 50, 50, 0, 100, 0, "@kicker:example.org", 50);
+        auto const target_member_json = make_member_event("@target:example.org", "@target:example.org", "join");
 
-        auto parsed_create        = merovingian::canonicaljson::parse_lossless(create_json);
-        auto parsed_pl            = merovingian::canonicaljson::parse_lossless(pl_json);
+        auto parsed_create = merovingian::canonicaljson::parse_lossless(create_json);
+        auto parsed_pl = merovingian::canonicaljson::parse_lossless(pl_json);
         auto parsed_target_member = merovingian::canonicaljson::parse_lossless(target_member_json);
         REQUIRE(parsed_create.error == merovingian::canonicaljson::ParseError::none);
         REQUIRE(parsed_pl.error == merovingian::canonicaljson::ParseError::none);
@@ -1741,13 +1756,13 @@ SCENARIO("Auth rules reject a kick when the sender's power level equals the targ
         auto const* policy = merovingian::rooms::find_room_version_policy("10");
         REQUIRE(policy != nullptr);
 
-        auto auth_events              = merovingian::events::AuthEventMap{};
-        auth_events.create            = parsed_create.value;
-        auth_events.power_levels      = parsed_pl.value;
-        auth_events.target_member     = parsed_target_member.value;
+        auto auth_events = merovingian::events::AuthEventMap{};
+        auth_events.create = parsed_create.value;
+        auth_events.power_levels = parsed_pl.value;
+        auth_events.target_member = parsed_target_member.value;
 
         // The kick event: @kicker sets @target's membership to leave.
-        auto const kick_json   = make_member_event("@kicker:example.org", "@target:example.org", "leave");
+        auto const kick_json = make_member_event("@kicker:example.org", "@target:example.org", "leave");
         auto const parsed_kick = merovingian::canonicaljson::parse_lossless(kick_json);
         REQUIRE(parsed_kick.error == merovingian::canonicaljson::ParseError::none);
 
@@ -1777,15 +1792,14 @@ SCENARIO("Auth rules reject a ban when the sender's power level equals the targe
 {
     GIVEN("a room where the banner and target both hold power level 50")
     {
-        auto const create_json  = make_create_event("@alice:example.org");
+        auto const create_json = make_create_event("@alice:example.org");
         // @banner at PL 50; target @victim also at PL 50; ban level 50.
-        auto const pl_json      = make_power_levels_event(
-            "@alice:example.org", 50, 50, 50, 50, 0, 100, 0, "@banner:example.org", 50);
-        auto const target_member_json =
-            make_member_event("@victim:example.org", "@victim:example.org", "join");
+        auto const pl_json =
+            make_power_levels_event("@alice:example.org", 50, 50, 50, 50, 0, 100, 0, "@banner:example.org", 50);
+        auto const target_member_json = make_member_event("@victim:example.org", "@victim:example.org", "join");
 
-        auto parsed_create        = merovingian::canonicaljson::parse_lossless(create_json);
-        auto parsed_pl            = merovingian::canonicaljson::parse_lossless(pl_json);
+        auto parsed_create = merovingian::canonicaljson::parse_lossless(create_json);
+        auto parsed_pl = merovingian::canonicaljson::parse_lossless(pl_json);
         auto parsed_target_member = merovingian::canonicaljson::parse_lossless(target_member_json);
         REQUIRE(parsed_create.error == merovingian::canonicaljson::ParseError::none);
         REQUIRE(parsed_pl.error == merovingian::canonicaljson::ParseError::none);
@@ -1794,13 +1808,13 @@ SCENARIO("Auth rules reject a ban when the sender's power level equals the targe
         auto const* policy = merovingian::rooms::find_room_version_policy("10");
         REQUIRE(policy != nullptr);
 
-        auto auth_events              = merovingian::events::AuthEventMap{};
-        auth_events.create            = parsed_create.value;
-        auth_events.power_levels      = parsed_pl.value;
-        auth_events.target_member     = parsed_target_member.value;
+        auto auth_events = merovingian::events::AuthEventMap{};
+        auth_events.create = parsed_create.value;
+        auth_events.power_levels = parsed_pl.value;
+        auth_events.target_member = parsed_target_member.value;
 
         // The ban event: @banner sets @victim's membership to ban.
-        auto const ban_json   = make_member_event("@banner:example.org", "@victim:example.org", "ban");
+        auto const ban_json = make_member_event("@banner:example.org", "@victim:example.org", "ban");
         auto const parsed_ban = merovingian::canonicaljson::parse_lossless(ban_json);
         REQUIRE(parsed_ban.error == merovingian::canonicaljson::ParseError::none);
 

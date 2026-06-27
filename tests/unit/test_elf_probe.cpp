@@ -17,9 +17,9 @@ SCENARIO("linker hardening check is enabled only when the probe confirms all thr
     GIVEN("a probe result indicating all three linker-hardening flags are set")
     {
         auto const probe = mp::ElfHardeningResult{
-            .probed           = true,
-            .has_relro        = true,
-            .has_bind_now     = true,
+            .probed = true,
+            .has_relro = true,
+            .has_bind_now = true,
             .has_noexec_stack = true,
         };
 
@@ -53,9 +53,9 @@ SCENARIO("linker hardening check is enabled only when the probe confirms all thr
     GIVEN("a probe result where PT_GNU_RELRO is absent")
     {
         auto const probe = mp::ElfHardeningResult{
-            .probed           = true,
-            .has_relro        = false,
-            .has_bind_now     = true,
+            .probed = true,
+            .has_relro = false,
+            .has_bind_now = true,
             .has_noexec_stack = true,
         };
 
@@ -73,9 +73,9 @@ SCENARIO("linker hardening check is enabled only when the probe confirms all thr
     GIVEN("a probe result where DT_BIND_NOW is absent")
     {
         auto const probe = mp::ElfHardeningResult{
-            .probed           = true,
-            .has_relro        = true,
-            .has_bind_now     = false,
+            .probed = true,
+            .has_relro = true,
+            .has_bind_now = false,
             .has_noexec_stack = true,
         };
 
@@ -93,9 +93,9 @@ SCENARIO("linker hardening check is enabled only when the probe confirms all thr
     GIVEN("a probe result where the noexec stack flag is absent")
     {
         auto const probe = mp::ElfHardeningResult{
-            .probed           = true,
-            .has_relro        = true,
-            .has_bind_now     = true,
+            .probed = true,
+            .has_relro = true,
+            .has_bind_now = true,
             .has_noexec_stack = false,
         };
 
@@ -120,7 +120,7 @@ SCENARIO("RELRO check is enabled only when the probe finds PT_GNU_RELRO", "[plat
     GIVEN("a probe result where PT_GNU_RELRO is present")
     {
         auto const probe = mp::ElfHardeningResult{
-            .probed    = true,
+            .probed = true,
             .has_relro = true,
         };
 
@@ -138,7 +138,7 @@ SCENARIO("RELRO check is enabled only when the probe finds PT_GNU_RELRO", "[plat
     GIVEN("a probe result where PT_GNU_RELRO is absent")
     {
         auto const probe = mp::ElfHardeningResult{
-            .probed    = true,
+            .probed = true,
             .has_relro = false,
         };
 
@@ -172,8 +172,8 @@ SCENARIO("RELRO check is enabled only when the probe finds PT_GNU_RELRO", "[plat
     GIVEN("bind-now is set but RELRO is absent")
     {
         auto const probe = mp::ElfHardeningResult{
-            .probed       = true,
-            .has_relro    = false,
+            .probed = true,
+            .has_relro = false,
             .has_bind_now = true,
         };
 

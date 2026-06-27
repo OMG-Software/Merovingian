@@ -13,11 +13,11 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <fstream>
 #include <mutex>
-#include <chrono>
 #include <optional>
 #include <span>
 #include <string>
@@ -761,9 +761,8 @@ auto issue_refresh_token_for_session(HomeserverRuntime& runtime, std::string_vie
         return make_operation_result(false, {}, "refresh token hashing failed", 500U);
     }
     auto const refresh_expires_at = token_expires_at(runtime.config.security().refresh_token_lifetime_ms);
-    if (!database::store_refresh_token(runtime.database.persistent_store,
-                                       {std::string{user_id}, std::string{device_id}, *refresh_hash, false,
-                                        refresh_expires_at}))
+    if (!database::store_refresh_token(runtime.database.persistent_store, {std::string{user_id}, std::string{device_id},
+                                                                           *refresh_hash, false, refresh_expires_at}))
     {
         return make_operation_result(false, {}, "refresh token persistence failed", 500U);
     }
@@ -781,12 +780,11 @@ auto refresh_local_session(HomeserverRuntime& runtime, std::string_view refresh_
     }
 
     auto const now = std::chrono::system_clock::now();
-    auto const refresh =
-        std::ranges::find_if(runtime.database.persistent_store.refresh_tokens,
-                             [&refresh_hashes, now](database::PersistentRefreshToken const& row) {
-                                 return matches_any_token_hash(row.token_hash, refresh_hashes) && !row.revoked &&
-                                        !is_expired(row.expires_at, now);
-                             });
+    auto const refresh = std::ranges::find_if(runtime.database.persistent_store.refresh_tokens,
+                                              [&refresh_hashes, now](database::PersistentRefreshToken const& row) {
+                                                  return matches_any_token_hash(row.token_hash, refresh_hashes) &&
+                                                         !row.revoked && !is_expired(row.expires_at, now);
+                                              });
     if (refresh == runtime.database.persistent_store.refresh_tokens.end())
     {
         return {false, 401U, {}, {}, {}, {}, "refresh token rejected"};
@@ -825,8 +823,8 @@ auto refresh_local_session(HomeserverRuntime& runtime, std::string_view refresh_
     }
     auto const new_access_expires_at = token_expires_at(runtime.config.security().access_token_lifetime_ms);
     auto const new_refresh_expires_at = token_expires_at(runtime.config.security().refresh_token_lifetime_ms);
-    if (!database::store_access_token(
-            runtime.database.persistent_store, {user_id, device_id, *access_hash, false, new_access_expires_at}) ||
+    if (!database::store_access_token(runtime.database.persistent_store,
+                                      {user_id, device_id, *access_hash, false, new_access_expires_at}) ||
         !database::store_refresh_token(runtime.database.persistent_store,
                                        {user_id, device_id, *new_refresh_hash, false, new_refresh_expires_at}))
     {
@@ -862,9 +860,9 @@ auto authenticated_user(HomeserverRuntime& runtime, std::string_view access_toke
         // Security: no live session for this token hash — report without leaking the raw token.
         // Distinguish an expired (but otherwise valid) token from a genuinely unknown one so
         // the audit log is actionable for #275 server-side token expiry.
-        auto const rejection_reason =
-            session_expired_for_token(runtime.database, token_hashes, now) ? std::string{"token expired"} :
-                                                                             std::string{"session not found"};
+        auto const rejection_reason = session_expired_for_token(runtime.database, token_hashes, now)
+                                          ? std::string{"token expired"}
+                                          : std::string{"session not found"};
         log_diagnostic_audit(runtime.database, "auth", "access_token.rejected",
                              {
                                  {"reason", rejection_reason, false}

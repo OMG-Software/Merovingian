@@ -37,8 +37,10 @@ auto request_is_rate_limited(RateLimitState state, RateLimitPolicy policy) -> bo
     if (!rate_limit_policy_is_valid(policy))
     {
         log_diagnostic("rate_limit.invalid_policy",
-                       {{"max_requests",    std::to_string(policy.max_requests),   false},
-                        {"window_seconds",  std::to_string(policy.window_seconds), false}});
+                       {
+                           {"max_requests",   std::to_string(policy.max_requests),   false},
+                           {"window_seconds", std::to_string(policy.window_seconds), false}
+        });
         return true;
     }
 
@@ -50,10 +52,11 @@ auto request_is_rate_limited(RateLimitState state, RateLimitPolicy policy) -> bo
     auto const limited = state.requests_seen >= policy.max_requests;
     if (limited)
     {
-        log_diagnostic("rate_limit.exceeded",
-                       {{"requests_seen",  std::to_string(state.requests_seen),          false},
-                        {"max_requests",   std::to_string(policy.max_requests),           false},
-                        {"window_seconds", std::to_string(policy.window_seconds),         false}});
+        log_diagnostic("rate_limit.exceeded", {
+                                                  {"requests_seen",  std::to_string(state.requests_seen),   false},
+                                                  {"max_requests",   std::to_string(policy.max_requests),   false},
+                                                  {"window_seconds", std::to_string(policy.window_seconds), false}
+        });
     }
     return limited;
 }

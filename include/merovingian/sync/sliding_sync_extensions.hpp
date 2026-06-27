@@ -24,14 +24,10 @@ namespace merovingian::sync
 //
 // `store` is mutable because the to_device extension drains delivered messages via
 // drain_to_device_messages, which removes them from the in-memory queue.
-[[nodiscard]] auto build_extensions(
-    homeserver::HomeserverRuntime const&    rt,
-    std::string_view                        user,
-    std::string_view                        device_id,
-    SlidingSyncExtensionRequests const&     ext_req,
-    std::uint64_t                           since_sync_stream_id,
-    std::uint64_t                           current_sync_stream_id,
-    database::PersistentStore&              store,
-    std::vector<std::string> const&         response_room_ids) -> SlidingSyncExtensionResponses;
+[[nodiscard]] auto build_extensions(homeserver::HomeserverRuntime const& rt, std::string_view user,
+                                    std::string_view device_id, SlidingSyncExtensionRequests const& ext_req,
+                                    std::uint64_t since_sync_stream_id, std::uint64_t current_sync_stream_id,
+                                    database::PersistentStore& store, std::vector<std::string> const& response_room_ids)
+    -> SlidingSyncExtensionResponses;
 
 } // namespace merovingian::sync

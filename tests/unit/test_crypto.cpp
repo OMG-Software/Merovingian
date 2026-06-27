@@ -459,8 +459,8 @@ SCENARIO("TokenHmacKey fails closed with empty material", "[crypto][token_key]")
 namespace
 {
 
-[[nodiscard]] auto make_key(std::string server_name, std::string key_id, std::size_t pk_bytes,
-                            bool active) -> merovingian::crypto::SigningKeyRecord
+[[nodiscard]] auto make_key(std::string server_name, std::string key_id, std::size_t pk_bytes, bool active)
+    -> merovingian::crypto::SigningKeyRecord
 {
     return {std::move(server_name), std::move(key_id),
             merovingian::crypto::Ed25519PublicKey{std::string(pk_bytes, 'p')}, active};
@@ -504,7 +504,8 @@ SCENARIO("signing_key_record_is_usable validates all required key record fields"
         {
             THEN("the key is usable")
             {
-                REQUIRE(merovingian::crypto::signing_key_record_is_usable(make_key("example.org", "ed25519:auto", 32U, true)));
+                REQUIRE(merovingian::crypto::signing_key_record_is_usable(
+                    make_key("example.org", "ed25519:auto", 32U, true)));
             }
         }
 
@@ -512,8 +513,8 @@ SCENARIO("signing_key_record_is_usable validates all required key record fields"
         {
             THEN("the key is not usable — inactive keys must not be used for signing")
             {
-                REQUIRE_FALSE(
-                    merovingian::crypto::signing_key_record_is_usable(make_key("example.org", "ed25519:auto", 32U, false)));
+                REQUIRE_FALSE(merovingian::crypto::signing_key_record_is_usable(
+                    make_key("example.org", "ed25519:auto", 32U, false)));
             }
         }
 
@@ -521,7 +522,8 @@ SCENARIO("signing_key_record_is_usable validates all required key record fields"
         {
             THEN("the key is not usable — server identity is required")
             {
-                REQUIRE_FALSE(merovingian::crypto::signing_key_record_is_usable(make_key("", "ed25519:auto", 32U, true)));
+                REQUIRE_FALSE(
+                    merovingian::crypto::signing_key_record_is_usable(make_key("", "ed25519:auto", 32U, true)));
             }
         }
 
@@ -529,7 +531,8 @@ SCENARIO("signing_key_record_is_usable validates all required key record fields"
         {
             THEN("the key is not usable — key_id must pass ed25519_key_id_is_valid")
             {
-                REQUIRE_FALSE(merovingian::crypto::signing_key_record_is_usable(make_key("example.org", "rsa:key", 32U, true)));
+                REQUIRE_FALSE(
+                    merovingian::crypto::signing_key_record_is_usable(make_key("example.org", "rsa:key", 32U, true)));
             }
         }
 
@@ -537,7 +540,8 @@ SCENARIO("signing_key_record_is_usable validates all required key record fields"
         {
             THEN("the key is not usable — invalid public key shape")
             {
-                REQUIRE_FALSE(merovingian::crypto::signing_key_record_is_usable(make_key("example.org", "ed25519:auto", 31U, true)));
+                REQUIRE_FALSE(merovingian::crypto::signing_key_record_is_usable(
+                    make_key("example.org", "ed25519:auto", 31U, true)));
             }
         }
     }
@@ -549,10 +553,9 @@ SCENARIO("Crypto signing service rejects an empty server name", "[crypto][signin
     {
         auto store = FixedSigningKeyStore{
             merovingian::crypto::SigningKeyRecord{
-                "example.org", "ed25519:auto",
-                merovingian::crypto::Ed25519PublicKey{std::string(32U, 'p')},
-                true,
-            }
+                                                  "example.org", "ed25519:auto",
+                                                  merovingian::crypto::Ed25519PublicKey{std::string(32U, 'p')},
+                                                  true, }
         };
         auto provider = FixedEd25519Provider{};
 
@@ -575,10 +578,9 @@ SCENARIO("Crypto signing service propagates key store errors", "[crypto][signing
     {
         auto store = FixedSigningKeyStore{
             merovingian::crypto::SigningKeyRecord{
-                "example.org", "ed25519:auto",
-                merovingian::crypto::Ed25519PublicKey{std::string(32U, 'p')},
-                true,
-            }
+                                                  "example.org", "ed25519:auto",
+                                                  merovingian::crypto::Ed25519PublicKey{std::string(32U, 'p')},
+                                                  true, }
         };
         auto provider = FixedEd25519Provider{};
 
@@ -622,10 +624,9 @@ SCENARIO("Crypto signing service propagates provider errors", "[crypto][signing]
     {
         auto store = FixedSigningKeyStore{
             merovingian::crypto::SigningKeyRecord{
-                "example.org", "ed25519:auto",
-                merovingian::crypto::Ed25519PublicKey{std::string(32U, 'p')},
-                true,
-            }
+                                                  "example.org", "ed25519:auto",
+                                                  merovingian::crypto::Ed25519PublicKey{std::string(32U, 'p')},
+                                                  true, }
         };
         auto provider = FixedEd25519Provider{};
 
@@ -650,10 +651,9 @@ SCENARIO("Crypto signing service rejects a provider signature with invalid byte 
     {
         auto store = FixedSigningKeyStore{
             merovingian::crypto::SigningKeyRecord{
-                "example.org", "ed25519:auto",
-                merovingian::crypto::Ed25519PublicKey{std::string(32U, 'p')},
-                true,
-            }
+                                                  "example.org", "ed25519:auto",
+                                                  merovingian::crypto::Ed25519PublicKey{std::string(32U, 'p')},
+                                                  true, }
         };
         auto provider = BadShapeEd25519Provider{};
 

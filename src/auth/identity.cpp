@@ -54,8 +54,8 @@ namespace
     // allow future case-folding without ambiguity.
     [[nodiscard]] auto is_new_localpart_character(char value) noexcept -> bool
     {
-        return is_ascii_lower(value) || is_ascii_digit(value) || value == '.' || value == '_' ||
-               value == '-' || value == '=' || value == '/' || value == '+';
+        return is_ascii_lower(value) || is_ascii_digit(value) || value == '.' || value == '_' || value == '-' ||
+               value == '=' || value == '/' || value == '+';
     }
 
     // Validates a byte sequence as a federated localpart.
@@ -87,27 +87,27 @@ namespace
             }
 
             // Determine UTF-8 sequence length and extract the leading code-point bits.
-            std::size_t  seq_len    = 0;
+            std::size_t seq_len = 0;
             std::uint32_t code_point = 0;
 
             if (byte < 0x80U) // ASCII (single byte)
             {
-                seq_len    = 1;
+                seq_len = 1;
                 code_point = byte;
             }
             else if ((byte & 0xE0U) == 0xC0U) // 2-byte sequence
             {
-                seq_len    = 2;
+                seq_len = 2;
                 code_point = byte & 0x1FU;
             }
             else if ((byte & 0xF0U) == 0xE0U) // 3-byte sequence
             {
-                seq_len    = 3;
+                seq_len = 3;
                 code_point = byte & 0x0FU;
             }
             else if ((byte & 0xF8U) == 0xF0U) // 4-byte sequence
             {
-                seq_len    = 4;
+                seq_len = 4;
                 code_point = byte & 0x07U;
             }
             else
@@ -132,9 +132,18 @@ namespace
             }
 
             // Reject overlong encodings (e.g. 2-byte encoding of an ASCII character).
-            if (seq_len == 2U && code_point < 0x80U)    { return false; }
-            if (seq_len == 3U && code_point < 0x800U)   { return false; }
-            if (seq_len == 4U && code_point < 0x10000U) { return false; }
+            if (seq_len == 2U && code_point < 0x80U)
+            {
+                return false;
+            }
+            if (seq_len == 3U && code_point < 0x800U)
+            {
+                return false;
+            }
+            if (seq_len == 4U && code_point < 0x10000U)
+            {
+                return false;
+            }
 
             // Reject surrogate code points U+D800–U+DFFF.
             // These are permanently reserved and cannot appear in valid UTF-8.
@@ -275,8 +284,7 @@ auto server_name_is_valid(std::string_view server_name) noexcept -> bool
 // Use this for registration and all local auth paths.
 auto localpart_is_valid_new(std::string_view localpart) noexcept -> bool
 {
-    return !localpart.empty() && localpart.size() <= 255U &&
-           std::ranges::all_of(localpart, is_new_localpart_character);
+    return !localpart.empty() && localpart.size() <= 255U && std::ranges::all_of(localpart, is_new_localpart_character);
 }
 
 // Spec: Matrix v1.18 § User Identifiers (historical compatibility)

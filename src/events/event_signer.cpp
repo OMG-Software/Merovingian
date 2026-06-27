@@ -26,8 +26,8 @@ namespace
         observability::log_diagnostic("event_signer", event, fields, severity);
     }
 
-    [[nodiscard]] auto object_member(canonicaljson::Object const& object,
-                                     std::string_view key) noexcept -> canonicaljson::ObjectMember const*
+    [[nodiscard]] auto object_member(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> canonicaljson::ObjectMember const*
     {
         for (auto const& member : object)
         {
@@ -40,8 +40,8 @@ namespace
         return nullptr;
     }
 
-    [[nodiscard]] auto object_member_value(canonicaljson::Object const& object,
-                                           std::string_view key) noexcept -> canonicaljson::Value const*
+    [[nodiscard]] auto object_member_value(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> canonicaljson::Value const*
     {
         auto const* member = object_member(object, key);
         return member == nullptr ? nullptr : member->value.get();
@@ -164,8 +164,8 @@ namespace
             canonicaljson::make_member(key_id.key_id, canonicaljson::Value{std::string{signature}}));
     }
 
-    auto upsert_signature(canonicaljson::Object& signatures, SigningKeyId const& key_id,
-                          std::string_view signature) -> void
+    auto upsert_signature(canonicaljson::Object& signatures, SigningKeyId const& key_id, std::string_view signature)
+        -> void
     {
         for (auto& server_member : signatures)
         {
@@ -238,8 +238,8 @@ auto make_event_signing_payload(canonicaljson::Value const& event) -> canonicalj
     return canonicaljson::serialize_canonical(canonicaljson::Value{clone_without_unsigned_and_signatures(*object)});
 }
 
-auto make_event_signing_payload(canonicaljson::Value const& event,
-                                rooms::RoomVersionPolicy const& policy) -> canonicaljson::SerializeResult
+auto make_event_signing_payload(canonicaljson::Value const& event, rooms::RoomVersionPolicy const& policy)
+    -> canonicaljson::SerializeResult
 {
     auto const* object = std::get_if<canonicaljson::Object>(&event.storage());
     if (object == nullptr)
@@ -278,8 +278,8 @@ auto make_event_signing_payload(canonicaljson::Value const& event,
         canonicaljson::Value{clone_without_unsigned_and_signatures(*redacted_obj)});
 }
 
-auto attach_event_signature(canonicaljson::Value const& event, SigningKeyId const& key_id,
-                            std::string_view signature) -> canonicaljson::SerializeResult
+auto attach_event_signature(canonicaljson::Value const& event, SigningKeyId const& key_id, std::string_view signature)
+    -> canonicaljson::SerializeResult
 {
     if (!signing_key_id_is_valid(key_id) || !signature_is_valid_shape(signature))
     {
@@ -366,20 +366,19 @@ auto sign_event_for_server(canonicaljson::Value const& event, rooms::RoomVersion
     // Diagnostic: log the exact signing payload, signature, and signed event JSON
     // so operators can compare byte-for-byte with a federation peer's verification
     // payload when triaging BadSignatureError ("Signature was forged or corrupt").
-    log_diagnostic("sign_event.accepted",
-                   {
-                       {"server_name",    signature.server_name,                    false},
-                       {"key_id",         signature.key_id,                         false},
-                       {"payload_bytes",  std::to_string(payload.output.size()),    false},
-                       {"signing_payload", payload.output,                          false},
-                       {"signature",      encoded,                                  false},
-                       {"signed_json",    signed_json.output,                       false}
+    log_diagnostic("sign_event.accepted", {
+                                              {"server_name",     signature.server_name,                 false},
+                                              {"key_id",          signature.key_id,                      false},
+                                              {"payload_bytes",   std::to_string(payload.output.size()), false},
+                                              {"signing_payload", payload.output,                        false},
+                                              {"signature",       encoded,                               false},
+                                              {"signed_json",     signed_json.output,                    false}
     });
     return {signed_json.output, signature.server_name, signature.key_id, encoded, {}};
 }
 
-auto verify_event_signature_presence(canonicaljson::Value const& event,
-                                     SigningKeyId const& key_id) -> SignatureVerificationResult
+auto verify_event_signature_presence(canonicaljson::Value const& event, SigningKeyId const& key_id)
+    -> SignatureVerificationResult
 {
     if (!signing_key_id_is_valid(key_id))
     {

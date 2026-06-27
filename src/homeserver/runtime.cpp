@@ -5,9 +5,11 @@
 
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
+#include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/database/postgresql_store.hpp"
 #include "merovingian/database/schema.hpp"
 #include "merovingian/federation/runtime_federation.hpp"
+#include "merovingian/homeserver/federation_proxy.hpp"
 #include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/homeserver/room_service.hpp"
 #include "merovingian/media/repository.hpp"
@@ -29,6 +31,8 @@
 #include <variant>
 #include <vector>
 
+#include <sodium.h>
+
 namespace merovingian::homeserver
 {
 namespace
@@ -39,6 +43,50 @@ namespace
     {
         observability::log_diagnostic("runtime", event, std::move(fields), severity);
     }
+
+    // Production Ed25519 provider backed by the runtime signing secret.
+    // The secret is copied once from the mlocked SecretBuffer into this object
+    // when the runtime starts (or after key rotation) and held for the lifetime
+    // of the runtime so that signing operations do not repeatedly copy the key.
+    class RuntimeEd25519Provider final : public crypto::Ed25519Provider
+    {
+    public:
+        explicit RuntimeEd25519Provider(std::array<unsigned char, crypto_sign_SECRETKEYBYTES> secret_key)
+            : secret_key_{std::move(secret_key)}
+        {
+        }
+
+        [[nodiscard]] auto sign(crypto::Ed25519SecretKeyHandle const& /*key*/, std::string_view message)
+            -> crypto::SignatureResult override
+        {
+            auto signature = std::string(crypto_sign_BYTES, '\0');
+            if (crypto_sign_detached(reinterpret_cast<unsigned char*>(signature.data()), nullptr,
+                                     reinterpret_cast<unsigned char const*>(message.data()), message.size(),
+                                     secret_key_.data()) != 0)
+            {
+                return {{}, "Ed25519 signing failed"};
+            }
+            return {crypto::Ed25519Signature{std::move(signature)}, {}};
+        }
+
+        [[nodiscard]] auto verify(crypto::Ed25519PublicKey const& public_key, std::string_view message,
+                                  crypto::Ed25519Signature const& signature) -> crypto::VerificationResult override
+        {
+            if (!crypto::ed25519_public_key_shape_is_valid(public_key) ||
+                !crypto::ed25519_signature_shape_is_valid(signature))
+            {
+                return {false, "invalid Ed25519 material"};
+            }
+            auto const ok =
+                crypto_sign_verify_detached(reinterpret_cast<unsigned char const*>(signature.bytes.data()),
+                                            reinterpret_cast<unsigned char const*>(message.data()), message.size(),
+                                            reinterpret_cast<unsigned char const*>(public_key.bytes.data())) == 0;
+            return {ok, ok ? std::string{} : std::string{"signature verification failed"}};
+        }
+
+    private:
+        std::array<unsigned char, crypto_sign_SECRETKEYBYTES> secret_key_{};
+    };
 
     [[nodiscard]] auto make_metric(std::string name, std::int64_t value, observability::MetricType type,
                                    std::string help, std::vector<observability::MetricLabel> labels = {})
@@ -242,6 +290,27 @@ namespace
 
 } // namespace
 
+// Rebuilds crypto_provider_owned from runtime.database.signing_secret_key.
+// Called after startup and after every key rotation so the active provider
+// always matches the currently persisted key. Exposed to room_service.cpp for
+// use by rotate_server_signing_key.
+auto reset_runtime_crypto_provider(HomeserverRuntime& runtime) -> void
+{
+    if (runtime.database.signing_secret_key.bytes().size() == crypto_sign_SECRETKEYBYTES)
+    {
+        auto secret_key = std::array<unsigned char, crypto_sign_SECRETKEYBYTES>{};
+        std::copy(runtime.database.signing_secret_key.bytes().begin(),
+                  runtime.database.signing_secret_key.bytes().end(), secret_key.begin());
+        runtime.crypto_provider_owned = std::make_unique<RuntimeEd25519Provider>(std::move(secret_key));
+        runtime.crypto_provider = runtime.crypto_provider_owned.get();
+    }
+    else
+    {
+        runtime.crypto_provider_owned.reset();
+        runtime.crypto_provider = nullptr;
+    }
+}
+
 HomeserverRuntime::HomeserverRuntime()
     : audit_sink_scope{std::make_unique<LocalDatabaseScope>(database)}
 {
@@ -269,11 +338,15 @@ HomeserverRuntime::HomeserverRuntime(HomeserverRuntime&& other) noexcept
     , trust_safety_policy_server(std::move(other.trust_safety_policy_server))
     , discovery_network(std::move(other.discovery_network))
     , dispatch_worker(std::move(other.dispatch_worker))
+    , federation_proxy(std::move(other.federation_proxy))
+    , crypto_provider_owned(std::move(other.crypto_provider_owned))
+    , crypto_provider(other.crypto_provider)
     , sync_notifier(std::exchange(other.sync_notifier, nullptr))
     , typing_users(std::move(other.typing_users))
     , receipts(std::move(other.receipts))
     , room_typing_stream_id(std::move(other.room_typing_stream_id))
 {
+    other.crypto_provider = nullptr;
 }
 
 auto HomeserverRuntime::operator=(HomeserverRuntime&& other) noexcept -> HomeserverRuntime&
@@ -301,6 +374,10 @@ auto HomeserverRuntime::operator=(HomeserverRuntime&& other) noexcept -> Homeser
     trust_safety_policy_server = std::move(other.trust_safety_policy_server);
     discovery_network = std::move(other.discovery_network);
     dispatch_worker = std::move(other.dispatch_worker);
+    federation_proxy = std::move(other.federation_proxy);
+    crypto_provider_owned = std::move(other.crypto_provider_owned);
+    crypto_provider = other.crypto_provider;
+    other.crypto_provider = nullptr;
     sync_notifier = std::exchange(other.sync_notifier, nullptr);
     typing_users = std::move(other.typing_users);
     receipts = std::move(other.receipts);
@@ -469,11 +546,17 @@ auto database_has_table(LocalDatabase const& database, std::string_view table_na
 
 auto start_runtime(config::Config const& config) -> RuntimeStartResult
 {
-    return start_runtime(config, {});
+    return start_runtime(RuntimeStartOptions{.config = config});
 }
 
 auto start_runtime(config::Config const& config, database::SchemaState existing_state) -> RuntimeStartResult
 {
+    return start_runtime(RuntimeStartOptions{.config = config, .existing_state = std::move(existing_state)});
+}
+
+auto start_runtime(RuntimeStartOptions opts) -> RuntimeStartResult
+{
+    auto const& config = opts.config;
     if (!config::is_valid(config))
     {
         log_diagnostic("start.rejected", {
@@ -505,7 +588,7 @@ auto start_runtime(config::Config const& config, database::SchemaState existing_
     },
                    observability::LogEventSeverity::info);
 
-    runtime.database = bootstrap_local_database(config, std::move(existing_state));
+    runtime.database = bootstrap_local_database(config, std::move(opts.existing_state));
     // The default ctor installed `audit_sink_scope` against the
     // empty `LocalDatabase{}` placeholder. Now that `database` holds
     // the real connection state, re-seat the scope so audit rows
@@ -546,6 +629,30 @@ auto start_runtime(config::Config const& config, database::SchemaState existing_
     },
                    observability::LogEventSeverity::info);
 
+    // Wire the signing provider. The main process loads the persisted signing secret;
+    // the federation worker receives an IPC-backed override so the secret never enters
+    // the child process. The provider must be ready before publish_server_signing_keys
+    // or any federation handler runs.
+    if (opts.signing_override != nullptr)
+    {
+        runtime.crypto_provider = opts.signing_override;
+        log_diagnostic("start.crypto_provider_override",
+                       {
+                           {"reason", "IPC-backed signing provider", false}
+        },
+                       observability::LogEventSeverity::info);
+    }
+    else
+    {
+        std::ignore = ensure_runtime_server_signing_key(runtime);
+        reset_runtime_crypto_provider(runtime);
+        log_diagnostic("start.crypto_provider_ready",
+                       {
+                           {"available", runtime.crypto_provider != nullptr ? "true" : "false", false}
+        },
+                       observability::LogEventSeverity::info);
+    }
+
     runtime.federation = federation::make_federation_runtime_state(federation::make_runtime_federation_config(config));
     runtime.outbound_client = std::make_unique<http::OutboundClient>();
     runtime.discovery_network = federation::make_system_server_discovery_network();
@@ -582,13 +689,18 @@ auto start_runtime(config::Config const& config, database::SchemaState existing_
     // connections. This ensures /_matrix/key/v2/server is served lock-free from the
     // very first request, even if make_join or another outbound operation arrives
     // concurrently on a different connection and holds the runtime mutex.
-    auto const key_warm = publish_server_signing_keys(runtime);
-    if (!key_warm.ok)
+    // The federation worker does not serve /_matrix/key/v2/server and has no local
+    // signing secret, so skip the pre-warm when running with an external provider.
+    if (opts.signing_override == nullptr)
     {
-        log_diagnostic("start.key_server_cache_warn",
-                       {
-                           {"reason", key_warm.reason.empty() ? "key unavailable" : key_warm.reason, false}
-        });
+        auto const key_warm = publish_server_signing_keys(runtime);
+        if (!key_warm.ok)
+        {
+            log_diagnostic("start.key_server_cache_warn",
+                           {
+                               {"reason", key_warm.reason.empty() ? "key unavailable" : key_warm.reason, false}
+            });
+        }
     }
 
     return {true, {}, std::move(runtime)};

@@ -753,8 +753,7 @@ SCENARIO("Server discovery treats an empty m.server as no delegation", "[federat
 // Among SRV records sharing the lowest priority, the record with the greater
 // weight MUST be preferred. The chosen target and its port become the
 // federation destination.
-SCENARIO("Server discovery prefers the higher-weight SRV record at equal priority",
-         "[federation][discovery][dns][srv]")
+SCENARIO("Server discovery prefers the higher-weight SRV record at equal priority", "[federation][discovery][dns][srv]")
 {
     GIVEN("two equal-priority SRV records with different weights")
     {
@@ -795,8 +794,7 @@ SCENARIO("Server discovery prefers the higher-weight SRV record at equal priorit
 // An m.server value carrying an invalid port (e.g. port 0) is not a usable
 // delegation. It MUST be treated as absent rather than connecting to an
 // invalid port; discovery falls through to SRV and then direct resolution.
-SCENARIO("Server discovery rejects a delegated port of zero and falls through",
-         "[federation][discovery][well-known]")
+SCENARIO("Server discovery rejects a delegated port of zero and falls through", "[federation][discovery][well-known]")
 {
     GIVEN("a well-known delegation whose m.server port is zero")
     {
@@ -902,8 +900,8 @@ SCENARIO("SRV response parsing extracts records and is bounds-safe on untrusted 
 
         WHEN("the response is parsed")
         {
-            auto const records = merovingian::federation::parse_srv_records(
-                message.data(), static_cast<int>(message.size()));
+            auto const records =
+                merovingian::federation::parse_srv_records(message.data(), static_cast<int>(message.size()));
 
             THEN("both SRV records are recovered with their fields intact")
             {
@@ -921,8 +919,8 @@ SCENARIO("SRV response parsing extracts records and is bounds-safe on untrusted 
         {
             auto truncated = message;
             truncated.resize(message.size() - 8U);
-            auto const records = merovingian::federation::parse_srv_records(
-                truncated.data(), static_cast<int>(truncated.size()));
+            auto const records =
+                merovingian::federation::parse_srv_records(truncated.data(), static_cast<int>(truncated.size()));
 
             THEN("parsing stops safely without reading past the buffer")
             {

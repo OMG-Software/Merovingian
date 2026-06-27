@@ -14,14 +14,14 @@ SCENARIO("Runtime database config preserves PostgreSQL URI file path and pool si
         auto database = merovingian::config::DatabaseConfig{};
         database.uri_file = "/run/secrets/merovingian-db-uri";
         database.pool_size = 32U;
-        auto const config = merovingian::config::Config {
+        auto const config = merovingian::config::Config{
             merovingian::config::ServerConfig{},
             merovingian::config::ListenersConfig{},
             database,
             merovingian::config::SecurityConfig{},
             merovingian::config::ClientRateLimitsConfig{},
             merovingian::config::LogModulesConfig{},
-};
+        };
 
         WHEN("the runtime database config is created")
         {
@@ -46,14 +46,14 @@ SCENARIO("Runtime database config supports SQLite for small installations", "[da
         database.backend = merovingian::config::DatabaseBackend::sqlite;
         database.sqlite_path = "/var/lib/merovingian/small.sqlite3";
         database.pool_size = 1U;
-        auto const config = merovingian::config::Config {
+        auto const config = merovingian::config::Config{
             merovingian::config::ServerConfig{},
             merovingian::config::ListenersConfig{},
             database,
             merovingian::config::SecurityConfig{},
             merovingian::config::ClientRateLimitsConfig{},
             merovingian::config::LogModulesConfig{},
-};
+        };
 
         WHEN("the runtime database config and summary are created")
         {

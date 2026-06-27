@@ -43,9 +43,8 @@ using merovingian::events::StateResolutionRequest;
 
 // Helper: build a StateEventReference from raw JSON.
 [[nodiscard]] auto make_event_ref(std::string const& event_type, std::string const& state_key,
-                                   std::string const& event_id, std::string const& sender,
-                                   std::int64_t ts, std::uint64_t depth,
-                                   std::string const& json) -> StateEventReference
+                                  std::string const& event_id, std::string const& sender, std::int64_t ts,
+                                  std::uint64_t depth, std::string const& json) -> StateEventReference
 {
     auto ref = StateEventReference{};
     ref.key = {event_type, state_key};
@@ -64,48 +63,44 @@ using merovingian::events::StateResolutionRequest;
 // Build a minimal state event for test purposes (no content — suitable for v1 tests
 // and any scenario that does NOT need SDSS auth checking).
 [[nodiscard]] auto make_state_event(std::string event_type, std::string state_key, std::string event_id,
-                                    std::string sender, std::int64_t ts, std::uint64_t depth)
-    -> StateEventReference
+                                    std::string sender, std::int64_t ts, std::uint64_t depth) -> StateEventReference
 {
-    auto const json =
-        std::string{"{\"type\":\""} + event_type + "\",\"state_key\":\"" + state_key + "\",\"sender\":\"" + sender +
-        "\",\"event_id\":\"" + event_id + "\",\"origin_server_ts\":" + std::to_string(ts) + ",\"content\":{}}";
+    auto const json = std::string{"{\"type\":\""} + event_type + "\",\"state_key\":\"" + state_key +
+                      "\",\"sender\":\"" + sender + "\",\"event_id\":\"" + event_id +
+                      "\",\"origin_server_ts\":" + std::to_string(ts) + ",\"content\":{}}";
     return make_event_ref(event_type, state_key, event_id, sender, ts, depth, json);
 }
 
 // Build an m.room.create event with creator in content.
 // Auth checks (v6+) require content.creator to exist (auth rule Step 3).
-[[nodiscard]] auto make_create_event(std::string const& creator, std::string const& event_id,
-                                      std::int64_t ts) -> StateEventReference
+[[nodiscard]] auto make_create_event(std::string const& creator, std::string const& event_id, std::int64_t ts)
+    -> StateEventReference
 {
-    auto const json =
-        std::string{"{\"type\":\"m.room.create\",\"state_key\":\"\",\"sender\":\""} + creator +
-        "\",\"event_id\":\"" + event_id + "\",\"origin_server_ts\":" + std::to_string(ts) +
-        ",\"content\":{\"creator\":\"" + creator + "\",\"room_version\":\"10\"}}";
+    auto const json = std::string{"{\"type\":\"m.room.create\",\"state_key\":\"\",\"sender\":\""} + creator +
+                      "\",\"event_id\":\"" + event_id + "\",\"origin_server_ts\":" + std::to_string(ts) +
+                      ",\"content\":{\"creator\":\"" + creator + "\",\"room_version\":\"10\"}}";
     return make_event_ref("m.room.create", "", event_id, creator, ts, 0, json);
 }
 
 // Build an m.room.member join event for a user.
-[[nodiscard]] auto make_member_event(std::string user_id, std::string event_id, std::int64_t ts,
-                                     std::uint64_t depth) -> StateEventReference
+[[nodiscard]] auto make_member_event(std::string user_id, std::string event_id, std::int64_t ts, std::uint64_t depth)
+    -> StateEventReference
 {
-    auto const json = std::string{"{\"type\":\"m.room.member\",\"state_key\":\""} + user_id +
-                      "\",\"sender\":\"" + user_id +
-                      "\",\"event_id\":\"" + event_id +
-                      "\",\"origin_server_ts\":" + std::to_string(ts) +
+    auto const json = std::string{"{\"type\":\"m.room.member\",\"state_key\":\""} + user_id + "\",\"sender\":\"" +
+                      user_id + "\",\"event_id\":\"" + event_id + "\",\"origin_server_ts\":" + std::to_string(ts) +
                       ",\"content\":{\"membership\":\"join\"}}";
     return make_event_ref("m.room.member", user_id, event_id, user_id, ts, depth, json);
 }
 
 // Build an m.room.power_levels event granting a specific user level 100.
-[[nodiscard]] auto make_power_levels_event(std::string const& sender, std::string const& event_id,
-                                            std::int64_t ts, std::uint64_t depth) -> StateEventReference
+[[nodiscard]] auto make_power_levels_event(std::string const& sender, std::string const& event_id, std::int64_t ts,
+                                           std::uint64_t depth) -> StateEventReference
 {
-    auto const json =
-        std::string{"{\"type\":\"m.room.power_levels\",\"state_key\":\"\",\"sender\":\""} + sender +
-        "\",\"event_id\":\"" + event_id + "\",\"origin_server_ts\":" + std::to_string(ts) +
-        ",\"content\":{\"ban\":50,\"events_default\":0,\"invite\":0,\"kick\":50,\"redact\":50,"
-        "\"state_default\":50,\"users\":{\"" + sender + "\":100},\"users_default\":0}}";
+    auto const json = std::string{"{\"type\":\"m.room.power_levels\",\"state_key\":\"\",\"sender\":\""} + sender +
+                      "\",\"event_id\":\"" + event_id + "\",\"origin_server_ts\":" + std::to_string(ts) +
+                      ",\"content\":{\"ban\":50,\"events_default\":0,\"invite\":0,\"kick\":50,\"redact\":50,"
+                      "\"state_default\":50,\"users\":{\"" +
+                      sender + "\":100},\"users_default\":0}}";
     return make_event_ref("m.room.power_levels", "", event_id, sender, ts, depth, json);
 }
 
@@ -113,8 +108,9 @@ using merovingian::events::StateResolutionRequest;
 [[nodiscard]] auto result_contains_event(merovingian::events::StateResolutionResult const& result,
                                          std::string const& event_id) -> bool
 {
-    return std::any_of(result.resolved_state.begin(), result.resolved_state.end(),
-                       [&](StateEventReference const& r) { return r.event_id == event_id; });
+    return std::any_of(result.resolved_state.begin(), result.resolved_state.end(), [&](StateEventReference const& r) {
+        return r.event_id == event_id;
+    });
 }
 
 // Returns the event in resolved_state for (type, state_key), or nullptr.
@@ -140,8 +136,7 @@ using merovingian::events::StateResolutionRequest;
 // When a single state group is provided (no fork), the resolved state is that
 // group's state — there is nothing to conflict on. This is the common case
 // for append-only room history.
-SCENARIO("State resolution v1: single state group is returned unchanged",
-         "[state-resolution][conformance][v1]")
+SCENARIO("State resolution v1: single state group is returned unchanged", "[state-resolution][conformance][v1]")
 {
     GIVEN("a single state group with two events")
     {
@@ -189,13 +184,12 @@ SCENARIO("State resolution v1: single state group is returned unchanged",
 //
 // When two state groups agree on every (type, state_key) pair, the resolved
 // state is identical to both groups — there is no conflict to resolve.
-SCENARIO("State resolution v1: identical state groups produce no conflict",
-         "[state-resolution][conformance][v1]")
+SCENARIO("State resolution v1: identical state groups produce no conflict", "[state-resolution][conformance][v1]")
 {
     GIVEN("two state groups with the same events")
     {
-        auto const ev = make_state_event("m.room.member", "@alice:example.org", "$join:example.org",
-                                         "@alice:example.org", 1000, 1);
+        auto const ev =
+            make_state_event("m.room.member", "@alice:example.org", "$join:example.org", "@alice:example.org", 1000, 1);
 
         auto group_a = StateGroup{};
         group_a.group_id = "group_a";
@@ -235,8 +229,7 @@ SCENARIO("State resolution v1: identical state groups produce no conflict",
 // When two forks have different events for the same (type, state_key), the
 // event with the greater depth wins. On a depth tie the lexicographically
 // smaller event ID wins (v1 algorithm).
-SCENARIO("State resolution v1: conflicting events — greater depth wins",
-         "[state-resolution][conformance][v1]")
+SCENARIO("State resolution v1: conflicting events — greater depth wins", "[state-resolution][conformance][v1]")
 {
     GIVEN("two state groups with conflicting m.room.member events")
     {
@@ -298,10 +291,10 @@ SCENARIO("State resolution v1: depth tie broken by lexicographically smaller eve
 {
     GIVEN("two state groups with conflicting events at equal depth")
     {
-        auto const event_aaa = make_state_event("m.room.join_rules", "", "$aaa:example.org",
-                                                "@alice:example.org", 1000, 3);
-        auto const event_zzz = make_state_event("m.room.join_rules", "", "$zzz:example.org",
-                                                "@alice:example.org", 2000, 3);
+        auto const event_aaa =
+            make_state_event("m.room.join_rules", "", "$aaa:example.org", "@alice:example.org", 1000, 3);
+        auto const event_zzz =
+            make_state_event("m.room.join_rules", "", "$zzz:example.org", "@alice:example.org", 2000, 3);
 
         auto group_a = StateGroup{};
         group_a.group_id = "group_a";
@@ -341,8 +334,7 @@ SCENARIO("State resolution v1: depth tie broken by lexicographically smaller eve
 //
 // resolve_state_v2 requires a room version policy. For a single state group
 // the resolved state is that group's complete state.
-SCENARIO("State resolution v2 (SDSS): single state group is returned unchanged",
-         "[state-resolution][conformance][v2]")
+SCENARIO("State resolution v2 (SDSS): single state group is returned unchanged", "[state-resolution][conformance][v2]")
 {
     GIVEN("a single state group and the v10 room version policy")
     {
@@ -399,9 +391,9 @@ SCENARIO("State resolution v2 (SDSS): non-conflicted state passes through unchan
         // Both groups agree on create, power_levels, and alice's membership.
         // Auth check (v6+ Step 3) requires content.creator in the create event.
         // Auth check for join_rules requires alice to be joined with power >= 50.
-        auto const create_ev  = make_create_event("@alice:example.org", "$create:example.org", 1000);
-        auto const power_ev   = make_power_levels_event("@alice:example.org", "$power:example.org", 1001, 1);
-        auto const alice_mbr  = make_member_event("@alice:example.org", "$alice_member:example.org", 1002, 2);
+        auto const create_ev = make_create_event("@alice:example.org", "$create:example.org", 1000);
+        auto const power_ev = make_power_levels_event("@alice:example.org", "$power:example.org", 1001, 1);
+        auto const alice_mbr = make_member_event("@alice:example.org", "$alice_member:example.org", 1002, 2);
         // The groups disagree on join_rules.
         auto const join_a =
             make_state_event("m.room.join_rules", "", "$join_rules_a:example.org", "@alice:example.org", 1003, 3);
@@ -529,24 +521,22 @@ SCENARIO("State resolution v2: conflicting membership events are resolved to a s
         auto const create = make_create_event("@alice:example.org", "$create:example.org", 500);
 
         // Group A: @charlie has membership=join (depth=10).
-        auto const join_event = make_state_event(
-            "m.room.member", "@charlie:example.org", "$charlie_join:example.org",
-            "@charlie:example.org", 1000, 10);
+        auto const join_event = make_state_event("m.room.member", "@charlie:example.org", "$charlie_join:example.org",
+                                                 "@charlie:example.org", 1000, 10);
 
         // Group B: @charlie has membership=leave (depth=5).
-        auto const leave_event = make_state_event(
-            "m.room.member", "@charlie:example.org", "$charlie_leave:example.org",
-            "@charlie:example.org", 2000, 5);
+        auto const leave_event = make_state_event("m.room.member", "@charlie:example.org", "$charlie_leave:example.org",
+                                                  "@charlie:example.org", 2000, 5);
 
-        auto request         = merovingian::events::StateResolutionRequest{};
+        auto request = merovingian::events::StateResolutionRequest{};
         request.room_version = "10";
 
-        auto group_a     = merovingian::events::StateGroup{};
+        auto group_a = merovingian::events::StateGroup{};
         group_a.group_id = "branch-a";
         group_a.state.push_back(create);
         group_a.state.push_back(join_event);
 
-        auto group_b     = merovingian::events::StateGroup{};
+        auto group_b = merovingian::events::StateGroup{};
         group_b.group_id = "branch-b";
         group_b.state.push_back(create);
         group_b.state.push_back(leave_event);
@@ -571,8 +561,7 @@ SCENARIO("State resolution v2: conflicting membership events are resolved to a s
                 auto charlie_count = std::size_t{0};
                 for (auto const& ref : result.resolved_state)
                 {
-                    if (ref.key.event_type == "m.room.member" &&
-                        ref.key.state_key == "@charlie:example.org")
+                    if (ref.key.event_type == "m.room.member" && ref.key.state_key == "@charlie:example.org")
                     {
                         ++charlie_count;
                     }
@@ -597,27 +586,23 @@ SCENARIO("State resolution v2: unconflicted state survives and conflicted state 
         REQUIRE(policy != nullptr);
 
         // Shared unconflicted event: both groups have the same create.
-        auto const create = make_state_event(
-            "m.room.create", "", "$create:example.org",
-            "@alice:example.org", 500, 0);
+        auto const create = make_state_event("m.room.create", "", "$create:example.org", "@alice:example.org", 500, 0);
 
         // Conflicting: Group A has @bob=join (depth 8), Group B has @bob=leave (depth 3).
-        auto const bob_join = make_state_event(
-            "m.room.member", "@bob:example.org", "$bob_join:example.org",
-            "@bob:example.org", 1000, 8);
-        auto const bob_leave = make_state_event(
-            "m.room.member", "@bob:example.org", "$bob_leave:example.org",
-            "@bob:example.org", 2000, 3);
+        auto const bob_join =
+            make_state_event("m.room.member", "@bob:example.org", "$bob_join:example.org", "@bob:example.org", 1000, 8);
+        auto const bob_leave = make_state_event("m.room.member", "@bob:example.org", "$bob_leave:example.org",
+                                                "@bob:example.org", 2000, 3);
 
-        auto request         = merovingian::events::StateResolutionRequest{};
+        auto request = merovingian::events::StateResolutionRequest{};
         request.room_version = "10";
 
-        auto group_a     = merovingian::events::StateGroup{};
+        auto group_a = merovingian::events::StateGroup{};
         group_a.group_id = "branch-a";
         group_a.state.push_back(create);
         group_a.state.push_back(bob_join);
 
-        auto group_b     = merovingian::events::StateGroup{};
+        auto group_b = merovingian::events::StateGroup{};
         group_b.group_id = "branch-b";
         group_b.state.push_back(create);
         group_b.state.push_back(bob_leave);
@@ -638,10 +623,8 @@ SCENARIO("State resolution v2: unconflicted state survives and conflicted state 
 
             THEN("the create event appears in the resolved state (unconflicted)")
             {
-                auto const found_create = std::ranges::any_of(
-                    result.resolved_state,
-                    [](merovingian::events::StateEventReference const& r)
-                    {
+                auto const found_create =
+                    std::ranges::any_of(result.resolved_state, [](merovingian::events::StateEventReference const& r) {
                         return r.key.event_type == "m.room.create" && r.key.state_key == "";
                     });
                 REQUIRE(found_create);
@@ -657,8 +640,7 @@ SCENARIO("State resolution v2: unconflicted state survives and conflicted state 
                 auto bob_count = std::size_t{0};
                 for (auto const& ref : result.resolved_state)
                 {
-                    if (ref.key.event_type == "m.room.member" &&
-                        ref.key.state_key == "@bob:example.org")
+                    if (ref.key.event_type == "m.room.member" && ref.key.state_key == "@bob:example.org")
                     {
                         ++bob_count;
                     }
@@ -680,24 +662,21 @@ SCENARIO("partition_conflicted_state separates shared state from conflicting sta
     GIVEN("two state groups with one event identical in both and one that differs")
     {
         // Shared: exact same event reference in both groups (unconflicted).
-        auto const shared_create = make_state_event(
-            "m.room.create", "", "$create:example.org",
-            "@alice:example.org", 500, 0);
+        auto const shared_create =
+            make_state_event("m.room.create", "", "$create:example.org", "@alice:example.org", 500, 0);
 
         // Conflicting: same key, different event_id in each group.
-        auto const alice_join = make_state_event(
-            "m.room.member", "@alice:example.org", "$alice_join:example.org",
-            "@alice:example.org", 600, 1);
-        auto const alice_leave = make_state_event(
-            "m.room.member", "@alice:example.org", "$alice_leave:example.org",
-            "@alice:example.org", 700, 2);
+        auto const alice_join = make_state_event("m.room.member", "@alice:example.org", "$alice_join:example.org",
+                                                 "@alice:example.org", 600, 1);
+        auto const alice_leave = make_state_event("m.room.member", "@alice:example.org", "$alice_leave:example.org",
+                                                  "@alice:example.org", 700, 2);
 
-        auto group_a     = merovingian::events::StateGroup{};
+        auto group_a = merovingian::events::StateGroup{};
         group_a.group_id = "branch-a";
         group_a.state.push_back(shared_create);
         group_a.state.push_back(alice_join);
 
-        auto group_b     = merovingian::events::StateGroup{};
+        auto group_b = merovingian::events::StateGroup{};
         group_b.group_id = "branch-b";
         group_b.state.push_back(shared_create);
         group_b.state.push_back(alice_leave);
@@ -706,8 +685,7 @@ SCENARIO("partition_conflicted_state separates shared state from conflicting sta
 
         WHEN("partition_conflicted_state is called")
         {
-            auto const [unconflicted, conflicted] =
-                merovingian::events::partition_conflicted_state(groups);
+            auto const [unconflicted, conflicted] = merovingian::events::partition_conflicted_state(groups);
 
             THEN("the create event is unconflicted (same event_id in both groups)")
             {
@@ -720,8 +698,7 @@ SCENARIO("partition_conflicted_state separates shared state from conflicting sta
             THEN("the member event is conflicted (different event_id in each group)")
             {
                 // Spec: events with differing values across groups must go through resolution.
-                auto const member_key =
-                    merovingian::events::StateKey{"m.room.member", "@alice:example.org"};
+                auto const member_key = merovingian::events::StateKey{"m.room.member", "@alice:example.org"};
                 REQUIRE(conflicted.count(member_key) == 1U);
             }
         }

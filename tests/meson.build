@@ -166,10 +166,17 @@ if get_option ('build_tests')
       'unit/test_homeserver_room_service.cpp',
       'unit/test_federation_server_name.cpp',
       'unit/test_event_signer.cpp',
+      'unit/test_ipc_framing.cpp',
+      'unit/test_federation_proxy.cpp',
+      'unit/test_federation_request_routing.cpp',
+      'unit/test_ipc_federation_frames.cpp',
+      'unit/test_federation_worker_args.cpp',
+      'unit/test_worker_supervisor.cpp',
+      'unit/test_worker_event_loop.cpp',
     ),
     include_directories: inc,
     dependencies: [catch2_dep, thread_dep, libsodium_dep, openssl_dep, libpq_dep, sqlite_dep, libcurl_dep, resolv_dep],
-    link_with: [auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, events_lib, federation_lib, homeserver_lib, http_lib, media_lib, net_lib, observability_lib, platform_lib, rooms_lib, sync_lib, trust_safety_lib],
+    link_with: [auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, events_lib, federation_lib, federation_worker_lib, homeserver_lib, http_lib, ipc_lib, media_lib, net_lib, observability_lib, platform_lib, rooms_lib, sync_lib, trust_safety_lib],
   )
 
   test('unit-tests', unit_tests, timeout: 600)
@@ -203,7 +210,7 @@ if get_option ('build_tests')
     ),
     include_directories: inc,
     dependencies: [catch2_dep, thread_dep, libsodium_dep, openssl_dep, libpq_dep, sqlite_dep, libcurl_dep, resolv_dep],
-    link_with: [auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, events_lib, federation_lib, homeserver_lib, http_lib, media_lib, net_lib, observability_lib, platform_lib, rooms_lib, sync_lib, trust_safety_lib],
+    link_with: [auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, events_lib, federation_lib, homeserver_lib, http_lib, ipc_lib, media_lib, net_lib, observability_lib, platform_lib, rooms_lib, sync_lib, trust_safety_lib],
   )
 
   test('conformance-tests', conformance_tests, timeout: 600)
@@ -215,6 +222,11 @@ if get_option ('build_tests')
     thumbnail_test_args = ['-DMEROVINGIAN_TEST_THUMBNAIL_WORKER="' + thumbnail_worker_exe.full_path() + '"']
   endif
 
+  # The federation worker integration test spawns the real merovingian-fed-worker;
+  # pass its build-tree path so the test can locate the binary without relying on
+  # libexecdir installation.
+  federation_worker_test_args = ['-DMEROVINGIAN_TEST_FEDERATION_WORKER="' + federation_worker_exe.full_path() + '"']
+
   integration_tests = executable(
     'merovingian-integration-tests',
     sources: files(
@@ -222,6 +234,7 @@ if get_option ('build_tests')
       'integration/test_client_server_flow.cpp',
       'integration/test_federation_inbound_flow.cpp',
       'integration/test_federation_outbound_flow.cpp',
+      'integration/test_federation_worker_flow.cpp',
       'integration/test_homeserver_vertical_slice_flow.cpp',
       'integration/test_http_server_listener_flow.cpp',
       'integration/test_media_repository_security.cpp',
@@ -237,8 +250,8 @@ if get_option ('build_tests')
     ),
     include_directories: inc,
     dependencies: [catch2_dep, thread_dep, libsodium_dep, openssl_dep, libpq_dep, sqlite_dep, libcurl_dep, resolv_dep],
-    link_with: [auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, events_lib, federation_lib, homeserver_lib, http_lib, media_lib, net_lib, observability_lib, platform_lib, rooms_lib, sync_lib, trust_safety_lib],
-    cpp_args: thumbnail_test_args,
+    link_with: [auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, events_lib, federation_lib, federation_worker_lib, homeserver_lib, http_lib, ipc_lib, media_lib, net_lib, observability_lib, platform_lib, rooms_lib, sync_lib, trust_safety_lib],
+    cpp_args: [thumbnail_test_args, federation_worker_test_args],
   )
 
   # Integration tests spawn real dependencies (PostgreSQL, SQLite, thumbnail
@@ -255,7 +268,7 @@ if get_option ('build_tests')
       ),
       include_directories: inc,
       dependencies: [catch2_dep, thread_dep, libsodium_dep, openssl_dep, libpq_dep, sqlite_dep, libcurl_dep, resolv_dep],
-      link_with: [auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, events_lib, federation_lib, homeserver_lib, http_lib, media_lib, net_lib, observability_lib, platform_lib, rooms_lib, sync_lib, trust_safety_lib],
+      link_with: [auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, events_lib, federation_lib, homeserver_lib, http_lib, ipc_lib, media_lib, net_lib, observability_lib, platform_lib, rooms_lib, sync_lib, trust_safety_lib],
     )
 
     test('live-integration-tests', live_integration_tests)

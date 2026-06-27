@@ -60,7 +60,8 @@ struct RemoteKeyFetchResult final
 // Persists every verify key in the response under
 // `database::PersistentServerSigningKey`. Returns false if any single key
 // fails to persist; the caller is expected to log and continue.
-[[nodiscard]] auto cache_remote_server_keys(database::PersistentStore& store, RemoteKeyResponse const& response) -> bool;
+[[nodiscard]] auto cache_remote_server_keys(database::PersistentStore& store, RemoteKeyResponse const& response)
+    -> bool;
 
 // Looks up a cached verify key by (server_name, key_id), returning the
 // federation-shaped key record consumed by request and PDU verification.

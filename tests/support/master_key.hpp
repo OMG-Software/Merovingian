@@ -21,8 +21,8 @@ inline auto master_key_file() -> std::string
 {
     static auto const s_salt = std::random_device{}();
     static std::atomic<unsigned> s_counter{0U};
-    auto const filename = "merovingian-master-" + std::to_string(s_salt) + "-" +
-                          std::to_string(s_counter.fetch_add(1U)) + ".key";
+    auto const filename =
+        "merovingian-master-" + std::to_string(s_salt) + "-" + std::to_string(s_counter.fetch_add(1U)) + ".key";
     auto const path = std::filesystem::temp_directory_path() / filename;
     auto output = std::ofstream{path, std::ios::binary};
 

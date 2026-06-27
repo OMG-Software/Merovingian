@@ -40,13 +40,15 @@ namespace
 } // namespace
 
 Config::Config(ServerConfig server, ListenersConfig listeners, DatabaseConfig database, SecurityConfig security,
-               ClientRateLimitsConfig client_rate_limits, LogModulesConfig log_modules)
+               ClientRateLimitsConfig client_rate_limits, LogModulesConfig log_modules,
+               FederationWorkerConfig federation_worker)
     : m_server{std::move(server)}
     , m_listeners{std::move(listeners)}
     , m_database{std::move(database)}
     , m_security{std::move(security)}
     , m_client_rate_limits{std::move(client_rate_limits)}
     , m_log_modules{std::move(log_modules)}
+    , m_federation_worker{std::move(federation_worker)}
 {
 }
 
@@ -108,6 +110,16 @@ auto Config::log_modules() const noexcept -> LogModulesConfig const&
 auto Config::log_modules() noexcept -> LogModulesConfig&
 {
     return m_log_modules;
+}
+
+auto Config::federation_worker() const noexcept -> FederationWorkerConfig const&
+{
+    return m_federation_worker;
+}
+
+auto Config::federation_worker() noexcept -> FederationWorkerConfig&
+{
+    return m_federation_worker;
 }
 
 auto is_ascii_digit(char value) noexcept -> bool
@@ -535,6 +547,12 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
     if (config.database().pool_size == 0U)
     {
         findings.push_back({"database.pool_size", "database pool size must be greater than zero"});
+    }
+
+    if (config.federation_worker().enabled && config.federation_worker().shards == 0U)
+    {
+        findings.push_back(
+            {"federation.worker.shards", "shards must be greater than zero when federation worker is enabled"});
     }
 
     if (config.security().registration.enabled && !config.security().registration.require_token)

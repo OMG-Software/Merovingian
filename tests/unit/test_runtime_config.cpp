@@ -33,14 +33,11 @@ SCENARIO("Runtime config snapshot applies reloadable changes", "[config][runtime
         auto snapshot = merovingian::config::RuntimeConfigSnapshot{merovingian::config::Config{}};
         auto security = merovingian::config::SecurityConfig{};
         security.federation.remote_timeout = "45s";
-        auto const next = merovingian::config::Config {
-            merovingian::config::ServerConfig{},
-            merovingian::config::ListenersConfig{},
-            merovingian::config::DatabaseConfig{},
-            security,
-            merovingian::config::ClientRateLimitsConfig{},
-            merovingian::config::LogModulesConfig{},
-};
+        auto const next = merovingian::config::Config{
+            merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
+            merovingian::config::DatabaseConfig{},         security,
+            merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+        };
 
         WHEN("the next config is applied")
         {
@@ -65,14 +62,11 @@ SCENARIO("Runtime config snapshot applies federation server list changes", "[con
         auto const expected_denied_servers = std::vector<std::string>{"bad.example"};
         security.federation.allowed_servers = expected_allowed_servers;
         security.federation.denied_servers = expected_denied_servers;
-        auto const next = merovingian::config::Config {
-            merovingian::config::ServerConfig{},
-            merovingian::config::ListenersConfig{},
-            merovingian::config::DatabaseConfig{},
-            security,
-            merovingian::config::ClientRateLimitsConfig{},
-            merovingian::config::LogModulesConfig{},
-};
+        auto const next = merovingian::config::Config{
+            merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
+            merovingian::config::DatabaseConfig{},         security,
+            merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+        };
 
         WHEN("the next config is applied")
         {
@@ -95,14 +89,14 @@ SCENARIO("Runtime config snapshot rejects restart-required changes", "[config][r
         auto snapshot = merovingian::config::RuntimeConfigSnapshot{merovingian::config::Config{}};
         auto server = merovingian::config::ServerConfig{};
         server.server_name = "new.example.org";
-        auto const next = merovingian::config::Config {
+        auto const next = merovingian::config::Config{
             server,
             merovingian::config::ListenersConfig{},
             merovingian::config::DatabaseConfig{},
             merovingian::config::SecurityConfig{},
             merovingian::config::ClientRateLimitsConfig{},
             merovingian::config::LogModulesConfig{},
-};
+        };
 
         WHEN("the next config is applied")
         {

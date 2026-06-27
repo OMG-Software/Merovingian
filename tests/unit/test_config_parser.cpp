@@ -397,3 +397,84 @@ SCENARIO("Key-value config parser rejects wildcard origin with credentials enabl
         }
     }
 }
+
+SCENARIO("Key-value config parser applies federation worker shard count", "[config][parser][federation-worker]")
+{
+    GIVEN("a config enabling the federation worker with multiple shards")
+    {
+        auto const input = std::string{"server.name=example.org\n"
+                                       "server.public_baseurl=https://matrix.example.org\n"
+                                       "federation.worker.enabled=true\n"
+                                       "federation.worker.shards=4\n"};
+
+        WHEN("the config is parsed")
+        {
+            auto const result = merovingian::config::parse_key_value_config(input);
+
+            THEN("the shard count is stored and the config is valid")
+            {
+                REQUIRE(result.findings.empty());
+                REQUIRE(result.config.federation_worker().enabled);
+                REQUIRE(result.config.federation_worker().shards == 4U);
+                REQUIRE(merovingian::config::is_valid(result.config));
+            }
+        }
+    }
+}
+
+SCENARIO("Key-value config parser rejects zero shards when the federation worker is enabled",
+         "[config][parser][federation-worker]")
+{
+    GIVEN("a config enabling the federation worker with shards=0")
+    {
+        auto const input = std::string{"server.name=example.org\n"
+                                       "server.public_baseurl=https://matrix.example.org\n"
+                                       "federation.worker.enabled=true\n"
+                                       "federation.worker.shards=0\n"};
+
+        WHEN("the config is parsed and validated")
+        {
+            auto const result = merovingian::config::parse_key_value_config(input);
+
+            THEN("a validation finding names the shards field")
+            {
+                auto found = false;
+                for (auto const& f : merovingian::config::validate(result.config))
+                {
+                    if (f.field == "federation.worker.shards")
+                    {
+                        found = true;
+                        break;
+                    }
+                }
+                REQUIRE(found);
+                REQUIRE_FALSE(merovingian::config::is_valid(result.config));
+            }
+        }
+    }
+}
+
+SCENARIO("Key-value config parser accepts zero shards when the federation worker is disabled",
+         "[config][parser][federation-worker]")
+{
+    GIVEN("a config disabling the federation worker with shards=0")
+    {
+        auto const input = std::string{"server.name=example.org\n"
+                                       "server.public_baseurl=https://matrix.example.org\n"
+                                       "federation.worker.enabled=false\n"
+                                       "federation.worker.shards=0\n"};
+
+        WHEN("the config is parsed and validated")
+        {
+            auto const result = merovingian::config::parse_key_value_config(input);
+
+            THEN("the zero shard count is accepted because the worker is not used")
+            {
+                REQUIRE(result.findings.empty());
+                REQUIRE_FALSE(result.config.federation_worker().enabled);
+                REQUIRE(result.config.federation_worker().shards == 0U);
+                REQUIRE(merovingian::config::is_valid(result.config));
+            }
+        }
+    }
+}

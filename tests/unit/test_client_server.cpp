@@ -1462,8 +1462,8 @@ SCENARIO("POST /join via room alias does not throw when federation is disabled",
         auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
         REQUIRE(started.started);
         auto& runtime = started.runtime;
-        runtime.homeserver.outbound_client    = nullptr;
-        runtime.homeserver.discovery_network  = nullptr;
+        runtime.homeserver.outbound_client = nullptr;
+        runtime.homeserver.discovery_network = nullptr;
 
         REQUIRE(merovingian::homeserver::handle_client_server_request(
                     runtime, {"POST",
@@ -1484,8 +1484,7 @@ SCENARIO("POST /join via room alias does not throw when federation is disabled",
         {
             // %23dev%3Agrapheneos.org decodes to #dev:grapheneos.org
             auto const response = merovingian::homeserver::handle_client_server_request(
-                runtime,
-                {"POST", "/_matrix/client/v3/join/%23dev%3Agrapheneos.org", token, {}});
+                runtime, {"POST", "/_matrix/client/v3/join/%23dev%3Agrapheneos.org", token, {}});
 
             THEN("the handler returns a federation error response rather than throwing")
             {

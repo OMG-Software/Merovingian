@@ -77,7 +77,9 @@ auto registration_policy(RegistrationPolicy policy) -> RegistrationPolicyDecisio
     }();
     if (result.allowed)
     {
-        log_diagnostic("registration_policy.allowed", {{"reason", result.reason, false}});
+        log_diagnostic("registration_policy.allowed", {
+                                                          {"reason", result.reason, false}
+        });
     }
     else
     {
@@ -87,11 +89,14 @@ auto registration_policy(RegistrationPolicy policy) -> RegistrationPolicyDecisio
         // the homeserver-installed sink so operators can query
         // `GET /_merovingian/admin/audit?category=policy` to see the
         // configured policy denying the request.
-        observability::log_diagnostic_audit(
-            "auth", "registration_policy.denied", {{"reason", result.reason, false}},
-            observability::LogEventSeverity::warning,
-            observability::AuditSinkFields{observability::AuditCategory::policy, "registration_policy.denied", "system",
-                                          "system", result.reason});
+        observability::log_diagnostic_audit("auth", "registration_policy.denied",
+                                            {
+                                                {"reason", result.reason, false}
+        },
+                                            observability::LogEventSeverity::warning,
+                                            observability::AuditSinkFields{observability::AuditCategory::policy,
+                                                                           "registration_policy.denied", "system",
+                                                                           "system", result.reason});
     }
     return result;
 }
@@ -108,8 +113,7 @@ auto session_is_active(SessionRecord const& session, std::chrono::system_clock::
         {
             return {false, "invalid device_id"};
         }
-        if (session.access_token.user_id != session.user_id ||
-            session.access_token.device_id != session.device_id)
+        if (session.access_token.user_id != session.user_id || session.access_token.device_id != session.device_id)
         {
             return {false, "token subject mismatch"};
         }
@@ -129,9 +133,11 @@ auto session_is_active(SessionRecord const& session, std::chrono::system_clock::
         return {true, {}};
     }();
     log_diagnostic(result.active ? "session.active" : "session.invalidated",
-                   {{"user_id",   session.user_id,   false},
-                    {"device_id", session.device_id, false},
-                    {"reason",    result.reason,      false}});
+                   {
+                       {"user_id",   session.user_id,   false},
+                       {"device_id", session.device_id, false},
+                       {"reason",    result.reason,     false}
+    });
     return result;
 }
 

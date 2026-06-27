@@ -90,8 +90,7 @@ namespace
         return value == nullptr ? nullptr : std::get_if<std::int64_t>(&value->storage());
     }
 
-    [[nodiscard]] auto bool_member(canonicaljson::Object const& object, std::string_view key) noexcept
-        -> bool const*
+    [[nodiscard]] auto bool_member(canonicaljson::Object const& object, std::string_view key) noexcept -> bool const*
     {
         auto const* value = object_member(object, key);
         return value == nullptr ? nullptr : std::get_if<bool>(&value->storage());
@@ -120,8 +119,7 @@ namespace
             return {};
         }
         auto const variant = sodium_base64_VARIANT_URLSAFE_NO_PADDING;
-        auto output =
-            std::string(sodium_base64_ENCODED_LEN(input.size(), variant), '\0');
+        auto output = std::string(sodium_base64_ENCODED_LEN(input.size(), variant), '\0');
         std::ignore = sodium_bin2base64(output.data(), output.size(),
                                         reinterpret_cast<unsigned char const*>(input.data()), input.size(), variant);
         output.resize(std::char_traits<char>::length(output.c_str()));
@@ -243,8 +241,7 @@ namespace
     }
 
     [[nodiscard]] auto state_event_sender(database::PersistentStore const& store, std::string_view room_id,
-                                          std::string_view event_type, std::string_view state_key = {})
-        -> std::string
+                                          std::string_view event_type, std::string_view state_key = {}) -> std::string
     {
         auto const json = state_event_json(store, room_id, event_type, state_key);
         if (!json.has_value())
@@ -282,14 +279,14 @@ namespace
     [[nodiscard]] auto joined_member_count(database::PersistentStore const& store, std::string_view room_id) noexcept
         -> std::size_t
     {
-        return static_cast<std::size_t>(std::ranges::count_if(
-            store.memberships, [room_id](database::PersistentMembership const& membership) {
+        return static_cast<std::size_t>(
+            std::ranges::count_if(store.memberships, [room_id](database::PersistentMembership const& membership) {
                 return membership.room_id == room_id && membership.membership == "join";
             }));
     }
 
     [[nodiscard]] auto user_membership(database::PersistentStore const& store, std::string_view room_id,
-                                          std::string_view user_id) noexcept -> std::optional<std::string>
+                                       std::string_view user_id) noexcept -> std::optional<std::string>
     {
         auto const* state = find_state_event(store, room_id, "m.room.member", user_id);
         if (state == nullptr)
@@ -654,8 +651,8 @@ namespace
     // ---- Depth-first traversal ------------------------------------------------
 
     [[nodiscard]] auto collect_visible_room_ids_client(database::PersistentStore const& store, std::string_view user_id,
-                                                     std::string_view root_room_id, std::size_t max_depth,
-                                                     bool suggested_only) -> std::vector<std::string>
+                                                       std::string_view root_room_id, std::size_t max_depth,
+                                                       bool suggested_only) -> std::vector<std::string>
     {
         auto result = std::vector<std::string>{};
         auto visited = std::unordered_set<std::string>{};

@@ -37,13 +37,15 @@ namespace
 // it. Clearing here keeps the test scenarios independent.
 struct AuditDatabaseReset
 {
-    ~AuditDatabaseReset() { merovingian::homeserver::set_current_audit_database(nullptr); }
+    ~AuditDatabaseReset()
+    {
+        merovingian::homeserver::set_current_audit_database(nullptr);
+    }
 };
 
 } // namespace
 
-SCENARIO("LocalDatabaseScope installs its database pointer on construction",
-         "[homeserver][audit][scope]")
+SCENARIO("LocalDatabaseScope installs its database pointer on construction", "[homeserver][audit][scope]")
 {
     AuditDatabaseReset const reset{};
     GIVEN("a clean thread_local audit-sink pointer")
@@ -110,7 +112,8 @@ SCENARIO("LocalDatabaseScope is non-copyable and non-movable", "[homeserver][aud
     GIVEN("a LocalDatabaseScope value")
     {
         auto const scoped = make_dummy_database();
-        auto const scope = merovingian::homeserver::LocalDatabaseScope{const_cast<merovingian::homeserver::LocalDatabase&>(scoped)};
+        auto const scope =
+            merovingian::homeserver::LocalDatabaseScope{const_cast<merovingian::homeserver::LocalDatabase&>(scoped)};
 
         THEN("copy construction and move construction are deleted")
         {

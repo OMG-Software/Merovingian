@@ -4,8 +4,8 @@
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/crypto/ed25519.hpp"
-#include "merovingian/events/event_id.hpp"
 #include "merovingian/crypto/signing_service.hpp"
+#include "merovingian/events/event_id.hpp"
 #include "merovingian/events/event_signer.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/federation/inbound_request.hpp"
@@ -165,8 +165,7 @@ private:
         }
     }
     auto hashes = merovingian::canonicaljson::Object{};
-    hashes.push_back(
-        merovingian::canonicaljson::make_member("sha256", merovingian::canonicaljson::Value{hash.sha256}));
+    hashes.push_back(merovingian::canonicaljson::make_member("sha256", merovingian::canonicaljson::Value{hash.sha256}));
     new_root.push_back(
         merovingian::canonicaljson::make_member("hashes", merovingian::canonicaljson::Value{std::move(hashes)}));
     return merovingian::canonicaljson::Value{std::move(new_root)};

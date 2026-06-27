@@ -44,20 +44,14 @@ SCENARIO("Reload plan marks runtime policy changes as reloadable", "[config][rel
         next_security.federation.denied_servers = std::vector<std::string>{"bad.example"};
 
         auto const current = merovingian::config::Config{
-            merovingian::config::ServerConfig{},
-            merovingian::config::ListenersConfig{},
-            merovingian::config::DatabaseConfig{},
-            current_security,
-            merovingian::config::ClientRateLimitsConfig{},
-            merovingian::config::LogModulesConfig{},
+            merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
+            merovingian::config::DatabaseConfig{},         current_security,
+            merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
         };
         auto const next = merovingian::config::Config{
-            merovingian::config::ServerConfig{},
-            merovingian::config::ListenersConfig{},
-            merovingian::config::DatabaseConfig{},
-            next_security,
-            merovingian::config::ClientRateLimitsConfig{},
-            merovingian::config::LogModulesConfig{},
+            merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
+            merovingian::config::DatabaseConfig{},         next_security,
+            merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
         };
 
         WHEN("a reload plan is built")

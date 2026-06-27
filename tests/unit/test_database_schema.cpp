@@ -147,8 +147,7 @@ SCENARIO("quote_sqlite_identifier rejects identifiers with SQL-injection charact
 
 // --- schema_table_is_core / schema_table_definition -------------------------
 
-SCENARIO("schema_table_is_core identifies core schema tables and rejects unknown names",
-         "[database][schema][core]")
+SCENARIO("schema_table_is_core identifies core schema tables and rejects unknown names", "[database][schema][core]")
 {
     GIVEN("core and non-core table names")
     {
@@ -276,8 +275,7 @@ SCENARIO("current_schema_version returns a non-zero version and initial_schema_t
 
 // --- migration_step_is_valid -------------------------------------------------
 
-SCENARIO("migration_step_is_valid rejects upgrade steps with version zero",
-         "[database][migration][step]")
+SCENARIO("migration_step_is_valid rejects upgrade steps with version zero", "[database][migration][step]")
 {
     GIVEN("an upgrade migration step carrying version 0")
     {
@@ -300,8 +298,7 @@ SCENARIO("migration_step_is_valid rejects upgrade steps with version zero",
     }
 }
 
-SCENARIO("migration_step_is_valid accepts a downgrade step at version zero",
-         "[database][migration][step]")
+SCENARIO("migration_step_is_valid accepts a downgrade step at version zero", "[database][migration][step]")
 {
     // Downgrade steps run in the opposite direction and their version field
     // identifies the schema state they target (0 = drop everything), so
@@ -350,8 +347,7 @@ SCENARIO("migration_step_is_valid rejects steps whose name fails the statement-n
     }
 }
 
-SCENARIO("migration_step_is_valid rejects steps with no statements",
-         "[database][migration][step]")
+SCENARIO("migration_step_is_valid rejects steps with no statements", "[database][migration][step]")
 {
     GIVEN("a migration step with an empty statements list")
     {
@@ -386,9 +382,7 @@ SCENARIO("migration_step_is_valid rejects steps containing multi-statement SQL",
         // Two statements in one SQL string — rejected to prevent injection via
         // migration files.
         step.statements.push_back(
-            {"add_column_and_drop",
-             "ALTER TABLE \"users\" ADD COLUMN phone TEXT; DROP TABLE users",
-             {}});
+            {"add_column_and_drop", "ALTER TABLE \"users\" ADD COLUMN phone TEXT; DROP TABLE users", {}});
 
         WHEN("the step is validated")
         {
@@ -412,8 +406,8 @@ SCENARIO("migration_direction_name round-trips upgrade and downgrade to their ca
     {
         WHEN("upgrade direction is named")
         {
-            auto const name = merovingian::database::migration_direction_name(
-                merovingian::database::MigrationDirection::upgrade);
+            auto const name =
+                merovingian::database::migration_direction_name(merovingian::database::MigrationDirection::upgrade);
 
             THEN("the name is 'upgrade'")
             {
@@ -423,8 +417,8 @@ SCENARIO("migration_direction_name round-trips upgrade and downgrade to their ca
 
         WHEN("downgrade direction is named")
         {
-            auto const name = merovingian::database::migration_direction_name(
-                merovingian::database::MigrationDirection::downgrade);
+            auto const name =
+                merovingian::database::migration_direction_name(merovingian::database::MigrationDirection::downgrade);
 
             THEN("the name is 'downgrade'")
             {
@@ -436,8 +430,7 @@ SCENARIO("migration_direction_name round-trips upgrade and downgrade to their ca
 
 // --- migration_rollback_policy -----------------------------------------------
 
-SCENARIO("migration_rollback_policy returns a non-empty human-readable policy string",
-         "[database][migration][policy]")
+SCENARIO("migration_rollback_policy returns a non-empty human-readable policy string", "[database][migration][policy]")
 {
     GIVEN("no preconditions")
     {
@@ -549,8 +542,7 @@ SCENARIO("apply_migration_plan fails closed when the state version does not matc
 
 // --- migration_plan_is_valid -----------------------------------------------------
 
-SCENARIO("migration_plan_is_valid accepts a no-op plan with no steps",
-         "[database][migration][plan_valid]")
+SCENARIO("migration_plan_is_valid accepts a no-op plan with no steps", "[database][migration][plan_valid]")
 {
     GIVEN("a plan where current_version equals target_version and steps is empty")
     {
@@ -568,8 +560,7 @@ SCENARIO("migration_plan_is_valid accepts a no-op plan with no steps",
     }
 }
 
-SCENARIO("migration_plan_is_valid rejects a no-op plan that contains steps",
-         "[database][migration][plan_valid][error]")
+SCENARIO("migration_plan_is_valid rejects a no-op plan that contains steps", "[database][migration][plan_valid][error]")
 {
     GIVEN("a plan with current_version == target_version but at least one step")
     {
@@ -597,8 +588,7 @@ SCENARIO("migration_plan_is_valid rejects a no-op plan that contains steps",
     }
 }
 
-SCENARIO("migration_plan_is_valid rejects an upgrade plan with no steps",
-         "[database][migration][plan_valid][error]")
+SCENARIO("migration_plan_is_valid rejects an upgrade plan with no steps", "[database][migration][plan_valid][error]")
 {
     GIVEN("a plan where target > current but steps is empty")
     {
@@ -678,13 +668,12 @@ SCENARIO("migration_plan_is_valid rejects a downgrade plan whose direction is se
     }
 }
 
-SCENARIO("migration_plan_is_valid accepts a real upgrade plan from the catalog",
-         "[database][migration][plan_valid]")
+SCENARIO("migration_plan_is_valid accepts a real upgrade plan from the catalog", "[database][migration][plan_valid]")
 {
     GIVEN("a plan produced by migration_plan_between from version 0 to current")
     {
-        auto const plan = merovingian::database::migration_plan_between(
-            0U, merovingian::database::current_schema_version());
+        auto const plan =
+            merovingian::database::migration_plan_between(0U, merovingian::database::current_schema_version());
 
         WHEN("the plan is validated")
         {

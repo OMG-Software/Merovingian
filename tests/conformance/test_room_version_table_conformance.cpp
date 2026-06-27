@@ -165,8 +165,7 @@ SCENARIO("Room versions v1–v5 use the original auth rules (no domain check)",
 //
 // v6 introduced the conditional sender-domain check (active only when
 // content.m.federate is false). v6–v11 all share the room_v6_plus auth rule set.
-SCENARIO("Room versions v6–v11 use the room_v6_plus auth rules",
-         "[rooms][versions][conformance][auth-rules]")
+SCENARIO("Room versions v6–v11 use the room_v6_plus auth rules", "[rooms][versions][conformance][auth-rules]")
 {
     GIVEN("the room version registry")
     {

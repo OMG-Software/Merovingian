@@ -39,7 +39,8 @@ namespace
 
     inline auto apply_config_value(ServerConfig& server, ListenersConfig& listeners, DatabaseConfig& database,
                                    SecurityConfig& security, ClientRateLimitsConfig& client_rate_limits,
-                                   LogModulesConfig& log_modules, std::string_view key, std::string_view value,
+                                   LogModulesConfig& log_modules, FederationWorkerConfig& federation_worker,
+                                   std::string_view key, std::string_view value,
                                    std::vector<ConfigValidationFinding>& findings) -> void
     {
         // The client_rate_limits.per_ip and .per_user maps are keyed by
@@ -440,6 +441,45 @@ namespace
         {
             security.secrets.master_key_file = std::string{value};
         }
+        else if (key == "federation.worker.enabled")
+        {
+            if (!parse_bool_value(value, federation_worker.enabled))
+            {
+                add_parse_finding(findings, std::string{key}, "expected boolean value");
+            }
+        }
+        else if (key == "federation.worker.fallback_in_process")
+        {
+            if (!parse_bool_value(value, federation_worker.fallback_in_process))
+            {
+                add_parse_finding(findings, std::string{key}, "expected boolean value");
+            }
+        }
+        else if (key == "federation.worker.request_timeout_seconds")
+        {
+            if (!parse_u32_value(value, federation_worker.request_timeout_seconds))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "federation.worker.threads")
+        {
+            if (!parse_u32_value(value, federation_worker.threads))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "federation.worker.shards")
+        {
+            if (!parse_u32_value(value, federation_worker.shards))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "federation.worker.binary")
+        {
+            federation_worker.worker_binary = std::string{value};
+        }
         else
         {
             add_parse_finding(findings, std::string{key}, "unknown configuration key");
@@ -579,6 +619,7 @@ auto parse_key_value_config(std::string_view input) -> ConfigParseResult
     auto security = SecurityConfig{};
     auto client_rate_limits = ClientRateLimitsConfig{};
     auto log_modules = LogModulesConfig{};
+    auto federation_worker = FederationWorkerConfig{};
     auto findings = std::vector<ConfigValidationFinding>{};
     auto seen_keys = std::vector<std::string>{};
 
@@ -621,8 +662,8 @@ auto parse_key_value_config(std::string_view input) -> ConfigParseResult
                 else
                 {
                     seen_keys.emplace_back(key);
-                    apply_config_value(server, listeners, database, security, client_rate_limits, log_modules, key,
-                                       value, findings);
+                    apply_config_value(server, listeners, database, security, client_rate_limits, log_modules,
+                                       federation_worker, key, value, findings);
                 }
             }
         }
@@ -635,7 +676,7 @@ auto parse_key_value_config(std::string_view input) -> ConfigParseResult
         ++line_number;
     }
 
-    auto config = Config{server, listeners, database, security, client_rate_limits, log_modules};
+    auto config = Config{server, listeners, database, security, client_rate_limits, log_modules, federation_worker};
     auto validation_findings = validate(config);
     findings.insert(findings.end(), validation_findings.begin(), validation_findings.end());
 

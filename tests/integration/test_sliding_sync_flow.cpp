@@ -567,10 +567,10 @@ SCENARIO("MSC4186 sliding sync is reachable at the org.matrix.simplified_msc3575
     GIVEN("a registered user")
     {
         auto const config = sliding_sync_config();
-        auto started      = merovingian::homeserver::start_client_server(config);
+        auto started = merovingian::homeserver::start_client_server(config);
         REQUIRE(started.started);
-        auto& rt          = started.runtime;
-        auto const token  = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
+        auto& rt = started.runtime;
+        auto const token = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
 
         WHEN("POST /_matrix/client/unstable/org.matrix.simplified_msc3575/sync is called")
         {
@@ -584,7 +584,7 @@ SCENARIO("MSC4186 sliding sync is reachable at the org.matrix.simplified_msc3575
             {
                 // matrix-rust-sdk calls this path; the server MUST serve it.
                 REQUIRE(result.response.status == 200U);
-                auto const obj  = parse_object(result.response.body);
+                auto const obj = parse_object(result.response.body);
                 auto const* pos = string_member(obj, "pos");
                 REQUIRE(pos != nullptr); // MSC4186 MUST include pos in every response
                 REQUIRE(!pos->empty());
@@ -599,10 +599,10 @@ SCENARIO("MSC4186 incremental sync works via the simplified_msc3575 path using p
     GIVEN("a user whose initial sliding sync was completed via the simplified_msc3575 path")
     {
         auto const config = sliding_sync_config();
-        auto started      = merovingian::homeserver::start_client_server(config);
+        auto started = merovingian::homeserver::start_client_server(config);
         REQUIRE(started.started);
-        auto& rt          = started.runtime;
-        auto const token  = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
+        auto& rt = started.runtime;
+        auto const token = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
 
         auto const initial = merovingian::homeserver::handle_client_server_request(
             rt,
@@ -635,10 +635,10 @@ SCENARIO("MSC4186 pos token is interchangeable between the msc4186 and simplifie
     GIVEN("a user whose initial sliding sync was completed via the msc4186 path")
     {
         auto const config = sliding_sync_config();
-        auto started      = merovingian::homeserver::start_client_server(config);
+        auto started = merovingian::homeserver::start_client_server(config);
         REQUIRE(started.started);
-        auto& rt          = started.runtime;
-        auto const token  = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
+        auto& rt = started.runtime;
+        auto const token = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
 
         auto const initial = sliding_sync(rt, token, R"({"lists":{"rooms":{"ranges":[[0,9]]}}})");
         REQUIRE(initial.response.status == 200U);
@@ -669,10 +669,10 @@ SCENARIO("MSC4186 pos token from simplified_msc3575 is accepted by the msc4186 p
     GIVEN("a user whose initial sliding sync was completed via the simplified_msc3575 path")
     {
         auto const config = sliding_sync_config();
-        auto started      = merovingian::homeserver::start_client_server(config);
+        auto started = merovingian::homeserver::start_client_server(config);
         REQUIRE(started.started);
-        auto& rt          = started.runtime;
-        auto const token  = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
+        auto& rt = started.runtime;
+        auto const token = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
 
         auto const initial = merovingian::homeserver::handle_client_server_request(
             rt,
@@ -702,10 +702,10 @@ SCENARIO("simplified_msc3575 sync with timeout=0 responds immediately without lo
     GIVEN("a registered user with no pending events")
     {
         auto const config = sliding_sync_config();
-        auto started      = merovingian::homeserver::start_client_server(config);
+        auto started = merovingian::homeserver::start_client_server(config);
         REQUIRE(started.started);
-        auto& rt          = started.runtime;
-        auto const token  = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
+        auto& rt = started.runtime;
+        auto const token = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
 
         WHEN("POST simplified_msc3575/sync?timeout=0 is called")
         {
@@ -718,7 +718,7 @@ SCENARIO("simplified_msc3575 sync with timeout=0 responds immediately without lo
             THEN("the response is 200 with a pos — timeout=0 means respond immediately")
             {
                 REQUIRE(result.response.status == 200U);
-                auto const obj  = parse_object(result.response.body);
+                auto const obj = parse_object(result.response.body);
                 auto const* pos = string_member(obj, "pos");
                 REQUIRE(pos != nullptr);
                 REQUIRE(!pos->empty());
@@ -733,10 +733,10 @@ SCENARIO("simplified_msc3575 sync with a joined room returns SYNC ops for that r
     GIVEN("a user with one joined room")
     {
         auto const config = sliding_sync_config();
-        auto started      = merovingian::homeserver::start_client_server(config);
+        auto started = merovingian::homeserver::start_client_server(config);
         REQUIRE(started.started);
-        auto& rt          = started.runtime;
-        auto const token  = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
+        auto& rt = started.runtime;
+        auto const token = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
         auto const room_id = create_room(rt, token);
 
         WHEN("initial sliding sync is issued via the simplified_msc3575 path with the room in range")
@@ -754,8 +754,7 @@ SCENARIO("simplified_msc3575 sync with a joined room returns SYNC ops for that r
                 REQUIRE(ops.has_value());
                 REQUIRE(!ops->empty());
                 // First op on an initial sync MUST be SYNC.
-                auto const* first =
-                    std::get_if<merovingian::canonicaljson::Object>(&ops->at(0).storage());
+                auto const* first = std::get_if<merovingian::canonicaljson::Object>(&ops->at(0).storage());
                 REQUIRE(first != nullptr);
                 auto const* op = string_member(*first, "op");
                 REQUIRE(op != nullptr);
@@ -775,9 +774,9 @@ SCENARIO("simplified_msc3575 sync rejects an unauthenticated request with 401",
     GIVEN("a running homeserver")
     {
         auto const config = sliding_sync_config();
-        auto started      = merovingian::homeserver::start_client_server(config);
+        auto started = merovingian::homeserver::start_client_server(config);
         REQUIRE(started.started);
-        auto& rt          = started.runtime;
+        auto& rt = started.runtime;
 
         WHEN("POST simplified_msc3575/sync is called with no access token")
         {
@@ -790,7 +789,7 @@ SCENARIO("simplified_msc3575 sync rejects an unauthenticated request with 401",
             THEN("the response is 401 M_MISSING_TOKEN")
             {
                 REQUIRE(result.response.status == 401U);
-                auto const obj      = parse_object(result.response.body);
+                auto const obj = parse_object(result.response.body);
                 auto const* errcode = string_member(obj, "errcode");
                 REQUIRE(errcode != nullptr);
                 REQUIRE(*errcode == "M_MISSING_TOKEN");
@@ -799,29 +798,26 @@ SCENARIO("simplified_msc3575 sync rejects an unauthenticated request with 401",
     }
 }
 
-SCENARIO("simplified_msc3575 sync rejects a malformed JSON body with 400",
-         "[homeserver][sliding-sync][integration]")
+SCENARIO("simplified_msc3575 sync rejects a malformed JSON body with 400", "[homeserver][sliding-sync][integration]")
 {
     GIVEN("a registered user")
     {
         auto const config = sliding_sync_config();
-        auto started      = merovingian::homeserver::start_client_server(config);
+        auto started = merovingian::homeserver::start_client_server(config);
         REQUIRE(started.started);
-        auto& rt          = started.runtime;
-        auto const token  = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
+        auto& rt = started.runtime;
+        auto const token = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
 
         WHEN("POST simplified_msc3575/sync is called with an invalid JSON body")
         {
             auto const result = merovingian::homeserver::handle_client_server_request(
-                rt,
-                {"POST", "/_matrix/client/unstable/org.matrix.simplified_msc3575/sync", token,
-                 "not-valid-json{{{"},
+                rt, {"POST", "/_matrix/client/unstable/org.matrix.simplified_msc3575/sync", token, "not-valid-json{{{"},
                 /*can_wait=*/false);
 
             THEN("the response is 400 M_BAD_JSON")
             {
                 REQUIRE(result.response.status == 400U);
-                auto const obj      = parse_object(result.response.body);
+                auto const obj = parse_object(result.response.body);
                 auto const* errcode = string_member(obj, "errcode");
                 REQUIRE(errcode != nullptr);
                 REQUIRE(*errcode == "M_BAD_JSON");
@@ -830,16 +826,15 @@ SCENARIO("simplified_msc3575 sync rejects a malformed JSON body with 400",
     }
 }
 
-SCENARIO("simplified_msc3575 sync rejects overlapping list ranges with 400",
-         "[homeserver][sliding-sync][integration]")
+SCENARIO("simplified_msc3575 sync rejects overlapping list ranges with 400", "[homeserver][sliding-sync][integration]")
 {
     GIVEN("a registered user")
     {
         auto const config = sliding_sync_config();
-        auto started      = merovingian::homeserver::start_client_server(config);
+        auto started = merovingian::homeserver::start_client_server(config);
         REQUIRE(started.started);
-        auto& rt          = started.runtime;
-        auto const token  = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
+        auto& rt = started.runtime;
+        auto const token = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
 
         WHEN("POST simplified_msc3575/sync is called with overlapping ranges [[0,10],[5,20]]")
         {
@@ -853,7 +848,7 @@ SCENARIO("simplified_msc3575 sync rejects overlapping list ranges with 400",
             {
                 // MSC4186 MUST: ranges MUST NOT overlap.
                 REQUIRE(result.response.status == 400U);
-                auto const obj      = parse_object(result.response.body);
+                auto const obj = parse_object(result.response.body);
                 auto const* errcode = string_member(obj, "errcode");
                 REQUIRE(errcode != nullptr);
                 REQUIRE(*errcode == "M_BAD_JSON");

@@ -17,19 +17,16 @@
 #include <optional>
 #include <string_view>
 
-SCENARIO("audit_category_from_name maps every known category name back to its enum value",
-         "[observability][audit]")
+SCENARIO("audit_category_from_name maps every known category name back to its enum value", "[observability][audit]")
 {
     GIVEN("the set of canonical audit category names")
     {
         WHEN("each name is round-tripped through the lookup")
         {
             auto const auth = merovingian::observability::audit_category_from_name("auth");
-            auto const key_lifecycle =
-                merovingian::observability::audit_category_from_name("key_lifecycle");
+            auto const key_lifecycle = merovingian::observability::audit_category_from_name("key_lifecycle");
             auto const policy = merovingian::observability::audit_category_from_name("policy");
-            auto const moderation =
-                merovingian::observability::audit_category_from_name("moderation");
+            auto const moderation = merovingian::observability::audit_category_from_name("moderation");
             auto const admin = merovingian::observability::audit_category_from_name("admin");
 
             THEN("the lookup returns the matching enum value and the round-trip is stable")

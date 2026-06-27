@@ -202,8 +202,10 @@ auto parse_filter_argument(std::string_view filter_argument) -> SyncFilter
         }
     }
     out.present = true;
-    log_diagnostic("filter.parsed", {{"has_room_filter",    out.room.rooms.empty() ? "false" : "true",      false},
-                                     {"has_presence_filter", out.presence.types.empty() ? "false" : "true", false}});
+    log_diagnostic("filter.parsed", {
+                                        {"has_room_filter",     out.room.rooms.empty() ? "false" : "true",     false},
+                                        {"has_presence_filter", out.presence.types.empty() ? "false" : "true", false}
+    });
     return out;
 }
 
@@ -236,12 +238,14 @@ auto parse_filter_argument(std::string_view filter_argument) -> SyncFilter
     });
 }
 
-auto event_passes_filter(EventTypeFilter const& filter, std::string_view event_type,
-                         std::string_view sender) noexcept -> bool
+auto event_passes_filter(EventTypeFilter const& filter, std::string_view event_type, std::string_view sender) noexcept
+    -> bool
 {
     // Senders use exact string matching (no wildcard support per spec).
     auto const sender_in_list = [](std::vector<std::string> const& list, std::string_view value) noexcept -> bool {
-        return std::ranges::any_of(list, [value](std::string const& candidate) { return candidate == value; });
+        return std::ranges::any_of(list, [value](std::string const& candidate) {
+            return candidate == value;
+        });
     };
     // Skip type predicates entirely when the caller hasn't supplied the
     // event type. The timeline walker currently passes an empty type for
@@ -273,7 +277,9 @@ auto event_passes_filter(EventTypeFilter const& filter, std::string_view event_t
 auto room_passes_filter(RoomFilter const& filter, std::string_view room_id) noexcept -> bool
 {
     auto const contains = [](std::vector<std::string> const& list, std::string_view value) noexcept -> bool {
-        return std::ranges::any_of(list, [value](std::string const& candidate) { return candidate == value; });
+        return std::ranges::any_of(list, [value](std::string const& candidate) {
+            return candidate == value;
+        });
     };
     if (!filter.rooms.empty() && !contains(filter.rooms, room_id))
     {

@@ -432,8 +432,8 @@ namespace
                 err.push_back(canonicaljson::make_member(
                     "errcode", canonicaljson::Value{std::string{"M_INCOMPATIBLE_ROOM_VERSION"}}));
                 err.push_back(canonicaljson::make_member("room_version", canonicaljson::Value{tmpl->room_version}));
-                err.push_back(
-                    canonicaljson::make_member("error", canonicaljson::Value{std::string{"Room version not supported"}}));
+                err.push_back(canonicaljson::make_member(
+                    "error", canonicaljson::Value{std::string{"Room version not supported"}}));
                 return {400U, serialize_response_object(std::move(err))};
             }
         }
@@ -475,9 +475,8 @@ namespace
         }
         // Resolve the room version from local state so the event ID is computed
         // with the correct redaction rules for that version, not hardcoded "12".
-        auto const send_room_ver = runtime.room_version_resolver
-            ? runtime.room_version_resolver(params->room_id)
-            : std::string{};
+        auto const send_room_ver =
+            runtime.room_version_resolver ? runtime.room_version_resolver(params->room_id) : std::string{};
         auto envelope = parse_inbound_pdu_envelope(request.body, send_room_ver);
         if (!envelope.has_value())
         {
@@ -529,8 +528,8 @@ namespace
         // knocking user while waiting for the knock answer.
         if (route.endpoint == FederationEndpoint::send_knock)
         {
-            response.push_back(canonicaljson::make_member(
-                "knock_room_state", build_array_value(acceptance.knock_room_state_json)));
+            response.push_back(
+                canonicaljson::make_member("knock_room_state", build_array_value(acceptance.knock_room_state_json)));
         }
         auto body = serialize_response_object(std::move(response));
         if (body.empty())
@@ -646,8 +645,8 @@ namespace
     //
     // Resolves a room alias to a room_id + list of resident servers.
     // The room_alias query parameter is percent-decoded before dispatch.
-    [[nodiscard]] auto handle_query_directory(FederationRuntimeState& runtime,
-                                              SignedFederationRequest const& request) -> FederationResponse
+    [[nodiscard]] auto handle_query_directory(FederationRuntimeState& runtime, SignedFederationRequest const& request)
+        -> FederationResponse
     {
         if (!runtime.directory_query_provider)
         {
@@ -670,8 +669,7 @@ namespace
         }
         auto response = canonicaljson::Object{};
         response.push_back(canonicaljson::make_member("room_id", canonicaljson::Value{result.room_id}));
-        response.push_back(
-            canonicaljson::make_member("servers", canonicaljson::Value{std::move(servers_array)}));
+        response.push_back(canonicaljson::make_member("servers", canonicaljson::Value{std::move(servers_array)}));
         auto body = serialize_response_object(std::move(response));
         if (body.empty())
         {
@@ -1195,8 +1193,7 @@ auto authorize_federation_pdu(FederationPdu const& pdu, std::string_view expecte
     return authorize_federation_pdu(pdu, expected_origin, std::nullopt);
 }
 
-auto authorize_federation_pdu(FederationPdu const& pdu,
-                              [[maybe_unused]] std::string_view expected_origin,
+auto authorize_federation_pdu(FederationPdu const& pdu, [[maybe_unused]] std::string_view expected_origin,
                               std::optional<FederationKeyRecord> const& key) -> FederationDecision
 {
     if (pdu.event_id.empty() || pdu.room_id.empty() || pdu.event_type.empty() || pdu.sender.empty())
@@ -1286,8 +1283,13 @@ auto parse_federation_pdu(std::string_view encoded, RoomVersionResolver const& v
             return {};
         }
         auto id = events::make_reference_hash_event_id(parsed.value, *room_version);
-        return {id.event_id,           envelope.event.room_id,    envelope.event.event_type,
-                envelope.event.sender, envelope.event.signatures, std::string{encoded}, room_ver};
+        return {id.event_id,
+                envelope.event.room_id,
+                envelope.event.event_type,
+                envelope.event.sender,
+                envelope.event.signatures,
+                std::string{encoded},
+                room_ver};
     }
     auto const fields = split_fields(encoded, ',');
     if (fields.size() != 7U || fields[6].empty())
@@ -1546,7 +1548,7 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
         // Ed25519 verification. Fail-closed: if the resolver is wired but returns
         // no key, the PDU is rejected rather than persisted without verification.
         auto const pdu_sender_dom = sender_domain(pdu.sender);
-        auto key_for_pdu          = std::optional<FederationKeyRecord>{remote->signing_key};
+        auto key_for_pdu = std::optional<FederationKeyRecord>{remote->signing_key};
         if (!pdu_sender_dom.empty() && pdu_sender_dom != request.origin && runtime.remote_key_resolver)
         {
             auto sender_key_id = std::string{};
@@ -1570,15 +1572,14 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
                     ++remote->trust.consecutive_failures;
                     auto const reason = std::string{"relayed PDU: could not resolve sender domain signing key"};
                     log_diagnostic("pdu.rejected", {
-                                                       {"origin",     request.origin, false},
+                                                       {"origin",     request.origin,              false},
                                                        {"sender_dom", std::string{pdu_sender_dom}, false},
-                                                       {"reason",     reason, false}
+                                                       {"reason",     reason,                      false}
                     });
                     audit_federation(runtime, "federation.rejected", request.origin, request.target, reason);
                     pdu_errors.push_back(canonicaljson::make_member(
-                        pdu.event_id,
-                        canonicaljson::Value{canonicaljson::Object{
-                            canonicaljson::make_member("error", canonicaljson::Value{reason})}}));
+                        pdu.event_id, canonicaljson::Value{canonicaljson::Object{
+                                          canonicaljson::make_member("error", canonicaljson::Value{reason})}}));
                     continue;
                 }
             }
@@ -1616,9 +1617,9 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
                 !events::verify_pdu_content_hash(parsed_for_hash.value))
             {
                 pdu_errors.push_back(canonicaljson::make_member(
-                    pdu.event_id, canonicaljson::Value{canonicaljson::Object{
-                                      canonicaljson::make_member("error", canonicaljson::Value{
-                                                                              std::string{"PDU content hash verification failed"}})}}));
+                    pdu.event_id,
+                    canonicaljson::Value{canonicaljson::Object{canonicaljson::make_member(
+                        "error", canonicaljson::Value{std::string{"PDU content hash verification failed"}})}}));
                 audit_federation(runtime, "federation.pdu_hash_rejected", request.origin, request.target,
                                  "content-hash-mismatch");
                 continue;
