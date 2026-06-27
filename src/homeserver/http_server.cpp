@@ -191,8 +191,7 @@ namespace
         // (not make_shared) to avoid GCC 16's spurious -Warray-bounds on the
         // _Sp_counted_ptr_inplace co-allocation destructor path.
         explicit TlsConnectionStream(
-            std::shared_ptr<TlsConnection>
-                connection) noexcept // SHARED_PTR: reviewed — split ownership: main-pool reads, sync-pool writes
+            std::shared_ptr<TlsConnection> connection) noexcept // SHARED_PTR: reviewed — read/write pool split
             : m_connection{std::move(connection)}
         {
         }
@@ -213,8 +212,7 @@ namespace
         }
 
     private:
-        std::shared_ptr<TlsConnection>
-            m_connection; // SHARED_PTR: reviewed — shared by main-pool read and sync-pool write phases
+        std::shared_ptr<TlsConnection> m_connection; // SHARED_PTR: reviewed — shared by read and write pool threads
     };
 
     [[nodiscard]] auto header_size_cap(http::RequestLimits const& limits) noexcept -> std::size_t
@@ -1142,9 +1140,8 @@ auto serve_tls_http(TlsServerContext& tls_context, net::TcpAcceptor& acceptor, C
                 // (read phase, this thread) and the async_write_fn lambda (write phase,
                 // sync-pool thread) hold a copy; the last one to finish cleans up.
                 auto tls_unique = std::make_unique<TlsConnection>(std::move(*accepted_tls.connection));
-                auto tls_shared = std::shared_ptr<TlsConnection>{
-                    std::move(tls_unique)}; // SHARED_PTR: reviewed — cross-thread TLS ownership via separate control
-                                            // block to avoid GCC 16 make_shared bug
+                auto tls_shared = std::shared_ptr<TlsConnection>{// SHARED_PTR: reviewed — cross-thread TLS ownership
+                                                                 std::move(tls_unique)};
                 auto stream = TlsConnectionStream{tls_shared};
 
                 auto async_write_fn =
