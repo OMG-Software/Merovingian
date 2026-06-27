@@ -130,6 +130,11 @@ auto serialize_fed_request(homeserver::LocalHttpRequest const& request) -> std::
     body += ipc_json_str(request.target);
     body += R"(,"remote_addr":)";
     body += ipc_json_str(request.remote_addr);
+    // access_token carries the raw Authorization header value (X-Matrix scheme
+    // for federation). The worker's handle_federation_http_request() reads it
+    // directly from request.access_token, so it must cross the IPC boundary.
+    body += R"(,"access_token":)";
+    body += ipc_json_str(request.access_token);
     body += R"(,"headers":[)";
     auto first = true;
     for (auto const& hdr : request.headers)
@@ -157,6 +162,7 @@ auto deserialize_fed_request(std::string_view json) -> homeserver::LocalHttpRequ
     request.method = ipc_json_get_str(json, "method");
     request.target = ipc_json_get_str(json, "target");
     request.remote_addr = ipc_json_get_str(json, "remote_addr");
+    request.access_token = ipc_json_get_str(json, "access_token");
     request.body = ipc_json_get_str(json, "body");
 
     auto const headers_key = std::string_view{R"("headers":[)"};

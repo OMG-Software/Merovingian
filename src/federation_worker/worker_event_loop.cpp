@@ -347,8 +347,11 @@ auto WorkerEventLoop::run() -> void
 
     // Block until shutdown is signalled.  A watcher thread also wakes us if
     // the main process closes the IPC fd without sending a notification.
-    auto watcher = std::thread{[channel_ptr, signal_shutdown]() {
-        while (channel_ptr->healthy())
+    // The watcher checks `shutdown` in addition to `healthy()` so it exits
+    // promptly after a graceful "shutdown" notification: on a clean shutdown
+    // the channel stays healthy, so checking only healthy() deadlocks here.
+    auto watcher = std::thread{[channel_ptr, signal_shutdown, &shutdown]() {
+        while (!shutdown.load() && channel_ptr->healthy())
         {
             std::this_thread::sleep_for(std::chrono::milliseconds{100});
         }

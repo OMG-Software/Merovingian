@@ -426,8 +426,6 @@ auto WorkerPool::handle(LocalHttpRequest const& request, std::string_view room_i
         return {503U, R"({"errcode":"M_UNAVAILABLE","error":"Federation worker shard unavailable"})"};
     }
 
-    // Serialize request using the shared IPC frame schema. access_token is
-    // intentionally omitted.
     auto const timeout = std::chrono::seconds{cfg_.request_timeout_seconds};
     auto const reply = worker.channel().send_request(ipc::serialize_fed_request(request), timeout);
     if (!reply.has_value())

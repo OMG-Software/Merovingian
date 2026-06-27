@@ -237,6 +237,59 @@ SCENARIO("Room ID extraction from /send decodes JSON escape sequences", "[federa
     }
 }
 
+SCENARIO("Room ID is extracted from v2 federation path endpoints", "[federation][routing][room-id][v2]")
+{
+    GIVEN("a request to a v2 federation endpoint")
+    {
+        auto const room_id = std::string{"!v2room:example.com"};
+
+        WHEN("the target is /_matrix/federation/v2/invite/{roomId}/{eventId}")
+        {
+            auto const request = make_request("/_matrix/federation/v2/invite/" + room_id + "/$eventId");
+            THEN("the room ID is extracted for correct shard routing")
+            {
+                REQUIRE(federation_worker_room_id_from_request(request) == room_id);
+            }
+        }
+
+        WHEN("the target is /_matrix/federation/v2/send_join/{roomId}/{eventId}")
+        {
+            auto const request = make_request("/_matrix/federation/v2/send_join/" + room_id + "/$eventId");
+            THEN("the room ID is extracted")
+            {
+                REQUIRE(federation_worker_room_id_from_request(request) == room_id);
+            }
+        }
+
+        WHEN("the target is /_matrix/federation/v2/send_leave/{roomId}/{eventId}")
+        {
+            auto const request = make_request("/_matrix/federation/v2/send_leave/" + room_id + "/$eventId");
+            THEN("the room ID is extracted")
+            {
+                REQUIRE(federation_worker_room_id_from_request(request) == room_id);
+            }
+        }
+
+        WHEN("the target is /_matrix/federation/v2/make_knock/{roomId}/{userId}")
+        {
+            auto const request = make_request("/_matrix/federation/v2/make_knock/" + room_id + "/@user:remote.example");
+            THEN("the room ID is extracted")
+            {
+                REQUIRE(federation_worker_room_id_from_request(request) == room_id);
+            }
+        }
+
+        WHEN("the target is /_matrix/federation/v2/send_knock/{roomId}/{eventId}")
+        {
+            auto const request = make_request("/_matrix/federation/v2/send_knock/" + room_id + "/$eventId");
+            THEN("the room ID is extracted")
+            {
+                REQUIRE(federation_worker_room_id_from_request(request) == room_id);
+            }
+        }
+    }
+}
+
 SCENARIO("Non-room federation endpoints return an empty room ID", "[federation][routing][room-id]")
 {
     GIVEN("a request to a non-room federation endpoint")

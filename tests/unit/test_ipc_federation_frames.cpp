@@ -287,6 +287,58 @@ SCENARIO("fed_response frame defaults invalid or missing status to 500", "[ipc][
     }
 }
 
+SCENARIO("fed_request frame preserves the X-Matrix access_token across IPC", "[ipc][federation][frame][security]")
+{
+    GIVEN("an inbound federation request with an X-Matrix Authorization header")
+    {
+        auto original = LocalHttpRequest{};
+        original.method = "PUT";
+        original.target = "/_matrix/federation/v1/send/txn123";
+        original.remote_addr = "203.0.113.5";
+        // access_token carries the full Authorization header value; handle_federation_http_request()
+        // reads request.access_token for X-Matrix parsing rather than re-scanning raw headers.
+        original.access_token = "X-Matrix origin=\"remote.example\",destination=\"local.example\","
+                                "key=\"ed25519:abc\",sig=\"base64sighere\"";
+        original.body = R"({"pdus":[]})";
+
+        WHEN("the request is serialized and deserialized for IPC")
+        {
+            auto const roundtripped = deserialize_fed_request(serialize_fed_request(original));
+
+            THEN("access_token is preserved so X-Matrix auth succeeds in the worker")
+            {
+                REQUIRE(roundtripped.access_token == original.access_token);
+            }
+
+            THEN("all other fields are also preserved")
+            {
+                REQUIRE(roundtripped.method == original.method);
+                REQUIRE(roundtripped.target == original.target);
+                REQUIRE(roundtripped.remote_addr == original.remote_addr);
+                REQUIRE(roundtripped.body == original.body);
+            }
+        }
+    }
+
+    GIVEN("an inbound federation request with no Authorization header")
+    {
+        auto original = LocalHttpRequest{};
+        original.method = "GET";
+        original.target = "/_matrix/federation/v1/key/server";
+        original.remote_addr = "203.0.113.5";
+
+        WHEN("the request is serialized and deserialized for IPC")
+        {
+            auto const roundtripped = deserialize_fed_request(serialize_fed_request(original));
+
+            THEN("access_token remains empty")
+            {
+                REQUIRE(roundtripped.access_token.empty());
+            }
+        }
+    }
+}
+
 SCENARIO("fed_request frame tolerates empty bodies and skipped headers", "[ipc][federation][frame]")
 {
     GIVEN("a request with an empty body and no headers")

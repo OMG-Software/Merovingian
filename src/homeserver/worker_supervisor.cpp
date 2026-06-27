@@ -192,6 +192,9 @@ auto WorkerSupervisor::supervisor_loop() -> void
         LOG_WARNING("Federation worker exited: pid=" + std::to_string(worker_pid_) +
                     " exit_code=" + std::to_string(exit_code) + " restart_in_ms=" + std::to_string(backoff_ms));
 
+        // Mark unhealthy before resetting channel_ so the request-path
+        // check in WorkerPool::handle() never dereferences a null channel_.
+        healthy_.store(false);
         if (channel_)
         {
             channel_->stop();
@@ -211,11 +214,13 @@ auto WorkerSupervisor::supervisor_loop() -> void
         {
             spawn_and_connect();
             backoff_ms = 1000U;
+            // Restart succeeded — restore the healthy flag so the pool
+            // routes new requests to this worker again.
+            healthy_.store(true);
         }
         catch (std::exception const& ex)
         {
             LOG_WARNING("Federation worker restart failed: " + std::string{ex.what()});
-            healthy_.store(false);
         }
     }
 }

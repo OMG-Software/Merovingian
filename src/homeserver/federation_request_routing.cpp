@@ -93,6 +93,14 @@ namespace
             "/_matrix/federation/v1/make_knock/",
             "/_matrix/federation/v1/send_knock/",
             "/_matrix/federation/v1/query/directory/",
+            // v2 endpoints — required for correct shard routing; without these,
+            // v2 requests fall through with no room_id and land on shard 0
+            // regardless of which shard owns the room.
+            "/_matrix/federation/v2/invite/",
+            "/_matrix/federation/v2/send_join/",
+            "/_matrix/federation/v2/send_leave/",
+            "/_matrix/federation/v2/make_knock/",
+            "/_matrix/federation/v2/send_knock/",
         };
         return prefixes;
     }

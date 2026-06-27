@@ -215,6 +215,15 @@ namespace
         ALLOW_SYSCALL(__NR_epoll_pwait2),
 #endif
 
+        // ── Process spawning ───────────────────────────────────────────────
+        // posix_spawn() calls execve/execveat in the child. The child inherits
+        // this filter, so the worker applies its own stricter filter at startup.
+        // Required for both initial worker launch and supervisor-driven restarts.
+        ALLOW_SYSCALL(__NR_execve),
+#ifdef __NR_execveat
+        ALLOW_SYSCALL(__NR_execveat),
+#endif
+
         // ── Threads and synchronisation ────────────────────────────────────
         ALLOW_SYSCALL(__NR_futex),
         ALLOW_SYSCALL(__NR_set_robust_list),
