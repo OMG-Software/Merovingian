@@ -62,10 +62,10 @@ public:
     explicit IpcChannel(core::FileDescriptor fd, Role role);
     ~IpcChannel();
 
-    IpcChannel(IpcChannel const&)                    = delete;
+    IpcChannel(IpcChannel const&) = delete;
     auto operator=(IpcChannel const&) -> IpcChannel& = delete;
-    IpcChannel(IpcChannel&&)                         = delete;
-    auto operator=(IpcChannel&&) -> IpcChannel&      = delete;
+    IpcChannel(IpcChannel&&) = delete;
+    auto operator=(IpcChannel&&) -> IpcChannel& = delete;
 
     // Must be set before start().
     auto set_request_handler(RequestHandler handler) -> void;
@@ -79,8 +79,7 @@ public:
     // Sends a request and blocks until a matching reply_to frame arrives.
     // Returns nullopt on timeout or channel failure.
     // json_body: a JSON object WITHOUT "id" or "reply_to".
-    [[nodiscard]] auto send_request(std::string_view json_body,
-                                    std::chrono::seconds timeout = std::chrono::seconds{30})
+    [[nodiscard]] auto send_request(std::string_view json_body, std::chrono::seconds timeout = std::chrono::seconds{30})
         -> std::optional<std::string>;
 
     // Sends a response to an inbound request. json_body: without "id"/"reply_to".
@@ -96,8 +95,8 @@ private:
     [[nodiscard]] auto raw_recv_exact(void* buf, std::size_t n) noexcept -> bool;
     [[nodiscard]] auto write_frame(std::string_view plaintext) noexcept -> bool;
     [[nodiscard]] auto read_frame() noexcept -> std::optional<std::string>;
-    [[nodiscard]] auto build_frame(std::uint64_t id, std::optional<std::uint64_t> reply_to,
-                                   std::string_view body) -> std::string;
+    [[nodiscard]] auto build_frame(std::uint64_t id, std::optional<std::uint64_t> reply_to, std::string_view body)
+        -> std::string;
     auto reader_loop() -> void;
 
     core::FileDescriptor fd_;
@@ -116,7 +115,9 @@ private:
         std::condition_variable cv{};
     };
     std::mutex pending_mu_{};
-    std::map<std::uint64_t, std::shared_ptr<PendingEntry>> pending_{}; // SHARED_PTR: reviewed — shared ownership of the pending entry between reader thread and waiting caller; entry is erased before last reference is dropped.
+    std::map<std::uint64_t, std::shared_ptr<PendingEntry>>
+        pending_{}; // SHARED_PTR: reviewed — shared ownership of the pending entry between reader thread and waiting
+                    // caller; entry is erased before last reference is dropped.
 
     RequestHandler request_handler_{};
     std::thread reader_thread_{};

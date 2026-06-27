@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "federation_signing_test_support.hpp"
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/runtime_federation.hpp"
-
-#include "federation_signing_test_support.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -42,8 +41,7 @@ namespace
     return remote;
 }
 
-[[nodiscard]] auto signed_request(std::string const& origin, std::string const& key_id,
-                                  std::string const& key_seed,
+[[nodiscard]] auto signed_request(std::string const& origin, std::string const& key_id, std::string const& key_seed,
                                   std::string const& body) -> merovingian::federation::SignedFederationRequest
 {
     auto request = merovingian::federation::SignedFederationRequest{};
@@ -67,9 +65,8 @@ SCENARIO("X-Matrix Authorization header is parsed into credentials", "[federatio
 {
     GIVEN("a valid full X-Matrix header with all fields")
     {
-        auto const header =
-            std::string_view{"X-Matrix origin=\"matrix.example.org\",key=\"ed25519:auto\","
-                             "sig=\"abc123==\",destination=\"local.example.org\""};
+        auto const header = std::string_view{"X-Matrix origin=\"matrix.example.org\",key=\"ed25519:auto\","
+                                             "sig=\"abc123==\",destination=\"local.example.org\""};
 
         WHEN("the header is parsed")
         {
@@ -156,8 +153,7 @@ SCENARIO("X-Matrix Authorization header is parsed into credentials", "[federatio
 
     GIVEN("an X-Matrix header with extra whitespace around delimiters")
     {
-        auto const spaced =
-            std::string_view{"X-Matrix origin=\"matrix.org\" , key=\"ed25519:auto\" , sig=\"abc==\""};
+        auto const spaced = std::string_view{"X-Matrix origin=\"matrix.org\" , key=\"ed25519:auto\" , sig=\"abc==\""};
 
         WHEN("the header is parsed")
         {

@@ -13,10 +13,9 @@
 #include <string_view>
 #include <vector>
 
-#include <sys/socket.h>
-
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <sys/socket.h>
 
 namespace merovingian::federation
 {
@@ -125,47 +124,58 @@ auto federation_discovery_policy(RemoteServerRecord const& remote) -> Federation
 {
     if (!server_name_is_valid(remote.server_name))
     {
-        log_diagnostic("discovery.rejected",
-                       {{"server_name", remote.server_name, false}, {"reason", "invalid remote server name", false}});
+        log_diagnostic("discovery.rejected", {
+                                                 {"server_name", remote.server_name,           false},
+                                                 {"reason",      "invalid remote server name", false}
+        });
         return {false, "invalid remote server name"};
     }
     if (remote.resolved_host.empty())
     {
         log_diagnostic("discovery.rejected",
-                       {{"server_name", remote.server_name, false}, {"reason", "remote host is unresolved", false}});
+                       {
+                           {"server_name", remote.server_name,          false},
+                           {"reason",      "remote host is unresolved", false}
+        });
         return {false, "remote host is unresolved"};
     }
     if (!remote.well_known_host.empty() && remote.well_known_host != remote.resolved_host)
     {
-        log_diagnostic("discovery.rejected",
-                       {{"server_name", remote.server_name, false},
-                        {"well_known_host", remote.well_known_host, false},
-                        {"resolved_host", remote.resolved_host, false},
-                        {"reason", "well-known host and resolved host mismatch", false}});
+        log_diagnostic("discovery.rejected", {
+                                                 {"server_name",     remote.server_name,                           false},
+                                                 {"well_known_host", remote.well_known_host,                       false},
+                                                 {"resolved_host",   remote.resolved_host,                         false},
+                                                 {"reason",          "well-known host and resolved host mismatch", false}
+        });
         return {false, "well-known host and resolved host mismatch"};
     }
     if (remote.resolved_addresses.empty())
     {
-        log_diagnostic("discovery.rejected",
-                       {{"server_name", remote.server_name, false},
-                        {"reason", "remote addresses are unresolved", false}});
+        log_diagnostic("discovery.rejected", {
+                                                 {"server_name", remote.server_name,                false},
+                                                 {"reason",      "remote addresses are unresolved", false}
+        });
         return {false, "remote addresses are unresolved"};
     }
     for (auto const& address : remote.resolved_addresses)
     {
         if (ip_address_is_private_or_loopback(address))
         {
-            log_diagnostic("discovery.rejected",
-                           {{"server_name", remote.server_name, false},
-                            {"address", address, false},
-                            {"reason", "remote address is private or loopback", false}});
+            log_diagnostic("discovery.rejected", {
+                                                     {"server_name", remote.server_name,                      false},
+                                                     {"address",     address,                                 false},
+                                                     {"reason",      "remote address is private or loopback", false}
+            });
             return {false, "remote address is private or loopback"};
         }
     }
     if (!remote.tls_required)
     {
         log_diagnostic("discovery.rejected",
-                       {{"server_name", remote.server_name, false}, {"reason", "federation requires TLS", false}});
+                       {
+                           {"server_name", remote.server_name,        false},
+                           {"reason",      "federation requires TLS", false}
+        });
         return {false, "federation requires TLS"};
     }
 
@@ -177,20 +187,28 @@ auto verify_federation_request_signature(FederationRequestSignature const& signa
     if (!server_name_is_valid(signature.origin))
     {
         log_diagnostic("request_signature.rejected",
-                       {{"origin", signature.origin, false}, {"reason", "invalid request origin", false}});
+                       {
+                           {"origin", signature.origin,         false},
+                           {"reason", "invalid request origin", false}
+        });
         return {false, "invalid request origin"};
     }
     if (signature.key_id.empty() || signature.signature.empty())
     {
         log_diagnostic("request_signature.rejected",
-                       {{"origin", signature.origin, false}, {"reason", "missing request signature", false}});
+                       {
+                           {"origin", signature.origin,            false},
+                           {"reason", "missing request signature", false}
+        });
         return {false, "missing request signature"};
     }
     if (!signature.canonical_json_verified)
     {
         log_diagnostic("request_signature.rejected",
-                       {{"origin", signature.origin, false},
-                        {"reason", "canonical JSON signature verification required", false}});
+                       {
+                           {"origin", signature.origin,                                 false},
+                           {"reason", "canonical JSON signature verification required", false}
+        });
         return {false, "canonical JSON signature verification required"};
     }
 
@@ -202,16 +220,19 @@ auto verify_federation_event_signatures(std::vector<events::EventSignature> cons
 {
     if (!server_name_is_valid(expected_server))
     {
-        log_diagnostic("event_signatures.rejected",
-                       {{"expected_server", std::string{expected_server}, false},
-                        {"reason", "invalid expected event signer", false}});
+        log_diagnostic("event_signatures.rejected", {
+                                                        {"expected_server", std::string{expected_server},    false},
+                                                        {"reason",          "invalid expected event signer", false}
+        });
         return {false, "invalid expected event signer"};
     }
     if (!contains_signature_for(signatures, expected_server))
     {
         log_diagnostic("event_signatures.rejected",
-                       {{"expected_server", std::string{expected_server}, false},
-                        {"reason", "missing event signature for expected server", false}});
+                       {
+                           {"expected_server", std::string{expected_server},                  false},
+                           {"reason",          "missing event signature for expected server", false}
+        });
         return {false, "missing event signature for expected server"};
     }
 
@@ -227,26 +248,33 @@ auto remote_trust_policy(RemoteTrustState state) -> RemoteTrustDecision
 {
     if (state.quarantined)
     {
-        log_diagnostic("trust.rejected", {{"reason", "remote server is quarantined", false}});
+        log_diagnostic("trust.rejected", {
+                                             {"reason", "remote server is quarantined", false}
+        });
         return {false, false, "remote server is quarantined"};
     }
     if (state.circuit_open)
     {
-        log_diagnostic("trust.rejected", {{"reason", "remote circuit breaker is open", false}});
+        log_diagnostic("trust.rejected", {
+                                             {"reason", "remote circuit breaker is open", false}
+        });
         return {false, true, "remote circuit breaker is open"};
     }
     if (state.reputation_score < 25U)
     {
-        log_diagnostic("trust.rejected",
-                       {{"reputation_score", std::to_string(state.reputation_score), false},
-                        {"reason", "remote reputation is too low", false}});
+        log_diagnostic("trust.rejected", {
+                                             {"reputation_score", std::to_string(state.reputation_score), false},
+                                             {"reason",           "remote reputation is too low",         false}
+        });
         return {false, true, "remote reputation is too low"};
     }
     if (state.consecutive_failures >= 3U)
     {
         log_diagnostic("trust.rejected",
-                       {{"consecutive_failures", std::to_string(state.consecutive_failures), false},
-                        {"reason", "remote backoff required", false}});
+                       {
+                           {"consecutive_failures", std::to_string(state.consecutive_failures), false},
+                           {"reason",               "remote backoff required",                  false}
+        });
         return {false, true, "remote backoff required"};
     }
 

@@ -40,19 +40,28 @@ SCENARIO("Sliding sync parser rejects invalid JSON bodies", "[sync][sliding-sync
         WHEN("an array is parsed")
         {
             auto const result = parse_sliding_sync_request("[1,2,3]");
-            THEN("the result is nullopt") { REQUIRE_FALSE(result.has_value()); }
+            THEN("the result is nullopt")
+            {
+                REQUIRE_FALSE(result.has_value());
+            }
         }
 
         WHEN("a plain string is parsed")
         {
             auto const result = parse_sliding_sync_request("\"hello\"");
-            THEN("the result is nullopt") { REQUIRE_FALSE(result.has_value()); }
+            THEN("the result is nullopt")
+            {
+                REQUIRE_FALSE(result.has_value());
+            }
         }
 
         WHEN("truncated JSON is parsed")
         {
             auto const result = parse_sliding_sync_request("{\"lists\":");
-            THEN("the result is nullopt") { REQUIRE_FALSE(result.has_value()); }
+            THEN("the result is nullopt")
+            {
+                REQUIRE_FALSE(result.has_value());
+            }
         }
     }
 }
@@ -100,7 +109,7 @@ SCENARIO("Sliding sync parser extracts named lists with ranges", "[sync][sliding
                 REQUIRE(it != result->lists.end());
                 REQUIRE(it->second.ranges.size() == 1U);
                 REQUIRE(it->second.ranges[0].start == 0U);
-                REQUIRE(it->second.ranges[0].end   == 19U);
+                REQUIRE(it->second.ranges[0].end == 19U);
                 REQUIRE(it->second.timeline_limit == 10U);
             }
         }
@@ -149,9 +158,9 @@ SCENARIO("Sliding sync parser extracts required_state wildcard pairs", "[sync][s
                 REQUIRE(it != result->lists.end());
                 auto const& rs = it->second.required_state;
                 REQUIRE(rs.size() == 2U);
-                REQUIRE(rs[0].first  == "*");
+                REQUIRE(rs[0].first == "*");
                 REQUIRE(rs[0].second == "*");
-                REQUIRE(rs[1].first  == "m.room.name");
+                REQUIRE(rs[1].first == "m.room.name");
                 REQUIRE(rs[1].second == "");
             }
         }
@@ -212,8 +221,12 @@ SCENARIO("sliding_sync_ranges_valid accepts well-ordered non-overlapping ranges"
         {
             THEN("it is valid")
             {
-                REQUIRE(sliding_sync_ranges_valid({{0U, 19U}}));
-                REQUIRE(sliding_sync_ranges_valid({{5U, 5U}}));
+                REQUIRE(sliding_sync_ranges_valid({
+                    {0U, 19U}
+                }));
+                REQUIRE(sliding_sync_ranges_valid({
+                    {5U, 5U}
+                }));
             }
         }
     }
@@ -224,7 +237,10 @@ SCENARIO("sliding_sync_ranges_valid accepts well-ordered non-overlapping ranges"
         {
             THEN("they are valid")
             {
-                REQUIRE(sliding_sync_ranges_valid({{0U, 19U}, {20U, 39U}}));
+                REQUIRE(sliding_sync_ranges_valid({
+                    {0U,  19U},
+                    {20U, 39U}
+                }));
             }
         }
     }
@@ -249,7 +265,9 @@ SCENARIO("sliding_sync_ranges_valid rejects invalid range configurations", "[syn
         {
             THEN("it is rejected")
             {
-                REQUIRE_FALSE(sliding_sync_ranges_valid({{10U, 5U}}));
+                REQUIRE_FALSE(sliding_sync_ranges_valid({
+                    {10U, 5U}
+                }));
             }
         }
     }
@@ -260,7 +278,10 @@ SCENARIO("sliding_sync_ranges_valid rejects invalid range configurations", "[syn
         {
             THEN("they are rejected as overlapping")
             {
-                REQUIRE_FALSE(sliding_sync_ranges_valid({{0U, 10U}, {10U, 20U}}));
+                REQUIRE_FALSE(sliding_sync_ranges_valid({
+                    {0U,  10U},
+                    {10U, 20U}
+                }));
             }
         }
     }

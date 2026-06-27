@@ -209,7 +209,8 @@ SCENARIO("Membership policy primitives cover joins, invites, removals, and restr
 // A wrong or incomplete auth_events set causes remote auth failure.
 
 // --- room versions 1–11 (create event is explicit) ---
-SCENARIO("Auth event selection includes m.room.create for room versions 1–11", "[events][auth][auth-events][conformance]")
+SCENARIO("Auth event selection includes m.room.create for room versions 1–11",
+         "[events][auth][auth-events][conformance]")
 {
     GIVEN("a v10 m.room.member invite request")
     {
@@ -224,7 +225,7 @@ SCENARIO("Auth event selection includes m.room.create for room versions 1–11",
 
         WHEN("auth events are selected")
         {
-            auto const normal_selection    = merovingian::events::select_auth_events(normal_invite);
+            auto const normal_selection = merovingian::events::select_auth_events(normal_invite);
             auto const third_party_selection = merovingian::events::select_auth_events(third_party_invite);
 
             THEN("normal invite requires {create, power_levels, join_rules, member}")
@@ -251,7 +252,8 @@ SCENARIO("Auth event selection includes m.room.create for room versions 1–11",
 }
 
 // --- room version 12 (create event is implicit — derived from the room ID) ---
-SCENARIO("Auth event selection omits m.room.create for room version 12", "[events][auth][auth-events][room-version][conformance]")
+SCENARIO("Auth event selection omits m.room.create for room version 12",
+         "[events][auth][auth-events][room-version][conformance]")
 {
     GIVEN("a v12 m.room.member invite request")
     {
@@ -266,7 +268,7 @@ SCENARIO("Auth event selection omits m.room.create for room version 12", "[event
 
         WHEN("auth events are selected")
         {
-            auto const normal_selection      = merovingian::events::select_auth_events(normal_invite);
+            auto const normal_selection = merovingian::events::select_auth_events(normal_invite);
             auto const third_party_selection = merovingian::events::select_auth_events(third_party_invite);
 
             THEN("normal invite requires {power_levels, join_rules, member} — no create")

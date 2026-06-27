@@ -37,12 +37,9 @@ namespace
     auto security = merovingian::config::SecurityConfig{};
     merovingian::tests::enable_token_registration(security);
     return merovingian::config::Config{
-        merovingian::config::ServerConfig{},
-        merovingian::config::ListenersConfig{},
-        merovingian::config::DatabaseConfig{},
-        security,
-        merovingian::config::ClientRateLimitsConfig{},
-        merovingian::config::LogModulesConfig{},
+        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
+        merovingian::config::DatabaseConfig{},         security,
+        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
     };
 }
 
@@ -50,8 +47,7 @@ namespace
 
 // --- bootstrap_admin_user --------------------------------------------------------
 
-SCENARIO("bootstrap_admin_user creates a new user with admin privilege",
-         "[homeserver][auth][admin][bootstrap]")
+SCENARIO("bootstrap_admin_user creates a new user with admin privilege", "[homeserver][auth][admin][bootstrap]")
 {
     GIVEN("a started runtime with no users")
     {
@@ -97,8 +93,8 @@ SCENARIO("bootstrap_admin_user grants admin privilege detectable by authenticate
 
         auto const bootstrap = merovingian::homeserver::bootstrap_admin_user(runtime, "admin", "AdminPass99!");
         REQUIRE(bootstrap.ok);
-        auto const login = merovingian::homeserver::login_local_user(
-            runtime, bootstrap.value, "AdminPass99!", "ADMIN_DEV");
+        auto const login =
+            merovingian::homeserver::login_local_user(runtime, bootstrap.value, "AdminPass99!", "ADMIN_DEV");
         REQUIRE(login.ok);
 
         WHEN("the admin token is presented to authenticated_admin_user")
@@ -124,11 +120,10 @@ SCENARIO("bootstrap_admin_user does not grant admin privilege to regular registe
         REQUIRE(started.started);
         auto& runtime = started.runtime;
 
-        auto const reg = merovingian::homeserver::register_local_user(
-            runtime, "alice", "CorrectHorse7!", merovingian::tests::registration_token);
+        auto const reg = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                      merovingian::tests::registration_token);
         REQUIRE(reg.ok);
-        auto const login = merovingian::homeserver::login_local_user(
-            runtime, reg.value, "CorrectHorse7!", "DEVICE1");
+        auto const login = merovingian::homeserver::login_local_user(runtime, reg.value, "CorrectHorse7!", "DEVICE1");
         REQUIRE(login.ok);
 
         WHEN("the regular user's token is presented to authenticated_admin_user")
@@ -145,8 +140,7 @@ SCENARIO("bootstrap_admin_user does not grant admin privilege to regular registe
 
 // --- account_state_for_user ------------------------------------------------------
 
-SCENARIO("account_state_for_user returns nullopt for user_ids not in the store",
-         "[homeserver][auth][account_state]")
+SCENARIO("account_state_for_user returns nullopt for user_ids not in the store", "[homeserver][auth][account_state]")
 {
     GIVEN("a started runtime with no users")
     {
@@ -157,8 +151,7 @@ SCENARIO("account_state_for_user returns nullopt for user_ids not in the store",
 
         WHEN("account state is queried for an unknown user_id")
         {
-            auto const state = merovingian::homeserver::account_state_for_user(
-                runtime, "@ghost:example.org");
+            auto const state = merovingian::homeserver::account_state_for_user(runtime, "@ghost:example.org");
 
             THEN("nullopt is returned — unknown users have no state")
             {
@@ -178,8 +171,7 @@ SCENARIO("account_state_for_user returns nullopt for user_ids not in the store",
     }
 }
 
-SCENARIO("account_state_for_user returns active for a freshly registered user",
-         "[homeserver][auth][account_state]")
+SCENARIO("account_state_for_user returns active for a freshly registered user", "[homeserver][auth][account_state]")
 {
     GIVEN("a started runtime with a registered user")
     {
@@ -188,8 +180,8 @@ SCENARIO("account_state_for_user returns active for a freshly registered user",
         REQUIRE(started.started);
         auto& runtime = started.runtime;
 
-        auto const reg = merovingian::homeserver::register_local_user(
-            runtime, "alice", "CorrectHorse7!", merovingian::tests::registration_token);
+        auto const reg = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                      merovingian::tests::registration_token);
         REQUIRE(reg.ok);
 
         WHEN("account state is queried for the registered user")
@@ -207,8 +199,7 @@ SCENARIO("account_state_for_user returns active for a freshly registered user",
 
 // --- logout_all_local_user -------------------------------------------------------
 
-SCENARIO("logout_all_local_user rejects unknown and empty access tokens",
-         "[homeserver][auth][logout_all][error]")
+SCENARIO("logout_all_local_user rejects unknown and empty access tokens", "[homeserver][auth][logout_all][error]")
 {
     GIVEN("a started runtime")
     {
@@ -219,8 +210,7 @@ SCENARIO("logout_all_local_user rejects unknown and empty access tokens",
 
         WHEN("logout_all is called with a token that was never issued")
         {
-            auto const result = merovingian::homeserver::logout_all_local_user(
-                runtime, "syt_unknown_token_xyz");
+            auto const result = merovingian::homeserver::logout_all_local_user(runtime, "syt_unknown_token_xyz");
 
             THEN("the call fails closed")
             {
@@ -250,14 +240,14 @@ SCENARIO("logout_all_local_user revokes every session belonging to the authentic
         REQUIRE(started.started);
         auto& runtime = started.runtime;
 
-        auto const reg = merovingian::homeserver::register_local_user(
-            runtime, "alice", "CorrectHorse7!", merovingian::tests::registration_token);
+        auto const reg = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                      merovingian::tests::registration_token);
         REQUIRE(reg.ok);
-        auto const login_a = merovingian::homeserver::login_local_user(
-            runtime, reg.value, "CorrectHorse7!", "DEVICE_A");
+        auto const login_a =
+            merovingian::homeserver::login_local_user(runtime, reg.value, "CorrectHorse7!", "DEVICE_A");
         REQUIRE(login_a.ok);
-        auto const login_b = merovingian::homeserver::login_local_user(
-            runtime, reg.value, "CorrectHorse7!", "DEVICE_B");
+        auto const login_b =
+            merovingian::homeserver::login_local_user(runtime, reg.value, "CorrectHorse7!", "DEVICE_B");
         REQUIRE(login_b.ok);
 
         WHEN("logout_all is called using the first session's token")
@@ -278,8 +268,7 @@ SCENARIO("logout_all_local_user revokes every session belonging to the authentic
 
 // --- change_local_user_password --------------------------------------------------
 
-SCENARIO("change_local_user_password rejects an unknown access token",
-         "[homeserver][auth][password_change][error]")
+SCENARIO("change_local_user_password rejects an unknown access token", "[homeserver][auth][password_change][error]")
 {
     GIVEN("a started runtime")
     {
@@ -290,8 +279,8 @@ SCENARIO("change_local_user_password rejects an unknown access token",
 
         WHEN("password change is attempted with a token that was never issued")
         {
-            auto const result = merovingian::homeserver::change_local_user_password(
-                runtime, "syt_unknown_token", "NewPassword99!");
+            auto const result =
+                merovingian::homeserver::change_local_user_password(runtime, "syt_unknown_token", "NewPassword99!");
 
             THEN("the call fails closed — no unauthenticated password changes")
             {
@@ -311,30 +300,29 @@ SCENARIO("change_local_user_password updates the credential and rejects the old 
         REQUIRE(started.started);
         auto& runtime = started.runtime;
 
-        auto const reg = merovingian::homeserver::register_local_user(
-            runtime, "alice", "OldPassword7!", merovingian::tests::registration_token);
+        auto const reg = merovingian::homeserver::register_local_user(runtime, "alice", "OldPassword7!",
+                                                                      merovingian::tests::registration_token);
         REQUIRE(reg.ok);
-        auto const login = merovingian::homeserver::login_local_user(
-            runtime, reg.value, "OldPassword7!", "DEVICE1");
+        auto const login = merovingian::homeserver::login_local_user(runtime, reg.value, "OldPassword7!", "DEVICE1");
         REQUIRE(login.ok);
 
         WHEN("the password is changed using the active session token")
         {
-            auto const change = merovingian::homeserver::change_local_user_password(
-                runtime, login.value, "NewPassword99!");
+            auto const change =
+                merovingian::homeserver::change_local_user_password(runtime, login.value, "NewPassword99!");
 
             THEN("the change succeeds, the old password is rejected, and the new password works")
             {
                 REQUIRE(change.ok);
 
                 // Old password must be rejected for new logins.
-                auto const old_login = merovingian::homeserver::login_local_user(
-                    runtime, reg.value, "OldPassword7!", "DEVICE2");
+                auto const old_login =
+                    merovingian::homeserver::login_local_user(runtime, reg.value, "OldPassword7!", "DEVICE2");
                 REQUIRE_FALSE(old_login.ok);
 
                 // New password must work for new logins.
-                auto const new_login = merovingian::homeserver::login_local_user(
-                    runtime, reg.value, "NewPassword99!", "DEVICE2");
+                auto const new_login =
+                    merovingian::homeserver::login_local_user(runtime, reg.value, "NewPassword99!", "DEVICE2");
                 REQUIRE(new_login.ok);
                 REQUIRE_FALSE(new_login.value.empty());
             }
@@ -352,28 +340,25 @@ SCENARIO("change_local_user_password with logout_devices invalidates other devic
         REQUIRE(started.started);
         auto& runtime = started.runtime;
 
-        auto const reg = merovingian::homeserver::register_local_user(
-            runtime, "alice", "OldPassword7!", merovingian::tests::registration_token);
+        auto const reg = merovingian::homeserver::register_local_user(runtime, "alice", "OldPassword7!",
+                                                                      merovingian::tests::registration_token);
         REQUIRE(reg.ok);
-        auto const login1 = merovingian::homeserver::login_local_user(
-            runtime, reg.value, "OldPassword7!", "DEVICE1");
+        auto const login1 = merovingian::homeserver::login_local_user(runtime, reg.value, "OldPassword7!", "DEVICE1");
         REQUIRE(login1.ok);
-        auto const login2 = merovingian::homeserver::login_local_user(
-            runtime, reg.value, "OldPassword7!", "DEVICE2");
+        auto const login2 = merovingian::homeserver::login_local_user(runtime, reg.value, "OldPassword7!", "DEVICE2");
         REQUIRE(login2.ok);
 
         WHEN("password is changed using DEVICE1's token (logout_devices=true)")
         {
-            auto const change = merovingian::homeserver::change_local_user_password(
-                runtime, login1.value, "NewPassword99!");
+            auto const change =
+                merovingian::homeserver::change_local_user_password(runtime, login1.value, "NewPassword99!");
             REQUIRE(change.ok);
 
             THEN("DEVICE2's session is invalidated")
             {
                 // The second device's token must be revoked — logout_devices=true
                 // targets all other sessions regardless of which device initiated the change.
-                auto const other_session = merovingian::homeserver::authenticated_user(
-                    runtime, login2.value);
+                auto const other_session = merovingian::homeserver::authenticated_user(runtime, login2.value);
                 REQUIRE_FALSE(other_session.has_value());
             }
         }
@@ -382,8 +367,7 @@ SCENARIO("change_local_user_password with logout_devices invalidates other devic
 
 // --- delete_local_device ---------------------------------------------------------
 
-SCENARIO("delete_local_device rejects unknown user and device identifiers",
-         "[homeserver][auth][delete_device][error]")
+SCENARIO("delete_local_device rejects unknown user and device identifiers", "[homeserver][auth][delete_device][error]")
 {
     GIVEN("a started runtime with a registered user")
     {
@@ -392,14 +376,13 @@ SCENARIO("delete_local_device rejects unknown user and device identifiers",
         REQUIRE(started.started);
         auto& runtime = started.runtime;
 
-        auto const reg = merovingian::homeserver::register_local_user(
-            runtime, "alice", "CorrectHorse7!", merovingian::tests::registration_token);
+        auto const reg = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                      merovingian::tests::registration_token);
         REQUIRE(reg.ok);
 
         WHEN("delete_local_device is called for a user that does not exist")
         {
-            auto const result = merovingian::homeserver::delete_local_device(
-                runtime, "@ghost:example.org", "DEVICE1");
+            auto const result = merovingian::homeserver::delete_local_device(runtime, "@ghost:example.org", "DEVICE1");
 
             THEN("the call fails closed")
             {
@@ -409,8 +392,7 @@ SCENARIO("delete_local_device rejects unknown user and device identifiers",
 
         WHEN("delete_local_device is called for a device_id that was never created")
         {
-            auto const result = merovingian::homeserver::delete_local_device(
-                runtime, reg.value, "GHOST_DEVICE");
+            auto const result = merovingian::homeserver::delete_local_device(runtime, reg.value, "GHOST_DEVICE");
 
             THEN("the call fails closed — an unknown device cannot be deleted")
             {
@@ -420,8 +402,7 @@ SCENARIO("delete_local_device rejects unknown user and device identifiers",
     }
 }
 
-SCENARIO("delete_local_device removes the session for the specified device",
-         "[homeserver][auth][delete_device]")
+SCENARIO("delete_local_device removes the session for the specified device", "[homeserver][auth][delete_device]")
 {
     GIVEN("a registered user with an active session on a named device")
     {
@@ -430,11 +411,10 @@ SCENARIO("delete_local_device removes the session for the specified device",
         REQUIRE(started.started);
         auto& runtime = started.runtime;
 
-        auto const reg = merovingian::homeserver::register_local_user(
-            runtime, "alice", "CorrectHorse7!", merovingian::tests::registration_token);
+        auto const reg = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                      merovingian::tests::registration_token);
         REQUIRE(reg.ok);
-        auto const login = merovingian::homeserver::login_local_user(
-            runtime, reg.value, "CorrectHorse7!", "DEVICE1");
+        auto const login = merovingian::homeserver::login_local_user(runtime, reg.value, "CorrectHorse7!", "DEVICE1");
         REQUIRE(login.ok);
 
         WHEN("that device is deleted by user_id and device_id")
@@ -453,8 +433,7 @@ SCENARIO("delete_local_device removes the session for the specified device",
 
 // --- issue_refresh_token_for_session / refresh_local_session ---------------------
 
-SCENARIO("issue_refresh_token_for_session fails for an unknown user",
-         "[homeserver][auth][refresh][error]")
+SCENARIO("issue_refresh_token_for_session fails for an unknown user", "[homeserver][auth][refresh][error]")
 {
     GIVEN("a started runtime with no users")
     {
@@ -465,8 +444,8 @@ SCENARIO("issue_refresh_token_for_session fails for an unknown user",
 
         WHEN("a refresh token is requested for a user that does not exist")
         {
-            auto const result = merovingian::homeserver::issue_refresh_token_for_session(
-                runtime, "@ghost:example.org", "DEVICE1");
+            auto const result =
+                merovingian::homeserver::issue_refresh_token_for_session(runtime, "@ghost:example.org", "DEVICE1");
 
             THEN("the call fails closed")
             {
@@ -476,8 +455,7 @@ SCENARIO("issue_refresh_token_for_session fails for an unknown user",
     }
 }
 
-SCENARIO("refresh_local_session rejects an unknown or empty refresh token",
-         "[homeserver][auth][refresh][error]")
+SCENARIO("refresh_local_session rejects an unknown or empty refresh token", "[homeserver][auth][refresh][error]")
 {
     GIVEN("a started runtime")
     {
@@ -488,8 +466,8 @@ SCENARIO("refresh_local_session rejects an unknown or empty refresh token",
 
         WHEN("refresh is attempted with a token that was never issued")
         {
-            auto const result = merovingian::homeserver::refresh_local_session(
-                runtime, "totally_unknown_refresh_token");
+            auto const result =
+                merovingian::homeserver::refresh_local_session(runtime, "totally_unknown_refresh_token");
 
             THEN("refresh fails closed")
             {
@@ -509,8 +487,7 @@ SCENARIO("refresh_local_session rejects an unknown or empty refresh token",
     }
 }
 
-SCENARIO("refresh_local_session issues a new access token from a valid refresh token",
-         "[homeserver][auth][refresh]")
+SCENARIO("refresh_local_session issues a new access token from a valid refresh token", "[homeserver][auth][refresh]")
 {
     GIVEN("a registered user with a session that has a refresh token")
     {
@@ -519,13 +496,11 @@ SCENARIO("refresh_local_session issues a new access token from a valid refresh t
         REQUIRE(started.started);
         auto& runtime = started.runtime;
 
-        auto const reg = merovingian::homeserver::register_local_user(
-            runtime, "alice", "CorrectHorse7!", merovingian::tests::registration_token);
+        auto const reg = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                      merovingian::tests::registration_token);
         REQUIRE(reg.ok);
-        std::ignore = merovingian::homeserver::login_local_user(
-            runtime, reg.value, "CorrectHorse7!", "DEVICE1");
-        auto const issued = merovingian::homeserver::issue_refresh_token_for_session(
-            runtime, reg.value, "DEVICE1");
+        std::ignore = merovingian::homeserver::login_local_user(runtime, reg.value, "CorrectHorse7!", "DEVICE1");
+        auto const issued = merovingian::homeserver::issue_refresh_token_for_session(runtime, reg.value, "DEVICE1");
         REQUIRE(issued.ok);
         REQUIRE_FALSE(issued.value.empty());
 
@@ -558,8 +533,7 @@ SCENARIO("refresh_local_session issues a new access token from a valid refresh t
 
 // --- access_token_is_soft_logout -------------------------------------------------
 
-SCENARIO("access_token_is_soft_logout returns false for empty and unknown tokens",
-         "[homeserver][auth][soft_logout]")
+SCENARIO("access_token_is_soft_logout returns false for empty and unknown tokens", "[homeserver][auth][soft_logout]")
 {
     GIVEN("a started runtime")
     {
@@ -580,8 +554,8 @@ SCENARIO("access_token_is_soft_logout returns false for empty and unknown tokens
 
         WHEN("soft_logout is queried for a token that was never issued")
         {
-            auto const soft = merovingian::homeserver::access_token_is_soft_logout(
-                runtime, "syt_never_issued_token_xyz");
+            auto const soft =
+                merovingian::homeserver::access_token_is_soft_logout(runtime, "syt_never_issued_token_xyz");
 
             THEN("returns false — unknown tokens are not soft-logout candidates")
             {

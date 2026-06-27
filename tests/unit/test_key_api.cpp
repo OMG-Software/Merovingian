@@ -323,8 +323,7 @@ SCENARIO("Empty key payloads are considered loggable", "[auth][key-api][logging]
 // Every KeyApiEndpoint enum value MUST map to a non-empty, non-'unknown' name.
 // 'unknown' is the fallback branch that indicates an unhandled enum case — if
 // any case appears here a new endpoint was added without updating the switch.
-SCENARIO("key_api_endpoint_name returns a unique non-empty label for every endpoint",
-         "[auth][key-api][endpoint-name]")
+SCENARIO("key_api_endpoint_name returns a unique non-empty label for every endpoint", "[auth][key-api][endpoint-name]")
 {
     GIVEN("all defined KeyApiEndpoint enum values")
     {
@@ -383,8 +382,7 @@ SCENARIO("match_key_api_route returns no match for unregistered paths", "[auth][
     {
         WHEN("a sync path is matched")
         {
-            auto const result =
-                merovingian::auth::match_key_api_route("GET", "/_matrix/client/v3/sync");
+            auto const result = merovingian::auth::match_key_api_route("GET", "/_matrix/client/v3/sync");
 
             THEN("no match is returned")
             {
@@ -415,15 +413,13 @@ SCENARIO("match_key_api_route returns no match for unregistered paths", "[auth][
     }
 }
 
-SCENARIO("match_key_api_route matches GET and DELETE key-backup routes",
-         "[auth][key-api][routes]")
+SCENARIO("match_key_api_route matches GET and DELETE key-backup routes", "[auth][key-api][routes]")
 {
     GIVEN("GET and DELETE key-backup targets")
     {
         WHEN("GET version route is matched")
         {
-            auto const result =
-                merovingian::auth::match_key_api_route("GET", "/_matrix/client/v3/room_keys/version");
+            auto const result = merovingian::auth::match_key_api_route("GET", "/_matrix/client/v3/room_keys/version");
 
             THEN("get_key_backup_version is matched")
             {
@@ -434,8 +430,7 @@ SCENARIO("match_key_api_route matches GET and DELETE key-backup routes",
 
         WHEN("GET version-by-id route is matched")
         {
-            auto const result =
-                merovingian::auth::match_key_api_route("GET", "/_matrix/client/v3/room_keys/version/5");
+            auto const result = merovingian::auth::match_key_api_route("GET", "/_matrix/client/v3/room_keys/version/5");
 
             THEN("get_key_backup_version_by_id is matched")
             {
@@ -458,8 +453,7 @@ SCENARIO("match_key_api_route matches GET and DELETE key-backup routes",
 
         WHEN("GET room-key-batch route is matched")
         {
-            auto const result =
-                merovingian::auth::match_key_api_route("GET", "/_matrix/client/v3/room_keys/keys");
+            auto const result = merovingian::auth::match_key_api_route("GET", "/_matrix/client/v3/room_keys/keys");
 
             THEN("get_room_key_backup_batch is matched")
             {
@@ -470,8 +464,7 @@ SCENARIO("match_key_api_route matches GET and DELETE key-backup routes",
 
         WHEN("DELETE room-key-batch route is matched")
         {
-            auto const result =
-                merovingian::auth::match_key_api_route("DELETE", "/_matrix/client/v3/room_keys/keys");
+            auto const result = merovingian::auth::match_key_api_route("DELETE", "/_matrix/client/v3/room_keys/keys");
 
             THEN("delete_room_key_backup_batch is matched")
             {
@@ -506,8 +499,8 @@ SCENARIO("match_key_api_route matches GET and DELETE key-backup routes",
 
         WHEN("DELETE room-key-by-room route is matched")
         {
-            auto const result = merovingian::auth::match_key_api_route(
-                "DELETE", "/_matrix/client/v3/room_keys/keys/!room:example.org");
+            auto const result =
+                merovingian::auth::match_key_api_route("DELETE", "/_matrix/client/v3/room_keys/keys/!room:example.org");
 
             THEN("delete_room_key_backup_room is matched")
             {
@@ -519,8 +512,7 @@ SCENARIO("match_key_api_route matches GET and DELETE key-backup routes",
 }
 
 // --- key_api_database_statements for remaining endpoints ---------------------
-SCENARIO("Key API database statements exist for update, delete, and GET backup endpoints",
-         "[auth][key-api][database]")
+SCENARIO("Key API database statements exist for update, delete, and GET backup endpoints", "[auth][key-api][database]")
 {
     GIVEN("update, delete, and GET backup routes")
     {
@@ -528,25 +520,23 @@ SCENARIO("Key API database statements exist for update, delete, and GET backup e
             merovingian::auth::match_key_api_route("PUT", "/_matrix/client/v3/room_keys/version/2");
         auto const delete_version =
             merovingian::auth::match_key_api_route("DELETE", "/_matrix/client/v3/room_keys/version/2");
-        auto const get_version =
-            merovingian::auth::match_key_api_route("GET", "/_matrix/client/v3/room_keys/version");
-        auto const claim_keys =
-            merovingian::auth::match_key_api_route("POST", "/_matrix/client/v3/keys/claim");
+        auto const get_version = merovingian::auth::match_key_api_route("GET", "/_matrix/client/v3/room_keys/version");
+        auto const claim_keys = merovingian::auth::match_key_api_route("POST", "/_matrix/client/v3/keys/claim");
         auto const upload_sigs =
             merovingian::auth::match_key_api_route("POST", "/_matrix/client/v3/keys/signatures/upload");
 
         WHEN("the boundary plans are built")
         {
-            auto const update_plan = merovingian::auth::make_key_api_boundary_plan(
-                update_version.route, "@alice:example.org", "DEVICE1");
-            auto const delete_plan = merovingian::auth::make_key_api_boundary_plan(
-                delete_version.route, "@alice:example.org", "DEVICE1");
-            auto const get_plan = merovingian::auth::make_key_api_boundary_plan(
-                get_version.route, "@alice:example.org", "DEVICE1");
-            auto const claim_plan = merovingian::auth::make_key_api_boundary_plan(
-                claim_keys.route, "@alice:example.org", "DEVICE1");
-            auto const sigs_plan = merovingian::auth::make_key_api_boundary_plan(
-                upload_sigs.route, "@alice:example.org", "DEVICE1");
+            auto const update_plan =
+                merovingian::auth::make_key_api_boundary_plan(update_version.route, "@alice:example.org", "DEVICE1");
+            auto const delete_plan =
+                merovingian::auth::make_key_api_boundary_plan(delete_version.route, "@alice:example.org", "DEVICE1");
+            auto const get_plan =
+                merovingian::auth::make_key_api_boundary_plan(get_version.route, "@alice:example.org", "DEVICE1");
+            auto const claim_plan =
+                merovingian::auth::make_key_api_boundary_plan(claim_keys.route, "@alice:example.org", "DEVICE1");
+            auto const sigs_plan =
+                merovingian::auth::make_key_api_boundary_plan(upload_sigs.route, "@alice:example.org", "DEVICE1");
 
             THEN("each plan contains at least one database statement")
             {

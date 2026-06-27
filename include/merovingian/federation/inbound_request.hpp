@@ -155,8 +155,7 @@ using UserDevicesProvider = std::function<std::string(std::string_view user_id)>
 using EventQueryProvider = std::function<std::string(std::string_view event_id)>;
 using StateQueryProvider = std::function<std::string(std::string_view room_id, std::string_view event_id)>;
 using StateIdsQueryProvider = std::function<std::string(std::string_view room_id, std::string_view event_id)>;
-using MissingEventsQueryProvider =
-    std::function<std::string(std::string_view room_id, std::string_view request_body)>;
+using MissingEventsQueryProvider = std::function<std::string(std::string_view room_id, std::string_view request_body)>;
 
 // Returns the canonical-JSON body for an inbound `GET /_matrix/federation/v1/hierarchy/{roomId}`
 // request. The `room_id` path component is already percent-decoded; `suggested_only` reflects the
@@ -256,8 +255,8 @@ struct FederationResponse final
 // body-less request. `secret_key` is the raw 64-byte libsodium secret key.
 // Returns the Base64-encoded signature, or an empty string on any failure.
 [[nodiscard]] auto make_federation_signature(std::string_view origin, std::string_view destination,
-                                             std::string_view method, std::string_view target,
-                                             std::string_view body, std::string_view secret_key) -> std::string;
+                                             std::string_view method, std::string_view target, std::string_view body,
+                                             std::string_view secret_key) -> std::string;
 // Verifies a federation request against the remote's published Ed25519 public
 // key. Rebuilds the Matrix signed-request object and checks the detached
 // signature; also rejects a request signed with a key past its validity.
@@ -276,8 +275,8 @@ auto upsert_remote(FederationRuntimeState& runtime, FederationRemoteRuntime remo
 // determine the room version for event-ID computation; pdu.room_version is
 // set to the resolved version. When the resolver is empty, falls back to "12".
 [[nodiscard]] auto parse_federation_pdu(std::string_view encoded) -> FederationPdu;
-[[nodiscard]] auto parse_federation_pdu(std::string_view encoded,
-                                        RoomVersionResolver const& version_resolver) -> FederationPdu;
+[[nodiscard]] auto parse_federation_pdu(std::string_view encoded, RoomVersionResolver const& version_resolver)
+    -> FederationPdu;
 [[nodiscard]] auto handle_inbound_federation_request(FederationRuntimeState& runtime,
                                                      SignedFederationRequest const& request) -> FederationResponse;
 [[nodiscard]] auto federation_runtime_summary(FederationRuntimeState const& runtime) -> std::string;

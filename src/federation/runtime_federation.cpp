@@ -89,8 +89,10 @@ auto federation_server_policy(RuntimeFederationConfig const& config, std::string
         return {true, {}};
     }();
     log_diagnostic(result.allowed ? "server_policy.allowed" : "server_policy.denied",
-                   {{"server_name", std::string{server_name}, false},
-                    {"reason",      result.reason,            false}});
+                   {
+                       {"server_name", std::string{server_name}, false},
+                       {"reason",      result.reason,            false}
+    });
     return result;
 }
 

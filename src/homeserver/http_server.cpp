@@ -190,7 +190,9 @@ namespace
         // Constructed from a shared_ptr built via shared_ptr{std::move(unique_ptr)}
         // (not make_shared) to avoid GCC 16's spurious -Warray-bounds on the
         // _Sp_counted_ptr_inplace co-allocation destructor path.
-        explicit TlsConnectionStream(std::shared_ptr<TlsConnection> connection) noexcept // SHARED_PTR: reviewed — split ownership: main-pool reads, sync-pool writes
+        explicit TlsConnectionStream(
+            std::shared_ptr<TlsConnection>
+                connection) noexcept // SHARED_PTR: reviewed — split ownership: main-pool reads, sync-pool writes
             : m_connection{std::move(connection)}
         {
         }
@@ -211,7 +213,8 @@ namespace
         }
 
     private:
-        std::shared_ptr<TlsConnection> m_connection; // SHARED_PTR: reviewed — shared by main-pool read and sync-pool write phases
+        std::shared_ptr<TlsConnection>
+            m_connection; // SHARED_PTR: reviewed — shared by main-pool read and sync-pool write phases
     };
 
     [[nodiscard]] auto header_size_cap(http::RequestLimits const& limits) noexcept -> std::size_t
@@ -621,23 +624,19 @@ namespace
             // Media upload routes permit up to max_upload_size; every other
             // client-server route uses the smaller general body cap.
             auto const effective_cap = [&]() -> std::size_t {
-                if (dispatch_mode == HttpDispatchMode::client_server &&
-                    parse.request.method == "POST")
+                if (dispatch_mode == HttpDispatchMode::client_server && parse.request.method == "POST")
                 {
                     auto const& t = parse.request.target;
                     auto const is_media =
-                        (t == "/_matrix/media/v3/upload" ||
-                         t.starts_with("/_matrix/media/v3/upload?") ||
-                         t == "/_matrix/client/v1/media/upload" ||
-                         t.starts_with("/_matrix/client/v1/media/upload?"));
+                        (t == "/_matrix/media/v3/upload" || t.starts_with("/_matrix/media/v3/upload?") ||
+                         t == "/_matrix/client/v1/media/upload" || t.starts_with("/_matrix/client/v1/media/upload?"));
                     if (is_media)
                     {
-                        auto const parsed = config::parse_size_limit(
-                            runtime.homeserver.config.security().media.max_upload_size);
+                        auto const parsed =
+                            config::parse_size_limit(runtime.homeserver.config.security().media.max_upload_size);
                         auto const raw = parsed.valid ? parsed.bytes : std::uint64_t{104857600U};
-                        return raw > std::numeric_limits<std::size_t>::max()
-                                   ? std::numeric_limits<std::size_t>::max()
-                                   : static_cast<std::size_t>(raw);
+                        return raw > std::numeric_limits<std::size_t>::max() ? std::numeric_limits<std::size_t>::max()
+                                                                             : static_cast<std::size_t>(raw);
                     }
                 }
                 return body_size_cap(limits);
@@ -645,21 +644,19 @@ namespace
             if (expected > effective_cap)
             {
                 ++stats.rejected_requests;
-                log_diagnostic(
-                    "request.rejected",
-                    {
-                        {"method",              parse.request.method,                                       false},
-                        {"target",             observability::sanitized_http_target(parse.request.target),  false},
-                        {"status",              "413",                                                      false},
-                        {"expected_body_bytes", std::to_string(expected),                                   false},
-                        {"limit_bytes",         std::to_string(effective_cap),                              false},
-                        {"reason",              "request body too large",                                   false}
+                log_diagnostic("request.rejected",
+                               {
+                                   {"method",              parse.request.method,                                       false},
+                                   {"target",              observability::sanitized_http_target(parse.request.target), false},
+                                   {"status",              "413",                                                      false},
+                                   {"expected_body_bytes", std::to_string(expected),                                   false},
+                                   {"limit_bytes",         std::to_string(effective_cap),                              false},
+                                   {"reason",              "request body too large",                                   false}
                 });
                 // Matrix spec §10.5: every response MUST carry CORS headers or
                 // browsers surface the 413 as a CORS error instead of the real one.
                 auto cors_hdrs = std::vector<std::pair<std::string, std::string>>{};
-                if (dispatch_mode == HttpDispatchMode::client_server &&
-                    !runtime.cors.allowed_origins.empty())
+                if (dispatch_mode == HttpDispatchMode::client_server && !runtime.cors.allowed_origins.empty())
                 {
                     auto const origin = find_header_value(parse.request, "origin");
                     if (!origin.empty())
@@ -668,18 +665,15 @@ namespace
                         {
                             if (allowed == "*" || allowed == origin)
                             {
-                                cors_hdrs.emplace_back(
-                                    "Access-Control-Allow-Origin",
-                                    allowed == "*" ? std::string{"*"} : std::string{origin});
+                                cors_hdrs.emplace_back("Access-Control-Allow-Origin",
+                                                       allowed == "*" ? std::string{"*"} : std::string{origin});
                                 break;
                             }
                         }
                     }
                 }
-                auto const rejection = format_response(
-                    413U,
-                    R"({"errcode":"M_TOO_LARGE","error":"request body too large"})",
-                    cors_hdrs);
+                auto const rejection =
+                    format_response(413U, R"({"errcode":"M_TOO_LARGE","error":"request body too large"})", cors_hdrs);
                 std::ignore = send_all(stream, rejection);
                 return false;
             }
@@ -736,8 +730,7 @@ namespace
                 // write through the OpenSSL layer rather than via raw ::send().
                 // For plain HTTP the function is null and ::send() is used directly.
                 auto submitted = sync_pool->submit([fd, write_fn = std::move(async_write_fn), &runtime, &stats,
-                                                    request_copy = local_request, wait, notifier,
-                                                    sync_pool]() mutable {
+                                                    request_copy = local_request, wait, notifier, sync_pool]() mutable {
                     // Re-wait loop: after each notifier fire, call the handler with
                     // can_wait=true.  If the handler returns needs_wait the wakeup was
                     // caused by an event irrelevant to this connection (e.g. another
@@ -746,7 +739,7 @@ namespace
                     // `wait` is captured const from the outer scope; use wait_params for
                     // the mutable cursor that tracks the advancing since-values.
                     auto dispatched_result = std::optional<DispatchResult>{};
-                    auto client_gone       = false;
+                    auto client_gone = false;
                     try
                     {
                         // Poll in 1-second slices: short enough to detect a dropped
@@ -754,8 +747,8 @@ namespace
                         // it generates excessive wakeups.  Shutdown (request_stop())
                         // is bounded to one slice (≤1 s) regardless of client timeout.
                         constexpr auto poll_interval = std::chrono::milliseconds{1000U};
-                        auto wait_params             = wait; // mutable cursor
-                        auto const deadline          = std::chrono::steady_clock::now() + wait_params.timeout;
+                        auto wait_params = wait; // mutable cursor
+                        auto const deadline = std::chrono::steady_clock::now() + wait_params.timeout;
                         while (sync_pool->running())
                         {
                             auto const remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -764,7 +757,8 @@ namespace
                             {
                                 break;
                             }
-                            if (notifier->wait_for_change(wait_params.since_stream_ordering, wait_params.since_sync_stream_id,
+                            if (notifier->wait_for_change(wait_params.since_stream_ordering,
+                                                          wait_params.since_sync_stream_id,
                                                           std::min(remaining, poll_interval)))
                             {
                                 auto interim = handle_client_server_request(runtime, request_copy, true);
@@ -786,7 +780,7 @@ namespace
                                 // rapidly (e.g. an SDK reset loop sends a new timeout=30000
                                 // every ~90 ms while abandoning the previous one).
                                 auto peek_buf = std::array<char, 1>{};
-                                auto const n  = ::recv(fd, peek_buf.data(), 1U, MSG_PEEK | MSG_DONTWAIT);
+                                auto const n = ::recv(fd, peek_buf.data(), 1U, MSG_PEEK | MSG_DONTWAIT);
                                 if (n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR))
                                 {
                                     client_gone = true;
@@ -807,8 +801,8 @@ namespace
                         return;
                     }
                     auto const final_result = dispatched_result.has_value()
-                        ? std::move(*dispatched_result)
-                        : handle_client_server_request(runtime, request_copy, false);
+                                                  ? std::move(*dispatched_result)
+                                                  : handle_client_server_request(runtime, request_copy, false);
                     ++stats.completed_requests;
                     log_diagnostic("request.completed",
                                    {
@@ -847,8 +841,8 @@ namespace
             // call the handler with can_wait=true so it can park again when the
             // wakeup was not relevant to this connection.
             {
-                auto wait       = result.wait;
-                auto deadline   = std::chrono::steady_clock::now() + wait.timeout;
+                auto wait = result.wait;
+                auto deadline = std::chrono::steady_clock::now() + wait.timeout;
                 auto dispatched = false;
                 try
                 {
@@ -865,7 +859,7 @@ namespace
                             auto interim = handle_client_server_request(runtime, local_request, true);
                             if (interim.status == DispatchResult::Status::complete)
                             {
-                                result     = std::move(interim);
+                                result = std::move(interim);
                                 dispatched = true;
                             }
                             else
@@ -925,15 +919,15 @@ auto dispatch_local_http_request(ClientServerRuntime& runtime, LocalHttpRequest 
         // by an event not relevant to this connection (e.g. another user uploading
         // device keys).  The handler advances wait.since_sync_stream_id past the
         // irrelevant bump, preventing an immediate re-fire.
-        auto wait       = result.wait;
-        auto deadline   = std::chrono::steady_clock::now() + wait.timeout;
+        auto wait = result.wait;
+        auto deadline = std::chrono::steady_clock::now() + wait.timeout;
         auto dispatched = false;
         try
         {
             while (!dispatched)
             {
-                auto const remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
-                    deadline - std::chrono::steady_clock::now());
+                auto const remaining =
+                    std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
                 if (remaining.count() <= 0)
                 {
                     break;
@@ -943,7 +937,7 @@ auto dispatch_local_http_request(ClientServerRuntime& runtime, LocalHttpRequest 
                     auto interim = handle_client_server_request(runtime, request, true);
                     if (interim.status == DispatchResult::Status::complete)
                     {
-                        result     = std::move(interim);
+                        result = std::move(interim);
                         dispatched = true;
                     }
                     else
@@ -1124,9 +1118,8 @@ auto serve_tls_http(TlsServerContext& tls_context, net::TcpAcceptor& acceptor, C
         // SocketHandle for RAII so it is closed even on exceptions.
         auto client = core::SocketHandle{raw_client};
         auto fd = client.release();
-        auto submitted =
-            pool.submit([&tls_context, &runtime, &stats, dispatch_mode, sync_pool, fd,
-                         tls_peer_addr = std::move(tls_peer_addr)] {
+        auto submitted = pool.submit(
+            [&tls_context, &runtime, &stats, dispatch_mode, sync_pool, fd, tls_peer_addr = std::move(tls_peer_addr)] {
                 auto guard = core::SocketHandle{fd};
                 ++stats.accepted_connections;
                 auto accepted_tls = accept_tls_connection(tls_context, fd, receive_timeout_milliseconds);
@@ -1149,15 +1142,18 @@ auto serve_tls_http(TlsServerContext& tls_context, net::TcpAcceptor& acceptor, C
                 // (read phase, this thread) and the async_write_fn lambda (write phase,
                 // sync-pool thread) hold a copy; the last one to finish cleans up.
                 auto tls_unique = std::make_unique<TlsConnection>(std::move(*accepted_tls.connection));
-                auto tls_shared = std::shared_ptr<TlsConnection>{std::move(tls_unique)}; // SHARED_PTR: reviewed — cross-thread TLS ownership via separate control block to avoid GCC 16 make_shared bug
+                auto tls_shared = std::shared_ptr<TlsConnection>{
+                    std::move(tls_unique)}; // SHARED_PTR: reviewed — cross-thread TLS ownership via separate control
+                                            // block to avoid GCC 16 make_shared bug
                 auto stream = TlsConnectionStream{tls_shared};
 
-                auto async_write_fn = std::function<std::ptrdiff_t(std::string_view)>{
-                    [tls = tls_shared](std::string_view data) { return tls->write(data); }};
+                auto async_write_fn =
+                    std::function<std::ptrdiff_t(std::string_view)>{[tls = tls_shared](std::string_view data) {
+                        return tls->write(data);
+                    }};
 
-                auto const transferred =
-                    serve_stream(stream, runtime, stats, dispatch_mode, sync_pool, tls_peer_addr,
-                                 std::move(async_write_fn));
+                auto const transferred = serve_stream(stream, runtime, stats, dispatch_mode, sync_pool, tls_peer_addr,
+                                                      std::move(async_write_fn));
                 if (transferred)
                 {
                     // The sync-pool thread now owns fd and holds tls_shared.

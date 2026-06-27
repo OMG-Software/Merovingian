@@ -55,12 +55,9 @@ SCENARIO("Media remote fetch timeout rejects invalid values", "[config][media][v
         auto security = merovingian::config::SecurityConfig{};
         security.media.remote_fetch_timeout = "bad-duration";
         auto const config = merovingian::config::Config{
-            merovingian::config::ServerConfig{},
-            merovingian::config::ListenersConfig{},
-            merovingian::config::DatabaseConfig{},
-            security,
-            merovingian::config::ClientRateLimitsConfig{},
-            merovingian::config::LogModulesConfig{},
+            merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
+            merovingian::config::DatabaseConfig{},         security,
+            merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
         };
 
         WHEN("the config is validated")
@@ -87,20 +84,14 @@ SCENARIO("Media remote fetch timeout changes are reloadable", "[config][media][r
         next_security.media.remote_fetch_timeout = "45s";
 
         auto const current = merovingian::config::Config{
-            merovingian::config::ServerConfig{},
-            merovingian::config::ListenersConfig{},
-            merovingian::config::DatabaseConfig{},
-            current_security,
-            merovingian::config::ClientRateLimitsConfig{},
-            merovingian::config::LogModulesConfig{},
+            merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
+            merovingian::config::DatabaseConfig{},         current_security,
+            merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
         };
         auto const next = merovingian::config::Config{
-            merovingian::config::ServerConfig{},
-            merovingian::config::ListenersConfig{},
-            merovingian::config::DatabaseConfig{},
-            next_security,
-            merovingian::config::ClientRateLimitsConfig{},
-            merovingian::config::LogModulesConfig{},
+            merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
+            merovingian::config::DatabaseConfig{},         next_security,
+            merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
         };
 
         WHEN("a reload plan is built")

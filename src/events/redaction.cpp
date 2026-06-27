@@ -31,8 +31,8 @@ namespace
         return base_key_is_allowed(key);
     }
 
-    [[nodiscard]] auto object_member_value(canonicaljson::Object const& object,
-                                           std::string_view key) noexcept -> canonicaljson::Value const*
+    [[nodiscard]] auto object_member_value(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> canonicaljson::Value const*
     {
         for (auto const& member : object)
         {
@@ -45,8 +45,8 @@ namespace
         return nullptr;
     }
 
-    [[nodiscard]] auto string_member(canonicaljson::Object const& object,
-                                     std::string_view key) noexcept -> std::string const*
+    [[nodiscard]] auto string_member(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> std::string const*
     {
         auto const* value = object_member_value(object, key);
         return value == nullptr ? nullptr : std::get_if<std::string>(&value->storage());
@@ -70,9 +70,8 @@ namespace
             //       "allow" was introduced by restricted joins (MSC3083) in room v8
             //       and is preserved from v8 onwards (v8-v10 and v11+).
             // URL:  ../../docs/matrix-v1.18-spec/rooms/v10.md#redactions
-            auto const allow_preserved =
-                policy.redaction_rules == rooms::RedactionRules::room_v8_v10 ||
-                policy.redaction_rules == rooms::RedactionRules::room_v11_plus;
+            auto const allow_preserved = policy.redaction_rules == rooms::RedactionRules::room_v8_v10 ||
+                                         policy.redaction_rules == rooms::RedactionRules::room_v11_plus;
             return key == "join_rule" || (allow_preserved && key == "allow");
         }
         if (event_type == "m.room.power_levels")

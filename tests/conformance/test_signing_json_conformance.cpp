@@ -32,12 +32,12 @@
 
 #include <catch2/catch_test_macros.hpp>
 
-#include <sodium.h>
-
 #include <array>
 #include <string>
 #include <string_view>
 #include <utility>
+
+#include <sodium.h>
 
 // ---------------------------------------------------------------------------
 // Spec: Matrix v1.18 Appendices — Signing JSON
@@ -59,8 +59,8 @@ namespace
 class LibsodiumEd25519Provider final : public merovingian::crypto::Ed25519Provider
 {
 public:
-    [[nodiscard]] auto sign(merovingian::crypto::Ed25519SecretKeyHandle const& key_handle,
-                            std::string_view message) -> merovingian::crypto::SignatureResult override
+    [[nodiscard]] auto sign(merovingian::crypto::Ed25519SecretKeyHandle const& key_handle, std::string_view message)
+        -> merovingian::crypto::SignatureResult override
     {
         auto const& kp = m_keypair;
         if (kp.secret_key.size() != 64U)
@@ -86,10 +86,10 @@ public:
         {
             return {false, "invalid key or signature length"};
         }
-        auto const result = crypto_sign_ed25519_verify_detached(
-            reinterpret_cast<unsigned char const*>(signature.bytes.data()),
-            reinterpret_cast<unsigned char const*>(message.data()), message.size(),
-            reinterpret_cast<unsigned char const*>(public_key.bytes.data()));
+        auto const result =
+            crypto_sign_ed25519_verify_detached(reinterpret_cast<unsigned char const*>(signature.bytes.data()),
+                                                reinterpret_cast<unsigned char const*>(message.data()), message.size(),
+                                                reinterpret_cast<unsigned char const*>(public_key.bytes.data()));
         return {result == 0, result == 0 ? std::string{} : std::string{"signature verification failed"}};
     }
 
@@ -131,16 +131,15 @@ private:
 // URL:  ../../docs/matrix-v1.18-spec/appendices.md#signing-json
 //
 // The signing payload MUST NOT contain the "signatures" or "unsigned" fields.
-SCENARIO("Signing payload excludes signatures and unsigned fields per spec",
-         "[conformance][signing][payload]")
+SCENARIO("Signing payload excludes signatures and unsigned fields per spec", "[conformance][signing][payload]")
 {
     GIVEN("an event object containing both signatures and unsigned fields")
     {
-        auto const event_json = std::string{
-            R"({"content":{"body":"test"},"depth":1,"origin_server_ts":1,)"
-            R"("room_id":"!room:example.org","sender":"@alice:example.org",)"
-            R"("type":"m.room.message","signatures":{"example.org":{"ed25519:1":"sig"}},)"
-            R"("unsigned":{"age":100}})"};
+        auto const event_json =
+            std::string{R"({"content":{"body":"test"},"depth":1,"origin_server_ts":1,)"
+                        R"("room_id":"!room:example.org","sender":"@alice:example.org",)"
+                        R"("type":"m.room.message","signatures":{"example.org":{"ed25519:1":"sig"}},)"
+                        R"("unsigned":{"age":100}})"};
 
         auto const parsed = merovingian::canonicaljson::parse_lossless(event_json);
         REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
@@ -173,8 +172,8 @@ SCENARIO("Signing payload is canonical JSON (sorted keys, no whitespace)",
 {
     GIVEN("an event object with unsorted keys")
     {
-        auto const event_json = std::string{
-            R"({"unsigned":{},"type":"m.room.message","sender":"@alice:example.org","depth":1})"};
+        auto const event_json =
+            std::string{R"({"unsigned":{},"type":"m.room.message","sender":"@alice:example.org","depth":1})"};
 
         auto const parsed = merovingian::canonicaljson::parse_lossless(event_json);
         REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
@@ -206,15 +205,13 @@ SCENARIO("Signing payload is canonical JSON (sorted keys, no whitespace)",
 // URL:  ../../docs/matrix-v1.18-spec/appendices.md#signing-json
 //
 // The signature is placed at signatures.{server_name}.{key_id} in the result.
-SCENARIO("Signed event contains the signature at the correct path per spec",
-         "[conformance][signing][structure]")
+SCENARIO("Signed event contains the signature at the correct path per spec", "[conformance][signing][structure]")
 {
     GIVEN("an event and a valid signing keypair")
     {
-        auto const event_json = std::string{
-            R"({"content":{"body":"hello"},"depth":1,"origin_server_ts":1,)"
-            R"("room_id":"!room:example.org","sender":"@alice:example.org",)"
-            R"("type":"m.room.message"})"};
+        auto const event_json = std::string{R"({"content":{"body":"hello"},"depth":1,"origin_server_ts":1,)"
+                                            R"("room_id":"!room:example.org","sender":"@alice:example.org",)"
+                                            R"("type":"m.room.message"})"};
 
         auto const parsed = merovingian::canonicaljson::parse_lossless(event_json);
         REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
@@ -261,15 +258,13 @@ SCENARIO("Signed event contains the signature at the correct path per spec",
 //  2. Remove the "unsigned" key from the object
 //  3. Serialize to canonical JSON
 //  4. Verify the signature against the payload and the claimed public key
-SCENARIO("Signature verification round-trip succeeds for a correctly signed event",
-         "[conformance][signing][verify]")
+SCENARIO("Signature verification round-trip succeeds for a correctly signed event", "[conformance][signing][verify]")
 {
     GIVEN("an event signed with a known key")
     {
-        auto const event_json = std::string{
-            R"({"content":{"body":"hello"},"depth":1,"origin_server_ts":1,)"
-            R"("room_id":"!room:example.org","sender":"@alice:example.org",)"
-            R"("type":"m.room.message"})"};
+        auto const event_json = std::string{R"({"content":{"body":"hello"},"depth":1,"origin_server_ts":1,)"
+                                            R"("room_id":"!room:example.org","sender":"@alice:example.org",)"
+                                            R"("type":"m.room.message"})"};
 
         auto const parsed = merovingian::canonicaljson::parse_lossless(event_json);
         REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
@@ -294,8 +289,7 @@ SCENARIO("Signature verification round-trip succeeds for a correctly signed even
 
         WHEN("the signed event is verified with the corresponding public key")
         {
-            auto const signed_parsed =
-                merovingian::canonicaljson::parse_lossless(signed_result.event_json);
+            auto const signed_parsed = merovingian::canonicaljson::parse_lossless(signed_result.event_json);
             REQUIRE(signed_parsed.error == merovingian::canonicaljson::ParseError::none);
 
             auto const public_key = merovingian::crypto::Ed25519PublicKey{kp.public_key};
@@ -317,15 +311,13 @@ SCENARIO("Signature verification round-trip succeeds for a correctly signed even
 // URL:  ../../docs/matrix-v1.18-spec/appendices.md#checking-for-a-signature
 //
 // A signature produced by one key MUST NOT verify against a different key.
-SCENARIO("Signature verification fails when a different key is used",
-         "[conformance][signing][verify][security]")
+SCENARIO("Signature verification fails when a different key is used", "[conformance][signing][verify][security]")
 {
     GIVEN("an event signed with key A, and a different public key B for verification")
     {
-        auto const event_json = std::string{
-            R"({"content":{"body":"test"},"depth":1,"origin_server_ts":1,)"
-            R"("room_id":"!room:example.org","sender":"@alice:example.org",)"
-            R"("type":"m.room.message"})"};
+        auto const event_json = std::string{R"({"content":{"body":"test"},"depth":1,"origin_server_ts":1,)"
+                                            R"("room_id":"!room:example.org","sender":"@alice:example.org",)"
+                                            R"("type":"m.room.message"})"};
 
         auto const parsed = merovingian::canonicaljson::parse_lossless(event_json);
         REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
@@ -352,8 +344,7 @@ SCENARIO("Signature verification fails when a different key is used",
 
         WHEN("the signed event is verified with the WRONG public key (key B)")
         {
-            auto const signed_parsed =
-                merovingian::canonicaljson::parse_lossless(signed_result.event_json);
+            auto const signed_parsed = merovingian::canonicaljson::parse_lossless(signed_result.event_json);
             REQUIRE(signed_parsed.error == merovingian::canonicaljson::ParseError::none);
 
             auto const wrong_key = merovingian::crypto::Ed25519PublicKey{kp_b.public_key};
@@ -375,8 +366,7 @@ SCENARIO("Signature verification fails when a different key is used",
 //
 // Signing an already-signed event adds to signatures without disturbing existing
 // signatures from other servers.
-SCENARIO("Signing an already-signed event preserves existing signatures",
-         "[conformance][signing][multi-server]")
+SCENARIO("Signing an already-signed event preserves existing signatures", "[conformance][signing][multi-server]")
 {
     GIVEN("an event already carrying a signature from server A")
     {
@@ -405,8 +395,8 @@ SCENARIO("Signing an already-signed event preserves existing signatures",
 
         WHEN("server B also signs the event")
         {
-            auto const result = merovingian::events::sign_event_for_server(
-                parsed.value, *policy, key_store, provider, "server-b.example.org");
+            auto const result = merovingian::events::sign_event_for_server(parsed.value, *policy, key_store, provider,
+                                                                           "server-b.example.org");
 
             THEN("the result contains both server A's and server B's signatures")
             {
@@ -430,15 +420,14 @@ SCENARIO("Signature presence check returns error when server or key is absent",
 {
     GIVEN("an event with no signatures field")
     {
-        auto const no_sigs_json = std::string{
-            R"({"depth":1,"type":"m.room.message"})"};
+        auto const no_sigs_json = std::string{R"({"depth":1,"type":"m.room.message"})"};
         auto const no_sigs = merovingian::canonicaljson::parse_lossless(no_sigs_json);
         REQUIRE(no_sigs.error == merovingian::canonicaljson::ParseError::none);
 
         WHEN("signature presence is checked for any server")
         {
-            auto const result = merovingian::events::verify_event_signature_presence(
-                no_sigs.value, {"example.org", "ed25519:1"});
+            auto const result =
+                merovingian::events::verify_event_signature_presence(no_sigs.value, {"example.org", "ed25519:1"});
 
             THEN("the check fails because signatures is absent")
             {
@@ -451,15 +440,15 @@ SCENARIO("Signature presence check returns error when server or key is absent",
 
     GIVEN("an event signed by server A but checked for server B")
     {
-        auto const signed_by_a = std::string{
-            R"({"depth":1,"signatures":{"server-a.org":{"ed25519:1":"sig"}},"type":"m.room.message"})"};
+        auto const signed_by_a =
+            std::string{R"({"depth":1,"signatures":{"server-a.org":{"ed25519:1":"sig"}},"type":"m.room.message"})"};
         auto const parsed = merovingian::canonicaljson::parse_lossless(signed_by_a);
         REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
 
         WHEN("presence is checked for server B")
         {
-            auto const result = merovingian::events::verify_event_signature_presence(
-                parsed.value, {"server-b.org", "ed25519:1"});
+            auto const result =
+                merovingian::events::verify_event_signature_presence(parsed.value, {"server-b.org", "ed25519:1"});
 
             THEN("the check fails because server B has not signed the event")
             {
@@ -494,9 +483,8 @@ namespace
     static_cast<void>(sodium_init());
     // YJDBA9Xnr2sVqXD9Vj7XVUnmFZcZrlw8Md7kMW+3XA1 base64-decoded (standard, no padding)
     auto constexpr seed = std::array<unsigned char, crypto_sign_SEEDBYTES>{
-        0x60, 0x90, 0xc1, 0x03, 0xd5, 0xe7, 0xaf, 0x6b, 0x15, 0xa9, 0x70, 0xfd,
-        0x56, 0x3e, 0xd7, 0x55, 0x49, 0xe6, 0x15, 0x97, 0x19, 0xae, 0x5c, 0x3c,
-        0x31, 0xde, 0xe4, 0x31, 0x6f, 0xb7, 0x5c, 0x0d,
+        0x60, 0x90, 0xc1, 0x03, 0xd5, 0xe7, 0xaf, 0x6b, 0x15, 0xa9, 0x70, 0xfd, 0x56, 0x3e, 0xd7, 0x55,
+        0x49, 0xe6, 0x15, 0x97, 0x19, 0xae, 0x5c, 0x3c, 0x31, 0xde, 0xe4, 0x31, 0x6f, 0xb7, 0x5c, 0x0d,
     };
     auto pk = std::array<unsigned char, crypto_sign_PUBLICKEYBYTES>{};
     auto sk = std::array<unsigned char, crypto_sign_SECRETKEYBYTES>{};
@@ -508,25 +496,22 @@ namespace
 }
 
 // Sign message bytes and return as standard (not URL-safe) unpadded base64.
-[[nodiscard]] auto sign_standard_b64(std::string_view message,
-                                     merovingian::federation::test::SigningKeypair const& kp) -> std::string
+[[nodiscard]] auto sign_standard_b64(std::string_view message, merovingian::federation::test::SigningKeypair const& kp)
+    -> std::string
 {
     auto sig = std::array<unsigned char, crypto_sign_BYTES>{};
-    if (crypto_sign_ed25519_detached(sig.data(), nullptr,
-                                     reinterpret_cast<unsigned char const*>(message.data()), message.size(),
-                                     reinterpret_cast<unsigned char const*>(kp.secret_key.data())) != 0)
+    if (crypto_sign_ed25519_detached(sig.data(), nullptr, reinterpret_cast<unsigned char const*>(message.data()),
+                                     message.size(), reinterpret_cast<unsigned char const*>(kp.secret_key.data())) != 0)
     {
         return {};
     }
-    auto out = std::string(sodium_base64_ENCODED_LEN(sig.size(),
-                               sodium_base64_VARIANT_ORIGINAL_NO_PADDING), '\0');
-    sodium_bin2base64(out.data(), out.size(), sig.data(), sig.size(),
-                      sodium_base64_VARIANT_ORIGINAL_NO_PADDING);
+    auto out = std::string(sodium_base64_ENCODED_LEN(sig.size(), sodium_base64_VARIANT_ORIGINAL_NO_PADDING), '\0');
+    sodium_bin2base64(out.data(), out.size(), sig.data(), sig.size(), sodium_base64_VARIANT_ORIGINAL_NO_PADDING);
     out.resize(std::char_traits<char>::length(out.c_str()));
     return out;
 }
 
-} // anonymous namespace (spec vector helpers)
+} // namespace
 
 // Spec: JSON Signing Test Vector 1 — empty object
 // Input:    {}
@@ -552,7 +537,8 @@ SCENARIO("Spec crypto test vector: signing an empty JSON object produces the spe
                 // Spec MUST: this exact signature MUST result from signing '{}' with the spec key.
                 // If this fails: the signing algorithm or base64 encoding is wrong.
                 // Do NOT change the expected value — it is taken verbatim from the spec.
-                REQUIRE(sig == "K8280/U9SSy9IVtjBuVeLr+HpOB4BQFWbg+UZaADMtTdGYI7Geitb76LTrr5QV/7Xg4ahLwYGYZzuHGZKM5ZAQ");
+                REQUIRE(sig ==
+                        "K8280/U9SSy9IVtjBuVeLr+HpOB4BQFWbg+UZaADMtTdGYI7Geitb76LTrr5QV/7Xg4ahLwYGYZzuHGZKM5ZAQ");
             }
         }
     }
@@ -581,7 +567,8 @@ SCENARIO("Spec crypto test vector: signing a data JSON object produces the spec-
             {
                 // Spec MUST: this exact signature MUST result from signing the object.
                 // Do NOT change the expected value — it is taken verbatim from the spec.
-                REQUIRE(sig == "KqmLSbO39/Bzb0QIYE82zqLwsA+PDzYIpIRA2sRQ4sL53+sN6/fpNSoqE7BP7vBZhG6kYdD13EIMJpvhJI+6Bw");
+                REQUIRE(sig ==
+                        "KqmLSbO39/Bzb0QIYE82zqLwsA+PDzYIpIRA2sRQ4sL53+sN6/fpNSoqE7BP7vBZhG6kYdD13EIMJpvhJI+6Bw");
             }
         }
     }
@@ -600,11 +587,10 @@ SCENARIO("Spec crypto test vector: minimal event content hash matches spec",
     GIVEN("the minimally-sized spec test event")
     {
         // Exactly as given in the spec (unsorted keys, includes unsigned/hashes/signatures).
-        auto const event_json = std::string{
-            R"({"room_id":"!x:domain","sender":"@a:domain","origin":"domain",)"
-            R"("origin_server_ts":1000000,"signatures":{},"hashes":{},)"
-            R"("type":"X","content":{},"prev_events":[],"auth_events":[],"depth":3,)"
-            R"("unsigned":{"age_ts":1000000}})"};
+        auto const event_json = std::string{R"({"room_id":"!x:domain","sender":"@a:domain","origin":"domain",)"
+                                            R"("origin_server_ts":1000000,"signatures":{},"hashes":{},)"
+                                            R"("type":"X","content":{},"prev_events":[],"auth_events":[],"depth":3,)"
+                                            R"("unsigned":{"age_ts":1000000}})"};
 
         auto const parsed = merovingian::canonicaljson::parse_lossless(event_json);
         REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
@@ -636,10 +622,10 @@ SCENARIO("Spec crypto test vector: content-bearing event content hash matches sp
 {
     GIVEN("the content-bearing spec test event")
     {
-        auto const event_json = std::string{
-            R"({"content":{"body":"Here is the message content"},"event_id":"$0:domain",)"
-            R"("origin":"domain","origin_server_ts":1000000,"type":"m.room.message",)"
-            R"("room_id":"!r:domain","sender":"@u:domain","signatures":{},"unsigned":{"age_ts":1000000}})"};
+        auto const event_json =
+            std::string{R"({"content":{"body":"Here is the message content"},"event_id":"$0:domain",)"
+                        R"("origin":"domain","origin_server_ts":1000000,"type":"m.room.message",)"
+                        R"("room_id":"!r:domain","sender":"@u:domain","signatures":{},"unsigned":{"age_ts":1000000}})"};
 
         auto const parsed = merovingian::canonicaljson::parse_lossless(event_json);
         REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);

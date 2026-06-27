@@ -42,18 +42,12 @@
 // An empty string is not a valid server name.
 // ---------------------------------------------------------------------------
 
-SCENARIO("Server name grammar: bare DNS hostnames are valid",
-         "[conformance][identifiers][server-name]")
+SCENARIO("Server name grammar: bare DNS hostnames are valid", "[conformance][identifiers][server-name]")
 {
     GIVEN("bare DNS hostnames without explicit ports")
     {
         auto const names = std::vector<std::string_view>{
-            "example.org",
-            "matrix.example.com",
-            "localhost",
-            "my-server.example.co.uk",
-            "a",
-            "A.B.C",
+            "example.org", "matrix.example.com", "localhost", "my-server.example.co.uk", "a", "A.B.C",
         };
 
         WHEN("each server name is validated")
@@ -70,17 +64,12 @@ SCENARIO("Server name grammar: bare DNS hostnames are valid",
     }
 }
 
-SCENARIO("Server name grammar: hostname with explicit port is valid",
-         "[conformance][identifiers][server-name]")
+SCENARIO("Server name grammar: hostname with explicit port is valid", "[conformance][identifiers][server-name]")
 {
     GIVEN("valid hostname:port combinations")
     {
         auto const names = std::vector<std::string_view>{
-            "example.org:8448",
-            "matrix.example.com:443",
-            "localhost:8008",
-            "example.org:1",
-            "example.org:65535",
+            "example.org:8448", "matrix.example.com:443", "localhost:8008", "example.org:1", "example.org:65535",
         };
 
         WHEN("each server name is validated")
@@ -97,8 +86,7 @@ SCENARIO("Server name grammar: hostname with explicit port is valid",
     }
 }
 
-SCENARIO("Server name grammar: IPv4 address server names are valid",
-         "[conformance][identifiers][server-name]")
+SCENARIO("Server name grammar: IPv4 address server names are valid", "[conformance][identifiers][server-name]")
 {
     GIVEN("valid IPv4 address server names")
     {
@@ -147,18 +135,17 @@ SCENARIO("Server name grammar: bracketed IPv6 address server names are valid",
     }
 }
 
-SCENARIO("Server name grammar: invalid server names are rejected",
-         "[conformance][identifiers][server-name]")
+SCENARIO("Server name grammar: invalid server names are rejected", "[conformance][identifiers][server-name]")
 {
     GIVEN("server names that violate the grammar")
     {
         auto const invalid_names = std::vector<std::string_view>{
-            "",                   // empty — spec MUST NOT
-            "@example.org",       // '@' is forbidden — spec MUST NOT
-            "example.org/path",   // '/' is forbidden — spec MUST NOT
-            "example.org:65536",  // port > 65535 — out of range
-            "example.org:",       // colon with no port digits
-            ":8448",              // no hostname before colon
+            "",                  // empty — spec MUST NOT
+            "@example.org",      // '@' is forbidden — spec MUST NOT
+            "example.org/path",  // '/' is forbidden — spec MUST NOT
+            "example.org:65536", // port > 65535 — out of range
+            "example.org:",      // colon with no port digits
+            ":8448",             // no hostname before colon
         };
 
         WHEN("each invalid name is validated")
@@ -195,8 +182,7 @@ SCENARIO("Server name grammar: invalid server names are rejected",
 //   localpart_is_valid_federated() — accepts the historical set
 // ---------------------------------------------------------------------------
 
-SCENARIO("User ID grammar: valid user IDs are accepted",
-         "[conformance][identifiers][user-id]")
+SCENARIO("User ID grammar: valid user IDs are accepted", "[conformance][identifiers][user-id]")
 {
     GIVEN("well-formed Matrix user IDs")
     {
@@ -222,19 +208,18 @@ SCENARIO("User ID grammar: valid user IDs are accepted",
     }
 }
 
-SCENARIO("User ID grammar: malformed user IDs are rejected",
-         "[conformance][identifiers][user-id]")
+SCENARIO("User ID grammar: malformed user IDs are rejected", "[conformance][identifiers][user-id]")
 {
     GIVEN("user IDs that violate the spec grammar")
     {
         auto const invalid_ids = std::vector<std::string_view>{
-            "",                           // empty
-            "alice:example.org",          // missing '@' sigil
-            "@",                          // only sigil, no localpart or server
-            "@:example.org",              // empty localpart
-            "@alice",                     // missing ':' and server name
-            "@alice:",                    // missing server name after ':'
-            "@ alice:example.org",        // space in localpart is forbidden
+            "",                    // empty
+            "alice:example.org",   // missing '@' sigil
+            "@",                   // only sigil, no localpart or server
+            "@:example.org",       // empty localpart
+            "@alice",              // missing ':' and server name
+            "@alice:",             // missing server name after ':'
+            "@ alice:example.org", // space in localpart is forbidden
         };
 
         WHEN("each invalid user ID is validated")
@@ -252,8 +237,7 @@ SCENARIO("User ID grammar: malformed user IDs are rejected",
     }
 }
 
-SCENARIO("User ID grammar: user ID exceeding 255 bytes is rejected",
-         "[conformance][identifiers][user-id]")
+SCENARIO("User ID grammar: user ID exceeding 255 bytes is rejected", "[conformance][identifiers][user-id]")
 {
     GIVEN("user IDs at and around the 255-byte spec limit")
     {
@@ -261,13 +245,13 @@ SCENARIO("User ID grammar: user ID exceeding 255 bytes is rejected",
         // "@" (1) + localpart + ":" (1) + "example.org" (11) = 13 overhead bytes.
         // To hit exactly 255 total: localpart = 255 - 13 = 242 chars.
         // To hit exactly 256 total: localpart = 256 - 13 = 243 chars.
-        auto constexpr server    = std::string_view{":example.org"};
-        auto constexpr overhead  = 1U + server.size(); // '@' + ':example.org' = 13
-        auto const max_localpart = std::string(255U - overhead, 'a'); // 242 chars
+        auto constexpr server = std::string_view{":example.org"};
+        auto constexpr overhead = 1U + server.size();                  // '@' + ':example.org' = 13
+        auto const max_localpart = std::string(255U - overhead, 'a');  // 242 chars
         auto const over_localpart = std::string(256U - overhead, 'a'); // 243 chars
 
-        auto const exactly_255 = "@" + max_localpart + std::string{server};   // 255 bytes
-        auto const exactly_256 = "@" + over_localpart + std::string{server};  // 256 bytes
+        auto const exactly_255 = "@" + max_localpart + std::string{server};  // 255 bytes
+        auto const exactly_256 = "@" + over_localpart + std::string{server}; // 256 bytes
 
         WHEN("both user IDs are validated")
         {
@@ -297,20 +281,12 @@ SCENARIO("User ID grammar: user ID exceeding 255 bytes is rejected",
 // Use localpart_is_valid_new() for all new-ID creation and local auth paths.
 // ---------------------------------------------------------------------------
 
-SCENARIO("New user ID localpart: normative character set is accepted",
-         "[conformance][identifiers][user-id][localpart]")
+SCENARIO("New user ID localpart: normative character set is accepted", "[conformance][identifiers][user-id][localpart]")
 {
     GIVEN("localparts using the normative v1.18 character set (lowercase only)")
     {
         auto const normative_valid = std::vector<std::string_view>{
-            "alice",
-            "alice123",
-            "alice.bob",
-            "alice-bob",
-            "alice_bob",
-            "alice=bob",
-            "alice/bob",
-            "alice+bob",
+            "alice", "alice123", "alice.bob", "alice-bob", "alice_bob", "alice=bob", "alice/bob", "alice+bob",
         };
 
         WHEN("each localpart is validated as a new user ID localpart")
@@ -327,8 +303,7 @@ SCENARIO("New user ID localpart: normative character set is accepted",
     }
 }
 
-SCENARIO("New user ID localpart: uppercase letters are rejected",
-         "[conformance][identifiers][user-id][localpart]")
+SCENARIO("New user ID localpart: uppercase letters are rejected", "[conformance][identifiers][user-id][localpart]")
 {
     GIVEN("localparts containing uppercase ASCII letters")
     {
@@ -356,17 +331,16 @@ SCENARIO("New user ID localpart: uppercase letters are rejected",
     }
 }
 
-SCENARIO("New user ID localpart: forbidden characters are rejected",
-         "[conformance][identifiers][user-id][localpart]")
+SCENARIO("New user ID localpart: forbidden characters are rejected", "[conformance][identifiers][user-id][localpart]")
 {
     GIVEN("localparts containing characters not in the allowed normative set")
     {
         auto const invalid = std::vector<std::string_view>{
-            "",           // empty localpart is forbidden
-            "alice bob",  // space is forbidden
-            "@alice",     // sigil is forbidden in localpart
-            "alice@",     // sigil is forbidden in localpart
-            "alice#bob",  // '#' is not in the normative character set
+            "",          // empty localpart is forbidden
+            "alice bob", // space is forbidden
+            "@alice",    // sigil is forbidden in localpart
+            "alice@",    // sigil is forbidden in localpart
+            "alice#bob", // '#' is not in the normative character set
         };
 
         WHEN("each localpart is validated as a new user ID localpart")
@@ -536,10 +510,10 @@ SCENARIO("Federated user ID: structural grammar is enforced with historical loca
             THEN("they are rejected even by the federated validator")
             {
                 // These are structurally broken, not merely historically unusual.
-                REQUIRE_FALSE(merovingian::auth::user_id_is_valid_federated(""));           // empty
-                REQUIRE_FALSE(merovingian::auth::user_id_is_valid_federated("alice:x"));    // missing '@'
-                REQUIRE_FALSE(merovingian::auth::user_id_is_valid_federated("@alice"));     // no server
-                REQUIRE_FALSE(merovingian::auth::user_id_is_valid_federated("@alice:"));    // empty server
+                REQUIRE_FALSE(merovingian::auth::user_id_is_valid_federated(""));        // empty
+                REQUIRE_FALSE(merovingian::auth::user_id_is_valid_federated("alice:x")); // missing '@'
+                REQUIRE_FALSE(merovingian::auth::user_id_is_valid_federated("@alice"));  // no server
+                REQUIRE_FALSE(merovingian::auth::user_id_is_valid_federated("@alice:")); // empty server
             }
         }
     }
@@ -557,8 +531,7 @@ SCENARIO("Federated user ID: structural grammar is enforced with historical loca
 // encoding of the SHA-256 reference hash of the event, prefixed with "$".
 // ---------------------------------------------------------------------------
 
-SCENARIO("Event ID grammar: well-formed event IDs are accepted",
-         "[conformance][identifiers][event-id]")
+SCENARIO("Event ID grammar: well-formed event IDs are accepted", "[conformance][identifiers][event-id]")
 {
     GIVEN("valid room version 4+ event IDs")
     {
@@ -582,19 +555,18 @@ SCENARIO("Event ID grammar: well-formed event IDs are accepted",
     }
 }
 
-SCENARIO("Event ID grammar: malformed event IDs are rejected",
-         "[conformance][identifiers][event-id]")
+SCENARIO("Event ID grammar: malformed event IDs are rejected", "[conformance][identifiers][event-id]")
 {
     GIVEN("event IDs that violate the room version 4+ grammar")
     {
         auto const invalid_ids = std::vector<std::string_view>{
-            "",              // empty
-            "abc123",        // missing '$' sigil
-            "$",             // sigil only, no hash bytes
-            "$has spaces",   // spaces are forbidden in base64url
-            "$has+plus",     // '+' is standard base64, NOT URL-safe base64
-            "$has/slash",    // '/' is standard base64, NOT URL-safe base64
-            "$has=padding",  // padding '=' is forbidden (spec requires unpadded)
+            "",             // empty
+            "abc123",       // missing '$' sigil
+            "$",            // sigil only, no hash bytes
+            "$has spaces",  // spaces are forbidden in base64url
+            "$has+plus",    // '+' is standard base64, NOT URL-safe base64
+            "$has/slash",   // '/' is standard base64, NOT URL-safe base64
+            "$has=padding", // padding '=' is forbidden (spec requires unpadded)
         };
 
         WHEN("each invalid event ID is validated")
@@ -611,8 +583,7 @@ SCENARIO("Event ID grammar: malformed event IDs are rejected",
     }
 }
 
-SCENARIO("Event ID grammar: SHA-256 length event ID matches spec dimensions",
-         "[conformance][identifiers][event-id]")
+SCENARIO("Event ID grammar: SHA-256 length event ID matches spec dimensions", "[conformance][identifiers][event-id]")
 {
     GIVEN("an event ID with the expected 43-character URL-safe base64 body")
     {
@@ -675,8 +646,8 @@ SCENARIO("Event ID grammar vs semantics: short IDs are syntactically valid but n
             {
                 // Spec MUST (semantic): SHA-256 → 32 bytes → 43 base64url chars → 44 total.
                 // A short ID cannot represent a real room-v4+ reference hash.
-                REQUIRE(short_id.size() < 44U);  // fails semantic check
-                REQUIRE(real_id.size() == 44U);  // satisfies semantic check
+                REQUIRE(short_id.size() < 44U); // fails semantic check
+                REQUIRE(real_id.size() == 44U); // satisfies semantic check
             }
         }
     }

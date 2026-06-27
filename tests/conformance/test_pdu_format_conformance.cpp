@@ -41,17 +41,16 @@ namespace
 {
 
 // A room-v3+ PDU with placeholder sha256 — used for structural parsing tests only.
-auto const valid_pdu = std::string{
-    "{\"type\":\"m.room.message\","
-    "\"room_id\":\"!room:example.org\","
-    "\"sender\":\"@alice:example.org\","
-    "\"content\":{\"msgtype\":\"m.text\",\"body\":\"hello\"},"
-    "\"depth\":5,"
-    "\"hashes\":{\"sha256\":\"abc123\"},"
-    "\"origin_server_ts\":1000000,"
-    "\"prev_events\":[\"$prev:example.org\"],"
-    "\"auth_events\":[\"$create:example.org\"],"
-    "\"signatures\":{\"example.org\":{\"ed25519:1\":\"sig\"}}}"};
+auto const valid_pdu = std::string{"{\"type\":\"m.room.message\","
+                                   "\"room_id\":\"!room:example.org\","
+                                   "\"sender\":\"@alice:example.org\","
+                                   "\"content\":{\"msgtype\":\"m.text\",\"body\":\"hello\"},"
+                                   "\"depth\":5,"
+                                   "\"hashes\":{\"sha256\":\"abc123\"},"
+                                   "\"origin_server_ts\":1000000,"
+                                   "\"prev_events\":[\"$prev:example.org\"],"
+                                   "\"auth_events\":[\"$create:example.org\"],"
+                                   "\"signatures\":{\"example.org\":{\"ed25519:1\":\"sig\"}}}"};
 
 } // namespace
 
@@ -60,8 +59,7 @@ auto const valid_pdu = std::string{
 //
 // parse_federation_pdu must correctly extract the core fields from a valid
 // room-v3+ PDU JSON string.
-SCENARIO("parse_federation_pdu extracts required fields from a valid room v3+ PDU",
-         "[pdu][format][conformance]")
+SCENARIO("parse_federation_pdu extracts required fields from a valid room v3+ PDU", "[pdu][format][conformance]")
 {
     GIVEN("a valid room-v3+ PDU JSON string")
     {
@@ -123,8 +121,7 @@ SCENARIO("parse_federation_pdu extracts required fields from a valid room v3+ PD
 // tests — test_federation_inbound_request.cpp:
 //   "Federation PDU authorization verifies JSON event signatures with the remote
 //    signing key" and "...accepts relayed PDUs from non-originating servers".
-SCENARIO("authorize_federation_pdu validates sender-server signatures (spec requirement)",
-         "[pdu][format][conformance]")
+SCENARIO("authorize_federation_pdu validates sender-server signatures (spec requirement)", "[pdu][format][conformance]")
 {
     GIVEN("a PDU from @alice:example.org carrying a signature entry from example.org")
     {
@@ -132,8 +129,7 @@ SCENARIO("authorize_federation_pdu validates sender-server signatures (spec requ
 
         WHEN("the PDU is authorized with no signing key available for the sender domain")
         {
-            auto const decision =
-                merovingian::federation::authorize_federation_pdu(pdu, "example.org");
+            auto const decision = merovingian::federation::authorize_federation_pdu(pdu, "example.org");
 
             THEN("the PDU is rejected — a present signature is not a verified signature")
             {
@@ -149,8 +145,7 @@ SCENARIO("authorize_federation_pdu validates sender-server signatures (spec requ
         {
             auto unsigned_pdu = pdu;
             unsigned_pdu.signatures.clear();
-            auto const decision =
-                merovingian::federation::authorize_federation_pdu(unsigned_pdu, "example.org");
+            auto const decision = merovingian::federation::authorize_federation_pdu(unsigned_pdu, "example.org");
 
             THEN("the PDU is rejected — missing sender-server signature")
             {
@@ -169,8 +164,7 @@ SCENARIO("authorize_federation_pdu validates sender-server signatures (spec requ
 // parse_inbound_pdu_envelope extracts the room-version-agnostic fields from a
 // PDU JSON string. A valid envelope must carry room_id, sender, event_type,
 // origin_server_ts, depth, prev_events, and auth_events.
-SCENARIO("parse_inbound_pdu_envelope extracts the full PDU envelope",
-         "[pdu][format][conformance]")
+SCENARIO("parse_inbound_pdu_envelope extracts the full PDU envelope", "[pdu][format][conformance]")
 {
     GIVEN("a valid room-v3+ PDU JSON string")
     {
@@ -234,20 +228,18 @@ SCENARIO("parse_inbound_pdu_envelope extracts the full PDU envelope",
 //
 // parse_inbound_pdu_envelope must return nullopt for structurally invalid input
 // (missing required fields, wrong types, invalid JSON).
-SCENARIO("parse_inbound_pdu_envelope rejects structurally invalid PDUs",
-         "[pdu][format][conformance]")
+SCENARIO("parse_inbound_pdu_envelope rejects structurally invalid PDUs", "[pdu][format][conformance]")
 {
     GIVEN("a PDU JSON missing the required 'type' field")
     {
-        auto const no_type = std::string{
-            "{\"room_id\":\"!room:example.org\","
-            "\"sender\":\"@alice:example.org\","
-            "\"content\":{},"
-            "\"depth\":1,"
-            "\"hashes\":{\"sha256\":\"x\"},"
-            "\"origin_server_ts\":1000,"
-            "\"prev_events\":[],\"auth_events\":[],"
-            "\"signatures\":{}}"};
+        auto const no_type = std::string{"{\"room_id\":\"!room:example.org\","
+                                         "\"sender\":\"@alice:example.org\","
+                                         "\"content\":{},"
+                                         "\"depth\":1,"
+                                         "\"hashes\":{\"sha256\":\"x\"},"
+                                         "\"origin_server_ts\":1000,"
+                                         "\"prev_events\":[],\"auth_events\":[],"
+                                         "\"signatures\":{}}"};
 
         WHEN("parse_inbound_pdu_envelope is called")
         {
@@ -263,15 +255,14 @@ SCENARIO("parse_inbound_pdu_envelope rejects structurally invalid PDUs",
 
     GIVEN("a PDU JSON missing the required 'sender' field")
     {
-        auto const no_sender = std::string{
-            "{\"type\":\"m.room.message\","
-            "\"room_id\":\"!room:example.org\","
-            "\"content\":{},"
-            "\"depth\":1,"
-            "\"hashes\":{\"sha256\":\"x\"},"
-            "\"origin_server_ts\":1000,"
-            "\"prev_events\":[],\"auth_events\":[],"
-            "\"signatures\":{}}"};
+        auto const no_sender = std::string{"{\"type\":\"m.room.message\","
+                                           "\"room_id\":\"!room:example.org\","
+                                           "\"content\":{},"
+                                           "\"depth\":1,"
+                                           "\"hashes\":{\"sha256\":\"x\"},"
+                                           "\"origin_server_ts\":1000,"
+                                           "\"prev_events\":[],\"auth_events\":[],"
+                                           "\"signatures\":{}}"};
 
         WHEN("parse_inbound_pdu_envelope is called")
         {
@@ -287,15 +278,14 @@ SCENARIO("parse_inbound_pdu_envelope rejects structurally invalid PDUs",
 
     GIVEN("a PDU JSON missing the required 'room_id' field")
     {
-        auto const no_room_id = std::string{
-            "{\"type\":\"m.room.message\","
-            "\"sender\":\"@alice:example.org\","
-            "\"content\":{},"
-            "\"depth\":1,"
-            "\"hashes\":{\"sha256\":\"x\"},"
-            "\"origin_server_ts\":1000,"
-            "\"prev_events\":[],\"auth_events\":[],"
-            "\"signatures\":{}}"};
+        auto const no_room_id = std::string{"{\"type\":\"m.room.message\","
+                                            "\"sender\":\"@alice:example.org\","
+                                            "\"content\":{},"
+                                            "\"depth\":1,"
+                                            "\"hashes\":{\"sha256\":\"x\"},"
+                                            "\"origin_server_ts\":1000,"
+                                            "\"prev_events\":[],\"auth_events\":[],"
+                                            "\"signatures\":{}}"};
 
         WHEN("parse_inbound_pdu_envelope is called")
         {
@@ -344,22 +334,20 @@ SCENARIO("parse_inbound_pdu_envelope rejects structurally invalid PDUs",
 // "depth" must be an integer >= 1 (the create event has depth 0 by convention;
 // all subsequent events have depth >= 1). The spec says depth is a "positive
 // integer" for non-create events, and 0 for the create event.
-SCENARIO("PDU envelope extracts depth correctly from the JSON",
-         "[pdu][format][conformance]")
+SCENARIO("PDU envelope extracts depth correctly from the JSON", "[pdu][format][conformance]")
 {
     GIVEN("a valid PDU with depth 7")
     {
-        auto const pdu_with_depth = std::string{
-            "{\"type\":\"m.room.message\","
-            "\"room_id\":\"!room:example.org\","
-            "\"sender\":\"@alice:example.org\","
-            "\"content\":{\"msgtype\":\"m.text\",\"body\":\"hi\"},"
-            "\"depth\":7,"
-            "\"hashes\":{\"sha256\":\"x\"},"
-            "\"origin_server_ts\":2000,"
-            "\"prev_events\":[\"$prev:example.org\"],"
-            "\"auth_events\":[\"$create:example.org\"],"
-            "\"signatures\":{}}"};
+        auto const pdu_with_depth = std::string{"{\"type\":\"m.room.message\","
+                                                "\"room_id\":\"!room:example.org\","
+                                                "\"sender\":\"@alice:example.org\","
+                                                "\"content\":{\"msgtype\":\"m.text\",\"body\":\"hi\"},"
+                                                "\"depth\":7,"
+                                                "\"hashes\":{\"sha256\":\"x\"},"
+                                                "\"origin_server_ts\":2000,"
+                                                "\"prev_events\":[\"$prev:example.org\"],"
+                                                "\"auth_events\":[\"$create:example.org\"],"
+                                                "\"signatures\":{}}"};
 
         WHEN("parse_inbound_pdu_envelope is called")
         {
@@ -377,18 +365,17 @@ SCENARIO("PDU envelope extracts depth correctly from the JSON",
     GIVEN("a valid v10 m.room.create PDU with room_id and depth 0")
     {
         // v10 and earlier create events DO include room_id.
-        auto const create_pdu = std::string{
-            "{\"type\":\"m.room.create\","
-            "\"state_key\":\"\","
-            "\"room_id\":\"!room:example.org\","
-            "\"sender\":\"@alice:example.org\","
-            "\"content\":{\"creator\":\"@alice:example.org\",\"room_version\":\"10\"},"
-            "\"depth\":0,"
-            "\"hashes\":{\"sha256\":\"x\"},"
-            "\"origin_server_ts\":1000,"
-            "\"prev_events\":[],"
-            "\"auth_events\":[],"
-            "\"signatures\":{}}"};
+        auto const create_pdu = std::string{"{\"type\":\"m.room.create\","
+                                            "\"state_key\":\"\","
+                                            "\"room_id\":\"!room:example.org\","
+                                            "\"sender\":\"@alice:example.org\","
+                                            "\"content\":{\"creator\":\"@alice:example.org\",\"room_version\":\"10\"},"
+                                            "\"depth\":0,"
+                                            "\"hashes\":{\"sha256\":\"x\"},"
+                                            "\"origin_server_ts\":1000,"
+                                            "\"prev_events\":[],"
+                                            "\"auth_events\":[],"
+                                            "\"signatures\":{}}"};
 
         WHEN("parse_inbound_pdu_envelope is called")
         {
@@ -423,17 +410,16 @@ SCENARIO("Room v12: m.room.create PDU without room_id is accepted and room_id is
     GIVEN("a v12 m.room.create PDU with no room_id field")
     {
         // Spec MUST: v12 create events MUST NOT have a room_id field.
-        auto const v12_create = std::string{
-            "{\"auth_events\":[],"
-            "\"content\":{\"creator\":\"@alice:example.org\",\"room_version\":\"12\"},"
-            "\"depth\":0,"
-            "\"hashes\":{\"sha256\":\"x\"},"
-            "\"origin_server_ts\":1000,"
-            "\"prev_events\":[],"
-            "\"sender\":\"@alice:example.org\","
-            "\"signatures\":{},"
-            "\"state_key\":\"\","
-            "\"type\":\"m.room.create\"}"};
+        auto const v12_create = std::string{"{\"auth_events\":[],"
+                                            "\"content\":{\"creator\":\"@alice:example.org\",\"room_version\":\"12\"},"
+                                            "\"depth\":0,"
+                                            "\"hashes\":{\"sha256\":\"x\"},"
+                                            "\"origin_server_ts\":1000,"
+                                            "\"prev_events\":[],"
+                                            "\"sender\":\"@alice:example.org\","
+                                            "\"signatures\":{},"
+                                            "\"state_key\":\"\","
+                                            "\"type\":\"m.room.create\"}"};
 
         WHEN("parse_inbound_pdu_envelope is called")
         {
@@ -474,8 +460,7 @@ SCENARIO("Room v12: m.room.create PDU without room_id is accepted and room_id is
 // event. In room version 12, the create event ID is derived deterministically
 // from the room ID (same hash, '!' → '$'), making violations detectable at
 // parse time without a store lookup."
-SCENARIO("Room v12: PDU with m.room.create in auth_events is rejected",
-         "[pdu][format][conformance][room-v12]")
+SCENARIO("Room v12: PDU with m.room.create in auth_events is rejected", "[pdu][format][conformance][room-v12]")
 {
     // A 43-char base64url hash, matching what a real v12 room looks like.
     // room_id = "!AAAA..." means create_event_id = "$AAAA...".
@@ -485,17 +470,19 @@ SCENARIO("Room v12: PDU with m.room.create in auth_events is rejected",
     {
         auto const v12_room_id = "!" + std::string{k_v12_hash};
         auto const v12_create_id = "$" + std::string{k_v12_hash};
-        auto const bad_pdu = std::string{
-            "{\"auth_events\":[\"" + v12_create_id + "\"],"
-            "\"content\":{\"body\":\"hello\",\"msgtype\":\"m.text\"},"
-            "\"depth\":5,"
-            "\"hashes\":{\"sha256\":\"x\"},"
-            "\"origin_server_ts\":2000,"
-            "\"prev_events\":[],"
-            "\"room_id\":\"" + v12_room_id + "\","
-            "\"sender\":\"@alice:example.org\","
-            "\"signatures\":{},"
-            "\"type\":\"m.room.message\"}"};
+        auto const bad_pdu = std::string{"{\"auth_events\":[\"" + v12_create_id +
+                                         "\"],"
+                                         "\"content\":{\"body\":\"hello\",\"msgtype\":\"m.text\"},"
+                                         "\"depth\":5,"
+                                         "\"hashes\":{\"sha256\":\"x\"},"
+                                         "\"origin_server_ts\":2000,"
+                                         "\"prev_events\":[],"
+                                         "\"room_id\":\"" +
+                                         v12_room_id +
+                                         "\","
+                                         "\"sender\":\"@alice:example.org\","
+                                         "\"signatures\":{},"
+                                         "\"type\":\"m.room.message\"}"};
 
         WHEN("parse_inbound_pdu_envelope is called")
         {
@@ -514,17 +501,19 @@ SCENARIO("Room v12: PDU with m.room.create in auth_events is rejected",
     {
         auto const v12_room_id = "!" + std::string{k_v12_hash};
         auto const other_event_id = "$BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBbb";
-        auto const good_pdu = std::string{
-            "{\"auth_events\":[\"" + std::string{other_event_id} + "\"],"
-            "\"content\":{\"body\":\"hello\",\"msgtype\":\"m.text\"},"
-            "\"depth\":5,"
-            "\"hashes\":{\"sha256\":\"x\"},"
-            "\"origin_server_ts\":2000,"
-            "\"prev_events\":[],"
-            "\"room_id\":\"" + v12_room_id + "\","
-            "\"sender\":\"@alice:example.org\","
-            "\"signatures\":{},"
-            "\"type\":\"m.room.message\"}"};
+        auto const good_pdu = std::string{"{\"auth_events\":[\"" + std::string{other_event_id} +
+                                          "\"],"
+                                          "\"content\":{\"body\":\"hello\",\"msgtype\":\"m.text\"},"
+                                          "\"depth\":5,"
+                                          "\"hashes\":{\"sha256\":\"x\"},"
+                                          "\"origin_server_ts\":2000,"
+                                          "\"prev_events\":[],"
+                                          "\"room_id\":\"" +
+                                          v12_room_id +
+                                          "\","
+                                          "\"sender\":\"@alice:example.org\","
+                                          "\"signatures\":{},"
+                                          "\"type\":\"m.room.message\"}"};
 
         WHEN("parse_inbound_pdu_envelope is called")
         {
@@ -553,21 +542,19 @@ SCENARIO("Room v12: PDU with m.room.create in auth_events is rejected",
 // signatures and unsigned fields."
 //
 // Servers MUST verify the content hash before accepting an inbound PDU.
-SCENARIO("make_content_hash produces a non-empty stable sha256 for a well-formed PDU",
-         "[pdu][hash][conformance]")
+SCENARIO("make_content_hash produces a non-empty stable sha256 for a well-formed PDU", "[pdu][hash][conformance]")
 {
     GIVEN("a well-formed PDU JSON object")
     {
         // Canonical JSON of a minimal room-v3+ PDU (no hashes/signatures/unsigned).
-        auto const pdu_json = std::string{
-            "{\"auth_events\":[\"$create:example.org\"],"
-            "\"content\":{\"body\":\"hello\",\"msgtype\":\"m.text\"},"
-            "\"depth\":5,"
-            "\"origin_server_ts\":1000000,"
-            "\"prev_events\":[\"$prev:example.org\"],"
-            "\"room_id\":\"!room:example.org\","
-            "\"sender\":\"@alice:example.org\","
-            "\"type\":\"m.room.message\"}"};
+        auto const pdu_json = std::string{"{\"auth_events\":[\"$create:example.org\"],"
+                                          "\"content\":{\"body\":\"hello\",\"msgtype\":\"m.text\"},"
+                                          "\"depth\":5,"
+                                          "\"origin_server_ts\":1000000,"
+                                          "\"prev_events\":[\"$prev:example.org\"],"
+                                          "\"room_id\":\"!room:example.org\","
+                                          "\"sender\":\"@alice:example.org\","
+                                          "\"type\":\"m.room.message\"}"};
 
         auto const parsed = merovingian::canonicaljson::parse_lossless(pdu_json);
 
@@ -602,15 +589,14 @@ SCENARIO("verify_pdu_content_hash accepts a PDU whose hashes.sha256 matches the 
 {
     GIVEN("a PDU JSON and its correct content hash")
     {
-        auto const pdu_no_hashes = std::string{
-            "{\"auth_events\":[\"$create:example.org\"],"
-            "\"content\":{\"body\":\"hello\",\"msgtype\":\"m.text\"},"
-            "\"depth\":5,"
-            "\"origin_server_ts\":1000000,"
-            "\"prev_events\":[\"$prev:example.org\"],"
-            "\"room_id\":\"!room:example.org\","
-            "\"sender\":\"@alice:example.org\","
-            "\"type\":\"m.room.message\"}"};
+        auto const pdu_no_hashes = std::string{"{\"auth_events\":[\"$create:example.org\"],"
+                                               "\"content\":{\"body\":\"hello\",\"msgtype\":\"m.text\"},"
+                                               "\"depth\":5,"
+                                               "\"origin_server_ts\":1000000,"
+                                               "\"prev_events\":[\"$prev:example.org\"],"
+                                               "\"room_id\":\"!room:example.org\","
+                                               "\"sender\":\"@alice:example.org\","
+                                               "\"type\":\"m.room.message\"}"};
 
         // Compute the correct hash from the unhashed event.
         auto const unhashed = merovingian::canonicaljson::parse_lossless(pdu_no_hashes);
@@ -619,17 +605,18 @@ SCENARIO("verify_pdu_content_hash accepts a PDU whose hashes.sha256 matches the 
         REQUIRE_FALSE(correct_hash.sha256.empty());
 
         // Build a PDU that includes hashes.sha256 with the correct value.
-        auto const pdu_with_correct_hash = std::string{
-            "{\"auth_events\":[\"$create:example.org\"],"
-            "\"content\":{\"body\":\"hello\",\"msgtype\":\"m.text\"},"
-            "\"depth\":5,"
-            "\"hashes\":{\"sha256\":\"" + correct_hash.sha256 + "\"},"
-            "\"origin_server_ts\":1000000,"
-            "\"prev_events\":[\"$prev:example.org\"],"
-            "\"room_id\":\"!room:example.org\","
-            "\"sender\":\"@alice:example.org\","
-            "\"signatures\":{\"example.org\":{\"ed25519:1\":\"sig\"}},"
-            "\"type\":\"m.room.message\"}"};
+        auto const pdu_with_correct_hash = std::string{"{\"auth_events\":[\"$create:example.org\"],"
+                                                       "\"content\":{\"body\":\"hello\",\"msgtype\":\"m.text\"},"
+                                                       "\"depth\":5,"
+                                                       "\"hashes\":{\"sha256\":\"" +
+                                                       correct_hash.sha256 +
+                                                       "\"},"
+                                                       "\"origin_server_ts\":1000000,"
+                                                       "\"prev_events\":[\"$prev:example.org\"],"
+                                                       "\"room_id\":\"!room:example.org\","
+                                                       "\"sender\":\"@alice:example.org\","
+                                                       "\"signatures\":{\"example.org\":{\"ed25519:1\":\"sig\"}},"
+                                                       "\"type\":\"m.room.message\"}"};
 
         auto const parsed = merovingian::canonicaljson::parse_lossless(pdu_with_correct_hash);
         REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
@@ -652,22 +639,21 @@ SCENARIO("verify_pdu_content_hash accepts a PDU whose hashes.sha256 matches the 
 //
 // A PDU that carries an incorrect hashes.sha256 MUST be rejected — the content
 // was tampered with after signing.
-SCENARIO("verify_pdu_content_hash rejects a PDU with an incorrect hashes.sha256",
-         "[pdu][hash][conformance]")
+SCENARIO("verify_pdu_content_hash rejects a PDU with an incorrect hashes.sha256", "[pdu][hash][conformance]")
 {
     GIVEN("a PDU JSON with a wrong sha256 value in hashes")
     {
-        auto const pdu_wrong_hash = std::string{
-            "{\"auth_events\":[\"$create:example.org\"],"
-            "\"content\":{\"body\":\"hello\",\"msgtype\":\"m.text\"},"
-            "\"depth\":5,"
-            "\"hashes\":{\"sha256\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"},"
-            "\"origin_server_ts\":1000000,"
-            "\"prev_events\":[\"$prev:example.org\"],"
-            "\"room_id\":\"!room:example.org\","
-            "\"sender\":\"@alice:example.org\","
-            "\"signatures\":{\"example.org\":{\"ed25519:1\":\"sig\"}},"
-            "\"type\":\"m.room.message\"}"};
+        auto const pdu_wrong_hash =
+            std::string{"{\"auth_events\":[\"$create:example.org\"],"
+                        "\"content\":{\"body\":\"hello\",\"msgtype\":\"m.text\"},"
+                        "\"depth\":5,"
+                        "\"hashes\":{\"sha256\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"},"
+                        "\"origin_server_ts\":1000000,"
+                        "\"prev_events\":[\"$prev:example.org\"],"
+                        "\"room_id\":\"!room:example.org\","
+                        "\"sender\":\"@alice:example.org\","
+                        "\"signatures\":{\"example.org\":{\"ed25519:1\":\"sig\"}},"
+                        "\"type\":\"m.room.message\"}"};
 
         auto const parsed = merovingian::canonicaljson::parse_lossless(pdu_wrong_hash);
         REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
@@ -689,21 +675,19 @@ SCENARIO("verify_pdu_content_hash rejects a PDU with an incorrect hashes.sha256"
 // URL: ../../docs/matrix-v1.18-spec/server-server-api.md#calculating-the-content-hash-for-an-event
 //
 // A PDU that is missing the hashes field entirely MUST be rejected.
-SCENARIO("verify_pdu_content_hash rejects a PDU with no hashes field",
-         "[pdu][hash][conformance]")
+SCENARIO("verify_pdu_content_hash rejects a PDU with no hashes field", "[pdu][hash][conformance]")
 {
     GIVEN("a PDU JSON with no hashes field")
     {
-        auto const pdu_no_hashes = std::string{
-            "{\"auth_events\":[\"$create:example.org\"],"
-            "\"content\":{\"body\":\"hello\",\"msgtype\":\"m.text\"},"
-            "\"depth\":5,"
-            "\"origin_server_ts\":1000000,"
-            "\"prev_events\":[\"$prev:example.org\"],"
-            "\"room_id\":\"!room:example.org\","
-            "\"sender\":\"@alice:example.org\","
-            "\"signatures\":{\"example.org\":{\"ed25519:1\":\"sig\"}},"
-            "\"type\":\"m.room.message\"}"};
+        auto const pdu_no_hashes = std::string{"{\"auth_events\":[\"$create:example.org\"],"
+                                               "\"content\":{\"body\":\"hello\",\"msgtype\":\"m.text\"},"
+                                               "\"depth\":5,"
+                                               "\"origin_server_ts\":1000000,"
+                                               "\"prev_events\":[\"$prev:example.org\"],"
+                                               "\"room_id\":\"!room:example.org\","
+                                               "\"sender\":\"@alice:example.org\","
+                                               "\"signatures\":{\"example.org\":{\"ed25519:1\":\"sig\"}},"
+                                               "\"type\":\"m.room.message\"}"};
 
         auto const parsed = merovingian::canonicaljson::parse_lossless(pdu_no_hashes);
         REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);

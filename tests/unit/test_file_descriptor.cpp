@@ -129,11 +129,10 @@ SCENARIO("close_all_file_descriptors_except preserves stdio and selected descrip
             if (pid == 0)
             {
                 merovingian::core::close_all_file_descriptors_except(std::set<int>{keep_fd});
-                auto const ok = ::fcntl(keep_fd, F_GETFD, 0) >= 0 &&     // kept fd open
-                                ::fcntl(close_fd, F_GETFD, 0) < 0 &&     // other fd closed
+                auto const ok = ::fcntl(keep_fd, F_GETFD, 0) >= 0 &&      // kept fd open
+                                ::fcntl(close_fd, F_GETFD, 0) < 0 &&      // other fd closed
                                 ::fcntl(STDIN_FILENO, F_GETFD, 0) >= 0 && // stdio preserved
-                                ::fcntl(STDOUT_FILENO, F_GETFD, 0) >= 0 &&
-                                ::fcntl(STDERR_FILENO, F_GETFD, 0) >= 0;
+                                ::fcntl(STDOUT_FILENO, F_GETFD, 0) >= 0 && ::fcntl(STDERR_FILENO, F_GETFD, 0) >= 0;
                 ::_exit(ok ? 0 : 1);
             }
 

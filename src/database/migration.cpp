@@ -379,21 +379,25 @@ auto apply_migration_plan(SchemaState state, MigrationPlan const& plan) -> Migra
                 return {false, "migration statement cannot update schema state: " + statement.name, std::move(state)};
             }
         }
-        log_diagnostic("step.applied", {
-                                           {"step_name",  step.name,                                             false},
-                                           {"version",    std::to_string(step.version),                          false},
-                                           {"direction",  std::string{migration_direction_name(step.direction)}, false},
-                                           {"statements", std::to_string(step.statements.size()),                false}
-        }, observability::LogEventSeverity::info);
+        log_diagnostic("step.applied",
+                       {
+                           {"step_name",  step.name,                                             false},
+                           {"version",    std::to_string(step.version),                          false},
+                           {"direction",  std::string{migration_direction_name(step.direction)}, false},
+                           {"statements", std::to_string(step.statements.size()),                false}
+        },
+                       observability::LogEventSeverity::info);
         state.applied_migrations.push_back({step.version, step.name, step.direction});
         state.version = step.version;
     }
-    log_diagnostic("plan.complete", {
-                                        {"direction",       std::string{migration_direction_name(plan.direction)}, false},
-                                        {"current_version", std::to_string(plan.current_version),                  false},
-                                        {"target_version",  std::to_string(plan.target_version),                   false},
-                                        {"steps_applied",   std::to_string(plan.steps.size()),                     false}
-    }, observability::LogEventSeverity::info);
+    log_diagnostic("plan.complete",
+                   {
+                       {"direction",       std::string{migration_direction_name(plan.direction)}, false},
+                       {"current_version", std::to_string(plan.current_version),                  false},
+                       {"target_version",  std::to_string(plan.target_version),                   false},
+                       {"steps_applied",   std::to_string(plan.steps.size()),                     false}
+    },
+                   observability::LogEventSeverity::info);
     return {true, {}, std::move(state)};
 }
 

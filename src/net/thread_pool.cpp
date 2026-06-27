@@ -79,7 +79,9 @@ ThreadPool::ThreadPool(std::size_t worker_count)
     {
         for (auto i = std::size_t{0U}; i < worker_count; ++i)
         {
-            workers_.emplace_back([this] { worker_loop(); });
+            workers_.emplace_back([this] {
+                worker_loop();
+            });
         }
     }
     catch (...)
@@ -89,7 +91,9 @@ ThreadPool::ThreadPool(std::size_t worker_count)
         request_stop();
         throw;
     }
-    log_diagnostic("pool.started", {{"workers", std::to_string(worker_count), false}});
+    log_diagnostic("pool.started", {
+                                       {"workers", std::to_string(worker_count), false}
+    });
 }
 
 ThreadPool::~ThreadPool()
@@ -103,7 +107,9 @@ auto ThreadPool::submit(std::function<void()> work) -> bool
         auto lock = std::lock_guard{queue_mutex_};
         if (stopping_)
         {
-            log_diagnostic("submit.dropped", {{"reason", "pool_stopped", false}});
+            log_diagnostic("submit.dropped", {
+                                                 {"reason", "pool_stopped", false}
+            });
             return false;
         }
         queue_.push(std::move(work));
@@ -153,7 +159,9 @@ auto ThreadPool::worker_loop() -> void
         auto work = std::function<void()>{};
         {
             auto lock = std::unique_lock{queue_mutex_};
-            queue_cv_.wait(lock, [this] { return stopping_ || !queue_.empty(); });
+            queue_cv_.wait(lock, [this] {
+                return stopping_ || !queue_.empty();
+            });
             if (stopping_ && queue_.empty())
             {
                 return;
@@ -172,11 +180,10 @@ auto ThreadPool::worker_loop() -> void
             // worker is diagnosable from the log stream. We never let the
             // exception escape the worker loop — std::thread::join would
             // call std::terminate.
-            log_diagnostic("worker.exception",
-                           {
-                               {"action", "swallowed",                  false},
-                               {"type",   current_exception_type_name(), false},
-                               {"what",   current_exception_message(),   false}
+            log_diagnostic("worker.exception", {
+                                                   {"action", "swallowed",                   false},
+                                                   {"type",   current_exception_type_name(), false},
+                                                   {"what",   current_exception_message(),   false}
             });
         }
     }

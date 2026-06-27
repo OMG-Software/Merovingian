@@ -597,8 +597,7 @@ SCENARIO("PostgreSQL savepoints isolate a failing statement without losing prior
             {
                 // The duplicate insert must have been rejected.
                 REQUIRE_FALSE(failed.ok);
-                auto const rows = executor.execute(
-                    {"sp_select", "SELECT id FROM " + probe + " ORDER BY id", {}});
+                auto const rows = executor.execute({"sp_select", "SELECT id FROM " + probe + " ORDER BY id", {}});
                 REQUIRE(rows.ok);
                 // Exactly 'keep' and 'other' survive; the duplicate left no trace.
                 REQUIRE(rows.rows.size() == 2U);
@@ -642,19 +641,19 @@ SCENARIO("PostgreSQL concurrent connections enforce isolation and commit visibil
             REQUIRE(writer_exec.execute({"cc_insert", "INSERT INTO " + probe + " (id) VALUES ('shared')", {}}).ok);
 
             // Before the writer commits, the reader's snapshot must not see the row.
-            auto const before = reader_exec.execute(
-                {"cc_before", "SELECT count(*) FROM " + probe + " WHERE id = 'shared'", {}});
+            auto const before =
+                reader_exec.execute({"cc_before", "SELECT count(*) FROM " + probe + " WHERE id = 'shared'", {}});
 
             REQUIRE(writer_exec.execute({"cc_commit", "COMMIT", {}}).ok);
 
             // After commit, a fresh read on the other connection must see the row.
-            auto const after = reader_exec.execute(
-                {"cc_after", "SELECT count(*) FROM " + probe + " WHERE id = 'shared'", {}});
+            auto const after =
+                reader_exec.execute({"cc_after", "SELECT count(*) FROM " + probe + " WHERE id = 'shared'", {}});
 
             // A second connection inserting the same primary key must be rejected,
             // proving the unique constraint is enforced across connections.
-            auto const conflict = reader_exec.execute(
-                {"cc_conflict", "INSERT INTO " + probe + " (id) VALUES ('shared')", {}});
+            auto const conflict =
+                reader_exec.execute({"cc_conflict", "INSERT INTO " + probe + " (id) VALUES ('shared')", {}});
 
             THEN("uncommitted writes stay invisible, committed writes appear, and the PK is enforced")
             {

@@ -190,8 +190,7 @@ private:
         }
     }
     auto hashes = merovingian::canonicaljson::Object{};
-    hashes.push_back(
-        merovingian::canonicaljson::make_member("sha256", merovingian::canonicaljson::Value{hash.sha256}));
+    hashes.push_back(merovingian::canonicaljson::make_member("sha256", merovingian::canonicaljson::Value{hash.sha256}));
     new_root.push_back(
         merovingian::canonicaljson::make_member("hashes", merovingian::canonicaljson::Value{std::move(hashes)}));
     return merovingian::canonicaljson::Value{std::move(new_root)};
@@ -236,13 +235,12 @@ private:
     auto secret_key = std::array<unsigned char, crypto_sign_SECRETKEYBYTES>{};
     REQUIRE(derive_test_keypair(token, public_key, secret_key));
     // "origin" sits between "hashes" and "origin_server_ts" in canonical order.
-    auto const event_json =
-        std::string{"{\"auth_events\":[],\"content\":{\"body\":\"hi\",\"msgtype\":\"m.text\"},"
-                    "\"depth\":1,\"hashes\":{\"sha256\":\"hash\"},\"origin\":\""} +
-        origin +
-        "\",\"origin_server_ts\":1,\"prev_events\":[],"
-        "\"room_id\":\"!room:example.org\",\"sender\":\"@alice:" +
-        origin + "\",\"type\":\"m.room.message\"}";
+    auto const event_json = std::string{"{\"auth_events\":[],\"content\":{\"body\":\"hi\",\"msgtype\":\"m.text\"},"
+                                        "\"depth\":1,\"hashes\":{\"sha256\":\"hash\"},\"origin\":\""} +
+                            origin +
+                            "\",\"origin_server_ts\":1,\"prev_events\":[],"
+                            "\"room_id\":\"!room:example.org\",\"sender\":\"@alice:" +
+                            origin + "\",\"type\":\"m.room.message\"}";
     auto const parsed = merovingian::canonicaljson::parse_lossless(event_json);
     auto const* policy = merovingian::rooms::find_room_version_policy("10");
     REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
@@ -278,20 +276,18 @@ private:
     return "{\"type\":\"m.room.power_levels\",\"state_key\":\"\",\"sender\":\"" + std::string{sender} +
            "\",\"room_id\":\"!room:example.org\",\"content\":{"
            "\"ban\":50,\"invite\":50,\"kick\":50,\"redact\":50,"
-           "\"users_default\":" + std::to_string(users_default) +
-           ",\"state_default\":" + std::to_string(state_default) +
-           ",\"events_default\":0,\"users\":{\"" + std::string{admin_user} + "\":" +
-           std::to_string(admin_level) +
+           "\"users_default\":" +
+           std::to_string(users_default) + ",\"state_default\":" + std::to_string(state_default) +
+           ",\"events_default\":0,\"users\":{\"" + std::string{admin_user} + "\":" + std::to_string(admin_level) +
            "}},\"origin_server_ts\":2,\"depth\":1,\"prev_events\":[],\"auth_events\":[],"
            "\"hashes\":{\"sha256\":\"hash\"}}";
 }
 
-[[nodiscard]] auto auth_member_event(std::string_view sender, std::string_view state_key,
-                                     std::string_view membership) -> std::string
+[[nodiscard]] auto auth_member_event(std::string_view sender, std::string_view state_key, std::string_view membership)
+    -> std::string
 {
-    return "{\"type\":\"m.room.member\",\"state_key\":\"" + std::string{state_key} +
-           "\",\"sender\":\"" + std::string{sender} +
-           "\",\"room_id\":\"!room:example.org\",\"content\":{\"membership\":\"" +
+    return "{\"type\":\"m.room.member\",\"state_key\":\"" + std::string{state_key} + "\",\"sender\":\"" +
+           std::string{sender} + "\",\"room_id\":\"!room:example.org\",\"content\":{\"membership\":\"" +
            std::string{membership} +
            "\"},\"origin_server_ts\":3,\"depth\":2,\"prev_events\":[],\"auth_events\":[],"
            "\"hashes\":{\"sha256\":\"hash\"}}";
@@ -305,11 +301,11 @@ private:
            "\"hashes\":{\"sha256\":\"hash\"}}";
 }
 
-[[nodiscard]] auto auth_state_event(std::string_view sender, std::string_view type,
-                                    std::string_view state_key) -> std::string
+[[nodiscard]] auto auth_state_event(std::string_view sender, std::string_view type, std::string_view state_key)
+    -> std::string
 {
-    return "{\"type\":\"" + std::string{type} + "\",\"state_key\":\"" + std::string{state_key} +
-           "\",\"sender\":\"" + std::string{sender} +
+    return "{\"type\":\"" + std::string{type} + "\",\"state_key\":\"" + std::string{state_key} + "\",\"sender\":\"" +
+           std::string{sender} +
            "\",\"room_id\":\"!room:example.org\",\"content\":{},"
            "\"origin_server_ts\":5,\"depth\":4,\"prev_events\":[],\"auth_events\":[],"
            "\"hashes\":{\"sha256\":\"hash\"}}";
@@ -664,7 +660,7 @@ SCENARIO("Federation PDU authorization validates the sender server's signature, 
         //   @alice:matrix.example.org now has no signature from matrix.example.org.
         auto const origin = std::string{"matrix.example.org"};
         auto const key_id = std::string{"ed25519:auto"};
-        auto const token  = std::string{"verify-token"};
+        auto const token = std::string{"verify-token"};
         auto valid = merovingian::federation::parse_federation_pdu(signed_json_pdu(origin, key_id, token));
         auto bad_sender = valid;
         bad_sender.sender = "@alice:elsewhere.example.org";
@@ -674,16 +670,15 @@ SCENARIO("Federation PDU authorization validates the sender server's signature, 
         bad_signature.signatures.front().server_name = "elsewhere.example.org";
 
         auto key = merovingian::federation::FederationKeyRecord{};
-        key.server_name      = origin;
-        key.key_id           = key_id;
-        key.valid_until_ts   = 2000U;
+        key.server_name = origin;
+        key.key_id = key_id;
+        key.valid_until_ts = 2000U;
         key.public_key_bytes = merovingian::federation::test::keypair_from_seed(token).public_key;
 
         WHEN("the PDUs are authorized with the matrix.example.org signing key")
         {
             auto const accepted = merovingian::federation::authorize_federation_pdu(valid, origin, key);
-            auto const rejected_sender =
-                merovingian::federation::authorize_federation_pdu(bad_sender, origin, key);
+            auto const rejected_sender = merovingian::federation::authorize_federation_pdu(bad_sender, origin, key);
             auto const rejected_spoofed_sender =
                 merovingian::federation::authorize_federation_pdu(spoofed_sender, origin, key);
             auto const rejected_signature =
@@ -716,21 +711,19 @@ SCENARIO("Federation PDU authorization fail-closes relayed PDUs whose sender-dom
         // was authored by alice.example.org; relay.example.org is forwarding it. The
         // PDU carries a real Ed25519 signature from alice.example.org.
         auto const event_server = std::string{"alice.example.org"};
-        auto const relay_origin  = std::string{"relay.example.org"};
-        auto const key_id        = std::string{"ed25519:auto"};
-        auto const token         = std::string{"alice-server-key"};
-        auto const pdu = merovingian::federation::parse_federation_pdu(
-            signed_json_pdu(event_server, key_id, token));
+        auto const relay_origin = std::string{"relay.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const token = std::string{"alice-server-key"};
+        auto const pdu = merovingian::federation::parse_federation_pdu(signed_json_pdu(event_server, key_id, token));
         auto key = merovingian::federation::FederationKeyRecord{};
-        key.server_name      = event_server;
-        key.key_id           = key_id;
-        key.valid_until_ts   = 2000U;
+        key.server_name = event_server;
+        key.key_id = key_id;
+        key.valid_until_ts = 2000U;
         key.public_key_bytes = merovingian::federation::test::keypair_from_seed(token).public_key;
 
         WHEN("the PDU is authorized with the sender domain's signing key")
         {
-            auto const accepted =
-                merovingian::federation::authorize_federation_pdu(pdu, relay_origin, key);
+            auto const accepted = merovingian::federation::authorize_federation_pdu(pdu, relay_origin, key);
 
             THEN("the PDU is accepted because alice.example.org's signature verifies")
             {
@@ -744,8 +737,7 @@ SCENARIO("Federation PDU authorization fail-closes relayed PDUs whose sender-dom
         {
             // Fail-closed (#270): a relayed PDU whose sender-domain key was not
             // resolved MUST be rejected — the signature cannot be verified.
-            auto const rejected =
-                merovingian::federation::authorize_federation_pdu(pdu, relay_origin);
+            auto const rejected = merovingian::federation::authorize_federation_pdu(pdu, relay_origin);
 
             THEN("the PDU is rejected because the sender domain key is unavailable")
             {
@@ -761,17 +753,19 @@ SCENARIO("Federation transaction handler uses room_version_resolver for PDU auth
 {
     GIVEN("a runtime with a known remote and a room version resolver that returns '12'")
     {
-        auto runtime    = merovingian::federation::make_federation_runtime_state(runtime_config());
-        auto const origin  = std::string{"matrix.example.org"};
-        auto const key_id  = std::string{"ed25519:auto"};
-        auto const token   = std::string{"verify-token"};
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const token = std::string{"verify-token"};
         merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
 
         WHEN("the resolver is set and a valid signed PDU is delivered")
         {
-            runtime.room_version_resolver = [](std::string_view) -> std::string { return "12"; };
+            runtime.room_version_resolver = [](std::string_view) -> std::string {
+                return "12";
+            };
             auto const json_pdu = signed_json_pdu(origin, key_id, token);
-            auto const request  = signed_request(origin, key_id, token, transaction_body(origin, json_pdu));
+            auto const request = signed_request(origin, key_id, token, transaction_body(origin, json_pdu));
             auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
 
             THEN("the transaction is accepted using the resolver-provided room version")
@@ -784,7 +778,7 @@ SCENARIO("Federation transaction handler uses room_version_resolver for PDU auth
         {
             // No resolver set: fallback to room version "12"
             auto const json_pdu = signed_json_pdu(origin, key_id, token);
-            auto const request  = signed_request(origin, key_id, token, transaction_body(origin, json_pdu));
+            auto const request = signed_request(origin, key_id, token, transaction_body(origin, json_pdu));
             auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
 
             THEN("the transaction is accepted using the default room version '12' fallback")
@@ -809,20 +803,22 @@ SCENARIO("Inbound v10 room PDU with 'origin' field fails verification when room 
 {
     GIVEN("a v10 room PDU carrying 'origin', signed with v10 redaction rules")
     {
-        auto const origin   = std::string{"synapse.example.org"};
-        auto const key_id   = std::string{"ed25519:a_RXGa"};
-        auto const token    = std::string{"v10-test-token"};
+        auto const origin = std::string{"synapse.example.org"};
+        auto const key_id = std::string{"ed25519:a_RXGa"};
+        auto const token = std::string{"v10-test-token"};
         auto const pdu_json = signed_v10_pdu(origin, key_id, token);
         auto key = merovingian::federation::FederationKeyRecord{};
-        key.server_name      = origin;
-        key.key_id           = key_id;
-        key.valid_until_ts   = 2000U;
+        key.server_name = origin;
+        key.key_id = key_id;
+        key.valid_until_ts = 2000U;
         key.public_key_bytes = merovingian::federation::test::keypair_from_seed(token).public_key;
 
         WHEN("the PDU is parsed with a resolver returning '10' and then authorized")
         {
-            auto const pdu = merovingian::federation::parse_federation_pdu(
-                pdu_json, [](std::string_view) -> std::string { return "10"; });
+            auto const pdu =
+                merovingian::federation::parse_federation_pdu(pdu_json, [](std::string_view) -> std::string {
+                    return "10";
+                });
             auto const decision = merovingian::federation::authorize_federation_pdu(pdu, origin, key);
 
             THEN("the PDU is accepted because v10 redaction keeps 'origin' in the signing payload")
@@ -833,7 +829,7 @@ SCENARIO("Inbound v10 room PDU with 'origin' field fails verification when room 
 
         WHEN("the PDU is parsed without a resolver (falls back to '12') and then authorized")
         {
-            auto const pdu      = merovingian::federation::parse_federation_pdu(pdu_json);
+            auto const pdu = merovingian::federation::parse_federation_pdu(pdu_json);
             auto const decision = merovingian::federation::authorize_federation_pdu(pdu, origin, key);
 
             THEN("the PDU is rejected because v12 redaction strips 'origin', changing the signing hash")
@@ -926,22 +922,19 @@ SCENARIO("Full Matrix event auth rejects PDUs that pass transport checks but vio
     auto base_auth = merovingian::events::AuthEventMap{};
     base_auth.create = parse_auth_json(auth_create_event("@alice:example.org"));
     // Alice is admin (level 100); users_default=0; state_default=50.
-    base_auth.power_levels = parse_auth_json(
-        auth_power_levels_event("@alice:example.org", 0, 50, "@alice:example.org", 100));
+    base_auth.power_levels =
+        parse_auth_json(auth_power_levels_event("@alice:example.org", 0, 50, "@alice:example.org", 100));
     // Alice is joined.
-    base_auth.sender_member = parse_auth_json(
-        auth_member_event("@alice:example.org", "@alice:example.org", "join"));
+    base_auth.sender_member = parse_auth_json(auth_member_event("@alice:example.org", "@alice:example.org", "join"));
 
     GIVEN("a room with alice as admin (power=100) and bob banned")
     {
-        auto const bob_ban = parse_auth_json(
-            auth_member_event("@alice:example.org", "@bob:remote.org", "ban"));
+        auto const bob_ban = parse_auth_json(auth_member_event("@alice:example.org", "@bob:remote.org", "ban"));
 
         WHEN("alice (power=100) sends a message in a room with events_default=0")
         {
             auto const event = parse_auth_json(auth_message_event("@alice:example.org"));
-            auto const decision =
-                merovingian::events::authorize_event_against_auth_events(event, *policy, base_auth);
+            auto const decision = merovingian::events::authorize_event_against_auth_events(event, *policy, base_auth);
 
             THEN("alice's message is allowed because she has sufficient power")
             {
@@ -953,8 +946,7 @@ SCENARIO("Full Matrix event auth rejects PDUs that pass transport checks but vio
 
         WHEN("a banned sender (@bob) attempts to send a state event")
         {
-            auto const state_event = parse_auth_json(
-                auth_state_event("@bob:remote.org", "m.room.topic", ""));
+            auto const state_event = parse_auth_json(auth_state_event("@bob:remote.org", "m.room.topic", ""));
             auto auth_for_bob = base_auth;
             // Replace sender_member with bob's ban event.
             auth_for_bob.sender_member = bob_ban;
@@ -974,8 +966,7 @@ SCENARIO("Full Matrix event auth rejects PDUs that pass transport checks but vio
         {
             auto const event = parse_auth_json(auth_message_event("@alice:example.org"));
             auto empty_auth = merovingian::events::AuthEventMap{};
-            auto const decision =
-                merovingian::events::authorize_event_against_auth_events(event, *policy, empty_auth);
+            auto const decision = merovingian::events::authorize_event_against_auth_events(event, *policy, empty_auth);
 
             THEN("the event is rejected because no create event exists for the room")
             {
@@ -988,8 +979,7 @@ SCENARIO("Full Matrix event auth rejects PDUs that pass transport checks but vio
 
         WHEN("a non-member (@eve) attempts to invite someone into a non-public room")
         {
-            auto const invite = parse_auth_json(
-                auth_member_event("@eve:evil.org", "@carol:example.org", "invite"));
+            auto const invite = parse_auth_json(auth_member_event("@eve:evil.org", "@carol:example.org", "invite"));
             auto auth_for_eve = base_auth;
             // Eve has no membership entry — she is effectively in state=leave.
             auth_for_eve.sender_member = {};
@@ -1009,10 +999,9 @@ SCENARIO("Full Matrix event auth rejects PDUs that pass transport checks but vio
         {
             // Mallory is joined but has default power (0).
             auto auth_for_mallory = base_auth;
-            auth_for_mallory.sender_member = parse_auth_json(
-                auth_member_event("@mallory:remote.org", "@mallory:remote.org", "join"));
-            auto const state_event = parse_auth_json(
-                auth_state_event("@mallory:remote.org", "m.room.topic", ""));
+            auth_for_mallory.sender_member =
+                parse_auth_json(auth_member_event("@mallory:remote.org", "@mallory:remote.org", "join"));
+            auto const state_event = parse_auth_json(auth_state_event("@mallory:remote.org", "m.room.topic", ""));
             auto const decision =
                 merovingian::events::authorize_event_against_auth_events(state_event, *policy, auth_for_mallory);
 
@@ -1041,27 +1030,26 @@ SCENARIO("Relayed PDU signature is verified against the sender domain key via th
 {
     GIVEN("a PDU authored by alice.example.org but delivered by relay.example.org")
     {
-        auto runtime          = merovingian::federation::make_federation_runtime_state(runtime_config());
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
         auto const relay_origin = std::string{"relay.example.org"};
         auto const relay_key_id = std::string{"ed25519:relay"};
-        auto const relay_token  = std::string{"relay-server-key"};
+        auto const relay_token = std::string{"relay-server-key"};
         auto const event_server = std::string{"alice.example.org"};
         auto const event_key_id = std::string{"ed25519:auto"};
-        auto const event_token  = std::string{"alice-server-key"};
+        auto const event_token = std::string{"alice-server-key"};
         // relay.example.org is a known trusted remote (provides X-Matrix auth).
         merovingian::federation::upsert_remote(runtime, remote_for(relay_origin, relay_key_id, relay_token));
 
         auto const alice_pdu_json = signed_json_pdu(event_server, event_key_id, event_token);
         // Transaction is signed by relay.example.org; the PDU within was authored
         // and cryptographically signed by alice.example.org.
-        auto const request = signed_request(relay_origin, relay_key_id, relay_token,
-                                            transaction_body(relay_origin, alice_pdu_json));
+        auto const request =
+            signed_request(relay_origin, relay_key_id, relay_token, transaction_body(relay_origin, alice_pdu_json));
 
         WHEN("a resolver that successfully resolves alice.example.org's key is wired")
         {
             auto accepted_event_id = std::string{};
-            runtime.pdu_sink =
-                [&accepted_event_id](merovingian::federation::InboundPduEnvelope const& env)
+            runtime.pdu_sink = [&accepted_event_id](merovingian::federation::InboundPduEnvelope const& env)
                 -> merovingian::federation::PduIngestionResult {
                 accepted_event_id = env.event_id;
                 return {merovingian::federation::PduIngestionStatus::accepted, {}};
@@ -1093,8 +1081,8 @@ SCENARIO("Relayed PDU signature is verified against the sender domain key via th
         {
             auto sink_called = bool{false};
             runtime.pdu_sink =
-                [&sink_called](merovingian::federation::InboundPduEnvelope const&)
-                -> merovingian::federation::PduIngestionResult {
+                [&sink_called](
+                    merovingian::federation::InboundPduEnvelope const&) -> merovingian::federation::PduIngestionResult {
                 sink_called = true;
                 return {merovingian::federation::PduIngestionStatus::accepted, {}};
             };
@@ -1125,14 +1113,14 @@ SCENARIO("Relayed PDU signature is verified against the sender domain key via th
         {
             auto sink_called = bool{false};
             runtime.pdu_sink =
-                [&sink_called](merovingian::federation::InboundPduEnvelope const&)
-                -> merovingian::federation::PduIngestionResult {
+                [&sink_called](
+                    merovingian::federation::InboundPduEnvelope const&) -> merovingian::federation::PduIngestionResult {
                 sink_called = true;
                 return {merovingian::federation::PduIngestionStatus::accepted, {}};
             };
             runtime.remote_key_resolver =
-                [](std::string_view, std::string_view)
-                -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+                [](std::string_view,
+                   std::string_view) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
                 return std::nullopt; // resolution always fails
             };
 
@@ -1162,32 +1150,29 @@ SCENARIO("Inbound pdu_sink enforces Matrix event-authorization rules before pers
 {
     GIVEN("a runtime with an auth-enforcing pdu_sink and @alice:remote.org banned in the room")
     {
-        auto runtime       = merovingian::federation::make_federation_runtime_state(runtime_config());
-        auto const origin  = std::string{"remote.org"};
-        auto const key_id  = std::string{"ed25519:auto"};
-        auto const token   = std::string{"verify-token"};
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        auto const origin = std::string{"remote.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const token = std::string{"verify-token"};
         merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
 
         auto const* policy = merovingian::rooms::find_room_version_policy("12");
         REQUIRE(policy != nullptr);
 
         // Auth state: @admin:example.org created the room; @alice:remote.org is banned.
-        auto auth_map                = merovingian::events::AuthEventMap{};
-        auth_map.create              = parse_auth_json(auth_create_event("@admin:example.org"));
-        auth_map.power_levels        = parse_auth_json(
-            auth_power_levels_event("@admin:example.org", 0, 50, "@admin:example.org", 100));
-        auth_map.sender_member       = parse_auth_json(
-            auth_member_event("@admin:example.org", "@alice:remote.org", "ban"));
+        auto auth_map = merovingian::events::AuthEventMap{};
+        auth_map.create = parse_auth_json(auth_create_event("@admin:example.org"));
+        auth_map.power_levels =
+            parse_auth_json(auth_power_levels_event("@admin:example.org", 0, 50, "@admin:example.org", 100));
+        auth_map.sender_member = parse_auth_json(auth_member_event("@admin:example.org", "@alice:remote.org", "ban"));
 
         // Mimics the production pdu_sink contract: MUST run authorize_event_against_auth_events
         // before persisting. Banned members MUST be rejected with rejected_auth.
-        auto rejection_count  = std::size_t{0U};
+        auto rejection_count = std::size_t{0U};
         auto acceptance_count = std::size_t{0U};
         runtime.pdu_sink =
             [policy, auth_map, &rejection_count, &acceptance_count](
-                merovingian::federation::InboundPduEnvelope const& env)
-            -> merovingian::federation::PduIngestionResult
-        {
+                merovingian::federation::InboundPduEnvelope const& env) -> merovingian::federation::PduIngestionResult {
             auto const pdu_val = merovingian::canonicaljson::parse_lossless(env.json);
             if (pdu_val.error != merovingian::canonicaljson::ParseError::none)
             {
@@ -1210,8 +1195,7 @@ SCENARIO("Inbound pdu_sink enforces Matrix event-authorization rules before pers
             // signed_json_pdu("remote.org", ...) creates sender=@alice:remote.org whose
             // transport signature is valid — the PDU passes authorize_federation_pdu.
             auto const pdu_json = signed_json_pdu(origin, key_id, token);
-            auto const request  = signed_request(origin, key_id, token,
-                                                 transaction_body(origin, pdu_json));
+            auto const request = signed_request(origin, key_id, token, transaction_body(origin, pdu_json));
             auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
 
             THEN("the transaction returns 200 but the pdu_sink rejects the event as auth-denied")
@@ -1228,8 +1212,7 @@ SCENARIO("Inbound pdu_sink enforces Matrix event-authorization rules before pers
     }
 }
 
-SCENARIO("Inbound transaction with an unknown EDU type does not invoke the edu_sink",
-         "[federation][inbound][edu]")
+SCENARIO("Inbound transaction with an unknown EDU type does not invoke the edu_sink", "[federation][inbound][edu]")
 {
     GIVEN("a runtime with a known remote and an edu_sink that counts invocations")
     {
@@ -1250,12 +1233,11 @@ SCENARIO("Inbound transaction with an unknown EDU type does not invoke the edu_s
         {
             // "org.example.unknown" is not a registered Matrix EDU type; the
             // implementation discards it before forwarding to the sink.
-            auto const body = std::string{
-                "{\"origin\":\"matrix.example.org\","
-                "\"origin_server_ts\":1000,"
-                "\"pdus\":[],"
-                "\"edus\":[{\"edu_type\":\"org.example.unknown\","
-                "\"content\":{\"k\":\"v\"}}]}"};
+            auto const body = std::string{"{\"origin\":\"matrix.example.org\","
+                                          "\"origin_server_ts\":1000,"
+                                          "\"pdus\":[],"
+                                          "\"edus\":[{\"edu_type\":\"org.example.unknown\","
+                                          "\"content\":{\"k\":\"v\"}}]}"};
             auto const request = signed_request(origin, key_id, token, body);
             [[maybe_unused]] auto const response =
                 merovingian::federation::handle_inbound_federation_request(runtime, request);

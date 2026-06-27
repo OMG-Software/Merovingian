@@ -28,8 +28,8 @@ public:
 
     // Sends a sign_request frame to main and returns the base64-unpadded signature.
     // Returns an error SignatureResult on IPC failure or if main reports an error.
-    [[nodiscard]] auto sign(crypto::Ed25519SecretKeyHandle const& key,
-                            std::string_view message) -> crypto::SignatureResult override;
+    [[nodiscard]] auto sign(crypto::Ed25519SecretKeyHandle const& key, std::string_view message)
+        -> crypto::SignatureResult override;
 
     // Unsupported in the worker process; terminates the process if called.
     [[nodiscard]] auto verify(crypto::Ed25519PublicKey const& public_key, std::string_view message,

@@ -86,11 +86,11 @@ struct ThumbnailResult final
 // Configuration for spawning the out-of-process worker.
 struct ThumbnailerConfig final
 {
-    std::string worker_path{};            // absolute path to the worker executable
-    std::uint32_t timeout_seconds{10U};   // wall-clock cap on a single decode
-    std::uint64_t max_input_bytes{0U};    // 0 = unbounded; reject larger sources
-    std::uint64_t max_output_bytes{0U};   // 0 = unbounded; reject larger results
-    std::uint32_t max_pixels{4096000U};   // decode-bomb guard handed to the worker
+    std::string worker_path{};          // absolute path to the worker executable
+    std::uint32_t timeout_seconds{10U}; // wall-clock cap on a single decode
+    std::uint64_t max_input_bytes{0U};  // 0 = unbounded; reject larger sources
+    std::uint64_t max_output_bytes{0U}; // 0 = unbounded; reject larger results
+    std::uint32_t max_pixels{4096000U}; // decode-bomb guard handed to the worker
     std::uint32_t max_target_dimension{2048U};
 };
 

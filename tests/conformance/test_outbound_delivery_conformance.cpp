@@ -42,33 +42,34 @@
 namespace
 {
 
-auto const local_origin      = std::string{"local.example.org"};
-auto const remote_dest       = std::string{"remote.example.org"};
-auto const test_key_seed     = std::string{"outbound-delivery-conformance"};
-auto const test_key_id       = std::string{"ed25519:auto"};
+auto const local_origin = std::string{"local.example.org"};
+auto const remote_dest = std::string{"remote.example.org"};
+auto const test_key_seed = std::string{"outbound-delivery-conformance"};
+auto const test_key_id = std::string{"ed25519:auto"};
 
 [[nodiscard]] auto local_secret_key() -> std::string
 {
     return merovingian::federation::test::keypair_from_seed(test_key_seed).secret_key;
 }
 
-[[nodiscard]] auto make_test_call(std::string_view transaction_id, std::string_view body) -> merovingian::federation::OutboundCall
+[[nodiscard]] auto make_test_call(std::string_view transaction_id, std::string_view body)
+    -> merovingian::federation::OutboundCall
 {
-    auto txn              = merovingian::federation::OutboundTransaction{};
-    txn.transaction_id    = std::string{transaction_id};
-    txn.destination       = remote_dest;
-    txn.method            = "PUT";
-    txn.target            = "/_matrix/federation/v1/send/" + std::string{transaction_id};
-    txn.origin            = local_origin;
-    txn.body              = std::string{body};
+    auto txn = merovingian::federation::OutboundTransaction{};
+    txn.transaction_id = std::string{transaction_id};
+    txn.destination = remote_dest;
+    txn.method = "PUT";
+    txn.target = "/_matrix/federation/v1/send/" + std::string{transaction_id};
+    txn.origin = local_origin;
+    txn.body = std::string{body};
 
-    auto call               = merovingian::federation::OutboundCall{};
-    call.transaction        = std::move(txn);
-    call.resolved_host      = remote_dest;
-    call.resolved_port      = 8448U;
-    call.pinned_addresses   = {"203.0.113.1"};
-    call.key_id             = test_key_id;
-    call.secret_key         = local_secret_key();
+    auto call = merovingian::federation::OutboundCall{};
+    call.transaction = std::move(txn);
+    call.resolved_host = remote_dest;
+    call.resolved_port = 8448U;
+    call.pinned_addresses = {"203.0.113.1"};
+    call.key_id = test_key_id;
+    call.secret_key = local_secret_key();
     return call;
 }
 
@@ -97,8 +98,7 @@ auto const test_key_id       = std::string{"ed25519:auto"};
 // contain "origin" (the sending server), "origin_server_ts" (millisecond
 // timestamp), and "pdus" (array, may be empty). "edus" is optional but when
 // present MUST be an array.
-SCENARIO("build_edu_transaction_body produces required top-level fields",
-         "[federation][outbound][conformance]")
+SCENARIO("build_edu_transaction_body produces required top-level fields", "[federation][outbound][conformance]")
 {
     GIVEN("a valid EDU type and content")
     {
@@ -106,8 +106,8 @@ SCENARIO("build_edu_transaction_body produces required top-level fields",
 
         WHEN("an EDU transaction body is built")
         {
-            auto const result = merovingian::federation::build_edu_transaction_body(
-                local_origin, "m.typing", edu_content);
+            auto const result =
+                merovingian::federation::build_edu_transaction_body(local_origin, "m.typing", edu_content);
 
             THEN("the result is present (not nullopt)")
             {
@@ -127,7 +127,7 @@ SCENARIO("build_edu_transaction_body produces required top-level fields",
             {
                 REQUIRE(result.has_value());
                 auto const parsed = merovingian::canonicaljson::parse_lossless(*result);
-                auto const* root  = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
                 REQUIRE(root != nullptr);
 
                 // Spec MUST: "origin" is the server_name of the sending server.
@@ -143,7 +143,7 @@ SCENARIO("build_edu_transaction_body produces required top-level fields",
             {
                 REQUIRE(result.has_value());
                 auto const parsed = merovingian::canonicaljson::parse_lossless(*result);
-                auto const* root  = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
                 REQUIRE(root != nullptr);
 
                 // Spec MUST: "origin_server_ts" is a millisecond POSIX timestamp.
@@ -157,7 +157,7 @@ SCENARIO("build_edu_transaction_body produces required top-level fields",
             {
                 REQUIRE(result.has_value());
                 auto const parsed = merovingian::canonicaljson::parse_lossless(*result);
-                auto const* root  = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
                 REQUIRE(root != nullptr);
 
                 // Spec MUST: "pdus" is present (may be empty for EDU-only transactions).
@@ -172,7 +172,7 @@ SCENARIO("build_edu_transaction_body produces required top-level fields",
             {
                 REQUIRE(result.has_value());
                 auto const parsed = merovingian::canonicaljson::parse_lossless(*result);
-                auto const* root  = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
                 REQUIRE(root != nullptr);
 
                 // Spec: "edus" is optional but when present must be an array.
@@ -195,8 +195,7 @@ SCENARIO("build_edu_transaction_body produces required top-level fields",
 // Spec MUST: EDU objects inside the "edus" array MUST use the key "edu_type"
 // for the type discriminator. Using "type" instead causes Synapse and other
 // Matrix homeservers to reject the entire transaction with a field-parse error.
-SCENARIO("EDU object in built transaction uses edu_type key not type",
-         "[federation][outbound][conformance][edu]")
+SCENARIO("EDU object in built transaction uses edu_type key not type", "[federation][outbound][conformance][edu]")
 {
     GIVEN("an outgoing m.typing EDU")
     {
@@ -204,12 +203,11 @@ SCENARIO("EDU object in built transaction uses edu_type key not type",
 
         WHEN("an EDU transaction body is built")
         {
-            auto const result = merovingian::federation::build_edu_transaction_body(
-                local_origin, "m.typing", content);
+            auto const result = merovingian::federation::build_edu_transaction_body(local_origin, "m.typing", content);
             REQUIRE(result.has_value());
 
             auto const parsed = merovingian::canonicaljson::parse_lossless(*result);
-            auto const* root  = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+            auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
             REQUIRE(root != nullptr);
             auto const* edus_val = json_get(*root, "edus");
             REQUIRE(edus_val != nullptr);
@@ -255,15 +253,14 @@ SCENARIO("EDU object in built transaction uses edu_type key not type",
 // When the EDU content is not valid JSON the builder MUST NOT produce a
 // malformed transaction body. Returning nullopt lets callers skip the send
 // rather than forwarding corrupt data to a remote server.
-SCENARIO("build_edu_transaction_body returns nullopt for non-JSON content",
-         "[federation][outbound][conformance][edu]")
+SCENARIO("build_edu_transaction_body returns nullopt for non-JSON content", "[federation][outbound][conformance][edu]")
 {
     GIVEN("EDU content that is not valid JSON")
     {
         WHEN("an EDU transaction body is built with the invalid content")
         {
-            auto const result = merovingian::federation::build_edu_transaction_body(
-                local_origin, "m.typing", "this is not json {{{");
+            auto const result =
+                merovingian::federation::build_edu_transaction_body(local_origin, "m.typing", "this is not json {{{");
 
             THEN("the result is nullopt (build fails cleanly)")
             {
@@ -290,16 +287,16 @@ SCENARIO("build_receipt_edu_content produces the spec-required nested structure"
 {
     GIVEN("receipt details for a room, user, and event")
     {
-        auto const room_id      = std::string{"!test:local.example.org"};
+        auto const room_id = std::string{"!test:local.example.org"};
         auto const receipt_type = std::string{"m.read"};
-        auto const user_id      = std::string{"@alice:local.example.org"};
-        auto const event_id     = std::string{"$event123:local.example.org"};
-        auto const ts           = std::int64_t{1718000000000LL};
+        auto const user_id = std::string{"@alice:local.example.org"};
+        auto const event_id = std::string{"$event123:local.example.org"};
+        auto const ts = std::int64_t{1718000000000LL};
 
         WHEN("a receipt EDU content is built")
         {
-            auto const result = merovingian::federation::build_receipt_edu_content(
-                room_id, receipt_type, user_id, event_id, ts);
+            auto const result =
+                merovingian::federation::build_receipt_edu_content(room_id, receipt_type, user_id, event_id, ts);
 
             THEN("the result is present")
             {
@@ -461,8 +458,7 @@ SCENARIO("build_outbound_request produces a PUT request to the correct federatio
 // Spec MUST: every outbound federation request MUST carry an
 // "Authorization: X-Matrix ..." header signed with the sending server's
 // Ed25519 private key. The receiving server verifies this before processing.
-SCENARIO("build_outbound_request carries an Authorization X-Matrix header",
-         "[federation][outbound][conformance][auth]")
+SCENARIO("build_outbound_request carries an Authorization X-Matrix header", "[federation][outbound][conformance][auth]")
 {
     GIVEN("a prepared outbound call")
     {
@@ -515,7 +511,7 @@ SCENARIO("X-Matrix Authorization header contains origin, destination, key, and s
         WHEN("the outbound request is built")
         {
             auto const req = merovingian::federation::build_outbound_request(call);
-            auto const it  = std::ranges::find_if(req.headers, [](merovingian::http::OutboundHeader const& h) {
+            auto const it = std::ranges::find_if(req.headers, [](merovingian::http::OutboundHeader const& h) {
                 return h.name == "Authorization";
             });
             REQUIRE(it != req.headers.end());
@@ -560,8 +556,7 @@ SCENARIO("X-Matrix Authorization header contains origin, destination, key, and s
 // The spec requires exponential backoff on delivery failure. The base interval
 // (retry_count == 0) MUST be positive so there is always a pause between the
 // first failure and the first retry.
-SCENARIO("compute_backoff returns a positive interval for retry_count 0",
-         "[federation][outbound][conformance][retry]")
+SCENARIO("compute_backoff returns a positive interval for retry_count 0", "[federation][outbound][conformance][retry]")
 {
     GIVEN("retry_count is zero (first failure)")
     {
@@ -586,8 +581,7 @@ SCENARIO("compute_backoff returns a positive interval for retry_count 0",
 //
 // Spec: the backoff interval MUST grow as retry_count increases so that a
 // repeatedly-failing destination does not saturate the network or the remote.
-SCENARIO("compute_backoff interval grows monotonically with retry count",
-         "[federation][outbound][conformance][retry]")
+SCENARIO("compute_backoff interval grows monotonically with retry count", "[federation][outbound][conformance][retry]")
 {
     GIVEN("successive retry counts")
     {
@@ -625,14 +619,13 @@ SCENARIO("compute_backoff interval grows monotonically with retry count",
 // Uncapped exponential backoff would delay delivery indefinitely. The
 // implementation MUST cap the backoff at a reasonable maximum so that a
 // previously-unreachable server can eventually receive traffic again.
-SCENARIO("compute_backoff is capped and does not grow without bound",
-         "[federation][outbound][conformance][retry]")
+SCENARIO("compute_backoff is capped and does not grow without bound", "[federation][outbound][conformance][retry]")
 {
     GIVEN("very large retry counts")
     {
         WHEN("backoff is computed for counts 20 and 100")
         {
-            auto const b20  = merovingian::federation::compute_backoff(20U);
+            auto const b20 = merovingian::federation::compute_backoff(20U);
             auto const b100 = merovingian::federation::compute_backoff(100U);
 
             THEN("the interval at count 100 equals the interval at count 20 (cap reached)")
@@ -666,13 +659,13 @@ SCENARIO("destination_should_retry returns true when no backoff is scheduled",
     GIVEN("a fresh destination with no recorded failures")
     {
         auto dest = merovingian::federation::FederationDestination{};
-        dest.server_name     = remote_dest;
-        dest.retry_after_ts  = 0U;
+        dest.server_name = remote_dest;
+        dest.retry_after_ts = 0U;
         dest.consecutive_failures = 0U;
 
         WHEN("should_retry is evaluated at any current time")
         {
-            auto const now      = std::uint64_t{1718000000000ULL};
+            auto const now = std::uint64_t{1718000000000ULL};
             auto const retryable = merovingian::federation::destination_should_retry(dest, now);
 
             THEN("the destination is retryable")
@@ -697,9 +690,9 @@ SCENARIO("destination_should_retry returns false while backoff window is active"
     GIVEN("a destination whose retry_after_ts is set in the future")
     {
         auto const now = std::uint64_t{1718000000000ULL};
-        auto dest      = merovingian::federation::FederationDestination{};
-        dest.server_name          = remote_dest;
-        dest.retry_after_ts       = now + 60000U; // 60 s from now
+        auto dest = merovingian::federation::FederationDestination{};
+        dest.server_name = remote_dest;
+        dest.retry_after_ts = now + 60000U; // 60 s from now
         dest.consecutive_failures = 3U;
 
         WHEN("should_retry is evaluated before the backoff window expires")
@@ -717,7 +710,7 @@ SCENARIO("destination_should_retry returns false while backoff window is active"
         WHEN("should_retry is evaluated after the backoff window expires")
         {
             auto const future_now = dest.retry_after_ts + 1U;
-            auto const retryable  = merovingian::federation::destination_should_retry(dest, future_now);
+            auto const retryable = merovingian::federation::destination_should_retry(dest, future_now);
 
             THEN("the destination is retryable")
             {
@@ -742,15 +735,15 @@ SCENARIO("apply_outbound_result clears consecutive_failures on a 2xx response",
     GIVEN("a destination with accumulated failures")
     {
         auto const now = std::uint64_t{1718000000000ULL};
-        auto dest      = merovingian::federation::FederationDestination{};
-        dest.server_name          = remote_dest;
+        auto dest = merovingian::federation::FederationDestination{};
+        dest.server_name = remote_dest;
         dest.consecutive_failures = 5U;
-        dest.retry_after_ts       = now + 60000U;
+        dest.retry_after_ts = now + 60000U;
 
         WHEN("a 200 OK result is applied")
         {
-            auto result        = merovingian::federation::OutboundTransactionResult{};
-            result.sent        = true;
+            auto result = merovingian::federation::OutboundTransactionResult{};
+            result.sent = true;
             result.http_status = 200U;
             merovingian::federation::apply_outbound_result(dest, result, now);
 
@@ -789,15 +782,15 @@ SCENARIO("apply_outbound_result increments failures and sets retry_after_ts on n
     GIVEN("a fresh destination with no prior failures")
     {
         auto const now = std::uint64_t{1718000000000ULL};
-        auto dest      = merovingian::federation::FederationDestination{};
-        dest.server_name          = remote_dest;
+        auto dest = merovingian::federation::FederationDestination{};
+        dest.server_name = remote_dest;
         dest.consecutive_failures = 0U;
-        dest.retry_after_ts       = 0U;
+        dest.retry_after_ts = 0U;
 
         WHEN("a 500 Internal Server Error result is applied")
         {
-            auto result        = merovingian::federation::OutboundTransactionResult{};
-            result.sent        = true;
+            auto result = merovingian::federation::OutboundTransactionResult{};
+            result.sent = true;
             result.http_status = 500U;
             merovingian::federation::apply_outbound_result(dest, result, now);
 
@@ -818,10 +811,10 @@ SCENARIO("apply_outbound_result increments failures and sets retry_after_ts on n
 
         WHEN("a network error (http_status 0) result is applied")
         {
-            auto result        = merovingian::federation::OutboundTransactionResult{};
-            result.sent        = false;
+            auto result = merovingian::federation::OutboundTransactionResult{};
+            result.sent = false;
             result.http_status = 0U;
-            result.error       = "connection_failed";
+            result.error = "connection_failed";
             merovingian::federation::apply_outbound_result(dest, result, now);
 
             THEN("consecutive_failures is incremented")

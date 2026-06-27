@@ -5,7 +5,6 @@
 
 #include <array>
 #include <atomic>
-
 #include <tuple>
 
 #include <fcntl.h>

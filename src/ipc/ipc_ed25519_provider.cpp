@@ -136,8 +136,8 @@ IpcEd25519Provider::IpcEd25519Provider(IpcChannel* channel)
 {
 }
 
-auto IpcEd25519Provider::sign(crypto::Ed25519SecretKeyHandle const& key,
-                              std::string_view message) -> crypto::SignatureResult
+auto IpcEd25519Provider::sign(crypto::Ed25519SecretKeyHandle const& key, std::string_view message)
+    -> crypto::SignatureResult
 {
     if (channel_ == nullptr)
     {

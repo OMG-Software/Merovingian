@@ -9857,9 +9857,8 @@ SCENARIO("POST /pushers/set conformance")
         WHEN("POST /pushers/set is called with kind:null to delete a pusher")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"POST", "/_matrix/client/v3/pushers/set", token,
-                 R"({"app_id":"io.element.elementx","kind":null,"pushkey":"key1"})"});
+                started.runtime, {"POST", "/_matrix/client/v3/pushers/set", token,
+                                  R"({"app_id":"io.element.elementx","kind":null,"pushkey":"key1"})"});
 
             THEN("the server returns 200 with an empty JSON object")
             {

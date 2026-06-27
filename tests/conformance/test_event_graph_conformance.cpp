@@ -97,11 +97,9 @@ namespace
 // event-graph query path recognises it as state and can place it by (type,
 // state_key). `depth` drives the "most recent value wins" tie-break during
 // state-at-event reconstruction.
-[[nodiscard]] auto make_state_event(std::string event_id, std::string room_id, std::string type,
-                                    std::string state_key, std::uint64_t depth,
-                                    std::vector<std::string> auth_event_ids,
-                                    std::vector<std::string> prev_event_ids)
-    -> merovingian::database::PersistentEvent
+[[nodiscard]] auto make_state_event(std::string event_id, std::string room_id, std::string type, std::string state_key,
+                                    std::uint64_t depth, std::vector<std::string> auth_event_ids,
+                                    std::vector<std::string> prev_event_ids) -> merovingian::database::PersistentEvent
 {
     auto event = merovingian::database::PersistentEvent{};
     event.event_id = std::move(event_id);

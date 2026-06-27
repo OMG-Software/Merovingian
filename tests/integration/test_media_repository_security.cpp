@@ -28,13 +28,10 @@ namespace
     security.media.max_upload_size = "8B";
     security.media.quarantine_unknown_mime = false;
     return {
-        merovingian::config::ServerConfig{},
-        merovingian::config::ListenersConfig{},
-        merovingian::config::DatabaseConfig{},
-        security,
-        merovingian::config::ClientRateLimitsConfig{},
-        merovingian::config::LogModulesConfig{},
-};
+        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
+        merovingian::config::DatabaseConfig{},         security,
+        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+    };
 }
 
 [[nodiscard]] auto sqlite_media_test_config(std::filesystem::path const& sqlite_path) -> merovingian::config::Config
@@ -47,13 +44,9 @@ namespace
     database.backend = merovingian::config::DatabaseBackend::sqlite;
     database.sqlite_path = sqlite_path.string();
     return {
-        merovingian::config::ServerConfig{},
-        merovingian::config::ListenersConfig{},
-        database,
-        security,
-        merovingian::config::ClientRateLimitsConfig{},
-        merovingian::config::LogModulesConfig{},
-};
+        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},  database, security,
+        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+    };
 }
 
 [[nodiscard]] auto unique_sqlite_path() -> std::filesystem::path
@@ -226,8 +219,7 @@ SCENARIO("Integrated media upload rejects oversized and unknown MIME uploads", "
     }
 }
 
-SCENARIO("Remote media download falls back to 502 when server discovery fails",
-         "[media][repository][integration]")
+SCENARIO("Remote media download falls back to 502 when server discovery fails", "[media][repository][integration]")
 {
     GIVEN("a running homeserver and an unresolvable remote origin")
     {

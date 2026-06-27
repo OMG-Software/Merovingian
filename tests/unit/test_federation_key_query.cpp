@@ -352,8 +352,7 @@ SCENARIO("Federation user-devices query lists a user's published devices", "[fed
 // Spec: stream_id MUST be a monotonically increasing integer so remote servers
 // can detect gaps and schedule refetches when a device list changes.
 // ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixfederationv1userdevicescircumflex
-SCENARIO("Federation user-devices response reflects the store sync stream counter",
-         "[federation][keys][devices]")
+SCENARIO("Federation user-devices response reflects the store sync stream counter", "[federation][keys][devices]")
 {
     GIVEN("a store with a device and a non-zero sync stream counter")
     {
@@ -412,8 +411,7 @@ SCENARIO("Federation user-devices response device entry carries the curve25519 i
                 auto const* devs_arr = std::get_if<merovingian::canonicaljson::Array>(&devs_val->storage());
                 REQUIRE(devs_arr->size() == 1U);
 
-                auto const* device_obj =
-                    std::get_if<merovingian::canonicaljson::Object>(&(*devs_arr)[0].storage());
+                auto const* device_obj = std::get_if<merovingian::canonicaljson::Object>(&(*devs_arr)[0].storage());
                 REQUIRE(device_obj != nullptr);
 
                 // Spec MUST: keys field contains the full device keys object.

@@ -67,8 +67,7 @@ SCENARIO("SecretBuffer is move-only and clears on destruction", "[core][secret][
     }
 }
 
-SCENARIO("SecretBuffer move-assignment replaces the prior secret and transfers ownership",
-         "[core][secret][security]")
+SCENARIO("SecretBuffer move-assignment replaces the prior secret and transfers ownership", "[core][secret][security]")
 {
     GIVEN("a buffer holding a prior secret and a buffer holding a new secret")
     {

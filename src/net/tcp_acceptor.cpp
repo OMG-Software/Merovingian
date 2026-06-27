@@ -8,7 +8,6 @@
 #include <cerrno>
 #include <cstring>
 #include <string>
-
 #include <tuple>
 
 #include <arpa/inet.h>

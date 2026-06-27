@@ -35,12 +35,9 @@ namespace
     auto security = merovingian::config::SecurityConfig{};
     merovingian::tests::enable_token_registration(security);
     return merovingian::config::Config{
-        merovingian::config::ServerConfig{},
-        merovingian::config::ListenersConfig{},
-        merovingian::config::DatabaseConfig{},
-        security,
-        merovingian::config::ClientRateLimitsConfig{},
-        merovingian::config::LogModulesConfig{},
+        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
+        merovingian::config::DatabaseConfig{},         security,
+        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
     };
 }
 
@@ -48,8 +45,7 @@ namespace
 
 // --- Login failure paths -----------------------------------------------------
 
-SCENARIO("login_local_user rejects a correct user_id with a wrong password",
-         "[homeserver][auth][login][error]")
+SCENARIO("login_local_user rejects a correct user_id with a wrong password", "[homeserver][auth][login][error]")
 {
     GIVEN("a started runtime with a registered user")
     {
@@ -58,14 +54,14 @@ SCENARIO("login_local_user rejects a correct user_id with a wrong password",
         REQUIRE(started.started);
         auto& runtime = started.runtime;
 
-        auto const reg = merovingian::homeserver::register_local_user(
-            runtime, "alice", "CorrectHorse7!", merovingian::tests::registration_token);
+        auto const reg = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                      merovingian::tests::registration_token);
         REQUIRE(reg.ok);
 
         WHEN("the user logs in with a wrong password")
         {
-            auto const result = merovingian::homeserver::login_local_user(
-                runtime, reg.value, "WrongPassword!", "DEVICE1");
+            auto const result =
+                merovingian::homeserver::login_local_user(runtime, reg.value, "WrongPassword!", "DEVICE1");
 
             THEN("login fails and no access token is issued")
             {
@@ -88,8 +84,8 @@ SCENARIO("login_local_user rejects login attempts for a user_id that does not ex
 
         WHEN("login is attempted for a non-existent user")
         {
-            auto const result = merovingian::homeserver::login_local_user(
-                runtime, "@ghost:example.org", "anypassword", "DEVICE1");
+            auto const result =
+                merovingian::homeserver::login_local_user(runtime, "@ghost:example.org", "anypassword", "DEVICE1");
 
             THEN("login fails closed")
             {
@@ -112,14 +108,14 @@ SCENARIO("register_local_user rejects a second registration for an existing loca
         REQUIRE(started.started);
         auto& runtime = started.runtime;
 
-        auto const first = merovingian::homeserver::register_local_user(
-            runtime, "alice", "CorrectHorse7!", merovingian::tests::registration_token);
+        auto const first = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                        merovingian::tests::registration_token);
         REQUIRE(first.ok);
 
         WHEN("the same localpart is registered again")
         {
-            auto const second = merovingian::homeserver::register_local_user(
-                runtime, "alice", "DifferentPass99!", merovingian::tests::registration_token);
+            auto const second = merovingian::homeserver::register_local_user(runtime, "alice", "DifferentPass99!",
+                                                                             merovingian::tests::registration_token);
 
             THEN("the second registration fails — usernames are unique per homeserver")
             {
@@ -131,8 +127,7 @@ SCENARIO("register_local_user rejects a second registration for an existing loca
 
 // --- Logout failure paths ----------------------------------------------------
 
-SCENARIO("logout_local_user rejects an access token that was never issued",
-         "[homeserver][auth][logout][error]")
+SCENARIO("logout_local_user rejects an access token that was never issued", "[homeserver][auth][logout][error]")
 {
     GIVEN("a started runtime")
     {
@@ -143,8 +138,7 @@ SCENARIO("logout_local_user rejects an access token that was never issued",
 
         WHEN("logout is called with a syntactically valid but unknown token")
         {
-            auto const result = merovingian::homeserver::logout_local_user(
-                runtime, "syt_totally_unknown_token_abc123");
+            auto const result = merovingian::homeserver::logout_local_user(runtime, "syt_totally_unknown_token_abc123");
 
             THEN("logout fails closed — the token is not in the session store")
             {
@@ -166,8 +160,7 @@ SCENARIO("logout_local_user rejects an access token that was never issued",
 
 // --- verify_local_user_password ----------------------------------------------
 
-SCENARIO("verify_local_user_password returns false for a wrong password",
-         "[homeserver][auth][password][error]")
+SCENARIO("verify_local_user_password returns false for a wrong password", "[homeserver][auth][password][error]")
 {
     GIVEN("a started runtime with a registered and logged-in user")
     {
@@ -176,17 +169,16 @@ SCENARIO("verify_local_user_password returns false for a wrong password",
         REQUIRE(started.started);
         auto& runtime = started.runtime;
 
-        auto const reg = merovingian::homeserver::register_local_user(
-            runtime, "bob", "CorrectHorse7!", merovingian::tests::registration_token);
+        auto const reg = merovingian::homeserver::register_local_user(runtime, "bob", "CorrectHorse7!",
+                                                                      merovingian::tests::registration_token);
         REQUIRE(reg.ok);
-        auto const login = merovingian::homeserver::login_local_user(
-            runtime, reg.value, "CorrectHorse7!", "DEVICE1");
+        auto const login = merovingian::homeserver::login_local_user(runtime, reg.value, "CorrectHorse7!", "DEVICE1");
         REQUIRE(login.ok);
 
         WHEN("password verification is called with the wrong password")
         {
-            auto const verified = merovingian::homeserver::verify_local_user_password(
-                runtime, login.value, "WrongPassword!");
+            auto const verified =
+                merovingian::homeserver::verify_local_user_password(runtime, login.value, "WrongPassword!");
 
             THEN("verification returns false")
             {
@@ -196,8 +188,8 @@ SCENARIO("verify_local_user_password returns false for a wrong password",
 
         WHEN("password verification is called with the correct password")
         {
-            auto const verified = merovingian::homeserver::verify_local_user_password(
-                runtime, login.value, "CorrectHorse7!");
+            auto const verified =
+                merovingian::homeserver::verify_local_user_password(runtime, login.value, "CorrectHorse7!");
 
             THEN("verification returns true — confirming the positive path is exercised")
             {
@@ -316,8 +308,7 @@ SCENARIO("handle_federation_http_request returns a 4xx for non-federation paths"
             request.method = "GET";
             request.target = "/_matrix/client/v3/sync";
 
-            auto const response =
-                merovingian::homeserver::handle_federation_http_request(runtime, request);
+            auto const response = merovingian::homeserver::handle_federation_http_request(runtime, request);
 
             THEN("the federation handler returns a client error — it only serves /_matrix/federation/")
             {
@@ -332,8 +323,7 @@ SCENARIO("handle_federation_http_request returns a 4xx for non-federation paths"
             request.method = "GET";
             request.target = "/garbage/path";
 
-            auto const response =
-                merovingian::homeserver::handle_federation_http_request(runtime, request);
+            auto const response = merovingian::homeserver::handle_federation_http_request(runtime, request);
 
             THEN("the federation handler returns a client error")
             {

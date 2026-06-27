@@ -314,8 +314,8 @@ auto build_user_devices_response(database::PersistentStore const& store, std::st
     }
     auto response = canonicaljson::Object{};
     response.push_back(canonicaljson::make_member("user_id", canonicaljson::Value{std::string{user_id}}));
-    response.push_back(canonicaljson::make_member("stream_id",
-                                                  canonicaljson::Value{static_cast<std::int64_t>(store.next_sync_stream_id)}));
+    response.push_back(canonicaljson::make_member(
+        "stream_id", canonicaljson::Value{static_cast<std::int64_t>(store.next_sync_stream_id)}));
     if (devices.empty())
     {
         log_diagnostic("user_devices.empty", {

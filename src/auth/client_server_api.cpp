@@ -75,7 +75,8 @@ namespace
     {
         return {
             "client_auth_persist_access_token_hash",
-            "INSERT INTO access_tokens (user_id, device_id, token_hash_algorithm, token_hash_value) VALUES ($1, $2, $3, "
+            "INSERT INTO access_tokens (user_id, device_id, token_hash_algorithm, token_hash_value) VALUES ($1, $2, "
+            "$3, "
             "$4)",
             {public_value(user_id), public_value(device_id), public_value(token_hash.algorithm),
               sensitive(token_hash.value)},

@@ -115,8 +115,7 @@ SCENARIO("HTTP request head parser accepts large Content-Length without error", 
     {
         // 2 MiB — previously rejected at parse time, which prevented the
         // media-upload handler from applying the higher max_upload_size limit.
-        auto const input =
-            std::string{"POST /_matrix/media/v3/upload HTTP/1.1\r\nContent-Length: 2097152\r\n\r\n"};
+        auto const input = std::string{"POST /_matrix/media/v3/upload HTTP/1.1\r\nContent-Length: 2097152\r\n\r\n"};
 
         WHEN("the request head is parsed")
         {

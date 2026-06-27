@@ -35,11 +35,10 @@ namespace merovingian::federation
 // state events the inviter wants the invitee to see are composed into the
 // v2 invite body. When `room_version` is empty the helper emits the v1
 // invite shape (the body IS the event).
-[[nodiscard]] auto make_outbound_invite(std::string_view destination, std::string_view origin,
-                                        std::string_view room_id, std::string_view event_id,
-                                        std::string_view room_version, std::string_view signed_invite_event_json,
-                                        std::vector<std::string> const& invite_room_state_json)
-    -> OutboundTransaction;
+[[nodiscard]] auto make_outbound_invite(std::string_view destination, std::string_view origin, std::string_view room_id,
+                                        std::string_view event_id, std::string_view room_version,
+                                        std::string_view signed_invite_event_json,
+                                        std::vector<std::string> const& invite_room_state_json) -> OutboundTransaction;
 
 // Outbound backfill GET. `event_ids` are sent as repeated `v=` query
 // parameters; `limit` is appended when non-zero.

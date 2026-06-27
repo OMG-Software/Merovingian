@@ -47,13 +47,10 @@ namespace
     auto security = merovingian::config::SecurityConfig{};
     merovingian::tests::enable_token_registration(security);
     return {
-        merovingian::config::ServerConfig{},
-        merovingian::config::ListenersConfig{},
-        merovingian::config::DatabaseConfig{},
-        security,
-        merovingian::config::ClientRateLimitsConfig{},
-        merovingian::config::LogModulesConfig{},
-};
+        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
+        merovingian::config::DatabaseConfig{},         security,
+        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+    };
 }
 
 [[nodiscard]] auto extract(std::string const& body, std::string_view key) -> std::string
@@ -67,8 +64,8 @@ namespace
     return body.substr(value_start, value_end - value_start);
 }
 
-[[nodiscard]] auto json_member(merovingian::canonicaljson::Object const& object,
-                               std::string_view key) -> merovingian::canonicaljson::Value const*
+[[nodiscard]] auto json_member(merovingian::canonicaljson::Object const& object, std::string_view key)
+    -> merovingian::canonicaljson::Value const*
 {
     for (auto const& member : object)
     {
@@ -112,8 +109,8 @@ namespace
 
 // Returns the most-recently-added device for `user`. Registration now creates
 // a device first; callers want the login device which is always added last.
-[[nodiscard]] auto first_device_id_for(merovingian::homeserver::ClientServerRuntime const& rt,
-                                       std::string_view user) -> std::string
+[[nodiscard]] auto first_device_id_for(merovingian::homeserver::ClientServerRuntime const& rt, std::string_view user)
+    -> std::string
 {
     // Track the last matching device with a portable loop: std::ranges::find_last_if
     // is C++23 and is not yet provided by every Tier 1 platform's standard library.
@@ -785,9 +782,9 @@ SCENARIO("Incremental sync surfaces newly-joined federated room when user had a 
         auto const [alice_id, token] = register_and_login(rt);
         auto& store = rt.homeserver.database.persistent_store;
 
-        auto const room_id        = std::string{"!remote:synapse.example.org"};
+        auto const room_id = std::string{"!remote:synapse.example.org"};
         auto const invite_event_id = std::string{"$invite_event_id"};
-        auto const join_event_id   = std::string{"$join_event_id"};
+        auto const join_event_id = std::string{"$join_event_id"};
 
         // Persist the remote room shell and the invite event with has_state=true,
         // mirroring what the inbound federation invite handler does.
@@ -800,26 +797,27 @@ SCENARIO("Incremental sync surfaces newly-joined federated room when user had a 
             R"({"type":"m.room.member","room_id":")" + room_id +
                 R"(","sender":"@remote:synapse.example.org","state_key":")" + alice_id +
                 R"(","content":{"membership":"invite"},"origin_server_ts":1000})",
-            0U, invite_stream, {}, {}, {}};
-        auto const invite_state = merovingian::database::PersistentStateEvent{
-            room_id, "m.room.member", alice_id, invite_event_id};
+            0U,
+            invite_stream,
+            {},
+            {},
+            {}};
+        auto const invite_state =
+            merovingian::database::PersistentStateEvent{room_id, "m.room.member", alice_id, invite_event_id};
         REQUIRE(merovingian::database::store_event_with_state(
-            store, invite_pe,
-            std::optional<merovingian::database::PersistentStateEvent>{invite_state}));
-        REQUIRE(merovingian::database::store_membership(
-                    store, {room_id, alice_id, "invite", invite_stream}) !=
+            store, invite_pe, std::optional<merovingian::database::PersistentStateEvent>{invite_state}));
+        REQUIRE(merovingian::database::store_membership(store, {room_id, alice_id, "invite", invite_stream}) !=
                 merovingian::database::MembershipStoreResult::error);
         store.next_sync_stream_id += 1U;
 
         // Initial sync — establishes the since-token baseline showing the invite.
-        auto const initial = merovingian::homeserver::handle_client_server_request(
-            rt, {"GET", "/_matrix/client/v3/sync", token, {}});
+        auto const initial =
+            merovingian::homeserver::handle_client_server_request(rt, {"GET", "/_matrix/client/v3/sync", token, {}});
         REQUIRE(initial.response.status == 200U);
-        auto const init_body  = parse_body(initial.response.body);
+        auto const init_body = parse_body(initial.response.body);
         auto const* init_root = as_object(init_body);
         REQUIRE(init_root != nullptr);
-        auto const next_batch =
-            std::get<std::string>(json_member(*init_root, "next_batch")->storage());
+        auto const next_batch = std::get<std::string>(json_member(*init_root, "next_batch")->storage());
 
         // Simulate the local join event being stored by the fixed remote join path.
         // store_event_with_state stores the event AND updates current_state to point
@@ -830,19 +828,20 @@ SCENARIO("Incremental sync surfaces newly-joined federated room when user had a 
             join_event_id,
             room_id,
             alice_id,
-            R"({"type":"m.room.member","room_id":")" + room_id + R"(","sender":")" + alice_id +
-                R"(","state_key":")" + alice_id +
-                R"(","content":{"membership":"join"},"origin_server_ts":2000})",
-            0U, join_stream, {}, {}, {}};
-        auto const join_state = merovingian::database::PersistentStateEvent{
-            room_id, "m.room.member", alice_id, join_event_id};
+            R"({"type":"m.room.member","room_id":")" + room_id + R"(","sender":")" + alice_id + R"(","state_key":")" +
+                alice_id + R"(","content":{"membership":"join"},"origin_server_ts":2000})",
+            0U,
+            join_stream,
+            {},
+            {},
+            {}};
+        auto const join_state =
+            merovingian::database::PersistentStateEvent{room_id, "m.room.member", alice_id, join_event_id};
         REQUIRE(merovingian::database::store_event_with_state(
-            store, join_pe,
-            std::optional<merovingian::database::PersistentStateEvent>{join_state}));
+            store, join_pe, std::optional<merovingian::database::PersistentStateEvent>{join_state}));
         REQUIRE(merovingian::database::update_membership(store, room_id, alice_id, "join"));
         std::ignore = merovingian::database::delete_invite(store, room_id, alice_id);
-        rt.homeserver.database.rooms.push_back(
-            {room_id, alice_id, std::vector<std::string>{alice_id}, {}});
+        rt.homeserver.database.rooms.push_back({room_id, alice_id, std::vector<std::string>{alice_id}, {}});
         store.next_sync_stream_id += 1U;
         if (rt.homeserver.sync_notifier != nullptr)
         {
@@ -907,9 +906,8 @@ SCENARIO("Incremental sync surfaces newly-joined federated room when user had a 
                 auto const* invite_map = as_object(*json_member(*rooms, "invite"));
                 REQUIRE(invite_map != nullptr);
                 // Must NOT be in rooms.invite — membership is now 'join'.
-                auto const in_invite = std::ranges::any_of(
-                    *invite_map,
-                    [&room_id](merovingian::canonicaljson::ObjectMember const& m) {
+                auto const in_invite =
+                    std::ranges::any_of(*invite_map, [&room_id](merovingian::canonicaljson::ObjectMember const& m) {
                         return m.key == room_id;
                     });
                 REQUIRE_FALSE(in_invite);
@@ -935,16 +933,15 @@ SCENARIO("Sync long-poll respects an explicit client-provided timeout", "[sync][
         auto& rt = started.runtime;
         auto const [alice_id, token] = register_and_login(rt);
 
-        auto const initial = merovingian::homeserver::handle_client_server_request(
-            rt, {"GET", "/_matrix/client/v3/sync", token, {}});
+        auto const initial =
+            merovingian::homeserver::handle_client_server_request(rt, {"GET", "/_matrix/client/v3/sync", token, {}});
         REQUIRE(initial.response.status == 200U);
         auto const next_batch = extract(initial.response.body, "next_batch");
 
         WHEN("Alice sends /sync?since=<next_batch>&timeout=30000 with no new events")
         {
             auto const target = "/_matrix/client/v3/sync?since=" + next_batch + "&timeout=30000";
-            auto const result = merovingian::homeserver::handle_client_server_request(
-                rt, {"GET", target, token, {}});
+            auto const result = merovingian::homeserver::handle_client_server_request(rt, {"GET", target, token, {}});
 
             // Spec MUST: server MUST park the connection for the full client-requested
             // timeout, not an internal cap. Previously the server silently capped to 5 s.
@@ -967,16 +964,15 @@ SCENARIO("Sync with no timeout parameter returns immediately per spec", "[sync][
         auto& rt = started.runtime;
         auto const [alice_id, token] = register_and_login(rt);
 
-        auto const initial = merovingian::homeserver::handle_client_server_request(
-            rt, {"GET", "/_matrix/client/v3/sync", token, {}});
+        auto const initial =
+            merovingian::homeserver::handle_client_server_request(rt, {"GET", "/_matrix/client/v3/sync", token, {}});
         REQUIRE(initial.response.status == 200U);
         auto const next_batch = extract(initial.response.body, "next_batch");
 
         WHEN("Alice sends /sync?since=<next_batch> with no timeout and no new events")
         {
             auto const target = "/_matrix/client/v3/sync?since=" + next_batch;
-            auto const result = merovingian::homeserver::handle_client_server_request(
-                rt, {"GET", target, token, {}});
+            auto const result = merovingian::homeserver::handle_client_server_request(rt, {"GET", target, token, {}});
 
             // Spec MUST: omitting `timeout` means respond immediately with current data.
             // Do NOT change — returning needs_wait here would violate spec §9.4.
@@ -998,16 +994,15 @@ SCENARIO("Sync with timeout=0 returns immediately without long-polling", "[sync]
         auto& rt = started.runtime;
         auto const [alice_id, token] = register_and_login(rt);
 
-        auto const initial = merovingian::homeserver::handle_client_server_request(
-            rt, {"GET", "/_matrix/client/v3/sync", token, {}});
+        auto const initial =
+            merovingian::homeserver::handle_client_server_request(rt, {"GET", "/_matrix/client/v3/sync", token, {}});
         REQUIRE(initial.response.status == 200U);
         auto const next_batch = extract(initial.response.body, "next_batch");
 
         WHEN("Alice sends /sync?since=<next_batch>&timeout=0")
         {
             auto const target = "/_matrix/client/v3/sync?since=" + next_batch + "&timeout=0";
-            auto const result = merovingian::homeserver::handle_client_server_request(
-                rt, {"GET", target, token, {}});
+            auto const result = merovingian::homeserver::handle_client_server_request(rt, {"GET", target, token, {}});
 
             THEN("the handler returns immediately with a complete 200 response")
             {

@@ -173,8 +173,7 @@ auto parse_inbound_pdu_envelope(std::string_view pdu_json, std::string_view room
     // in the auth_events of any other event. In v12, the create event ID equals
     // the room_id with sigil swapped ('!' → '$'), so we can detect violations
     // without a store lookup. Only applies to v12 rooms (no ':' in room_id).
-    if (out.event_type != "m.room.create" && !out.room_id.empty() &&
-        out.room_id.find(':') == std::string::npos)
+    if (out.event_type != "m.room.create" && !out.room_id.empty() && out.room_id.find(':') == std::string::npos)
     {
         auto const create_event_id = "$" + out.room_id.substr(1U);
         for (auto const& auth_id : out.auth_event_ids)
@@ -182,7 +181,9 @@ auto parse_inbound_pdu_envelope(std::string_view pdu_json, std::string_view room
             if (auth_id == create_event_id)
             {
                 log_diagnostic("pdu.parse.rejected",
-                               {{"reason", "v12: m.room.create must not appear in auth_events", false}});
+                               {
+                                   {"reason", "v12: m.room.create must not appear in auth_events", false}
+                });
                 return std::nullopt;
             }
         }

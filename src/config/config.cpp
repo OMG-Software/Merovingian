@@ -551,7 +551,8 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
 
     if (config.federation_worker().enabled && config.federation_worker().shards == 0U)
     {
-        findings.push_back({"federation.worker.shards", "shards must be greater than zero when federation worker is enabled"});
+        findings.push_back(
+            {"federation.worker.shards", "shards must be greater than zero when federation worker is enabled"});
     }
 
     if (config.security().registration.enabled && !config.security().registration.require_token)
