@@ -64,7 +64,7 @@ flowchart TB
 | Remote exhaustion attacker | Listeners, queues, parsers | Bounded queues, rate limiting, resource limits, circuit breakers |
 | Media upload attacker | Image decoding | Out-of-process seccomp/rlimit-sandboxed worker, pixel-count decode-bomb guard, MIME sniffing, quarantine |
 | Malicious reverse proxy | Header/transport trust | Production listener rejects test-only credential encodings; response header validation |
-| Malicious local process | IPC channel sniffing | Ephemeral `crypto_kx` + AEAD encryption; no filesystem socket path; signing key never forwarded; access tokens stripped |
+| Malicious local process | IPC channel sniffing | Ephemeral `crypto_kx` + AEAD encryption; no filesystem socket path; signing key never loaded in worker and never forwarded over IPC; access tokens stripped |
 | DB exfiltration attacker | Persistence | Prepared statements only, runtime/migration role separation, audit redaction; at-rest encryption for the server signing secret when a master key is configured; Argon2id hashing for registration tokens |
 | Supply-chain attacker | Dependencies, release | Vendored/pinned subprojects, secret scanning, SBOM; signing/provenance tracked in production milestone |
 | Compromised administrator | Admin surface | Audited admin actions; richer admin authZ tracked as a gap |
@@ -281,13 +281,31 @@ threat it closes; the controls above are the standing defences these reinforce.
   process and the new `merovingian-fed-worker` child. Mitigations: (a) the
   channel uses an ephemeral `crypto_kx` key exchange and
   `crypto_secretstream_xchacha20poly1305` AEAD so a local process that can
-  read the socket pair sees only ciphertext; (b) the server signing key is
-  never forwarded — the worker reads it from the database directly; (c) client
-  access tokens are stripped before serialisation so the worker receives only
-  the validated context it needs; (d) the channel uses an `AF_UNIX` socket
-  pair inherited at spawn with `SOCK_CLOEXEC` and no filesystem path, removing
-  the impersonation surface; (e) PDU writes to the persistent store remain
-  exclusively in the main process so stream-ordering integrity is preserved.
+  read the socket pair sees only ciphertext; (b) client access tokens are
+  stripped before serialisation so the worker receives only the validated
+  context it needs; (c) the channel uses an `AF_UNIX` socket pair inherited at
+  spawn with `SOCK_CLOEXEC` and no filesystem path, removing the impersonation
+  surface; (d) PDU writes to the persistent store remain exclusively in the main
+  process so stream-ordering integrity is preserved.
+
+- **Signing secret in federation worker address space (v0.10.2):**
+  in Phase 1 the worker loaded the server signing secret from the database, so a
+  compromised worker could forge federation signatures. Phase 2 removes the
+  secret from the worker entirely: the worker delegates signing to the main
+  process over the existing encrypted IPC channel via `sign_request` /
+  `sign_response` frames, and `IpcEd25519Provider::verify` is unsupported in
+  the worker. The private key exists only in the main process's locked
+  `SecretBuffer`; worker compromise now leaks no long-lived signing material.
+
+- **Single worker as a chokepoint (v0.10.3):**
+  Phase 1 used one federation worker for every room. A CPU-heavy room could
+  still delay federation traffic for all other rooms because that single process
+  had to process every inbound PDU. Phase 3 shards rooms across N independent
+  `merovingian-fed-worker` processes using `fnv1a_32(room_id) % shards`;
+  non-room requests route to shard 0. A crash or resource exhaustion in one
+  shard only affects the rooms owned by that shard, and `fallback_in_process`
+  keeps the rest of federation available in the main process while the
+  supervisor restarts the failed worker.
 
 ## Security principles
 

@@ -549,6 +549,11 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
         findings.push_back({"database.pool_size", "database pool size must be greater than zero"});
     }
 
+    if (config.federation_worker().enabled && config.federation_worker().shards == 0U)
+    {
+        findings.push_back({"federation.worker.shards", "shards must be greater than zero when federation worker is enabled"});
+    }
+
     if (config.security().registration.enabled && !config.security().registration.require_token)
     {
         findings.push_back({"security.registration.require_token", "open registration requires token protection"});

@@ -108,6 +108,12 @@ struct ValidatedMakeLeaveResponse final
 
 [[nodiscard]] auto ensure_runtime_server_signing_key(HomeserverRuntime& runtime)
     -> std::optional<database::PersistentServerSigningKey>;
+// Returns the active server signing-key record (key_id and public_key) without
+// loading or decrypting the secret. Used by federation paths that sign through
+// an external provider (e.g. the out-of-process worker) where the secret must
+// not enter the runtime.
+[[nodiscard]] auto find_active_server_signing_key(HomeserverRuntime const& runtime)
+    -> std::optional<database::PersistentServerSigningKey>;
 [[nodiscard]] auto publish_server_signing_keys(HomeserverRuntime& runtime) -> OperationResult;
 // Rotates this server's Ed25519 signing key. The currently active key is retired
 // (its valid_until_ts is set to "now" so it is published under old_verify_keys) and

@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.10.1
+Version:        0.10.3
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -96,6 +96,12 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Sat Jun 27 2026 James Chapman <claude@ping.me.uk> - 0.10.3-1
+- feat(federation): room-sharded federation workers (Phase 3); inbound requests are routed by room ID across N independent merovingian-fed-worker processes using FNV-1a hashing
+
+* Sat Jun 27 2026 James Chapman <claude@ping.me.uk> - 0.10.2-1
+- feat(federation): sign-back channel for federation worker (Phase 2); worker delegates Ed25519 signing to main process via IPC so the signing secret never enters the worker
+
 * Sat Jun 27 2026 James Chapman <claude@ping.me.uk> - 0.10.1-1
 - feat(federation): introduce merovingian-fed-worker out-of-process federation worker with encrypted IPC channel to isolate federation CPU/IO from client-server threads
 

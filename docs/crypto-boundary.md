@@ -22,6 +22,11 @@ implementing custom cryptographic primitives.
 - Runtime server signing-key persistence for the current local Ed25519 key.
 - Explicit server signing-key rotation (`rotate_server_signing_key`) that retires
   the active key into `old_verify_keys` and activates a freshly generated key.
+- Centralised runtime signing provider (`HomeserverRuntime::crypto_provider`)
+  so every server signing path uses one provider instance.
+- Sign-back IPC channel for the out-of-process federation worker: the worker
+  delegates Ed25519 signing to the main process over the encrypted IPC channel
+  via `IpcEd25519Provider`; the private key never enters the worker address space.
 - Validation for Ed25519 public-key shape, signature shape, and key IDs.
 - Bounded random request-size validation.
 - Event-signing integration tests using deterministic provider doubles.
@@ -107,13 +112,16 @@ The encrypted channel between `merovingian-server` and `merovingian-fed-worker`
 - **Framing**: `[4-byte big-endian ciphertext_length][ciphertext]`. The
   ciphertext includes the AEAD MAC overhead so the receiver can verify integrity
   before decrypting.
-- **Isolation**: the Matrix signing key is never transmitted over the IPC
-  channel. The worker reads the signing key from the database directly. Client
-  access tokens are stripped from every forwarded request.
+- **Isolation**: client access tokens are stripped from every forwarded request.
+  The Matrix signing key is never transmitted over the IPC channel. The worker
+  does not load the signing secret from the database; instead it sends
+  `sign_request` frames and the main process signs with the in-memory production
+  provider, returning only the unpadded base64 signature.
 
 The IPC channel is tested by `tests/unit/test_ipc_framing.cpp` covering:
-concurrent key exchange, request/response pairing, notification delivery, and
-timeout behaviour when no reply arrives.
+concurrent key exchange, request/response pairing, notification delivery,
+timeout behaviour when no reply arrives, and the `IpcEd25519Provider` sign-back
+round-trip.
 
 ## Deliberately not included
 

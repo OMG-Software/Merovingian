@@ -1,11 +1,11 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "worker_event_loop.hpp"
-
 #include "merovingian/config/config_parser.hpp"
 #include "merovingian/core/file_descriptor.hpp"
+#include "merovingian/federation_worker/args.hpp"
 #include "merovingian/observability/logger.hpp"
+#include "worker_event_loop.hpp"
 
 #include <cerrno>
 #include <cstdlib>
@@ -23,70 +23,23 @@
 namespace
 {
 
-struct ParsedArgs final
+auto read_file(std::string_view path) -> std::optional<std::string>
 {
-    std::optional<std::string> config_path{};
-    std::optional<int>         ipc_fd{};
-    std::optional<std::string> error{};
-};
-
-[[nodiscard]] auto parse_args(int argc, char const* const* argv) -> ParsedArgs
-{
-    auto parsed = ParsedArgs{};
-    for (auto i = 1; i < argc; ++i)
+    auto input = std::ifstream{std::string{path}, std::ios::binary};
+    if (!input.is_open())
     {
-        auto const arg = std::string_view{argv[i]};
-        if (arg == "--config" && i + 1 < argc)
-        {
-            parsed.config_path = argv[++i];
-        }
-        else if (arg == "--ipc-fd" && i + 1 < argc)
-        {
-            auto const val = std::string_view{argv[++i]};
-            auto fd = 0;
-            auto overflow = false;
-            for (auto const ch : val)
-            {
-                if (ch < '0' || ch > '9')
-                {
-                    parsed.error = "--ipc-fd requires a non-negative integer";
-                    return parsed;
-                }
-                fd = fd * 10 + (ch - '0');
-                if (fd > 65535)
-                {
-                    overflow = true;
-                }
-            }
-            if (overflow)
-            {
-                parsed.error = "--ipc-fd value out of range";
-                return parsed;
-            }
-            parsed.ipc_fd = fd;
-        }
-        else
-        {
-            parsed.error = "unknown argument: " + std::string{arg};
-            return parsed;
-        }
+        return std::nullopt;
     }
-    if (!parsed.config_path.has_value())
-    {
-        parsed.error = "--config is required";
-    }
-    else if (!parsed.ipc_fd.has_value())
-    {
-        parsed.error = "--ipc-fd is required";
-    }
-    return parsed;
+    auto contents = std::string{std::istreambuf_iterator<char>{input}, {}};
+    input.close();
+    return contents;
 }
 
 } // namespace
 
 auto main(int argc, char const* const* argv) -> int
 {
-    auto const args = parse_args(argc, argv);
+    auto const args = merovingian::federation_worker::parse_worker_args(argc, argv);
     if (args.error.has_value())
     {
         std::cerr << "merovingian-fed-worker: " << *args.error << '\n';
@@ -97,21 +50,18 @@ auto main(int argc, char const* const* argv) -> int
     auto const raw_fd = *args.ipc_fd;
     if (::fcntl(raw_fd, F_GETFD) < 0)
     {
-        std::cerr << "merovingian-fed-worker: ipc fd " << raw_fd
-                  << " is not open: " << ::strerror(errno) << '\n';
+        std::cerr << "merovingian-fed-worker: ipc fd " << raw_fd << " is not open: " << ::strerror(errno) << '\n';
         return 1;
     }
 
-    auto input = std::ifstream{*args.config_path, std::ios::binary};
-    if (!input.is_open())
+    auto const contents = read_file(*args.config_path);
+    if (!contents.has_value())
     {
         std::cerr << "merovingian-fed-worker: cannot open config: " << *args.config_path << '\n';
         return 1;
     }
-    auto contents = std::string{std::istreambuf_iterator<char>{input}, {}};
-    input.close();
 
-    auto const parse_result = merovingian::config::parse_key_value_config(contents);
+    auto const parse_result = merovingian::config::parse_key_value_config(*contents);
     if (!parse_result.findings.empty())
     {
         for (auto const& f : parse_result.findings)
@@ -121,14 +71,14 @@ auto main(int argc, char const* const* argv) -> int
         return 1;
     }
 
-    LOG_INFO("Federation worker starting: config=" + *args.config_path +
+    LOG_INFO("Federation worker starting: shard=" + std::to_string(args.shard_index) + " config=" + *args.config_path +
              " ipc_fd=" + std::to_string(raw_fd));
 
     auto ipc_fd = merovingian::core::FileDescriptor{raw_fd};
     auto const threads = parse_result.config.federation_worker().threads;
 
-    auto loop = merovingian::federation_worker::WorkerEventLoop{
-        std::move(ipc_fd), parse_result.config, threads};
+    auto loop = merovingian::federation_worker::WorkerEventLoop{std::move(ipc_fd), parse_result.config, threads,
+                                                                args.shard_index};
     loop.run();
 
     return 0;

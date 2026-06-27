@@ -25,7 +25,7 @@ flowchart TB
 
     subgraph host["Merovingian host"]
         server["merovingian-server<br/>(loopback listeners)"]
-        fedworker["merovingian-fed-worker<br/>(IPC child, own thread pool)"]
+        fedworker["merovingian-fed-worker × N<br/>(IPC children, sharded by room ID)"]
         thumbnail["merovingian-thumbnail-worker<br/>(sandboxed, short-lived)"]
         db[("PostgreSQL / SQLite")]
     end
@@ -131,12 +131,13 @@ merovingian-server
   ├── federation listener thread — plain TCP accept loop
   ├── federation TLS listener thread — OpenSSL accept loop
   ├── DispatchWorker thread — outbound federation queue
-  ├── WorkerSupervisor thread — restarts merovingian-fed-worker on crash
+  ├── WorkerPool — manages N WorkerSupervisor threads, one per federation shard
   └── observability pipeline
 
-merovingian-fed-worker  [spawned when federation.worker.enabled=true]
+merovingian-fed-worker × N  [spawned when federation.worker.enabled=true]
+  Each worker owns a subset of room IDs by FNV-1a hash of the room ID.
   ├── IPC reader thread — receives fed_request / pdu_ingest_result frames
-  └── worker thread pool (N threads, default 4) — handles fed_request concurrently
+  └── worker thread pool (threads = federation.worker.threads) — handles fed_request concurrently
 ```
 
 `start_client_server(config)` returns a `ClientServerRuntime` holding `HomeserverRuntime`, which owns the persistent store, federation state, media, outbound client, discovery network, sync notifier, and a recursive mutex serialising access to the runtime.
@@ -146,7 +147,7 @@ Request flow:
 1. Listener thread accepts a connection, submits the fd to the pool.
 2. Pool thread reads one HTTP request, routes it via `dispatch_local_http_request()`.
 3. Authenticated client-server requests go to `handle_client_server_request()`.
-4. Federation requests go to `FederationProxy::handle()` (when `federation.worker.enabled=true`) which serialises the request over encrypted IPC to `merovingian-fed-worker`; otherwise directly to `handle_federation_http_request()`.
+4. Federation requests go to `FederationProxy::handle()` (when `federation.worker.enabled=true`) which extracts the room ID, selects the owning worker shard (`fnv1a_32(room_id) % federation.worker.shards`), and serialises the request over encrypted IPC to that `merovingian-fed-worker` process; non-room requests route to shard 0. When the worker is disabled, requests go directly to `handle_federation_http_request()`.
 5. In-process requests (room creation that needs both auth and federation) go through `handle_local_http_request()`.
 6. For `/sync` long-polls: if no new data exists, `DispatchResult::needs_wait` is returned with `SyncWaitParams`. The HTTP server releases the runtime mutex, calls `SyncNotifier::wait_for_change()`, then re-acquires the lock and rebuilds the response. This offloading keeps the main pool free for real requests.
 

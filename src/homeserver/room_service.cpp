@@ -369,46 +369,6 @@ namespace
         database::PersistentServerSigningKey key_{};
     };
 
-    class RuntimeEd25519Provider final : public crypto::Ed25519Provider
-    {
-    public:
-        explicit RuntimeEd25519Provider(std::array<unsigned char, crypto_sign_SECRETKEYBYTES> secret_key)
-            : secret_key_{std::move(secret_key)}
-        {
-        }
-
-        [[nodiscard]] auto sign(crypto::Ed25519SecretKeyHandle const& /*key*/, std::string_view message)
-            -> crypto::SignatureResult override
-        {
-            auto signature = std::string(crypto_sign_BYTES, '\0');
-            if (crypto_sign_detached(reinterpret_cast<unsigned char*>(signature.data()), nullptr,
-                                     reinterpret_cast<unsigned char const*>(message.data()), message.size(),
-                                     secret_key_.data()) != 0)
-            {
-                return {{}, "Ed25519 signing failed"};
-            }
-            return {crypto::Ed25519Signature{std::move(signature)}, {}};
-        }
-
-        [[nodiscard]] auto verify(crypto::Ed25519PublicKey const& public_key, std::string_view message,
-                                  crypto::Ed25519Signature const& signature) -> crypto::VerificationResult override
-        {
-            if (!crypto::ed25519_public_key_shape_is_valid(public_key) ||
-                !crypto::ed25519_signature_shape_is_valid(signature))
-            {
-                return {false, "invalid Ed25519 material"};
-            }
-            auto const ok =
-                crypto_sign_verify_detached(reinterpret_cast<unsigned char const*>(signature.bytes.data()),
-                                            reinterpret_cast<unsigned char const*>(message.data()), message.size(),
-                                            reinterpret_cast<unsigned char const*>(public_key.bytes.data())) == 0;
-            return {ok, ok ? std::string{} : std::string{"signature verification failed"}};
-        }
-
-    private:
-        std::array<unsigned char, crypto_sign_SECRETKEYBYTES> secret_key_{};
-    };
-
     [[nodiscard]] auto object_member(canonicaljson::Object const& object, std::string_view key) noexcept
         -> canonicaljson::Value const*
     {
@@ -1175,8 +1135,8 @@ namespace
             return std::nullopt;
         }
 
-        auto key = ensure_runtime_server_signing_key(runtime);
-        if (!key.has_value())
+        auto key = find_active_server_signing_key(runtime);
+        if (!key.has_value() || runtime.crypto_provider == nullptr)
         {
             log_diagnostic("event.compose.rejected", {
                                                          {"room_id",    std::string{room_id},             false},
@@ -1187,15 +1147,8 @@ namespace
             return std::nullopt;
         }
         auto key_store = RuntimeSigningKeyStore{runtime.config.server().server_name, *key};
-        auto secret_key_array = std::array<unsigned char, crypto_sign_SECRETKEYBYTES>{};
-        if (runtime.database.signing_secret_key.bytes().size() == crypto_sign_SECRETKEYBYTES)
-        {
-            std::copy(runtime.database.signing_secret_key.bytes().begin(),
-                      runtime.database.signing_secret_key.bytes().end(), secret_key_array.begin());
-        }
-        auto provider = RuntimeEd25519Provider{std::move(secret_key_array)};
-        auto const signed_event = events::sign_event_for_server(hash_event, *policy, key_store, provider,
-                                                                runtime.config.server().server_name);
+        auto const signed_event = events::sign_event_for_server(
+            hash_event, *policy, key_store, *runtime.crypto_provider, runtime.config.server().server_name);
         if (!signed_event.error.empty())
         {
             log_diagnostic("event.compose.rejected", {
@@ -1292,8 +1245,7 @@ namespace
     // duplicating, and persists the result. Called when create_room is invoked
     // with is_direct:true so that a second device can classify the room via
     // sliding sync without relying on the first client to PUT m.direct itself.
-    [[nodiscard]] auto upsert_m_direct(HomeserverRuntime& runtime, std::string_view user_id,
-                                       std::string_view room_id,
+    [[nodiscard]] auto upsert_m_direct(HomeserverRuntime& runtime, std::string_view user_id, std::string_view room_id,
                                        std::vector<std::string> const& invitees) -> bool
     {
         if (invitees.empty())
@@ -1303,8 +1255,8 @@ namespace
 
         auto mapping = canonicaljson::Object{};
         auto const& account_data = runtime.database.persistent_store.account_data;
-        auto const existing = std::ranges::find_if(
-            account_data, [user_id](database::PersistentAccountData const& entry) {
+        auto const existing =
+            std::ranges::find_if(account_data, [user_id](database::PersistentAccountData const& entry) {
                 return entry.user_id == user_id && entry.room_id.empty() && entry.event_type == "m.direct";
             });
         if (existing != account_data.end())
@@ -1312,8 +1264,7 @@ namespace
             auto const parsed = canonicaljson::parse_lossless(existing->content_json);
             if (parsed.error == canonicaljson::ParseError::none)
             {
-                if (auto const* obj = std::get_if<canonicaljson::Object>(&parsed.value.storage());
-                    obj != nullptr)
+                if (auto const* obj = std::get_if<canonicaljson::Object>(&parsed.value.storage()); obj != nullptr)
                 {
                     mapping = *obj;
                 }
@@ -1322,10 +1273,9 @@ namespace
 
         for (auto const& invitee : invitees)
         {
-            auto const member_it =
-                std::ranges::find_if(mapping, [&invitee](canonicaljson::ObjectMember const& m) {
-                    return m.key == invitee;
-                });
+            auto const member_it = std::ranges::find_if(mapping, [&invitee](canonicaljson::ObjectMember const& m) {
+                return m.key == invitee;
+            });
             if (member_it == mapping.end())
             {
                 auto arr = canonicaljson::Array{};
@@ -1334,8 +1284,7 @@ namespace
             }
             else
             {
-                auto const* existing_arr =
-                    std::get_if<canonicaljson::Array>(&member_it->value->storage());
+                auto const* existing_arr = std::get_if<canonicaljson::Array>(&member_it->value->storage());
                 if (existing_arr == nullptr)
                 {
                     // Key exists but is not an array; replace it.
@@ -1345,11 +1294,10 @@ namespace
                 }
                 else
                 {
-                    auto const already =
-                        std::ranges::any_of(*existing_arr, [room_id](canonicaljson::Value const& v) {
-                            auto const* s = std::get_if<std::string>(&v.storage());
-                            return s != nullptr && *s == room_id;
-                        });
+                    auto const already = std::ranges::any_of(*existing_arr, [room_id](canonicaljson::Value const& v) {
+                        auto const* s = std::get_if<std::string>(&v.storage());
+                        return s != nullptr && *s == room_id;
+                    });
                     if (!already)
                     {
                         auto new_arr = *existing_arr;
@@ -1503,12 +1451,14 @@ namespace
         }
         runtime.database.signing_secret_key = core::SecretBuffer{raw_secret->size()};
         std::copy(raw_secret->begin(), raw_secret->end(), runtime.database.signing_secret_key.bytes().begin());
-        log_diagnostic("signing_key.loaded", {
-                                                 {"server_name", std::string{server_name},           false},
-                                                 {"key_id",      it->key_id,                         false},
-                                                 {"public_key",  it->public_key,                     false},
-                                                 {"secret_size", std::to_string(raw_secret->size()), false}
-        }, observability::LogEventSeverity::info);
+        log_diagnostic("signing_key.loaded",
+                       {
+                           {"server_name", std::string{server_name},           false},
+                           {"key_id",      it->key_id,                         false},
+                           {"public_key",  it->public_key,                     false},
+                           {"secret_size", std::to_string(raw_secret->size()), false}
+        },
+                       observability::LogEventSeverity::info);
         return *it;
     }
 
@@ -1581,12 +1531,14 @@ namespace
         now_ms + seven_days_ms,
         *stored_secret,
     };
-    log_diagnostic("signing_key.generated", {
-                                                {"server_name", std::string{server_name}, false},
-                                                {"key_id",      key_id,                   false},
-                                                {"public_key",  key.public_key,           false},
-                                                {"encrypted",   encrypted,                false}
-    }, observability::LogEventSeverity::info);
+    log_diagnostic("signing_key.generated",
+                   {
+                       {"server_name", std::string{server_name}, false},
+                       {"key_id",      key_id,                   false},
+                       {"public_key",  key.public_key,           false},
+                       {"encrypted",   encrypted,                false}
+    },
+                   observability::LogEventSeverity::info);
     if (!database::store_server_signing_key(runtime.database.persistent_store, key))
     {
         return std::nullopt;
@@ -1596,6 +1548,32 @@ namespace
     return key;
 }
 
+[[nodiscard]] auto find_active_server_signing_key(HomeserverRuntime const& runtime)
+    -> std::optional<database::PersistentServerSigningKey>
+{
+    auto const& server_name = runtime.config.server().server_name;
+    auto const& all_keys = runtime.database.persistent_store.server_signing_keys;
+
+    // Select the usable non-legacy key with the greatest valid_until_ts, mirroring
+    // the choice made by ensure_runtime_server_signing_key but without touching the
+    // encrypted secret. This lets federation handlers that delegate signing to an
+    // external provider obtain the key_id and public_key they need.
+    auto it = all_keys.end();
+    for (auto candidate = all_keys.begin(); candidate != all_keys.end(); ++candidate)
+    {
+        if (candidate->server_name != server_name || candidate->key_id == "ed25519:auto" ||
+            candidate->secret_key.empty())
+        {
+            continue;
+        }
+        if (it == all_keys.end() || candidate->valid_until_ts > it->valid_until_ts)
+        {
+            it = candidate;
+        }
+    }
+    return it == all_keys.end() ? std::nullopt : std::optional<database::PersistentServerSigningKey>{*it};
+}
+
 [[nodiscard]] auto publish_server_signing_keys(HomeserverRuntime& runtime) -> OperationResult
 {
     auto key = ensure_runtime_server_signing_key(runtime);
@@ -1603,9 +1581,9 @@ namespace
     {
         return make_operation_result(false, {}, "server signing key unavailable", 500U);
     }
-    if (runtime.database.signing_secret_key.bytes().size() != crypto_sign_SECRETKEYBYTES)
+    if (runtime.crypto_provider == nullptr)
     {
-        return make_operation_result(false, {}, "server signing secret unavailable", 500U);
+        return make_operation_result(false, {}, "server signing provider unavailable", 500U);
     }
 
     // Publish a rolling valid_until_ts of now + 7 days. A far-future sentinel (year 2999) is
@@ -1659,17 +1637,15 @@ namespace
         return make_operation_result(false, {}, canonicaljson::canonical_json_error_name(payload.error), 500U);
     }
 
-    auto signature = std::string(crypto_sign_BYTES, '\0');
-    if (crypto_sign_detached(reinterpret_cast<unsigned char*>(signature.data()), nullptr,
-                             reinterpret_cast<unsigned char const*>(payload.output.data()), payload.output.size(),
-                             runtime.database.signing_secret_key.bytes().data()) != 0)
+    auto const sign_result = runtime.crypto_provider->sign(crypto::Ed25519SecretKeyHandle{key->key_id}, payload.output);
+    if (!sign_result.error.empty())
     {
-        return make_operation_result(false, {}, "server key response signing failed", 500U);
+        return make_operation_result(false, {}, "server key response signing failed: " + sign_result.error, 500U);
     }
 
     auto server_signatures = canonicaljson::Object{};
-    server_signatures.push_back(
-        canonicaljson::make_member(key->key_id, canonicaljson::Value{events::matrix_base64_from_bytes(signature)}));
+    server_signatures.push_back(canonicaljson::make_member(
+        key->key_id, canonicaljson::Value{events::matrix_base64_from_bytes(sign_result.signature.bytes)}));
     auto signatures = canonicaljson::Object{};
     signatures.push_back(
         canonicaljson::make_member(key->server_name, canonicaljson::Value{std::move(server_signatures)}));
@@ -1760,12 +1736,15 @@ namespace
     }
     runtime.database.signing_secret_key = core::SecretBuffer{secret_key.size()};
     std::copy(secret_key.begin(), secret_key.end(), runtime.database.signing_secret_key.bytes().begin());
-    log_diagnostic("signing_key.rotated", {
-                                              {"server_name",    current->server_name, false},
-                                              {"retired_key_id", current->key_id,      false},
-                                              {"new_key_id",     key_id,               false},
-                                              {"encrypted",      encrypted,            false}
-    }, observability::LogEventSeverity::info);
+    reset_runtime_crypto_provider(runtime);
+    log_diagnostic("signing_key.rotated",
+                   {
+                       {"server_name",    current->server_name, false},
+                       {"retired_key_id", current->key_id,      false},
+                       {"new_key_id",     key_id,               false},
+                       {"encrypted",      encrypted,            false}
+    },
+                   observability::LogEventSeverity::info);
 
     // Refresh the cached key-server response so federation peers immediately observe
     // the rotation on their next GET /_matrix/key/v2/server.
@@ -2258,10 +2237,12 @@ namespace
 
     append_local_audit(runtime.database, observability::AuditCategory::admin, "room.created", *user_id, room_id,
                        "created");
-    log_diagnostic("room.create.accepted", {
-                                               {"actor",   *user_id, false},
-                                               {"room_id", room_id,  false}
-    }, observability::LogEventSeverity::info);
+    log_diagnostic("room.create.accepted",
+                   {
+                       {"actor",   *user_id, false},
+                       {"room_id", room_id,  false}
+    },
+                   observability::LogEventSeverity::info);
     // Room creation changes membership which is visible in /sync;
     // advance the sync stream counter so the publish wakes clients.
     auto sync_stream_id = database::allocate_sync_stream_id(runtime.database.persistent_store);
@@ -2532,12 +2513,12 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
         auto* outbound_client = runtime.outbound_client.get();
         auto* discovery_network = runtime.discovery_network.get();
         auto const supported_versions = std::vector<std::string>{"10", "11", "12"};
-        // Best-effort: load the key_id from the persistent store. If the key cannot be
-        // hydrated (wrong size, bad base64) ensure_runtime_server_signing_key returns
-        // nullopt and signing_secret_key stays empty. perform_sync_outbound_call validates
-        // the secret size and returns {false, "server signing key not initialized"}, which
-        // join_room surfaces as 502 — the correct status for an upstream federation failure.
-        auto const signing_key = ensure_runtime_server_signing_key(runtime);
+        // Best-effort: load the key_id from the persistent store. If no usable key
+        // record exists, perform_sync_outbound_call fails with "server signing key not
+        // initialized", which join_room surfaces as 502 — the correct status for an
+        // upstream federation failure. The signing secret is already held by the runtime
+        // provider; keep a local string view only for the X-Matrix authorization header.
+        auto const signing_key = find_active_server_signing_key(runtime);
         auto const key_id = signing_key.has_value() ? signing_key->key_id : std::string{};
         auto const secret_key =
             std::string{reinterpret_cast<char const*>(runtime.database.signing_secret_key.bytes().data()),
@@ -2629,13 +2610,17 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
         // signing_key is guaranteed non-empty here: perform_sync_outbound_call
         // validates secret_key size before executing make_join, so a failed key
         // means make_ok was false and we returned 502 above.
-        auto key_store = RuntimeSigningKeyStore{our_server, signing_key.value()};
-        auto secret_key_array = std::array<unsigned char, crypto_sign_SECRETKEYBYTES>{};
-        if (secret_key.size() == crypto_sign_SECRETKEYBYTES)
+        if (runtime.crypto_provider == nullptr)
         {
-            std::copy(secret_key.begin(), secret_key.end(), secret_key_array.begin());
+            log_diagnostic("room.join.rejected", {
+                                                     {"actor",   *user_id,                                false},
+                                                     {"room_id", std::string{room_id},                    false},
+                                                     {"status",  "500",                                   false},
+                                                     {"reason",  "server signing provider not available", false}
+            });
+            return make_operation_result(false, {}, "server signing provider not available", 500U);
         }
-        auto provider = RuntimeEd25519Provider{std::move(secret_key_array)};
+        auto key_store = RuntimeSigningKeyStore{our_server, signing_key.value()};
         auto const* policy = rooms::find_room_version_policy(room_version);
         if (policy == nullptr)
         {
@@ -2648,7 +2633,7 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
             return make_operation_result(false, {}, "room version policy missing", 500U);
         }
         auto const signed_event =
-            events::sign_event_for_server(event_to_sign, *policy, key_store, provider, our_server);
+            events::sign_event_for_server(event_to_sign, *policy, key_store, *runtime.crypto_provider, our_server);
         if (!signed_event.error.empty())
         {
             log_diagnostic("room.join.rejected", {
@@ -2980,7 +2965,8 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
                            {"remote_server", std::string{remote_server},                                   false},
                            {"event_id",      event_id_result.event_id,                                     false},
                            {"member_count",  std::to_string(runtime.database.rooms.back().members.size()), false}
-        }, observability::LogEventSeverity::info);
+        },
+                       observability::LogEventSeverity::info);
         // Membership change from remote join is visible in /sync; advance
         // the sync stream counter so the publish wakes clients.
         auto const sync_stream_id = database::allocate_sync_stream_id(runtime.database.persistent_store);
@@ -3112,11 +3098,13 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
 
     append_local_audit(runtime.database, observability::AuditCategory::admin, "room.joined", *user_id, room_id,
                        "joined");
-    log_diagnostic("room.join.accepted", {
-                                             {"actor",        *user_id,                             false},
-                                             {"room_id",      std::string{room_id},                 false},
-                                             {"member_count", std::to_string(room->members.size()), false}
-    }, observability::LogEventSeverity::info);
+    log_diagnostic("room.join.accepted",
+                   {
+                       {"actor",        *user_id,                             false},
+                       {"room_id",      std::string{room_id},                 false},
+                       {"member_count", std::to_string(room->members.size()), false}
+    },
+                   observability::LogEventSeverity::info);
     // Membership change from local join is visible in /sync; advance
     // the sync stream counter so the publish wakes clients.
     auto const sync_stream_id = database::allocate_sync_stream_id(runtime.database.persistent_store);
@@ -3203,7 +3191,8 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
                        {
                            {"actor",   *user_id,             false},
                            {"room_id", std::string{room_id}, false}
-        }, observability::LogEventSeverity::info);
+        },
+                       observability::LogEventSeverity::info);
         return make_operation_result(true, std::string{room_id});
     }
     if (membership_it->membership != "join" && membership_it->membership != "invite")
@@ -3212,7 +3201,8 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
                        {
                            {"actor",   *user_id,             false},
                            {"room_id", std::string{room_id}, false}
-        }, observability::LogEventSeverity::info);
+        },
+                       observability::LogEventSeverity::info);
         return make_operation_result(true, std::string{room_id});
     }
 
@@ -3228,7 +3218,7 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
         auto* outbound_client = runtime.outbound_client.get();
         auto* discovery_network = runtime.discovery_network.get();
         auto const remote_server = std::string{room_domain};
-        auto const signing_key = ensure_runtime_server_signing_key(runtime);
+        auto const signing_key = find_active_server_signing_key(runtime);
         auto const key_id = signing_key.has_value() ? signing_key->key_id : std::string{};
         auto const secret_key =
             std::string{reinterpret_cast<char const*>(runtime.database.signing_secret_key.bytes().data()),
@@ -3318,15 +3308,20 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
             });
             return make_operation_result(false, {}, "room version policy missing", 500U);
         }
-        auto key_store = RuntimeSigningKeyStore{our_server, signing_key.value()};
-        auto secret_key_array = std::array<unsigned char, crypto_sign_SECRETKEYBYTES>{};
-        if (secret_key.size() == crypto_sign_SECRETKEYBYTES)
+        if (runtime.crypto_provider == nullptr)
         {
-            std::copy(secret_key.begin(), secret_key.end(), secret_key_array.begin());
+            guard.lock();
+            log_diagnostic("room.leave.rejected", {
+                                                      {"actor",   *user_id,                                false},
+                                                      {"room_id", std::string{room_id},                    false},
+                                                      {"status",  "500",                                   false},
+                                                      {"reason",  "server signing provider not available", false}
+            });
+            return make_operation_result(false, {}, "server signing provider not available", 500U);
         }
-        auto provider = RuntimeEd25519Provider{std::move(secret_key_array)};
+        auto key_store = RuntimeSigningKeyStore{our_server, signing_key.value()};
         auto const signed_event =
-            events::sign_event_for_server(event_to_sign, *policy, key_store, provider, our_server);
+            events::sign_event_for_server(event_to_sign, *policy, key_store, *runtime.crypto_provider, our_server);
         if (!signed_event.error.empty())
         {
             guard.lock();
@@ -3415,7 +3410,8 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
                        {
                            {"actor",   *user_id,             false},
                            {"room_id", std::string{room_id}, false}
-        }, observability::LogEventSeverity::info);
+        },
+                       observability::LogEventSeverity::info);
         return make_operation_result(true, std::string{room_id});
     }
 
@@ -3434,10 +3430,12 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
     }
 
     append_local_audit(runtime.database, observability::AuditCategory::admin, "room.left", *user_id, room_id, "left");
-    log_diagnostic("room.leave.accepted", {
-                                              {"actor",   *user_id,             false},
-                                              {"room_id", std::string{room_id}, false}
-    }, observability::LogEventSeverity::info);
+    log_diagnostic("room.leave.accepted",
+                   {
+                       {"actor",   *user_id,             false},
+                       {"room_id", std::string{room_id}, false}
+    },
+                   observability::LogEventSeverity::info);
     return make_operation_result(true, std::string{room_id});
 }
 

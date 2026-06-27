@@ -1,7 +1,37 @@
+## 0.10.3
+
+### Added
+- **feat(federation): room-sharded federation workers (Phase 3):** inbound federation requests are now routed across N independent `merovingian-fed-worker` processes using `federation.worker.shards`. Room-scoped endpoints are assigned by `fnv1a_32(room_id) % shards`; non-room endpoints (key queries, profile queries, etc.) route to shard 0. Each shard has its own `WorkerSupervisor` restart monitor and encrypted AF_UNIX IPC channel, so a CPU-heavy room can no longer starve federation traffic for all other rooms. `FederationProxy` extracts the room ID from request targets and from the first PDU in `PUT /send/{txnId}` bodies.
+
+### Changed
+- **refactor(federation): `WorkerPool` owns N supervisors:** `FederationProxy` now delegates to a `WorkerPool` that creates `federation.worker.shards` `WorkerSupervisor` instances. Each worker is launched with `--shard <index>` so log output can identify the shard; the per-worker IPC request handler captures the correct supervisor reference so `pdu_ingest` and `sign_request` responses are sent on the channel that received them.
+
+### Fixed
+- **fix(federation): close the server-side IPC fd before duping the client fd in `WorkerSupervisor`:** the `posix_spawn` file actions previously duplicated the child's socketpair end onto `kWorkerIpcFd` (3) and then closed the parent-side fd. When `socketpair` returned the parent side as fd 3, the close removed the newly placed IPC fd, causing the worker to fail with "ipc fd 3 is not open". The close now happens before the dup2 so the fixed IPC fd survives into the child.
+- **fix(federation): `WorkerSupervisor::healthy()` reports healthy before `start()`:** a constructed supervisor that has not yet spawned a worker is not failed; `healthy()` now returns `true` when no IPC channel exists yet, so pre-start health checks and unit assertions behave correctly.
+- **fix(ipc): `deserialize_fed_response` parses numeric `status` field:** the worker response frame carries `status` as a JSON number, but the deserializer was reading it with the string helper and defaulting to `500`. A dedicated numeric parser now returns the actual HTTP status from the worker.
+
+### Added tests
+- **test(federation): BDD scenarios for federation worker shard routing:** `tests/unit/test_federation_proxy.cpp` covers deterministic FNV-1a sharding, single-shard fallback to shard 0, non-room request routing, and the 503 fail-closed path when the selected shard's worker is unhealthy.
+- **test(federation): exhaustive unit coverage for Phase 2/3 helpers:** `tests/unit/test_federation_request_routing.cpp`, `tests/unit/test_ipc_federation_frames.cpp`, `tests/unit/test_federation_worker_args.cpp`, `tests/unit/test_worker_supervisor.cpp`, and `tests/unit/test_worker_event_loop.cpp` cover room-ID extraction from federation paths and `/send` bodies, IPC `fed_request`/`fed_response` frame round-trips, worker CLI argument parsing, and shard-index capture in supervisor/event-loop construction.
+- **test(config): federation worker shard validation:** `tests/unit/test_config_parser.cpp` asserts that `federation.worker.shards` is parsed, that `shards=0` is rejected when the worker is enabled, and that `shards=0` is accepted when the worker is disabled.
+- **test(federation): end-to-end worker flow integration:** `tests/integration/test_federation_worker_flow.cpp` spawns the real `merovingian-fed-worker` binary, waits for the pool to become healthy, routes non-room and room-scoped requests through the IPC channel, verifies shard selection, and exercises in-process fallback when the pool is stopped.
+
+## 0.10.2
+
+### Added
+- **feat(federation): sign-back channel for the out-of-process federation worker (Phase 2):** the `merovingian-fed-worker` child no longer loads the Ed25519 server signing secret. When the worker needs to sign JSON (co-signing invites, `/_matrix/key/...` responses, etc.), it sends a `sign_request` IPC frame to the main process, which signs with its in-memory provider and returns the unpadded base64 signature. The private key never crosses the IPC boundary. New `IpcEd25519Provider` implements the `crypto::Ed25519Provider` interface over the encrypted channel; the main process handles `sign_request` in `FederationProxy` and returns `sign_response`.
+
+### Changed
+- **refactor(runtime): centralise runtime signing provider:** `HomeserverRuntime` now owns a `crypto::Ed25519Provider*` (`crypto_provider`) used by `publish_server_signing_keys()`, `compose_signed_event()`, invite co-signing, and outbound join/leave signing. `find_active_server_signing_key()` selects the active public key record without decrypting the secret. Worker startup injects `IpcEd25519Provider` via `RuntimeStartOptions::signing_override`; the main process uses the persisted production provider.
+
+### Added tests
+- **test(ipc): BDD scenario for `IpcEd25519Provider` round-trip:** `tests/unit/test_ipc_framing.cpp` covers a worker-side sign call being routed over the encrypted channel and returning the expected signature bytes.
+
 ## 0.10.1
 
 ### Added
-- **feat(federation): out-of-process federation worker (`merovingian-fed-worker`):** federation CPU and I/O work (inbound PDU verification, state resolution, membership state machine, outbound dispatch) now runs in a dedicated child process with its own thread pool, so the main process threads are exclusively available for client-server API requests. A large room join no longer starves all connected clients. The IPC channel uses a `socketpair(AF_UNIX)` inherited file descriptor (no filesystem socket path), an ephemeral `crypto_kx` key exchange, and `crypto_secretstream_xchacha20poly1305` encryption for all frames. The Matrix signing key never crosses the IPC boundary — the worker sends `SignRequest` messages and the main process signs on its behalf. Client access tokens are stripped before forwarding; the worker receives only the validated user MXID.
+- **feat(federation): out-of-process federation worker (`merovingian-fed-worker`):** federation CPU and I/O work (inbound PDU verification, state resolution, membership state machine, outbound dispatch) now runs in a dedicated child process with its own thread pool, so the main process threads are exclusively available for client-server API requests. A large room join no longer starves all connected clients. The IPC channel uses a `socketpair(AF_UNIX)` inherited file descriptor (no filesystem socket path), an ephemeral `crypto_kx` key exchange, and `crypto_secretstream_xchacha20poly1305` encryption for all frames. Client access tokens are stripped before forwarding; the worker receives only the validated user MXID.
 
 ## 0.9.25
 

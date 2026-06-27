@@ -469,6 +469,13 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected unsigned integer");
             }
         }
+        else if (key == "federation.worker.shards")
+        {
+            if (!parse_u32_value(value, federation_worker.shards))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
         else if (key == "federation.worker.binary")
         {
             federation_worker.worker_binary = std::string{value};

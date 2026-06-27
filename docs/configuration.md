@@ -1006,6 +1006,7 @@ into a dedicated child process with its own thread pool.
 federation.worker.enabled=true
 federation.worker.fallback_in_process=true
 federation.worker.threads=4
+federation.worker.shards=2
 federation.worker.binary=/usr/libexec/merovingian/merovingian-fed-worker
 federation.worker.request_timeout_seconds=120
 ```
@@ -1014,7 +1015,8 @@ federation.worker.request_timeout_seconds=120
 |-----|------|---------|-------|
 | `federation.worker.enabled` | bool | `false` | Launch `merovingian-fed-worker` on startup and route all inbound federation requests (except `/_matrix/key/`) through it. |
 | `federation.worker.fallback_in_process` | bool | `true` | If `true`, serve federation in-process when the worker is unavailable (startup failure or crash with no healthy replacement yet). If `false`, return `503` instead. |
-| `federation.worker.threads` | unsigned int | `4` | Thread pool size inside `merovingian-fed-worker`. Increase for deployments that federate with many rooms simultaneously. |
+| `federation.worker.threads` | unsigned int | `4` | Thread pool size inside each `merovingian-fed-worker` process. Increase for deployments that federate with many rooms simultaneously. |
+| `federation.worker.shards` | unsigned int | `1` | Number of independent federation worker processes. Requests are routed by `fnv1a_32(room_id) % shards`; non-room endpoints (key queries, profile queries, etc.) go to shard 0. Must be greater than 0 when the worker is enabled. |
 | `federation.worker.binary` | string | compile-time default | Absolute path to the `merovingian-fed-worker` binary. Empty means `$libexecdir/merovingian/merovingian-fed-worker` (baked in as `MEROVINGIAN_LIBEXECDIR` at build time). |
 | `federation.worker.request_timeout_seconds` | unsigned int | `120` | Per-request IPC timeout in seconds. A federation request that takes longer than this returns a 504 to the remote server. |
 

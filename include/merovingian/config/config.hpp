@@ -191,6 +191,11 @@ struct FederationWorkerConfig final
     std::uint32_t request_timeout_seconds{120U};
     // Number of processing threads in the worker process.
     std::uint32_t threads{4U};
+    // Number of independent federation worker processes. shard=1 is the
+    // Phase 1/2 single-worker behaviour. Requests are routed by
+    // fnv1a_32(room_id) % shards; non-room endpoints go to shard 0. shards=0
+    // is rejected at config validation time.
+    std::uint32_t shards{1U};
     // Absolute path to the merovingian-fed-worker binary. Empty means use
     // the compile-time libexec default.
     std::string worker_binary{};

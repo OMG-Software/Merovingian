@@ -28,13 +28,15 @@ public:
     // worker_path: absolute path to merovingian-fed-worker executable.
     // config_path: path passed as --config to the worker.
     // request_timeout: per-request IPC timeout forwarded to channel usage.
-    WorkerSupervisor(std::string worker_path, std::string config_path,
-                     std::uint32_t request_timeout_seconds);
+    // shard_index: index of this worker (0..shards-1); passed to the worker
+    // as --shard so it can include the index in log output.
+    WorkerSupervisor(std::string worker_path, std::string config_path, std::uint32_t request_timeout_seconds,
+                     std::uint32_t shard_index = 0U);
     ~WorkerSupervisor();
 
-    WorkerSupervisor(WorkerSupervisor const&)            = delete;
+    WorkerSupervisor(WorkerSupervisor const&) = delete;
     auto operator=(WorkerSupervisor const&) -> WorkerSupervisor& = delete;
-    WorkerSupervisor(WorkerSupervisor&&)                 = delete;
+    WorkerSupervisor(WorkerSupervisor&&) = delete;
     auto operator=(WorkerSupervisor&&) -> WorkerSupervisor& = delete;
 
     // Sets the request handler called for inbound messages from the worker
@@ -52,6 +54,7 @@ public:
     [[nodiscard]] auto channel() noexcept -> ipc::IpcChannel&;
     [[nodiscard]] auto healthy() const noexcept -> bool;
     [[nodiscard]] auto request_timeout() const noexcept -> std::uint32_t;
+    [[nodiscard]] auto shard_index() const noexcept -> std::uint32_t;
 
 private:
     auto spawn_and_connect() -> void;
@@ -59,7 +62,8 @@ private:
 
     std::string worker_path_;
     std::string config_path_;
-    std::uint32_t request_timeout_seconds_;
+    std::uint32_t request_timeout_seconds_{};
+    std::uint32_t shard_index_{};
     ipc::IpcChannel::RequestHandler request_handler_{};
 
     std::unique_ptr<ipc::IpcChannel> channel_{};

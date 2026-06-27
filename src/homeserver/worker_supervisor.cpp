@@ -26,23 +26,24 @@ namespace merovingian::homeserver
 namespace
 {
 
-[[nodiscard]] auto make_ipc_socketpair() -> std::pair<core::FileDescriptor, core::FileDescriptor>
-{
-    auto fds = std::array<int, 2>{-1, -1};
-    if (::socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, fds.data()) != 0)
+    [[nodiscard]] auto make_ipc_socketpair() -> std::pair<core::FileDescriptor, core::FileDescriptor>
     {
-        throw std::runtime_error{"socketpair failed: " + std::string{::strerror(errno)}};
+        auto fds = std::array<int, 2>{-1, -1};
+        if (::socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, fds.data()) != 0)
+        {
+            throw std::runtime_error{"socketpair failed: " + std::string{::strerror(errno)}};
+        }
+        return {core::FileDescriptor{fds[0]}, core::FileDescriptor{fds[1]}};
     }
-    return {core::FileDescriptor{fds[0]}, core::FileDescriptor{fds[1]}};
-}
 
 } // namespace
 
 WorkerSupervisor::WorkerSupervisor(std::string worker_path, std::string config_path,
-                                   std::uint32_t request_timeout_seconds)
+                                   std::uint32_t request_timeout_seconds, std::uint32_t shard_index)
     : worker_path_{std::move(worker_path)}
     , config_path_{std::move(config_path)}
     , request_timeout_seconds_{request_timeout_seconds}
+    , shard_index_{shard_index}
 {
 }
 
@@ -60,7 +61,9 @@ auto WorkerSupervisor::start() -> void
 {
     running_.store(true);
     spawn_and_connect();
-    supervisor_thread_ = std::thread{[this]() { supervisor_loop(); }};
+    supervisor_thread_ = std::thread{[this]() {
+        supervisor_loop();
+    }};
 }
 
 auto WorkerSupervisor::stop() noexcept -> void
@@ -102,7 +105,9 @@ auto WorkerSupervisor::channel() noexcept -> ipc::IpcChannel&
 
 auto WorkerSupervisor::healthy() const noexcept -> bool
 {
-    return healthy_.load() && channel_ && channel_->healthy();
+    // A supervisor is healthy before start() is called (it has not failed)
+    // and, once started, only while its IPC channel is alive.
+    return healthy_.load() && (!channel_ || channel_->healthy());
 }
 
 auto WorkerSupervisor::request_timeout() const noexcept -> std::uint32_t
@@ -110,28 +115,37 @@ auto WorkerSupervisor::request_timeout() const noexcept -> std::uint32_t
     return request_timeout_seconds_;
 }
 
+auto WorkerSupervisor::shard_index() const noexcept -> std::uint32_t
+{
+    return shard_index_;
+}
+
 auto WorkerSupervisor::spawn_and_connect() -> void
 {
     auto [server_fd, client_fd] = make_ipc_socketpair();
 
     auto const ipc_fd_str = std::to_string(kWorkerIpcFd);
+    auto const shard_index_str = std::to_string(shard_index_);
     auto const* worker_argv0 = worker_path_.c_str();
     // NOLINTNEXTLINE(*-avoid-c-arrays) — posix_spawn requires char* const[]
     char const* argv[] = {
-        worker_argv0, "--config", config_path_.c_str(), "--ipc-fd", ipc_fd_str.c_str(), nullptr,
+        worker_argv0,       "--config", config_path_.c_str(),    "--ipc-fd",
+        ipc_fd_str.c_str(), "--shard",  shard_index_str.c_str(), nullptr,
     };
 
     posix_spawn_file_actions_t file_actions{};
     ::posix_spawn_file_actions_init(&file_actions);
-    // Place client_fd at kWorkerIpcFd in the child.
-    ::posix_spawn_file_actions_adddup2(&file_actions, client_fd.get(), kWorkerIpcFd);
-    // Ensure the server-side fd does not leak into the child.
+    // Close the server-side fd in the child first.  The socketpair may have
+    // returned server_fd == kWorkerIpcFd; if we dup client_fd onto that fd
+    // before closing server_fd, the subsequent close would drop the IPC fd.
     ::posix_spawn_file_actions_addclose(&file_actions, server_fd.get());
+    // Place client_fd at the fixed kWorkerIpcFd in the child.
+    ::posix_spawn_file_actions_adddup2(&file_actions, client_fd.get(), kWorkerIpcFd);
 
     pid_t pid{-1};
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast) — posix_spawn argv is char* const*
-    auto const rc = ::posix_spawn(&pid, worker_path_.c_str(), &file_actions, nullptr,
-                                  const_cast<char* const*>(argv), nullptr);
+    auto const rc =
+        ::posix_spawn(&pid, worker_path_.c_str(), &file_actions, nullptr, const_cast<char* const*>(argv), nullptr);
     ::posix_spawn_file_actions_destroy(&file_actions);
 
     if (rc != 0)
@@ -149,7 +163,8 @@ auto WorkerSupervisor::spawn_and_connect() -> void
     }
     channel_->start();
 
-    LOG_INFO("Federation worker spawned: pid=" + std::to_string(pid) + " binary=" + worker_path_);
+    LOG_INFO("Federation worker spawned: shard=" + std::to_string(shard_index_) + " pid=" + std::to_string(pid) +
+             " binary=" + worker_path_);
 }
 
 auto WorkerSupervisor::supervisor_loop() -> void
@@ -174,8 +189,8 @@ auto WorkerSupervisor::supervisor_loop() -> void
         }
 
         auto const exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
-        LOG_WARNING("Federation worker exited: pid=" + std::to_string(worker_pid_) + " exit_code=" +
-                    std::to_string(exit_code) + " restart_in_ms=" + std::to_string(backoff_ms));
+        LOG_WARNING("Federation worker exited: pid=" + std::to_string(worker_pid_) +
+                    " exit_code=" + std::to_string(exit_code) + " restart_in_ms=" + std::to_string(backoff_ms));
 
         if (channel_)
         {
