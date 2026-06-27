@@ -4,6 +4,7 @@
 #include "merovingian/platform/elf_probe.hpp"
 
 #ifdef __linux__
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -71,9 +72,6 @@ namespace
         // Probe ran successfully; individual flag fields are updated below.
         result.probed = true;
 
-        Elf64_Off dynamic_offset = 0;
-        std::size_t dynamic_filesz = 0;
-
         for (auto const& ph : phdrs)
         {
             switch (ph.p_type)
@@ -85,10 +83,6 @@ namespace
                 // PF_X set means executable stack — the linker flag is -z,noexecstack.
                 result.has_noexec_stack = (ph.p_flags & static_cast<Elf64_Word>(PF_X)) == 0U;
                 break;
-            case PT_DYNAMIC:
-                dynamic_offset = ph.p_offset;
-                dynamic_filesz = static_cast<std::size_t>(ph.p_filesz);
-                break;
             default:
                 break;
             }
@@ -96,11 +90,16 @@ namespace
 
         // Walk the dynamic section looking for DT_BIND_NOW or DF_BIND_NOW in DT_FLAGS.
         // Both encode the -z,now linker flag; different linker versions use either form.
-        if (dynamic_offset != 0U && dynamic_filesz >= sizeof(Elf64_Dyn))
+        // Use find_if to access the phdr fields directly — avoids intermediate variables
+        // that confuse static-analysis data-flow tracking.
+        auto const dyn_it = std::find_if(phdrs.cbegin(), phdrs.cend(), [](Elf64_Phdr const& ph) {
+            return ph.p_type == PT_DYNAMIC;
+        });
+        if (dyn_it != phdrs.cend() && dyn_it->p_offset != 0U && dyn_it->p_filesz >= sizeof(Elf64_Dyn))
         {
-            if (::lseek(guard.fd, static_cast<off_t>(dynamic_offset), SEEK_SET) >= 0)
+            auto const dyn_count = static_cast<std::size_t>(dyn_it->p_filesz / sizeof(Elf64_Dyn));
+            if (::lseek(guard.fd, static_cast<off_t>(dyn_it->p_offset), SEEK_SET) >= 0)
             {
-                auto const dyn_count = dynamic_filesz / sizeof(Elf64_Dyn);
                 auto dyns = std::vector<Elf64_Dyn>(dyn_count);
                 auto const dyn_bytes = static_cast<ssize_t>(dyn_count * sizeof(Elf64_Dyn));
                 if (::read(guard.fd, dyns.data(), static_cast<std::size_t>(dyn_bytes)) == dyn_bytes)
