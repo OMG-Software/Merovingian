@@ -995,6 +995,41 @@ Deny-by-default federation requires a non-empty `allowed_servers` list while fed
 
 `security.federation.deny_ip_ranges` remains separate from server-name policy and is used for private or loopback network-range blocking.
 
+## Federation worker (out-of-process)
+
+When a user joins a large federated room, the inbound PDU verification, state
+resolution, and membership state machine can saturate the main thread pool and
+make all connected clients unresponsive. The federation worker moves that work
+into a dedicated child process with its own thread pool.
+
+```text
+federation.worker.enabled=true
+federation.worker.fallback_in_process=true
+federation.worker.threads=4
+federation.worker.binary=/usr/libexec/merovingian/merovingian-fed-worker
+federation.worker.request_timeout_seconds=120
+```
+
+| Key | Type | Default | Notes |
+|-----|------|---------|-------|
+| `federation.worker.enabled` | bool | `false` | Launch `merovingian-fed-worker` on startup and route all inbound federation requests (except `/_matrix/key/`) through it. |
+| `federation.worker.fallback_in_process` | bool | `true` | If `true`, serve federation in-process when the worker is unavailable (startup failure or crash with no healthy replacement yet). If `false`, return `503` instead. |
+| `federation.worker.threads` | unsigned int | `4` | Thread pool size inside `merovingian-fed-worker`. Increase for deployments that federate with many rooms simultaneously. |
+| `federation.worker.binary` | string | compile-time default | Absolute path to the `merovingian-fed-worker` binary. Empty means `$libexecdir/merovingian/merovingian-fed-worker` (baked in as `MEROVINGIAN_LIBEXECDIR` at build time). |
+| `federation.worker.request_timeout_seconds` | unsigned int | `120` | Per-request IPC timeout in seconds. A federation request that takes longer than this returns a 504 to the remote server. |
+
+The worker communicates with the main process over an `AF_UNIX SOCK_STREAM`
+socket pair inherited at spawn. All frames are encrypted with an ephemeral
+`crypto_kx` key exchange and `crypto_secretstream_xchacha20poly1305` AEAD —
+no sensitive material is transmitted in plaintext. The server signing key is
+never forwarded; the worker reads it from the same database. Client access
+tokens are stripped from every request before forwarding.
+
+If the worker crashes, `WorkerSupervisor` restarts it with exponential
+back-off (1 s, 2 s, 4 s, 8 s, then capped at 30 s). When
+`fallback_in_process=true` the main process handles federation directly while
+the worker is recovering.
+
 ## Size and duration formats
 
 Size values accept positive bounded byte sizes with one of these suffixes:

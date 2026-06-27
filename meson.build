@@ -2,7 +2,7 @@ project(
   'merovingian',
   'cpp',
   'c',
-  version: '0.9.24',
+  version: '0.10.1',
   license: 'GPL-3.0-or-later',
   meson_version: '>=1.1.0',
   default_options: [
@@ -116,6 +116,12 @@ inc = include_directories('include')
 _raw_sysconfdir = get_option('sysconfdir')
 _sysconfdir = _raw_sysconfdir.startswith('/') ? _raw_sysconfdir : (get_option('prefix') / _raw_sysconfdir)
 add_project_arguments('-DMEROVINGIAN_SYSCONFDIR="' + _sysconfdir + '"', language: 'cpp')
+
+# Bake the libexecdir so the main server can locate helper binaries
+# (merovingian-fed-worker) without requiring an explicit config entry.
+_raw_libexecdir = get_option('libexecdir')
+_libexecdir = _raw_libexecdir.startswith('/') ? _raw_libexecdir : (get_option('prefix') / _raw_libexecdir)
+add_project_arguments('-DMEROVINGIAN_LIBEXECDIR="' + _libexecdir + '"', language: 'cpp')
 
 subdir('src')
 subdir('tests')

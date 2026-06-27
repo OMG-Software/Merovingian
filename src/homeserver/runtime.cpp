@@ -4,6 +4,7 @@
 #include "merovingian/homeserver/runtime.hpp"
 
 #include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/homeserver/federation_proxy.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/database/postgresql_store.hpp"
 #include "merovingian/database/schema.hpp"
@@ -269,6 +270,7 @@ HomeserverRuntime::HomeserverRuntime(HomeserverRuntime&& other) noexcept
     , trust_safety_policy_server(std::move(other.trust_safety_policy_server))
     , discovery_network(std::move(other.discovery_network))
     , dispatch_worker(std::move(other.dispatch_worker))
+    , federation_proxy(std::move(other.federation_proxy))
     , sync_notifier(std::exchange(other.sync_notifier, nullptr))
     , typing_users(std::move(other.typing_users))
     , receipts(std::move(other.receipts))
@@ -301,6 +303,7 @@ auto HomeserverRuntime::operator=(HomeserverRuntime&& other) noexcept -> Homeser
     trust_safety_policy_server = std::move(other.trust_safety_policy_server);
     discovery_network = std::move(other.discovery_network);
     dispatch_worker = std::move(other.dispatch_worker);
+    federation_proxy = std::move(other.federation_proxy);
     sync_notifier = std::exchange(other.sync_notifier, nullptr);
     typing_users = std::move(other.typing_users);
     receipts = std::move(other.receipts);

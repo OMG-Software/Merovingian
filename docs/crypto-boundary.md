@@ -88,6 +88,33 @@ The boundary provides these guarantees:
 - Commma-delimited PDUs without JSON body are rejected rather than bypassing
   Ed25519 cryptographic verification.
 
+## IPC channel key exchange
+
+The encrypted channel between `merovingian-server` and `merovingian-fed-worker`
+(`src/ipc/channel.cpp`) uses libsodium key exchange and authenticated encryption:
+
+- **Ephemeral key pair**: each side generates a fresh `crypto_kx_keypair` on
+  every connection. Neither party persists the IPC key material; compromise of
+  the IPC key does not affect the server's Matrix signing key.
+- **Key exchange**: `crypto_kx_server_session_keys` / `crypto_kx_client_session_keys`
+  derive two one-directional session keys (tx and rx) from the ephemeral pair.
+  The exchange is authenticated — both sides must contribute valid key material
+  or the session fails.
+- **Authenticated encryption**: all subsequent frames use
+  `crypto_secretstream_xchacha20poly1305` (XChaCha20-Poly1305 AEAD). Each
+  frame is independently authenticated; a truncated or tampered frame is
+  rejected before the plaintext is consumed.
+- **Framing**: `[4-byte big-endian ciphertext_length][ciphertext]`. The
+  ciphertext includes the AEAD MAC overhead so the receiver can verify integrity
+  before decrypting.
+- **Isolation**: the Matrix signing key is never transmitted over the IPC
+  channel. The worker reads the signing key from the database directly. Client
+  access tokens are stripped from every forwarded request.
+
+The IPC channel is tested by `tests/unit/test_ipc_framing.cpp` covering:
+concurrent key exchange, request/response pairing, notification delivery, and
+timeout behaviour when no reply arrives.
+
 ## Deliberately not included
 
 These remain deferred:

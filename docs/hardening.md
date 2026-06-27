@@ -130,6 +130,39 @@ and `src/media/thumbnail_worker_main.cpp`):
 * The worker rejects images whose width or height exceeds 4096 and whose pixel
   count exceeds the request's `max_pixels`.
 
+### Out_of_process federation worker IPC security
+
+When `federation.worker.enabled=true`, `merovingian-server` spawns
+`merovingian-fed-worker` and communicates through an `AF_UNIX SOCK_STREAM`
+socket pair created with `SOCK_CLOEXEC` before the child is spawned via
+`posix_spawn`. The worker inherits the client fd at file descriptor 3 only;
+every other inherited fd is closed by the `posix_spawn` file actions.
+
+The channel is hardened against a local attacker who gains access to a
+separate process on the same host:
+
+* **Ephemeral encryption**: every session uses a fresh `crypto_kx_keypair`
+  pair and `crypto_secretstream_xchacha20poly1305` AEAD. The session keys
+  are never stored or logged; a captured IPC stream is useless after the
+  session ends.
+* **No secrets in transit**: the Matrix signing key is never forwarded.
+  The worker reads it from the database at startup under the same access
+  control that governs the main process. Client access tokens are stripped
+  from every forwarded request before serialisation.
+* **No filesystem socket path**: the transport is an `AF_UNIX` socket pair
+  with no pathname in the filesystem namespace, so there is no socket file
+  to impersonate or intercept via filesystem access.
+* **SOCK_CLOEXEC**: the socket pair is created `SOCK_CLOEXEC` so it is
+  not inherited by any further child processes.
+* **WorkerSupervisor isolation**: the supervisor thread monitors the child
+  pid with `waitpid`. If the worker exits unexpectedly the supervisor
+  closes the channel and respawns — the main process never acts on a
+  half-open or unauthenticated channel.
+* **PDU write authority**: the worker does not write accepted PDUs to the
+  database directly. It sends a `pdu_ingest` call back to the main process
+  over the IPC channel; only the main process writes to the persistent store
+  and advances the authoritative `stream_ordering` counter.
+
 ## Platform_specific defences
 
 ### Linux

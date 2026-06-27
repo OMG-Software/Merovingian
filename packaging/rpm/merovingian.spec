@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.9.24
+Version:        0.10.1
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -100,6 +100,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Sat Jun 27 2026 James Chapman <claude@ping.me.uk> - 0.10.1-1
+- feat(federation): introduce merovingian-fed-worker out-of-process federation worker with encrypted IPC channel to isolate federation CPU/IO from client-server threads
+
 * Thu Jun 25 2026 James Chapman <claude@ping.me.uk> - 0.9.23-1
 - fix(client-server): implement POST /_matrix/client/v3/pushers/set so Element X can register push notifications without route-not-found errors
 

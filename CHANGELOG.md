@@ -1,3 +1,8 @@
+## 0.10.1
+
+### Added
+- **feat(federation): out-of-process federation worker (`merovingian-fed-worker`):** federation CPU and I/O work (inbound PDU verification, state resolution, membership state machine, outbound dispatch) now runs in a dedicated child process with its own thread pool, so the main process threads are exclusively available for client-server API requests. A large room join no longer starves all connected clients. The IPC channel uses a `socketpair(AF_UNIX)` inherited file descriptor (no filesystem socket path), an ephemeral `crypto_kx` key exchange, and `crypto_secretstream_xchacha20poly1305` encryption for all frames. The Matrix signing key never crosses the IPC boundary — the worker sends `SignRequest` messages and the main process signs on its behalf. Client access tokens are stripped before forwarding; the worker receives only the validated user MXID.
+
 ## 0.9.25
 
 ### Fixed

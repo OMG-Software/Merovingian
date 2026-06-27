@@ -4,6 +4,7 @@
 #include "merovingian/homeserver/http_server.hpp"
 
 #include "merovingian/core/socket_handle.hpp"
+#include "merovingian/homeserver/federation_proxy.hpp"
 #include "merovingian/homeserver/tls.hpp"
 #include "merovingian/http/request.hpp"
 #include "merovingian/http/request_limits.hpp"
@@ -540,7 +541,14 @@ namespace
             result = handle_client_server_request(runtime, request);
             break;
         case HttpDispatchMode::federation:
-            result.response = handle_federation_http_request(runtime.homeserver, request);
+            if (runtime.homeserver.federation_proxy != nullptr)
+            {
+                result.response = runtime.homeserver.federation_proxy->handle(request);
+            }
+            else
+            {
+                result.response = handle_federation_http_request(runtime.homeserver, request);
+            }
             break;
         case HttpDispatchMode::local_router:
             result.response = handle_local_http_request(runtime.homeserver, request);

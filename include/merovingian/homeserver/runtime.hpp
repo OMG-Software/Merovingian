@@ -32,6 +32,9 @@
 namespace merovingian::homeserver
 {
 
+// Forward declaration — full type in federation_proxy.hpp, included by runtime.cpp.
+class FederationProxy;
+
 // Thread-safe cache for the signed /_matrix/key/v2/server response.
 // Uses its own mutex so the response can be served without holding the
 // global runtime mutex — Synapse's ServerKeyFetcher times out (~20 s)
@@ -171,6 +174,9 @@ struct HomeserverRuntime final
         trust_safety_policy_server{};
     std::unique_ptr<federation::ServerDiscoveryNetwork> discovery_network{};
     std::unique_ptr<federation::DispatchWorker> dispatch_worker{};
+    // Non-null when federation.worker.enabled = true. Intercepts inbound
+    // federation requests and forwards them to the out-of-process worker.
+    std::unique_ptr<FederationProxy> federation_proxy{};
     sync::SyncNotifier* sync_notifier{nullptr};
     std::vector<InboundTypingUser> typing_users{};
     std::vector<InboundReceipt> receipts{};
