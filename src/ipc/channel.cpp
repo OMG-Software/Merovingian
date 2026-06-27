@@ -136,16 +136,39 @@ auto IpcChannel::start() -> void
 auto IpcChannel::stop() noexcept -> void
 {
     running_.store(false);
-    // shutdown() is the reliable way to unblock recv() in another thread;
-    // close() alone is not guaranteed to interrupt a blocking system call.
+
+    // Wake every pending send_request waiter so callers return quickly instead
+    // of continuing to use the file descriptor while it is being closed.
+    {
+        auto const lk = std::lock_guard{pending_mu_};
+        for (auto& [_, e] : pending_)
+        {
+            e->ready = true;
+            e->cv.notify_one();
+        }
+    }
+
+    // shutdown() is the reliable way to unblock recv() in the reader thread
+    // and to fail in-flight send()/recv() calls without waiting for timeouts.
+    // The reader thread must be joined before the descriptor is closed; closing
+    // it earlier creates a data race between the close and the reader's use of
+    // the same fd (ThreadSanitizer: FileDescriptor::reset vs get).
     if (fd_.get() >= 0)
     {
         ::shutdown(fd_.get(), SHUT_RDWR);
     }
-    fd_.reset();
+
     if (reader_thread_.joinable())
     {
         reader_thread_.join();
+    }
+
+    // No writer can hold write_mu_ once shutdown() has caused the blocked
+    // send() to return, so take the lock while closing the fd to serialize
+    // the last close with any straggling write_frame call.
+    {
+        auto const lk = std::lock_guard{write_mu_};
+        fd_.reset();
     }
 }
 

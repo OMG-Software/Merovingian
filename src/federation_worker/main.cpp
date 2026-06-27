@@ -30,7 +30,16 @@ auto read_file(std::string_view path) -> std::optional<std::string>
     {
         return std::nullopt;
     }
-    auto contents = std::string{std::istreambuf_iterator<char>{input}, {}};
+
+    // Read in chunks to avoid a GCC -Wnull-dereference false positive that the
+    // std::istreambuf_iterator constructor triggers in some libstdc++ builds.
+    auto contents = std::string{};
+    constexpr auto chunk_size = std::size_t{4096U};
+    auto chunk = std::vector<char>(chunk_size);
+    while (input.read(chunk.data(), static_cast<std::streamsize>(chunk.size())) || input.gcount() > 0)
+    {
+        contents.append(chunk.data(), static_cast<std::size_t>(input.gcount()));
+    }
     input.close();
     return contents;
 }

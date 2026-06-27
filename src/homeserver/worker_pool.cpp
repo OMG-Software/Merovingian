@@ -10,6 +10,7 @@
 #include "merovingian/ipc/federation_ipc_frames.hpp"
 #include "merovingian/observability/logger.hpp"
 
+#include <charconv>
 #include <chrono>
 #include <cstdint>
 #include <functional>
