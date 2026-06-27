@@ -43,3 +43,19 @@ SCENARIO("WorkerEventLoop defaults to shard 0 when omitted", "[federation-worker
         }
     }
 }
+
+SCENARIO("WorkerEventLoop run exits when the IPC fd is invalid", "[federation-worker][event-loop][lifecycle]")
+{
+    GIVEN("a worker event loop with an invalid IPC fd")
+    {
+        auto loop = WorkerEventLoop{FileDescriptor{FileDescriptor::invalid}, merovingian::config::Config{}, 1U, 3U};
+
+        WHEN("run is invoked on a separate thread")
+        {
+            THEN("the constructor-time key exchange fails and run propagates the exception")
+            {
+                REQUIRE_THROWS_AS(loop.run(), std::runtime_error);
+            }
+        }
+    }
+}

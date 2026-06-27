@@ -220,6 +220,23 @@ SCENARIO("Room ID extraction handles malformed /send bodies gracefully", "[feder
     }
 }
 
+SCENARIO("Room ID extraction from /send decodes JSON escape sequences", "[federation][routing][room-id][send]")
+{
+    GIVEN("a PUT /send/{txnId} body whose first PDU has an escaped backslash in the room_id value")
+    {
+        auto const request =
+            make_request("/_matrix/federation/v1/send/txn-1", R"({"pdus":[{"room_id":"!escaped\\room:example.com"}]})");
+
+        WHEN("the room ID is extracted")
+        {
+            THEN("the backslash escape is decoded")
+            {
+                REQUIRE(federation_worker_room_id_from_request(request) == "!escaped\\room:example.com");
+            }
+        }
+    }
+}
+
 SCENARIO("Non-room federation endpoints return an empty room ID", "[federation][routing][room-id]")
 {
     GIVEN("a request to a non-room federation endpoint")

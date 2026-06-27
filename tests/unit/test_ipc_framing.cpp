@@ -286,6 +286,99 @@ SCENARIO("IpcChannel send_request returns nullopt on timeout when no reply is se
     }
 }
 
+SCENARIO("IpcChannel stop is idempotent and healthy reflects the stopped state", "[ipc][channel][lifecycle]")
+{
+    GIVEN("a connected channel pair")
+    {
+        auto pair = make_channel_pair();
+
+        THEN("both channels report healthy before start")
+        {
+            CHECK(pair.server->healthy());
+            CHECK(pair.client->healthy());
+        }
+
+        WHEN("the client is stopped twice")
+        {
+            pair.client->stop();
+            pair.client->stop();
+
+            THEN("the channel reports not healthy")
+            {
+                CHECK_FALSE(pair.client->healthy());
+            }
+        }
+
+        pair.server->stop();
+        pair.client->stop();
+    }
+}
+
+SCENARIO("IpcChannel send_request returns nullopt on a stopped channel", "[ipc][channel][lifecycle]")
+{
+    GIVEN("a connected channel pair")
+    {
+        auto pair = make_channel_pair();
+        pair.server->start();
+        pair.client->start();
+
+        WHEN("the client is stopped before sending a request")
+        {
+            pair.client->stop();
+            auto const reply = pair.client->send_request(R"({"type":"ping"})", std::chrono::seconds{1});
+
+            THEN("the request returns nullopt immediately")
+            {
+                CHECK_FALSE(reply.has_value());
+            }
+        }
+
+        pair.server->stop();
+    }
+}
+
+SCENARIO("IpcChannel handles multiple concurrent requests with matching replies", "[ipc][channel][concurrent]")
+{
+    GIVEN("a server that echoes each request id back")
+    {
+        auto pair = make_channel_pair();
+
+        pair.server->set_request_handler([server = pair.server.get()](std::uint64_t id, std::string json) {
+            auto const id_str = std::to_string(id);
+            server->send_response(id, std::string{R"({"type":"echo","id":)"} + id_str + R"(,"json":)" + json + "}");
+        });
+        pair.server->start();
+        pair.client->start();
+
+        WHEN("two requests are sent concurrently")
+        {
+            auto reply_a = std::optional<std::string>{};
+            auto reply_b = std::optional<std::string>{};
+            auto t1 = std::thread{[client = pair.client.get(), &reply_a]() {
+                reply_a = client->send_request(R"({"type":"a"})", std::chrono::seconds{5});
+            }};
+            auto t2 = std::thread{[client = pair.client.get(), &reply_b]() {
+                reply_b = client->send_request(R"({"type":"b"})", std::chrono::seconds{5});
+            }};
+            t1.join();
+            t2.join();
+
+            THEN("both replies arrive and contain distinct request ids")
+            {
+                REQUIRE(reply_a.has_value());
+                REQUIRE(reply_b.has_value());
+                CHECK(reply_a->find("\"type\":\"echo\"") != std::string::npos);
+                CHECK(reply_b->find("\"type\":\"echo\"") != std::string::npos);
+                CHECK(reply_a->find("\"type\":\"a\"") != std::string::npos);
+                CHECK(reply_b->find("\"type\":\"b\"") != std::string::npos);
+            }
+        }
+
+        pair.server->stop();
+        pair.client->stop();
+    }
+}
+
 SCENARIO("IpcEd25519Provider routes sign through channel and returns correct base64 signature",
          "[ipc][ed25519][sign_back_channel]")
 {
@@ -336,6 +429,129 @@ SCENARIO("IpcEd25519Provider routes sign through channel and returns correct bas
             {
                 REQUIRE(result.error.empty());
                 REQUIRE(result.signature.bytes == std::string(crypto_sign_BYTES, '\xab'));
+            }
+        }
+
+        pair.server->stop();
+        pair.client->stop();
+    }
+}
+
+SCENARIO("IpcEd25519Provider surfaces IPC and protocol errors instead of returning invalid signatures",
+         "[ipc][ed25519][error-paths]")
+{
+    GIVEN("a connected channel pair and a worker-side provider")
+    {
+        auto pair = make_channel_pair();
+
+        WHEN("the provider is constructed with a null channel")
+        {
+            auto provider = merovingian::ipc::IpcEd25519Provider{nullptr};
+            auto const result = provider.sign(merovingian::crypto::Ed25519SecretKeyHandle{"ed25519:x"}, "msg");
+
+            THEN("sign returns an error without signature bytes")
+            {
+                REQUIRE_FALSE(result.error.empty());
+                REQUIRE(result.signature.bytes.empty());
+            }
+        }
+
+        pair.server->set_request_handler([server = pair.server.get()](std::uint64_t id, std::string /*json*/) {
+            server->send_response(id, R"({"type":"not_sign_response"})");
+        });
+        pair.server->start();
+        pair.client->start();
+
+        WHEN("main replies with an unexpected frame type")
+        {
+            auto provider = merovingian::ipc::IpcEd25519Provider{pair.client.get()};
+            auto const result = provider.sign(merovingian::crypto::Ed25519SecretKeyHandle{"ed25519:x"}, "msg");
+
+            THEN("the provider returns an error")
+            {
+                REQUIRE_FALSE(result.error.empty());
+                REQUIRE(result.signature.bytes.empty());
+            }
+        }
+
+        pair.server->stop();
+        pair.client->stop();
+    }
+}
+
+SCENARIO("IpcEd25519Provider rejects malformed sign_response payloads", "[ipc][ed25519][error-paths]")
+{
+    GIVEN("a connected channel pair where main returns malformed sign responses")
+    {
+        auto pair = make_channel_pair();
+
+        pair.server->set_request_handler([server = pair.server.get()](std::uint64_t id, std::string /*json*/) {
+            server->send_response(id, R"({"type":"sign_response","signature":"","error":""})");
+        });
+        pair.server->start();
+        pair.client->start();
+
+        WHEN("main returns an empty signature field")
+        {
+            auto provider = merovingian::ipc::IpcEd25519Provider{pair.client.get()};
+            auto const result = provider.sign(merovingian::crypto::Ed25519SecretKeyHandle{"ed25519:x"}, "msg");
+
+            THEN("the provider reports an empty signature error")
+            {
+                REQUIRE_FALSE(result.error.empty());
+                REQUIRE(result.signature.bytes.empty());
+            }
+        }
+
+        pair.server->stop();
+        pair.client->stop();
+    }
+
+    GIVEN("a connected channel pair where main returns a non-base64 signature")
+    {
+        auto pair = make_channel_pair();
+
+        pair.server->set_request_handler([server = pair.server.get()](std::uint64_t id, std::string /*json*/) {
+            server->send_response(id, R"({"type":"sign_response","signature":"not-base64!"})");
+        });
+        pair.server->start();
+        pair.client->start();
+
+        WHEN("the signature cannot be base64-decoded")
+        {
+            auto provider = merovingian::ipc::IpcEd25519Provider{pair.client.get()};
+            auto const result = provider.sign(merovingian::crypto::Ed25519SecretKeyHandle{"ed25519:x"}, "msg");
+
+            THEN("the provider reports a shape error")
+            {
+                REQUIRE_FALSE(result.error.empty());
+                REQUIRE(result.signature.bytes.size() != crypto_sign_BYTES);
+            }
+        }
+
+        pair.server->stop();
+        pair.client->stop();
+    }
+
+    GIVEN("a connected channel pair where main reports a signing error")
+    {
+        auto pair = make_channel_pair();
+
+        pair.server->set_request_handler([server = pair.server.get()](std::uint64_t id, std::string /*json*/) {
+            server->send_response(id, R"({"type":"sign_response","signature":"","error":"main failed"})");
+        });
+        pair.server->start();
+        pair.client->start();
+
+        WHEN("main includes an error field")
+        {
+            auto provider = merovingian::ipc::IpcEd25519Provider{pair.client.get()};
+            auto const result = provider.sign(merovingian::crypto::Ed25519SecretKeyHandle{"ed25519:x"}, "msg");
+
+            THEN("the provider forwards the error")
+            {
+                REQUIRE(result.error.find("main failed") != std::string::npos);
+                REQUIRE(result.signature.bytes.empty());
             }
         }
 

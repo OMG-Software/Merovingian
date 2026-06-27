@@ -293,3 +293,99 @@ SCENARIO("Federation requests fall back to in-process handling when the worker p
         }
     }
 }
+
+SCENARIO("Room-scoped federation requests are processed by the worker pool",
+         "[integration][federation-worker][routing]")
+{
+    GIVEN("a running two-shard worker pool and a started main runtime")
+    {
+        if (worker_binary_path().empty())
+        {
+            SKIP("MEROVINGIAN_TEST_FEDERATION_WORKER is not defined");
+        }
+
+        REQUIRE(sodium_init() >= 0);
+
+        auto const tmp_dir = unique_temp_dir("merovingian-fed-worker-room");
+        auto config = make_federation_worker_config(tmp_dir);
+        auto const config_path = tmp_dir / "merovingian.conf";
+        write_worker_config(config_path, config);
+
+        auto started = start_runtime(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto pool =
+            WorkerPool{config.federation_worker(), runtime, std::string{worker_binary_path()}, config_path.string()};
+        REQUIRE(wait_for_worker(pool, std::chrono::seconds{10}));
+
+        WHEN("a room-scoped state request is routed through the pool")
+        {
+            auto const room_id = std::string{"!nonexistent-room:example.com"};
+            auto const request = make_fed_request("GET", "/_matrix/federation/v1/state/" + room_id);
+            auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds{30};
+
+            auto response = LocalHttpResponse{};
+            do
+            {
+                response = pool.handle(request, room_id);
+            } while (response.status == 503U && std::chrono::steady_clock::now() < deadline);
+
+            THEN("the worker processes the request without returning the unavailable code")
+            {
+                REQUIRE(response.status != 503U);
+                REQUIRE_FALSE(response.body.find("M_UNAVAILABLE") != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("PUT /send transactions are routed to a worker and receive a JSON response",
+         "[integration][federation-worker][routing][send]")
+{
+    GIVEN("a running two-shard worker pool and a started main runtime")
+    {
+        if (worker_binary_path().empty())
+        {
+            SKIP("MEROVINGIAN_TEST_FEDERATION_WORKER is not defined");
+        }
+
+        REQUIRE(sodium_init() >= 0);
+
+        auto const tmp_dir = unique_temp_dir("merovingian-fed-worker-send");
+        auto config = make_federation_worker_config(tmp_dir);
+        auto const config_path = tmp_dir / "merovingian.conf";
+        write_worker_config(config_path, config);
+
+        auto started = start_runtime(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto pool =
+            WorkerPool{config.federation_worker(), runtime, std::string{worker_binary_path()}, config_path.string()};
+        REQUIRE(wait_for_worker(pool, std::chrono::seconds{10}));
+
+        WHEN("a /send/{txnId} request with a minimal PDU body is routed through the pool")
+        {
+            auto const room_id = std::string{"!send-room:example.com"};
+            auto const pdu = std::string{"{\"room_id\":\""} + room_id +
+                             std::string{"\",\"event_id\":\"$x:remote.example\",\"type\":\"m.room.message\"}"};
+            auto const body = std::string{"{\"origin\":\"remote.example\",\"origin_server_ts\":1234,\"pdus\":["} + pdu +
+                              std::string{"]}"};
+            auto const request = make_fed_request("PUT", "/_matrix/federation/v1/send/txn-test", body);
+            auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds{30};
+
+            auto response = LocalHttpResponse{};
+            do
+            {
+                response = pool.handle(request, room_id);
+            } while (response.status == 503U && std::chrono::steady_clock::now() < deadline);
+
+            THEN("the worker processes the transaction and returns a parsed JSON response")
+            {
+                REQUIRE(response.status != 503U);
+                REQUIRE_FALSE(response.body.empty());
+            }
+        }
+    }
+}

@@ -187,3 +187,148 @@ SCENARIO("fed_response frame handles non-200 statuses and special body character
         }
     }
 }
+
+SCENARIO("IPC JSON string extraction handles every escape sequence", "[ipc][federation][json]")
+{
+    GIVEN("a JSON object containing escaped control characters")
+    {
+        auto const json = std::string{R"({"value":"bell\bform\fnewline\nreturn\rtab\tquote\"slash\\"})"};
+
+        WHEN("the value is extracted")
+        {
+            THEN("every escape is decoded back to the original byte")
+            {
+                auto const expected = std::string{"bell\bform\fnewline\nreturn\rtab\tquote\"slash\\"};
+                REQUIRE(ipc_json_get_str(json, "value") == expected);
+            }
+        }
+
+        AND_WHEN("a key is missing")
+        {
+            THEN("an empty string is returned")
+            {
+                REQUIRE(ipc_json_get_str(json, "missing").empty());
+            }
+        }
+    }
+}
+
+SCENARIO("IPC JSON escaping covers control characters", "[ipc][federation][json]")
+{
+    GIVEN("a string containing a null byte and common escapes")
+    {
+        auto raw = std::string{"newline\nreturn\rtab\t"};
+        raw += '\0';
+        raw += "end";
+
+        WHEN("it is escaped for an IPC frame")
+        {
+            auto const escaped = ipc_json_str(raw);
+
+            THEN("control characters are represented as JSON unicode escapes")
+            {
+                REQUIRE(escaped.find("\\n") != std::string::npos);
+                REQUIRE(escaped.find("\\r") != std::string::npos);
+                REQUIRE(escaped.find("\\t") != std::string::npos);
+                REQUIRE(escaped.find("\\u0000") != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("fed_response frame defaults invalid or missing status to 500", "[ipc][federation][frame]")
+{
+    GIVEN("a response JSON with status 0")
+    {
+        auto const json = R"({"type":"fed_response","status":0,"body":"{}"})";
+
+        WHEN("it is deserialized")
+        {
+            auto const response = deserialize_fed_response(json);
+
+            THEN("the status is normalized to 500")
+            {
+                REQUIRE(response.status == 500U);
+                REQUIRE(response.body == "{}");
+            }
+        }
+    }
+
+    GIVEN("a response JSON with a status above the HTTP range")
+    {
+        auto const json = R"({"type":"fed_response","status":1234,"body":"error"})";
+
+        WHEN("it is deserialized")
+        {
+            auto const response = deserialize_fed_response(json);
+
+            THEN("the status is normalized to 500")
+            {
+                REQUIRE(response.status == 500U);
+                REQUIRE(response.body == "error");
+            }
+        }
+    }
+
+    GIVEN("a response JSON with whitespace after the status key")
+    {
+        auto const json = R"({"type":"fed_response","status": 418,"body":"teapot"})";
+
+        WHEN("it is deserialized")
+        {
+            auto const response = deserialize_fed_response(json);
+
+            THEN("the whitespace is tolerated and the status is preserved")
+            {
+                REQUIRE(response.status == 418U);
+                REQUIRE(response.body == "teapot");
+            }
+        }
+    }
+}
+
+SCENARIO("fed_request frame tolerates empty bodies and skipped headers", "[ipc][federation][frame]")
+{
+    GIVEN("a request with an empty body and no headers")
+    {
+        auto original = LocalHttpRequest{};
+        original.method = "GET";
+        original.target = "/_matrix/federation/v1/key/server";
+        original.remote_addr = "203.0.113.1";
+
+        WHEN("it is serialized and deserialized")
+        {
+            auto const roundtripped = deserialize_fed_request(serialize_fed_request(original));
+
+            THEN("method, target and remote address are preserved and the body is empty")
+            {
+                REQUIRE(roundtripped.method == original.method);
+                REQUIRE(roundtripped.target == original.target);
+                REQUIRE(roundtripped.remote_addr == original.remote_addr);
+                REQUIRE(roundtripped.body.empty());
+                REQUIRE(roundtripped.headers.empty());
+            }
+        }
+    }
+
+    GIVEN("a request whose headers include an empty name")
+    {
+        auto original = LocalHttpRequest{};
+        original.method = "GET";
+        original.target = "/_matrix/federation/v1/query/profile";
+        original.headers.push_back({"", "ignored"});
+        original.headers.push_back({"X-Valid", "kept"});
+
+        WHEN("it is serialized and deserialized")
+        {
+            auto const roundtripped = deserialize_fed_request(serialize_fed_request(original));
+
+            THEN("the empty-name header is dropped and the valid header is kept")
+            {
+                REQUIRE(roundtripped.headers.size() == 1U);
+                REQUIRE(roundtripped.headers[0].name == "X-Valid");
+                REQUIRE(roundtripped.headers[0].value == "kept");
+            }
+        }
+    }
+}

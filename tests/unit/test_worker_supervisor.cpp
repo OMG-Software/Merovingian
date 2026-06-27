@@ -59,3 +59,38 @@ SCENARIO("WorkerSupervisor reports healthy before start", "[federation][worker-s
         }
     }
 }
+
+SCENARIO("WorkerSupervisor stop is idempotent before start", "[federation][worker-supervisor][lifecycle]")
+{
+    GIVEN("a freshly constructed supervisor")
+    {
+        WHEN("stop is called before start and again after")
+        {
+            auto supervisor = WorkerSupervisor{"/nonexistent/worker", "/nonexistent/config", 30U, 2U};
+            supervisor.stop();
+            supervisor.stop();
+
+            THEN("the supervisor remains healthy and does not crash")
+            {
+                REQUIRE(supervisor.healthy());
+            }
+        }
+    }
+}
+
+SCENARIO("WorkerSupervisor exposes timeout and shard getters", "[federation][worker-supervisor]")
+{
+    GIVEN("a supervisor configured with a 45-second timeout and shard 9")
+    {
+        WHEN("the getters are queried")
+        {
+            auto supervisor = WorkerSupervisor{"/nonexistent/worker", "/nonexistent/config", 45U, 9U};
+
+            THEN("the original values are returned")
+            {
+                REQUIRE(supervisor.request_timeout() == 45U);
+                REQUIRE(supervisor.shard_index() == 9U);
+            }
+        }
+    }
+}

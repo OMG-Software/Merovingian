@@ -3,13 +3,13 @@
 
 #include "merovingian/ipc/channel.hpp"
 
-#include <arpa/inet.h>
-#include <sys/socket.h>
-
 #include <cstring>
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+#include <arpa/inet.h>
+#include <sys/socket.h>
 
 namespace merovingian::ipc
 {
@@ -17,38 +17,38 @@ namespace merovingian::ipc
 namespace
 {
 
-// Extracts a uint64 value for a JSON key in the form "key":N.
-[[nodiscard]] auto json_uint64(std::string_view j, std::string_view key) noexcept
-    -> std::optional<std::uint64_t>
-{
-    auto const search = std::string{"\""} + std::string{key} + "\":";
-    auto const pos    = j.find(search);
-    if (pos == std::string_view::npos)
+    // Extracts a uint64 value for a JSON key in the form "key":N.
+    [[nodiscard]] auto json_uint64(std::string_view j, std::string_view key) noexcept -> std::optional<std::uint64_t>
     {
-        return std::nullopt;
+        auto const search = std::string{"\""} + std::string{key} + "\":";
+        auto const pos = j.find(search);
+        if (pos == std::string_view::npos)
+        {
+            return std::nullopt;
+        }
+        auto i = pos + search.size();
+        while (i < j.size() && (j[i] == ' ' || j[i] == '\t'))
+        {
+            ++i;
+        }
+        if (i >= j.size() || j[i] < '0' || j[i] > '9')
+        {
+            return std::nullopt;
+        }
+        auto v = std::uint64_t{0};
+        while (i < j.size() && j[i] >= '0' && j[i] <= '9')
+        {
+            v = v * 10U + static_cast<std::uint64_t>(j[i] - '0');
+            ++i;
+        }
+        return v;
     }
-    auto i = pos + search.size();
-    while (i < j.size() && (j[i] == ' ' || j[i] == '\t'))
-    {
-        ++i;
-    }
-    if (i >= j.size() || j[i] < '0' || j[i] > '9')
-    {
-        return std::nullopt;
-    }
-    auto v = std::uint64_t{0};
-    while (i < j.size() && j[i] >= '0' && j[i] <= '9')
-    {
-        v = v * 10U + static_cast<std::uint64_t>(j[i] - '0');
-        ++i;
-    }
-    return v;
-}
 
 } // namespace
 
 IpcChannel::IpcChannel(core::FileDescriptor fd, Role role)
-    : fd_{std::move(fd)}, role_{role}
+    : fd_{std::move(fd)}
+    , role_{role}
 {
     uint8_t my_pk[crypto_kx_PUBLICKEYBYTES]{};
     uint8_t my_sk[crypto_kx_SECRETKEYBYTES]{};
@@ -66,9 +66,8 @@ IpcChannel::IpcChannel(core::FileDescriptor fd, Role role)
 
     uint8_t rx[crypto_kx_SESSIONKEYBYTES]{};
     uint8_t tx[crypto_kx_SESSIONKEYBYTES]{};
-    auto const rc = (role_ == Role::server)
-                        ? crypto_kx_server_session_keys(rx, tx, my_pk, my_sk, peer_pk)
-                        : crypto_kx_client_session_keys(rx, tx, my_pk, my_sk, peer_pk);
+    auto const rc = (role_ == Role::server) ? crypto_kx_server_session_keys(rx, tx, my_pk, my_sk, peer_pk)
+                                            : crypto_kx_client_session_keys(rx, tx, my_pk, my_sk, peer_pk);
     sodium_memzero(my_sk, sizeof(my_sk));
     sodium_memzero(my_pk, sizeof(my_pk));
     sodium_memzero(peer_pk, sizeof(peer_pk));
@@ -89,8 +88,7 @@ IpcChannel::IpcChannel(core::FileDescriptor fd, Role role)
     uint8_t peer_header[crypto_secretstream_xchacha20poly1305_HEADERBYTES]{};
     if (role_ == Role::server)
     {
-        if (!raw_send_exact(our_header, sizeof(our_header))
-            || !raw_recv_exact(peer_header, sizeof(peer_header)))
+        if (!raw_send_exact(our_header, sizeof(our_header)) || !raw_recv_exact(peer_header, sizeof(peer_header)))
         {
             sodium_memzero(rx, sizeof(rx));
             throw std::runtime_error{"ipc: secretstream header exchange failed"};
@@ -98,8 +96,7 @@ IpcChannel::IpcChannel(core::FileDescriptor fd, Role role)
     }
     else
     {
-        if (!raw_recv_exact(peer_header, sizeof(peer_header))
-            || !raw_send_exact(our_header, sizeof(our_header)))
+        if (!raw_recv_exact(peer_header, sizeof(peer_header)) || !raw_send_exact(our_header, sizeof(our_header)))
         {
             sodium_memzero(rx, sizeof(rx));
             throw std::runtime_error{"ipc: secretstream header exchange failed"};
@@ -130,12 +127,15 @@ auto IpcChannel::set_request_handler(RequestHandler handler) -> void
 auto IpcChannel::start() -> void
 {
     running_.store(true);
-    reader_thread_ = std::thread{[this] { reader_loop(); }};
+    reader_thread_ = std::thread{[this] {
+        reader_loop();
+    }};
 }
 
 auto IpcChannel::stop() noexcept -> void
 {
     running_.store(false);
+    healthy_.store(false);
 
     // Wake every pending send_request waiter so callers return quickly instead
     // of continuing to use the file descriptor while it is being closed.
@@ -217,12 +217,11 @@ auto IpcChannel::write_frame(std::string_view plaintext) noexcept -> bool
         return false;
     }
     auto const ct_len = static_cast<std::uint32_t>(pt_len + crypto_secretstream_xchacha20poly1305_ABYTES);
-    auto ct           = std::vector<uint8_t>(ct_len);
+    auto ct = std::vector<uint8_t>(ct_len);
 
-    crypto_secretstream_xchacha20poly1305_push(
-        &push_state_, ct.data(), nullptr,
-        reinterpret_cast<uint8_t const*>(plaintext.data()), pt_len,
-        nullptr, 0, crypto_secretstream_xchacha20poly1305_TAG_MESSAGE);
+    crypto_secretstream_xchacha20poly1305_push(&push_state_, ct.data(), nullptr,
+                                               reinterpret_cast<uint8_t const*>(plaintext.data()), pt_len, nullptr, 0,
+                                               crypto_secretstream_xchacha20poly1305_TAG_MESSAGE);
 
     auto const net_len = htonl(ct_len);
     return raw_send_exact(&net_len, 4U) && raw_send_exact(ct.data(), ct_len);
@@ -236,10 +235,8 @@ auto IpcChannel::read_frame() noexcept -> std::optional<std::string>
         return std::nullopt;
     }
     auto const ct_len = ntohl(net_len);
-    if (ct_len < static_cast<std::uint32_t>(crypto_secretstream_xchacha20poly1305_ABYTES)
-        || ct_len
-               > kIpcMaxFrameBytes
-                     + static_cast<std::uint32_t>(crypto_secretstream_xchacha20poly1305_ABYTES))
+    if (ct_len < static_cast<std::uint32_t>(crypto_secretstream_xchacha20poly1305_ABYTES) ||
+        ct_len > kIpcMaxFrameBytes + static_cast<std::uint32_t>(crypto_secretstream_xchacha20poly1305_ABYTES))
     {
         return std::nullopt;
     }
@@ -251,20 +248,18 @@ auto IpcChannel::read_frame() noexcept -> std::optional<std::string>
     }
 
     auto const pt_len = ct_len - static_cast<std::uint32_t>(crypto_secretstream_xchacha20poly1305_ABYTES);
-    auto pt           = std::string(pt_len, '\0');
+    auto pt = std::string(pt_len, '\0');
     uint8_t tag{};
-    if (crypto_secretstream_xchacha20poly1305_pull(
-            &pull_state_, reinterpret_cast<uint8_t*>(pt.data()), nullptr, &tag,
-            ct.data(), ct_len, nullptr, 0)
-        != 0)
+    if (crypto_secretstream_xchacha20poly1305_pull(&pull_state_, reinterpret_cast<uint8_t*>(pt.data()), nullptr, &tag,
+                                                   ct.data(), ct_len, nullptr, 0) != 0)
     {
         return std::nullopt;
     }
     return pt;
 }
 
-auto IpcChannel::build_frame(std::uint64_t id, std::optional<std::uint64_t> reply_to,
-                              std::string_view body) -> std::string
+auto IpcChannel::build_frame(std::uint64_t id, std::optional<std::uint64_t> reply_to, std::string_view body)
+    -> std::string
 {
     auto frame = std::string{"{\"id\":"};
     frame += std::to_string(id);
@@ -286,16 +281,15 @@ auto IpcChannel::build_frame(std::uint64_t id, std::optional<std::uint64_t> repl
     return frame;
 }
 
-auto IpcChannel::send_request(std::string_view json_body, std::chrono::seconds timeout)
-    -> std::optional<std::string>
+auto IpcChannel::send_request(std::string_view json_body, std::chrono::seconds timeout) -> std::optional<std::string>
 {
-    auto const id    = next_id_.fetch_add(1U, std::memory_order_relaxed);
+    auto const id = next_id_.fetch_add(1U, std::memory_order_relaxed);
     auto const frame = build_frame(id, std::nullopt, json_body);
 
     auto entry = std::make_shared<PendingEntry>();
     {
         auto const lk = std::lock_guard{pending_mu_};
-        pending_[id]  = entry;
+        pending_[id] = entry;
     }
 
     {
@@ -309,8 +303,10 @@ auto IpcChannel::send_request(std::string_view json_body, std::chrono::seconds t
     }
 
     auto const deadline = std::chrono::steady_clock::now() + timeout;
-    auto lk             = std::unique_lock{pending_mu_};
-    auto const ok       = entry->cv.wait_until(lk, deadline, [&] { return entry->ready; });
+    auto lk = std::unique_lock{pending_mu_};
+    auto const ok = entry->cv.wait_until(lk, deadline, [&] {
+        return entry->ready;
+    });
     pending_.erase(id);
     if (!ok || !entry->response.has_value())
     {
@@ -321,18 +317,18 @@ auto IpcChannel::send_request(std::string_view json_body, std::chrono::seconds t
 
 auto IpcChannel::send_response(std::uint64_t reply_to, std::string_view json_body) -> void
 {
-    auto const id    = next_id_.fetch_add(1U, std::memory_order_relaxed);
+    auto const id = next_id_.fetch_add(1U, std::memory_order_relaxed);
     auto const frame = build_frame(id, reply_to, json_body);
-    auto const lk    = std::lock_guard{write_mu_};
-    std::ignore      = write_frame(frame);
+    auto const lk = std::lock_guard{write_mu_};
+    std::ignore = write_frame(frame);
 }
 
 auto IpcChannel::send_notification(std::string_view json_body) -> void
 {
-    auto const id    = next_id_.fetch_add(1U, std::memory_order_relaxed);
+    auto const id = next_id_.fetch_add(1U, std::memory_order_relaxed);
     auto const frame = build_frame(id, std::nullopt, json_body);
-    auto const lk    = std::lock_guard{write_mu_};
-    std::ignore      = write_frame(frame);
+    auto const lk = std::lock_guard{write_mu_};
+    std::ignore = write_frame(frame);
 }
 
 auto IpcChannel::reader_loop() -> void
@@ -346,21 +342,23 @@ auto IpcChannel::reader_loop() -> void
             break;
         }
 
-        auto const id       = json_uint64(*frame, "id").value_or(0U);
+        auto const id = json_uint64(*frame, "id").value_or(0U);
         auto const reply_to = json_uint64(*frame, "reply_to");
 
         if (reply_to.has_value())
         {
             // Response to one of our pending send_request calls.
-            std::shared_ptr<PendingEntry> entry; // SHARED_PTR: reviewed — keeps pending entry alive after lock is released so the condition variable can be notified outside the critical section.
+            std::shared_ptr<PendingEntry>
+                entry; // SHARED_PTR: reviewed — keeps pending entry alive after lock is released so the condition
+                       // variable can be notified outside the critical section.
             {
                 auto const lk = std::lock_guard{pending_mu_};
                 auto const it = pending_.find(*reply_to);
                 if (it != pending_.end())
                 {
                     it->second->response = std::move(*frame);
-                    it->second->ready    = true;
-                    entry                = it->second;
+                    it->second->ready = true;
+                    entry = it->second;
                 }
             }
             if (entry)
