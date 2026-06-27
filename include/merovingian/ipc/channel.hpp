@@ -115,7 +115,10 @@ private:
         std::condition_variable cv{};
     };
     std::mutex pending_mu_{};
-    std::map<std::uint64_t, std::shared_ptr<PendingEntry>> pending_{}; // SHARED_PTR: reviewed — caller/reader co-own
+    // Reader thread and waiting caller each hold a reference; the map entry is
+    // erased while the caller still holds its copy, so the entry is destroyed
+    // only after the waiter has consumed the response.
+    std::map<std::uint64_t, std::shared_ptr<PendingEntry>> pending_{}; // SHARED_PTR: reviewed — reader/caller co-own
 
     RequestHandler request_handler_{};
     std::thread reader_thread_{};

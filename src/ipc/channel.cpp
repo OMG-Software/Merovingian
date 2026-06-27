@@ -348,7 +348,10 @@ auto IpcChannel::reader_loop() -> void
         if (reply_to.has_value())
         {
             // Response to one of our pending send_request calls.
-            std::shared_ptr<PendingEntry> entry; // SHARED_PTR: reviewed — notify called outside lock
+            // Extract before releasing the lock so cv.notify_one() is called
+            // outside the critical section — notifying under the mutex would
+            // let the waiter wake and immediately re-lock, defeating the cv.
+            std::shared_ptr<PendingEntry> entry; // SHARED_PTR: reviewed — outlives lock for cv::notify_one()
             {
                 auto const lk = std::lock_guard{pending_mu_};
                 auto const it = pending_.find(*reply_to);
