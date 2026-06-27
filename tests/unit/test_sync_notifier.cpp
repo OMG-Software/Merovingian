@@ -9,8 +9,7 @@
 #include <mutex>
 #include <thread>
 
-SCENARIO("SyncNotifier returns immediately when the sync stream id has already advanced",
-         "[sync][notifier]")
+SCENARIO("SyncNotifier returns immediately when the sync stream id has already advanced", "[sync][notifier]")
 {
     GIVEN("a notifier published past the caller's since-token")
     {
@@ -19,8 +18,7 @@ SCENARIO("SyncNotifier returns immediately when the sync stream id has already a
 
         WHEN("a sync call waits with since_stream_ordering=0 and since_sync_stream_id=3")
         {
-            auto const woke =
-                notifier.wait_for_change(0U, 3U, std::chrono::milliseconds{500});
+            auto const woke = notifier.wait_for_change(0U, 3U, std::chrono::milliseconds{500});
 
             THEN("wait returns true without blocking on the timeout")
             {
@@ -31,8 +29,7 @@ SCENARIO("SyncNotifier returns immediately when the sync stream id has already a
     }
 }
 
-SCENARIO("SyncNotifier returns immediately when stream_ordering has advanced",
-         "[sync][notifier]")
+SCENARIO("SyncNotifier returns immediately when stream_ordering has advanced", "[sync][notifier]")
 {
     GIVEN("a notifier with stream_ordering=10 and sync_stream_id=0")
     {
@@ -41,8 +38,7 @@ SCENARIO("SyncNotifier returns immediately when stream_ordering has advanced",
 
         WHEN("a sync call waits with since_stream_ordering=5")
         {
-            auto const woke =
-                notifier.wait_for_change(5U, 0U, std::chrono::milliseconds{500});
+            auto const woke = notifier.wait_for_change(5U, 0U, std::chrono::milliseconds{500});
 
             THEN("wait returns true because timeline events are available")
             {
@@ -119,8 +115,7 @@ SCENARIO("SyncNotifier wait returns false on timeout when nothing publishes", "[
     }
 }
 
-SCENARIO("An external mutex is releasable while a sync wait is parked",
-         "[sync][notifier][lock-release]")
+SCENARIO("An external mutex is releasable while a sync wait is parked", "[sync][notifier][lock-release]")
 {
     GIVEN("a mutex a client holds across a sync wait and a SyncNotifier at counters 0,0")
     {
@@ -222,8 +217,7 @@ SCENARIO("A single publish wakes all concurrent waiters simultaneously", "[sync]
     }
 }
 
-SCENARIO("A to-device publish does not unblock a waiter whose since-token already covers it",
-         "[sync][notifier]")
+SCENARIO("A to-device publish does not unblock a waiter whose since-token already covers it", "[sync][notifier]")
 {
     // Guards against a regression where publish() could skip notify_all() when
     // the new sync_stream_id is not strictly greater than the stored value, while

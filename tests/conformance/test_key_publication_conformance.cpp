@@ -29,12 +29,8 @@ namespace
     server.server_name = "example.org";
 
     return {
-        server,
-        merovingian::config::ListenersConfig{},
-        merovingian::config::DatabaseConfig{},
-        security,
-        merovingian::config::ClientRateLimitsConfig{},
-        merovingian::config::LogModulesConfig{},
+        server,   merovingian::config::ListenersConfig{},        merovingian::config::DatabaseConfig{},
+        security, merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
     };
 }
 
@@ -170,8 +166,7 @@ SCENARIO("GET /_matrix/key/v2/server verify_keys entries have ed25519:version ke
                 REQUIRE(root != nullptr);
                 auto const* verify_keys_val = json_get(*root, "verify_keys");
                 REQUIRE(verify_keys_val != nullptr);
-                auto const* verify_keys =
-                    std::get_if<merovingian::canonicaljson::Object>(&verify_keys_val->storage());
+                auto const* verify_keys = std::get_if<merovingian::canonicaljson::Object>(&verify_keys_val->storage());
                 REQUIRE(verify_keys != nullptr);
                 // Spec MUST: at least one current signing key must be published.
                 REQUIRE_FALSE(verify_keys->empty());
@@ -207,10 +202,9 @@ SCENARIO("GET /_matrix/key/v2/server valid_until_ts is strictly in the future",
 
         WHEN("the local HTTP router serves GET /_matrix/key/v2/server")
         {
-            auto const now_ms = static_cast<std::int64_t>(
-                std::chrono::duration_cast<std::chrono::milliseconds>(
-                    std::chrono::system_clock::now().time_since_epoch())
-                    .count());
+            auto const now_ms = static_cast<std::int64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                              std::chrono::system_clock::now().time_since_epoch())
+                                                              .count());
 
             auto const response = merovingian::homeserver::dispatch_local_http_request(
                 runtime, {"GET", "/_matrix/key/v2/server", {}, {}},
@@ -253,10 +247,9 @@ SCENARIO("GET /_matrix/key/v2/server old_verify_keys entries contain key and exp
 
         WHEN("the local HTTP router serves GET /_matrix/key/v2/server")
         {
-            auto const now_ms = static_cast<std::int64_t>(
-                std::chrono::duration_cast<std::chrono::milliseconds>(
-                    std::chrono::system_clock::now().time_since_epoch())
-                    .count());
+            auto const now_ms = static_cast<std::int64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                              std::chrono::system_clock::now().time_since_epoch())
+                                                              .count());
 
             auto const response = merovingian::homeserver::dispatch_local_http_request(
                 runtime, {"GET", "/_matrix/key/v2/server", {}, {}},
@@ -271,14 +264,12 @@ SCENARIO("GET /_matrix/key/v2/server old_verify_keys entries contain key and exp
                 auto const* old_keys_val = json_get(*root, "old_verify_keys");
                 // Spec MUST: old_verify_keys field is present and is an object.
                 REQUIRE(old_keys_val != nullptr);
-                auto const* old_keys =
-                    std::get_if<merovingian::canonicaljson::Object>(&old_keys_val->storage());
+                auto const* old_keys = std::get_if<merovingian::canonicaljson::Object>(&old_keys_val->storage());
                 REQUIRE(old_keys != nullptr);
                 // Validate structure of any historical keys present (vacuously true on fresh start).
                 for (auto const& entry : *old_keys)
                 {
-                    auto const* entry_obj =
-                        std::get_if<merovingian::canonicaljson::Object>(&entry.value->storage());
+                    auto const* entry_obj = std::get_if<merovingian::canonicaljson::Object>(&entry.value->storage());
                     // Spec MUST: each old key entry is an object.
                     REQUIRE(entry_obj != nullptr);
                     // Spec MUST: "key" field contains the base64-encoded old public key.
@@ -319,8 +310,7 @@ SCENARIO("GET /_matrix/key/v2/server reflects a signing key rotation",
         auto& runtime = started.runtime;
 
         auto const before = merovingian::homeserver::dispatch_local_http_request(
-            runtime, {"GET", "/_matrix/key/v2/server", {}, {}},
-            merovingian::homeserver::HttpDispatchMode::federation);
+            runtime, {"GET", "/_matrix/key/v2/server", {}, {}}, merovingian::homeserver::HttpDispatchMode::federation);
         REQUIRE(before.status == 200U);
         auto const before_parsed = merovingian::canonicaljson::parse_lossless(before.body);
         auto const* before_root = std::get_if<merovingian::canonicaljson::Object>(&before_parsed.value.storage());
@@ -339,10 +329,9 @@ SCENARIO("GET /_matrix/key/v2/server reflects a signing key rotation",
             auto const rotation = merovingian::homeserver::rotate_server_signing_key(runtime.homeserver);
             REQUIRE(rotation.ok);
 
-            auto const now_ms = static_cast<std::int64_t>(
-                std::chrono::duration_cast<std::chrono::milliseconds>(
-                    std::chrono::system_clock::now().time_since_epoch())
-                    .count());
+            auto const now_ms = static_cast<std::int64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                              std::chrono::system_clock::now().time_since_epoch())
+                                                              .count());
 
             auto const after = merovingian::homeserver::dispatch_local_http_request(
                 runtime, {"GET", "/_matrix/key/v2/server", {}, {}},
@@ -408,8 +397,7 @@ SCENARIO("GET /_matrix/key/v2/server after rotation is signed by the new key and
         auto& runtime = started.runtime;
 
         auto const before = merovingian::homeserver::dispatch_local_http_request(
-            runtime, {"GET", "/_matrix/key/v2/server", {}, {}},
-            merovingian::homeserver::HttpDispatchMode::federation);
+            runtime, {"GET", "/_matrix/key/v2/server", {}, {}}, merovingian::homeserver::HttpDispatchMode::federation);
         REQUIRE(before.status == 200U);
         auto const before_parsed = merovingian::canonicaljson::parse_lossless(before.body);
         auto const* before_root = std::get_if<merovingian::canonicaljson::Object>(&before_parsed.value.storage());
@@ -448,8 +436,7 @@ SCENARIO("GET /_matrix/key/v2/server after rotation is signed by the new key and
                 // Spec MUST: the key server response is signed by the server's current key.
                 auto const* signatures = get_object(*root, "signatures");
                 REQUIRE(signatures != nullptr);
-                auto const* server_signatures =
-                    get_object(*signatures, runtime.homeserver.config.server().server_name);
+                auto const* server_signatures = get_object(*signatures, runtime.homeserver.config.server().server_name);
                 REQUIRE(server_signatures != nullptr);
                 // Signed under the NEW active key id produced by the rotation.
                 REQUIRE(json_get(*server_signatures, new_key_id) != nullptr);
@@ -488,8 +475,7 @@ SCENARIO("Repeated signing-key rotations accumulate every superseded key in old_
         auto& runtime = started.runtime;
 
         auto const before = merovingian::homeserver::dispatch_local_http_request(
-            runtime, {"GET", "/_matrix/key/v2/server", {}, {}},
-            merovingian::homeserver::HttpDispatchMode::federation);
+            runtime, {"GET", "/_matrix/key/v2/server", {}, {}}, merovingian::homeserver::HttpDispatchMode::federation);
         REQUIRE(before.status == 200U);
         auto const before_parsed = merovingian::canonicaljson::parse_lossless(before.body);
         auto const* before_root = std::get_if<merovingian::canonicaljson::Object>(&before_parsed.value.storage());

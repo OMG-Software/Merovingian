@@ -23,8 +23,8 @@ namespace merovingian::federation
 // and consumes the claimed one-time keys from the store. `request_body` is the
 // `{"one_time_keys": {"@user": {"device": "algorithm"}}}` request. Returns an
 // empty string when the request body is not canonical-parseable.
-[[nodiscard]] auto build_one_time_keys_claim_response(database::PersistentStore& store,
-                                                      std::string_view request_body) -> std::string;
+[[nodiscard]] auto build_one_time_keys_claim_response(database::PersistentStore& store, std::string_view request_body)
+    -> std::string;
 
 // Builds the response body for `GET /_matrix/federation/v1/user/devices/{userId}`.
 // Returns an empty string when the user has no published device keys (the HTTP

@@ -66,8 +66,7 @@ SCENARIO("parse_join_via_servers extracts server_name and via query parameters",
         {
             THEN("duplicates are removed and unrelated parameters ignored")
             {
-                REQUIRE(parse_join_via_servers("filter=x&via=a.example&via=a.example&limit=5") ==
-                        Servers{"a.example"});
+                REQUIRE(parse_join_via_servers("filter=x&via=a.example&via=a.example&limit=5") == Servers{"a.example"});
             }
         }
 

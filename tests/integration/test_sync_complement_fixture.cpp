@@ -59,13 +59,10 @@ namespace
     auto security = merovingian::config::SecurityConfig{};
     merovingian::tests::enable_token_registration(security);
     return {
-        merovingian::config::ServerConfig{},
-        merovingian::config::ListenersConfig{},
-        merovingian::config::DatabaseConfig{},
-        security,
-        merovingian::config::ClientRateLimitsConfig{},
-        merovingian::config::LogModulesConfig{},
-};
+        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
+        merovingian::config::DatabaseConfig{},         security,
+        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+    };
 }
 
 [[nodiscard]] auto read_file(std::filesystem::path const& path) -> std::string
@@ -394,11 +391,10 @@ SCENARIO("Client-server v1.18 conformance fixture covers beta endpoint families"
             // The fixture JSON uses {{placeholder}} tokens that are interpolated
             // by run_complement_fixture; the signatures must match the ed25519 key
             // we inject here so the server's real crypto_sign_verify_detached passes.
-            auto const fix_kp =
-                merovingian::federation::test::keypair_from_seed("fixture-device-seed");
+            auto const fix_kp = merovingian::federation::test::keypair_from_seed("fixture-device-seed");
             bindings["fixture_ed25519_key"] = merovingian::federation::test::pubkey_b64(fix_kp);
-            bindings["fixture_otk_sig"] = merovingian::federation::test::sign_payload_b64(
-                R"({"key":"one-time-key"})", fix_kp.secret_key);
+            bindings["fixture_otk_sig"] =
+                merovingian::federation::test::sign_payload_b64(R"({"key":"one-time-key"})", fix_kp.secret_key);
             bindings["fixture_fallback_sig"] = merovingian::federation::test::sign_payload_b64(
                 R"({"fallback":true,"key":"fallback-key"})", fix_kp.secret_key);
 

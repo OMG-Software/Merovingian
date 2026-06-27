@@ -51,7 +51,10 @@ namespace
 class StubSigningKeyStore final : public merovingian::crypto::SigningKeyStore
 {
 public:
-    explicit StubSigningKeyStore(merovingian::crypto::SigningKeyRecord key) : m_key{std::move(key)} {}
+    explicit StubSigningKeyStore(merovingian::crypto::SigningKeyRecord key)
+        : m_key{std::move(key)}
+    {
+    }
 
     [[nodiscard]] auto active_key_for_server(std::string_view server_name)
         -> merovingian::crypto::SigningKeyLookupResult override
@@ -71,7 +74,10 @@ private:
 class StubEd25519Provider final : public merovingian::crypto::Ed25519Provider
 {
 public:
-    explicit StubEd25519Provider(bool verify_succeeds = true) : m_verify_succeeds{verify_succeeds} {}
+    explicit StubEd25519Provider(bool verify_succeeds = true)
+        : m_verify_succeeds{verify_succeeds}
+    {
+    }
 
     [[nodiscard]] auto sign(merovingian::crypto::Ed25519SecretKeyHandle const& key, std::string_view message)
         -> merovingian::crypto::SignatureResult override
@@ -91,8 +97,7 @@ public:
         {
             return {false, "signature verification failed"};
         }
-        auto const ok = public_key.bytes.size() == 32U && !message.empty() &&
-                        signature.bytes == std::string(64U, 's');
+        auto const ok = public_key.bytes.size() == 32U && !message.empty() && signature.bytes == std::string(64U, 's');
         return {ok, ok ? std::string{} : std::string{"signature verification failed"}};
     }
 
@@ -104,11 +109,9 @@ private:
 {
     return StubSigningKeyStore{
         merovingian::crypto::SigningKeyRecord{
-            "example.org",
-            "ed25519:auto",
-            merovingian::crypto::Ed25519PublicKey{std::string(32U, 'p')},
-            true,
-        }
+                                              "example.org", "ed25519:auto",
+                                              merovingian::crypto::Ed25519PublicKey{std::string(32U, 'p')},
+                                              true, }
     };
 }
 
@@ -209,8 +212,7 @@ SCENARIO("matrix_base64_from_bytes and matrix_bytes_from_base64 round-trip binar
     }
 }
 
-SCENARIO("matrix_base64_from_bytes returns empty for empty input",
-         "[events][event-signer][base64][boundary]")
+SCENARIO("matrix_base64_from_bytes returns empty for empty input", "[events][event-signer][base64][boundary]")
 {
     GIVEN("an empty byte string")
     {
@@ -228,8 +230,7 @@ SCENARIO("matrix_base64_from_bytes returns empty for empty input",
     }
 }
 
-SCENARIO("matrix_bytes_from_base64 returns empty for invalid base64",
-         "[events][event-signer][base64][boundary]")
+SCENARIO("matrix_bytes_from_base64 returns empty for invalid base64", "[events][event-signer][base64][boundary]")
 {
     GIVEN("a string that is not valid unpadded base64")
     {
@@ -247,8 +248,7 @@ SCENARIO("matrix_bytes_from_base64 returns empty for invalid base64",
     }
 }
 
-SCENARIO("matrix_bytes_from_base64 returns empty for empty input",
-         "[events][event-signer][base64][boundary]")
+SCENARIO("matrix_bytes_from_base64 returns empty for empty input", "[events][event-signer][base64][boundary]")
 {
     GIVEN("an empty encoded string")
     {
@@ -270,8 +270,7 @@ SCENARIO("matrix_bytes_from_base64 returns empty for empty input",
 // make_event_signing_payload (no policy)
 // ---------------------------------------------------------------------------
 
-SCENARIO("make_event_signing_payload strips unsigned and signatures fields",
-         "[events][event-signer][payload]")
+SCENARIO("make_event_signing_payload strips unsigned and signatures fields", "[events][event-signer][payload]")
 {
     GIVEN("a JSON object containing unsigned and signatures fields")
     {
@@ -294,8 +293,7 @@ SCENARIO("make_event_signing_payload strips unsigned and signatures fields",
     }
 }
 
-SCENARIO("make_event_signing_payload fails for a non-object JSON value",
-         "[events][event-signer][payload][error]")
+SCENARIO("make_event_signing_payload fails for a non-object JSON value", "[events][event-signer][payload][error]")
 {
     GIVEN("a JSON string value instead of an object")
     {
@@ -464,8 +462,7 @@ SCENARIO("attach_event_signature fails when the event is not a JSON object",
 // sign_event_for_server
 // ---------------------------------------------------------------------------
 
-SCENARIO("sign_event_for_server signs a valid event with the active server key",
-         "[events][event-signer][sign-event]")
+SCENARIO("sign_event_for_server signs a valid event with the active server key", "[events][event-signer][sign-event]")
 {
     GIVEN("a minimal event, default policy, and a valid signing key store")
     {
@@ -493,8 +490,7 @@ SCENARIO("sign_event_for_server signs a valid event with the active server key",
     }
 }
 
-SCENARIO("sign_event_for_server fails when the event is not a JSON object",
-         "[events][event-signer][sign-event][error]")
+SCENARIO("sign_event_for_server fails when the event is not a JSON object", "[events][event-signer][sign-event][error]")
 {
     GIVEN("a JSON string in place of an event")
     {
@@ -555,8 +551,7 @@ SCENARIO("verify_event_signature_presence rejects an invalid signing key ID",
 
         WHEN("presence is checked with an empty key ID")
         {
-            auto const result =
-                merovingian::events::verify_event_signature_presence(event, {"", "ed25519:auto"});
+            auto const result = merovingian::events::verify_event_signature_presence(event, {"", "ed25519:auto"});
 
             THEN("verification fails with 'invalid signing key id'")
             {
@@ -567,8 +562,7 @@ SCENARIO("verify_event_signature_presence rejects an invalid signing key ID",
     }
 }
 
-SCENARIO("verify_event_signature_presence rejects a non-object event",
-         "[events][event-signer][verify-presence][error]")
+SCENARIO("verify_event_signature_presence rejects a non-object event", "[events][event-signer][verify-presence][error]")
 {
     GIVEN("a JSON array instead of an event")
     {
@@ -619,8 +613,8 @@ SCENARIO("verify_event_signature_presence rejects when the queried server is abs
         REQUIRE(sodium_ready());
         // The signature value can be any string; this test only exercises the
         // server-name lookup path, not signature shape validation.
-        auto const event = parse_json(
-            R"({"content":{},"signatures":{"other.org":{"ed25519:auto":"placeholder"}},"type":"m.test"})");
+        auto const event =
+            parse_json(R"({"content":{},"signatures":{"other.org":{"ed25519:auto":"placeholder"}},"type":"m.test"})");
 
         WHEN("presence is checked for example.org")
         {
@@ -656,8 +650,8 @@ SCENARIO("verify_event_signature_presence accepts a correctly structured signatu
 
         WHEN("presence is checked for the signing server and key")
         {
-            auto const result = merovingian::events::verify_event_signature_presence(
-                parsed.value, {"example.org", "ed25519:auto"});
+            auto const result =
+                merovingian::events::verify_event_signature_presence(parsed.value, {"example.org", "ed25519:auto"});
 
             THEN("presence verification succeeds")
             {
@@ -672,8 +666,7 @@ SCENARIO("verify_event_signature_presence accepts a correctly structured signatu
 // verify_event_signature — end-to-end
 // ---------------------------------------------------------------------------
 
-SCENARIO("verify_event_signature validates a correctly signed event end-to-end",
-         "[events][event-signer][verify]")
+SCENARIO("verify_event_signature validates a correctly signed event end-to-end", "[events][event-signer][verify]")
 {
     GIVEN("an event signed by the stub provider")
     {

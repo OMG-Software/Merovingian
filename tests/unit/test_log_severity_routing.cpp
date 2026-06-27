@@ -29,8 +29,7 @@ struct CapturedEntry
 // tests, where the runtime's LocalDatabase is reachable.
 } // namespace
 
-SCENARIO("LogEventSeverity: default severity for log_diagnostic is debug",
-         "[observability][log-severity][default]")
+SCENARIO("LogEventSeverity: default severity for log_diagnostic is debug", "[observability][log-severity][default]")
 {
     GIVEN("a call site that omits the severity argument")
     {
@@ -48,8 +47,7 @@ SCENARIO("LogEventSeverity: default severity for log_diagnostic is debug",
                 // to build without modification.
                 using DfltSev = merovingian::observability::LogEventSeverity;
                 using F = void (*)(std::string_view, std::string_view,
-                                   std::vector<merovingian::observability::StructuredLogField> const&,
-                                   DfltSev);
+                                   std::vector<merovingian::observability::StructuredLogField> const&, DfltSev);
                 F fptr = &merovingian::observability::log_diagnostic;
                 REQUIRE(fptr != nullptr);
                 SUCCEED();
@@ -123,10 +121,10 @@ SCENARIO("AuditCategory: the policy category exists for rate-limit and request-r
             // rate-limit and request-rejected events. The category must
             // be a real value (not a name alias) so `audit_log` filters
             // by category work.
-            REQUIRE(merovingian::observability::audit_category_name(merovingian::observability::AuditCategory::policy) !=
-                    nullptr);
+            REQUIRE(merovingian::observability::audit_category_name(
+                        merovingian::observability::AuditCategory::policy) != nullptr);
             REQUIRE(std::string{merovingian::observability::audit_category_name(
-                       merovingian::observability::AuditCategory::auth)} != "policy");
+                        merovingian::observability::AuditCategory::auth)} != "policy");
         }
     }
 }

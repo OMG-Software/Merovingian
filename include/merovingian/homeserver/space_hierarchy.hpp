@@ -37,8 +37,7 @@ struct SpaceHierarchyResult final
 // Server-Server API: GET /_matrix/federation/v1/hierarchy/{roomId}
 // Returns the canonical-JSON response body for the requesting server, or an
 // empty string when the room is unknown or not viewable over federation.
-[[nodiscard]] auto build_federation_space_hierarchy_response(HomeserverRuntime const& runtime,
-                                                             std::string_view room_id,
+[[nodiscard]] auto build_federation_space_hierarchy_response(HomeserverRuntime const& runtime, std::string_view room_id,
                                                              bool suggested_only) -> std::string;
 
 } // namespace merovingian::homeserver

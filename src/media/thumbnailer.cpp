@@ -473,7 +473,12 @@ auto generate_thumbnail(ThumbnailerConfig const& config, ThumbnailRequest const&
 
     if (!wrote)
     {
-        return {false, 504U, {}, {}, 0U, 0U,
+        return {false,
+                504U,
+                {},
+                {},
+                0U,
+                0U,
                 "timed out sending media to worker" + worker_status + " [" + write_detail + "]"};
     }
     if (!read_ok)

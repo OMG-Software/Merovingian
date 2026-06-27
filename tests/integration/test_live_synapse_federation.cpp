@@ -7,28 +7,28 @@
 // skipped in CI environments without network access. Each scenario
 // checks connectivity first and SKIP()s if the remote is unreachable.
 
+#include "federation_signing_test_support.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/remote_key_cache.hpp"
 #include "merovingian/federation/server_discovery.hpp"
 #include "merovingian/http/outbound_client.hpp"
 
-#include "federation_signing_test_support.hpp"
-
-#include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_message.hpp>
+#include <catch2/catch_test_macros.hpp>
 
 #include <array>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <string>
+#include <string_view>
+#include <vector>
+
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <sys/socket.h>
-#include <string>
-#include <string_view>
 #include <unistd.h>
-#include <vector>
 
 namespace
 {
@@ -47,8 +47,7 @@ constexpr auto https_port = std::uint16_t{443U};
     auto buffer = std::array<char, INET6_ADDRSTRLEN>{};
     switch (address.sa_family)
     {
-    case AF_INET:
-    {
+    case AF_INET: {
         auto const* ipv4 = reinterpret_cast<sockaddr_in const*>(&address);
         if (inet_ntop(AF_INET, &ipv4->sin_addr, buffer.data(), buffer.size()) != nullptr)
         {
@@ -56,8 +55,7 @@ constexpr auto https_port = std::uint16_t{443U};
         }
         break;
     }
-    case AF_INET6:
-    {
+    case AF_INET6: {
         auto const* ipv6 = reinterpret_cast<sockaddr_in6 const*>(&address);
         if (inet_ntop(AF_INET6, &ipv6->sin6_addr, buffer.data(), buffer.size()) != nullptr)
         {
@@ -197,16 +195,16 @@ constexpr auto livetest_origin = std::string_view{"merovingian-livetest.invalid"
 // Canonical key order is edus, origin, origin_server_ts, pdus.
 [[nodiscard]] auto build_empty_transaction_body(std::string_view origin) -> std::string
 {
-    auto const now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                            std::chrono::system_clock::now().time_since_epoch())
-                            .count();
-    return std::string{R"({"edus":[],"origin":")"} + std::string{origin} +
-           R"(","origin_server_ts":)" + std::to_string(now_ms) + R"(,"pdus":[]})";
+    auto const now_ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+            .count();
+    return std::string{R"({"edus":[],"origin":")"} + std::string{origin} + R"(","origin_server_ts":)" +
+           std::to_string(now_ms) + R"(,"pdus":[]})";
 }
 
 // Composes an X-Matrix Authorization header value from its signed components.
-[[nodiscard]] auto x_matrix_authorization(std::string_view origin, std::string_view key_id,
-                                          std::string_view signature, std::string_view destination) -> std::string
+[[nodiscard]] auto x_matrix_authorization(std::string_view origin, std::string_view key_id, std::string_view signature,
+                                          std::string_view destination) -> std::string
 {
     return std::string{R"(X-Matrix origin=")"} + std::string{origin} + R"(",key=")" + std::string{key_id} +
            R"(",sig=")" + std::string{signature} + R"(",destination=")" + std::string{destination} + R"(")";
@@ -223,7 +221,7 @@ constexpr auto livetest_origin = std::string_view{"merovingian-livetest.invalid"
     auto const txn_target = std::string{"/_matrix/federation/v1/send/livetest-txn-1"};
     auto const body = build_empty_transaction_body(livetest_origin);
     auto const signature = merovingian::federation::make_federation_signature(livetest_origin, target_server, "PUT",
-                                                                             txn_target, body, keypair.secret_key);
+                                                                              txn_target, body, keypair.secret_key);
 
     auto request = merovingian::http::OutboundRequest{};
     request.method = "PUT";
@@ -257,8 +255,7 @@ SCENARIO("Fetch Synapse server keys via OutboundClient", "[live][federation]")
         WHEN("fetching GET /_matrix/key/v2/server from matrix.ping.me.uk")
         {
             auto client = merovingian::http::OutboundClient{};
-            auto const request =
-                make_get_request("https://matrix.ping.me.uk/_matrix/key/v2/server", addresses);
+            auto const request = make_get_request("https://matrix.ping.me.uk/_matrix/key/v2/server", addresses);
             auto const result = client.perform(request);
 
             THEN("the response is valid JSON with server_name, verify_keys, and a future valid_until_ts")
@@ -304,8 +301,7 @@ SCENARIO("Fetch Synapse federation version via OutboundClient", "[live][federati
         WHEN("fetching GET /_matrix/federation/v1/version from matrix.ping.me.uk")
         {
             auto client = merovingian::http::OutboundClient{};
-            auto const request =
-                make_get_request("https://matrix.ping.me.uk/_matrix/federation/v1/version", addresses);
+            auto const request = make_get_request("https://matrix.ping.me.uk/_matrix/federation/v1/version", addresses);
             auto const result = client.perform(request);
 
             THEN("the response contains a server name and version")
@@ -346,9 +342,9 @@ SCENARIO("Query Synapse user profile via OutboundClient", "[live][federation]")
         WHEN("querying the displayname for @james:matrix.ping.me.uk")
         {
             auto client = merovingian::http::OutboundClient{};
-            auto const request = make_get_request(
-                "https://matrix.ping.me.uk/_matrix/federation/v1/query/profile?user_id=%40james%3Amatrix.ping.me.uk&field=displayname",
-                addresses);
+            auto const request = make_get_request("https://matrix.ping.me.uk/_matrix/federation/v1/query/"
+                                                  "profile?user_id=%40james%3Amatrix.ping.me.uk&field=displayname",
+                                                  addresses);
             auto const result = client.perform(request);
 
             THEN("the response is valid JSON")
@@ -384,8 +380,7 @@ SCENARIO("Discover Synapse via well-known", "[live][federation]")
         WHEN("fetching GET /.well-known/matrix/server from matrix.ping.me.uk")
         {
             auto client = merovingian::http::OutboundClient{};
-            auto const request =
-                make_get_request("https://matrix.ping.me.uk/.well-known/matrix/server", addresses);
+            auto const request = make_get_request("https://matrix.ping.me.uk/.well-known/matrix/server", addresses);
             auto const result = client.perform(request);
 
             THEN("the response contains a delegated server name")
@@ -455,8 +450,7 @@ SCENARIO("Fetch Merovingian server keys via OutboundClient", "[live][federation]
         WHEN("fetching GET /_matrix/key/v2/server from pong.ping.me.uk")
         {
             auto client = merovingian::http::OutboundClient{};
-            auto const request =
-                make_get_request("https://pong.ping.me.uk/_matrix/key/v2/server", addresses);
+            auto const request = make_get_request("https://pong.ping.me.uk/_matrix/key/v2/server", addresses);
             auto const result = client.perform(request);
 
             THEN("the response is valid JSON with pong.ping.me.uk as server_name")
@@ -502,8 +496,7 @@ SCENARIO("Discover Merovingian via well-known", "[live][federation]")
         WHEN("fetching GET /.well-known/matrix/server from pong.ping.me.uk")
         {
             auto client = merovingian::http::OutboundClient{};
-            auto const request =
-                make_get_request("https://pong.ping.me.uk/.well-known/matrix/server", addresses);
+            auto const request = make_get_request("https://pong.ping.me.uk/.well-known/matrix/server", addresses);
             auto const result = client.perform(request);
 
             THEN("the response contains a delegated server name")

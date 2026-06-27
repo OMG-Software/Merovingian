@@ -25,7 +25,8 @@ flowchart TB
 
     subgraph host["Merovingian host"]
         server["merovingian-server<br/>(loopback listeners)"]
-        worker["merovingian-thumbnail-worker<br/>(sandboxed, short-lived)"]
+        fedworker["merovingian-fed-worker × N<br/>(IPC children, sharded by room ID)"]
+        thumbnail["merovingian-thumbnail-worker<br/>(sandboxed, short-lived)"]
         db[("PostgreSQL / SQLite")]
     end
 
@@ -33,8 +34,10 @@ flowchart TB
     admin -->|HTTPS| proxy
     proxy -->|HTTP loopback| server
     remote <-->|HTTPS + X-Matrix| server
-    server -->|spawn + pipe| worker
+    server -->|encrypted AF_UNIX IPC| fedworker
+    server -->|spawn + pipe| thumbnail
     server -->|prepared statements| db
+    fedworker -->|prepared statements| db
     server -->|outbound HTTPS, pinned IPs| remote
 ```
 
@@ -58,6 +61,7 @@ Seventeen modules under `src/` and `include/merovingian/`, each compiling into a
 | `federation` | Inbound/outbound federation, transactions, discovery |
 | `homeserver` | Top-level runtime, HTTP serving, routing, auth/room/media services |
 | `http` | Outbound HTTP client (libcurl), rate limiting |
+| `ipc` | Encrypted AF_UNIX IPC channel (ephemeral key exchange, AEAD framing) |
 | `media` | Media repository: upload, download, quarantine |
 | `net` | TCP listener, thread pool, shutdown signal |
 | `observability` | Logging, health checks, structured diagnostics |
@@ -66,7 +70,7 @@ Seventeen modules under `src/` and `include/merovingian/`, each compiling into a
 | `sync` | Sync notifier, stream tokens, sync filters |
 | `trust_safety` | Policy engine for moderation rules |
 
-Entry points: `src/main.cpp` (server) and `src/db_migrate.cpp` (standalone migration tool).
+Entry points: `src/main.cpp` (server), `src/db_migrate.cpp` (standalone migration tool), and `src/federation_worker/main.cpp` (out-of-process federation worker).
 
 ### Module layering
 
@@ -127,7 +131,13 @@ merovingian-server
   ├── federation listener thread — plain TCP accept loop
   ├── federation TLS listener thread — OpenSSL accept loop
   ├── DispatchWorker thread — outbound federation queue
+  ├── WorkerPool — manages N WorkerSupervisor threads, one per federation shard
   └── observability pipeline
+
+merovingian-fed-worker × N  [spawned when federation.worker.enabled=true]
+  Each worker owns a subset of room IDs by FNV-1a hash of the room ID.
+  ├── IPC reader thread — receives fed_request / pdu_ingest_result frames
+  └── worker thread pool (threads = federation.worker.threads) — handles fed_request concurrently
 ```
 
 `start_client_server(config)` returns a `ClientServerRuntime` holding `HomeserverRuntime`, which owns the persistent store, federation state, media, outbound client, discovery network, sync notifier, and a recursive mutex serialising access to the runtime.
@@ -137,7 +147,7 @@ Request flow:
 1. Listener thread accepts a connection, submits the fd to the pool.
 2. Pool thread reads one HTTP request, routes it via `dispatch_local_http_request()`.
 3. Authenticated client-server requests go to `handle_client_server_request()`.
-4. Federation requests go to `handle_federation_http_request()`.
+4. Federation requests go to `FederationProxy::handle()` (when `federation.worker.enabled=true`) which extracts the room ID, selects the owning worker shard (`fnv1a_32(room_id) % federation.worker.shards`), and serialises the request over encrypted IPC to that `merovingian-fed-worker` process; non-room requests route to shard 0. When the worker is disabled, requests go directly to `handle_federation_http_request()`.
 5. In-process requests (room creation that needs both auth and federation) go through `handle_local_http_request()`.
 6. For `/sync` long-polls: if no new data exists, `DispatchResult::needs_wait` is returned with `SyncWaitParams`. The HTTP server releases the runtime mutex, calls `SyncNotifier::wait_for_change()`, then re-acquires the lock and rebuilds the response. This offloading keeps the main pool free for real requests.
 
@@ -325,7 +335,7 @@ Meson (`>=1.1.0`), C++26, `-Werror`, warning level 3. Hardening: stack protector
 
 Dependencies: libsodium, OpenSSL, libpq (+ pgcommon/pgport), libcurl, resolv (optional) — all **system-provided** (`allow_fallback: false`). SQLite3, yyjson, and Catch2 (tests) build from source-pinned subproject wraps when no system copy is present. The thumbnail worker links system `libpng` and `libjpeg-turbo`; when those codecs are absent the worker is not built and thumbnailing falls back to original bytes. See [platform-support.md](platform-support.md) for the per-platform system-dependency package names.
 
-Install targets: `merovingian-server`, `merovingian-db-migrate`, and (when image codecs are present) `merovingian-thumbnail-worker` under `libexecdir/merovingian`. Sysconfdir baked in as `MEROVINGIAN_SYSCONFDIR`; the worker path as `MEROVINGIAN_THUMBNAIL_WORKER_PATH`. The worker is an out-of-process, seccomp/rlimit-sandboxed image decoder so untrusted PNG/JPEG bytes are never parsed in the server process.
+Install targets: `merovingian-server`, `merovingian-db-migrate`, `merovingian-fed-worker`, and (when image codecs are present) `merovingian-thumbnail-worker` under `libexecdir/merovingian`. Sysconfdir baked in as `MEROVINGIAN_SYSCONFDIR`; the thumbnail worker path as `MEROVINGIAN_THUMBNAIL_WORKER_PATH`; the federation worker libexec directory as `MEROVINGIAN_LIBEXECDIR`. The thumbnail worker is an out-of-process, seccomp/rlimit-sandboxed image decoder so untrusted PNG/JPEG bytes are never parsed in the server process. `merovingian-fed-worker` is an out-of-process federation handler that isolates inbound federation CPU and I/O from the client-server thread pool.
 
 ## Testing
 
@@ -344,6 +354,7 @@ gate that runs before any state mutation:
 |---|---|---|
 | Client edge | Matrix clients | Access-token authentication, rate limiting, bounded request parsing |
 | Federation edge | Remote homeservers | X-Matrix request-signature verification, per-PDU content-hash + Ed25519 verification, event authorization rules |
+| IPC channel | `merovingian-fed-worker` | Ephemeral crypto_kx key exchange, AEAD-encrypted frames; access tokens stripped before forwarding; signing key never crosses the boundary |
 | Media decode | Uploaded/fetched image bytes | Out-of-process sandboxed worker (seccomp + rlimits); the server never decodes image bytes in-process |
 | Persistence | All write paths | Prepared statements only; runtime/migration role separation |
 

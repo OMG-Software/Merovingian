@@ -376,7 +376,9 @@ SCENARIO("Homeserver publishes superseded signing keys in old_verify_keys", "[in
         // sentinel) - the implementation must cap expired_ts at now so it is never future-dated.
         auto const legacy_public_key = std::string{"bGVnYWN5cHVibGlja2V5"}; // base64("legacypublickey")
         runtime.database.persistent_store.server_signing_keys.push_back({
-            "example.org", "ed25519:auto", legacy_public_key,
+            "example.org",
+            "ed25519:auto",
+            legacy_public_key,
             32503680000000ULL, // year-2999 sentinel - must be capped when published
             "",                // no secret; old keys are verification-only
         });

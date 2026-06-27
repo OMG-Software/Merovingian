@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "merovingian/auth/session.hpp"
-
-#include <catch2/catch_test_macros.hpp>
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
+
+#include <catch2/catch_test_macros.hpp>
 
 #include <chrono>
 #include <string>
@@ -162,7 +162,8 @@ SCENARIO("Session liveness rejects expired tokens even when not revoked", "[auth
     }
 }
 
-SCENARIO("Expired and revoked tokens yield distinct rejection reasons for soft-logout routing", "[auth][tokens][expiry][security]")
+SCENARIO("Expired and revoked tokens yield distinct rejection reasons for soft-logout routing",
+         "[auth][tokens][expiry][security]")
 {
     // access_token_is_soft_logout() distinguishes "found-but-expired" (soft logout:
     // use refresh token) from "found-but-revoked" (hard logout: clear session).

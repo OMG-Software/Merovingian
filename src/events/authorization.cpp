@@ -46,8 +46,8 @@ namespace
         return event_type == "m.room.member";
     }
 
-    [[nodiscard]] auto object_member(canonicaljson::Object const& object,
-                                     std::string_view key) noexcept -> canonicaljson::Value const*
+    [[nodiscard]] auto object_member(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> canonicaljson::Value const*
     {
         for (auto const& member : object)
         {
@@ -60,22 +60,22 @@ namespace
         return nullptr;
     }
 
-    [[nodiscard]] auto string_member(canonicaljson::Object const& object,
-                                     std::string_view key) noexcept -> std::string const*
+    [[nodiscard]] auto string_member(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> std::string const*
     {
         auto const* value = object_member(object, key);
         return value == nullptr ? nullptr : std::get_if<std::string>(&value->storage());
     }
 
-    [[nodiscard]] auto integer_member(canonicaljson::Object const& object,
-                                      std::string_view key) noexcept -> std::int64_t const*
+    [[nodiscard]] auto integer_member(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> std::int64_t const*
     {
         auto const* value = object_member(object, key);
         return value == nullptr ? nullptr : std::get_if<std::int64_t>(&value->storage());
     }
 
-    [[nodiscard]] auto object_member_as_object(canonicaljson::Object const& object,
-                                               std::string_view key) noexcept -> canonicaljson::Object const*
+    [[nodiscard]] auto object_member_as_object(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> canonicaljson::Object const*
     {
         auto const* value = object_member(object, key);
         return value == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&value->storage());
@@ -94,10 +94,10 @@ namespace
     [[nodiscard]] auto make_denied(std::string step, std::string reason) -> EventAuthorizationDecision
     {
         observability::log_diagnostic("event_auth", "authorization.rejected",
-                                  {
-                                      {"rule_step", step,   false},
-                                      {"reason",    reason, false}
-                                  });
+                                      {
+                                          {"rule_step", step,   false},
+                                          {"reason",    reason, false}
+        });
         return {false, {}, std::move(step), std::move(reason)};
     }
 
@@ -106,8 +106,8 @@ namespace
         return {true, {}, std::move(step), {}};
     }
 
-    [[nodiscard]] auto event_content_string(canonicaljson::Value const& event,
-                                            std::string_view key) noexcept -> std::string const*
+    [[nodiscard]] auto event_content_string(canonicaljson::Value const& event, std::string_view key) noexcept
+        -> std::string const*
     {
         auto const* obj = value_is_object(event);
         if (obj == nullptr)
@@ -147,8 +147,8 @@ namespace
         return sender_power >= redact_level || sender_power >= ban_level;
     }
 
-    [[nodiscard]] auto array_contains_string(canonicaljson::Value const& value,
-                                             std::string_view needle) noexcept -> bool
+    [[nodiscard]] auto array_contains_string(canonicaljson::Value const& value, std::string_view needle) noexcept
+        -> bool
     {
         auto const* array = std::get_if<canonicaljson::Array>(&value.storage());
         if (array == nullptr)
@@ -332,8 +332,8 @@ auto extract_content_membership(canonicaljson::Value const& event) noexcept -> s
     return membership == nullptr ? std::string{} : *membership;
 }
 
-auto extract_user_power_level(canonicaljson::Value const& power_levels_event,
-                              std::string_view user_id) noexcept -> std::int64_t
+auto extract_user_power_level(canonicaljson::Value const& power_levels_event, std::string_view user_id) noexcept
+    -> std::int64_t
 {
     auto const* obj = value_is_object(power_levels_event);
     if (obj == nullptr)
@@ -382,8 +382,8 @@ auto extract_power_level_key(canonicaljson::Value const& power_levels_event, std
     return default_value;
 }
 
-auto authorize_event(rooms::RoomVersionPolicy const& policy,
-                     EventAuthorizationRequest const& request) -> EventAuthorizationDecision
+auto authorize_event(rooms::RoomVersionPolicy const& policy, EventAuthorizationRequest const& request)
+    -> EventAuthorizationDecision
 {
     auto const rule_hook = auth_rule_hook_name(policy);
     if (policy.id != request.room_version)
@@ -449,8 +449,7 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
     // is absent or true the check does not apply and cross-domain senders are permitted.
     // Spec: Matrix Server-Server API v1.18 — Authorization Rules, Step 3.
     // URL: ../../docs/matrix-v1.18-spec/server-server-api.md#authorization-rules
-    if (policy.auth_rules == rooms::AuthRules::room_v6_plus ||
-        policy.auth_rules == rooms::AuthRules::room_v12)
+    if (policy.auth_rules == rooms::AuthRules::room_v6_plus || policy.auth_rules == rooms::AuthRules::room_v12)
     {
         auto const* create_obj = value_is_object(auth_events.create);
         auto is_non_federated = false;
@@ -653,8 +652,7 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
             {
                 return make_denied("5", "banned user cannot knock");
             }
-            if (membership_at_least_one_of(target_current_membership,
-                                           {MembershipState::join, MembershipState::invite}))
+            if (membership_at_least_one_of(target_current_membership, {MembershipState::join, MembershipState::invite}))
             {
                 return make_denied("5", "already joined or invited user cannot knock");
             }
@@ -831,7 +829,8 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
         if (value_has_content(auth_events.power_levels))
         {
             auto const* old_event_obj = value_is_object(auth_events.power_levels);
-            auto const* old_content = old_event_obj == nullptr ? nullptr : object_member_as_object(*old_event_obj, "content");
+            auto const* old_content =
+                old_event_obj == nullptr ? nullptr : object_member_as_object(*old_event_obj, "content");
             auto const old_users = old_content == nullptr ? nullptr : object_member_as_object(*old_content, "users");
 
             // Spec v1.18 authorization rules 9.8 and 9.9 (room v12):
@@ -879,8 +878,7 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
                     {
                         continue;
                     }
-                    auto const* new_level =
-                        new_users == nullptr ? nullptr : integer_member(*new_users, old_entry.key);
+                    auto const* new_level = new_users == nullptr ? nullptr : integer_member(*new_users, old_entry.key);
                     auto const removed = (new_level == nullptr);
                     auto const changed = !removed && (*new_level != old_level);
                     if ((removed || changed) && old_level >= pl_sender_power)

@@ -88,15 +88,13 @@ SCENARIO("Malformed client_rate_limits values are rejected as findings", "[confi
             THEN("the parser reports a finding rather than silently dropping the key")
             {
                 REQUIRE_FALSE(result.findings.empty());
-                REQUIRE(result.findings.front().field ==
-                        "client_rate_limits.per_ip./_matrix/client/v3/login");
+                REQUIRE(result.findings.front().field == "client_rate_limits.per_ip./_matrix/client/v3/login");
             }
         }
     }
 }
 
-SCENARIO("The config parser rejects a zero-window rate-limit policy at parse time",
-         "[config][rate-limit]")
+SCENARIO("The config parser rejects a zero-window rate-limit policy at parse time", "[config][rate-limit]")
 {
     GIVEN("a config whose per-user policy has zero window")
     {
@@ -112,8 +110,7 @@ SCENARIO("The config parser rejects a zero-window rate-limit policy at parse tim
             THEN("the parser emits a finding on the offending key")
             {
                 REQUIRE_FALSE(result.findings.empty());
-                REQUIRE(result.findings.front().field ==
-                        "client_rate_limits.per_user./_matrix/client/v3/login");
+                REQUIRE(result.findings.front().field == "client_rate_limits.per_user./_matrix/client/v3/login");
             }
         }
     }

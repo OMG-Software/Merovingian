@@ -18,9 +18,9 @@ namespace merovingian::sync
 struct RoomListResult final
 {
     // Total number of rooms matching the list's filters (for list.count).
-    std::uint64_t              count{0U};
+    std::uint64_t count{0U};
     // Ordered room IDs covering the union of all requested ranges.
-    std::vector<std::string>   windowed_room_ids{};
+    std::vector<std::string> windowed_room_ids{};
     // Ops to include in the list response.
     std::vector<SlidingSyncOp> ops{};
 };
@@ -30,11 +30,8 @@ struct RoomListResult final
 // `prev_window` — the room IDs returned in the last response for this list
 //   (from SlidingSyncConnectionState::list_prev_windows). Empty on the first
 //   request for a given list.
-[[nodiscard]] auto compute_room_list(
-    homeserver::HomeserverRuntime const& rt,
-    std::string_view                     user,
-    SlidingSyncList const&               list,
-    std::vector<std::string> const&      prev_window,
-    database::PersistentStore const&     store) -> RoomListResult;
+[[nodiscard]] auto compute_room_list(homeserver::HomeserverRuntime const& rt, std::string_view user,
+                                     SlidingSyncList const& list, std::vector<std::string> const& prev_window,
+                                     database::PersistentStore const& store) -> RoomListResult;
 
 } // namespace merovingian::sync

@@ -18,7 +18,9 @@ SCENARIO("ThreadPool executes submitted work items", "[net][thread_pool]")
 
         WHEN("a work item is submitted")
         {
-            REQUIRE(pool.submit([&] { executed.store(true); }));
+            REQUIRE(pool.submit([&] {
+                executed.store(true);
+            }));
             std::this_thread::sleep_for(std::chrono::milliseconds{100});
 
             THEN("the work item executes")
@@ -40,7 +42,9 @@ SCENARIO("ThreadPool processes multiple work items concurrently", "[net][thread_
         {
             for (auto i = std::size_t{0U}; i < 8U; ++i)
             {
-                REQUIRE(pool.submit([&] { counter.fetch_add(1U); }));
+                REQUIRE(pool.submit([&] {
+                    counter.fetch_add(1U);
+                }));
             }
             std::this_thread::sleep_for(std::chrono::milliseconds{200});
 
@@ -61,11 +65,15 @@ SCENARIO("ThreadPool request_stop prevents new submissions", "[net][thread_pool]
 
         WHEN("request_stop is called and more work is submitted")
         {
-            REQUIRE(pool.submit([&] { counter.fetch_add(1U); }));
+            REQUIRE(pool.submit([&] {
+                counter.fetch_add(1U);
+            }));
             std::this_thread::sleep_for(std::chrono::milliseconds{50});
             pool.request_stop();
             auto const before = counter.load();
-            REQUIRE_FALSE(pool.submit([&] { counter.fetch_add(1U); }));
+            REQUIRE_FALSE(pool.submit([&] {
+                counter.fetch_add(1U);
+            }));
             std::this_thread::sleep_for(std::chrono::milliseconds{100});
 
             THEN("the post-stop submission is ignored")
@@ -102,8 +110,7 @@ SCENARIO("ThreadPool running() reflects pool state", "[net][thread_pool]")
     }
 }
 
-SCENARIO("ThreadPool worker does not terminate when a work item throws std::exception",
-         "[net][thread_pool]")
+SCENARIO("ThreadPool worker does not terminate when a work item throws std::exception", "[net][thread_pool]")
 {
     GIVEN("a pool with 1 worker")
     {
@@ -112,12 +119,15 @@ SCENARIO("ThreadPool worker does not terminate when a work item throws std::exce
 
         WHEN("a work item throws std::runtime_error and a follow-up item is then submitted")
         {
-            REQUIRE(pool.submit(
-                [] { throw std::runtime_error{"synthetic thread_pool fault"}; }));
+            REQUIRE(pool.submit([] {
+                throw std::runtime_error{"synthetic thread_pool fault"};
+            }));
             // Give the worker time to catch, log, and return to the wait
             // state. The catch-all must let the loop continue.
             std::this_thread::sleep_for(std::chrono::milliseconds{50});
-            REQUIRE(pool.submit([&] { follow_up_ran.store(true); }));
+            REQUIRE(pool.submit([&] {
+                follow_up_ran.store(true);
+            }));
             std::this_thread::sleep_for(std::chrono::milliseconds{50});
 
             THEN("the pool remains alive and processes the next work item")

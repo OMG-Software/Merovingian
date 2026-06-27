@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "federation_signing_test_support.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/federation/dispatch_worker.hpp"
 #include "merovingian/federation/outbound_transaction.hpp"
 #include "merovingian/federation/server_discovery.hpp"
 #include "merovingian/http/outbound_client.hpp"
-
-#include "federation_signing_test_support.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -334,7 +333,8 @@ SCENARIO("Dispatch worker start is idempotent — calling start twice does not s
         }};
         auto sleep_for =
             merovingian::federation::DispatchSleep{[](std::chrono::milliseconds) { /* no real sleep in tests */ }};
-        auto worker = merovingian::federation::DispatchWorker{worker_config(), client, std::move(resolver), {}, std::move(sleep_for)};
+        auto worker = merovingian::federation::DispatchWorker{
+            worker_config(), client, std::move(resolver), {}, std::move(sleep_for)};
 
         WHEN("start() is called twice before shutdown")
         {

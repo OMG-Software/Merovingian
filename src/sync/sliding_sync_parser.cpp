@@ -36,8 +36,7 @@ namespace
         return nullptr;
     }
 
-    [[nodiscard]] auto as_object(canonicaljson::Value const& v) noexcept
-        -> canonicaljson::Object const*
+    [[nodiscard]] auto as_object(canonicaljson::Value const& v) noexcept -> canonicaljson::Object const*
     {
         return std::get_if<canonicaljson::Object>(&v.storage());
     }
@@ -57,8 +56,7 @@ namespace
         return std::get_if<std::int64_t>(&v.storage());
     }
 
-    [[nodiscard]] auto as_array(canonicaljson::Value const& v) noexcept
-        -> canonicaljson::Array const*
+    [[nodiscard]] auto as_array(canonicaljson::Value const& v) noexcept -> canonicaljson::Array const*
     {
         return std::get_if<canonicaljson::Array>(&v.storage());
     }
@@ -91,7 +89,7 @@ namespace
             return std::nullopt;
         }
         auto const* start = as_int((*arr)[0]);
-        auto const* end   = as_int((*arr)[1]);
+        auto const* end = as_int((*arr)[1]);
         if (start == nullptr || end == nullptr || *start < 0 || *end < 0)
         {
             return std::nullopt;
@@ -137,7 +135,7 @@ namespace
             {
                 continue;
             }
-            auto const* type      = as_string((*pair_arr)[0]);
+            auto const* type = as_string((*pair_arr)[0]);
             auto const* state_key = as_string((*pair_arr)[1]);
             if (type == nullptr || state_key == nullptr)
             {
@@ -191,8 +189,7 @@ namespace
     }
 
     // Returns nullopt if ranges are invalid (overlapping).
-    [[nodiscard]] auto parse_list(canonicaljson::Object const& obj)
-        -> std::optional<SlidingSyncList>
+    [[nodiscard]] auto parse_list(canonicaljson::Object const& obj) -> std::optional<SlidingSyncList>
     {
         auto list = SlidingSyncList{};
 
@@ -252,8 +249,7 @@ namespace
         return list;
     }
 
-    [[nodiscard]] auto parse_room_subscription(canonicaljson::Object const& obj)
-        -> SlidingSyncRoomSubscription
+    [[nodiscard]] auto parse_room_subscription(canonicaljson::Object const& obj) -> SlidingSyncRoomSubscription
     {
         auto sub = SlidingSyncRoomSubscription{};
 
@@ -278,8 +274,7 @@ namespace
         return sub;
     }
 
-    [[nodiscard]] auto parse_extension_requests(canonicaljson::Object const& obj)
-        -> SlidingSyncExtensionRequests
+    [[nodiscard]] auto parse_extension_requests(canonicaljson::Object const& obj) -> SlidingSyncExtensionRequests
     {
         auto ext = SlidingSyncExtensionRequests{};
 
@@ -297,8 +292,8 @@ namespace
         {
             if (auto const* o = as_object(*v); o != nullptr)
             {
-                auto req       = ExtToDeviceRequest{};
-                req.enabled    = parse_enabled(*o);
+                auto req = ExtToDeviceRequest{};
+                req.enabled = parse_enabled(*o);
                 if (auto const* lv = find_member(*o, "limit"); lv != nullptr)
                 {
                     if (auto const* n = as_int(*lv); n != nullptr && *n > 0)
@@ -337,7 +332,7 @@ namespace
         {
             if (auto const* o = as_object(*v); o != nullptr)
             {
-                auto req    = ExtReceiptsRequest{};
+                auto req = ExtReceiptsRequest{};
                 req.enabled = parse_enabled(*o);
                 if (auto const* rv = find_member(*o, "rooms"); rv != nullptr)
                 {
@@ -351,7 +346,7 @@ namespace
         {
             if (auto const* o = as_object(*v); o != nullptr)
             {
-                auto req    = ExtTypingRequest{};
+                auto req = ExtTypingRequest{};
                 req.enabled = parse_enabled(*o);
                 if (auto const* rv = find_member(*o, "rooms"); rv != nullptr)
                 {
@@ -446,7 +441,7 @@ auto parse_sliding_sync_request(std::string_view body) -> std::optional<SlidingS
             auto list = parse_list(*list_obj);
             if (!list.has_value())
             {
-                return std::nullopt;  // invalid ranges or malformed list
+                return std::nullopt; // invalid ranges or malformed list
             }
             req.lists.emplace(member.key, std::move(*list));
         }

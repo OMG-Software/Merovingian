@@ -39,12 +39,9 @@ namespace
     auto security = merovingian::config::SecurityConfig{};
     merovingian::tests::enable_token_registration(security);
     return merovingian::config::Config{
-        merovingian::config::ServerConfig{},
-        merovingian::config::ListenersConfig{},
-        merovingian::config::DatabaseConfig{},
-        security,
-        merovingian::config::ClientRateLimitsConfig{},
-        merovingian::config::LogModulesConfig{},
+        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
+        merovingian::config::DatabaseConfig{},         security,
+        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
     };
 }
 
@@ -60,25 +57,24 @@ struct TwoUserRoom
 // Registers alice (room creator) and bob (invited + joined member).
 [[nodiscard]] auto make_two_user_room(merovingian::homeserver::HomeserverRuntime& runtime) -> TwoUserRoom
 {
-    auto const alice_reg = merovingian::homeserver::register_local_user(
-        runtime, "alice", "CorrectHorse7!", merovingian::tests::registration_token);
+    auto const alice_reg = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                        merovingian::tests::registration_token);
     REQUIRE(alice_reg.ok);
-    auto const alice_login = merovingian::homeserver::login_local_user(
-        runtime, alice_reg.value, "CorrectHorse7!", "ALICE_DEV");
+    auto const alice_login =
+        merovingian::homeserver::login_local_user(runtime, alice_reg.value, "CorrectHorse7!", "ALICE_DEV");
     REQUIRE(alice_login.ok);
 
-    auto const bob_reg = merovingian::homeserver::register_local_user(
-        runtime, "bob", "CorrectHorse7!", merovingian::tests::registration_token);
+    auto const bob_reg = merovingian::homeserver::register_local_user(runtime, "bob", "CorrectHorse7!",
+                                                                      merovingian::tests::registration_token);
     REQUIRE(bob_reg.ok);
-    auto const bob_login = merovingian::homeserver::login_local_user(
-        runtime, bob_reg.value, "CorrectHorse7!", "BOB_DEV");
+    auto const bob_login =
+        merovingian::homeserver::login_local_user(runtime, bob_reg.value, "CorrectHorse7!", "BOB_DEV");
     REQUIRE(bob_login.ok);
 
     auto const room = merovingian::homeserver::create_room(runtime, alice_login.value);
     REQUIRE(room.ok);
 
-    auto const invite = merovingian::homeserver::invite_user(
-        runtime, alice_login.value, room.value, bob_reg.value);
+    auto const invite = merovingian::homeserver::invite_user(runtime, alice_login.value, room.value, bob_reg.value);
     REQUIRE(invite.ok);
 
     auto const join = merovingian::homeserver::join_room(runtime, bob_login.value, room.value);
@@ -91,8 +87,7 @@ struct TwoUserRoom
 
 // --- ban_user --------------------------------------------------------------------
 
-SCENARIO("ban_user rejects an unauthenticated caller",
-         "[homeserver][rooms][ban][error]")
+SCENARIO("ban_user rejects an unauthenticated caller", "[homeserver][rooms][ban][error]")
 {
     GIVEN("a started runtime with alice and bob in a room")
     {
@@ -104,8 +99,8 @@ SCENARIO("ban_user rejects an unauthenticated caller",
 
         WHEN("ban is attempted with an unknown access token")
         {
-            auto const result = merovingian::homeserver::ban_user(
-                runtime, "syt_unknown_token", ctx.room_id, ctx.bob_id);
+            auto const result =
+                merovingian::homeserver::ban_user(runtime, "syt_unknown_token", ctx.room_id, ctx.bob_id);
 
             THEN("ban is rejected — unauthenticated callers cannot modify room membership")
             {
@@ -115,8 +110,7 @@ SCENARIO("ban_user rejects an unauthenticated caller",
     }
 }
 
-SCENARIO("ban_user rejects a ban in a room that does not exist",
-         "[homeserver][rooms][ban][error]")
+SCENARIO("ban_user rejects a ban in a room that does not exist", "[homeserver][rooms][ban][error]")
 {
     GIVEN("a started runtime with a registered user but no room")
     {
@@ -125,17 +119,16 @@ SCENARIO("ban_user rejects a ban in a room that does not exist",
         REQUIRE(started.started);
         auto& runtime = started.runtime;
 
-        auto const reg = merovingian::homeserver::register_local_user(
-            runtime, "alice", "CorrectHorse7!", merovingian::tests::registration_token);
+        auto const reg = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                      merovingian::tests::registration_token);
         REQUIRE(reg.ok);
-        auto const login = merovingian::homeserver::login_local_user(
-            runtime, reg.value, "CorrectHorse7!", "DEVICE1");
+        auto const login = merovingian::homeserver::login_local_user(runtime, reg.value, "CorrectHorse7!", "DEVICE1");
         REQUIRE(login.ok);
 
         WHEN("ban is attempted in a room that does not exist")
         {
-            auto const result = merovingian::homeserver::ban_user(
-                runtime, login.value, "!ghost:example.org", "@bob:example.org");
+            auto const result =
+                merovingian::homeserver::ban_user(runtime, login.value, "!ghost:example.org", "@bob:example.org");
 
             THEN("ban is rejected — the room does not exist")
             {
@@ -145,8 +138,7 @@ SCENARIO("ban_user rejects a ban in a room that does not exist",
     }
 }
 
-SCENARIO("ban_user allows the room creator to ban a member",
-         "[homeserver][rooms][ban]")
+SCENARIO("ban_user allows the room creator to ban a member", "[homeserver][rooms][ban]")
 {
     GIVEN("a started runtime with alice (room creator) and bob (member)")
     {
@@ -158,8 +150,8 @@ SCENARIO("ban_user allows the room creator to ban a member",
 
         WHEN("alice bans bob from the room")
         {
-            auto const result = merovingian::homeserver::ban_user(
-                runtime, ctx.alice_token, ctx.room_id, ctx.bob_id, "test ban");
+            auto const result =
+                merovingian::homeserver::ban_user(runtime, ctx.alice_token, ctx.room_id, ctx.bob_id, "test ban");
 
             THEN("the ban succeeds — room creator has sufficient power level")
             {
@@ -182,8 +174,8 @@ SCENARIO("ban_user prevents a non-privileged member from banning another member"
 
         WHEN("bob attempts to ban alice (the room creator)")
         {
-            auto const result = merovingian::homeserver::ban_user(
-                runtime, ctx.bob_token, ctx.room_id, ctx.alice_id, "attempted ban");
+            auto const result =
+                merovingian::homeserver::ban_user(runtime, ctx.bob_token, ctx.room_id, ctx.alice_id, "attempted ban");
 
             THEN("ban is rejected — bob lacks the required power level")
             {
@@ -195,8 +187,7 @@ SCENARIO("ban_user prevents a non-privileged member from banning another member"
 
 // --- kick_user -------------------------------------------------------------------
 
-SCENARIO("kick_user rejects an unauthenticated caller",
-         "[homeserver][rooms][kick][error]")
+SCENARIO("kick_user rejects an unauthenticated caller", "[homeserver][rooms][kick][error]")
 {
     GIVEN("a started runtime with alice and bob in a room")
     {
@@ -208,8 +199,8 @@ SCENARIO("kick_user rejects an unauthenticated caller",
 
         WHEN("kick is attempted with an unknown access token")
         {
-            auto const result = merovingian::homeserver::kick_user(
-                runtime, "syt_unknown_token", ctx.room_id, ctx.bob_id);
+            auto const result =
+                merovingian::homeserver::kick_user(runtime, "syt_unknown_token", ctx.room_id, ctx.bob_id);
 
             THEN("kick is rejected — unauthenticated callers cannot modify room membership")
             {
@@ -219,8 +210,7 @@ SCENARIO("kick_user rejects an unauthenticated caller",
     }
 }
 
-SCENARIO("kick_user allows the room creator to kick a member",
-         "[homeserver][rooms][kick]")
+SCENARIO("kick_user allows the room creator to kick a member", "[homeserver][rooms][kick]")
 {
     GIVEN("a started runtime with alice (room creator) and bob (member)")
     {
@@ -232,8 +222,8 @@ SCENARIO("kick_user allows the room creator to kick a member",
 
         WHEN("alice kicks bob from the room")
         {
-            auto const result = merovingian::homeserver::kick_user(
-                runtime, ctx.alice_token, ctx.room_id, ctx.bob_id, "test kick");
+            auto const result =
+                merovingian::homeserver::kick_user(runtime, ctx.alice_token, ctx.room_id, ctx.bob_id, "test kick");
 
             THEN("the kick succeeds — room creator has sufficient power level")
             {
@@ -256,8 +246,8 @@ SCENARIO("kick_user prevents a non-privileged member from kicking another member
 
         WHEN("bob attempts to kick alice (the room creator)")
         {
-            auto const result = merovingian::homeserver::kick_user(
-                runtime, ctx.bob_token, ctx.room_id, ctx.alice_id, "attempted kick");
+            auto const result =
+                merovingian::homeserver::kick_user(runtime, ctx.bob_token, ctx.room_id, ctx.alice_id, "attempted kick");
 
             THEN("kick is rejected — bob lacks the required power level")
             {
@@ -269,8 +259,7 @@ SCENARIO("kick_user prevents a non-privileged member from kicking another member
 
 // --- unban_user ------------------------------------------------------------------
 
-SCENARIO("unban_user rejects an unauthenticated caller",
-         "[homeserver][rooms][unban][error]")
+SCENARIO("unban_user rejects an unauthenticated caller", "[homeserver][rooms][unban][error]")
 {
     GIVEN("a started runtime with alice and bob in a room where bob is banned")
     {
@@ -279,14 +268,13 @@ SCENARIO("unban_user rejects an unauthenticated caller",
         REQUIRE(started.started);
         auto& runtime = started.runtime;
         auto const ctx = make_two_user_room(runtime);
-        auto const ban = merovingian::homeserver::ban_user(
-            runtime, ctx.alice_token, ctx.room_id, ctx.bob_id);
+        auto const ban = merovingian::homeserver::ban_user(runtime, ctx.alice_token, ctx.room_id, ctx.bob_id);
         REQUIRE(ban.ok);
 
         WHEN("unban is attempted with an unknown access token")
         {
-            auto const result = merovingian::homeserver::unban_user(
-                runtime, "syt_unknown_token", ctx.room_id, ctx.bob_id);
+            auto const result =
+                merovingian::homeserver::unban_user(runtime, "syt_unknown_token", ctx.room_id, ctx.bob_id);
 
             THEN("unban is rejected — unauthenticated callers cannot modify room membership")
             {
@@ -296,8 +284,7 @@ SCENARIO("unban_user rejects an unauthenticated caller",
     }
 }
 
-SCENARIO("unban_user allows the room creator to lift a ban",
-         "[homeserver][rooms][unban]")
+SCENARIO("unban_user allows the room creator to lift a ban", "[homeserver][rooms][unban]")
 {
     GIVEN("a started runtime with alice as room creator and bob banned")
     {
@@ -307,14 +294,12 @@ SCENARIO("unban_user allows the room creator to lift a ban",
         auto& runtime = started.runtime;
         auto const ctx = make_two_user_room(runtime);
 
-        auto const ban = merovingian::homeserver::ban_user(
-            runtime, ctx.alice_token, ctx.room_id, ctx.bob_id);
+        auto const ban = merovingian::homeserver::ban_user(runtime, ctx.alice_token, ctx.room_id, ctx.bob_id);
         REQUIRE(ban.ok);
 
         WHEN("alice unbans bob")
         {
-            auto const result = merovingian::homeserver::unban_user(
-                runtime, ctx.alice_token, ctx.room_id, ctx.bob_id);
+            auto const result = merovingian::homeserver::unban_user(runtime, ctx.alice_token, ctx.room_id, ctx.bob_id);
 
             THEN("unban succeeds — the ban state is reversed")
             {
@@ -326,8 +311,7 @@ SCENARIO("unban_user allows the room creator to lift a ban",
 
 // --- forget_room -----------------------------------------------------------------
 
-SCENARIO("forget_room rejects an unauthenticated caller",
-         "[homeserver][rooms][forget][error]")
+SCENARIO("forget_room rejects an unauthenticated caller", "[homeserver][rooms][forget][error]")
 {
     GIVEN("a started runtime with a room")
     {
@@ -336,19 +320,17 @@ SCENARIO("forget_room rejects an unauthenticated caller",
         REQUIRE(started.started);
         auto& runtime = started.runtime;
 
-        auto const reg = merovingian::homeserver::register_local_user(
-            runtime, "alice", "CorrectHorse7!", merovingian::tests::registration_token);
+        auto const reg = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                      merovingian::tests::registration_token);
         REQUIRE(reg.ok);
-        auto const login = merovingian::homeserver::login_local_user(
-            runtime, reg.value, "CorrectHorse7!", "DEVICE1");
+        auto const login = merovingian::homeserver::login_local_user(runtime, reg.value, "CorrectHorse7!", "DEVICE1");
         REQUIRE(login.ok);
         auto const room = merovingian::homeserver::create_room(runtime, login.value);
         REQUIRE(room.ok);
 
         WHEN("forget is attempted with an unknown access token")
         {
-            auto const result = merovingian::homeserver::forget_room(
-                runtime, "syt_unknown_token", room.value);
+            auto const result = merovingian::homeserver::forget_room(runtime, "syt_unknown_token", room.value);
 
             THEN("forget is rejected — unauthenticated callers cannot forget rooms")
             {
@@ -358,8 +340,7 @@ SCENARIO("forget_room rejects an unauthenticated caller",
     }
 }
 
-SCENARIO("forget_room rejects forgetting a room the user is still joined to",
-         "[homeserver][rooms][forget][error]")
+SCENARIO("forget_room rejects forgetting a room the user is still joined to", "[homeserver][rooms][forget][error]")
 {
     // Spec: Matrix Client-Server API v1.18
     // A joined user cannot forget a room they are still a member of.
@@ -371,11 +352,10 @@ SCENARIO("forget_room rejects forgetting a room the user is still joined to",
         REQUIRE(started.started);
         auto& runtime = started.runtime;
 
-        auto const reg = merovingian::homeserver::register_local_user(
-            runtime, "alice", "CorrectHorse7!", merovingian::tests::registration_token);
+        auto const reg = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                      merovingian::tests::registration_token);
         REQUIRE(reg.ok);
-        auto const login = merovingian::homeserver::login_local_user(
-            runtime, reg.value, "CorrectHorse7!", "DEVICE1");
+        auto const login = merovingian::homeserver::login_local_user(runtime, reg.value, "CorrectHorse7!", "DEVICE1");
         REQUIRE(login.ok);
         auto const room = merovingian::homeserver::create_room(runtime, login.value);
         REQUIRE(room.ok);
@@ -392,8 +372,7 @@ SCENARIO("forget_room rejects forgetting a room the user is still joined to",
     }
 }
 
-SCENARIO("forget_room succeeds after the user has left the room",
-         "[homeserver][rooms][forget]")
+SCENARIO("forget_room succeeds after the user has left the room", "[homeserver][rooms][forget]")
 {
     GIVEN("a started runtime with alice and bob where both have left the room")
     {
@@ -403,17 +382,14 @@ SCENARIO("forget_room succeeds after the user has left the room",
         auto& runtime = started.runtime;
         auto const ctx = make_two_user_room(runtime);
 
-        auto const bob_leave = merovingian::homeserver::leave_room(
-            runtime, ctx.bob_token, ctx.room_id);
+        auto const bob_leave = merovingian::homeserver::leave_room(runtime, ctx.bob_token, ctx.room_id);
         REQUIRE(bob_leave.ok);
-        auto const alice_leave = merovingian::homeserver::leave_room(
-            runtime, ctx.alice_token, ctx.room_id);
+        auto const alice_leave = merovingian::homeserver::leave_room(runtime, ctx.alice_token, ctx.room_id);
         REQUIRE(alice_leave.ok);
 
         WHEN("alice forgets the room after leaving")
         {
-            auto const result = merovingian::homeserver::forget_room(
-                runtime, ctx.alice_token, ctx.room_id);
+            auto const result = merovingian::homeserver::forget_room(runtime, ctx.alice_token, ctx.room_id);
 
             THEN("forget succeeds — non-members may forget the room")
             {
@@ -425,8 +401,7 @@ SCENARIO("forget_room succeeds after the user has left the room",
 
 // --- knock_room ------------------------------------------------------------------
 
-SCENARIO("knock_room rejects an unauthenticated caller",
-         "[homeserver][rooms][knock][error]")
+SCENARIO("knock_room rejects an unauthenticated caller", "[homeserver][rooms][knock][error]")
 {
     GIVEN("a started runtime with a room")
     {
@@ -435,19 +410,17 @@ SCENARIO("knock_room rejects an unauthenticated caller",
         REQUIRE(started.started);
         auto& runtime = started.runtime;
 
-        auto const reg = merovingian::homeserver::register_local_user(
-            runtime, "alice", "CorrectHorse7!", merovingian::tests::registration_token);
+        auto const reg = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                      merovingian::tests::registration_token);
         REQUIRE(reg.ok);
-        auto const login = merovingian::homeserver::login_local_user(
-            runtime, reg.value, "CorrectHorse7!", "DEVICE1");
+        auto const login = merovingian::homeserver::login_local_user(runtime, reg.value, "CorrectHorse7!", "DEVICE1");
         REQUIRE(login.ok);
         auto const room = merovingian::homeserver::create_room(runtime, login.value);
         REQUIRE(room.ok);
 
         WHEN("knock is attempted with an unknown access token")
         {
-            auto const result = merovingian::homeserver::knock_room(
-                runtime, "syt_unknown_token", room.value);
+            auto const result = merovingian::homeserver::knock_room(runtime, "syt_unknown_token", room.value);
 
             THEN("knock is rejected — unauthenticated callers cannot knock")
             {
@@ -457,8 +430,7 @@ SCENARIO("knock_room rejects an unauthenticated caller",
     }
 }
 
-SCENARIO("knock_room rejects a knock on a room that does not exist",
-         "[homeserver][rooms][knock][error]")
+SCENARIO("knock_room rejects a knock on a room that does not exist", "[homeserver][rooms][knock][error]")
 {
     GIVEN("a started runtime with a registered user")
     {
@@ -467,17 +439,15 @@ SCENARIO("knock_room rejects a knock on a room that does not exist",
         REQUIRE(started.started);
         auto& runtime = started.runtime;
 
-        auto const reg = merovingian::homeserver::register_local_user(
-            runtime, "alice", "CorrectHorse7!", merovingian::tests::registration_token);
+        auto const reg = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                      merovingian::tests::registration_token);
         REQUIRE(reg.ok);
-        auto const login = merovingian::homeserver::login_local_user(
-            runtime, reg.value, "CorrectHorse7!", "DEVICE1");
+        auto const login = merovingian::homeserver::login_local_user(runtime, reg.value, "CorrectHorse7!", "DEVICE1");
         REQUIRE(login.ok);
 
         WHEN("a knock is attempted on a room_id that does not exist")
         {
-            auto const result = merovingian::homeserver::knock_room(
-                runtime, login.value, "!doesnotexist:example.org");
+            auto const result = merovingian::homeserver::knock_room(runtime, login.value, "!doesnotexist:example.org");
 
             THEN("knock is rejected — room not found")
             {
@@ -498,15 +468,15 @@ namespace
                                          std::string const& user_id) -> std::string
 {
     auto const& account_data = runtime.database.persistent_store.account_data;
-    auto const it = std::ranges::find_if(
-        account_data, [&user_id](merovingian::database::PersistentAccountData const& e) {
+    auto const it =
+        std::ranges::find_if(account_data, [&user_id](merovingian::database::PersistentAccountData const& e) {
             return e.user_id == user_id && e.room_id.empty() && e.event_type == "m.direct";
         });
     return it == account_data.end() ? std::string{} : it->content_json;
 }
 
-[[nodiscard]] auto m_direct_rooms_for(std::string const& content_json,
-                                      std::string const& invitee_id) -> std::vector<std::string>
+[[nodiscard]] auto m_direct_rooms_for(std::string const& content_json, std::string const& invitee_id)
+    -> std::vector<std::string>
 {
     auto const parsed = merovingian::canonicaljson::parse_lossless(content_json);
     auto const* obj = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
@@ -514,8 +484,9 @@ namespace
     {
         return {};
     }
-    auto const it = std::ranges::find_if(
-        *obj, [&invitee_id](merovingian::canonicaljson::ObjectMember const& m) { return m.key == invitee_id; });
+    auto const it = std::ranges::find_if(*obj, [&invitee_id](merovingian::canonicaljson::ObjectMember const& m) {
+        return m.key == invitee_id;
+    });
     if (it == obj->end())
     {
         return {};
@@ -549,15 +520,15 @@ SCENARIO("create_room with is_direct writes m.direct account data when none exis
         REQUIRE(started.started);
         auto& runtime = started.runtime;
 
-        auto const alice = merovingian::homeserver::register_local_user(
-            runtime, "alice", "CorrectHorse7!", merovingian::tests::registration_token);
+        auto const alice = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                        merovingian::tests::registration_token);
         REQUIRE(alice.ok);
-        auto const alice_login = merovingian::homeserver::login_local_user(
-            runtime, alice.value, "CorrectHorse7!", "ALICE_DEV");
+        auto const alice_login =
+            merovingian::homeserver::login_local_user(runtime, alice.value, "CorrectHorse7!", "ALICE_DEV");
         REQUIRE(alice_login.ok);
 
-        auto const bob = merovingian::homeserver::register_local_user(
-            runtime, "bob", "CorrectHorse7!", merovingian::tests::registration_token);
+        auto const bob = merovingian::homeserver::register_local_user(runtime, "bob", "CorrectHorse7!",
+                                                                      merovingian::tests::registration_token);
         REQUIRE(bob.ok);
 
         WHEN("alice creates a room with is_direct:true and invites bob")
@@ -590,15 +561,15 @@ SCENARIO("create_room with is_direct appends a second room to m.direct for the s
         REQUIRE(started.started);
         auto& runtime = started.runtime;
 
-        auto const alice = merovingian::homeserver::register_local_user(
-            runtime, "alice", "CorrectHorse7!", merovingian::tests::registration_token);
+        auto const alice = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                        merovingian::tests::registration_token);
         REQUIRE(alice.ok);
-        auto const alice_login = merovingian::homeserver::login_local_user(
-            runtime, alice.value, "CorrectHorse7!", "ALICE_DEV");
+        auto const alice_login =
+            merovingian::homeserver::login_local_user(runtime, alice.value, "CorrectHorse7!", "ALICE_DEV");
         REQUIRE(alice_login.ok);
 
-        auto const bob = merovingian::homeserver::register_local_user(
-            runtime, "bob", "CorrectHorse7!", merovingian::tests::registration_token);
+        auto const bob = merovingian::homeserver::register_local_user(runtime, "bob", "CorrectHorse7!",
+                                                                      merovingian::tests::registration_token);
         REQUIRE(bob.ok);
 
         auto options = merovingian::homeserver::CreateRoomOptions{};
@@ -625,8 +596,7 @@ SCENARIO("create_room with is_direct appends a second room to m.direct for the s
     }
 }
 
-SCENARIO("create_room without is_direct does not write m.direct account data",
-         "[homeserver][rooms][dm][m.direct]")
+SCENARIO("create_room without is_direct does not write m.direct account data", "[homeserver][rooms][dm][m.direct]")
 {
     GIVEN("a started runtime with alice and bob registered")
     {
@@ -635,15 +605,15 @@ SCENARIO("create_room without is_direct does not write m.direct account data",
         REQUIRE(started.started);
         auto& runtime = started.runtime;
 
-        auto const alice = merovingian::homeserver::register_local_user(
-            runtime, "alice", "CorrectHorse7!", merovingian::tests::registration_token);
+        auto const alice = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                        merovingian::tests::registration_token);
         REQUIRE(alice.ok);
-        auto const alice_login = merovingian::homeserver::login_local_user(
-            runtime, alice.value, "CorrectHorse7!", "ALICE_DEV");
+        auto const alice_login =
+            merovingian::homeserver::login_local_user(runtime, alice.value, "CorrectHorse7!", "ALICE_DEV");
         REQUIRE(alice_login.ok);
 
-        auto const bob = merovingian::homeserver::register_local_user(
-            runtime, "bob", "CorrectHorse7!", merovingian::tests::registration_token);
+        auto const bob = merovingian::homeserver::register_local_user(runtime, "bob", "CorrectHorse7!",
+                                                                      merovingian::tests::registration_token);
         REQUIRE(bob.ok);
 
         WHEN("alice creates a room without is_direct and invites bob")

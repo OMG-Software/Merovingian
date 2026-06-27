@@ -411,14 +411,14 @@ auto detect_system_ca_trust() -> SystemCaTrust
         "/etc/ssl/ca-bundle.pem",
         "/etc/ssl/cert.pem",
         "/usr/local/share/certs/ca-root-nss.crt",
-        "/etc/openssl/cert.pem",      // NetBSD (base/pkgsrc openssl)
+        "/etc/openssl/cert.pem",         // NetBSD (base/pkgsrc openssl)
         "/usr/pkg/etc/openssl/cert.pem", // NetBSD pkgsrc prefix
     };
     // OpenSSL hashed certificate directories.
     constexpr std::array<std::string_view, 4U> bundle_dirs{
         "/etc/ssl/certs",
         "/etc/pki/tls/certs",
-        "/etc/openssl/certs",      // NetBSD
+        "/etc/openssl/certs",         // NetBSD
         "/usr/pkg/etc/openssl/certs", // NetBSD pkgsrc prefix
     };
     auto trust = SystemCaTrust{};

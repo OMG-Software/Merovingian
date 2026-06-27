@@ -80,8 +80,8 @@ auto decode_stream_token(std::string_view encoded) -> std::optional<StreamToken>
     auto const remainder = encoded.substr(first_separator + 1U);
     auto const second_separator = remainder.find('_');
     auto const membership_part = remainder.substr(0U, second_separator);
-    auto const sync_part = second_separator == std::string_view::npos ? std::string_view{}
-                                                                       : remainder.substr(second_separator + 1U);
+    auto const sync_part =
+        second_separator == std::string_view::npos ? std::string_view{} : remainder.substr(second_separator + 1U);
     if (event_part.empty() || membership_part.empty())
     {
         return std::nullopt;

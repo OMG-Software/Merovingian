@@ -24,8 +24,7 @@ using merovingian::config::parse_key_value_config;
 
 } // namespace
 
-SCENARIO("Parsing a log_modules.<name>=<level> line populates the per-module map",
-         "[config][log-modules]")
+SCENARIO("Parsing a log_modules.<name>=<level> line populates the per-module map", "[config][log-modules]")
 {
     GIVEN("a config that bumps a module to info and silences another")
     {
@@ -47,8 +46,7 @@ SCENARIO("Parsing a log_modules.<name>=<level> line populates the per-module map
     }
 }
 
-SCENARIO("Parsing log_modules.<name>=bogus is rejected as a finding",
-         "[config][log-modules]")
+SCENARIO("Parsing log_modules.<name>=bogus is rejected as a finding", "[config][log-modules]")
 {
     GIVEN("a config that names an unknown log level")
     {

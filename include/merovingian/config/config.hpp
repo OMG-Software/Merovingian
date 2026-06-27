@@ -177,6 +177,30 @@ struct LogModulesConfig final
     std::unordered_map<std::string, observability::LogLevel> levels{};
 };
 
+// Out-of-process federation worker configuration.
+// When enabled, all inbound federation requests (except key-server) are
+// dispatched to merovingian-fed-worker over an encrypted AF_UNIX socketpair
+// channel, freeing the main thread pool for client-server requests.
+struct FederationWorkerConfig final
+{
+    bool enabled{false};
+    // When true and the worker is down, main process handles federation
+    // requests directly until the worker restarts.
+    bool fallback_in_process{true};
+    // Maximum seconds to wait for the worker to respond.
+    std::uint32_t request_timeout_seconds{120U};
+    // Number of processing threads in the worker process.
+    std::uint32_t threads{4U};
+    // Number of independent federation worker processes. shard=1 is the
+    // Phase 1/2 single-worker behaviour. Requests are routed by
+    // fnv1a_32(room_id) % shards; non-room endpoints go to shard 0. shards=0
+    // is rejected at config validation time.
+    std::uint32_t shards{1U};
+    // Absolute path to the merovingian-fed-worker binary. Empty means use
+    // the compile-time libexec default.
+    std::string worker_binary{};
+};
+
 struct SecurityConfig final
 {
     RegistrationSecurityConfig registration{};
@@ -200,7 +224,8 @@ public:
     Config() = default;
 
     Config(ServerConfig server, ListenersConfig listeners, DatabaseConfig database, SecurityConfig security,
-           ClientRateLimitsConfig client_rate_limits, LogModulesConfig log_modules);
+           ClientRateLimitsConfig client_rate_limits, LogModulesConfig log_modules,
+           FederationWorkerConfig federation_worker = {});
 
     [[nodiscard]] auto server() const noexcept -> ServerConfig const&;
     [[nodiscard]] auto server() noexcept -> ServerConfig&;
@@ -214,6 +239,8 @@ public:
     [[nodiscard]] auto client_rate_limits() noexcept -> ClientRateLimitsConfig&;
     [[nodiscard]] auto log_modules() const noexcept -> LogModulesConfig const&;
     [[nodiscard]] auto log_modules() noexcept -> LogModulesConfig&;
+    [[nodiscard]] auto federation_worker() const noexcept -> FederationWorkerConfig const&;
+    [[nodiscard]] auto federation_worker() noexcept -> FederationWorkerConfig&;
 
 private:
     ServerConfig m_server{};
@@ -222,6 +249,7 @@ private:
     SecurityConfig m_security{};
     ClientRateLimitsConfig m_client_rate_limits{};
     LogModulesConfig m_log_modules{};
+    FederationWorkerConfig m_federation_worker{};
 };
 
 struct ConfigValidationFinding final

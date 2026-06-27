@@ -34,9 +34,10 @@ auto append_local_audit(LocalDatabase& database, observability::AuditCategory ca
 // the log line. The decision matches the design doc's "follow-up
 // routing" promise from PR #190.
 auto log_diagnostic_audit(LocalDatabase& database, std::string_view logger, std::string_view event,
-                          std::vector<observability::StructuredLogField> fields, observability::LogEventSeverity severity,
-                          observability::AuditCategory category, std::string_view audit_event_type,
-                          std::string_view actor, std::string_view target, std::string_view reason) -> void;
+                          std::vector<observability::StructuredLogField> fields,
+                          observability::LogEventSeverity severity, observability::AuditCategory category,
+                          std::string_view audit_event_type, std::string_view actor, std::string_view target,
+                          std::string_view reason) -> void;
 
 // Install the active `LocalDatabase` pointer used by the audit sink
 // (see `merovingian::observability::log_diagnostic_audit`). Pass
@@ -79,7 +80,7 @@ auto set_current_audit_database(LocalDatabase* database) noexcept -> void;
 // database member is replaced by move-assignment.
 class LocalDatabaseScope final
 {
-  public:
+public:
     explicit LocalDatabaseScope(LocalDatabase& database) noexcept
         : m_installed{&database}
     {
@@ -113,7 +114,7 @@ class LocalDatabaseScope final
     LocalDatabaseScope(LocalDatabaseScope&&) = delete;
     auto operator=(LocalDatabaseScope&&) -> LocalDatabaseScope& = delete;
 
-  private:
+private:
     LocalDatabase* m_installed{nullptr};
 };
 

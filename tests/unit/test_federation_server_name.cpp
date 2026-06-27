@@ -22,8 +22,7 @@
 
 // --- server_name_is_valid ----------------------------------------------------
 
-SCENARIO("server_name_is_valid accepts domain names with at least one dot",
-         "[federation][security][server-name]")
+SCENARIO("server_name_is_valid accepts domain names with at least one dot", "[federation][security][server-name]")
 {
     GIVEN("valid Matrix server names")
     {
@@ -49,8 +48,7 @@ SCENARIO("server_name_is_valid accepts domain names with at least one dot",
     }
 }
 
-SCENARIO("server_name_is_valid rejects empty and dot-free server names",
-         "[federation][security][server-name][error]")
+SCENARIO("server_name_is_valid rejects empty and dot-free server names", "[federation][security][server-name][error]")
 {
     GIVEN("server names that lack the minimum required structure")
     {
@@ -276,8 +274,7 @@ SCENARIO("federation_discovery_policy rejects remotes that do not require TLS",
 
 // --- parse_inbound_pdu_envelope error paths ----------------------------------
 
-SCENARIO("parse_inbound_pdu_envelope returns nullopt for an empty input",
-         "[federation][ingestion][pdu][error]")
+SCENARIO("parse_inbound_pdu_envelope returns nullopt for an empty input", "[federation][ingestion][pdu][error]")
 {
     GIVEN("an empty PDU JSON string")
     {
@@ -293,15 +290,13 @@ SCENARIO("parse_inbound_pdu_envelope returns nullopt for an empty input",
     }
 }
 
-SCENARIO("parse_inbound_pdu_envelope returns nullopt for a JSON array",
-         "[federation][ingestion][pdu][error]")
+SCENARIO("parse_inbound_pdu_envelope returns nullopt for a JSON array", "[federation][ingestion][pdu][error]")
 {
     GIVEN("a JSON array instead of a JSON object")
     {
         WHEN("the array is parsed as a PDU envelope")
         {
-            auto const result =
-                merovingian::federation::parse_inbound_pdu_envelope(R"([{"type":"m.room.message"}])");
+            auto const result = merovingian::federation::parse_inbound_pdu_envelope(R"([{"type":"m.room.message"}])");
 
             THEN("nullopt is returned — PDUs MUST be JSON objects, not arrays")
             {
@@ -311,15 +306,13 @@ SCENARIO("parse_inbound_pdu_envelope returns nullopt for a JSON array",
     }
 }
 
-SCENARIO("parse_inbound_pdu_envelope returns nullopt for a JSON string literal",
-         "[federation][ingestion][pdu][error]")
+SCENARIO("parse_inbound_pdu_envelope returns nullopt for a JSON string literal", "[federation][ingestion][pdu][error]")
 {
     GIVEN("a JSON string literal instead of a JSON object")
     {
         WHEN("the string is parsed as a PDU envelope")
         {
-            auto const result =
-                merovingian::federation::parse_inbound_pdu_envelope(R"("not_an_object")");
+            auto const result = merovingian::federation::parse_inbound_pdu_envelope(R"("not_an_object")");
 
             THEN("nullopt is returned — PDUs MUST be JSON objects")
             {
@@ -329,15 +322,13 @@ SCENARIO("parse_inbound_pdu_envelope returns nullopt for a JSON string literal",
     }
 }
 
-SCENARIO("parse_inbound_pdu_envelope returns nullopt for malformed JSON",
-         "[federation][ingestion][pdu][error]")
+SCENARIO("parse_inbound_pdu_envelope returns nullopt for malformed JSON", "[federation][ingestion][pdu][error]")
 {
     GIVEN("a string that is not valid JSON")
     {
         WHEN("the malformed bytes are parsed as a PDU envelope")
         {
-            auto const result =
-                merovingian::federation::parse_inbound_pdu_envelope("{not valid json}");
+            auto const result = merovingian::federation::parse_inbound_pdu_envelope("{not valid json}");
 
             THEN("nullopt is returned — the canonical JSON parser rejects the input")
             {

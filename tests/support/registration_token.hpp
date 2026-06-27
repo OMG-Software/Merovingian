@@ -24,8 +24,8 @@ inline auto registration_token_file() -> std::string
 {
     static auto const s_salt = std::random_device{}();
     static std::atomic<unsigned> s_counter{0U};
-    auto const filename = "merovingian-reg-" + std::to_string(s_salt) + "-" +
-                          std::to_string(s_counter.fetch_add(1U)) + ".txt";
+    auto const filename =
+        "merovingian-reg-" + std::to_string(s_salt) + "-" + std::to_string(s_counter.fetch_add(1U)) + ".txt";
     auto const path = std::filesystem::temp_directory_path() / filename;
     auto output = std::ofstream{path};
     output << registration_token << '\n';

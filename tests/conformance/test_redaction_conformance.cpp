@@ -87,18 +87,17 @@ namespace
 //   m.room.aliases:            aliases
 // ---------------------------------------------------------------------------
 
-SCENARIO("Redaction v1-v10: top-level fields are preserved as per spec",
-         "[conformance][redaction][v10]")
+SCENARIO("Redaction v1-v10: top-level fields are preserved as per spec", "[conformance][redaction][v10]")
 {
     GIVEN("an m.room.message event with many top-level fields")
     {
-        auto constexpr event_json = std::string_view{
-            R"({"event_id":"$ev:example.org","type":"m.room.message","room_id":"!r:example.org",)"
-            R"("sender":"@alice:example.org","origin":"example.org","origin_server_ts":1000,)"
-            R"("depth":2,"prev_events":["$p:x"],"auth_events":["$a:x"],)"
-            R"("hashes":{"sha256":"abc"},"signatures":{"example.org":{"ed25519:1":"sig"}},)"
-            R"("unsigned":{"age":100},"membership":"join",)"
-            R"("content":{"body":"hello","msgtype":"m.text"}})"};
+        auto constexpr event_json =
+            std::string_view{R"({"event_id":"$ev:example.org","type":"m.room.message","room_id":"!r:example.org",)"
+                             R"("sender":"@alice:example.org","origin":"example.org","origin_server_ts":1000,)"
+                             R"("depth":2,"prev_events":["$p:x"],"auth_events":["$a:x"],)"
+                             R"("hashes":{"sha256":"abc"},"signatures":{"example.org":{"ed25519:1":"sig"}},)"
+                             R"("unsigned":{"age":100},"membership":"join",)"
+                             R"("content":{"body":"hello","msgtype":"m.text"}})"};
 
         WHEN("the event is redacted under v10 rules")
         {
@@ -144,12 +143,12 @@ SCENARIO("Redaction v1-v10: m.room.member preserves only membership from content
 {
     GIVEN("an m.room.member event with several content fields")
     {
-        auto constexpr event_json = std::string_view{
-            R"({"event_id":"$ev:x","type":"m.room.member","room_id":"!r:x","sender":"@a:x",)"
-            R"("state_key":"@a:x","origin_server_ts":1,"depth":1,"prev_events":[],"auth_events":[],)"
-            R"("hashes":{"sha256":"h"},"signatures":{},"content":{"membership":"join",)"
-            R"("displayname":"Alice","avatar_url":"mxc://x/y",)"
-            R"("join_authorised_via_users_server":"@server:x","reason":"hello"}})"};
+        auto constexpr event_json =
+            std::string_view{R"({"event_id":"$ev:x","type":"m.room.member","room_id":"!r:x","sender":"@a:x",)"
+                             R"("state_key":"@a:x","origin_server_ts":1,"depth":1,"prev_events":[],"auth_events":[],)"
+                             R"("hashes":{"sha256":"h"},"signatures":{},"content":{"membership":"join",)"
+                             R"("displayname":"Alice","avatar_url":"mxc://x/y",)"
+                             R"("join_authorised_via_users_server":"@server:x","reason":"hello"}})"};
 
         WHEN("the event is redacted under v10")
         {
@@ -170,16 +169,15 @@ SCENARIO("Redaction v1-v10: m.room.member preserves only membership from content
     }
 }
 
-SCENARIO("Redaction v1-v10: m.room.create preserves creator from content",
-         "[conformance][redaction][v10][create]")
+SCENARIO("Redaction v1-v10: m.room.create preserves creator from content", "[conformance][redaction][v10][create]")
 {
     GIVEN("an m.room.create event with creator and extra content")
     {
-        auto constexpr event_json = std::string_view{
-            R"({"event_id":"$ev:x","type":"m.room.create","room_id":"!r:x","sender":"@a:x",)"
-            R"("state_key":"","origin_server_ts":1,"depth":0,"prev_events":[],"auth_events":[],)"
-            R"("hashes":{"sha256":"h"},"signatures":{},)"
-            R"("content":{"creator":"@a:x","room_version":"10","extra_field":"value"}})"};
+        auto constexpr event_json =
+            std::string_view{R"({"event_id":"$ev:x","type":"m.room.create","room_id":"!r:x","sender":"@a:x",)"
+                             R"("state_key":"","origin_server_ts":1,"depth":0,"prev_events":[],"auth_events":[],)"
+                             R"("hashes":{"sha256":"h"},"signatures":{},)"
+                             R"("content":{"creator":"@a:x","room_version":"10","extra_field":"value"}})"};
 
         WHEN("the event is redacted under v10")
         {
@@ -201,13 +199,13 @@ SCENARIO("Redaction v1-v10: m.room.power_levels preserves the specified content 
 {
     GIVEN("an m.room.power_levels event")
     {
-        auto constexpr event_json = std::string_view{
-            R"({"event_id":"$ev:x","type":"m.room.power_levels","room_id":"!r:x","sender":"@a:x",)"
-            R"("state_key":"","origin_server_ts":1,"depth":1,"prev_events":[],"auth_events":[],)"
-            R"("hashes":{"sha256":"h"},"signatures":{},)"
-            R"("content":{"ban":50,"events":{},"events_default":0,"invite":0,"kick":50,)"
-            R"("redact":50,"state_default":50,"users":{"@a:x":100},"users_default":0,)"
-            R"("extra":"should_be_stripped"}})"};
+        auto constexpr event_json =
+            std::string_view{R"({"event_id":"$ev:x","type":"m.room.power_levels","room_id":"!r:x","sender":"@a:x",)"
+                             R"("state_key":"","origin_server_ts":1,"depth":1,"prev_events":[],"auth_events":[],)"
+                             R"("hashes":{"sha256":"h"},"signatures":{},)"
+                             R"("content":{"ban":50,"events":{},"events_default":0,"invite":0,"kick":50,)"
+                             R"("redact":50,"state_default":50,"users":{"@a:x":100},"users_default":0,)"
+                             R"("extra":"should_be_stripped"}})"};
 
         WHEN("the event is redacted under v10")
         {
@@ -244,16 +242,15 @@ SCENARIO("Redaction v1-v10: m.room.power_levels preserves the specified content 
 //  4. m.room.power_levels now also preserves "invite" under content.
 // ---------------------------------------------------------------------------
 
-SCENARIO("Redaction v11+: origin is no longer preserved (v11 change from v10)",
-         "[conformance][redaction][v11]")
+SCENARIO("Redaction v11+: origin is no longer preserved (v11 change from v10)", "[conformance][redaction][v11]")
 {
     GIVEN("an event with an origin field")
     {
-        auto constexpr event_json = std::string_view{
-            R"({"event_id":"$ev:x","type":"m.room.message","room_id":"!r:x","sender":"@a:x",)"
-            R"("origin":"example.org","origin_server_ts":1,"depth":1,)"
-            R"("prev_events":[],"auth_events":[],"hashes":{"sha256":"h"},"signatures":{},)"
-            R"("unsigned":{"age":1},"content":{"body":"hi"}})"};
+        auto constexpr event_json =
+            std::string_view{R"({"event_id":"$ev:x","type":"m.room.message","room_id":"!r:x","sender":"@a:x",)"
+                             R"("origin":"example.org","origin_server_ts":1,"depth":1,)"
+                             R"("prev_events":[],"auth_events":[],"hashes":{"sha256":"h"},"signatures":{},)"
+                             R"("unsigned":{"age":1},"content":{"body":"hi"}})"};
 
         WHEN("the event is redacted under v10 vs v11")
         {
@@ -294,12 +291,12 @@ SCENARIO("Redaction v10 vs v11: membership and prev_state are preserved in v10 b
         // prev_state was an early Matrix PDU field (an array of prior state events).
         // It appears in v1–v10 PDUs and is listed as a protected top-level key in
         // that redaction rule set. v11 removes it from the protected set.
-        auto constexpr event_json = std::string_view{
-            R"({"event_id":"$ev:x","type":"m.room.message","room_id":"!r:x","sender":"@a:x",)"
-            R"("origin":"example.org","origin_server_ts":1,"depth":1,)"
-            R"("prev_events":[],"auth_events":[],"hashes":{"sha256":"h"},"signatures":{},)"
-            R"("membership":"join","prev_state":[],)"
-            R"("content":{"body":"hi"}})"};
+        auto constexpr event_json =
+            std::string_view{R"({"event_id":"$ev:x","type":"m.room.message","room_id":"!r:x","sender":"@a:x",)"
+                             R"("origin":"example.org","origin_server_ts":1,"depth":1,)"
+                             R"("prev_events":[],"auth_events":[],"hashes":{"sha256":"h"},"signatures":{},)"
+                             R"("membership":"join","prev_state":[],)"
+                             R"("content":{"body":"hi"}})"};
 
         WHEN("the event is redacted under v10 vs v11")
         {
@@ -330,11 +327,11 @@ SCENARIO("Redaction v11+: m.room.create preserves all content, not just creator"
 {
     GIVEN("an m.room.create event with several content fields")
     {
-        auto constexpr event_json = std::string_view{
-            R"({"event_id":"$ev:x","type":"m.room.create","room_id":"!r:x","sender":"@a:x",)"
-            R"("state_key":"","origin_server_ts":1,"depth":0,"prev_events":[],"auth_events":[],)"
-            R"("hashes":{"sha256":"h"},"signatures":{},)"
-            R"("content":{"creator":"@a:x","room_version":"11","predecessor":{"room_id":"!old:x"}}})"};
+        auto constexpr event_json =
+            std::string_view{R"({"event_id":"$ev:x","type":"m.room.create","room_id":"!r:x","sender":"@a:x",)"
+                             R"("state_key":"","origin_server_ts":1,"depth":0,"prev_events":[],"auth_events":[],)"
+                             R"("hashes":{"sha256":"h"},"signatures":{},)"
+                             R"("content":{"creator":"@a:x","room_version":"11","predecessor":{"room_id":"!old:x"}}})"};
 
         WHEN("the event is redacted under v10 vs v11")
         {
@@ -361,12 +358,12 @@ SCENARIO("Redaction v11+: m.room.power_levels preserves invite (v11 addition)",
 {
     GIVEN("an m.room.power_levels event with an invite field")
     {
-        auto constexpr event_json = std::string_view{
-            R"({"event_id":"$ev:x","type":"m.room.power_levels","room_id":"!r:x","sender":"@a:x",)"
-            R"("state_key":"","origin_server_ts":1,"depth":1,"prev_events":[],"auth_events":[],)"
-            R"("hashes":{"sha256":"h"},"signatures":{},)"
-            R"("content":{"ban":50,"events":{},"events_default":0,"invite":50,"kick":50,)"
-            R"("redact":50,"state_default":50,"users":{},"users_default":0}})"};
+        auto constexpr event_json =
+            std::string_view{R"({"event_id":"$ev:x","type":"m.room.power_levels","room_id":"!r:x","sender":"@a:x",)"
+                             R"("state_key":"","origin_server_ts":1,"depth":1,"prev_events":[],"auth_events":[],)"
+                             R"("hashes":{"sha256":"h"},"signatures":{},)"
+                             R"("content":{"ban":50,"events":{},"events_default":0,"invite":50,"kick":50,)"
+                             R"("redact":50,"state_default":50,"users":{},"users_default":0}})"};
 
         WHEN("the event is redacted under v10 vs v11")
         {
@@ -389,11 +386,11 @@ SCENARIO("Redaction v11+: m.room.redaction preserves redacts under content",
 {
     GIVEN("an m.room.redaction event with redacts in content")
     {
-        auto constexpr event_json = std::string_view{
-            R"({"event_id":"$ev:x","type":"m.room.redaction","room_id":"!r:x","sender":"@a:x",)"
-            R"("origin_server_ts":1,"depth":5,"prev_events":[],"auth_events":[],)"
-            R"("hashes":{"sha256":"h"},"signatures":{},)"
-            R"("content":{"redacts":"$target:x","reason":"spam"}})"};
+        auto constexpr event_json =
+            std::string_view{R"({"event_id":"$ev:x","type":"m.room.redaction","room_id":"!r:x","sender":"@a:x",)"
+                             R"("origin_server_ts":1,"depth":5,"prev_events":[],"auth_events":[],)"
+                             R"("hashes":{"sha256":"h"},"signatures":{},)"
+                             R"("content":{"redacts":"$target:x","reason":"spam"}})"};
 
         WHEN("the event is redacted under v10 vs v11")
         {
@@ -414,16 +411,15 @@ SCENARIO("Redaction v11+: m.room.redaction preserves redacts under content",
     }
 }
 
-SCENARIO("Redaction: unsigned is never preserved in any room version",
-         "[conformance][redaction][all-versions]")
+SCENARIO("Redaction: unsigned is never preserved in any room version", "[conformance][redaction][all-versions]")
 {
     GIVEN("a message event with unsigned data")
     {
-        auto constexpr event_json = std::string_view{
-            R"({"event_id":"$ev:x","type":"m.room.message","room_id":"!r:x","sender":"@a:x",)"
-            R"("origin_server_ts":1,"depth":1,"prev_events":[],"auth_events":[],)"
-            R"("hashes":{"sha256":"h"},"signatures":{},)"
-            R"("unsigned":{"age":100,"transaction_id":"tx1"},"content":{"body":"hi"}})"};
+        auto constexpr event_json =
+            std::string_view{R"({"event_id":"$ev:x","type":"m.room.message","room_id":"!r:x","sender":"@a:x",)"
+                             R"("origin_server_ts":1,"depth":1,"prev_events":[],"auth_events":[],)"
+                             R"("hashes":{"sha256":"h"},"signatures":{},)"
+                             R"("unsigned":{"age":100,"transaction_id":"tx1"},"content":{"body":"hi"}})"};
 
         WHEN("the event is redacted under several room versions")
         {
@@ -500,8 +496,8 @@ SCENARIO("Redaction v8-v10: m.room.join_rules preserves both join_rule and allow
 
         WHEN("the event is redacted under v8, v9, and v10")
         {
-            auto const result_v8  = redact_event(event_json, "8");
-            auto const result_v9  = redact_event(event_json, "9");
+            auto const result_v8 = redact_event(event_json, "8");
+            auto const result_v9 = redact_event(event_json, "9");
             auto const result_v10 = redact_event(event_json, "10");
 
             THEN("both join_rule and allow are preserved; extra is stripped for all three versions")
@@ -669,10 +665,10 @@ SCENARIO("Redaction: state_key is preserved as a top-level field in all versions
 {
     GIVEN("a state event with a non-empty state_key")
     {
-        auto constexpr event_json = std::string_view{
-            R"({"event_id":"$ev:x","type":"m.room.member","room_id":"!r:x","sender":"@a:x",)"
-            R"("state_key":"@a:x","origin_server_ts":1,"depth":1,"prev_events":[],"auth_events":[],)"
-            R"("hashes":{"sha256":"h"},"signatures":{},"content":{"membership":"join"}})"};
+        auto constexpr event_json =
+            std::string_view{R"({"event_id":"$ev:x","type":"m.room.member","room_id":"!r:x","sender":"@a:x",)"
+                             R"("state_key":"@a:x","origin_server_ts":1,"depth":1,"prev_events":[],"auth_events":[],)"
+                             R"("hashes":{"sha256":"h"},"signatures":{},"content":{"membership":"join"}})"};
 
         WHEN("the event is redacted under v10, v11, and v12")
         {
@@ -696,17 +692,16 @@ SCENARIO("Redaction: state_key is preserved as a top-level field in all versions
 // URL:  ../../docs/matrix-v1.18-spec/rooms/v12.md
 // ---------------------------------------------------------------------------
 
-SCENARIO("Redaction v12: m.room.power_levels preserves invite as in v11",
-         "[conformance][redaction][v12]")
+SCENARIO("Redaction v12: m.room.power_levels preserves invite as in v11", "[conformance][redaction][v12]")
 {
     GIVEN("an m.room.power_levels event with an invite field")
     {
-        auto constexpr event_json = std::string_view{
-            R"({"event_id":"$ev:x","type":"m.room.power_levels","room_id":"!r:x","sender":"@a:x",)"
-            R"("state_key":"","origin_server_ts":1,"depth":1,"prev_events":[],"auth_events":[],)"
-            R"("hashes":{"sha256":"h"},"signatures":{},)"
-            R"("content":{"ban":50,"events":{},"events_default":0,"invite":50,"kick":50,)"
-            R"("redact":50,"state_default":50,"users":{},"users_default":0,"extra":"strip"}})"};
+        auto constexpr event_json =
+            std::string_view{R"({"event_id":"$ev:x","type":"m.room.power_levels","room_id":"!r:x","sender":"@a:x",)"
+                             R"("state_key":"","origin_server_ts":1,"depth":1,"prev_events":[],"auth_events":[],)"
+                             R"("hashes":{"sha256":"h"},"signatures":{},)"
+                             R"("content":{"ban":50,"events":{},"events_default":0,"invite":50,"kick":50,)"
+                             R"("redact":50,"state_default":50,"users":{},"users_default":0,"extra":"strip"}})"};
 
         WHEN("the event is redacted under v12")
         {

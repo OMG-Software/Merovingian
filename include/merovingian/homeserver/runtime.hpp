@@ -4,6 +4,7 @@
 
 #include "merovingian/config/config.hpp"
 #include "merovingian/core/secret_buffer.hpp"
+#include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/federation/dispatch_worker.hpp"
 #include "merovingian/federation/inbound_request.hpp"
@@ -31,6 +32,9 @@
 
 namespace merovingian::homeserver
 {
+
+// Forward declaration — full type in federation_proxy.hpp, included by runtime.cpp.
+class FederationProxy;
 
 // Thread-safe cache for the signed /_matrix/key/v2/server response.
 // Uses its own mutex so the response can be served without holding the
@@ -171,6 +175,17 @@ struct HomeserverRuntime final
         trust_safety_policy_server{};
     std::unique_ptr<federation::ServerDiscoveryNetwork> discovery_network{};
     std::unique_ptr<federation::DispatchWorker> dispatch_worker{};
+    // Non-null when federation.worker.enabled = true. Intercepts inbound
+    // federation requests and forwards them to the out-of-process worker.
+    std::unique_ptr<FederationProxy> federation_proxy{};
+    // Owned implementation of the runtime signing provider. Null when an
+    // external provider (e.g. IpcEd25519Provider in the federation worker)
+    // is supplied via RuntimeStartOptions::signing_override.
+    std::unique_ptr<crypto::Ed25519Provider> crypto_provider_owned{};
+    // Active Ed25519 provider used for server signing. Points to
+    // crypto_provider_owned for the main process and to the override in
+    // worker contexts. Check for nullptr before signing.
+    crypto::Ed25519Provider* crypto_provider{nullptr};
     sync::SyncNotifier* sync_notifier{nullptr};
     std::vector<InboundTypingUser> typing_users{};
     std::vector<InboundReceipt> receipts{};
@@ -194,6 +209,16 @@ struct HomeserverRuntime final
 [[nodiscard]] auto room_typing_stream_id_for(HomeserverRuntime const& rt, std::string_view room_id) -> std::uint64_t;
 [[nodiscard]] auto update_room_typing_stream_id_if_changed(HomeserverRuntime& rt, std::string_view room_id,
                                                            std::vector<std::string> const& previous) -> std::uint64_t;
+
+struct RuntimeStartOptions final
+{
+    config::Config config{};
+    database::SchemaState existing_state{};
+    // Non-owning pointer to an Ed25519Provider to use instead of loading the
+    // server signing secret into this runtime. Used by the federation worker
+    // to delegate signing to the main process over IPC.
+    crypto::Ed25519Provider* signing_override{nullptr};
+};
 
 struct RuntimeStartResult final
 {
@@ -228,6 +253,11 @@ struct SessionRefreshResult final
 [[nodiscard]] auto start_runtime(config::Config const& config) -> RuntimeStartResult;
 [[nodiscard]] auto start_runtime(config::Config const& config, database::SchemaState existing_state)
     -> RuntimeStartResult;
+[[nodiscard]] auto start_runtime(RuntimeStartOptions opts) -> RuntimeStartResult;
+// Re-creates the runtime's owned signing provider from runtime.database.signing_secret_key.
+// Called by start_runtime after the signing key is ensured and by rotate_server_signing_key
+// after a rotation. This is a no-op when an external provider override is active.
+auto reset_runtime_crypto_provider(HomeserverRuntime& runtime) -> void;
 [[nodiscard]] auto admin_health(HomeserverRuntime const& runtime) -> observability::HealthCheckSnapshot;
 [[nodiscard]] auto admin_health_summary(HomeserverRuntime const& runtime) -> std::string;
 [[nodiscard]] auto admin_metrics_summary(HomeserverRuntime const& runtime) -> std::string;

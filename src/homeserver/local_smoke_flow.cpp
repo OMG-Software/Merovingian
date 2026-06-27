@@ -1,9 +1,10 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "merovingian/homeserver/local_services.hpp"
-#include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/local_smoke_flow.hpp"
+
+#include "merovingian/homeserver/auth_service.hpp"
+#include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/homeserver/room_service.hpp"
 
 #include <algorithm>
@@ -97,7 +98,9 @@ auto run_local_smoke_flow(config::Config const& config) -> OperationResult
     }
     // Build a diagnostic summary from runtime state for test assertions.
     auto const& rooms = runtime.database.rooms;
-    auto const room_it = std::ranges::find_if(rooms, [&](LocalRoom const& r) { return r.room_id == room.value; });
+    auto const room_it = std::ranges::find_if(rooms, [&](LocalRoom const& r) {
+        return r.room_id == room.value;
+    });
     if (room_it == rooms.end())
     {
         return make_operation_result(false, {}, "room not found in runtime database after demo flow");

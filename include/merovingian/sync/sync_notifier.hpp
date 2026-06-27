@@ -48,8 +48,7 @@ public:
     // (i.e. current > since at either entry or wake-up), false on
     // timeout. `timeout == 0` returns immediately with the current
     // state.
-    [[nodiscard]] auto wait_for_change(std::uint64_t since_stream_ordering,
-                                       std::uint64_t since_sync_stream_id,
+    [[nodiscard]] auto wait_for_change(std::uint64_t since_stream_ordering, std::uint64_t since_sync_stream_id,
                                        std::chrono::milliseconds timeout) -> bool;
 
     // Read the current sync_stream_id without blocking. Mostly useful

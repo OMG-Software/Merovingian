@@ -3,6 +3,8 @@
 // Derived from SingleLog by James Chapman, BSD-3-Clause.
 #pragma once
 
+#include "merovingian/observability/observability.hpp"
+
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -16,16 +18,14 @@
 #include <iostream>
 #include <mutex>
 #include <optional>
+#include <shared_mutex>
 #include <sstream>
 #include <string>
 #include <thread>
 #include <tuple>
-#include <utility>
-#include <shared_mutex>
 #include <unordered_map>
+#include <utility>
 #include <vector>
-
-#include "merovingian/observability/observability.hpp"
 
 namespace merovingian::observability
 {
@@ -59,7 +59,6 @@ enum class LogEventSeverity
     error = 600,
     critical = 700,
 };
-
 
 class LowSeverityFlushPolicy final
 {
@@ -596,7 +595,8 @@ auto string_format(std::string const& format, Args&&... args) -> std::string
 
 // Splits a structured-log message into the first whitespace-delimited token
 // (the module/logger name) and the rest. Used by the module-level filter.
-[[nodiscard]] inline auto split_logger_from_message(std::string_view message) -> std::pair<std::string_view, std::string_view>
+[[nodiscard]] inline auto split_logger_from_message(std::string_view message)
+    -> std::pair<std::string_view, std::string_view>
 {
     auto const ws = message.find(' ');
     if (ws == std::string_view::npos)
@@ -614,8 +614,8 @@ auto string_format(std::string const& format, Args&&... args) -> std::string
 // Build the message body for a diagnostic log line: "event=<event> key=value ...".
 // The module name and level header are added by the SingleLog named methods via
 // make_log_line, so they must not be included here.
-[[nodiscard]] inline auto diagnostic_message(std::string_view event,
-                                             std::vector<StructuredLogField> const& fields) -> std::string
+[[nodiscard]] inline auto diagnostic_message(std::string_view event, std::vector<StructuredLogField> const& fields)
+    -> std::string
 {
     auto msg = std::string{"event="} + std::string{event};
     for (auto const& field : fields)
@@ -644,13 +644,27 @@ inline auto log_diagnostic(std::string_view logger, std::string_view event,
     auto& log = SingleLog::instance();
     switch (severity)
     {
-    case LogEventSeverity::trace:    log.trace(mod, msg);    break;
-    case LogEventSeverity::debug:    log.debug(mod, msg);    break;
-    case LogEventSeverity::info:     log.info(mod, msg);     break;
-    case LogEventSeverity::notice:   log.notice(mod, msg);   break;
-    case LogEventSeverity::warning:  log.warning(mod, msg);  break;
-    case LogEventSeverity::error:    log.error(mod, msg);    break;
-    case LogEventSeverity::critical: log.critical(mod, msg); break;
+    case LogEventSeverity::trace:
+        log.trace(mod, msg);
+        break;
+    case LogEventSeverity::debug:
+        log.debug(mod, msg);
+        break;
+    case LogEventSeverity::info:
+        log.info(mod, msg);
+        break;
+    case LogEventSeverity::notice:
+        log.notice(mod, msg);
+        break;
+    case LogEventSeverity::warning:
+        log.warning(mod, msg);
+        break;
+    case LogEventSeverity::error:
+        log.error(mod, msg);
+        break;
+    case LogEventSeverity::critical:
+        log.critical(mod, msg);
+        break;
     }
 }
 
@@ -708,8 +722,6 @@ inline auto log_diagnostic_audit(std::string_view logger, std::string_view event
         the_audit_sink()(audit_fields);
     }
 }
-
-
 
 } // namespace merovingian::observability
 

@@ -255,15 +255,13 @@ SCENARIO("MSC4186 timeout parameter is parsed in milliseconds", "[sync][sliding-
 // The server MUST also serve the endpoint at the org.matrix.simplified_msc3575
 // path for matrix-rust-sdk compatibility. The pos and timeout query parameters
 // MUST be parsed identically from this path.
-SCENARIO("MSC4186 pos token is parsed identically from the simplified_msc3575 URL",
-         "[sync][sliding-sync][conformance]")
+SCENARIO("MSC4186 pos token is parsed identically from the simplified_msc3575 URL", "[sync][sliding-sync][conformance]")
 {
     GIVEN("a pos value appended to the simplified_msc3575 target URL")
     {
-        auto const token  = merovingian::sync::StreamToken{200U, 200U, 75U};
+        auto const token = merovingian::sync::StreamToken{200U, 200U, 75U};
         auto const encoded = merovingian::sync::encode_stream_token(token);
-        auto const target =
-            "/_matrix/client/unstable/org.matrix.simplified_msc3575/sync?pos=" + encoded;
+        auto const target = "/_matrix/client/unstable/org.matrix.simplified_msc3575/sync?pos=" + encoded;
 
         WHEN("the pos is parsed from the URL")
         {
@@ -299,8 +297,7 @@ SCENARIO("MSC4186 pos token is parsed identically from the simplified_msc3575 UR
 // URL: https://github.com/matrix-org/matrix-spec-proposals/blob/main/proposals/4186-simplified-sliding-sync.md
 //
 // timeout MUST be parsed from the simplified_msc3575 path identically to the msc4186 path.
-SCENARIO("MSC4186 timeout is parsed identically from the simplified_msc3575 URL",
-         "[sync][sliding-sync][conformance]")
+SCENARIO("MSC4186 timeout is parsed identically from the simplified_msc3575 URL", "[sync][sliding-sync][conformance]")
 {
     GIVEN("a simplified_msc3575 URL with timeout=0")
     {

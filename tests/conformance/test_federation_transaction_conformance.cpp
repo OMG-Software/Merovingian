@@ -210,8 +210,7 @@ private:
         }
     }
     auto hashes = merovingian::canonicaljson::Object{};
-    hashes.push_back(
-        merovingian::canonicaljson::make_member("sha256", merovingian::canonicaljson::Value{hash.sha256}));
+    hashes.push_back(merovingian::canonicaljson::make_member("sha256", merovingian::canonicaljson::Value{hash.sha256}));
     new_root.push_back(
         merovingian::canonicaljson::make_member("hashes", merovingian::canonicaljson::Value{std::move(hashes)}));
     return merovingian::canonicaljson::Value{std::move(new_root)};
@@ -649,4 +648,3 @@ SCENARIO("Federation send transaction with an unrecognized EDU type is accepted 
         }
     }
 }
-

@@ -3,10 +3,10 @@
 
 #include "merovingian/crypto/secret_box.hpp"
 
-#include <sodium.h>
-
 #include <algorithm>
 #include <string>
+
+#include <sodium.h>
 
 namespace merovingian::crypto
 {
@@ -34,10 +34,8 @@ auto derive_secret_box_key(std::span<std::uint8_t const> master_key_material) no
     }
 
     auto key = SecretBoxKey{};
-    if (crypto_generichash(key.bytes.data(), key.bytes.size(), master_key_material.data(),
-                           master_key_material.size(), reinterpret_cast<unsigned char const*>(k_context.data()),
-                           k_context.size())
-        != 0)
+    if (crypto_generichash(key.bytes.data(), key.bytes.size(), master_key_material.data(), master_key_material.size(),
+                           reinterpret_cast<unsigned char const*>(k_context.data()), k_context.size()) != 0)
     {
         return std::nullopt;
     }
@@ -60,9 +58,8 @@ auto secret_box_encrypt(std::span<std::uint8_t const> plaintext, SecretBoxKey co
 
     std::copy_n(nonce.begin(), crypto_secretbox_NONCEBYTES, ciphertext.bytes.begin());
 
-    if (crypto_secretbox_easy(ciphertext.bytes.data() + crypto_secretbox_NONCEBYTES, plaintext.data(),
-                              plaintext.size(), nonce.data(), key.bytes.data())
-        != 0)
+    if (crypto_secretbox_easy(ciphertext.bytes.data() + crypto_secretbox_NONCEBYTES, plaintext.data(), plaintext.size(),
+                              nonce.data(), key.bytes.data()) != 0)
     {
         return std::nullopt;
     }
