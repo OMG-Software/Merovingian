@@ -178,15 +178,12 @@ struct LogModulesConfig final
 };
 
 // Out-of-process federation worker configuration.
-// When enabled, all inbound federation requests (except key-server) are
-// dispatched to merovingian-fed-worker over an encrypted AF_UNIX socketpair
-// channel, freeing the main thread pool for client-server requests.
+// All inbound federation requests (except key-server) are dispatched to
+// merovingian-fed-worker over an encrypted AF_UNIX socketpair channel,
+// freeing the main thread pool for client-server requests.
+// The worker is mandatory: startup fails if the worker process cannot be launched.
 struct FederationWorkerConfig final
 {
-    bool enabled{false};
-    // When true and the worker is down, main process handles federation
-    // requests directly until the worker restarts.
-    bool fallback_in_process{true};
     // Maximum seconds to wait for the worker to respond.
     std::uint32_t request_timeout_seconds{120U};
     // Number of processing threads in the worker process.

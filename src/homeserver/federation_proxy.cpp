@@ -20,10 +20,9 @@ namespace merovingian::homeserver
 
 FederationProxy::FederationProxy(config::FederationWorkerConfig const& cfg, HomeserverRuntime& runtime,
                                  std::string worker_path, std::string config_path)
-    : cfg_{cfg}
-    , runtime_{runtime}
+    : runtime_{runtime}
 {
-    pool_ = std::make_unique<WorkerPool>(cfg_, runtime_, std::move(worker_path), std::move(config_path));
+    pool_ = std::make_unique<WorkerPool>(cfg, runtime_, std::move(worker_path), std::move(config_path));
 }
 
 FederationProxy::~FederationProxy()
@@ -43,28 +42,7 @@ auto FederationProxy::handle(LocalHttpRequest const& request) -> LocalHttpRespon
     }
 
     auto const room_id = federation_worker_room_id_from_request(request);
-
-    if (pool_ && pool_->healthy())
-    {
-        auto const reply = pool_->handle(request, room_id);
-        if (reply.status != 503U)
-        {
-            return reply;
-        }
-        LOG_WARNING("FederationProxy: worker shard unavailable for " + request.target);
-    }
-
-    if (cfg_.fallback_in_process)
-    {
-        return handle_federation_http_request(runtime_, request);
-    }
-
-    return {503U, R"({"errcode":"M_UNAVAILABLE","error":"Federation worker unavailable"})"};
-}
-
-auto FederationProxy::healthy() const noexcept -> bool
-{
-    return pool_ && pool_->healthy();
+    return pool_->handle(request, room_id);
 }
 
 } // namespace merovingian::homeserver

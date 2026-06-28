@@ -411,14 +411,24 @@ jobs:
             sleep 15
           done
       - uses: actions/checkout@v4
-      - name: Cache compiler output with ccache
-        uses: hendrikmuhs/ccache-action@v1.2
+      - name: Restore ccache
+        uses: actions/cache@v4
         with:
-          # ccache is already installed by zypper above; ccache-action does not
-          # recognize OpenSUSE's package manager and would fail trying to install it.
-          install: false
+          path: ~/.ccache
           key: ccache-opensuse-rpm-${{ github.run_id }}
           restore-keys: ccache-opensuse-rpm-
+          save-always: true
+      - name: Configure ccache
+        run: |
+          # ccache-action@v1.2 does not recognise the 'install' parameter and
+          # has no zypper support, so it fails on a cold cache.  Wire ccache
+          # manually: ccache is already installed by the zypper step above.
+          # Use CC/CXX prefix mode instead of GITHUB_PATH symlinks: modifying
+          # GITHUB_PATH inside a Docker container step can corrupt the PATH
+          # seen by subsequent steps, leaving 'sh' unfindable.
+          ccache --set-config=max_size=500M
+          echo "CC=ccache clang" >> "$GITHUB_ENV"
+          echo "CXX=ccache clang++" >> "$GITHUB_ENV"
       - name: Build OpenSUSE .rpm
         run: sh scripts/build-opensuse-rpm.sh
       - name: Attest OpenSUSE RPM

@@ -42,7 +42,7 @@
 namespace
 {
 
-constexpr auto version = std::string_view{"0.10.3"};
+constexpr auto version = std::string_view{"0.10.4"};
 
 struct BootstrapConfigResult final
 {
@@ -818,7 +818,7 @@ struct ListenerBinding final
     merovingian::homeserver::wire_federation_callbacks(runtime.homeserver);
 
     auto const& fw_cfg = runtime.homeserver.config.federation_worker();
-    if (fw_cfg.enabled && !result.config_path.empty())
+    if (runtime.homeserver.config.security().federation.enabled)
     {
         auto const worker_binary = resolve_worker_binary(fw_cfg);
         try
@@ -829,15 +829,8 @@ struct ListenerBinding final
         }
         catch (std::exception const& ex)
         {
-            if (fw_cfg.fallback_in_process)
-            {
-                LOG_WARNING("Federation worker failed to start (falling back in-process): " + std::string{ex.what()});
-            }
-            else
-            {
-                LOG_CRITICAL("Federation worker failed to start: " + std::string{ex.what()});
-                return merovingian::bootstrap::to_int(merovingian::bootstrap::ExitCode::runtime_start_error);
-            }
+            LOG_CRITICAL("Federation worker failed to start: " + std::string{ex.what()});
+            return merovingian::bootstrap::to_int(merovingian::bootstrap::ExitCode::runtime_start_error);
         }
     }
 

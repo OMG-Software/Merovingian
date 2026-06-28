@@ -297,15 +297,17 @@ threat it closes; the controls above are the standing defences these reinforce.
   the worker. The private key exists only in the main process's locked
   `SecretBuffer`; worker compromise now leaks no long-lived signing material.
 
-- **Single worker as a chokepoint (v0.10.3):**
+- **Single worker as a chokepoint (v0.10.3, mitigated in v0.10.4):**
   Phase 1 used one federation worker for every room. A CPU-heavy room could
   still delay federation traffic for all other rooms because that single process
   had to process every inbound PDU. Phase 3 shards rooms across N independent
   `merovingian-fed-worker` processes using `fnv1a_32(room_id) % shards`;
   non-room requests route to shard 0. A crash or resource exhaustion in one
-  shard only affects the rooms owned by that shard, and `fallback_in_process`
-  keeps the rest of federation available in the main process while the
-  supervisor restarts the failed worker.
+  shard only affects the rooms owned by that shard. As of v0.10.4 the
+  out-of-process worker is mandatory and there is no `fallback_in_process`
+  option; federation is always isolated and fails closed if the worker cannot
+  be launched. The `WorkerSupervisor` restarts crashed workers automatically
+  with exponential back-off.
 
 ## Security principles
 

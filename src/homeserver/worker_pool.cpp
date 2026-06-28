@@ -359,8 +359,14 @@ WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRunt
             {
                 auto const env = deserialize_pdu_ingest(json);
                 auto result = federation::PduIngestionResult{};
+                auto stream_ordering = std::uint64_t{0U};
                 {
                     auto guard = std::unique_lock{runtime_.mutex};
+                    // Capture ordering before pdu_sink so the sync notification
+                    // uses the event's own position (not next_stream_ordering
+                    // after pdu_sink has incremented it, which would publish
+                    // one past the stored event and cause spurious sync wakeups).
+                    stream_ordering = runtime_.database.next_stream_ordering;
                     if (runtime_.federation.pdu_sink)
                     {
                         result = runtime_.federation.pdu_sink(env);
@@ -372,7 +378,7 @@ WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRunt
                     }
                     if (result.status == federation::PduIngestionStatus::accepted && runtime_.sync_notifier != nullptr)
                     {
-                        runtime_.sync_notifier->publish(runtime_.database.next_stream_ordering, 0U);
+                        runtime_.sync_notifier->publish(stream_ordering, 0U);
                     }
                 }
                 ptr->channel().send_response(id, serialize_pdu_ingest_result(result));
@@ -421,13 +427,17 @@ auto WorkerPool::handle(LocalHttpRequest const& request, std::string_view room_i
     }
 
     auto& worker = *workers_[index];
-    if (!worker.healthy())
+    // Check supervisor health first (covers waitpid failure / stopped monitor),
+    // then grab a ref-counted channel snapshot so the pointer stays alive across
+    // a concurrent restart that might reset channel_ before send_request().
+    auto const ch = worker.channel_snapshot();
+    if (!worker.healthy() || !ch || !ch->healthy())
     {
         return {503U, R"({"errcode":"M_UNAVAILABLE","error":"Federation worker shard unavailable"})"};
     }
 
     auto const timeout = std::chrono::seconds{cfg_.request_timeout_seconds};
-    auto const reply = worker.channel().send_request(ipc::serialize_fed_request(request), timeout);
+    auto const reply = ch->send_request(ipc::serialize_fed_request(request), timeout);
     if (!reply.has_value())
     {
         LOG_WARNING("WorkerPool: shard " + std::to_string(index) + " request timed out or failed for " +

@@ -441,20 +441,6 @@ namespace
         {
             security.secrets.master_key_file = std::string{value};
         }
-        else if (key == "federation.worker.enabled")
-        {
-            if (!parse_bool_value(value, federation_worker.enabled))
-            {
-                add_parse_finding(findings, std::string{key}, "expected boolean value");
-            }
-        }
-        else if (key == "federation.worker.fallback_in_process")
-        {
-            if (!parse_bool_value(value, federation_worker.fallback_in_process))
-            {
-                add_parse_finding(findings, std::string{key}, "expected boolean value");
-            }
-        }
         else if (key == "federation.worker.request_timeout_seconds")
         {
             if (!parse_u32_value(value, federation_worker.request_timeout_seconds))

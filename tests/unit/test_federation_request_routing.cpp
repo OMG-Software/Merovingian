@@ -290,6 +290,48 @@ SCENARIO("Room ID is extracted from v2 federation path endpoints", "[federation]
     }
 }
 
+SCENARIO("Room ID is extracted from /send body when room_id follows a nested field",
+         "[federation][routing][room-id][send]")
+{
+    GIVEN("a PUT /send/{txnId} body where the first PDU has nested objects before room_id")
+    {
+        // A real PDU often has "content", "hashes", or "unsigned" before "room_id".
+        // The old find('}') would stop at the closing brace of "content" and miss
+        // "room_id" entirely; brace-depth tracking must walk past nested objects.
+        auto const room_id = std::string{"!nested:example.com"};
+        auto const body = std::string{
+            R"({"pdus":[{"content":{"msgtype":"m.text","body":"hi"},"hashes":{"sha256":"abc"},"room_id":")" + room_id +
+            R"(","event_id":"$y:remote.example"}]})"};
+        auto const request = make_request("/_matrix/federation/v1/send/txn-2", body);
+
+        WHEN("the room ID is extracted")
+        {
+            THEN("it is found correctly even though nested objects precede it")
+            {
+                REQUIRE(federation_worker_room_id_from_request(request) == room_id);
+            }
+        }
+    }
+
+    GIVEN("a PUT /send/{txnId} body where the PDU has deeply nested content before room_id")
+    {
+        auto const room_id = std::string{"!deep:example.com"};
+        auto const body =
+            std::string{R"({"pdus":[{"content":{"body":"hi","relates_to":{"rel_type":"m.thread","event_id":"$x"}})"
+                        R"(,"room_id":")" +
+                        room_id + R"("}]})"};
+        auto const request = make_request("/_matrix/federation/v1/send/txn-3", body);
+
+        WHEN("the room ID is extracted")
+        {
+            THEN("it is found despite deeply nested content preceding it")
+            {
+                REQUIRE(federation_worker_room_id_from_request(request) == room_id);
+            }
+        }
+    }
+}
+
 SCENARIO("Non-room federation endpoints return an empty room ID", "[federation][routing][room-id]")
 {
     GIVEN("a request to a non-room federation endpoint")

@@ -1,3 +1,21 @@
+## 0.10.4
+
+### Changed
+- **feat(federation): federation worker is now mandatory:** the `federation.worker.enabled` and `federation.worker.fallback_in_process` configuration keys have been removed. The `merovingian-fed-worker` process is the only supported federation path; startup fails with a fatal error if the worker cannot be launched. `FederationProxy` is fail-closed with no in-process fallback. Config validation now always enforces non-zero values for `federation.worker.shards`, `federation.worker.threads`, and `federation.worker.request_timeout_seconds`.
+
+### Fixed
+- **fix(federation): TOCTOU channel race in `WorkerSupervisor`:** the supervisor restart loop could reset `channel_` (a `unique_ptr`) while a request thread was between the `healthy()` check and the `channel().send_request()` call, causing a use-after-free. `channel_` is now a `shared_ptr` protected by `channel_mu_`; external callers obtain a ref-counted snapshot via `channel_snapshot()` that remains valid across concurrent restarts.
+- **fix(federation): `room_id_from_send_body` failed when nested JSON objects precede `room_id`:** the old search stopped at the first `}` inside the first PDU object, which belongs to a nested `content`, `hashes`, or `unsigned` field rather than the PDU itself. The extractor now tracks brace depth (including string-escaped characters) to correctly identify the PDU closing brace, then searches within the full PDU span.
+- **fix(federation): spurious sync wakeup after PDU ingestion:** `publish(next_stream_ordering)` was called with the value of `runtime_.database.next_stream_ordering` after `pdu_sink` had already incremented it, waking sync clients with a token one step ahead of the event. The stream ordering is now captured before invoking `pdu_sink`.
+- **fix(config): zero threads and zero request timeout were not validated:** `federation.worker.threads=0` and `federation.worker.request_timeout_seconds=0` were only rejected when the worker was enabled. Since the worker is now always enabled, both values are always validated and rejected if zero.
+
+### Added tests
+- **test(federation): BDD scenarios for nested-object PDU room ID extraction:** `tests/unit/test_federation_request_routing.cpp` adds two new scenarios verifying that `room_id` is correctly extracted from `/send` bodies where `content`+`hashes` objects and deeply nested `relates_to` content precede the `room_id` field.
+- **test(config): mandatory-worker validation scenarios:** `tests/unit/test_config_parser.cpp` adds scenarios asserting that zero threads and zero request timeout are always rejected; removed the now-invalid "accepts zero shards when disabled" scenario.
+
+### CI
+- **fix(ci): OpenSUSE Tumbleweed RPM build fails on cold cache:** `hendrikmuhs/ccache-action@v1.2` does not recognise the `install` parameter added in later releases and has no zypper support, so on a cold runner it attempts auto-installation and fails. The opensuse-rpm job now uses `actions/cache@v4` to restore/save `~/.ccache` directly and a shell step to wire ccache via `CC=ccache clang` / `CXX=ccache clang++` in `GITHUB_ENV`, replacing the ccache-action entirely for this job. The earlier symlink + `GITHUB_PATH` approach was dropped because appending to `GITHUB_PATH` inside a Docker container step corrupts the `PATH` seen by subsequent steps, leaving `sh` unfindable at exec time.
+
 ## 0.10.3
 
 ### Added

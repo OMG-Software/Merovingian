@@ -96,11 +96,9 @@ auto write_file(std::filesystem::path const& path, std::string_view content) -> 
     security.federation.enabled = true;
 
     auto fw = FederationWorkerConfig{};
-    fw.enabled = true;
     fw.shards = 2U;
     fw.threads = 1U;
     fw.request_timeout_seconds = 10U;
-    fw.fallback_in_process = true;
 
     return Config{server, ListenersConfig{}, database, security, ClientRateLimitsConfig{}, LogModulesConfig{}, fw};
 }
@@ -115,7 +113,6 @@ auto write_worker_config(std::filesystem::path const& path, Config const& config
     content += "database.sqlite_path=" + config.database().sqlite_path + "\n";
     content += "database.role=runtime\n";
     content += "security.federation.enabled=true\n";
-    content += "federation.worker.enabled=true\n";
     content += "federation.worker.shards=" + std::to_string(config.federation_worker().shards) + "\n";
     content += "federation.worker.threads=" + std::to_string(config.federation_worker().threads) + "\n";
     content += "federation.worker.request_timeout_seconds=" +
