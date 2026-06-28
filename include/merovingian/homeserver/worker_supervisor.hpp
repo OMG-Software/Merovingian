@@ -64,7 +64,9 @@ public:
     // any thread; the returned pointer keeps the channel alive even if a
     // concurrent restart replaces channel_ before the caller finishes.
     // Returns nullptr if no channel is active.
-    [[nodiscard]] auto channel_snapshot() const noexcept -> std::shared_ptr<ipc::IpcChannel>;
+    [[nodiscard]] auto channel_snapshot() const noexcept
+        -> std::shared_ptr<ipc::IpcChannel>; // SHARED_PTR: reviewed — ref-counted snapshot prevents use-after-free when
+                                             // supervisor restarts and resets channel_ concurrently
 
     [[nodiscard]] auto healthy() const noexcept -> bool;
     [[nodiscard]] auto request_timeout() const noexcept -> std::uint32_t;
@@ -83,7 +85,8 @@ private:
     // channel_ and channel_mu_ guard the IpcChannel pointer against concurrent
     // reads (WorkerPool::handle) and writes (supervisor_loop restart, stop).
     mutable std::mutex channel_mu_{};
-    std::shared_ptr<ipc::IpcChannel> channel_{};
+    std::shared_ptr<ipc::IpcChannel> channel_{}; // SHARED_PTR: reviewed — shared ownership with channel_snapshot()
+                                                 // callers prevents use-after-free on restart
     pid_t worker_pid_{-1};
 
     std::thread supervisor_thread_{};

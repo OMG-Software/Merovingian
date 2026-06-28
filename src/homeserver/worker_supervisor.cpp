@@ -108,7 +108,9 @@ auto WorkerSupervisor::channel() noexcept -> ipc::IpcChannel&
     return *channel_;
 }
 
-auto WorkerSupervisor::channel_snapshot() const noexcept -> std::shared_ptr<ipc::IpcChannel>
+auto WorkerSupervisor::channel_snapshot() const noexcept
+    -> std::shared_ptr<ipc::IpcChannel> // SHARED_PTR: reviewed — ref-counted snapshot keeps IpcChannel alive across
+                                        // concurrent supervisor restarts
 {
     auto lock = std::lock_guard{channel_mu_};
     return channel_;
