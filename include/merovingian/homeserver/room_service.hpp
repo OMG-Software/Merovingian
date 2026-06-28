@@ -87,14 +87,15 @@ struct ValidatedMakeLeaveResponse final
                                                std::string_view body) -> ValidatedMakeJoinResponse;
 [[nodiscard]] auto validate_make_leave_response(std::string_view requested_room_id, std::string_view requested_user_id,
                                                 std::string_view body) -> ValidatedMakeLeaveResponse;
-// Synchronous outbound federation call — signs, discovers, and executes a
-// single transaction. Returns {true, body} on HTTP 2xx, {false, reason} otherwise.
-// Used by both room_service and client_server for blocking federation requests.
-[[nodiscard]] auto perform_sync_outbound_call(http::OutboundClient* outbound_client,
-                                              federation::ServerDiscoveryNetwork* discovery_network,
+// Synchronous outbound federation call — signs in-process then routes via
+// federation proxy (worker thread pool) if available, else direct outbound client.
+// Returns {true, body} on HTTP 2xx, {false, reason} otherwise.
+// room_id is used only for worker shard routing; pass {} for non-room requests.
+[[nodiscard]] auto perform_sync_outbound_call(HomeserverRuntime& runtime, std::string_view room_id,
                                               federation::OutboundTransaction const& transaction,
                                               std::string_view key_id, std::string_view secret_key,
-                                              std::string_view diagnostic_event) -> std::pair<bool, std::string>;
+                                              std::string_view diagnostic_event, std::uint32_t timeout_seconds)
+    -> std::pair<bool, std::string>;
 
 // Ingests the `state` array from a send_join response. Every event is stored
 // in the persistent event graph. State events — identified by the PRESENCE of

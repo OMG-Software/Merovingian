@@ -4,9 +4,11 @@
 
 #include "merovingian/config/config.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
+#include "merovingian/http/outbound_client.hpp"
 
 #include <memory>
 #include <string>
+#include <string_view>
 
 namespace merovingian::homeserver
 {
@@ -38,6 +40,12 @@ public:
 
     // Called in place of handle_federation_http_request() when the worker is active.
     [[nodiscard]] auto handle(LocalHttpRequest const& request) -> LocalHttpResponse;
+
+    // Sends a pre-signed OutboundRequest to the worker shard for room_id to
+    // execute. The HTTP call runs in the worker's thread pool; the signing key
+    // never crosses the IPC boundary.
+    [[nodiscard]] auto send_outbound_request(http::OutboundRequest const& request, std::string_view room_id)
+        -> http::OutboundResult;
 
 private:
     HomeserverRuntime& runtime_;

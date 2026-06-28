@@ -45,4 +45,14 @@ auto FederationProxy::handle(LocalHttpRequest const& request) -> LocalHttpRespon
     return pool_->handle(request, room_id);
 }
 
+auto FederationProxy::send_outbound_request(http::OutboundRequest const& request, std::string_view room_id)
+    -> http::OutboundResult
+{
+    if (!pool_)
+    {
+        return {false, {}, http::OutboundError::network_error, "federation worker pool not available"};
+    }
+    return pool_->send_outbound_request(request, room_id);
+}
+
 } // namespace merovingian::homeserver

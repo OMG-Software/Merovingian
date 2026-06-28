@@ -3,9 +3,11 @@
 
 #include "merovingian/ipc/federation_ipc_frames.hpp"
 
+#include "merovingian/http/outbound_client.hpp"
 #include "merovingian/http/request.hpp"
 
 #include <charconv>
+#include <cstddef>
 #include <cstdint>
 #include <string_view>
 #include <utility>
@@ -295,6 +297,194 @@ auto deserialize_fed_response(std::string_view json) -> homeserver::LocalHttpRes
     }
 
     return response;
+}
+
+auto serialize_outbound_http_request(http::OutboundRequest const& request) -> std::string
+{
+    auto body = std::string{};
+    body.reserve(512U + request.body.size());
+    body += R"({"type":"outbound_http_request","method":)";
+    body += ipc_json_str(request.method);
+    body += R"(,"url":)";
+    body += ipc_json_str(request.url);
+    body += R"(,"headers":[)";
+    auto first = true;
+    for (auto const& hdr : request.headers)
+    {
+        if (!first)
+        {
+            body += ',';
+        }
+        first = false;
+        body += R"({"n":)";
+        body += ipc_json_str(hdr.name);
+        body += R"(,"v":)";
+        body += ipc_json_str(hdr.value);
+        body += '}';
+    }
+    body += R"(],"pinned_addresses":[)";
+    first = true;
+    for (auto const& addr : request.pinned_addresses)
+    {
+        if (!first)
+        {
+            body += ',';
+        }
+        first = false;
+        body += ipc_json_str(addr);
+    }
+    body += R"(],"body":)";
+    body += ipc_json_str(request.body);
+    body += R"(,"connect_timeout":)";
+    body += std::to_string(request.connect_timeout_seconds);
+    body += R"(,"total_timeout":)";
+    body += std::to_string(request.total_timeout_seconds);
+    body += R"(,"max_body_bytes":)";
+    body += std::to_string(request.max_response_body_bytes);
+    body += '}';
+    return body;
+}
+
+auto deserialize_outbound_http_request(std::string_view json) -> http::OutboundRequest
+{
+    auto request = http::OutboundRequest{};
+    request.method = ipc_json_get_str(json, "method");
+    request.url = ipc_json_get_str(json, "url");
+    request.body = ipc_json_get_str(json, "body");
+
+    auto const headers_key = std::string_view{R"("headers":[)"};
+    auto const hpos = json.find(headers_key);
+    if (hpos != std::string_view::npos)
+    {
+        auto pos = hpos + headers_key.size();
+        while (pos < json.size() && json[pos] != ']')
+        {
+            auto const obj_start = json.find('{', pos);
+            if (obj_start == std::string_view::npos)
+            {
+                break;
+            }
+            auto const obj_end = json.find('}', obj_start);
+            if (obj_end == std::string_view::npos)
+            {
+                break;
+            }
+            auto const obj = json.substr(obj_start, obj_end - obj_start + 1U);
+            auto name = ipc_json_get_str(obj, "n");
+            auto value = ipc_json_get_str(obj, "v");
+            if (!name.empty())
+            {
+                request.headers.push_back({std::move(name), std::move(value)});
+            }
+            pos = obj_end + 1U;
+        }
+    }
+
+    auto const pinned_key = std::string_view{R"("pinned_addresses":[)"};
+    auto const ppos = json.find(pinned_key);
+    if (ppos != std::string_view::npos)
+    {
+        auto pos = ppos + pinned_key.size();
+        while (pos < json.size() && json[pos] != ']')
+        {
+            if (json[pos] == '"')
+            {
+                ++pos;
+                auto addr = std::string{};
+                while (pos < json.size() && json[pos] != '"')
+                {
+                    addr += json[pos++];
+                }
+                if (!addr.empty())
+                {
+                    request.pinned_addresses.push_back(std::move(addr));
+                }
+            }
+            ++pos;
+        }
+    }
+
+    {
+        auto const needle = std::string_view{R"("connect_timeout":)"};
+        auto const p = json.find(needle);
+        if (p != std::string_view::npos)
+        {
+            auto val = std::uint32_t{};
+            std::ignore = std::from_chars(json.data() + p + needle.size(), json.data() + json.size(), val);
+            request.connect_timeout_seconds = val;
+        }
+    }
+    {
+        auto const needle = std::string_view{R"("total_timeout":)"};
+        auto const p = json.find(needle);
+        if (p != std::string_view::npos)
+        {
+            auto val = std::uint32_t{};
+            std::ignore = std::from_chars(json.data() + p + needle.size(), json.data() + json.size(), val);
+            request.total_timeout_seconds = val;
+        }
+    }
+    {
+        auto const needle = std::string_view{R"("max_body_bytes":)"};
+        auto const p = json.find(needle);
+        if (p != std::string_view::npos)
+        {
+            auto val = std::size_t{};
+            std::ignore = std::from_chars(json.data() + p + needle.size(), json.data() + json.size(), val);
+            request.max_response_body_bytes = val;
+        }
+    }
+
+    return request;
+}
+
+auto serialize_outbound_http_response(http::OutboundResult const& result) -> std::string
+{
+    auto body = std::string{};
+    body.reserve(128U + result.response.body.size());
+    body += R"({"type":"outbound_http_response","ok":)";
+    body += result.ok ? "true" : "false";
+    body += R"(,"http_status":)";
+    body += std::to_string(result.response.status);
+    body += R"(,"body":)";
+    body += ipc_json_str(result.response.body);
+    body += R"(,"error":)";
+    body += ipc_json_str(result.ok ? std::string_view{} : http::outbound_error_name(result.error));
+    body += R"(,"error_detail":)";
+    body += ipc_json_str(result.error_detail);
+    body += '}';
+    return body;
+}
+
+auto deserialize_outbound_http_response(std::string_view json) -> http::OutboundResult
+{
+    auto result = http::OutboundResult{};
+
+    auto const ok_needle = std::string_view{R"("ok":)"};
+    auto const ok_pos = json.find(ok_needle);
+    if (ok_pos != std::string_view::npos)
+    {
+        auto const after = json.substr(ok_pos + ok_needle.size());
+        result.ok = after.starts_with("true");
+    }
+
+    {
+        auto const needle = std::string_view{R"("http_status":)"};
+        auto const p = json.find(needle);
+        if (p != std::string_view::npos)
+        {
+            auto val = std::uint16_t{};
+            std::ignore = std::from_chars(json.data() + p + needle.size(), json.data() + json.size(), val);
+            result.response.status = val;
+        }
+    }
+
+    result.response.body = ipc_json_get_str(json, "body");
+    result.error_detail = ipc_json_get_str(json, "error_detail");
+    // error code is informational; callers inspect ok + http_status.
+    result.error = result.ok ? http::OutboundError::none : http::OutboundError::network_error;
+
+    return result;
 }
 
 } // namespace merovingian::ipc

@@ -129,7 +129,7 @@ SCENARIO("Config blocks private federation and loopback targets by default", "[c
                 REQUIRE(federation.deny_ip_ranges[0] == "127.0.0.0/8");
                 REQUIRE(federation.deny_ip_ranges[5] == "fc00::/7");
                 REQUIRE(federation.max_transaction_size == "10MiB");
-                REQUIRE(federation.remote_timeout == "30s");
+                REQUIRE(federation.remote_timeout == "60s");
             }
         }
     }

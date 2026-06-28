@@ -76,6 +76,12 @@ if get_option ('build_tests')
   )
 
   test(
+    'hook-tooling',
+    python,
+    args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_hooks.py'],
+  )
+
+  test(
     'live-integration-tooling',
     python,
     args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_live_integration_registration.py'],

@@ -47,6 +47,25 @@ libraries for those boundaries.
 Dependency reviews live under `docs/dependencies/`; new direct dependencies
 should add or update a review there before they are wired into Meson.
 
+## Git Hooks
+
+Install the repository Git hooks from the project root:
+
+```sh
+sh scripts/install-hooks.sh
+```
+
+The pre-commit hook runs the unsafe C/C++ source gate, the Catch2 BDD style
+gate, the unit/conformance test registration gate, and a staged-file check that
+requires project changes to include both `CHANGELOG.md` and a relevant
+`docs/*.md` update. Set `MEROVINGIAN_SKIP_CHANGE_DOC_CHECK=1` only for reviewed
+non-behavioural maintenance commits.
+
+The project also carries a Codex `PostToolUse` hook in `.codex/hooks.json`.
+After Codex edit/write tool calls, it runs `.codex/hooks/clang_format_after_edit.py`
+to apply `clang-format -i` to edited C and C++ source files. Codex requires
+project-local command hooks to be reviewed and trusted before they run.
+
 Linux and BSD CI builds run through the same wrappers intended for local use:
 
 ```sh
