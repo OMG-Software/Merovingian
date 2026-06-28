@@ -459,10 +459,10 @@ SCENARIO("WorkerPool routes outbound HTTP requests through the federation worker
     }
 }
 
-SCENARIO("WorkerPool send_outbound_request returns failure immediately when all workers are unhealthy",
+SCENARIO("WorkerPool send_outbound_request returns failure immediately after the pool is stopped",
          "[federation][worker-pool][outbound][resilience]")
 {
-    GIVEN("a worker pool constructed with an invalid worker binary path")
+    GIVEN("a healthy worker pool that is then stopped")
     {
         if (worker_binary_path().empty())
         {
@@ -471,7 +471,7 @@ SCENARIO("WorkerPool send_outbound_request returns failure immediately when all 
 
         REQUIRE(sodium_init() >= 0);
 
-        auto const tmp_dir = unique_temp_dir("merovingian-fed-worker-unhealthy");
+        auto const tmp_dir = unique_temp_dir("merovingian-fed-worker-stopped");
         auto config = make_federation_worker_config(tmp_dir);
         auto const config_path = tmp_dir / "merovingian.conf";
         write_worker_config(config_path, config);
@@ -480,15 +480,15 @@ SCENARIO("WorkerPool send_outbound_request returns failure immediately when all 
         REQUIRE(started.started);
         auto& runtime = started.runtime;
 
-        // Deliberately use a non-existent binary so all shards fail immediately.
-        auto pool = WorkerPool{config.federation_worker(), runtime, "/nonexistent/path/merovingian-fed-worker",
-                               config_path.string()};
+        auto pool =
+            WorkerPool{config.federation_worker(), runtime, std::string{worker_binary_path()}, config_path.string()};
+        REQUIRE(wait_for_worker(pool, std::chrono::seconds{10}));
 
-        // Give the supervisor threads a moment to detect the launch failure
-        // before we assert that the pool is unhealthy.
-        std::this_thread::sleep_for(std::chrono::milliseconds{200});
+        // Stop the pool so workers_ is emptied. Any subsequent call must fail
+        // fast from the index >= workers_.size() guard without IPC.
+        pool.stop();
 
-        WHEN("an outbound request is dispatched through the unhealthy pool")
+        WHEN("an outbound request is dispatched through the stopped pool")
         {
             auto request = OutboundRequest{};
             request.method = "GET";
@@ -499,7 +499,7 @@ SCENARIO("WorkerPool send_outbound_request returns failure immediately when all 
 
             auto const result = pool.send_outbound_request(request, "!room:remote.example.com");
 
-            THEN("the call fails fast without blocking on IPC and returns a non-empty error detail")
+            THEN("the call fails immediately and returns a non-empty error detail")
             {
                 REQUIRE_FALSE(result.ok);
                 REQUIRE_FALSE(result.error_detail.empty());

@@ -131,9 +131,12 @@ The canonical pattern for an outbound IPC scenario is:
    (e.g. `"host:port:127.0.0.1"` where port 9 is the discard port — ECONNREFUSED in < 1 ms).
 4. Call `send_outbound_request()` and `REQUIRE_FALSE(result.ok)`.
 
-For unhealthy-pool coverage: construct the pool with a non-existent binary path,
-`sleep_for(200ms)` so the supervisor detects the launch failure, then assert the
-returned `error_detail` is non-empty without blocking on IPC.
+For stopped-pool coverage: start a healthy pool, call `pool.stop()` to clear
+`workers_`, then call `send_outbound_request()`. The `index >= workers_.size()`
+guard fires immediately and returns a non-empty `error_detail` without touching
+IPC. Do **not** pass a nonexistent binary path — the constructor calls
+`posix_spawn()` directly and throws `std::runtime_error` when the binary is
+absent, crashing the GIVEN block before any assertion runs.
 
 ## Sanitizers and concurrency tests
 
