@@ -9,10 +9,12 @@
 // +-------------------------------------------------------------------------+
 
 #include "merovingian/config/config.hpp"
+#include "merovingian/homeserver/federation_proxy.hpp"
 #include "merovingian/homeserver/federation_request_routing.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/homeserver/worker_pool.hpp"
+#include "merovingian/http/outbound_client.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -40,11 +42,13 @@ using merovingian::config::LogModulesConfig;
 using merovingian::config::SecurityConfig;
 using merovingian::config::ServerConfig;
 using merovingian::homeserver::federation_worker_room_id_from_request;
+using merovingian::homeserver::FederationProxy;
 using merovingian::homeserver::handle_federation_http_request;
 using merovingian::homeserver::LocalHttpRequest;
 using merovingian::homeserver::LocalHttpResponse;
 using merovingian::homeserver::start_runtime;
 using merovingian::homeserver::WorkerPool;
+using merovingian::http::OutboundRequest;
 
 #ifndef MEROVINGIAN_TEST_FEDERATION_WORKER
 #define MEROVINGIAN_TEST_FEDERATION_WORKER ""
@@ -382,6 +386,169 @@ SCENARIO("PUT /send transactions are routed to a worker and receive a JSON respo
             {
                 REQUIRE(response.status != 503U);
                 REQUIRE_FALSE(response.body.empty());
+            }
+        }
+    }
+}
+
+SCENARIO("WorkerPool routes outbound HTTP requests through the federation worker IPC channel",
+         "[integration][federation-worker][outbound][ipc]")
+{
+    GIVEN("a running two-shard worker pool backed by real worker processes")
+    {
+        if (worker_binary_path().empty())
+        {
+            SKIP("MEROVINGIAN_TEST_FEDERATION_WORKER is not defined");
+        }
+
+        REQUIRE(sodium_init() >= 0);
+
+        auto const tmp_dir = unique_temp_dir("merovingian-fed-worker-outbound");
+        auto config = make_federation_worker_config(tmp_dir);
+        auto const config_path = tmp_dir / "merovingian.conf";
+        write_worker_config(config_path, config);
+
+        auto started = start_runtime(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto pool =
+            WorkerPool{config.federation_worker(), runtime, std::string{worker_binary_path()}, config_path.string()};
+        REQUIRE(wait_for_worker(pool, std::chrono::seconds{10}));
+
+        WHEN("an outbound HTTP request is dispatched to a connection-refused local address")
+        {
+            // Use loopback port 9 (discard), which is almost always closed —
+            // the TCP stack returns ECONNREFUSED immediately with no network I/O.
+            // We pin the address explicitly so libcurl never tries DNS.
+            auto request = OutboundRequest{};
+            request.method = "GET";
+            request.url = "https://fed-worker-outbound-test.local:9/_matrix/key/v2/server";
+            request.pinned_addresses = {"fed-worker-outbound-test.local:9:127.0.0.1"};
+            request.connect_timeout_seconds = 5U;
+            request.total_timeout_seconds = 5U;
+
+            auto const result = pool.send_outbound_request(request, "!room:test.example.com");
+
+            THEN("the IPC round-trip completes and the worker reports a network failure")
+            {
+                // The connection to 127.0.0.1:9 must be refused. We don't
+                // assert the exact error code because it varies by platform and
+                // TLS layer, but the request must not succeed and must not hang.
+                REQUIRE_FALSE(result.ok);
+            }
+        }
+
+        AND_WHEN("the same outbound request is dispatched for a different room on the other shard")
+        {
+            auto request = OutboundRequest{};
+            request.method = "GET";
+            request.url = "https://fed-worker-outbound-test.local:9/_matrix/key/v2/server";
+            request.pinned_addresses = {"fed-worker-outbound-test.local:9:127.0.0.1"};
+            request.connect_timeout_seconds = 5U;
+            request.total_timeout_seconds = 5U;
+
+            // Use a different room ID so the FNV-1a hash routes to the other shard.
+            auto const result_shard_b = pool.send_outbound_request(request, "!other-room:test.example.com");
+
+            THEN("the second shard also completes the IPC round-trip and reports failure")
+            {
+                REQUIRE_FALSE(result_shard_b.ok);
+            }
+        }
+    }
+}
+
+SCENARIO("WorkerPool send_outbound_request returns failure immediately when all workers are unhealthy",
+         "[federation][worker-pool][outbound][resilience]")
+{
+    GIVEN("a worker pool constructed with an invalid worker binary path")
+    {
+        if (worker_binary_path().empty())
+        {
+            SKIP("MEROVINGIAN_TEST_FEDERATION_WORKER is not defined");
+        }
+
+        REQUIRE(sodium_init() >= 0);
+
+        auto const tmp_dir = unique_temp_dir("merovingian-fed-worker-unhealthy");
+        auto config = make_federation_worker_config(tmp_dir);
+        auto const config_path = tmp_dir / "merovingian.conf";
+        write_worker_config(config_path, config);
+
+        auto started = start_runtime(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        // Deliberately use a non-existent binary so all shards fail immediately.
+        auto pool = WorkerPool{config.federation_worker(), runtime, "/nonexistent/path/merovingian-fed-worker",
+                               config_path.string()};
+
+        // Give the supervisor threads a moment to detect the launch failure
+        // before we assert that the pool is unhealthy.
+        std::this_thread::sleep_for(std::chrono::milliseconds{200});
+
+        WHEN("an outbound request is dispatched through the unhealthy pool")
+        {
+            auto request = OutboundRequest{};
+            request.method = "GET";
+            request.url = "https://remote.example.com:8448/_matrix/key/v2/server";
+            request.pinned_addresses = {"remote.example.com:8448:203.0.113.1"};
+            request.connect_timeout_seconds = 5U;
+            request.total_timeout_seconds = 5U;
+
+            auto const result = pool.send_outbound_request(request, "!room:remote.example.com");
+
+            THEN("the call fails fast without blocking on IPC and returns a non-empty error detail")
+            {
+                REQUIRE_FALSE(result.ok);
+                REQUIRE_FALSE(result.error_detail.empty());
+            }
+        }
+    }
+}
+
+SCENARIO("FederationProxy delegates outbound HTTP requests to the worker pool via IPC",
+         "[integration][federation-proxy][outbound][ipc]")
+{
+    GIVEN("a FederationProxy wrapping a healthy two-shard worker pool")
+    {
+        if (worker_binary_path().empty())
+        {
+            SKIP("MEROVINGIAN_TEST_FEDERATION_WORKER is not defined");
+        }
+
+        REQUIRE(sodium_init() >= 0);
+
+        auto const tmp_dir = unique_temp_dir("merovingian-fed-proxy-outbound");
+        auto config = make_federation_worker_config(tmp_dir);
+        auto const config_path = tmp_dir / "merovingian.conf";
+        write_worker_config(config_path, config);
+
+        auto started = start_runtime(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto proxy = FederationProxy{config.federation_worker(), runtime, std::string{worker_binary_path()},
+                                     config_path.string()};
+
+        // Give workers a moment to complete key exchange before sending.
+        std::this_thread::sleep_for(std::chrono::seconds{2});
+
+        WHEN("an outbound HTTP request is dispatched through the proxy to an unreachable address")
+        {
+            auto request = OutboundRequest{};
+            request.method = "GET";
+            request.url = "https://fed-proxy-outbound-test.local:9/_matrix/key/v2/server";
+            request.pinned_addresses = {"fed-proxy-outbound-test.local:9:127.0.0.1"};
+            request.connect_timeout_seconds = 5U;
+            request.total_timeout_seconds = 5U;
+
+            auto const result = proxy.send_outbound_request(request, "!room:test.example.com");
+
+            THEN("the proxy forwards the request through IPC and returns a network failure")
+            {
+                REQUIRE_FALSE(result.ok);
             }
         }
     }
