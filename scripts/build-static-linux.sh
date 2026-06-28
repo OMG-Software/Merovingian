@@ -32,9 +32,12 @@ for binary in "${STAGING}/usr/bin/merovingian-server" "${STAGING}/usr/bin/merovi
     fi
 done
 
-install -d -m 0755 "${PACKAGE_ROOT}/bin" "${PACKAGE_ROOT}/config" "${PACKAGE_ROOT}/docs"
+install -d -m 0755 "${PACKAGE_ROOT}/bin" "${PACKAGE_ROOT}/libexec/merovingian" \
+    "${PACKAGE_ROOT}/config" "${PACKAGE_ROOT}/docs"
 install -m 0755 "${STAGING}/usr/bin/merovingian-server" "${PACKAGE_ROOT}/bin/"
 install -m 0755 "${STAGING}/usr/bin/merovingian-db-migrate" "${PACKAGE_ROOT}/bin/"
+install -m 0755 "${STAGING}/usr/libexec/merovingian/merovingian-fed-worker" \
+    "${PACKAGE_ROOT}/libexec/merovingian/"
 install -m 0644 config/merovingian.conf.example "${PACKAGE_ROOT}/config/merovingian.conf.example"
 install -m 0644 README.md LICENSE "${PACKAGE_ROOT}/"
 install -m 0644 docs/configuration.md docs/release-process.md \

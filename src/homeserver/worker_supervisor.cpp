@@ -120,7 +120,9 @@ auto WorkerSupervisor::healthy() const noexcept -> bool
 {
     // A supervisor is healthy before start() is called (it has not failed)
     // and, once started, only while its IPC channel is alive.
-    return healthy_.load() && (!channel_ || channel_->healthy());
+    // Use channel_snapshot() so this read is safe under concurrent restart.
+    auto const ch = channel_snapshot();
+    return healthy_.load() && (!ch || ch->healthy());
 }
 
 auto WorkerSupervisor::request_timeout() const noexcept -> std::uint32_t

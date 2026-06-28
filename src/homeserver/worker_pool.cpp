@@ -427,10 +427,11 @@ auto WorkerPool::handle(LocalHttpRequest const& request, std::string_view room_i
     }
 
     auto& worker = *workers_[index];
-    // Grab a shared_ptr snapshot before checking health; this keeps the channel
-    // alive across a concurrent supervisor restart that might reset channel_.
+    // Check supervisor health first (covers waitpid failure / stopped monitor),
+    // then grab a ref-counted channel snapshot so the pointer stays alive across
+    // a concurrent restart that might reset channel_ before send_request().
     auto const ch = worker.channel_snapshot();
-    if (!ch || !ch->healthy())
+    if (!worker.healthy() || !ch || !ch->healthy())
     {
         return {503U, R"({"errcode":"M_UNAVAILABLE","error":"Federation worker shard unavailable"})"};
     }

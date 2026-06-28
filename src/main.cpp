@@ -818,6 +818,7 @@ struct ListenerBinding final
     merovingian::homeserver::wire_federation_callbacks(runtime.homeserver);
 
     auto const& fw_cfg = runtime.homeserver.config.federation_worker();
+    if (runtime.homeserver.config.security().federation.enabled)
     {
         auto const worker_binary = resolve_worker_binary(fw_cfg);
         try

@@ -72,6 +72,7 @@ cat > "+CONTENTS" <<EOF
 bin/merovingian-db-migrate
 bin/merovingian-server
 etc/merovingian/merovingian.conf.sample
+libexec/merovingian/merovingian-fed-worker
 libexec/merovingian/merovingian-thumbnail-worker
 share/examples/rc.d/merovingian
 @dir share/examples/rc.d
@@ -95,6 +96,8 @@ cp "${STAGE}${PREFIX}/bin/merovingian-db-migrate"        "${PKGDIR}/bin/"
 cp "${STAGE}${PREFIX}/bin/merovingian-server"            "${PKGDIR}/bin/"
 cp "${STAGE}${PREFIX}/etc/merovingian/merovingian.conf.sample" \
                                                           "${PKGDIR}/etc/merovingian/"
+cp "${STAGE}${PREFIX}/libexec/merovingian/merovingian-fed-worker" \
+                                                          "${PKGDIR}/libexec/merovingian/"
 cp "${STAGE}${PREFIX}/libexec/merovingian/merovingian-thumbnail-worker" \
                                                           "${PKGDIR}/libexec/merovingian/"
 cp "${STAGE}${PREFIX}/share/examples/rc.d/merovingian"   "${PKGDIR}/share/examples/rc.d/"
@@ -104,6 +107,7 @@ cp "${STAGE}${PREFIX}/share/examples/rc.d/merovingian"   "${PKGDIR}/share/exampl
     bin/merovingian-db-migrate \
     bin/merovingian-server \
     etc/merovingian/merovingian.conf.sample \
+    libexec/merovingian/merovingian-fed-worker \
     libexec/merovingian/merovingian-thumbnail-worker \
     share/examples/rc.d/merovingian )
 
