@@ -13,6 +13,9 @@
 - **test(federation): BDD scenarios for nested-object PDU room ID extraction:** `tests/unit/test_federation_request_routing.cpp` adds two new scenarios verifying that `room_id` is correctly extracted from `/send` bodies where `content`+`hashes` objects and deeply nested `relates_to` content precede the `room_id` field.
 - **test(config): mandatory-worker validation scenarios:** `tests/unit/test_config_parser.cpp` adds scenarios asserting that zero threads and zero request timeout are always rejected; removed the now-invalid "accepts zero shards when disabled" scenario.
 
+### CI
+- **fix(ci): OpenSUSE Tumbleweed RPM build fails on cold cache:** `hendrikmuhs/ccache-action@v1.2` does not recognise the `install` parameter added in later releases and has no zypper support, so on a cold runner it attempts auto-installation and fails. The opensuse-rpm job now uses `actions/cache@v4` to restore/save `~/.ccache` directly and a shell step to create the clang/clang++ symlinks in `/usr/lib/ccache`, replacing the ccache-action entirely for this job.
+
 ## 0.10.3
 
 ### Added

@@ -411,14 +411,23 @@ jobs:
             sleep 15
           done
       - uses: actions/checkout@v4
-      - name: Cache compiler output with ccache
-        uses: hendrikmuhs/ccache-action@v1.2
+      - name: Restore ccache
+        uses: actions/cache@v4
         with:
-          # ccache is already installed by zypper above; ccache-action does not
-          # recognize OpenSUSE's package manager and would fail trying to install it.
-          install: false
+          path: ~/.ccache
           key: ccache-opensuse-rpm-${{ github.run_id }}
           restore-keys: ccache-opensuse-rpm-
+          save-always: true
+      - name: Configure ccache
+        run: |
+          # ccache-action@v1.2 does not recognise the 'install' parameter and
+          # has no zypper support, so it fails on a cold cache.  Wire ccache
+          # manually: ccache is already installed by the zypper step above.
+          mkdir -p /usr/lib/ccache
+          ln -sf /usr/bin/ccache /usr/lib/ccache/clang
+          ln -sf /usr/bin/ccache /usr/lib/ccache/clang++
+          echo "/usr/lib/ccache" >> "$GITHUB_PATH"
+          ccache --set-config=max_size=500M
       - name: Build OpenSUSE .rpm
         run: sh scripts/build-opensuse-rpm.sh
       - name: Attest OpenSUSE RPM
