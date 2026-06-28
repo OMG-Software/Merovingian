@@ -14,7 +14,7 @@
 - **test(config): mandatory-worker validation scenarios:** `tests/unit/test_config_parser.cpp` adds scenarios asserting that zero threads and zero request timeout are always rejected; removed the now-invalid "accepts zero shards when disabled" scenario.
 
 ### CI
-- **fix(ci): OpenSUSE Tumbleweed RPM build fails on cold cache:** `hendrikmuhs/ccache-action@v1.2` does not recognise the `install` parameter added in later releases and has no zypper support, so on a cold runner it attempts auto-installation and fails. The opensuse-rpm job now uses `actions/cache@v4` to restore/save `~/.ccache` directly and a shell step to create the clang/clang++ symlinks in `/usr/lib/ccache`, replacing the ccache-action entirely for this job.
+- **fix(ci): OpenSUSE Tumbleweed RPM build fails on cold cache:** `hendrikmuhs/ccache-action@v1.2` does not recognise the `install` parameter added in later releases and has no zypper support, so on a cold runner it attempts auto-installation and fails. The opensuse-rpm job now uses `actions/cache@v4` to restore/save `~/.ccache` directly and a shell step to wire ccache via `CC=ccache clang` / `CXX=ccache clang++` in `GITHUB_ENV`, replacing the ccache-action entirely for this job. The earlier symlink + `GITHUB_PATH` approach was dropped because appending to `GITHUB_PATH` inside a Docker container step corrupts the `PATH` seen by subsequent steps, leaving `sh` unfindable at exec time.
 
 ## 0.10.3
 

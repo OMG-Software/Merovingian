@@ -423,11 +423,12 @@ jobs:
           # ccache-action@v1.2 does not recognise the 'install' parameter and
           # has no zypper support, so it fails on a cold cache.  Wire ccache
           # manually: ccache is already installed by the zypper step above.
-          mkdir -p /usr/lib/ccache
-          ln -sf /usr/bin/ccache /usr/lib/ccache/clang
-          ln -sf /usr/bin/ccache /usr/lib/ccache/clang++
-          echo "/usr/lib/ccache" >> "$GITHUB_PATH"
+          # Use CC/CXX prefix mode instead of GITHUB_PATH symlinks: modifying
+          # GITHUB_PATH inside a Docker container step can corrupt the PATH
+          # seen by subsequent steps, leaving 'sh' unfindable.
           ccache --set-config=max_size=500M
+          echo "CC=ccache clang" >> "$GITHUB_ENV"
+          echo "CXX=ccache clang++" >> "$GITHUB_ENV"
       - name: Build OpenSUSE .rpm
         run: sh scripts/build-opensuse-rpm.sh
       - name: Attest OpenSUSE RPM
