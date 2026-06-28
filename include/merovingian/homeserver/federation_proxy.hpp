@@ -22,9 +22,8 @@ class WorkerPool;
 // delegated to the worker.
 //
 // Requests with a room ID are routed to the worker shard that owns that
-// room; non-room requests route to shard 0. When the selected shard is
-// unavailable and fallback_in_process is true, requests are handled by the
-// main process. When fallback is false, 503 is returned.
+// room; non-room requests route to shard 0. If the selected shard is
+// unhealthy, 503 is returned immediately (fail-closed; no in-process fallback).
 class FederationProxy final
 {
 public:
@@ -40,10 +39,7 @@ public:
     // Called in place of handle_federation_http_request() when the worker is active.
     [[nodiscard]] auto handle(LocalHttpRequest const& request) -> LocalHttpResponse;
 
-    [[nodiscard]] auto healthy() const noexcept -> bool;
-
 private:
-    config::FederationWorkerConfig cfg_{};
     HomeserverRuntime& runtime_;
     std::unique_ptr<WorkerPool> pool_{};
 };

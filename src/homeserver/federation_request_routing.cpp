@@ -125,7 +125,47 @@ namespace
         {
             return {};
         }
-        auto const obj_end = body.find('}', first_obj);
+        // Track brace depth to find the matching '}' for the first PDU object.
+        // A naive find('}') stops at the first nested object (e.g. "content" or
+        // "hashes"), which excludes room_id if it appears after a nested field.
+        auto depth = int{0};
+        auto in_string = bool{false};
+        auto obj_end = std::string_view::npos;
+        for (auto i = first_obj; i < body.size(); ++i)
+        {
+            auto const ch = body[i];
+            if (in_string)
+            {
+                if (ch == '\\')
+                {
+                    ++i; // skip escaped character
+                }
+                else if (ch == '"')
+                {
+                    in_string = false;
+                }
+            }
+            else
+            {
+                if (ch == '"')
+                {
+                    in_string = true;
+                }
+                else if (ch == '{')
+                {
+                    ++depth;
+                }
+                else if (ch == '}')
+                {
+                    --depth;
+                    if (depth == 0)
+                    {
+                        obj_end = i;
+                        break;
+                    }
+                }
+            }
+        }
         if (obj_end == std::string_view::npos)
         {
             return {};

@@ -7,6 +7,7 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 
@@ -19,9 +20,12 @@ namespace merovingian::homeserver
 // supervisor monitors the child via waitpid and restarts it with
 // exponential back-off (1s/2s/4s/8s/30s cap) on unexpected exit.
 //
-// Thread safety: start() may be called once. channel() is safe to use
-// from any thread after start() returns. stop() is safe to call from
-// any thread.
+// Thread safety:
+//   start() may be called once.
+//   channel() is safe from within the IPC reader thread (the request handler).
+//   channel_snapshot() is safe from any external thread; it returns a
+//     shared_ptr that keeps the channel alive across concurrent restarts.
+//   stop() is safe to call from any thread.
 class WorkerSupervisor final
 {
 public:
@@ -51,7 +55,17 @@ public:
     // the IPC channel, and joins all background threads.
     auto stop() noexcept -> void;
 
+    // Returns a reference to the current channel. Only safe to call from
+    // within the IPC reader thread (the request handler callback), where the
+    // channel is guaranteed to outlive the call.
     [[nodiscard]] auto channel() noexcept -> ipc::IpcChannel&;
+
+    // Returns a shared_ptr snapshot of the current channel. Safe to call from
+    // any thread; the returned pointer keeps the channel alive even if a
+    // concurrent restart replaces channel_ before the caller finishes.
+    // Returns nullptr if no channel is active.
+    [[nodiscard]] auto channel_snapshot() const noexcept -> std::shared_ptr<ipc::IpcChannel>;
+
     [[nodiscard]] auto healthy() const noexcept -> bool;
     [[nodiscard]] auto request_timeout() const noexcept -> std::uint32_t;
     [[nodiscard]] auto shard_index() const noexcept -> std::uint32_t;
@@ -66,7 +80,10 @@ private:
     std::uint32_t shard_index_{};
     ipc::IpcChannel::RequestHandler request_handler_{};
 
-    std::unique_ptr<ipc::IpcChannel> channel_{};
+    // channel_ and channel_mu_ guard the IpcChannel pointer against concurrent
+    // reads (WorkerPool::handle) and writes (supervisor_loop restart, stop).
+    mutable std::mutex channel_mu_{};
+    std::shared_ptr<ipc::IpcChannel> channel_{};
     pid_t worker_pid_{-1};
 
     std::thread supervisor_thread_{};

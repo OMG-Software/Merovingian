@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.10.3
+Version:        0.10.4
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -101,6 +101,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Sun Jun 28 2026 James Chapman <claude@ping.me.uk> - 0.10.4-1
+- feat(federation): make federation worker mandatory; remove enabled/fallback_in_process config; fix TOCTOU channel race, PDU room_id routing for nested JSON, spurious sync wakeup, and zero threads/timeout validation
+
 * Sat Jun 27 2026 James Chapman <claude@ping.me.uk> - 0.10.3-1
 - feat(federation): room-sharded federation workers (Phase 3); inbound requests are routed by room ID across N independent merovingian-fed-worker processes using FNV-1a hashing
 

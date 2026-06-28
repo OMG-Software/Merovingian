@@ -549,10 +549,18 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
         findings.push_back({"database.pool_size", "database pool size must be greater than zero"});
     }
 
-    if (config.federation_worker().enabled && config.federation_worker().shards == 0U)
+    if (config.federation_worker().shards == 0U)
     {
-        findings.push_back(
-            {"federation.worker.shards", "shards must be greater than zero when federation worker is enabled"});
+        findings.push_back({"federation.worker.shards", "federation.worker.shards must be greater than zero"});
+    }
+    if (config.federation_worker().threads == 0U)
+    {
+        findings.push_back({"federation.worker.threads", "federation.worker.threads must be greater than zero"});
+    }
+    if (config.federation_worker().request_timeout_seconds == 0U)
+    {
+        findings.push_back({"federation.worker.request_timeout_seconds",
+                            "federation.worker.request_timeout_seconds must be greater than zero"});
     }
 
     if (config.security().registration.enabled && !config.security().registration.require_token)

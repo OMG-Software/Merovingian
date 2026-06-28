@@ -72,20 +72,23 @@ auto WorkerSupervisor::stop() noexcept -> void
     {
         return;
     }
-    if (channel_ && channel_->healthy())
     {
-        try
+        auto lock = std::lock_guard{channel_mu_};
+        if (channel_ && channel_->healthy())
         {
-            channel_->send_notification(R"({"type":"shutdown"})");
+            try
+            {
+                channel_->send_notification(R"({"type":"shutdown"})");
+            }
+            catch (...)
+            {
+            }
         }
-        catch (...)
+        if (channel_)
         {
+            channel_->stop();
+            channel_.reset();
         }
-    }
-    if (channel_)
-    {
-        channel_->stop();
-        channel_.reset();
     }
     if (supervisor_thread_.joinable())
     {
@@ -100,7 +103,15 @@ auto WorkerSupervisor::stop() noexcept -> void
 
 auto WorkerSupervisor::channel() noexcept -> ipc::IpcChannel&
 {
+    // Only safe from within the IPC reader thread (request handler), where the
+    // channel is guaranteed to outlive the call — no lock needed there.
     return *channel_;
+}
+
+auto WorkerSupervisor::channel_snapshot() const noexcept -> std::shared_ptr<ipc::IpcChannel>
+{
+    auto lock = std::lock_guard{channel_mu_};
+    return channel_;
 }
 
 auto WorkerSupervisor::healthy() const noexcept -> bool
@@ -156,12 +167,17 @@ auto WorkerSupervisor::spawn_and_connect() -> void
     client_fd.reset();
     worker_pid_ = pid;
 
-    channel_ = std::make_unique<ipc::IpcChannel>(std::move(server_fd), ipc::IpcChannel::Role::server);
+    auto new_channel = std::make_shared<ipc::IpcChannel>(std::move(server_fd), ipc::IpcChannel::Role::server);
     if (request_handler_)
     {
-        channel_->set_request_handler(request_handler_);
+        new_channel->set_request_handler(request_handler_);
     }
-    channel_->start();
+    new_channel->start();
+
+    {
+        auto lock = std::lock_guard{channel_mu_};
+        channel_ = std::move(new_channel);
+    }
 
     LOG_INFO("Federation worker spawned: shard=" + std::to_string(shard_index_) + " pid=" + std::to_string(pid) +
              " binary=" + worker_path_);
@@ -192,13 +208,16 @@ auto WorkerSupervisor::supervisor_loop() -> void
         LOG_WARNING("Federation worker exited: pid=" + std::to_string(worker_pid_) +
                     " exit_code=" + std::to_string(exit_code) + " restart_in_ms=" + std::to_string(backoff_ms));
 
-        // Mark unhealthy before resetting channel_ so the request-path
-        // check in WorkerPool::handle() never dereferences a null channel_.
+        // Mark unhealthy and reset channel_ under the mutex so WorkerPool::handle()
+        // can never dereference a channel_ that is being destroyed concurrently.
         healthy_.store(false);
-        if (channel_)
         {
-            channel_->stop();
-            channel_.reset();
+            auto lock = std::lock_guard{channel_mu_};
+            if (channel_)
+            {
+                channel_->stop();
+                channel_.reset();
+            }
         }
         worker_pid_ = -1;
 

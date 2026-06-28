@@ -123,15 +123,15 @@ security.federation.deny_ip_ranges=127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.
 security.federation.max_transaction_size=10MiB
 security.federation.remote_timeout=30s
 
-# Out-of-process federation worker
-# When enabled, all inbound federation requests are forwarded to a separate
+# Out-of-process federation worker (mandatory)
+# All inbound federation requests are forwarded to a separate
 # merovingian-fed-worker child process over an encrypted AF_UNIX IPC channel,
-# freeing the main thread pool for client-server traffic.
-# Set enabled=true when large room joins are starving client connections.
-federation.worker.enabled=false
-federation.worker.fallback_in_process=true
+# freeing the main thread pool for client-server traffic. The worker is always
+# required; startup fails if it cannot be launched. Rooms are sharded across
+# federation.worker.shards independent worker processes using FNV-1a hashing.
 # federation.worker.threads=4
 # federation.worker.request_timeout_seconds=120
+# federation.worker.shards=1
 # federation.worker.binary=
 
 # Media safety policy

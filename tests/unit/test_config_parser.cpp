@@ -400,11 +400,10 @@ SCENARIO("Key-value config parser rejects wildcard origin with credentials enabl
 
 SCENARIO("Key-value config parser applies federation worker shard count", "[config][parser][federation-worker]")
 {
-    GIVEN("a config enabling the federation worker with multiple shards")
+    GIVEN("a config with multiple federation worker shards")
     {
         auto const input = std::string{"server.name=example.org\n"
                                        "server.public_baseurl=https://matrix.example.org\n"
-                                       "federation.worker.enabled=true\n"
                                        "federation.worker.shards=4\n"};
 
         WHEN("the config is parsed")
@@ -414,7 +413,6 @@ SCENARIO("Key-value config parser applies federation worker shard count", "[conf
             THEN("the shard count is stored and the config is valid")
             {
                 REQUIRE(result.findings.empty());
-                REQUIRE(result.config.federation_worker().enabled);
                 REQUIRE(result.config.federation_worker().shards == 4U);
                 REQUIRE(merovingian::config::is_valid(result.config));
             }
@@ -422,14 +420,12 @@ SCENARIO("Key-value config parser applies federation worker shard count", "[conf
     }
 }
 
-SCENARIO("Key-value config parser rejects zero shards when the federation worker is enabled",
-         "[config][parser][federation-worker]")
+SCENARIO("Key-value config parser rejects zero shards for the federation worker", "[config][parser][federation-worker]")
 {
-    GIVEN("a config enabling the federation worker with shards=0")
+    GIVEN("a config with federation.worker.shards=0")
     {
         auto const input = std::string{"server.name=example.org\n"
                                        "server.public_baseurl=https://matrix.example.org\n"
-                                       "federation.worker.enabled=true\n"
                                        "federation.worker.shards=0\n"};
 
         WHEN("the config is parsed and validated")
@@ -454,26 +450,63 @@ SCENARIO("Key-value config parser rejects zero shards when the federation worker
     }
 }
 
-SCENARIO("Key-value config parser accepts zero shards when the federation worker is disabled",
+SCENARIO("Key-value config parser rejects zero threads for the federation worker",
          "[config][parser][federation-worker]")
 {
-    GIVEN("a config disabling the federation worker with shards=0")
+    GIVEN("a config with federation.worker.threads=0")
     {
         auto const input = std::string{"server.name=example.org\n"
                                        "server.public_baseurl=https://matrix.example.org\n"
-                                       "federation.worker.enabled=false\n"
-                                       "federation.worker.shards=0\n"};
+                                       "federation.worker.threads=0\n"};
 
         WHEN("the config is parsed and validated")
         {
             auto const result = merovingian::config::parse_key_value_config(input);
 
-            THEN("the zero shard count is accepted because the worker is not used")
+            THEN("a validation finding names the threads field")
             {
-                REQUIRE(result.findings.empty());
-                REQUIRE_FALSE(result.config.federation_worker().enabled);
-                REQUIRE(result.config.federation_worker().shards == 0U);
-                REQUIRE(merovingian::config::is_valid(result.config));
+                auto found = false;
+                for (auto const& f : merovingian::config::validate(result.config))
+                {
+                    if (f.field == "federation.worker.threads")
+                    {
+                        found = true;
+                        break;
+                    }
+                }
+                REQUIRE(found);
+                REQUIRE_FALSE(merovingian::config::is_valid(result.config));
+            }
+        }
+    }
+}
+
+SCENARIO("Key-value config parser rejects zero request timeout for the federation worker",
+         "[config][parser][federation-worker]")
+{
+    GIVEN("a config with federation.worker.request_timeout_seconds=0")
+    {
+        auto const input = std::string{"server.name=example.org\n"
+                                       "server.public_baseurl=https://matrix.example.org\n"
+                                       "federation.worker.request_timeout_seconds=0\n"};
+
+        WHEN("the config is parsed and validated")
+        {
+            auto const result = merovingian::config::parse_key_value_config(input);
+
+            THEN("a validation finding names the request_timeout_seconds field")
+            {
+                auto found = false;
+                for (auto const& f : merovingian::config::validate(result.config))
+                {
+                    if (f.field == "federation.worker.request_timeout_seconds")
+                    {
+                        found = true;
+                        break;
+                    }
+                }
+                REQUIRE(found);
+                REQUIRE_FALSE(merovingian::config::is_valid(result.config));
             }
         }
     }
