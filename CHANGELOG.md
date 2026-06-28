@@ -4,6 +4,13 @@
 - **feat(dev): add installable pre-commit project gates:** `scripts/hooks/pre-commit` now runs the unsafe C/C++ source gate, Catch2 BDD style checks, unit/conformance test registration checks, and a new staged-file changelog/docs guard. `scripts/install-hooks.sh` installs the tracked hook template into `.git/hooks`, and tooling tests cover the hook wiring and changelog/docs guard behavior.
 - **feat(dev): add Codex post-edit clang-format hook:** `.codex/hooks.json` wires a Codex `PostToolUse` hook for edit/write tool calls, backed by `.codex/hooks/clang_format_after_edit.py`, so edited C and C++ source files are formatted with `clang-format -i` immediately after Codex modifies them.
 
+### Fixed (PR review)
+- **fix(federation): discovery timeout ignores configured `remote_timeout`:** `perform_sync_outbound_call` used a hard-coded 30 s timeout for the `discover_server()` call regardless of the operator-configured `security.federation.remote_timeout`. Operators who raised the timeout for slow federation joins (e.g. 180 s) would still see discovery fail after 30 s during the `.well-known` fetch. Now passes `timeout_seconds` directly to `discover_server()`.
+- **fix(config): example `security.federation.remote_timeout` was 600s instead of the 60s default:** `config/merovingian.conf.example` showed `600s`, overriding the code default and tying up caller and worker slots for ten minutes per slow join. Corrected to `60s`.
+- **fix(scripts): `check-staged-changelog-docs.sh` missed deleted project files:** `--diff-filter=ACMR` excluded `D` (Deleted) paths, so a commit that removes source or packaging files bypassed the changelog/docs guard. Added `D` to the filter.
+- **fix(scripts): `install-hooks.sh` failed in linked worktrees:** `.git/hooks` is not a directory in a linked worktree. Now resolves via `git rev-parse --git-path hooks` and `mkdir -p`.
+- **fix(packaging): RPM `%changelog` entries missing for 0.10.5:** Added 0.10.5 entries to `packaging/rpm`, `packaging/rhel`, and `packaging/opensuse` spec files.
+
 ### Added tests
 - **test(federation): outbound HTTP routing through worker IPC — coverage for `WorkerPool::send_outbound_request`, `FederationProxy::send_outbound_request`, and the `outbound_http_request` branch in `WorkerEventLoop::run`:** `tests/integration/test_federation_worker_flow.cpp` gains four new scenarios: healthy-pool outbound dispatch to a quick-failing (ECONNREFUSED) pinned address across both shards; stopped-pool early-exit returning a non-empty error detail; and `FederationProxy`-level outbound dispatch proving the proxy delegates correctly to the pool.
 

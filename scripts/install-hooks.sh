@@ -4,7 +4,8 @@
 set -eu
 
 repo_root=$(git rev-parse --show-toplevel)
-hooks_dir="$repo_root/.git/hooks"
+hooks_dir=$(git rev-parse --git-path hooks)
+mkdir -p "$hooks_dir"
 
 install -m 0755 "$repo_root/scripts/hooks/pre-commit" "$hooks_dir/pre-commit"
 

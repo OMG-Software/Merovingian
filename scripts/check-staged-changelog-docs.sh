@@ -13,7 +13,7 @@ fi
 if [ -n "${GIT_STAGED_FILES:-}" ]; then
     staged_files=$GIT_STAGED_FILES
 else
-    staged_files=$(git diff --cached --name-only --diff-filter=ACMR)
+    staged_files=$(git diff --cached --name-only --diff-filter=ACMRD)
 fi
 
 if [ -z "$staged_files" ]; then

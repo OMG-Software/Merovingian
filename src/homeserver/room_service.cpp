@@ -1338,8 +1338,7 @@ namespace
         });
         return {false, "federation not available"};
     }
-    auto const discovery_timeout = std::uint32_t{30U};
-    auto const resolution = federation::discover_server(transaction.destination, *discovery_network, discovery_timeout);
+    auto const resolution = federation::discover_server(transaction.destination, *discovery_network, timeout_seconds);
     if (!resolution.discovery_allowed)
     {
         log_diagnostic(diagnostic_event, {
