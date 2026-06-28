@@ -1,0 +1,12 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+set -eu
+
+repo_root=$(git rev-parse --show-toplevel)
+cd "$repo_root"
+
+bash scripts/reject-unsafe.sh
+sh scripts/check-catch2-bdd-tests.sh "$repo_root"
+sh scripts/check-unit-test-registration.sh "$repo_root"
+sh scripts/check-staged-changelog-docs.sh "$repo_root"
