@@ -90,6 +90,48 @@ SCENARIO("seccomp hardening check maps probe results to the correct status", "[p
     }
 }
 
+#ifndef __linux__
+SCENARIO("seccomp probe reports not-probed on non-Linux platforms", "[platform][hardening][seccomp][bsd][portable]")
+{
+    GIVEN("a non-Linux platform with no seccomp-bpf support")
+    {
+        WHEN("the seccomp status is probed")
+        {
+            auto const result = merovingian::platform::probe_seccomp_status();
+
+            THEN("the probe reports not-probed, not an error and not active")
+            {
+                // /proc/self/status does not exist on BSD or other non-Linux
+                // systems. probe_seccomp_status must gracefully return
+                // probed=false rather than crashing, and seccomp_active must
+                // be false because seccomp-bpf only exists on Linux.
+                REQUIRE_FALSE(result.probed);
+                REQUIRE_FALSE(result.seccomp_active);
+            }
+        }
+
+        WHEN("the probe result is mapped to a HardeningCheck")
+        {
+            auto const result = merovingian::platform::probe_seccomp_status();
+            auto const check = merovingian::platform::seccomp_check_from_probe(result);
+
+            THEN("the check is unknown — never alpha_exception or disabled")
+            {
+                // On BSD and other non-Linux targets seccomp maps to `unknown`,
+                // not `alpha_exception`. alpha_exception is reserved for controls
+                // that the project has decided to intentionally skip for now
+                // (pledge, capsicum); seccomp-bpf simply does not exist on this
+                // OS and unknown is the correct signal.
+                REQUIRE(check.status == merovingian::platform::HardeningStatus::unknown);
+                REQUIRE(check.status != merovingian::platform::HardeningStatus::alpha_exception);
+                REQUIRE(check.status != merovingian::platform::HardeningStatus::disabled);
+                REQUIRE_FALSE(check.note.empty());
+            }
+        }
+    }
+}
+#endif // !__linux__
+
 #ifdef __linux__
 SCENARIO("seccomp probe reads /proc/self/status successfully on Linux", "[platform][hardening][seccomp][linux]")
 {
@@ -196,6 +238,27 @@ SCENARIO("seccomp filter allows SQLite journal ops and blocks privilege-escalati
                 REQUIRE_FALSE(merovingian::platform::seccomp_is_syscall_allowed(__NR_umask));
                 REQUIRE_FALSE(merovingian::platform::seccomp_is_syscall_allowed(__NR_mkdir));
                 REQUIRE_FALSE(merovingian::platform::seccomp_is_syscall_allowed(__NR_truncate));
+            }
+        }
+
+        WHEN("modern Linux syscalls needed by glibc 2.34+ on Fedora are checked")
+        {
+            THEN("clone3, close_range, and faccessat2 are always allowed on x86_64 and aarch64")
+            {
+                // glibc 2.34+ uses clone3 (435) for pthread_create and posix_spawn.
+                // glibc 2.34+ posix_spawn uses close_range (436) in the child to close
+                // inherited file descriptors before exec; the child inherits this filter.
+                // glibc 2.33+ uses faccessat2 (439) for faccessat() with AT_SYMLINK_NOFOLLOW
+                // on kernels >= 5.8. These must always be present regardless of what
+                // __NR_* macros the build-time kernel headers define — binaries built on
+                // WSL2 / Ubuntu 20.04 (kernel headers 5.4) would otherwise omit them,
+                // causing SIGSYS crashes on modern Fedora/Ubuntu hosts at the first
+                // pthread_create or posix_spawn call after seccomp is applied.
+#if defined(__x86_64__) || defined(__aarch64__)
+                REQUIRE(merovingian::platform::seccomp_is_syscall_allowed(435)); // clone3
+                REQUIRE(merovingian::platform::seccomp_is_syscall_allowed(436)); // close_range
+                REQUIRE(merovingian::platform::seccomp_is_syscall_allowed(439)); // faccessat2
+#endif
             }
         }
 

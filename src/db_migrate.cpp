@@ -14,7 +14,7 @@
 namespace
 {
 
-constexpr auto version = std::string_view{"0.10.5"};
+constexpr auto version = std::string_view{"0.10.6"};
 
 auto print_help() -> void
 {
