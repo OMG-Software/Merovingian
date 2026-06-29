@@ -1,3 +1,11 @@
+## 0.10.6
+
+### Fixed
+- **fix(platform): SIGSYS crash on Fedora / modern Linux at startup:** the seccomp-BPF allowlist conditionally included `clone3` (435), `close_range` (436), and `faccessat2` (439) only when the build-time kernel headers defined the corresponding `__NR_*` macros. Binaries compiled against Ubuntu 20.04 `linux-libc-dev` (kernel headers 5.4) therefore omitted all three, because `close_range` and `faccessat2` were added in 5.9 and 5.8 respectively. On Fedora 36+ and other hosts with glibc 2.34+, the first `pthread_create` or `posix_spawn` call after seccomp was applied used `clone3`; without it in the filter the process was killed immediately with `SECCOMP_RET_KILL_PROCESS` (SIGSYS). All three syscalls now use a hardcoded numeric fallback for x86_64 and aarch64 when the macro is absent, ensuring they are always present in the deployed filter regardless of the build environment's kernel header version.
+
+### Added tests
+- **test(platform): seccomp allowlist always contains clone3/close\_range/faccessat2 on x86\_64 and aarch64:** new WHEN block in `tests/unit/test_seccomp_hardening.cpp` asserts that syscalls 435, 436, and 439 are present in the compiled filter by raw number, catching any future regression where a `#ifdef __NR_*` guard silently drops them from the allowlist.
+
 ## 0.10.5
 
 ### Added

@@ -203,13 +203,25 @@ The path-based `truncate` and permission-mutation calls (`chmod`, `fchmod`,
 actually reach.
 
 **glibc per-CPU and synchronisation syscalls** — allowed because modern glibc
-(2.35+) calls these from `malloc`, thread initialisation, and after `fork()`:
+(2.31+–2.35+) calls these from `malloc`, thread initialisation, process spawning,
+and after `fork()`:
 
-| Syscall | Reason |
-| --- | --- |
-| `rseq` | glibc 2.35+ registers a per-thread restartable-sequence area after `fork()`. glibc 2.36+ also uses `rseq` inside the `malloc` per-CPU cache. |
-| `membarrier` | glibc 2.31+ issues `MEMBARRIER_CMD_PRIVATE_EXPEDITED` from the `malloc` fast path on multi-processor systems. |
-| `getcpu` | Returns the running CPU/NUMA node; used by glibc's per-CPU TLS and `malloc` implementation. |
+| Syscall | Nr (x86-64/aarch64) | Reason |
+| --- | --- | --- |
+| `clone3` | 435 | glibc 2.34+ uses `clone3` instead of `clone` for `pthread_create` and `posix_spawn`. Not defining `__NR_clone3` in the build headers silently omits this entry and causes SIGSYS at the first thread or process creation after seccomp is applied. |
+| `close_range` | 436 | glibc 2.34+ `posix_spawn` uses `close_range` in the child to close inherited file descriptors before `exec`. The child inherits this filter, so the entry must be present even though only the child calls it. |
+| `faccessat2` | 439 | glibc 2.33+ uses `faccessat2` (Linux 5.8+) for `faccessat()` calls with `AT_SYMLINK_NOFOLLOW` or `AT_EACCESS` flags. `getaddrinfo` and NSS module probing trigger this on Fedora 36+ hosts. |
+| `rseq` | — | glibc 2.35+ registers a per-thread restartable-sequence area after `fork()`. glibc 2.36+ also uses `rseq` inside the `malloc` per-CPU cache. |
+| `membarrier` | — | glibc 2.31+ issues `MEMBARRIER_CMD_PRIVATE_EXPEDITED` from the `malloc` fast path on multi-processor systems. |
+| `getcpu` | — | Returns the running CPU/NUMA node; used by glibc's per-CPU TLS and `malloc` implementation. |
+
+**Build-header caveat** — `clone3`, `close_range`, and `faccessat2` were added in
+Linux 5.3, 5.9, and 5.8 respectively. Kernel headers shipped with older build
+environments (e.g. Ubuntu 20.04 `linux-libc-dev` at 5.4) may not define the
+corresponding `__NR_*` macros; a naive `#ifdef __NR_clone3` guard would silently
+drop the entry. The filter uses an `#elif defined(__x86_64__) || defined(__aarch64__)`
+fallback with the raw numeric constant for each of these three syscalls, paralleling
+the pattern already used for `SECCOMP_RET_KILL_PROCESS`.
 
 ### FreeBSD / NetBSD / OpenBSD (BSD)
 
@@ -279,8 +291,10 @@ advertises:
 Hardening is exercised by automated tests:
 
 * `tests/unit/test_seccomp_hardening.cpp` asserts the fail_closed default action,
-  the architecture guard, that SQLite journal syscalls are allowed, and that
-  privilege-mutation syscalls (chmod, fchmod, fchmodat, umask, mkdir, truncate) remain denied.
+  the architecture guard, that SQLite journal syscalls are allowed, that
+  privilege-mutation syscalls (chmod, fchmod, fchmodat, umask, mkdir, truncate) remain denied,
+  and that `clone3` (435), `close_range` (436), and `faccessat2` (439) are always present in
+  the compiled filter regardless of build-time `__NR_*` macro availability.
 * `tests/unit/test_file_descriptor.cpp` exercises `FileDescriptor::set_cloexec()`
   and `close_all_file_descriptors_except()`.
 * `tests/unit/test_media_thumbnailer.cpp` covers the CLOEXEC pipe path and the

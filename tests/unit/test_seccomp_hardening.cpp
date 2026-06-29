@@ -199,6 +199,27 @@ SCENARIO("seccomp filter allows SQLite journal ops and blocks privilege-escalati
             }
         }
 
+        WHEN("modern Linux syscalls needed by glibc 2.34+ on Fedora are checked")
+        {
+            THEN("clone3, close_range, and faccessat2 are always allowed on x86_64 and aarch64")
+            {
+                // glibc 2.34+ uses clone3 (435) for pthread_create and posix_spawn.
+                // glibc 2.34+ posix_spawn uses close_range (436) in the child to close
+                // inherited file descriptors before exec; the child inherits this filter.
+                // glibc 2.33+ uses faccessat2 (439) for faccessat() with AT_SYMLINK_NOFOLLOW
+                // on kernels >= 5.8. These must always be present regardless of what
+                // __NR_* macros the build-time kernel headers define — binaries built on
+                // WSL2 / Ubuntu 20.04 (kernel headers 5.4) would otherwise omit them,
+                // causing SIGSYS crashes on modern Fedora/Ubuntu hosts at the first
+                // pthread_create or posix_spawn call after seccomp is applied.
+#if defined(__x86_64__) || defined(__aarch64__)
+                REQUIRE(merovingian::platform::seccomp_is_syscall_allowed(435)); // clone3
+                REQUIRE(merovingian::platform::seccomp_is_syscall_allowed(436)); // close_range
+                REQUIRE(merovingian::platform::seccomp_is_syscall_allowed(439)); // faccessat2
+#endif
+            }
+        }
+
         WHEN("the expected architecture is queried")
         {
             auto const expected = merovingian::platform::seccomp_expected_architecture();

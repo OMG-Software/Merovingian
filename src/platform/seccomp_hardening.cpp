@@ -108,6 +108,15 @@ namespace
         ALLOW_SYSCALL(__NR_lstat),
         ALLOW_SYSCALL(__NR_access),
         ALLOW_SYSCALL(__NR_faccessat),
+        // faccessat2 (Linux 5.8, x86_64/aarch64 = 439): glibc 2.33+ uses this
+        // for faccessat() calls with AT_SYMLINK_NOFOLLOW / AT_EACCESS flags.
+        // getaddrinfo and NSS module probing trigger this on modern Fedora.
+        // Numeric fallback for builds against older kernel headers.
+#ifdef __NR_faccessat2
+        ALLOW_SYSCALL(__NR_faccessat2),
+#elif defined(__x86_64__) || defined(__aarch64__)
+        ALLOW_SYSCALL(439),
+#endif
         ALLOW_SYSCALL(__NR_lseek),
         ALLOW_SYSCALL(__NR_fcntl),
         ALLOW_SYSCALL(__NR_ioctl),
@@ -223,6 +232,15 @@ namespace
 #ifdef __NR_execveat
         ALLOW_SYSCALL(__NR_execveat),
 #endif
+        // close_range (Linux 5.9, x86_64/aarch64 = 436): glibc 2.34+ posix_spawn
+        // uses this in the child to efficiently close inherited file descriptors
+        // before exec. The child inherits this filter, so it must be present.
+        // Numeric fallback for builds against older kernel headers.
+#ifdef __NR_close_range
+        ALLOW_SYSCALL(__NR_close_range),
+#elif defined(__x86_64__) || defined(__aarch64__)
+        ALLOW_SYSCALL(436),
+#endif
 
         // ── Threads and synchronisation ────────────────────────────────────
         ALLOW_SYSCALL(__NR_futex),
@@ -238,8 +256,15 @@ namespace
         ALLOW_SYSCALL(__NR_exit),
         ALLOW_SYSCALL(__NR_exit_group),
         ALLOW_SYSCALL(__NR_set_tid_address),
+        // clone3 (Linux 5.3, x86_64/aarch64 = 435): glibc 2.34+ uses clone3
+        // for both pthread_create and posix_spawn. Binaries built against older
+        // kernel headers (e.g. Ubuntu 20.04 linux-libc-dev) may not define
+        // __NR_clone3 even though the runtime distro's glibc issues it, so we
+        // always include it via the numeric fallback for x86_64 and aarch64.
 #ifdef __NR_clone3
         ALLOW_SYSCALL(__NR_clone3),
+#elif defined(__x86_64__) || defined(__aarch64__)
+        ALLOW_SYSCALL(435),
 #endif
 #ifdef __NR_futex_waitv
         ALLOW_SYSCALL(__NR_futex_waitv),
