@@ -185,3 +185,71 @@ SCENARIO("Hardening status names are stable for startup logs", "[platform][harde
         }
     }
 }
+
+SCENARIO("BSD sandbox controls in self-check are always alpha_exception not enabled",
+         "[platform][hardening][bsd][portable]")
+{
+    GIVEN("the hardening self-check report")
+    {
+        auto const self_check = merovingian::platform::run_startup_hardening_self_check();
+        auto const& checks = self_check.checks();
+
+        WHEN("BSD-specific sandbox controls are examined")
+        {
+            THEN("pledge/unveil and capsicum are always alpha_exception — never enabled")
+            {
+                // enabled_or_alpha_exception(false, ...) always produces alpha_exception.
+                // These controls are documented intentional deferrals; pinning them here
+                // catches any accidental promotion to `enabled` before it ships.
+                REQUIRE(checks[7].name == "pledge/unveil");
+                REQUIRE(checks[8].name == "capsicum");
+                REQUIRE(checks[7].status == merovingian::platform::HardeningStatus::alpha_exception);
+                REQUIRE(checks[8].status == merovingian::platform::HardeningStatus::alpha_exception);
+            }
+        }
+    }
+}
+
+#ifndef __linux__
+SCENARIO("Hardening self-check maps Linux-only controls to appropriate non-Linux statuses",
+         "[platform][hardening][bsd][portable]")
+{
+    GIVEN("the hardening self-check report on a non-Linux platform")
+    {
+        auto const self_check = merovingian::platform::run_startup_hardening_self_check();
+        auto const& checks = self_check.checks();
+
+        WHEN("seccomp is examined on a non-Linux host")
+        {
+            THEN("seccomp status is unknown — not alpha_exception, enabled, or disabled")
+            {
+                // /proc/self/status does not exist on BSD; probe_seccomp_status
+                // returns {probed: false, seccomp_active: false} which maps to
+                // `unknown`. unknown is the correct signal — the OS cannot run
+                // seccomp-bpf at all, distinct from alpha_exception (intentional
+                // deferral we have documented).
+                REQUIRE(checks[6].name == "seccomp");
+                REQUIRE(checks[6].status == merovingian::platform::HardeningStatus::unknown);
+                REQUIRE(checks[6].status != merovingian::platform::HardeningStatus::alpha_exception);
+                REQUIRE(checks[6].status != merovingian::platform::HardeningStatus::enabled);
+            }
+        }
+
+        WHEN("Linux process-capability controls are examined on a non-Linux host")
+        {
+            THEN("core dump policy, no_new_privs, and capability bounding are alpha_exception")
+            {
+                // PR_SET_DUMPABLE, PR_SET_NO_NEW_PRIVS, and cap_set_proc are Linux
+                // kernel features. On non-Linux hosts the implementation returns
+                // enabled_or_alpha_exception(false, ...) = alpha_exception for each.
+                REQUIRE(checks[11].name == "core dump policy");
+                REQUIRE(checks[12].name == "no_new_privs");
+                REQUIRE(checks[13].name == "capability bounding");
+                REQUIRE(checks[11].status == merovingian::platform::HardeningStatus::alpha_exception);
+                REQUIRE(checks[12].status == merovingian::platform::HardeningStatus::alpha_exception);
+                REQUIRE(checks[13].status == merovingian::platform::HardeningStatus::alpha_exception);
+            }
+        }
+    }
+}
+#endif // !__linux__

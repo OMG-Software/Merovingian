@@ -4,6 +4,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -395,6 +396,128 @@ SCENARIO("Linux hardening documentation gate requires core dump policy", "[platf
             {
                 REQUIRE_FALSE(decision.accepted);
                 REQUIRE(decision.reason == "linux hardening plan is incomplete");
+            }
+        }
+    }
+}
+
+SCENARIO("BSD hardening plan fails closed when each documentation field is individually missing",
+         "[platform][hardening][bsd]")
+{
+    GIVEN("BSD profiles with exactly one documentation field set to false")
+    {
+        // pledge_documented is already covered by the existing scenario.
+        // All six BsdHardeningPlan booleans must be individually load-bearing.
+        auto no_unveil = merovingian::platform::default_bsd_hardening_profile();
+        no_unveil.bsd.unveil_documented = false;
+        auto no_capsicum = merovingian::platform::default_bsd_hardening_profile();
+        no_capsicum.bsd.capsicum_documented = false;
+        auto no_jail = merovingian::platform::default_bsd_hardening_profile();
+        no_jail.bsd.jail_documented = false;
+        auto no_chroot = merovingian::platform::default_bsd_hardening_profile();
+        no_chroot.bsd.chroot_documented = false;
+        auto no_setrlimit = merovingian::platform::default_bsd_hardening_profile();
+        no_setrlimit.bsd.setrlimit_documented = false;
+
+        WHEN("each incomplete BSD profile is evaluated")
+        {
+            auto const no_unveil_decision = merovingian::platform::evaluate_runtime_hardening_profile(no_unveil);
+            auto const no_capsicum_decision = merovingian::platform::evaluate_runtime_hardening_profile(no_capsicum);
+            auto const no_jail_decision = merovingian::platform::evaluate_runtime_hardening_profile(no_jail);
+            auto const no_chroot_decision = merovingian::platform::evaluate_runtime_hardening_profile(no_chroot);
+            auto const no_setrlimit_decision = merovingian::platform::evaluate_runtime_hardening_profile(no_setrlimit);
+
+            THEN("every missing documentation field fails closed independently")
+            {
+                REQUIRE_FALSE(no_unveil_decision.accepted);
+                REQUIRE(no_unveil_decision.reason == "bsd hardening plan is incomplete");
+                REQUIRE_FALSE(no_capsicum_decision.accepted);
+                REQUIRE(no_capsicum_decision.reason == "bsd hardening plan is incomplete");
+                REQUIRE_FALSE(no_jail_decision.accepted);
+                REQUIRE(no_jail_decision.reason == "bsd hardening plan is incomplete");
+                REQUIRE_FALSE(no_chroot_decision.accepted);
+                REQUIRE(no_chroot_decision.reason == "bsd hardening plan is incomplete");
+                REQUIRE_FALSE(no_setrlimit_decision.accepted);
+                REQUIRE(no_setrlimit_decision.reason == "bsd hardening plan is incomplete");
+            }
+        }
+    }
+}
+
+SCENARIO("BSD and Linux profiles use platform-appropriate writable path sets", "[platform][hardening][bsd]")
+{
+    GIVEN("default Linux and BSD hardening profiles")
+    {
+        auto const linux_profile = merovingian::platform::default_linux_hardening_profile();
+        auto const bsd_profile = merovingian::platform::default_bsd_hardening_profile();
+
+        WHEN("writable paths are compared across platforms")
+        {
+            auto const& lp = linux_profile.filesystem.writable_paths;
+            auto const& bp = bsd_profile.filesystem.writable_paths;
+
+            THEN("BSD paths differ from Linux paths and both are accepted as safe")
+            {
+                // Both profiles share /var/lib/merovingian (persistent data dir).
+                // Linux adds /run/merovingian (tmpfs ephemeral, standard on Linux).
+                // BSD replaces that with /var/run/merovingian because /run is not a
+                // standard tmpfs mountpoint on BSD variants.
+                REQUIRE(lp.size() == 2U);
+                REQUIRE(bp.size() == 2U);
+                REQUIRE(std::find(lp.begin(), lp.end(), "/var/lib/merovingian") != lp.end());
+                REQUIRE(std::find(lp.begin(), lp.end(), "/run/merovingian") != lp.end());
+                REQUIRE(std::find(bp.begin(), bp.end(), "/var/lib/merovingian") != bp.end());
+                REQUIRE(std::find(bp.begin(), bp.end(), "/var/run/merovingian") != bp.end());
+
+                // The platform-specific runtime socket dir must differ between the two.
+                REQUIRE(std::find(lp.begin(), lp.end(), "/var/run/merovingian") == lp.end());
+                REQUIRE(std::find(bp.begin(), bp.end(), "/run/merovingian") == bp.end());
+
+                // Both sets must still pass the evaluator.
+                auto const linux_decision = merovingian::platform::evaluate_runtime_hardening_profile(linux_profile);
+                auto const bsd_decision = merovingian::platform::evaluate_runtime_hardening_profile(bsd_profile);
+                REQUIRE(linux_decision.accepted);
+                REQUIRE(bsd_decision.accepted);
+            }
+        }
+    }
+}
+
+SCENARIO("BSD hardening profile rejects the same unsafe filesystem paths as Linux", "[platform][hardening][bsd]")
+{
+    GIVEN("BSD profiles with protected or non-normalized writable paths")
+    {
+        auto protected_etc = merovingian::platform::default_bsd_hardening_profile();
+        protected_etc.filesystem.writable_paths.push_back("/etc/rc.conf.d");
+        auto protected_usr = merovingian::platform::default_bsd_hardening_profile();
+        protected_usr.filesystem.writable_paths.push_back("/usr/local/bin");
+        auto non_normalized = merovingian::platform::default_bsd_hardening_profile();
+        non_normalized.filesystem.writable_paths.push_back("/var/lib/../etc");
+        auto root_escape = merovingian::platform::default_bsd_hardening_profile();
+        root_escape.filesystem.writable_paths.push_back("/");
+
+        WHEN("the BSD profiles are evaluated")
+        {
+            auto const protected_etc_decision =
+                merovingian::platform::evaluate_runtime_hardening_profile(protected_etc);
+            auto const protected_usr_decision =
+                merovingian::platform::evaluate_runtime_hardening_profile(protected_usr);
+            auto const non_normalized_decision =
+                merovingian::platform::evaluate_runtime_hardening_profile(non_normalized);
+            auto const root_escape_decision = merovingian::platform::evaluate_runtime_hardening_profile(root_escape);
+
+            THEN("filesystem safety validation is platform-agnostic and rejects all unsafe paths")
+            {
+                // The filesystem safety check must apply identically regardless of
+                // whether the outer profile targets Linux or BSD.
+                REQUIRE_FALSE(protected_etc_decision.accepted);
+                REQUIRE(protected_etc_decision.reason == "filesystem restriction plan is unsafe");
+                REQUIRE_FALSE(protected_usr_decision.accepted);
+                REQUIRE(protected_usr_decision.reason == "filesystem restriction plan is unsafe");
+                REQUIRE_FALSE(non_normalized_decision.accepted);
+                REQUIRE(non_normalized_decision.reason == "filesystem restriction plan is unsafe");
+                REQUIRE_FALSE(root_escape_decision.accepted);
+                REQUIRE(root_escape_decision.reason == "filesystem restriction plan is unsafe");
             }
         }
     }
