@@ -186,10 +186,12 @@ auto run_startup_hardening_self_check() -> HardeningSelfCheck
     add("FORTIFY_SOURCE",
         enabled_or_alpha_exception(compile_time_fortify_enabled(), "Compile did not advertise _FORTIFY_SOURCE > 0."));
     add("seccomp", seccomp_check_from_probe(probe_seccomp_status()));
-    add("pledge/unveil",
-        enabled_or_alpha_exception(false, "OpenBSD pledge/unveil invocations are not yet wired into startup."));
-    add("capsicum",
-        enabled_or_alpha_exception(false, "FreeBSD Capsicum capability mode entry is not yet wired into startup."));
+    add("pledge/unveil", enabled_or_alpha_exception(
+                             openbsd_pledge_is_active(),
+                             "OpenBSD pledge/unveil has not been applied yet (applied after start_client_server)."));
+    add("capsicum", enabled_or_alpha_exception(
+                        freebsd_capsicum_is_active(),
+                        "FreeBSD Capsicum capability mode not yet entered (entered after fed worker is spawned)."));
     add("privilege drop",
         enabled_or_alpha_exception(
             false,

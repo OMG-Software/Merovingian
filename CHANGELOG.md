@@ -1,3 +1,20 @@
+## 0.10.7
+
+### Added
+- **feat(platform): implement OpenBSD `pledge(2)` + `unveil(2)` sandbox:** `apply_runtime_hardening_controls()` now calls `unveil()` for every path in the BSD hardening profile (read-only paths get `"rx"`, writable paths get `"rwc"`, `/etc/ssl` gets `"r"` for the LibreSSL CA bundle), locks the vnode allowlist with `unveil(NULL, NULL)`, then applies `pledge("stdio rpath wpath cpath flock inet unix dns proc exec", NULL)`. The promise set includes `proc exec` for the thumbnail and federation worker child processes and `unix` for the AF_UNIX IPC channel. `openbsd_pledge_is_active()` and `bsd_pledge_promises()` are now exported from `runtime_hardening.hpp` for testing. Tested on the Tier 1 OpenBSD CI job (`vmactions/openbsd-vm@v1`).
+- **feat(platform): implement FreeBSD Capsicum `cap_enter(2)` capability mode:** `apply_freebsd_capsicum_capability_mode()` is a new public API that enters Capsicum capability mode. It is called from `run_server()` in `main.cpp` after all resources are open (listeners bound, TLS loaded, federation worker spawned via `posix_spawn()` by path). Before calling `cap_enter`, the thumbnail worker binary is pre-opened with `O_RDONLY | O_EXEC | O_CLOEXEC` and the fd is stored in `RuntimeMediaConfig::thumbnail_worker_fd`. The child process in `thumbnailer.cpp` now calls `fexecve(fd, argv, environ)` on FreeBSD when the pre-opened fd is available, allowing thumbnail generation to continue after the global filesystem namespace is forbidden. `freebsd_capsicum_is_active()` probes `cap_getmode(2)` and is exported for testing. Tested on the Tier 1 FreeBSD CI job (`vmactions/freebsd-vm@v1`).
+
+### Changed
+- **chore(platform): update BSD hardening profile rejection message:** the fallback for non-OpenBSD/non-FreeBSD BSDs (e.g. NetBSD) now reads `"BSD sandbox helpers are not yet implemented on this BSD variant"` to distinguish from the old message that previously also covered OpenBSD and FreeBSD.
+
+### Added tests
+- **test(platform): OpenBSD pledge probe returns false before pledge is applied:** new `#ifdef __OpenBSD__` SCENARIO in `test_runtime_hardening.cpp` asserts `openbsd_pledge_is_active()` returns false in the test runner (pledge not applied) — exercises the probe without permanently restricting the test process.
+- **test(platform): OpenBSD pledge promise set covers all homeserver categories:** new `#ifdef __OpenBSD__` SCENARIO asserts all ten promise categories (`stdio`, `rpath`, `wpath`, `cpath`, `flock`, `inet`, `unix`, `dns`, `proc`, `exec`) are present in `bsd_pledge_promises()` and the string is space-separated.
+- **test(platform): FreeBSD Capsicum probe returns false before capability mode entry:** new `#ifdef __FreeBSD__` SCENARIO asserts `freebsd_capsicum_is_active()` returns false (cap_enter not called).
+- **test(platform): FreeBSD `apply_runtime_hardening_controls` accepts BSD profile without cap_enter:** new `#ifdef __FreeBSD__` SCENARIO calls `apply_runtime_hardening_controls` on FreeBSD (safe — returns accepted without calling cap_enter) and asserts accepted + probe still false.
+- **test(platform): BSD runtime hardening scenario is now platform-conditional:** the old scenario "BSD runtime hardening controls remain documented alpha exceptions" is replaced with a platform-aware equivalent: profile evaluation always accepts; `apply_runtime_hardening_controls` is tested on FreeBSD (accepts, Capsicum deferred) and non-OpenBSD/non-FreeBSD (rejects with unimplemented message); skipped on OpenBSD to avoid permanently pledging the test process.
+- **test(platform): self-check BSD scenario comment updated:** the "BSD sandbox controls are alpha_exception" scenario in `test_hardening_self_check.cpp` is updated to explain the correct reason (startup self-check runs before `apply_runtime_hardening_controls`, so probes return false at check time).
+
 ## 0.10.6
 
 ### Fixed

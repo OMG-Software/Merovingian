@@ -186,21 +186,23 @@ SCENARIO("Hardening status names are stable for startup logs", "[platform][harde
     }
 }
 
-SCENARIO("BSD sandbox controls in self-check are always alpha_exception not enabled",
+SCENARIO("BSD sandbox controls in self-check are alpha_exception in a process where they have not been applied",
          "[platform][hardening][bsd][portable]")
 {
-    GIVEN("the hardening self-check report")
+    GIVEN("the hardening self-check report from a process where pledge and cap_enter have not been called")
     {
         auto const self_check = merovingian::platform::run_startup_hardening_self_check();
         auto const& checks = self_check.checks();
 
         WHEN("BSD-specific sandbox controls are examined")
         {
-            THEN("pledge/unveil and capsicum are always alpha_exception — never enabled")
+            THEN("pledge/unveil and capsicum are alpha_exception because the probes return false")
             {
-                // enabled_or_alpha_exception(false, ...) always produces alpha_exception.
-                // These controls are documented intentional deferrals; pinning them here
-                // catches any accidental promotion to `enabled` before it ships.
+                // The startup self-check runs BEFORE apply_runtime_hardening_controls is
+                // called (the self-check is at line ~762 in main.cpp; the apply is at ~769).
+                // Therefore openbsd_pledge_is_active() and freebsd_capsicum_is_active() both
+                // return false at self-check time, yielding alpha_exception. In unit tests the
+                // probes also return false since pledge/cap_enter are never called directly.
                 REQUIRE(checks[7].name == "pledge/unveil");
                 REQUIRE(checks[8].name == "capsicum");
                 REQUIRE(checks[7].status == merovingian::platform::HardeningStatus::alpha_exception);

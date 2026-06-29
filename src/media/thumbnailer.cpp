@@ -413,7 +413,26 @@ auto generate_thumbnail(ThumbnailerConfig const& config, ThumbnailRequest const&
         child_stdin_write.reset();
         child_stdout_read.reset();
 
-        // Close everything except stdio and the pipe ends that are now stdio.
+        char* const exec_argv[] = {const_cast<char*>(config.worker_path.c_str()), nullptr};
+
+#ifdef __FreeBSD__
+        // In FreeBSD Capsicum capability mode the process cannot open files by path;
+        // use a pre-opened binary fd with fexecve(3) instead of execv(3).
+        if (config.worker_binary_fd >= 0)
+        {
+            // Include the pre-opened binary fd in the keep-open set so the fd
+            // sweep does not close it before the fexecve call.
+            auto const keep_open_caps = std::array<int, 5>{STDIN_FILENO, STDOUT_FILENO, child_stdin_read.get(),
+                                                           child_stdout_write.get(), config.worker_binary_fd};
+            core::close_all_file_descriptors_except(std::span<int const>{keep_open_caps});
+            child_stdin_read.reset();
+            child_stdout_write.reset();
+            ::fexecve(config.worker_binary_fd, exec_argv, ::environ);
+            ::_exit(127); // fexecve failed
+        }
+#endif // __FreeBSD__
+
+        // Standard path: close everything except stdio and the pipe ends, then exec.
         // Use the allocation-free span overload: between fork() and exec() the
         // child must not touch the heap because another thread in the parent may
         // hold a malloc lock, which would deadlock and leave the parent waiting
@@ -431,8 +450,7 @@ auto generate_thumbnail(ThumbnailerConfig const& config, ThumbnailRequest const&
 
         child_stdin_read.reset();
         child_stdout_write.reset();
-        char* const argv[] = {const_cast<char*>(config.worker_path.c_str()), nullptr};
-        ::execv(config.worker_path.c_str(), argv);
+        ::execv(config.worker_path.c_str(), exec_argv);
         ::_exit(127); // exec failed
     }
 

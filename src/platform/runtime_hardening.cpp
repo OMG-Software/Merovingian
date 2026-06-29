@@ -17,6 +17,19 @@
 #include <sys/resource.h>
 #endif
 
+#ifdef __OpenBSD__
+#include <atomic>
+
+#include <unistd.h>
+#endif
+
+#ifdef __FreeBSD__
+#include <cerrno>
+#include <cstring>
+
+#include <sys/capsicum.h>
+#endif
+
 namespace merovingian::platform
 {
 namespace
@@ -381,9 +394,95 @@ namespace
         return true;
     }
 
-#endif
+#endif // __linux__
+
+#ifdef __OpenBSD__
+
+    // Atomic flag set once pledge(2) is called. Allows the probe function to
+    // answer without re-entering the kernel on every health-check query.
+    static std::atomic<bool> g_pledge_applied{false};
+
+    // Apply filesystem access restrictions via unveil(2), then restrict
+    // available syscalls via pledge(2). Returns false on any failure.
+    [[nodiscard]] auto apply_openbsd_pledge_unveil(RuntimeHardeningProfile const& profile) noexcept -> bool
+    {
+        // Paths in read_only_paths need read + execute permission so that shared
+        // libraries under /usr and worker binaries can be accessed and executed.
+        for (auto const& path : profile.filesystem.read_only_paths)
+        {
+            if (::unveil(path.c_str(), "rx") != 0)
+            {
+                return false;
+            }
+        }
+        // Paths in writable_paths need read + write + create (WAL files, sockets).
+        for (auto const& path : profile.filesystem.writable_paths)
+        {
+            if (::unveil(path.c_str(), "rwc") != 0)
+            {
+                return false;
+            }
+        }
+        // LibreSSL CA bundle — OpenBSD ships LibreSSL; /etc/ssl is the trust store
+        // for outbound TLS connections and federation server verification.
+        if (::unveil("/etc/ssl", "r") != 0)
+        {
+            return false;
+        }
+        // Lock the vnode allowlist — no further paths may be added after this point.
+        if (::unveil(nullptr, nullptr) != 0)
+        {
+            return false;
+        }
+        if (::pledge(bsd_pledge_promises(), nullptr) != 0)
+        {
+            return false;
+        }
+        g_pledge_applied.store(true, std::memory_order_release);
+        return true;
+    }
+
+#endif // __OpenBSD__
 
 } // namespace
+
+#ifdef __OpenBSD__
+
+auto bsd_pledge_promises() noexcept -> char const*
+{
+    // proc + exec: required to fork and exec the thumbnail and federation worker
+    //              child processes via posix_spawn() and fork()/execv().
+    // flock:       SQLite WAL-mode file locking (flock(2) on WAL files).
+    // unix:        AF_UNIX IPC channel to the out-of-process federation worker.
+    // dns:         server-discovery DNS resolution for outbound federation.
+    return "stdio rpath wpath cpath flock inet unix dns proc exec";
+}
+
+auto openbsd_pledge_is_active() noexcept -> bool
+{
+    return g_pledge_applied.load(std::memory_order_acquire);
+}
+
+#endif // __OpenBSD__
+
+#ifdef __FreeBSD__
+
+auto freebsd_capsicum_is_active() noexcept -> bool
+{
+    auto mode = unsigned int{0U};
+    return ::cap_getmode(&mode) == 0 && mode != 0U;
+}
+
+auto apply_freebsd_capsicum_capability_mode() -> HardeningPlanDecision
+{
+    if (::cap_enter() != 0)
+    {
+        return reject("FreeBSD cap_enter() failed: " + std::string{::strerror(errno)});
+    }
+    return accept();
+}
+
+#endif // __FreeBSD__
 
 auto apply_runtime_hardening_controls(RuntimeHardeningProfile const& profile) -> HardeningPlanDecision
 {
@@ -416,9 +515,21 @@ auto apply_runtime_hardening_controls(RuntimeHardeningProfile const& profile) ->
 
     if (profile.platform == HardeningPlatform::bsd)
     {
-        // pledge/unveil/capsicum are intentionally deferred until the project
-        // has BSD CI environments to test them safely.
-        return reject_if_required(profile.mode, "BSD sandbox helpers are not yet implemented");
+#ifdef __OpenBSD__
+        if (!apply_openbsd_pledge_unveil(profile))
+        {
+            return reject_if_required(profile.mode, "OpenBSD pledge/unveil application failed");
+        }
+        return accept();
+#elif defined(__FreeBSD__)
+        // Capsicum capability mode is entered separately after all resources are opened;
+        // call apply_freebsd_capsicum_capability_mode() from main.cpp after spawning
+        // the federation worker. This call only validates the profile.
+        return accept();
+#else
+        // NetBSD and other BSD variants: no in-process sandbox primitives implemented.
+        return reject_if_required(profile.mode, "BSD sandbox helpers are not yet implemented on this BSD variant");
+#endif
     }
 
     // Portable profile: service-manager units apply privilege drop and filesystem

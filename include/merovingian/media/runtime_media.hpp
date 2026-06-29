@@ -32,6 +32,10 @@ struct RuntimeMediaConfig final
     // resampling (the original media bytes are served instead). Defaults to the
     // build-time install location; see make_runtime_media_config.
     std::string thumbnail_worker_path{};
+    // Pre-opened file descriptor for the thumbnail worker binary. Set to a valid
+    // fd before entering FreeBSD Capsicum capability mode so the child process can
+    // exec the worker with fexecve(3) rather than execv(3). -1 means unused.
+    int thumbnail_worker_fd{-1};
     std::uint32_t thumbnail_timeout_seconds{10U};
 };
 
