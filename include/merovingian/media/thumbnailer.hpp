@@ -92,6 +92,10 @@ struct ThumbnailerConfig final
     std::uint64_t max_output_bytes{0U}; // 0 = unbounded; reject larger results
     std::uint32_t max_pixels{4096000U}; // decode-bomb guard handed to the worker
     std::uint32_t max_target_dimension{2048U};
+    // Pre-opened fd for the worker binary (FreeBSD Capsicum only). When >= 0 the
+    // child process calls fexecve(fd,...) instead of execv(path,...) so the exec
+    // succeeds after cap_enter() has forbidden opening files by path. -1 disables.
+    int worker_binary_fd{-1};
 };
 
 // --- Wire protocol (shared by parent and worker; pure, no I/O) ---------------

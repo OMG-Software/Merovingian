@@ -2,6 +2,7 @@
 
 #include "../federation_signing_test_support.hpp"
 #include "../support/registration_token.hpp"
+#include "../support/temp_directory.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/database/migration.hpp"
 #include "merovingian/database/schema.hpp"
@@ -73,7 +74,7 @@ namespace
 [[nodiscard]] auto unique_sqlite_path() -> std::filesystem::path
 {
     auto const now = std::chrono::steady_clock::now().time_since_epoch().count();
-    return std::filesystem::temp_directory_path() / ("merovingian-restart-flow-" + std::to_string(now) + ".sqlite3");
+    return merovingian::tests::temporary_directory() / ("merovingian-restart-flow-" + std::to_string(now) + ".sqlite3");
 }
 
 } // namespace

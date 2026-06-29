@@ -55,8 +55,9 @@ SCENARIO("Default Linux BSD and portable hardening profiles are accepted", "[pla
                 REQUIRE(linux.platform == merovingian::platform::HardeningPlatform::linux);
                 REQUIRE(bsd.platform == merovingian::platform::HardeningPlatform::bsd);
                 REQUIRE(portable.mode == merovingian::platform::HardeningMode::optional);
-                REQUIRE(bsd.filesystem.writable_paths.size() == 2U);
+                REQUIRE(bsd.filesystem.writable_paths.size() == 3U);
                 REQUIRE(bsd.filesystem.writable_paths[1] == "/var/run/merovingian");
+                REQUIRE(bsd.filesystem.writable_paths[2] == "/tmp");
             }
         }
     }
@@ -354,17 +355,39 @@ SCENARIO("Portable runtime hardening controls delegate to service manager", "[pl
     }
 }
 
-SCENARIO("BSD runtime hardening controls remain documented alpha exceptions", "[platform][hardening]")
+SCENARIO("BSD runtime hardening controls apply or reject based on the current BSD variant",
+         "[platform][hardening][bsd]")
 {
     GIVEN("the default BSD hardening profile")
     {
-        auto profile = merovingian::platform::default_bsd_hardening_profile();
+        auto const profile = merovingian::platform::default_bsd_hardening_profile();
 
-        WHEN("controls are applied")
+        WHEN("the profile documentation is evaluated")
+        {
+            auto const eval_decision = merovingian::platform::evaluate_runtime_hardening_profile(profile);
+
+            THEN("the documented plan passes the profile validator on all platforms")
+            {
+                REQUIRE(eval_decision.accepted);
+            }
+        }
+
+#if !defined(__OpenBSD__)
+        // On OpenBSD, apply_runtime_hardening_controls calls unveil()+pledge(), which
+        // permanently restricts the test-runner process and would break subsequent tests.
+        WHEN("controls are applied on a non-OpenBSD platform")
         {
             auto const decision = merovingian::platform::apply_runtime_hardening_controls(profile);
 
-            THEN("BSD helpers are rejected in required mode and accepted as optional")
+#if defined(__FreeBSD__)
+            THEN("FreeBSD BSD profile is accepted — Capsicum entry is deferred to "
+                 "apply_freebsd_capsicum_capability_mode()")
+            {
+                REQUIRE(decision.accepted);
+                REQUIRE_FALSE(decision.fail_closed);
+            }
+#else
+            THEN("non-native BSD platform rejects with an unimplemented message")
             {
                 REQUIRE_FALSE(decision.accepted);
                 REQUIRE(decision.fail_closed);
@@ -377,9 +400,100 @@ SCENARIO("BSD runtime hardening controls remain documented alpha exceptions", "[
                 REQUIRE(optional_decision.accepted);
                 REQUIRE(optional_decision.reason.find("BSD sandbox helpers") != std::string::npos);
             }
+#endif // __FreeBSD__
+        }
+#endif // !__OpenBSD__
+    }
+}
+
+#ifdef __OpenBSD__
+SCENARIO("OpenBSD pledge probe returns false before pledge is applied in the test process",
+         "[platform][hardening][bsd][openbsd]")
+{
+    GIVEN("the OpenBSD test runner, which has not yet called pledge(2)")
+    {
+        WHEN("the pledge active probe is queried")
+        {
+            THEN("it returns false — pledge has not been applied in this process")
+            {
+                REQUIRE_FALSE(merovingian::platform::openbsd_pledge_is_active());
+            }
         }
     }
 }
+
+SCENARIO("OpenBSD pledge promise set covers all homeserver service categories", "[platform][hardening][bsd][openbsd]")
+{
+    GIVEN("the homeserver pledge promise string")
+    {
+        WHEN("bsd_pledge_promises() is called")
+        {
+            auto const promises = std::string{merovingian::platform::bsd_pledge_promises()};
+
+            THEN("all required promise categories are present")
+            {
+                REQUIRE(promises.find("stdio") != std::string::npos); // basic I/O
+                REQUIRE(promises.find("rpath") != std::string::npos); // config, certs
+                REQUIRE(promises.find("wpath") != std::string::npos); // WAL, sockets
+                REQUIRE(promises.find("cpath") != std::string::npos); // WAL file creation
+                REQUIRE(promises.find("flock") != std::string::npos); // SQLite WAL locking
+                REQUIRE(promises.find("inet") != std::string::npos);  // TCP listeners
+                REQUIRE(promises.find("unix") != std::string::npos);  // federation IPC socket
+                REQUIRE(promises.find("dns") != std::string::npos);   // server discovery
+                REQUIRE(promises.find("proc") != std::string::npos);  // fork thumbnail worker
+                REQUIRE(promises.find("exec") != std::string::npos);  // exec thumbnail worker
+            }
+
+            AND_THEN("the string is space-separated and non-empty")
+            {
+                REQUIRE_FALSE(promises.empty());
+                REQUIRE(promises.find(' ') != std::string::npos);
+            }
+        }
+    }
+}
+#endif // __OpenBSD__
+
+#ifdef __FreeBSD__
+SCENARIO("FreeBSD Capsicum probe returns false before capability mode is entered",
+         "[platform][hardening][bsd][freebsd]")
+{
+    GIVEN("the FreeBSD test runner, which has not yet called cap_enter(2)")
+    {
+        WHEN("the Capsicum active probe is queried")
+        {
+            THEN("it returns false — the process is not in capability mode")
+            {
+                REQUIRE_FALSE(merovingian::platform::freebsd_capsicum_is_active());
+            }
+        }
+    }
+}
+
+SCENARIO("FreeBSD apply_runtime_hardening_controls accepts the BSD profile without entering capability mode",
+         "[platform][hardening][bsd][freebsd]")
+{
+    GIVEN("the default BSD hardening profile on FreeBSD")
+    {
+        auto const profile = merovingian::platform::default_bsd_hardening_profile();
+
+        WHEN("runtime hardening controls are applied")
+        {
+            // Safe to call in unit tests: the FreeBSD branch validates the profile and
+            // returns accepted without calling cap_enter(). Capsicum entry is deferred
+            // to apply_freebsd_capsicum_capability_mode() called from main.cpp.
+            auto const decision = merovingian::platform::apply_runtime_hardening_controls(profile);
+
+            THEN("the decision is accepted and the process is not yet in capability mode")
+            {
+                REQUIRE(decision.accepted);
+                REQUIRE_FALSE(decision.fail_closed);
+                REQUIRE_FALSE(merovingian::platform::freebsd_capsicum_is_active());
+            }
+        }
+    }
+}
+#endif // __FreeBSD__
 
 SCENARIO("Linux hardening documentation gate requires core dump policy", "[platform][hardening]")
 {
@@ -460,14 +574,16 @@ SCENARIO("BSD and Linux profiles use platform-appropriate writable path sets", "
             {
                 // Both profiles share /var/lib/merovingian (persistent data dir).
                 // Linux adds /run/merovingian (tmpfs ephemeral, standard on Linux).
-                // BSD replaces that with /var/run/merovingian because /run is not a
-                // standard tmpfs mountpoint on BSD variants.
+                // BSD uses /var/run/merovingian because /run is not a standard tmpfs
+                // mountpoint on BSD variants, and adds /tmp for the test harness and
+                // runtime scratch utilities.
                 REQUIRE(lp.size() == 2U);
-                REQUIRE(bp.size() == 2U);
+                REQUIRE(bp.size() == 3U);
                 REQUIRE(std::find(lp.begin(), lp.end(), "/var/lib/merovingian") != lp.end());
                 REQUIRE(std::find(lp.begin(), lp.end(), "/run/merovingian") != lp.end());
                 REQUIRE(std::find(bp.begin(), bp.end(), "/var/lib/merovingian") != bp.end());
                 REQUIRE(std::find(bp.begin(), bp.end(), "/var/run/merovingian") != bp.end());
+                REQUIRE(std::find(bp.begin(), bp.end(), "/tmp") != bp.end());
 
                 // The platform-specific runtime socket dir must differ between the two.
                 REQUIRE(std::find(lp.begin(), lp.end(), "/var/run/merovingian") == lp.end());

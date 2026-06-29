@@ -347,6 +347,7 @@ namespace
     auto const& media_config = runtime.media_repository.config;
     auto thumbnailer_config = media::ThumbnailerConfig{};
     thumbnailer_config.worker_path = media_config.thumbnail_worker_path;
+    thumbnailer_config.worker_binary_fd = media_config.thumbnail_worker_fd;
     thumbnailer_config.timeout_seconds = media_config.thumbnail_timeout_seconds;
     thumbnailer_config.max_input_bytes = media_config.max_decode_input_bytes;
     thumbnailer_config.max_output_bytes = media_config.max_decode_output_bytes;

@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.10.6
+Version:        0.10.7
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -97,6 +97,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Mon Jun 29 2026 James Chapman <claude@ping.me.uk> - 0.10.7-1
+- feat(platform): implement OpenBSD pledge/unveil and FreeBSD Capsicum capability mode hardening with CI tests
+
 * Sun Jun 28 2026 James Chapman <claude@ping.me.uk> - 0.10.6-1
 - feat(federation): route join/leave outbound calls through federation worker; discovery timeout now honours configured remote_timeout; example config remote_timeout corrected to 60s; deleted-file guard and worktree-safe hook installer
 

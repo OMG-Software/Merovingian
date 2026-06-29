@@ -225,20 +225,65 @@ the pattern already used for `SECCOMP_RET_KILL_PROCESS`.
 
 ### FreeBSD / NetBSD / OpenBSD (BSD)
 
-Merovingian builds and runs on all three BSDs, but some kernel sandbox APIs are
-still alpha exceptions:
+Merovingian builds and runs on all three BSDs. OpenBSD and FreeBSD have full
+in-process sandbox support; NetBSD is served by the portable service-manager
+profile.
 
-* `pledge` / `unveil` (OpenBSD), `cap_enter()` (FreeBSD Capsicum), `jail`, and
-  `chroot` are documented in the BSD hardening plan but are **not yet invoked**
-  inside the process. They are tracked as `alpha_exception` in the startup
-  self_check.
+#### OpenBSD — `pledge(2)` + `unveil(2)`
+
+`apply_runtime_hardening_controls()` (called from `start_client_server()`) calls:
+
+1. `unveil(path, "rx")` for every path in `filesystem.read_only_paths` (e.g.
+   `/usr`, `/etc/merovingian`).
+2. `unveil(path, "rwc")` for every path in `filesystem.writable_paths` (e.g.
+   `/var/lib/merovingian`, `/var/run/merovingian`, `/tmp`). `/tmp` is included
+   because the test harness and runtime scratch utilities create temporary files
+   via `std::filesystem::temp_directory_path()`, which resolves to `/tmp` on
+   OpenBSD.
+3. `unveil("/etc/ssl", "r")` — LibreSSL CA bundle for outbound TLS.
+4. `unveil(NULL, NULL)` — locks the vnode allowlist.
+5. `pledge("stdio rpath wpath cpath flock inet unix dns proc exec", NULL)` — the
+   `proc exec` promises allow `fork()`/`exec()` for the thumbnail worker;
+   `unix` allows the AF_UNIX IPC channel to the federation worker.
+
+`openbsd_pledge_is_active()` returns `true` after step 5. The startup self-check
+runs *before* `apply_runtime_hardening_controls`, so pledge/unveil always appears
+as `alpha_exception` in the startup snapshot; the health endpoint and logs
+reflect the post-apply state.
+
+#### FreeBSD — Capsicum `cap_enter(2)`
+
+FreeBSD Capsicum capability mode forbids opening files by path after `cap_enter()`.
+The call therefore happens *after* all resources are open:
+
+1. `apply_runtime_hardening_controls()` validates the BSD profile and returns
+   accepted without calling `cap_enter()`.
+2. TCP listeners bind, TLS certificates load, and the federation worker is
+   spawned via `posix_spawn()` (path-based — must run before capability mode).
+3. `run_server()` in `main.cpp` pre-opens the thumbnail worker binary with
+   `open(path, O_RDONLY | O_EXEC | O_CLOEXEC)` and stores the fd in
+   `RuntimeMediaConfig::thumbnail_worker_fd`.
+4. `apply_freebsd_capsicum_capability_mode()` calls `cap_enter()`.
+5. The child process (thumbnail worker) uses `fexecve(fd, argv, environ)` instead
+   of `execv(path, argv)` because opening the binary by path is now forbidden.
+
+`freebsd_capsicum_is_active()` probes `cap_getmode(2)`. Like pledge above, the
+startup self-check always shows `alpha_exception` for capsicum because `cap_enter`
+is called after the self-check runs.
+
+#### NetBSD and other BSDs
+
+No in-process sandbox primitives are implemented. The BSD hardening profile is
+validated as documented, but `apply_runtime_hardening_controls()` returns a
+mode-gated rejection. Service-manager privilege drop and filesystem restrictions
+apply via `rc.d` scripts.
+
 * The portable `setrlimit` gates are validated by the BSD hardening profile, and
   the thumbnail worker applies `RLIMIT_CPU`, `RLIMIT_FSIZE`, `RLIMIT_CORE`,
   `RLIMIT_NOFILE`, and `RLIMIT_AS`.
 * The thumbnail worker fd sweep uses the capped `fcntl(F_GETFD)` fallback on
   every BSD instead of walking `/dev/fd`.
-* Service_manager scripts apply the privilege drop and filesystem restrictions
-  that the in_process code defers during alpha:
+* Service-manager scripts apply the privilege drop and filesystem restrictions:
   * OpenRC: `packaging/openrc/merovingian` (`command_user=merovingian:merovingian`,
     `directory=/var/lib/merovingian`).
   * FreeBSD/NetBSD/OpenBSD rc.d: `packaging/rc.d/merovingian` and
@@ -301,15 +346,22 @@ Hardening is exercised by automated tests:
   sandboxed worker round_trip.
 * `tests/unit/test_runtime_hardening.cpp` validates profile accept/reject logic.
 
+Because seccomp/pledge/unveil are permanent in-process, the test suite sets
+`MEROVINGIAN_TEST_DISABLE_HARDENING=1` when invoking `meson test`. The build
+scripts export this variable automatically; direct invocations of the test binary
+(such as the PostgreSQL integration workflow) must set it manually. Production
+server binaries never see this variable and always apply the platform profile.
+
 ## What is intentionally deferred
 
-The following controls are documented `alpha_exception` placeholders:
+The following controls remain documented `alpha_exception` placeholders:
 
-* OpenBSD `pledge`/`unveil`.
-* FreeBSD `cap_enter()` (Capsicum).
-* In_process privilege drop (`setresgid`/`setresuid`).
-* In_process filesystem confinement (Landlock / `unveil` / Capsicum).
+* In-process privilege drop (`setresgid`/`setresuid`) — delegated to the service
+  manager for alpha; will be applied by the process itself before 1.0.
+* In-process Linux filesystem confinement (Landlock) — deferred; kernel version
+  requirements are still being evaluated.
 
-They are delegated to the supplied service-manager units. The
-production readiness gate will not pass until each is retired. See
-[`todos/capability-gaps.md`](todos/capability-gaps.md) for open hardening items.
+OpenBSD `pledge`/`unveil` and FreeBSD `cap_enter()` are now fully wired and
+exercised in CI (see above). The production readiness gate will not pass until
+the remaining items above are retired. See
+[`todos/capability-gaps.md`](todos/capability-gaps.md) for the current list.

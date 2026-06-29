@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "../support/registration_token.hpp"
+#include "../support/temp_directory.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
@@ -52,7 +53,7 @@ namespace
 [[nodiscard]] auto unique_sqlite_path() -> std::filesystem::path
 {
     auto const now = std::chrono::steady_clock::now().time_since_epoch().count();
-    return std::filesystem::temp_directory_path() /
+    return merovingian::tests::temporary_directory() /
            ("merovingian-media-integration-" + std::to_string(now) + ".sqlite3");
 }
 

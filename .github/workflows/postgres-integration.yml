@@ -27,6 +27,9 @@ jobs:
       MEROVINGIAN_TEST_POSTGRESQL_URI: postgresql://merovingian_test:test-password@127.0.0.1:5432/merovingian_test
       MEROVINGIAN_TEST_POSTGRESQL_MIGRATION_ROLE: merovingian_migration
       MEROVINGIAN_TEST_POSTGRESQL_RUNTIME_ROLE: merovingian_runtime
+      # Runtime hardening is permanent in-process; the test binary runs many
+      # scenarios in one Catch2 process, so disable it for this focused run.
+      MEROVINGIAN_TEST_DISABLE_HARDENING: 1
 
     services:
       postgres:

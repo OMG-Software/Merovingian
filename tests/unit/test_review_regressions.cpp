@@ -2,6 +2,7 @@
 
 #include "../federation_signing_test_support.hpp"
 #include "../support/registration_token.hpp"
+#include "../support/temp_directory.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/database/migration.hpp"
 #include "merovingian/database/persistent_store.hpp"
@@ -98,13 +99,13 @@ private:
 [[nodiscard]] auto unique_secret_path(std::string const& suffix) -> std::filesystem::path
 {
     auto const now = std::chrono::steady_clock::now().time_since_epoch().count();
-    return std::filesystem::temp_directory_path() / ("merovingian-secret-" + suffix + "-" + std::to_string(now));
+    return merovingian::tests::temporary_directory() / ("merovingian-secret-" + suffix + "-" + std::to_string(now));
 }
 
 [[nodiscard]] auto unique_sqlite_path(std::string const& suffix) -> std::filesystem::path
 {
     auto const now = std::chrono::steady_clock::now().time_since_epoch().count();
-    return std::filesystem::temp_directory_path() /
+    return merovingian::tests::temporary_directory() /
            ("merovingian-review-" + suffix + "-" + std::to_string(now) + ".sqlite3");
 }
 

@@ -55,6 +55,19 @@
 
 #include <sodium.h>
 
+#if defined(__NetBSD__)
+[[maybe_unused]] inline auto merovingian_netbsd_diag(std::string_view const msg) -> void
+{
+    std::cerr << "[netbsd-diag] " << msg << '\n' << std::flush;
+}
+#else
+[[maybe_unused]] inline auto merovingian_netbsd_diag(std::string_view const /*msg*/) -> void
+{
+}
+#endif
+
+#define MEROVINGIAN_NETBSD_DIAG(msg) merovingian_netbsd_diag(msg)
+
 namespace
 {
 
@@ -1576,10 +1589,10 @@ SCENARIO("ingest_send_join_state stores v12 m.room.create with room_id derived f
     GIVEN("a send_join state array for a v12 room whose create event has no room_id field")
     {
         REQUIRE(sodium_init() >= 0);
-        std::cerr << "[netbsd-diag] sodium_init passed\n" << std::flush;
+        MEROVINGIAN_NETBSD_DIAG("sodium_init passed");
         auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
         REQUIRE(started.started);
-        std::cerr << "[netbsd-diag] start_runtime passed\n" << std::flush;
+        MEROVINGIAN_NETBSD_DIAG("start_runtime passed");
         auto& runtime = started.runtime;
 
         auto const creator = std::string{"@creator:remote.example.org"};
@@ -1610,13 +1623,13 @@ SCENARIO("ingest_send_join_state stores v12 m.room.create with room_id derived f
         REQUIRE(parsed_create.error == merovingian::canonicaljson::ParseError::none);
         auto const eid = merovingian::events::make_reference_hash_event_id(parsed_create.value, *policy);
         REQUIRE_FALSE(eid.event_id.empty());
-        std::cerr << "[netbsd-diag] reference hash passed\n" << std::flush;
+        MEROVINGIAN_NETBSD_DIAG("reference hash passed");
         auto const expected_room_id = "!" + eid.event_id.substr(1);
 
         WHEN("the state array is ingested via ingest_send_join_state")
         {
             std::ignore = merovingian::homeserver::ingest_send_join_state(runtime, *arr, *policy);
-            std::cerr << "[netbsd-diag] ingest passed\n" << std::flush;
+            MEROVINGIAN_NETBSD_DIAG("ingest passed");
 
             THEN("m.room.create appears in store.state with the derived room_id, not \"\"")
             {
@@ -1645,7 +1658,7 @@ SCENARIO("ingest_send_join_state stores v12 m.room.create with room_id derived f
                 });
                 REQUIRE_FALSE(has_empty);
             }
-            std::cerr << "[netbsd-diag] scenario end\n" << std::flush;
+            MEROVINGIAN_NETBSD_DIAG("scenario end");
         }
     }
 }

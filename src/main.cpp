@@ -21,6 +21,7 @@
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/platform/file_metadata.hpp"
 #include "merovingian/platform/hardening_self_check.hpp"
+#include "merovingian/platform/runtime_hardening.hpp"
 #include "merovingian/platform/seccomp_hardening.hpp"
 
 #include <cerrno>
@@ -39,10 +40,14 @@
 
 #include <poll.h>
 
+#ifdef __FreeBSD__
+#include <fcntl.h>
+#endif
+
 namespace
 {
 
-constexpr auto version = std::string_view{"0.10.6"};
+constexpr auto version = std::string_view{"0.10.7"};
 
 struct BootstrapConfigResult final
 {
@@ -833,6 +838,40 @@ struct ListenerBinding final
             return merovingian::bootstrap::to_int(merovingian::bootstrap::ExitCode::runtime_start_error);
         }
     }
+
+#ifdef __FreeBSD__
+    // Enter FreeBSD Capsicum capability mode now that all resources are open:
+    // TCP listeners are bound, TLS certs are loaded, the federation worker is
+    // spawned (posix_spawn uses a file path — it must run before cap_enter),
+    // and the SQLite WAL files are open. After cap_enter the global filesystem
+    // namespace is forbidden; opening files by path will return ECAPMODE.
+    //
+    // Pre-open the thumbnail worker binary so the child can call fexecve(3)
+    // instead of execv(3) after fork() in capability mode.
+    if (!runtime.homeserver.media_repository.config.thumbnail_worker_path.empty())
+    {
+        auto const thumb_fd = ::open(runtime.homeserver.media_repository.config.thumbnail_worker_path.c_str(),
+                                     O_RDONLY | O_EXEC | O_CLOEXEC); // NOLINT
+        if (thumb_fd >= 0)
+        {
+            runtime.homeserver.media_repository.config.thumbnail_worker_fd = thumb_fd;
+        }
+        else
+        {
+            LOG_WARNING("FreeBSD: failed to pre-open thumbnail worker binary; thumbnails may fail in capability mode");
+        }
+    }
+
+    auto const capsicum_result = merovingian::platform::apply_freebsd_capsicum_capability_mode();
+    if (capsicum_result.accepted)
+    {
+        LOG_INFO("FreeBSD Capsicum capability mode entered — filesystem global namespace is now forbidden");
+    }
+    else
+    {
+        LOG_WARNING("FreeBSD Capsicum capability mode entry failed: " + capsicum_result.reason);
+    }
+#endif // __FreeBSD__
 
     auto const stats = serve_until_shutdown(runtime, bindings, shutdown);
 

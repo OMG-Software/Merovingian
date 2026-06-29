@@ -151,10 +151,40 @@ struct HardeningGate final
 [[nodiscard]] auto evaluate_hardening_gates(std::vector<HardeningGate> const& gates) -> HardeningPlanDecision;
 
 // Apply the platform-specific controls that are safe to invoke from inside the
-// server process. Linux: core-dump policy, no_new_privs, capability bounding.
-// BSD: documented alpha exceptions remain until pledge/unveil/capsicum helpers
-// are implemented. Portable: no-op (delegated to service manager).
+// server process at the point start_client_server() runs. Linux: core-dump
+// policy, no_new_privs, capability bounding. OpenBSD: unveil(2) + pledge(2).
+// FreeBSD: profile is validated here; cap_enter(2) is deferred — call
+// apply_freebsd_capsicum_capability_mode() from main.cpp after all resources
+// are open and the federation worker is spawned. Portable: no-op.
 [[nodiscard]] auto apply_runtime_hardening_controls(RuntimeHardeningProfile const& profile) -> HardeningPlanDecision;
+
+// Probe: true when OpenBSD pledge(2) has been applied in this process.
+// On all non-OpenBSD platforms the inline stub returns false at compile time.
+#ifdef __OpenBSD__
+[[nodiscard]] auto openbsd_pledge_is_active() noexcept -> bool;
+// The space-separated pledge promise set passed to pledge(2) at startup.
+[[nodiscard]] auto bsd_pledge_promises() noexcept -> char const*;
+#else
+[[nodiscard]] inline auto openbsd_pledge_is_active() noexcept -> bool
+{
+    return false;
+}
+#endif
+
+// Probe: true when the process is in FreeBSD Capsicum capability mode.
+// On all non-FreeBSD platforms the inline stub returns false at compile time.
+#ifdef __FreeBSD__
+[[nodiscard]] auto freebsd_capsicum_is_active() noexcept -> bool;
+// Enter FreeBSD Capsicum capability mode. Must be called AFTER all file
+// descriptors needed for the server's lifetime are open and the federation
+// worker has been spawned via posix_spawn() (which requires path access).
+[[nodiscard]] auto apply_freebsd_capsicum_capability_mode() -> HardeningPlanDecision;
+#else
+[[nodiscard]] inline auto freebsd_capsicum_is_active() noexcept -> bool
+{
+    return false;
+}
+#endif
 
 [[nodiscard]] auto linux_deployment_profile_notes() -> std::vector<std::string>;
 [[nodiscard]] auto bsd_deployment_profile_notes() -> std::vector<std::string>;

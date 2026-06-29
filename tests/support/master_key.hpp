@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "temp_directory.hpp"
+
 #include <atomic>
 #include <cstddef>
-#include <filesystem>
 #include <fstream>
 #include <random>
 #include <string>
@@ -23,7 +24,7 @@ inline auto master_key_file() -> std::string
     static std::atomic<unsigned> s_counter{0U};
     auto const filename =
         "merovingian-master-" + std::to_string(s_salt) + "-" + std::to_string(s_counter.fetch_add(1U)) + ".key";
-    auto const path = std::filesystem::temp_directory_path() / filename;
+    auto const path = temporary_directory() / filename;
     auto output = std::ofstream{path, std::ios::binary};
 
     auto key = std::vector<unsigned char>(crypto_generichash_KEYBYTES);

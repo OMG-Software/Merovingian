@@ -177,8 +177,8 @@ Runtime hardening is platform-specific and reported by the startup self-check
 |---|---|---|---|---|
 | seccomp-bpf syscall filter | enabled | n/a | n/a | n/a |
 | ELF RELRO / BIND_NOW / noexec stack probe | enabled | enabled | enabled | enabled |
-| pledge / unveil | n/a | n/a | alpha exception (scaffolded) | n/a |
-| Capsicum | n/a | alpha exception (scaffolded) | n/a | n/a |
+| pledge / unveil | n/a | n/a | enabled (wired in 0.10.7) | n/a |
+| Capsicum | n/a | enabled (wired in 0.10.7) | n/a | n/a |
 | Resource limits, no-new-privs, core-dump policy | enabled / alpha exception | partial | partial | partial |
 
 The sandboxed thumbnail worker applies its own `setrlimit` clamps and (on Linux)
