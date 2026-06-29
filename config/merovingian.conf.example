@@ -120,8 +120,8 @@ security.federation.denied_servers=
 security.federation.require_valid_tls=true
 security.federation.verify_json_signatures=true
 security.federation.deny_ip_ranges=127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,::1/128,fc00::/7
-security.federation.max_transaction_size=10MiB
-security.federation.remote_timeout=30s
+security.federation.max_transaction_size=20MiB
+security.federation.remote_timeout=60s
 
 # Out-of-process federation worker (mandatory)
 # All inbound federation requests are forwarded to a separate
@@ -129,9 +129,9 @@ security.federation.remote_timeout=30s
 # freeing the main thread pool for client-server traffic. The worker is always
 # required; startup fails if it cannot be launched. Rooms are sharded across
 # federation.worker.shards independent worker processes using FNV-1a hashing.
-# federation.worker.threads=4
-# federation.worker.request_timeout_seconds=120
-# federation.worker.shards=1
+federation.worker.threads=4
+federation.worker.request_timeout_seconds=30
+federation.worker.shards=2
 # federation.worker.binary=
 
 # Media safety policy
@@ -145,7 +145,7 @@ security.media.max_upload_size=50MiB
 # so encrypted-room attachments (opaque ciphertext) are accepted. Override only
 # if you need a stricter policy; do not remove application/octet-stream unless
 # you intend to block E2EE media uploads.
-# security.media.allowed_mime_types=image/png,image/jpeg,image/gif,text/plain,application/pdf,application/octet-stream
+# security.media.allowed_mime_types=application/octet-stream,image/png,image/jpeg,image/gif,text/plain,application/pdf
 security.media.quarantine_unknown_mime=true
 # Commented out: no AV engine integration is wired yet. This flag only changes
 # how Merovingian treats a scanner verdict supplied by an upstream caller/test

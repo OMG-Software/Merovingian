@@ -7,6 +7,7 @@
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/http/outbound_client.hpp"
 #include "merovingian/http/request.hpp"
 #include "merovingian/ipc/channel.hpp"
 #include "merovingian/ipc/federation_ipc_frames.hpp"
@@ -323,6 +324,24 @@ auto WorkerEventLoop::run() -> void
                 auto const request = ipc::deserialize_fed_request(json);
                 auto const response = homeserver::handle_federation_http_request(runtime, request);
                 channel_ptr->send_response(id, ipc::serialize_fed_response(response));
+            });
+        }
+        else if (type == "outbound_http_request")
+        {
+            // Execute outbound HTTP in the thread pool so the IPC reader thread
+            // is never blocked waiting for a remote server to respond.
+            std::ignore = pool.submit([&runtime, channel_ptr, id, json = std::move(json)]() mutable {
+                auto const request = ipc::deserialize_outbound_http_request(json);
+                auto outcome = http::OutboundResult{};
+                if (runtime.outbound_client)
+                {
+                    outcome = runtime.outbound_client->perform(request);
+                }
+                else
+                {
+                    outcome = {false, {}, http::OutboundError::network_error, "outbound client not available"};
+                }
+                channel_ptr->send_response(id, ipc::serialize_outbound_http_response(outcome));
             });
         }
         else if (type == "shutdown")

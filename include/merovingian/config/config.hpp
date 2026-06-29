@@ -112,7 +112,7 @@ struct FederationSecurityConfig final
         "127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "::1/128", "fc00::/7",
     };
     std::string max_transaction_size{"10MiB"};
-    std::string remote_timeout{"30s"};
+    std::string remote_timeout{"60s"};
 };
 
 struct MediaSecurityConfig final

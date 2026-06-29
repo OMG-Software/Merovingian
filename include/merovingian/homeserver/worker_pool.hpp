@@ -5,6 +5,7 @@
 #include "merovingian/config/config.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/worker_supervisor.hpp"
+#include "merovingian/http/outbound_client.hpp"
 
 #include <cstdint>
 #include <memory>
@@ -46,6 +47,13 @@ public:
     // Forwards the request to the worker that owns room_id. Returns a 503
     // response if the selected worker is unhealthy and no reply is received.
     [[nodiscard]] auto handle(LocalHttpRequest const& request, std::string_view room_id) -> LocalHttpResponse;
+
+    // Sends a pre-signed outbound HTTP request to the worker shard that owns
+    // room_id for execution. The worker calls OutboundClient::perform() in its
+    // own thread pool, keeping the main process handler thread free.
+    // IPC timeout = request.total_timeout_seconds + 10 s buffer.
+    [[nodiscard]] auto send_outbound_request(http::OutboundRequest const& request, std::string_view room_id)
+        -> http::OutboundResult;
 
     // True when all configured workers are healthy.
     [[nodiscard]] auto healthy() const noexcept -> bool;

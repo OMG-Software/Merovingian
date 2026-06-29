@@ -20,7 +20,7 @@ SCENARIO("Runtime config snapshot reports unchanged reloads", "[config][runtime]
             THEN("the reload is reported as unchanged")
             {
                 REQUIRE(result == merovingian::config::RuntimeConfigApplyResult::unchanged);
-                REQUIRE(snapshot.current().security().federation.remote_timeout == "30s");
+                REQUIRE(snapshot.current().security().federation.remote_timeout == "60s");
             }
         }
     }

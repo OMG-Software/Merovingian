@@ -477,4 +477,33 @@ auto WorkerPool::shard_for(std::string_view room_id) const noexcept -> std::size
     return federation_worker_shard_for(room_id, cfg_.shards);
 }
 
+auto WorkerPool::send_outbound_request(http::OutboundRequest const& request, std::string_view room_id)
+    -> http::OutboundResult
+{
+    auto const index = shard_for(room_id);
+    if (index >= workers_.size())
+    {
+        return {false, {}, http::OutboundError::network_error, "federation worker shard unavailable"};
+    }
+
+    auto& worker = *workers_[index];
+    auto const ch = worker.channel_snapshot();
+    if (!worker.healthy() || !ch || !ch->healthy())
+    {
+        return {false, {}, http::OutboundError::network_error, "federation worker shard unavailable"};
+    }
+
+    // Give the IPC channel a 10 s buffer beyond the HTTP total timeout so the
+    // worker always has time to return a response before we declare a timeout.
+    auto const ipc_timeout = std::chrono::seconds{static_cast<long>(request.total_timeout_seconds) + 10};
+    auto const reply = ch->send_request(ipc::serialize_outbound_http_request(request), ipc_timeout);
+    if (!reply.has_value())
+    {
+        LOG_WARNING("WorkerPool: shard " + std::to_string(index) + " outbound HTTP IPC timed out for " + request.url);
+        return {false, {}, http::OutboundError::timeout, "IPC timeout waiting for outbound HTTP result"};
+    }
+
+    return ipc::deserialize_outbound_http_response(*reply);
+}
+
 } // namespace merovingian::homeserver

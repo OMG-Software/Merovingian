@@ -3,6 +3,7 @@
 #pragma once
 
 #include "merovingian/homeserver/local_http_router.hpp"
+#include "merovingian/http/outbound_client.hpp"
 
 #include <string>
 #include <string_view>
@@ -28,5 +29,19 @@ namespace merovingian::ipc
 
 // Deserializes the JSON body of a fed_response IPC frame into a LocalHttpResponse.
 [[nodiscard]] auto deserialize_fed_response(std::string_view json) -> homeserver::LocalHttpResponse;
+
+// Serializes a pre-signed OutboundRequest into the JSON body of an
+// outbound_http_request IPC frame. The request must already carry the
+// X-Matrix Authorization header; the secret key is never sent over IPC.
+[[nodiscard]] auto serialize_outbound_http_request(http::OutboundRequest const& request) -> std::string;
+
+// Deserializes the JSON body of an outbound_http_request IPC frame.
+[[nodiscard]] auto deserialize_outbound_http_request(std::string_view json) -> http::OutboundRequest;
+
+// Serializes an OutboundResult into the JSON body of an outbound_http_response IPC frame.
+[[nodiscard]] auto serialize_outbound_http_response(http::OutboundResult const& result) -> std::string;
+
+// Deserializes the JSON body of an outbound_http_response IPC frame.
+[[nodiscard]] auto deserialize_outbound_http_response(std::string_view json) -> http::OutboundResult;
 
 } // namespace merovingian::ipc

@@ -116,6 +116,28 @@ SCENARIO("fuzz regression: <brief description>", "[<surface>][fuzz][regression]"
    regresses on it.
 4. Fix the underlying bug before merging.
 
+## Federation worker outbound IPC tests
+
+`WorkerPool::send_outbound_request`, `FederationProxy::send_outbound_request`, and the
+`outbound_http_request` branch in `WorkerEventLoop::run` can only be exercised by spawning
+real worker processes over a live IPC channel. These paths belong in
+`tests/integration/test_federation_worker_flow.cpp` under the
+`MEROVINGIAN_TEST_FEDERATION_WORKER` guard.
+
+The canonical pattern for an outbound IPC scenario is:
+1. Construct a `WorkerPool` (or `FederationProxy`) with the real worker binary.
+2. Wait for `pool.healthy()` or a `sleep_for(2s)` warm-up.
+3. Build an `http::OutboundRequest` with a quick-failing `pinned_addresses` entry
+   (e.g. `"host:port:127.0.0.1"` where port 9 is the discard port — ECONNREFUSED in < 1 ms).
+4. Call `send_outbound_request()` and `REQUIRE_FALSE(result.ok)`.
+
+For stopped-pool coverage: start a healthy pool, call `pool.stop()` to clear
+`workers_`, then call `send_outbound_request()`. The `index >= workers_.size()`
+guard fires immediately and returns a non-empty `error_detail` without touching
+IPC. Do **not** pass a nonexistent binary path — the constructor calls
+`posix_spawn()` directly and throws `std::runtime_error` when the binary is
+absent, crashing the GIVEN block before any assertion runs.
+
 ## Sanitizers and concurrency tests
 
 - CI runs the suite under sanitizers in `.github/workflows/sanitizers.yml`:

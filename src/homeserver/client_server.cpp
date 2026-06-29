@@ -4823,9 +4823,9 @@ namespace
                 auto const q_body = json_serialize(json_obj(std::move(q_body_obj)));
                 auto const tx = federation::make_outbound_transaction(
                     server, "POST", "/_matrix/federation/v1/user/keys/query", local_server, q_body);
-                auto const [ok, resp_body] = perform_sync_outbound_call(rt.homeserver.outbound_client.get(),
-                                                                        rt.homeserver.discovery_network.get(), tx,
-                                                                        key_id, secret, "key_query.remote");
+                auto const [ok, resp_body] =
+                    perform_sync_outbound_call(rt.homeserver, {}, tx, key_id, secret, "key_query.remote",
+                                               rt.homeserver.federation.config.remote_timeout_seconds);
                 if (ok)
                 {
                     auto const parsed = canonicaljson::parse_lossless(resp_body);
@@ -4975,9 +4975,9 @@ namespace
                 auto const claim_body = json_serialize(json_obj(std::move(claim_body_obj)));
                 auto const tx = federation::make_outbound_transaction(
                     server, "POST", "/_matrix/federation/v1/user/keys/claim", local_server, claim_body);
-                auto const [ok, resp_body] = perform_sync_outbound_call(rt.homeserver.outbound_client.get(),
-                                                                        rt.homeserver.discovery_network.get(), tx,
-                                                                        key_id, secret, "key_claim.remote");
+                auto const [ok, resp_body] =
+                    perform_sync_outbound_call(rt.homeserver, {}, tx, key_id, secret, "key_claim.remote",
+                                               rt.homeserver.federation.config.remote_timeout_seconds);
                 if (ok)
                 {
                     auto const parsed = canonicaljson::parse_lossless(resp_body);
@@ -6818,8 +6818,6 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             auto const secret =
                 std::string{reinterpret_cast<char const*>(rt.homeserver.database.signing_secret_key.bytes().data()),
                             rt.homeserver.database.signing_secret_key.bytes().size()};
-            auto* outbound_client = rt.homeserver.outbound_client.get();
-            auto* discovery_network = rt.homeserver.discovery_network.get();
             auto limit = std::optional<std::size_t>{};
             if (auto const lv = query_param_value(req.target, "limit"); lv.has_value() && !lv->empty())
             {
@@ -6833,8 +6831,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             auto const tx = federation::make_outbound_transaction(
                 *server_param, "GET", public_rooms_fed_target(limit, since_sv), our_server, {});
             guard.unlock();
-            auto const [ok, body] = perform_sync_outbound_call(outbound_client, discovery_network, tx, key_id, secret,
-                                                               "public_rooms.proxy");
+            auto const [ok, body] =
+                perform_sync_outbound_call(rt.homeserver, {}, tx, key_id, secret, "public_rooms.proxy",
+                                           rt.homeserver.federation.config.remote_timeout_seconds);
             if (!ok)
                 return dispatch_err(req, rt, 502U, "M_UNKNOWN", "Failed to fetch public rooms from remote server");
             return dispatch_resp(req, rt, 200U, body);
@@ -6886,8 +6885,6 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             auto const secret =
                 std::string{reinterpret_cast<char const*>(rt.homeserver.database.signing_secret_key.bytes().data()),
                             rt.homeserver.database.signing_secret_key.bytes().size()};
-            auto* outbound_client = rt.homeserver.outbound_client.get();
-            auto* discovery_network = rt.homeserver.discovery_network.get();
             auto const opt_since = since_raw.empty() ? std::nullopt : std::make_optional<std::string_view>(since_raw);
             // Use POST when filter_term is set so servers supporting
             // POST /_matrix/federation/v1/publicRooms can apply the filter.
@@ -6909,8 +6906,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             auto const tx = federation::make_outbound_transaction(
                 *server_param, fed_method, public_rooms_fed_target(limit, opt_since), our_server, fed_body);
             guard.unlock();
-            auto const [ok, body] = perform_sync_outbound_call(outbound_client, discovery_network, tx, key_id, secret,
-                                                               "public_rooms.proxy");
+            auto const [ok, body] =
+                perform_sync_outbound_call(rt.homeserver, {}, tx, key_id, secret, "public_rooms.proxy",
+                                           rt.homeserver.federation.config.remote_timeout_seconds);
             if (!ok)
                 return dispatch_err(req, rt, 502U, "M_UNKNOWN", "Failed to fetch public rooms from remote server");
             return dispatch_resp(req, rt, 200U, body);
@@ -6933,15 +6931,14 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             auto const secret =
                 std::string{reinterpret_cast<char const*>(rt.homeserver.database.signing_secret_key.bytes().data()),
                             rt.homeserver.database.signing_secret_key.bytes().size()};
-            auto* outbound_client = rt.homeserver.outbound_client.get();
-            auto* discovery_network = rt.homeserver.discovery_network.get();
             auto const target = std::string{"/_matrix/federation/v1/query/directory?room_alias="} +
                                 core::percent_encode_path_component(room_alias);
             auto const tx =
                 federation::make_outbound_transaction(std::string{alias_server}, "GET", target, our_server, {});
             guard.unlock();
-            auto const [ok, body] = perform_sync_outbound_call(outbound_client, discovery_network, tx, key_id, secret,
-                                                               "directory.room.proxy");
+            auto const [ok, body] =
+                perform_sync_outbound_call(rt.homeserver, {}, tx, key_id, secret, "directory.room.proxy",
+                                           rt.homeserver.federation.config.remote_timeout_seconds);
             if (!ok)
             {
                 return dispatch_err(req, rt, 502U, "M_UNKNOWN", "Failed to resolve room alias on remote server");
@@ -9647,15 +9644,14 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 auto const secret =
                     std::string{reinterpret_cast<char const*>(rt.homeserver.database.signing_secret_key.bytes().data()),
                                 rt.homeserver.database.signing_secret_key.bytes().size()};
-                auto* outbound_client = rt.homeserver.outbound_client.get();
-                auto* discovery_network = rt.homeserver.discovery_network.get();
                 auto const target = std::string{"/_matrix/federation/v1/query/directory?room_alias="} +
                                     core::percent_encode_path_component(decoded_room_segment);
                 auto const tx =
                     federation::make_outbound_transaction(std::string{alias_server}, "GET", target, our_server, {});
                 guard.unlock();
-                auto const [ok, body] = perform_sync_outbound_call(outbound_client, discovery_network, tx, key_id,
-                                                                   secret, "room.join.alias_lookup_failed");
+                auto const [ok, body] =
+                    perform_sync_outbound_call(rt.homeserver, {}, tx, key_id, secret, "room.join.alias_lookup_failed",
+                                               rt.homeserver.federation.config.remote_timeout_seconds);
                 guard.lock();
                 if (!ok)
                 {

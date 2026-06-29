@@ -11,12 +11,20 @@ namespace
 
 using merovingian::homeserver::LocalHttpRequest;
 using merovingian::homeserver::LocalHttpResponse;
+using merovingian::http::OutboundError;
+using merovingian::http::OutboundHeader;
+using merovingian::http::OutboundRequest;
+using merovingian::http::OutboundResult;
 using merovingian::ipc::deserialize_fed_request;
 using merovingian::ipc::deserialize_fed_response;
+using merovingian::ipc::deserialize_outbound_http_request;
+using merovingian::ipc::deserialize_outbound_http_response;
 using merovingian::ipc::ipc_json_get_str;
 using merovingian::ipc::ipc_json_str;
 using merovingian::ipc::serialize_fed_request;
 using merovingian::ipc::serialize_fed_response;
+using merovingian::ipc::serialize_outbound_http_request;
+using merovingian::ipc::serialize_outbound_http_response;
 
 } // namespace
 
@@ -380,6 +388,294 @@ SCENARIO("fed_request frame tolerates empty bodies and skipped headers", "[ipc][
                 REQUIRE(roundtripped.headers.size() == 1U);
                 REQUIRE(roundtripped.headers[0].name == "X-Valid");
                 REQUIRE(roundtripped.headers[0].value == "kept");
+            }
+        }
+    }
+}
+
+// --- outbound_http_request frames ------------------------------------------------
+
+SCENARIO("outbound_http_request round-trips a minimal GET request", "[ipc][federation][outbound]")
+{
+    GIVEN("a minimal GET request with a single pinned address and default timeouts")
+    {
+        auto original = OutboundRequest{};
+        original.method = "GET";
+        original.url = "https://matrix.example.com:8448/_matrix/federation/v1/query/profile"
+                       "?user_id=%40alice%3Aexample.com";
+        original.pinned_addresses.push_back("198.51.100.1:8448");
+
+        WHEN("it is serialized and deserialized over IPC")
+        {
+            auto const rt = deserialize_outbound_http_request(serialize_outbound_http_request(original));
+
+            THEN("method, URL and pinned address are preserved")
+            {
+                REQUIRE(rt.method == original.method);
+                REQUIRE(rt.url == original.url);
+                REQUIRE(rt.pinned_addresses.size() == 1U);
+                REQUIRE(rt.pinned_addresses[0] == "198.51.100.1:8448");
+                REQUIRE(rt.body.empty());
+                REQUIRE(rt.headers.empty());
+            }
+
+            THEN("default timeout values survive the round-trip")
+            {
+                REQUIRE(rt.connect_timeout_seconds == 10U);
+                REQUIRE(rt.total_timeout_seconds == 60U);
+            }
+        }
+    }
+}
+
+SCENARIO("outbound_http_request round-trips a POST request with a JSON body", "[ipc][federation][outbound]")
+{
+    GIVEN("a POST send_join request carrying a signed event body")
+    {
+        auto original = OutboundRequest{};
+        original.method = "POST";
+        original.url = "https://remote.example:8448/_matrix/federation/v1/send_join/!room:remote.example/$ev";
+        original.headers.push_back({"Content-Type", "application/json"});
+        original.headers.push_back({"Authorization", "X-Matrix origin=\"local.example\",destination=\"remote.example\","
+                                                     "key=\"ed25519:K001\",sig=\"base64sighere==\""});
+        original.body =
+            R"({"type":"m.room.member","state_key":"@alice:local.example","content":{"membership":"join"}})";
+        original.pinned_addresses.push_back("203.0.113.10:8448");
+
+        WHEN("it is serialized and deserialized over IPC")
+        {
+            auto const rt = deserialize_outbound_http_request(serialize_outbound_http_request(original));
+
+            THEN("method, URL, body, and all headers are preserved")
+            {
+                REQUIRE(rt.method == "POST");
+                REQUIRE(rt.url == original.url);
+                REQUIRE(rt.body == original.body);
+                REQUIRE(rt.headers.size() == 2U);
+                REQUIRE(rt.headers[0].name == "Content-Type");
+                REQUIRE(rt.headers[0].value == "application/json");
+                REQUIRE(rt.headers[1].name == "Authorization");
+                REQUIRE(rt.headers[1].value.find("X-Matrix") != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("outbound_http_request preserves multiple pinned addresses in order", "[ipc][federation][outbound]")
+{
+    GIVEN("a request with three distinct pinned IP addresses from server discovery")
+    {
+        auto original = OutboundRequest{};
+        original.method = "GET";
+        original.url = "https://matrix.example.com:8448/_matrix/federation/v1/key/server";
+        original.pinned_addresses.push_back("198.51.100.1:8448");
+        original.pinned_addresses.push_back("198.51.100.2:8448");
+        original.pinned_addresses.push_back("198.51.100.3:8448");
+
+        WHEN("it is serialized and deserialized over IPC")
+        {
+            auto const rt = deserialize_outbound_http_request(serialize_outbound_http_request(original));
+
+            THEN("all three addresses are present and in the original order")
+            {
+                REQUIRE(rt.pinned_addresses.size() == 3U);
+                REQUIRE(rt.pinned_addresses[0] == "198.51.100.1:8448");
+                REQUIRE(rt.pinned_addresses[1] == "198.51.100.2:8448");
+                REQUIRE(rt.pinned_addresses[2] == "198.51.100.3:8448");
+            }
+        }
+    }
+}
+
+SCENARIO("outbound_http_request preserves non-default timeout and max body size configuration",
+         "[ipc][federation][outbound]")
+{
+    GIVEN("a request with custom connect_timeout, total_timeout and max_response_body_bytes")
+    {
+        auto original = OutboundRequest{};
+        original.method = "PUT";
+        original.url = "https://matrix.example.com:8448/_matrix/federation/v1/send/txn-1";
+        original.connect_timeout_seconds = 15U;
+        original.total_timeout_seconds = 90U;
+        original.max_response_body_bytes = 1024U * 1024U; // 1 MiB instead of default 16 MiB
+
+        WHEN("it is serialized and deserialized over IPC")
+        {
+            auto const rt = deserialize_outbound_http_request(serialize_outbound_http_request(original));
+
+            THEN("all three numeric configuration fields are preserved exactly")
+            {
+                REQUIRE(rt.connect_timeout_seconds == 15U);
+                REQUIRE(rt.total_timeout_seconds == 90U);
+                REQUIRE(rt.max_response_body_bytes == 1024U * 1024U);
+            }
+        }
+    }
+}
+
+SCENARIO("outbound_http_request tolerates an empty body with no headers or pinned addresses",
+         "[ipc][federation][outbound]")
+{
+    GIVEN("a bare request with only method and URL populated")
+    {
+        auto original = OutboundRequest{};
+        original.method = "DELETE";
+        original.url = "https://matrix.example.com:8448/_matrix/federation/v1/send/txn-empty";
+
+        WHEN("it is serialized and deserialized over IPC")
+        {
+            auto const rt = deserialize_outbound_http_request(serialize_outbound_http_request(original));
+
+            THEN("method and URL are preserved and all optional collections remain empty")
+            {
+                REQUIRE(rt.method == "DELETE");
+                REQUIRE(rt.url == original.url);
+                REQUIRE(rt.body.empty());
+                REQUIRE(rt.headers.empty());
+                REQUIRE(rt.pinned_addresses.empty());
+            }
+        }
+    }
+}
+
+SCENARIO("outbound_http_request escapes JSON-hostile characters in the URL", "[ipc][federation][outbound]")
+{
+    GIVEN("a URL that contains ampersands, equals signs and percent-encoded sequences")
+    {
+        auto original = OutboundRequest{};
+        original.method = "GET";
+        // Query-parameter URL that would corrupt naive JSON string assembly
+        original.url = "https://matrix.example.com:8448/_matrix/federation/v1/query/profile"
+                       "?user_id=%40alice%3Aexample.com&field=name&field=avatar_url";
+        original.pinned_addresses.push_back("198.51.100.1:8448");
+
+        WHEN("it is serialized and deserialized over IPC")
+        {
+            auto const rt = deserialize_outbound_http_request(serialize_outbound_http_request(original));
+
+            THEN("the URL is byte-identical to the original after the round-trip")
+            {
+                REQUIRE(rt.url == original.url);
+            }
+        }
+    }
+}
+
+// --- outbound_http_response frames -----------------------------------------------
+
+SCENARIO("outbound_http_response round-trips a successful 200 response", "[ipc][federation][outbound]")
+{
+    GIVEN("a successful 200 response carrying a JSON body")
+    {
+        auto original = OutboundResult{};
+        original.ok = true;
+        original.response.status = 200U;
+        original.response.body = R"({"origin":"remote.example","pdus":[]})";
+        original.error = OutboundError::none;
+
+        WHEN("it is serialized and deserialized over IPC")
+        {
+            auto const rt = deserialize_outbound_http_response(serialize_outbound_http_response(original));
+
+            THEN("ok is true, HTTP status is 200, body is preserved, and error code is none")
+            {
+                REQUIRE(rt.ok);
+                REQUIRE(rt.response.status == 200U);
+                REQUIRE(rt.response.body == original.response.body);
+                REQUIRE(rt.error == OutboundError::none);
+            }
+        }
+    }
+}
+
+SCENARIO("outbound_http_response round-trips a network failure with error detail", "[ipc][federation][outbound]")
+{
+    GIVEN("a failed result indicating the remote server was unreachable")
+    {
+        auto original = OutboundResult{};
+        original.ok = false;
+        original.response.status = 0U;
+        original.error = OutboundError::connection_failed;
+        original.error_detail = "connect() refused by 198.51.100.1:8448";
+
+        WHEN("it is serialized and deserialized over IPC")
+        {
+            auto const rt = deserialize_outbound_http_response(serialize_outbound_http_response(original));
+
+            THEN("ok is false, error_detail is preserved, and error code is network_error")
+            {
+                REQUIRE_FALSE(rt.ok);
+                REQUIRE(rt.error_detail == original.error_detail);
+                // The specific error variant is normalised to network_error on deserialization;
+                // callers use ok + http_status as the primary signal.
+                REQUIRE(rt.error == OutboundError::network_error);
+            }
+        }
+    }
+}
+
+SCENARIO("outbound_http_response round-trips a non-2xx response that was received without transport error",
+         "[ipc][federation][outbound]")
+{
+    GIVEN("a 403 Forbidden response where the HTTP exchange itself succeeded")
+    {
+        auto original = OutboundResult{};
+        original.ok = true;
+        original.response.status = 403U;
+        original.response.body = R"({"errcode":"M_FORBIDDEN","error":"You are not allowed to join this room."})";
+        original.error = OutboundError::none;
+
+        WHEN("it is serialized and deserialized over IPC")
+        {
+            auto const rt = deserialize_outbound_http_response(serialize_outbound_http_response(original));
+
+            THEN("ok is true, status is 403, body is preserved, and error code is none")
+            {
+                REQUIRE(rt.ok);
+                REQUIRE(rt.response.status == 403U);
+                REQUIRE(rt.response.body == original.response.body);
+                REQUIRE(rt.error == OutboundError::none);
+            }
+        }
+    }
+}
+
+SCENARIO("outbound_http_response normalises any failure error code to network_error after deserialization",
+         "[ipc][federation][outbound]")
+{
+    GIVEN("failed results with different specific error codes")
+    {
+        auto timeout_result = OutboundResult{};
+        timeout_result.ok = false;
+        timeout_result.error = OutboundError::timeout;
+        timeout_result.error_detail = "request timed out after 60s";
+
+        auto tls_result = OutboundResult{};
+        tls_result.ok = false;
+        tls_result.error = OutboundError::tls_verification_failed;
+        tls_result.error_detail = "certificate verification failed";
+
+        WHEN("a timeout result is serialized and deserialized")
+        {
+            auto const rt = deserialize_outbound_http_response(serialize_outbound_http_response(timeout_result));
+
+            THEN("the error code is network_error and error_detail is preserved")
+            {
+                REQUIRE_FALSE(rt.ok);
+                REQUIRE(rt.error == OutboundError::network_error);
+                REQUIRE(rt.error_detail == timeout_result.error_detail);
+            }
+        }
+
+        WHEN("a TLS failure result is serialized and deserialized")
+        {
+            auto const rt = deserialize_outbound_http_response(serialize_outbound_http_response(tls_result));
+
+            THEN("the error code is also normalised to network_error")
+            {
+                REQUIRE_FALSE(rt.ok);
+                REQUIRE(rt.error == OutboundError::network_error);
+                REQUIRE(rt.error_detail == tls_result.error_detail);
             }
         }
     }

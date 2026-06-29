@@ -20,6 +20,7 @@
 #include "merovingian/federation/outbound_transaction.hpp"
 #include "merovingian/federation/server_discovery.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
+#include "merovingian/homeserver/federation_proxy.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/homeserver/runtime.hpp"
@@ -1321,21 +1322,23 @@ namespace
 
 // Perform a single synchronous outbound federation call. Returns the raw
 // response body on success (HTTP 2xx), or an error description on failure.
-[[nodiscard]] auto perform_sync_outbound_call(http::OutboundClient* outbound_client,
-                                              federation::ServerDiscoveryNetwork* discovery_network,
+// The request is signed in-process; if a federation proxy is wired the actual
+// HTTP call runs in the worker's thread pool, freeing this handler thread.
+[[nodiscard]] auto perform_sync_outbound_call(HomeserverRuntime& runtime, std::string_view room_id,
                                               federation::OutboundTransaction const& transaction,
                                               std::string_view key_id, std::string_view secret_key,
-                                              std::string_view diagnostic_event) -> std::pair<bool, std::string>
+                                              std::string_view diagnostic_event, std::uint32_t timeout_seconds)
+    -> std::pair<bool, std::string>
 {
-    if (outbound_client == nullptr || discovery_network == nullptr)
+    auto* discovery_network = runtime.discovery_network.get();
+    if (discovery_network == nullptr)
     {
         log_diagnostic(diagnostic_event, {
                                              {"reason", "federation infrastructure not available", false}
         });
         return {false, "federation not available"};
     }
-    auto const discovery_timeout = std::uint32_t{30U};
-    auto const resolution = federation::discover_server(transaction.destination, *discovery_network, discovery_timeout);
+    auto const resolution = federation::discover_server(transaction.destination, *discovery_network, timeout_seconds);
     if (!resolution.discovery_allowed)
     {
         log_diagnostic(diagnostic_event, {
@@ -1358,23 +1361,44 @@ namespace
     call.pinned_addresses = resolution.pinned_addresses;
     call.key_id = std::string{key_id};
     call.secret_key = std::string{secret_key};
-    auto destination = federation::FederationDestination{};
-    destination.server_name = transaction.destination;
-    auto const now_ts = static_cast<std::uint64_t>(
-        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
-            .count());
-    auto const result = federation::perform_outbound_transaction(*outbound_client, call, destination, now_ts);
-    if (!result.sent || result.http_status < 200U || result.http_status >= 300U)
+    call.connect_timeout_seconds = std::min(timeout_seconds, 30U);
+    call.total_timeout_seconds = timeout_seconds;
+
+    // Sign the request in-process — the Ed25519 secret never crosses the IPC boundary.
+    auto const request = federation::build_outbound_request(call);
+
+    // Route via worker if available; fall back to direct outbound client.
+    auto outcome = http::OutboundResult{};
+    if (runtime.federation_proxy)
+    {
+        outcome = runtime.federation_proxy->send_outbound_request(request, room_id);
+    }
+    else if (runtime.outbound_client)
+    {
+        outcome = runtime.outbound_client->perform(request);
+    }
+    else
     {
         log_diagnostic(diagnostic_event, {
-                                             {"destination", transaction.destination,                         false},
-                                             {"http_status", std::to_string(result.http_status),              false},
-                                             {"reason",      result.error.empty() ? "non-2xx" : result.error, false}
+                                             {"reason", "federation infrastructure not available", false}
         });
-        return {false,
-                result.error.empty() ? "remote server returned " + std::to_string(result.http_status) : result.error};
+        return {false, "federation not available"};
     }
-    return {true, result.response_body};
+
+    if (!outcome.ok || outcome.response.status < 200U || outcome.response.status >= 300U)
+    {
+        log_diagnostic(diagnostic_event,
+                       {
+                           {"destination", transaction.destination,                                         false},
+                           {"http_status", std::to_string(outcome.response.status),                         false},
+                           {"reason",      outcome.error_detail.empty() ? "non-2xx" : outcome.error_detail, false}
+        },
+                       observability::LogEventSeverity::warning);
+        return {false, outcome.error_detail.empty()
+                           ? "remote server returned " + std::to_string(outcome.response.status)
+                           : outcome.error_detail};
+    }
+    return {true, outcome.response.body};
 }
 
 namespace
@@ -2510,8 +2534,6 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
             return make_operation_result(false, {}, "unknown room: no resident server to join via", 404U);
         }
         wire_federation_callbacks(runtime);
-        auto* outbound_client = runtime.outbound_client.get();
-        auto* discovery_network = runtime.discovery_network.get();
         auto const supported_versions = std::vector<std::string>{"10", "11", "12"};
         // Best-effort: load the key_id from the persistent store. If no usable key
         // record exists, perform_sync_outbound_call fails with "server signing key not
@@ -2538,8 +2560,9 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
                                                              {"room_id",       std::string{room_id}, false},
                                                              {"remote_server", candidate,            false}
             });
-            auto [ok, body] = perform_sync_outbound_call(outbound_client, discovery_network, make_join_tx, key_id,
-                                                         secret_key, "room.join.remote.make_join_failed");
+            auto [ok, body] = perform_sync_outbound_call(runtime, room_id, make_join_tx, key_id, secret_key,
+                                                         "room.join.remote.make_join_failed",
+                                                         runtime.federation.config.remote_timeout_seconds);
             // Keep the latest body: on success it is the make_join response; on failure it
             // is the reason, surfaced below if every candidate server fails.
             make_body = std::move(body);
@@ -2668,16 +2691,19 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
                                                          {"remote_server", std::string{remote_server}, false},
                                                          {"event_id",      event_id_result.event_id,   false}
         });
-        auto const [send_ok, send_body] = perform_sync_outbound_call(
-            outbound_client, discovery_network, send_join_tx, key_id, secret_key, "room.join.remote.send_join_failed");
+        auto const [send_ok, send_body] = perform_sync_outbound_call(runtime, room_id, send_join_tx, key_id, secret_key,
+                                                                     "room.join.remote.send_join_failed",
+                                                                     runtime.federation.config.remote_timeout_seconds);
         if (!send_ok)
         {
-            log_diagnostic("room.join.rejected", {
-                                                     {"actor",   *user_id,             false},
-                                                     {"room_id", std::string{room_id}, false},
-                                                     {"status",  "502",                false},
-                                                     {"reason",  "send_join failed",   false}
-            });
+            log_diagnostic("room.join.rejected",
+                           {
+                               {"actor",   *user_id,             false},
+                               {"room_id", std::string{room_id}, false},
+                               {"status",  "502",                false},
+                               {"reason",  "send_join failed",   false}
+            },
+                           observability::LogEventSeverity::warning);
             return make_operation_result(false, {}, "send_join failed: " + send_body, 502U);
         }
         // Parse the send_join response. The v2 send_join response is
@@ -3215,8 +3241,6 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
     if (is_remote)
     {
         wire_federation_callbacks(runtime);
-        auto* outbound_client = runtime.outbound_client.get();
-        auto* discovery_network = runtime.discovery_network.get();
         auto const remote_server = std::string{room_domain};
         auto const signing_key = find_active_server_signing_key(runtime);
         auto const key_id = signing_key.has_value() ? signing_key->key_id : std::string{};
@@ -3234,18 +3258,20 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
                                                            {"room_id",       std::string{room_id}, false},
                                                            {"remote_server", remote_server,        false}
         });
-        auto const [make_ok, make_body] =
-            perform_sync_outbound_call(outbound_client, discovery_network, make_leave_tx, key_id, secret_key,
-                                       "room.leave.remote.make_leave_failed");
+        auto const [make_ok, make_body] = perform_sync_outbound_call(runtime, room_id, make_leave_tx, key_id,
+                                                                     secret_key, "room.leave.remote.make_leave_failed",
+                                                                     runtime.federation.config.remote_timeout_seconds);
         if (!make_ok)
         {
             guard.lock();
-            log_diagnostic("room.leave.rejected", {
-                                                      {"actor",   *user_id,             false},
-                                                      {"room_id", std::string{room_id}, false},
-                                                      {"status",  "502",                false},
-                                                      {"reason",  "make_leave failed",  false}
-            });
+            log_diagnostic("room.leave.rejected",
+                           {
+                               {"actor",   *user_id,             false},
+                               {"room_id", std::string{room_id}, false},
+                               {"status",  "502",                false},
+                               {"reason",  "make_leave failed",  false}
+            },
+                           observability::LogEventSeverity::warning);
             return make_operation_result(false, {}, "make_leave failed: " + make_body, 502U);
         }
 
@@ -3357,20 +3383,22 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
                                                            {"remote_server", remote_server,            false},
                                                            {"event_id",      event_id_result.event_id, false}
         });
-        auto const [send_ok, send_body] =
-            perform_sync_outbound_call(outbound_client, discovery_network, send_leave_tx, key_id, secret_key,
-                                       "room.leave.remote.send_leave_failed");
+        auto const [send_ok, send_body] = perform_sync_outbound_call(runtime, room_id, send_leave_tx, key_id,
+                                                                     secret_key, "room.leave.remote.send_leave_failed",
+                                                                     runtime.federation.config.remote_timeout_seconds);
 
         guard.lock();
 
         if (!send_ok)
         {
-            log_diagnostic("room.leave.rejected", {
-                                                      {"actor",   *user_id,             false},
-                                                      {"room_id", std::string{room_id}, false},
-                                                      {"status",  "502",                false},
-                                                      {"reason",  "send_leave failed",  false}
-            });
+            log_diagnostic("room.leave.rejected",
+                           {
+                               {"actor",   *user_id,             false},
+                               {"room_id", std::string{room_id}, false},
+                               {"status",  "502",                false},
+                               {"reason",  "send_leave failed",  false}
+            },
+                           observability::LogEventSeverity::warning);
             return make_operation_result(false, {}, "send_leave failed: " + send_body, 502U);
         }
 

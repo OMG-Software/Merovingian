@@ -632,3 +632,38 @@ SCENARIO("create_room without is_direct does not write m.direct account data", "
         }
     }
 }
+
+// --- perform_sync_outbound_call --------------------------------------------------
+
+SCENARIO("perform_sync_outbound_call returns failure immediately when discovery_network is unavailable",
+         "[homeserver][federation][outbound]")
+{
+    GIVEN("a started runtime whose discovery_network has been cleared to simulate missing infrastructure")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        // Simulate a runtime where server discovery was never wired or has been torn down.
+        runtime.discovery_network.reset();
+
+        WHEN("a federation outbound call is attempted to a remote room")
+        {
+            auto const tx = merovingian::federation::OutboundTransaction{
+                .destination = "remote.example.com",
+                .method = "PUT",
+                .target = "/_matrix/federation/v1/send/txn-1",
+                .origin = "local.example.com",
+                .body = R"({"pdus":[]})",
+            };
+            auto const [ok, reason] = merovingian::homeserver::perform_sync_outbound_call(
+                runtime, "!room:remote.example.com", tx, "ed25519:K001", {}, "test.diagnostic", 30U);
+
+            THEN("the call fails fast without crashing or blocking, and returns a non-empty reason")
+            {
+                REQUIRE_FALSE(ok);
+                REQUIRE_FALSE(reason.empty());
+            }
+        }
+    }
+}

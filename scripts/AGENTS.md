@@ -17,9 +17,11 @@ called by it rather than directly.
 | `format_code.py` | Runs `clang-format` over all C++ source and headers |
 | `check-catch2-bdd-tests.sh` | Verifies every `SCENARIO` is registered and has at least one `REQUIRE` |
 | `check-conformance-gate.sh` | Fails if any conformance test has been removed or commented out |
+| `check-staged-changelog-docs.sh` | Pre-commit guard requiring staged project changes to include `CHANGELOG.md` and relevant `docs/*.md` updates |
 | `check-unit-test-registration.sh` | Checks that unit test files are registered in `meson.build` |
 | `check-release-readiness.sh` | Pre-release checklist: version consistency, changelog entry, no debug flags |
 | `reject-unsafe.sh` | Grep-based check for banned patterns (raw `new`, `delete`, `malloc`, `free`) |
+| `install-hooks.sh` | Installs the tracked Git hook templates into `.git/hooks` |
 | `setup-dev-env.sh` | Installs build dependencies on a fresh Linux dev machine |
 | `fetch_matrix_spec.py` | Downloads and unpacks the Matrix spec into `docs/matrix-v1.18-spec/` |
 
