@@ -241,6 +241,34 @@ SCENARIO("seccomp filter allows SQLite journal ops and blocks privilege-escalati
             }
         }
 
+        WHEN("glibc 2.35+ per-thread syscalls are checked by numeric value regardless of build-time kernel headers")
+        {
+            THEN("rseq, membarrier, getcpu, and futex_waitv are always present on x86_64 and aarch64")
+            {
+                // glibc 2.35+ registers a per-thread rseq area after fork() and uses rseq
+                // inside the malloc per-CPU cache (2.36+). membarrier is issued in the malloc
+                // fast path on SMP systems. getcpu feeds the per-CPU TLS cache.
+                // futex_waitv (Linux 5.16) is used by newer condition-variable implementations.
+                // Builds against older kernel headers (e.g. Ubuntu 18.04, Linux 4.15) will not
+                // define __NR_rseq, __NR_membarrier, __NR_getcpu, or __NR_futex_waitv, so the
+                // filter must include them via unconditional numeric fallbacks — exactly as was
+                // done for clone3 (435), close_range (436), and faccessat2 (439) in v0.10.6.
+                // Without these, the first pthread_create after seccomp installation kills the
+                // process via SECCOMP_RET_KILL_PROCESS because glibc's thread init calls rseq.
+#if defined(__x86_64__)
+                REQUIRE(merovingian::platform::seccomp_is_syscall_allowed(334)); // rseq
+                REQUIRE(merovingian::platform::seccomp_is_syscall_allowed(324)); // membarrier
+                REQUIRE(merovingian::platform::seccomp_is_syscall_allowed(309)); // getcpu
+                REQUIRE(merovingian::platform::seccomp_is_syscall_allowed(449)); // futex_waitv
+#elif defined(__aarch64__)
+                REQUIRE(merovingian::platform::seccomp_is_syscall_allowed(293)); // rseq
+                REQUIRE(merovingian::platform::seccomp_is_syscall_allowed(283)); // membarrier
+                REQUIRE(merovingian::platform::seccomp_is_syscall_allowed(168)); // getcpu
+                REQUIRE(merovingian::platform::seccomp_is_syscall_allowed(449)); // futex_waitv
+#endif
+            }
+        }
+
         WHEN("modern Linux syscalls needed by glibc 2.34+ on Fedora are checked")
         {
             THEN("clone3, close_range, and faccessat2 are always allowed on x86_64 and aarch64")

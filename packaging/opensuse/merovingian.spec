@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.10.7
+Version:        0.10.8
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -112,6 +112,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Mon Jun 29 2026 James Chapman <claude@ping.me.uk> - 0.10.8-1
+- fix(platform): add numeric fallbacks for rseq/membarrier/getcpu/futex_waitv in seccomp filter to prevent SIGSYS on glibc 2.35+ when built with older kernel headers
+
 * Mon Jun 29 2026 James Chapman <claude@ping.me.uk> - 0.10.7-1
 - feat(platform): implement OpenBSD pledge/unveil and FreeBSD Capsicum capability mode hardening with CI tests
 

@@ -1,3 +1,11 @@
+## 0.10.8
+
+### Fixed
+- **fix(platform): seccomp filter SIGSYS crash on glibc 2.35+ when built with older kernel headers:** `rseq` (Linux 4.18), `membarrier` (Linux 4.3), `getcpu`, and `futex_waitv` (Linux 5.16) were conditionally included in the BPF allowlist only when the build-time kernel headers defined the corresponding `__NR_*` macros. On hosts built against Ubuntu 18.04 headers (Linux 4.15) or Ubuntu 22.04 headers (Linux 5.15), these macros are absent and the filter silently drops the entries. When the binary then runs on a host with glibc 2.35+, thread initialisation unconditionally calls `sys_rseq()`, which is blocked by `SECCOMP_RET_KILL_PROCESS` — delivering SIGSYS and killing the server immediately after `event=start.complete`. Fixed by adding architecture-specific numeric fallbacks matching the pattern established in v0.10.6 for `clone3` (435), `close_range` (436), and `faccessat2` (439): x86_64 fallbacks are 334/324/309/449; aarch64 fallbacks are 293/283/168/449.
+
+### Added tests
+- **test(platform): rseq/membarrier/getcpu/futex_waitv numeric values are always present:** new WHEN block in `test_seccomp_hardening.cpp` unconditionally checks the numeric syscall values (334/324/309/449 on x86_64; 293/283/168/449 on aarch64) are in the allowlist, regardless of what `__NR_*` macros the build headers define — mirroring the existing clone3/close_range/faccessat2 numeric assertions added in v0.10.6.
+
 ## 0.10.7
 
 ### Added
