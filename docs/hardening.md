@@ -346,6 +346,12 @@ Hardening is exercised by automated tests:
   sandboxed worker round_trip.
 * `tests/unit/test_runtime_hardening.cpp` validates profile accept/reject logic.
 
+Because seccomp/pledge/unveil are permanent in-process, the test suite sets
+`MEROVINGIAN_TEST_DISABLE_HARDENING=1` when invoking `meson test`. The build
+scripts export this variable automatically; direct invocations of the test binary
+(such as the PostgreSQL integration workflow) must set it manually. Production
+server binaries never see this variable and always apply the platform profile.
+
 ## What is intentionally deferred
 
 The following controls remain documented `alpha_exception` placeholders:

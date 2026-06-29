@@ -473,7 +473,7 @@ auto openbsd_pledge_is_active() noexcept -> bool
 
 auto freebsd_capsicum_is_active() noexcept -> bool
 {
-    auto mode = unsigned int{0U};
+    unsigned int mode = 0U;
     return ::cap_getmode(&mode) == 0 && mode != 0U;
 }
 

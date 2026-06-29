@@ -138,6 +138,19 @@ IPC. Do **not** pass a nonexistent binary path — the constructor calls
 `posix_spawn()` directly and throws `std::runtime_error` when the binary is
 absent, crashing the GIVEN block before any assertion runs.
 
+### Test-only environment variables
+
+* `MEROVINGIAN_TEST_FEDERATION_WORKER` — absolute path to the
+  `merovingian-fed-worker` binary. Required by the live federation-worker
+  integration tests; when unset those scenarios are skipped.
+* `MEROVINGIAN_TEST_DISABLE_HARDENING` — when set to any value,
+  `start_runtime()` skips applying seccomp/pledge/unveil sandbox controls.
+  The build scripts (`build-linux.sh`, `build-bsd.sh`, `build-wsl.sh`) export
+  this variable automatically when they run `meson test`, because the sandbox
+  restrictions are permanent in-process and would break the Catch2 runner that
+  executes many scenarios in one process. Direct invocations of a test binary
+  (for example a focused PostgreSQL integration run) must set it manually.
+
 ## Sanitizers and concurrency tests
 
 - CI runs the suite under sanitizers in `.github/workflows/sanitizers.yml`:

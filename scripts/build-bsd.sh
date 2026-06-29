@@ -253,4 +253,18 @@ if [ "$compile_only" -eq 1 ] || [ "$run_tests" -eq 0 ]; then
     exit 0
 fi
 
-run meson test -C "$builddir" --print-errorlogs
+# Runtime hardening (seccomp/pledge/unveil) is permanent in-process. The Catch2
+# test runner executes many scenarios in one process, so disable it for the
+# test suite while still applying it in production server binaries.
+export MEROVINGIAN_TEST_DISABLE_HARDENING=1
+
+# Meson does not read MESON_TEST_TIMEOUT_MULTIPLIER from the environment.
+# Translate the env var used by the sanitizers workflow into the matching
+# command-line flag so long-running integration tests get the extra time.
+meson_test_timeout_args=""
+if [ -n "${MESON_TEST_TIMEOUT_MULTIPLIER:-}" ]; then
+    meson_test_timeout_args="--timeout-multiplier ${MESON_TEST_TIMEOUT_MULTIPLIER}"
+fi
+
+# shellcheck disable=SC2086
+run env MEROVINGIAN_TEST_DISABLE_HARDENING=1 meson test -C "$builddir" --print-errorlogs ${meson_test_timeout_args}

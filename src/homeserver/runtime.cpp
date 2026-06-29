@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdlib>
 #include <fstream>
 #include <memory>
 #include <optional>
@@ -658,7 +659,23 @@ auto start_runtime(RuntimeStartOptions opts) -> RuntimeStartResult
     runtime.discovery_network = federation::make_system_server_discovery_network();
     runtime.media_repository = media::make_local_media_repository(media::make_runtime_media_config(config));
     hydrate_media_repository(runtime.media_repository, runtime.database.persistent_store);
+    // Tests run in a long-lived Catch2 process. Applying seccomp/pledge/unveil
+    // there would permanently restrict that process and break every subsequent
+    // test. The build scripts set MEROVINGIAN_TEST_DISABLE_HARDENING=1 when they
+    // invoke the test suite; production binaries never see it.
     auto const hardening_controls = [&]() {
+        if (std::getenv("MEROVINGIAN_TEST_DISABLE_HARDENING") != nullptr)
+        {
+            log_diagnostic(
+                "hardening.test_disable",
+                {
+                    {
+                     "reason", std::string{"runtime hardening controls disabled by MEROVINGIAN_TEST_DISABLE_HARDENING"},
+                     false, }
+            },
+                observability::LogEventSeverity::info);
+            return platform::HardeningPlanDecision{true, false, "disabled by MEROVINGIAN_TEST_DISABLE_HARDENING"};
+        }
 #if defined(__linux__)
         return platform::apply_runtime_hardening_controls(platform::default_linux_hardening_profile());
 #elif defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__) || defined(__DragonFly__)
