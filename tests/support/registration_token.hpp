@@ -2,9 +2,9 @@
 #pragma once
 
 #include "merovingian/config/config.hpp"
+#include "temp_directory.hpp"
 
 #include <atomic>
-#include <filesystem>
 #include <fstream>
 #include <random>
 #include <string>
@@ -26,7 +26,7 @@ inline auto registration_token_file() -> std::string
     static std::atomic<unsigned> s_counter{0U};
     auto const filename =
         "merovingian-reg-" + std::to_string(s_salt) + "-" + std::to_string(s_counter.fetch_add(1U)) + ".txt";
-    auto const path = std::filesystem::temp_directory_path() / filename;
+    auto const path = temporary_directory() / filename;
     auto output = std::ofstream{path};
     output << registration_token << '\n';
     return path.string();

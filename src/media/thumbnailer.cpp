@@ -29,6 +29,13 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#if defined(__FreeBSD__)
+// FreeBSD exposes `environ` with C linkage; declare it at namespace scope so
+// the FreeBSD Capsicum fexecve() path can pass the current environment to the
+// thumbnail worker binary.
+extern "C" char** environ;
+#endif
+
 namespace merovingian::media
 {
 namespace
@@ -427,10 +434,8 @@ auto generate_thumbnail(ThumbnailerConfig const& config, ThumbnailRequest const&
             core::close_all_file_descriptors_except(std::span<int const>{keep_open_caps});
             child_stdin_read.reset();
             child_stdout_write.reset();
-            // FreeBSD exposes `environ` with C linkage; declare it at namespace
-            // scope so the lookup succeeds regardless of whether the system header
-            // imports it into the C++ namespace.
-            extern "C" char** environ;
+            // FreeBSD exposes `environ` with C linkage; the global declaration
+            // above provides it for this Capsicum fexecve() path.
             ::fexecve(config.worker_binary_fd, exec_argv, environ);
             ::_exit(127); // fexecve failed
         }

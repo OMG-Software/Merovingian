@@ -8,6 +8,7 @@
 // |  sign-back channel, and in-process fallback when the worker is down.    |
 // +-------------------------------------------------------------------------+
 
+#include "../support/temp_directory.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/homeserver/federation_proxy.hpp"
 #include "merovingian/homeserver/federation_request_routing.hpp"
@@ -63,7 +64,7 @@ using merovingian::http::OutboundRequest;
 {
     auto rng = std::mt19937{std::random_device{}()};
     auto dist = std::uniform_int_distribution<std::uint64_t>{};
-    auto parent = std::filesystem::temp_directory_path();
+    auto parent = merovingian::tests::temporary_directory();
     while (true)
     {
         auto candidate = parent / (std::string{prefix} + "-" + std::to_string(dist(rng)));

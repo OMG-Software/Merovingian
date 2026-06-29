@@ -9,6 +9,7 @@ Shared test utilities used across unit, conformance, and integration tests.
 | `json_test_support.hpp` | JSON assertion helpers: `require_json_key()`, `parse_or_fail()` |
 | `master_key.hpp` | Deterministic Ed25519 key pair for signing in tests; do not use in production |
 | `registration_token.hpp` | Generates registration tokens for test users without going through the full UIAA flow |
+| `temp_directory.hpp` | Fallback-aware temporary-directory helper for test scratch files |
 
 ## Rules
 

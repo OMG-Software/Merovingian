@@ -55,8 +55,9 @@ SCENARIO("Default Linux BSD and portable hardening profiles are accepted", "[pla
                 REQUIRE(linux.platform == merovingian::platform::HardeningPlatform::linux);
                 REQUIRE(bsd.platform == merovingian::platform::HardeningPlatform::bsd);
                 REQUIRE(portable.mode == merovingian::platform::HardeningMode::optional);
-                REQUIRE(bsd.filesystem.writable_paths.size() == 2U);
+                REQUIRE(bsd.filesystem.writable_paths.size() == 3U);
                 REQUIRE(bsd.filesystem.writable_paths[1] == "/var/run/merovingian");
+                REQUIRE(bsd.filesystem.writable_paths[2] == "/tmp");
             }
         }
     }
@@ -573,14 +574,16 @@ SCENARIO("BSD and Linux profiles use platform-appropriate writable path sets", "
             {
                 // Both profiles share /var/lib/merovingian (persistent data dir).
                 // Linux adds /run/merovingian (tmpfs ephemeral, standard on Linux).
-                // BSD replaces that with /var/run/merovingian because /run is not a
-                // standard tmpfs mountpoint on BSD variants.
+                // BSD uses /var/run/merovingian because /run is not a standard tmpfs
+                // mountpoint on BSD variants, and adds /tmp for the test harness and
+                // runtime scratch utilities.
                 REQUIRE(lp.size() == 2U);
-                REQUIRE(bp.size() == 2U);
+                REQUIRE(bp.size() == 3U);
                 REQUIRE(std::find(lp.begin(), lp.end(), "/var/lib/merovingian") != lp.end());
                 REQUIRE(std::find(lp.begin(), lp.end(), "/run/merovingian") != lp.end());
                 REQUIRE(std::find(bp.begin(), bp.end(), "/var/lib/merovingian") != bp.end());
                 REQUIRE(std::find(bp.begin(), bp.end(), "/var/run/merovingian") != bp.end());
+                REQUIRE(std::find(bp.begin(), bp.end(), "/tmp") != bp.end());
 
                 // The platform-specific runtime socket dir must differ between the two.
                 REQUIRE(std::find(lp.begin(), lp.end(), "/var/run/merovingian") == lp.end());

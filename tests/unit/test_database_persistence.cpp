@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "../support/temp_directory.hpp"
 #include "merovingian/database/connection.hpp"
 #include "merovingian/database/migration.hpp"
 #include "merovingian/database/migration_files.hpp"
@@ -71,7 +72,7 @@ private:
 [[nodiscard]] auto unique_sqlite_path() -> std::filesystem::path
 {
     auto const now = std::chrono::steady_clock::now().time_since_epoch().count();
-    return std::filesystem::temp_directory_path() /
+    return merovingian::tests::temporary_directory() /
            ("merovingian-transaction-unit-" + std::to_string(now) + ".sqlite3");
 }
 
@@ -1527,7 +1528,7 @@ SCENARIO("Physical migration files load into validated migration plans", "[datab
 {
     GIVEN("a temporary migration file with explicit statement names")
     {
-        auto const directory = std::filesystem::temp_directory_path() / "merovingian-migration-file-test";
+        auto const directory = merovingian::tests::temporary_directory() / "merovingian-migration-file-test";
         std::filesystem::create_directories(directory);
         auto const file = directory / "003_policy_rules.sql";
         {

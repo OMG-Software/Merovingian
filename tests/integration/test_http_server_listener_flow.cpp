@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "../support/registration_token.hpp"
+#include "../support/temp_directory.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/core/socket_handle.hpp"
 #include "merovingian/homeserver/client_server.hpp"
@@ -218,7 +219,7 @@ struct FileDeleter final
 [[nodiscard]] auto write_test_tls_certificate() -> TlsTestCertificate
 {
     static auto counter = std::uint32_t{0U};
-    auto const directory = std::filesystem::temp_directory_path() /
+    auto const directory = merovingian::tests::temporary_directory() /
                            ("merovingian-tls-" + std::to_string(::getpid()) + "-" + std::to_string(++counter));
     std::filesystem::create_directories(directory);
 
