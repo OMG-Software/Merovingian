@@ -21,6 +21,7 @@
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/platform/file_metadata.hpp"
 #include "merovingian/platform/hardening_self_check.hpp"
+#include "merovingian/platform/runtime_hardening.hpp"
 #include "merovingian/platform/seccomp_hardening.hpp"
 
 #include <cerrno>
@@ -857,7 +858,7 @@ struct ListenerBinding final
         }
         else
         {
-            LOG_WARN("FreeBSD: failed to pre-open thumbnail worker binary; thumbnails may fail in capability mode");
+            LOG_WARNING("FreeBSD: failed to pre-open thumbnail worker binary; thumbnails may fail in capability mode");
         }
     }
 
@@ -868,7 +869,7 @@ struct ListenerBinding final
     }
     else
     {
-        LOG_WARN("FreeBSD Capsicum capability mode entry failed: " + capsicum_result.reason);
+        LOG_WARNING("FreeBSD Capsicum capability mode entry failed: " + capsicum_result.reason);
     }
 #endif // __FreeBSD__
 
