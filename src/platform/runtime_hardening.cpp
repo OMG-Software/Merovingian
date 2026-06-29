@@ -193,7 +193,11 @@ auto default_bsd_hardening_profile() -> RuntimeHardeningProfile
 {
     auto profile = default_linux_hardening_profile();
     profile.platform = HardeningPlatform::bsd;
-    profile.filesystem.writable_paths = {"/var/lib/merovingian", "/var/run/merovingian"};
+    // The test harness and several runtime utilities (e.g. media thumbnail
+    // scratch files) rely on the system temporary directory. OpenBSD's
+    // unveil(2) requires every reachable path to be listed, so /tmp is
+    // included alongside the persistent and runtime state directories.
+    profile.filesystem.writable_paths = {"/var/lib/merovingian", "/var/run/merovingian", "/tmp"};
     return profile;
 }
 

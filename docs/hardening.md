@@ -236,7 +236,10 @@ profile.
 1. `unveil(path, "rx")` for every path in `filesystem.read_only_paths` (e.g.
    `/usr`, `/etc/merovingian`).
 2. `unveil(path, "rwc")` for every path in `filesystem.writable_paths` (e.g.
-   `/var/lib/merovingian`, `/var/run/merovingian`).
+   `/var/lib/merovingian`, `/var/run/merovingian`, `/tmp`). `/tmp` is included
+   because the test harness and runtime scratch utilities create temporary files
+   via `std::filesystem::temp_directory_path()`, which resolves to `/tmp` on
+   OpenBSD.
 3. `unveil("/etc/ssl", "r")` — LibreSSL CA bundle for outbound TLS.
 4. `unveil(NULL, NULL)` — locks the vnode allowlist.
 5. `pledge("stdio rpath wpath cpath flock inet unix dns proc exec", NULL)` — the

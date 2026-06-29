@@ -427,7 +427,11 @@ auto generate_thumbnail(ThumbnailerConfig const& config, ThumbnailRequest const&
             core::close_all_file_descriptors_except(std::span<int const>{keep_open_caps});
             child_stdin_read.reset();
             child_stdout_write.reset();
-            ::fexecve(config.worker_binary_fd, exec_argv, ::environ);
+            // FreeBSD exposes `environ` with C linkage; declare it at namespace
+            // scope so the lookup succeeds regardless of whether the system header
+            // imports it into the C++ namespace.
+            extern "C" char** environ;
+            ::fexecve(config.worker_binary_fd, exec_argv, environ);
             ::_exit(127); // fexecve failed
         }
 #endif // __FreeBSD__
