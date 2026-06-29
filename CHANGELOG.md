@@ -3,8 +3,18 @@
 ### Fixed
 - **fix(platform): seccomp filter SIGSYS crash on glibc 2.35+ when built with older kernel headers:** `rseq` (Linux 4.18), `membarrier` (Linux 4.3), `getcpu`, and `futex_waitv` (Linux 5.16) were conditionally included in the BPF allowlist only when the build-time kernel headers defined the corresponding `__NR_*` macros. On hosts built against Ubuntu 18.04 headers (Linux 4.15) or Ubuntu 22.04 headers (Linux 5.15), these macros are absent and the filter silently drops the entries. When the binary then runs on a host with glibc 2.35+, thread initialisation unconditionally calls `sys_rseq()`, which is blocked by `SECCOMP_RET_KILL_PROCESS` — delivering SIGSYS and killing the server immediately after `event=start.complete`. Fixed by adding architecture-specific numeric fallbacks matching the pattern established in v0.10.6 for `clone3` (435), `close_range` (436), and `faccessat2` (439): x86_64 fallbacks are 334/324/309/449; aarch64 fallbacks are 293/283/168/449.
 
+### Changed
+- **refactor(platform): remove `HardeningStatus::alpha_exception` and require every hardening check to report `enabled`:** the alpha-phase carve-out status is deleted from the hardening self-check. `is_alpha_ready()` is replaced by `is_ready()`, which returns true only when every hardening check is `enabled`; `unknown` and `disabled` both block startup. `src/main.cpp` now runs the final self-check after all platform controls are applied: after `start_client_server()` has applied the OpenBSD `pledge`/`unveil` profile and after FreeBSD `cap_enter()` has entered Capsicum capability mode. `docs/hardening.md` is updated to remove all alpha-exception language.
+- **test(platform): binary startup integration test skips when the environment cannot satisfy full hardening:** `tests/integration/test_server_startup_hardening_flow.cpp` now detects a hardening-gate refusal from the server log and calls `SKIP()` instead of failing. `ServerGuard::alive()` uses `waitpid(WNOHANG)` so a server that exits between "Listeners active" and the idle check is not misreported as alive due to zombie PID reuse. The test polls for the gate decision before committing to the full 10 s idle window.
+
+### Fixed
+- **fix(tests): restore hardening self-check snapshot for `admin_health`:** `src/homeserver/runtime.cpp` populates `runtime.hardening` with `run_startup_hardening_self_check()` before marking the runtime started, so the health endpoint reports `hardening:ok` in unit tests. The final startup gate in `src/main.cpp` still overwrites the snapshot after all platform controls are applied.
+- **fix(tests): smoke test expects the new readiness summary format:** `tests/smoke/meson.build` no longer greps for the removed `alpha_ready` field; it checks for `Hardening readiness: ready=false blockers=N` in `--dry-run` output.
+- **chore(tests): remove temporary diagnostic script:** `scripts/tmp_startup_test.sh` is deleted.
+
 ### Added tests
 - **test(platform): rseq/membarrier/getcpu/futex_waitv numeric values are always present:** new WHEN block in `test_seccomp_hardening.cpp` unconditionally checks the numeric syscall values (334/324/309/449 on x86_64; 293/283/168/449 on aarch64) are in the allowlist, regardless of what `__NR_*` macros the build headers define — mirroring the existing clone3/close_range/faccessat2 numeric assertions added in v0.10.6.
+- **test(platform): hardening self-check no longer tolerates alpha exceptions:** updated `test_hardening_self_check.cpp` to assert the absence of `alpha_exception`, to verify `is_ready()` fails closed when runtime controls are not applied, and to check that platform-specific sandbox controls map to `enabled` (not applicable) or `unknown` (not yet applied) instead of `alpha_exception`.
 
 ## 0.10.7
 

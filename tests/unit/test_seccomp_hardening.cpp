@@ -75,13 +75,9 @@ SCENARIO("seccomp hardening check maps probe results to the correct status", "[p
             auto const check_inactive = merovingian::platform::seccomp_check_from_probe(inactive);
             auto const check_unprobed = merovingian::platform::seccomp_check_from_probe(unprobed);
 
-            THEN("the check is never alpha_exception or disabled")
+            THEN("the check is never disabled")
             {
-                auto constexpr alpha_exception = merovingian::platform::HardeningStatus::alpha_exception;
                 auto constexpr disabled = merovingian::platform::HardeningStatus::disabled;
-                REQUIRE(check_active.status != alpha_exception);
-                REQUIRE(check_inactive.status != alpha_exception);
-                REQUIRE(check_unprobed.status != alpha_exception);
                 REQUIRE(check_active.status != disabled);
                 REQUIRE(check_inactive.status != disabled);
                 REQUIRE(check_unprobed.status != disabled);
@@ -115,15 +111,12 @@ SCENARIO("seccomp probe reports not-probed on non-Linux platforms", "[platform][
             auto const result = merovingian::platform::probe_seccomp_status();
             auto const check = merovingian::platform::seccomp_check_from_probe(result);
 
-            THEN("the check is unknown — never alpha_exception or disabled")
+            THEN("the check is unknown — never disabled")
             {
-                // On BSD and other non-Linux targets seccomp maps to `unknown`,
-                // not `alpha_exception`. alpha_exception is reserved for controls
-                // that the project has decided to intentionally skip for now
-                // (pledge, capsicum); seccomp-bpf simply does not exist on this
-                // OS and unknown is the correct signal.
+                // On BSD and other non-Linux targets seccomp maps to `unknown`;
+                // seccomp-bpf simply does not exist on this OS and unknown is the
+                // correct signal. There is no alpha-exception status.
                 REQUIRE(check.status == merovingian::platform::HardeningStatus::unknown);
-                REQUIRE(check.status != merovingian::platform::HardeningStatus::alpha_exception);
                 REQUIRE(check.status != merovingian::platform::HardeningStatus::disabled);
                 REQUIRE_FALSE(check.note.empty());
             }

@@ -246,10 +246,9 @@ profile.
    `proc exec` promises allow `fork()`/`exec()` for the thumbnail worker;
    `unix` allows the AF_UNIX IPC channel to the federation worker.
 
-`openbsd_pledge_is_active()` returns `true` after step 5. The startup self-check
-runs *before* `apply_runtime_hardening_controls`, so pledge/unveil always appears
-as `alpha_exception` in the startup snapshot; the health endpoint and logs
-reflect the post-apply state.
+`openbsd_pledge_is_active()` returns `true` after step 5. The final startup
+hardening self-check runs in `run_server()` after `start_client_server()` has
+applied the BSD profile, so the snapshot reflects the post-apply state.
 
 #### FreeBSD — Capsicum `cap_enter(2)`
 
@@ -267,9 +266,9 @@ The call therefore happens *after* all resources are open:
 5. The child process (thumbnail worker) uses `fexecve(fd, argv, environ)` instead
    of `execv(path, argv)` because opening the binary by path is now forbidden.
 
-`freebsd_capsicum_is_active()` probes `cap_getmode(2)`. Like pledge above, the
-startup self-check always shows `alpha_exception` for capsicum because `cap_enter`
-is called after the self-check runs.
+`freebsd_capsicum_is_active()` probes `cap_getmode(2)`. The final startup
+hardening self-check runs in `run_server()` after `cap_enter()` has been called,
+so the snapshot reflects the confined state.
 
 #### NetBSD and other BSDs
 
@@ -304,18 +303,19 @@ profile:
 
 ## Startup hardening self_check
 
-`src/platform/hardening_self_check.cpp` runs in `src/main.cpp` just before the
-server binds listeners. Each check reports one of:
+`src/platform/hardening_self_check.cpp` is invoked from `src/main.cpp` after all
+platform hardening controls have been applied (seccomp-bpf, Linux capability
+bounding / no_new_privs / core-dump policy, OpenBSD pledge/unveil, FreeBSD
+Capsicum). Each check reports one of:
 
 * `enabled` — the defence is active;
 * `disabled` — the defence was explicitly turned off (hard failure);
 * `unknown` — the probe could not confirm the defence (e.g. static binary,
-  unsupported kernel);
-* `alpha_exception` — a documented alpha_only carve_out.
+  unsupported kernel).
 
-`run_server()` refuses to bind listeners if any check reports `disabled`.
-`is_production_ready()` returns true only when every check is `enabled`, so
-production release gating catches any remaining `alpha_exception`.
+`run_server()` refuses to start serving traffic unless every check reports
+`enabled`. `HardeningSelfCheck::is_ready()` returns true only when there are no
+blockers, and `production_blockers()` lists every check that is not enabled.
 
 ## Packaging and deployment hardening
 
@@ -345,6 +345,15 @@ Hardening is exercised by automated tests:
 * `tests/unit/test_media_thumbnailer.cpp` covers the CLOEXEC pipe path and the
   sandboxed worker round_trip.
 * `tests/unit/test_runtime_hardening.cpp` validates profile accept/reject logic.
+* `tests/integration/test_server_startup_hardening_flow.cpp` spawns the real
+  `merovingian-server` binary and verifies it either starts under full hardening
+  or refuses to start when a control cannot be enabled. The test skips in
+  environments that cannot satisfy every control (for example, a `debug` Meson
+  build omits `_FORTIFY_SOURCE`, or a non-root Linux process lacks `CAP_SETPCAP`
+  to drop the capability bounding set). To exercise the 10 s live-startup path,
+  build with `--buildtype debugoptimized` or `release` and run the test as a
+  non-root user that retains `CAP_SETPCAP` (ambient capability or a suitable
+  container/security profile).
 
 Because seccomp/pledge/unveil are permanent in-process, the test suite sets
 `MEROVINGIAN_TEST_DISABLE_HARDENING=1` when invoking `meson test`. The build
@@ -354,14 +363,16 @@ server binaries never see this variable and always apply the platform profile.
 
 ## What is intentionally deferred
 
-The following controls remain documented `alpha_exception` placeholders:
+The following controls are implemented as service-manager policy rather than
+in-process syscalls:
 
-* In-process privilege drop (`setresgid`/`setresuid`) — delegated to the service
-  manager for alpha; will be applied by the process itself before 1.0.
-* In-process Linux filesystem confinement (Landlock) — deferred; kernel version
-  requirements are still being evaluated.
+* In-process privilege drop (`setresgid`/`setresuid`) — the server must never run
+  as root; the service manager supplies a dedicated user.
+* In-process Linux filesystem confinement (Landlock) — service-manager sandboxing
+  (systemd/OpenRC/FreeBSD rc.d) enforces filesystem restrictions; the
+  Merovingian hardening profile documents these requirements.
 
-OpenBSD `pledge`/`unveil` and FreeBSD `cap_enter()` are now fully wired and
-exercised in CI (see above). The production readiness gate will not pass until
-the remaining items above are retired. See
-[`todos/capability-gaps.md`](todos/capability-gaps.md) for the current list.
+OpenBSD `pledge`/`unveil` and FreeBSD `cap_enter()` are fully wired and exercised
+in CI. The startup readiness gate will not pass until every hardening check
+reports `enabled`. See [`todos/capability-gaps.md`](todos/capability-gaps.md) for
+the current list.

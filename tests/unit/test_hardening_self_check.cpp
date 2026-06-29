@@ -40,78 +40,84 @@ SCENARIO("Startup hardening self-check reports stable baseline checks", "[platfo
     }
 }
 
-SCENARIO("Runtime hardening checks deferred for alpha carry documented exceptions", "[platform][hardening]")
+SCENARIO("Runtime hardening checks that cannot be confirmed at startup report unknown", "[platform][hardening]")
 {
-    GIVEN("the alpha exception hardening status")
+    GIVEN("a test process where runtime controls are not yet applied")
     {
-        auto constexpr alpha_exception = merovingian::platform::HardeningStatus::alpha_exception;
-
         WHEN("the startup hardening self-check runs")
         {
             auto const self_check = merovingian::platform::run_startup_hardening_self_check();
 
-            THEN("placeholder runtime checks are tagged alpha_exception or are already enabled")
+            THEN("placeholder runtime checks are either enabled or unknown")
             {
                 auto const& checks = self_check.checks();
-                // Indices 7–12: pledge/unveil, capsicum, privilege drop,
-                // filesystem restrictions, core dump policy, no_new_privs.
-                // These are alpha exceptions on platforms where the control is not
-                // implemented; on Linux they may already be enabled by an earlier
-                // test that applied runtime hardening controls in the same process.
-                // Index 6 (seccomp) is now probe-based, not alpha_exception.
-                auto const deferred_indices = {7U, 8U, 9U, 10U, 11U, 12U};
+                // Indices 7-13: pledge/unveil, capsicum, privilege drop,
+                // filesystem restrictions, core dump policy, no_new_privs,
+                // capability bounding. These report `enabled` when the control is
+                // active or not applicable to this platform, and `unknown` when the
+                // probe returns false (e.g. controls not yet applied in a test
+                // process). Index 6 (seccomp) is probe-based and reports `unknown`
+                // in the test process because apply_seccomp_filter() is not called.
+                auto const deferred_indices = {7U, 8U, 9U, 10U, 11U, 12U, 13U};
                 for (auto const index : deferred_indices)
                 {
                     auto const status = checks[index].status;
-                    REQUIRE((status == alpha_exception || status == merovingian::platform::HardeningStatus::enabled));
-                    if (status == alpha_exception)
+                    REQUIRE((status == merovingian::platform::HardeningStatus::enabled ||
+                             status == merovingian::platform::HardeningStatus::unknown));
+                    if (status == merovingian::platform::HardeningStatus::unknown)
                     {
                         REQUIRE_FALSE(checks[index].note.empty());
                     }
                 }
             }
 
-            AND_THEN("probe-derived checks are no longer alpha_exception")
+            AND_THEN("probe-derived checks are never disabled")
             {
                 // linker hardening (index 1) and RELRO (index 3) are driven by the
                 // ELF program-header probe; seccomp (index 6) by a /proc/self/status
-                // probe. All three may report `enabled` or `unknown` depending on
-                // the build and runtime state, but never `alpha_exception`.
+                // probe. All three may report `enabled` or `unknown` depending on the
+                // build and runtime state, but never `disabled`.
                 auto const& checks = self_check.checks();
                 REQUIRE(checks[1].name == "linker hardening");
                 REQUIRE(checks[3].name == "RELRO");
                 REQUIRE(checks[6].name == "seccomp");
-                REQUIRE(checks[1].status != alpha_exception);
-                REQUIRE(checks[3].status != alpha_exception);
-                REQUIRE(checks[6].status != alpha_exception);
+                REQUIRE(checks[1].status != merovingian::platform::HardeningStatus::disabled);
+                REQUIRE(checks[3].status != merovingian::platform::HardeningStatus::disabled);
+                REQUIRE(checks[6].status != merovingian::platform::HardeningStatus::disabled);
             }
         }
     }
 }
 
-SCENARIO("Hardening self-check fails closed for production while accepting alpha", "[platform][hardening]")
+SCENARIO("Hardening self-check fails closed when any control is not enabled", "[platform][hardening]")
 {
-    GIVEN("a startup hardening self-check report")
+    GIVEN("a startup hardening self-check report in a test process")
     {
         auto const self_check = merovingian::platform::run_startup_hardening_self_check();
 
-        WHEN("the report is queried for production readiness")
+        WHEN("the report is queried for readiness")
         {
-            THEN("alpha_exception entries block production readiness")
+            THEN("any unknown or disabled control blocks readiness")
             {
-                REQUIRE_FALSE(self_check.is_production_ready());
+                // The test process does not apply runtime hardening controls, so
+                // at least some checks are expected to be unknown. is_ready()
+                // therefore returns false.
+                REQUIRE_FALSE(self_check.is_ready());
                 REQUIRE(self_check.production_blocker_count() > 0U);
             }
 
-            AND_THEN("the report still permits alpha operation")
+            AND_THEN("every blocker is a non-enabled check")
             {
-                REQUIRE(self_check.is_alpha_ready());
+                for (auto const& blocker : self_check.production_blockers())
+                {
+                    REQUIRE(blocker.status != merovingian::platform::HardeningStatus::enabled);
+                }
             }
         }
     }
 }
 
-SCENARIO("Production-blocking hardening checks expose their documented notes", "[platform][hardening]")
+SCENARIO("Production-blocking hardening checks expose explanatory notes", "[platform][hardening]")
 {
     GIVEN("a startup hardening self-check report")
     {
@@ -121,18 +127,12 @@ SCENARIO("Production-blocking hardening checks expose their documented notes", "
         {
             auto const blockers = self_check.production_blockers();
 
-            THEN("alpha_exception blockers reference the alpha exception documentation")
+            THEN("every blocker carries a non-empty note")
             {
-                // ELF-probe-derived checks (linker hardening, RELRO) are now
-                // `unknown` rather than `alpha_exception`; they carry informative
-                // notes but do not reference the alpha-exceptions doc.
                 REQUIRE_FALSE(blockers.empty());
                 for (auto const& blocker : blockers)
                 {
-                    if (blocker.status == merovingian::platform::HardeningStatus::alpha_exception)
-                    {
-                        REQUIRE(blocker.note.find("docs/hardening-alpha-exceptions.md") != std::string::npos);
-                    }
+                    REQUIRE_FALSE(blocker.note.empty());
                 }
             }
         }
@@ -165,49 +165,66 @@ SCENARIO("Hardening status names are stable for startup logs", "[platform][harde
         auto constexpr enabled = merovingian::platform::HardeningStatus::enabled;
         auto constexpr disabled = merovingian::platform::HardeningStatus::disabled;
         auto constexpr unknown = merovingian::platform::HardeningStatus::unknown;
-        auto constexpr alpha_exception = merovingian::platform::HardeningStatus::alpha_exception;
 
         WHEN("the status names are requested")
         {
             auto const enabled_name = std::string{merovingian::platform::hardening_status_name(enabled)};
             auto const disabled_name = std::string{merovingian::platform::hardening_status_name(disabled)};
             auto const unknown_name = std::string{merovingian::platform::hardening_status_name(unknown)};
-            auto const alpha_exception_name =
-                std::string{merovingian::platform::hardening_status_name(alpha_exception)};
 
             THEN("the diagnostic names are stable")
             {
                 REQUIRE(enabled_name == "enabled");
                 REQUIRE(disabled_name == "disabled");
                 REQUIRE(unknown_name == "unknown");
-                REQUIRE(alpha_exception_name == "alpha_exception");
             }
         }
     }
 }
 
-SCENARIO("BSD sandbox controls in self-check are alpha_exception in a process where they have not been applied",
+SCENARIO("Platform-specific sandbox controls reflect their applicability in the self-check",
          "[platform][hardening][bsd][portable]")
 {
-    GIVEN("the hardening self-check report from a process where pledge and cap_enter have not been called")
+    GIVEN("the hardening self-check report")
     {
         auto const self_check = merovingian::platform::run_startup_hardening_self_check();
         auto const& checks = self_check.checks();
 
-        WHEN("BSD-specific sandbox controls are examined")
+        WHEN("platform-specific sandbox controls are examined")
         {
-            THEN("pledge/unveil and capsicum are alpha_exception because the probes return false")
+            REQUIRE(checks[7].name == "pledge/unveil");
+            REQUIRE(checks[8].name == "capsicum");
+
+#ifdef __linux__
+            // On Linux, pledge/unveil and Capsicum are not applicable controls —
+            // the server reports `enabled` (no security gap from the absence of a
+            // BSD-only primitive on a non-BSD platform).
+            THEN("pledge/unveil and capsicum are enabled (not applicable on Linux)")
             {
-                // The startup self-check runs BEFORE apply_runtime_hardening_controls is
-                // called (the self-check is at line ~762 in main.cpp; the apply is at ~769).
-                // Therefore openbsd_pledge_is_active() and freebsd_capsicum_is_active() both
-                // return false at self-check time, yielding alpha_exception. In unit tests the
-                // probes also return false since pledge/cap_enter are never called directly.
-                REQUIRE(checks[7].name == "pledge/unveil");
-                REQUIRE(checks[8].name == "capsicum");
-                REQUIRE(checks[7].status == merovingian::platform::HardeningStatus::alpha_exception);
-                REQUIRE(checks[8].status == merovingian::platform::HardeningStatus::alpha_exception);
+                REQUIRE(checks[7].status == merovingian::platform::HardeningStatus::enabled);
+                REQUIRE(checks[8].status == merovingian::platform::HardeningStatus::enabled);
             }
+#elif defined(__OpenBSD__)
+            // On OpenBSD, pledge has not been called yet in the test process.
+            THEN("pledge/unveil is unknown (not yet applied in test process)")
+            {
+                REQUIRE(checks[7].status == merovingian::platform::HardeningStatus::unknown);
+                REQUIRE(checks[8].status == merovingian::platform::HardeningStatus::enabled);
+            }
+#elif defined(__FreeBSD__)
+            // On FreeBSD, cap_enter has not been called yet in the test process.
+            THEN("capsicum is unknown (not yet entered in test process)")
+            {
+                REQUIRE(checks[7].status == merovingian::platform::HardeningStatus::enabled);
+                REQUIRE(checks[8].status == merovingian::platform::HardeningStatus::unknown);
+            }
+#else
+            THEN("pledge/unveil and capsicum are unknown on unsupported platforms")
+            {
+                REQUIRE(checks[7].status == merovingian::platform::HardeningStatus::unknown);
+                REQUIRE(checks[8].status == merovingian::platform::HardeningStatus::unknown);
+            }
+#endif
         }
     }
 }
@@ -223,33 +240,32 @@ SCENARIO("Hardening self-check maps Linux-only controls to appropriate non-Linux
 
         WHEN("seccomp is examined on a non-Linux host")
         {
-            THEN("seccomp status is unknown — not alpha_exception, enabled, or disabled")
+            THEN("seccomp status is unknown — not enabled or disabled")
             {
                 // /proc/self/status does not exist on BSD; probe_seccomp_status
                 // returns {probed: false, seccomp_active: false} which maps to
                 // `unknown`. unknown is the correct signal — the OS cannot run
-                // seccomp-bpf at all, distinct from alpha_exception (intentional
-                // deferral we have documented).
+                // seccomp-bpf at all.
                 REQUIRE(checks[6].name == "seccomp");
                 REQUIRE(checks[6].status == merovingian::platform::HardeningStatus::unknown);
-                REQUIRE(checks[6].status != merovingian::platform::HardeningStatus::alpha_exception);
                 REQUIRE(checks[6].status != merovingian::platform::HardeningStatus::enabled);
+                REQUIRE(checks[6].status != merovingian::platform::HardeningStatus::disabled);
             }
         }
 
         WHEN("Linux process-capability controls are examined on a non-Linux host")
         {
-            THEN("core dump policy, no_new_privs, and capability bounding are alpha_exception")
+            THEN("core dump policy, no_new_privs, and capability bounding are unknown")
             {
                 // PR_SET_DUMPABLE, PR_SET_NO_NEW_PRIVS, and cap_set_proc are Linux
                 // kernel features. On non-Linux hosts the implementation returns
-                // enabled_or_alpha_exception(false, ...) = alpha_exception for each.
+                // enabled_or_unknown(false, ...) = unknown for each.
                 REQUIRE(checks[11].name == "core dump policy");
                 REQUIRE(checks[12].name == "no_new_privs");
                 REQUIRE(checks[13].name == "capability bounding");
-                REQUIRE(checks[11].status == merovingian::platform::HardeningStatus::alpha_exception);
-                REQUIRE(checks[12].status == merovingian::platform::HardeningStatus::alpha_exception);
-                REQUIRE(checks[13].status == merovingian::platform::HardeningStatus::alpha_exception);
+                REQUIRE(checks[11].status == merovingian::platform::HardeningStatus::unknown);
+                REQUIRE(checks[12].status == merovingian::platform::HardeningStatus::unknown);
+                REQUIRE(checks[13].status == merovingian::platform::HardeningStatus::unknown);
             }
         }
     }

@@ -11,6 +11,7 @@ namespace merovingian::platform
 struct ElfHardeningResult final
 {
     bool probed{false};           // true when the probe could open and parse the binary
+    bool is_pie{false};           // ELF type is ET_DYN (position-independent executable)
     bool has_relro{false};        // PT_GNU_RELRO segment present
     bool has_bind_now{false};     // DT_BIND_NOW or DF_BIND_NOW in PT_DYNAMIC
     bool has_noexec_stack{false}; // PT_GNU_STACK present without PF_X

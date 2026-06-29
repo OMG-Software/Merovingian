@@ -58,6 +58,10 @@ namespace
             ehdr.e_ident[EI_MAG3] != ELFMAG3 || ehdr.e_ident[EI_CLASS] != ELFCLASS64)
             return result;
 
+        // ET_DYN means the binary is a shared object or position-independent executable.
+        // A PIE executable is always ET_DYN; a non-PIE executable is ET_EXEC.
+        result.is_pie = (ehdr.e_type == ET_DYN);
+
         if (ehdr.e_phentsize != sizeof(Elf64_Phdr) || ehdr.e_phnum == 0)
             return result;
 

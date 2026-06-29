@@ -9,7 +9,12 @@
 // tests — specifically syscalls made by glibc thread initialisation AFTER the
 // filter is installed (rseq, membarrier, getcpu, futex_waitv). A filter gap
 // produces SIGSYS (SECCOMP_RET_KILL_PROCESS) and the server dies with "Bad
-// system call" immediately after event=start.complete.
+// system call" immediately after the listeners become active.
+//
+// Because the project now refuses to start unless every hardening control is
+// `enabled`, the test is skipped when the current build or runtime environment
+// cannot satisfy that requirement. The skip is detected from the server log
+// rather than by duplicating the readiness logic in the test runner.
 
 #include "../support/temp_directory.hpp"
 
@@ -171,6 +176,8 @@ struct ServerGuard final
 {
     pid_t pid{-1};
     int log_pipe_read{-1};
+    int exit_status{-1};
+    bool reaped{false};
 
     ServerGuard() = default;
 
@@ -194,10 +201,33 @@ struct ServerGuard final
     ServerGuard(ServerGuard&&) = delete;
     auto operator=(ServerGuard&&) -> ServerGuard& = delete;
 
-    // True if the child is still running.
-    [[nodiscard]] auto alive() const noexcept -> bool
+    // True if the child is still running. Uses waitpid(WNOHANG) so that a
+    // process which has already exited (and would otherwise exist only as a
+    // zombie) is reported as not alive. When the child has exited, its status
+    // is stored and the pid is cleared to prevent the destructor from sending
+    // SIGKILL to a stale pid.
+    [[nodiscard]] auto alive() noexcept -> bool
     {
-        return pid > 0 && ::kill(pid, 0) == 0;
+        if (pid <= 0)
+        {
+            return false;
+        }
+
+        auto const rc = ::waitpid(pid, &exit_status, WNOHANG);
+        if (rc > 0)
+        {
+            reaped = true;
+            pid = -1;
+            return false;
+        }
+        if (rc == 0)
+        {
+            return true;
+        }
+
+        // rc < 0: unexpected error — treat the process as gone.
+        pid = -1;
+        return false;
     }
 };
 
@@ -321,9 +351,28 @@ struct ServerGuard final
     return false;
 }
 
+// Read everything currently available from read_fd. Non-blocking; returns what
+// has already been emitted by the child process.
+[[nodiscard]] auto drain_pipe(int read_fd) -> std::string
+{
+    auto result = std::string{};
+    auto chunk = std::array<char, 4096>{};
+    while (true)
+    {
+        auto const n = ::read(read_fd, chunk.data(), chunk.size() - 1U);
+        if (n <= 0)
+        {
+            break;
+        }
+        result.append(chunk.data(), static_cast<std::size_t>(n));
+    }
+    return result;
+}
+
 } // namespace
 
-SCENARIO("merovingian-server starts under full platform hardening, runs for 10 s, and shuts down cleanly via SIGTERM",
+SCENARIO("merovingian-server either starts under full platform hardening or refuses to start when hardening cannot be "
+         "enabled",
          "[platform][hardening][integration][startup][binary]")
 {
     GIVEN("the server binary and federation worker binary are available")
@@ -370,11 +419,46 @@ SCENARIO("merovingian-server starts under full platform hardening, runs for 10 s
             {
                 REQUIRE(ready);
 
+                // The server performs the final hardening self-check immediately
+                // after logging "Listeners active". Give it a short window to exit
+                // if the build or runtime environment cannot satisfy every control.
+                auto hardening_decided = false;
+                for (auto i = 0; i < 50; ++i)
+                {
+                    if (!guard.alive())
+                    {
+                        hardening_decided = true;
+                        break;
+                    }
+                    std::this_thread::sleep_for(std::chrono::milliseconds{100});
+                }
+
+                if (hardening_decided)
+                {
+                    auto const drain = drain_pipe(guard.log_pipe_read);
+                    // Since every hardening control must now be `enabled`, the server
+                    // may legitimately refuse to start when the build or runtime
+                    // environment cannot satisfy a control (e.g. debug build without
+                    // _FORTIFY_SOURCE, or non-root Linux without CAP_SETPCAP). Skip
+                    // the test in that case rather than failing CI in unsupported
+                    // environments.
+                    if (drain.find("Startup refused: hardening self-check") != std::string::npos)
+                    {
+                        SKIP("build/runtime environment cannot satisfy full hardening; binary startup test skipped\n" +
+                             drain);
+                    }
+                    FAIL("server died before the 10 s idle window; likely seccomp gap or crash:\n" + drain);
+                }
+
                 // Confirm it survives 10 s of idle operation under full hardening.
                 // A seccomp gap (SIGSYS / SECCOMP_RET_KILL_PROCESS) would kill the
                 // process during this window, causing alive() to return false.
                 std::this_thread::sleep_for(std::chrono::seconds{10});
-                REQUIRE(guard.alive());
+                if (!guard.alive())
+                {
+                    auto const drain = drain_pipe(guard.log_pipe_read);
+                    FAIL("server died during 10 s idle window under full hardening; likely seccomp gap:\n" + drain);
+                }
 
                 // Request graceful shutdown.
                 ::kill(guard.pid, SIGTERM);
@@ -382,6 +466,20 @@ SCENARIO("merovingian-server starts under full platform hardening, runs for 10 s
                 // Wait up to 10 s for clean exit; the destructor SIGKILLs if needed.
                 auto exit_status = int{};
                 auto const exited = wait_for_exit(guard.pid, std::chrono::seconds{10}, exit_status);
+
+                // Drain any remaining log output for debugging shutdown failures.
+                if (!exited || !((WIFEXITED(exit_status) && WEXITSTATUS(exit_status) == 0) ||
+                                 (WIFSIGNALED(exit_status) && WTERMSIG(exit_status) == SIGTERM)))
+                {
+                    auto const drain = drain_pipe(guard.log_pipe_read);
+                    WARN("server log:\n" + drain);
+                    WARN("exit_status raw=" + std::to_string(exit_status) +
+                         " exited=" + std::string{exited ? "true" : "false"} +
+                         " signaled=" + std::string{WIFSIGNALED(exit_status) ? "true" : "false"} +
+                         " signal=" + std::to_string(WIFSIGNALED(exit_status) ? WTERMSIG(exit_status) : 0) +
+                         " exitcode=" + std::to_string(WIFEXITED(exit_status) ? WEXITSTATUS(exit_status) : -1));
+                }
+
                 guard.pid = -1; // already reaped; prevent double-kill in destructor
 
                 REQUIRE(exited);

@@ -26,6 +26,7 @@
 
 #include <cerrno>
 #include <cstdint>
+#include <cstdlib>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -535,10 +536,30 @@ auto plan_config_reload(std::string const& current_path, std::string const& next
     return merovingian::bootstrap::to_int(merovingian::bootstrap::ExitCode::success);
 }
 
+auto log_hardening_summary(merovingian::platform::HardeningSelfCheck const& self_check) -> void
+{
+    LOG_INFO("Startup hardening checks: " + std::to_string(self_check.count()));
+    for (auto const& check : self_check.checks())
+    {
+        auto const status_name = std::string{merovingian::platform::hardening_status_name(check.status)};
+        auto const suffix = check.note.empty() ? std::string{} : (" note=" + check.note);
+        if (check.status == merovingian::platform::HardeningStatus::disabled ||
+            check.status == merovingian::platform::HardeningStatus::unknown)
+        {
+            LOG_WARNING("Hardening self-check: " + check.name + "=" + status_name + suffix);
+        }
+        else
+        {
+            LOG_INFO("Hardening self-check: " + check.name + "=" + status_name + suffix);
+        }
+    }
+    LOG_INFO("Hardening readiness: ready=" + std::string{self_check.is_ready() ? "true" : "false"} +
+             " blockers=" + std::to_string(self_check.production_blocker_count()));
+}
+
 auto log_startup_summary(BootstrapConfigResult const& result) -> void
 {
     auto const& config = result.parsed.config;
-    auto const hardening_self_check = merovingian::platform::run_startup_hardening_self_check();
     auto const runtime_database = merovingian::database::make_runtime_database_config(config);
     auto const runtime_federation = merovingian::federation::make_runtime_federation_config(config);
     auto const runtime_listeners = merovingian::net::make_runtime_listeners(config);
@@ -548,24 +569,6 @@ auto log_startup_summary(BootstrapConfigResult const& result) -> void
     LOG_INFO("Configuration source: " + result.source);
     LOG_INFO("Server name: " + config.server().server_name);
     LOG_INFO("Public base URL: " + config.server().public_baseurl);
-    LOG_INFO("Startup hardening checks: " + std::to_string(hardening_self_check.count()));
-    for (auto const& check : hardening_self_check.checks())
-    {
-        auto const status_name = std::string{merovingian::platform::hardening_status_name(check.status)};
-        auto const suffix = check.note.empty() ? std::string{} : (" note=" + check.note);
-        if (check.status == merovingian::platform::HardeningStatus::alpha_exception)
-        {
-            LOG_WARNING("Hardening self-check: " + check.name + "=" + status_name + suffix);
-        }
-        else
-        {
-            LOG_INFO("Hardening self-check: " + check.name + "=" + status_name + suffix);
-        }
-    }
-    LOG_INFO("Hardening readiness: production_ready=" +
-             std::string{hardening_self_check.is_production_ready() ? "true" : "false"} +
-             " alpha_ready=" + std::string{hardening_self_check.is_alpha_ready() ? "true" : "false"} +
-             " production_blockers=" + std::to_string(hardening_self_check.production_blocker_count()));
     LOG_INFO(merovingian::database::database_summary(runtime_database));
     LOG_INFO(merovingian::federation::federation_summary(runtime_federation));
     LOG_INFO(merovingian::media::media_summary(runtime_media));
@@ -761,14 +764,33 @@ struct ListenerBinding final
     // probe below will then report `unknown` rather than `enabled`.
     std::ignore = merovingian::platform::apply_seccomp_filter();
 
-    // Fail closed when a hardening control is explicitly disabled. Documented
-    // alpha exceptions are still permitted; production gating happens at
-    // release-readiness time. See docs/hardening-alpha-exceptions.md.
-    auto const hardening_self_check = merovingian::platform::run_startup_hardening_self_check();
-    if (!hardening_self_check.is_alpha_ready())
+#ifdef __linux__
+    // Apply Linux runtime controls (core-dump policy, no_new_privs, capability
+    // bounding) before the gate self-check so their probes report `enabled`.
+    // Skipped when MEROVINGIAN_TEST_DISABLE_HARDENING is set so in-process unit
+    // tests are not permanently restricted. start_client_server() also calls
+    // apply_runtime_hardening_controls(); the double call is idempotent.
+    if (std::getenv("MEROVINGIAN_TEST_DISABLE_HARDENING") == nullptr)
     {
-        LOG_CRITICAL("Startup refused: hardening self-check reports a disabled control");
-        return merovingian::bootstrap::to_int(merovingian::bootstrap::ExitCode::runtime_start_error);
+        std::ignore = merovingian::platform::apply_runtime_hardening_controls(
+            merovingian::platform::default_linux_hardening_profile());
+    }
+#endif
+
+    // Fail fast on explicitly disabled hardening controls (e.g. running as root)
+    // before binding listeners. Controls that are still `unknown` because they
+    // are applied later in the startup sequence are tolerated here; the final
+    // self-check after all controls are applied requires every check to be
+    // `enabled`.
+    auto const early_hardening_check = merovingian::platform::run_startup_hardening_self_check();
+    for (auto const& check : early_hardening_check.checks())
+    {
+        if (check.status == merovingian::platform::HardeningStatus::disabled)
+        {
+            LOG_CRITICAL("Startup refused: hardening self-check reports a disabled control: " + check.name + " (" +
+                         check.note + ")");
+            return merovingian::bootstrap::to_int(merovingian::bootstrap::ExitCode::runtime_start_error);
+        }
     }
 
     auto runtime_result = merovingian::homeserver::start_client_server(result.parsed.config);
@@ -873,6 +895,16 @@ struct ListenerBinding final
     }
 #endif // __FreeBSD__
 
+    // Every hardening control must now be confirmed enabled. The server refuses to
+    // start if any check is still unknown or disabled.
+    runtime.homeserver.hardening = merovingian::platform::run_startup_hardening_self_check();
+    log_hardening_summary(runtime.homeserver.hardening);
+    if (!runtime.homeserver.hardening.is_ready())
+    {
+        LOG_CRITICAL("Startup refused: hardening self-check reports a non-enabled control");
+        return merovingian::bootstrap::to_int(merovingian::bootstrap::ExitCode::runtime_start_error);
+    }
+
     auto const stats = serve_until_shutdown(runtime, bindings, shutdown);
 
     merovingian::net::uninstall_shutdown_signal_handlers();
@@ -930,6 +962,8 @@ auto main(int argc, char const* const* argv) -> int
     if (args.dry_run)
     {
         LOG_INFO("Dry run requested; skipping listener bind");
+        auto const dry_run_hardening = merovingian::platform::run_startup_hardening_self_check();
+        log_hardening_summary(dry_run_hardening);
         return merovingian::bootstrap::to_int(merovingian::bootstrap::ExitCode::success);
     }
 
