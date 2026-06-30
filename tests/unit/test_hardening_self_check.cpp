@@ -242,10 +242,16 @@ SCENARIO("Platform-specific sandbox controls reflect their applicability in the 
                 REQUIRE(checks[8].status == merovingian::platform::HardeningStatus::unknown);
             }
 #else
-            THEN("pledge/unveil and capsicum are unknown on unsupported platforms")
+            // NetBSD and any other platform without pledge/unveil or Capsicum:
+            // neither BSD-only control is applicable here, so the self-check reports
+            // `enabled` (no security gap from the absence of a primitive the OS does
+            // not support) — the same treatment Linux receives. `unknown` would be
+            // wrong: it would block startup via is_ready() on platforms that can
+            // never apply these controls.
+            THEN("pledge/unveil and capsicum are enabled (not applicable on this platform)")
             {
-                REQUIRE(checks[7].status == merovingian::platform::HardeningStatus::unknown);
-                REQUIRE(checks[8].status == merovingian::platform::HardeningStatus::unknown);
+                REQUIRE(checks[7].status == merovingian::platform::HardeningStatus::enabled);
+                REQUIRE(checks[8].status == merovingian::platform::HardeningStatus::enabled);
             }
 #endif
         }
