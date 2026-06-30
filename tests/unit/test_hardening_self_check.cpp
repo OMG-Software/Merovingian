@@ -48,17 +48,17 @@ SCENARIO("Runtime hardening checks that cannot be confirmed at startup report un
         {
             auto const self_check = merovingian::platform::run_startup_hardening_self_check();
 
-            THEN("placeholder runtime checks are either enabled or unknown")
+            THEN("probe-deferred runtime checks are either enabled or unknown")
             {
                 auto const& checks = self_check.checks();
-                // Indices 7-13: pledge/unveil, capsicum, privilege drop,
-                // filesystem restrictions, core dump policy, no_new_privs,
-                // capability bounding. These report `enabled` when the control is
-                // active or not applicable to this platform, and `unknown` when the
-                // probe returns false (e.g. controls not yet applied in a test
-                // process). Index 6 (seccomp) is probe-based and reports `unknown`
-                // in the test process because apply_seccomp_filter() is not called.
-                auto const deferred_indices = {7U, 8U, 9U, 10U, 11U, 12U, 13U};
+                // Indices 7,8,11,12,13: pledge/unveil, capsicum, core dump policy,
+                // no_new_privs, capability bounding. These report `enabled` when the
+                // control is active or not applicable to this platform, and `unknown`
+                // when the probe returns false (e.g. controls not yet applied in a
+                // test process). Index 6 (seccomp) is probe-based and reports
+                // `unknown` in the test process because apply_seccomp_filter() is
+                // not called.
+                auto const deferred_indices = {7U, 8U, 11U, 12U, 13U};
                 for (auto const index : deferred_indices)
                 {
                     auto const status = checks[index].status;
@@ -69,6 +69,29 @@ SCENARIO("Runtime hardening checks that cannot be confirmed at startup report un
                         REQUIRE_FALSE(checks[index].note.empty());
                     }
                 }
+            }
+
+            AND_THEN("privilege drop and filesystem restrictions reflect the runtime UID")
+            {
+                // Indices 9 (privilege drop) and 10 (filesystem restrictions) are
+                // NOT probe-deferred: on Linux they are definitive — `enabled` when
+                // the process runs as a non-root user and `disabled` when it runs as
+                // root, because the server refuses to run as root. CI distro
+                // containers run as root, so `disabled` is expected there. On
+                // non-Linux platforms the probe is not implemented and reports
+                // `unknown`.
+                auto const& checks = self_check.checks();
+                REQUIRE(checks[9].name == "privilege drop");
+                REQUIRE(checks[10].name == "filesystem restrictions");
+#ifdef __linux__
+                REQUIRE((checks[9].status == merovingian::platform::HardeningStatus::enabled ||
+                         checks[9].status == merovingian::platform::HardeningStatus::disabled));
+                REQUIRE((checks[10].status == merovingian::platform::HardeningStatus::enabled ||
+                         checks[10].status == merovingian::platform::HardeningStatus::disabled));
+#else
+                REQUIRE(checks[9].status == merovingian::platform::HardeningStatus::unknown);
+                REQUIRE(checks[10].status == merovingian::platform::HardeningStatus::unknown);
+#endif
             }
 
             AND_THEN("probe-derived checks are never disabled")
