@@ -31,6 +31,19 @@ struct SeccompProbeResult final
 // code must use apply_seccomp_filter(); only tests pass a non-kill default.
 [[nodiscard]] auto apply_seccomp_filter_with_default(std::uint32_t default_action) noexcept -> bool;
 
+// Applies a STRICTER allowlist for the federation worker child (issue #319).
+// The worker never spawns or execs child processes, so execve/execveat are
+// DENIED here even though the main process allows them (for posix_spawn). All
+// other syscalls the worker needs (I/O, threads, network, mlock, getrandom)
+// match the main allowlist. Same fail-closed default action. Returns false on
+// non-Linux or kernels without CONFIG_SECCOMP_FILTER.
+[[nodiscard]] auto apply_worker_seccomp_filter() noexcept -> bool;
+
+// Worker-filter variant with a caller-chosen default action, for the same
+// diagnosability reason as apply_seccomp_filter_with_default(). Production
+// worker code must use apply_worker_seccomp_filter().
+[[nodiscard]] auto apply_worker_seccomp_filter_with_default(std::uint32_t default_action) noexcept -> bool;
+
 // Reads /proc/self/status to detect whether a seccomp-bpf filter is active.
 // Returns probed=true and seccomp_active=true when "Seccomp: 2" is found
 // (SECCOMP_MODE_FILTER). On non-Linux, returns probed=false.
@@ -45,6 +58,15 @@ struct SeccompProbeResult final
 // apply_seccomp_filter(). Exposed for unit testing without installing the
 // filter in the test process.
 [[nodiscard]] auto seccomp_is_syscall_allowed(int syscall_number) noexcept -> bool;
+
+// Returns the default seccomp-bpf action used by apply_worker_seccomp_filter().
+// Fail-closed: SECCOMP_RET_KILL_PROCESS (same as the main filter).
+[[nodiscard]] auto worker_seccomp_default_action() noexcept -> std::uint32_t;
+
+// Returns true if `syscall_number` is present in the worker allowlist used by
+// apply_worker_seccomp_filter(). Exposed for unit testing the stricter profile
+// (execve/execveat must be denied; the thread/network/I/O set must be allowed).
+[[nodiscard]] auto worker_seccomp_is_syscall_allowed(int syscall_number) noexcept -> bool;
 
 // Returns the AUDIT_ARCH_* constant the installed filter expects, or std::nullopt
 // when the build architecture is not supported (fail-closed). Exposed for testing.

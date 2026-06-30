@@ -800,7 +800,7 @@ namespace
                        "DO UPDATE SET public_key = $3, valid_until_ts = $4, "
                        "secret_key = CASE WHEN $5 = '' THEN server_signing_keys.secret_key ELSE $5 END",
                        {public_value(key.server_name), public_value(key.key_id), public_value(key.public_key),
-                        public_value(std::to_string(key.valid_until_ts)), public_value(key.secret_key)})))
+                        public_value(std::to_string(key.valid_until_ts)), sensitive_value(key.secret_key)})))
     {
         return false;
     }

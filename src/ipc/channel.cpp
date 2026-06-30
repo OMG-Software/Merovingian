@@ -3,9 +3,16 @@
 
 #include "merovingian/ipc/channel.hpp"
 
+#include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/ipc/federation_ipc_frames.hpp"
+#include "merovingian/observability/logger.hpp"
+
+#include <array>
 #include <cstring>
+#include <new>
 #include <stdexcept>
 #include <string>
+#include <variant>
 #include <vector>
 
 #include <arpa/inet.h>
@@ -17,38 +24,34 @@ namespace merovingian::ipc
 namespace
 {
 
-    // Extracts a uint64 value for a JSON key in the form "key":N.
-    [[nodiscard]] auto json_uint64(std::string_view j, std::string_view key) noexcept -> std::optional<std::uint64_t>
+    // Extracts a uint64 value for a JSON key from a parsed object. The
+    // canonicaljson DOM stores integers as int64; values are monotonic frame
+    // ids/reply_tos starting at 0, so the int64 range is sufficient. Returns
+    // nullopt for a missing key or a non-integer value.
+    [[nodiscard]] auto extract_uint64(canonicaljson::Object const& obj, std::string_view key) noexcept
+        -> std::optional<std::uint64_t>
     {
-        auto const search = std::string{"\""} + std::string{key} + "\":";
-        auto const pos = j.find(search);
-        if (pos == std::string_view::npos)
+        for (auto const& member : obj)
         {
-            return std::nullopt;
+            if (member.key == key)
+            {
+                auto const* num = std::get_if<std::int64_t>(&member.value->storage());
+                if (num == nullptr || *num < 0)
+                {
+                    return std::nullopt;
+                }
+                return static_cast<std::uint64_t>(*num);
+            }
         }
-        auto i = pos + search.size();
-        while (i < j.size() && (j[i] == ' ' || j[i] == '\t'))
-        {
-            ++i;
-        }
-        if (i >= j.size() || j[i] < '0' || j[i] > '9')
-        {
-            return std::nullopt;
-        }
-        auto v = std::uint64_t{0};
-        while (i < j.size() && j[i] >= '0' && j[i] <= '9')
-        {
-            v = v * 10U + static_cast<std::uint64_t>(j[i] - '0');
-            ++i;
-        }
-        return v;
+        return std::nullopt;
     }
 
 } // namespace
 
-IpcChannel::IpcChannel(core::FileDescriptor fd, Role role)
+IpcChannel::IpcChannel(core::FileDescriptor fd, Role role, crypto::IpcAuthKey auth_key, std::uint32_t max_frame_bytes)
     : fd_{std::move(fd)}
     , role_{role}
+    , max_frame_bytes_{max_frame_bytes == 0U ? kIpcMaxFrameBytes : max_frame_bytes}
 {
     uint8_t my_pk[crypto_kx_PUBLICKEYBYTES]{};
     uint8_t my_sk[crypto_kx_SECRETKEYBYTES]{};
@@ -63,6 +66,46 @@ IpcChannel::IpcChannel(core::FileDescriptor fd, Role role)
         sodium_memzero(my_sk, sizeof(my_sk));
         throw std::runtime_error{"ipc: public key exchange failed"};
     }
+
+    // Authenticate the peer: both sides MAC (role_byte || my_pk || peer_pk)
+    // with the master-key-derived IpcAuthKey and exchange MACs. The role byte
+    // is role-dependent so a server MAC cannot be replayed as a client MAC.
+    // crypto_kx is confidentiality-only; this proves both peers hold the master
+    // key, preventing an unauthorised process from completing the handshake.
+    auto const role_byte = static_cast<uint8_t>(role_ == Role::server ? 0x01U : 0x02U);
+    auto const peer_role_byte = static_cast<uint8_t>(role_ == Role::server ? 0x02U : 0x01U);
+    auto mac_msg = std::array<uint8_t, 1U + crypto_kx_PUBLICKEYBYTES + crypto_kx_PUBLICKEYBYTES>{};
+    mac_msg[0U] = role_byte;
+    std::memcpy(mac_msg.data() + 1U, my_pk, crypto_kx_PUBLICKEYBYTES);
+    std::memcpy(mac_msg.data() + 1U + crypto_kx_PUBLICKEYBYTES, peer_pk, crypto_kx_PUBLICKEYBYTES);
+
+    uint8_t my_mac[crypto_auth_BYTES]{};
+    crypto_auth(my_mac, mac_msg.data(), mac_msg.size(), auth_key.bytes.data());
+
+    uint8_t peer_mac[crypto_auth_BYTES]{};
+    if (!raw_send_exact(my_mac, sizeof(my_mac)) || !raw_recv_exact(peer_mac, sizeof(peer_mac)))
+    {
+        sodium_memzero(my_sk, sizeof(my_sk));
+        sodium_memzero(my_mac, sizeof(my_mac));
+        sodium_memzero(auth_key.bytes.data(), auth_key.bytes.size());
+        throw std::runtime_error{"ipc: auth MAC exchange failed"};
+    }
+
+    // Verify the peer's MAC against (peer_role_byte || peer_pk || my_pk).
+    mac_msg[0U] = peer_role_byte;
+    std::memcpy(mac_msg.data() + 1U, peer_pk, crypto_kx_PUBLICKEYBYTES);
+    std::memcpy(mac_msg.data() + 1U + crypto_kx_PUBLICKEYBYTES, my_pk, crypto_kx_PUBLICKEYBYTES);
+    if (crypto_auth_verify(peer_mac, mac_msg.data(), mac_msg.size(), auth_key.bytes.data()) != 0)
+    {
+        sodium_memzero(my_sk, sizeof(my_sk));
+        sodium_memzero(my_mac, sizeof(my_mac));
+        sodium_memzero(peer_mac, sizeof(peer_mac));
+        sodium_memzero(auth_key.bytes.data(), auth_key.bytes.size());
+        throw std::runtime_error{"ipc: peer authentication failed"};
+    }
+    sodium_memzero(my_mac, sizeof(my_mac));
+    sodium_memzero(peer_mac, sizeof(peer_mac));
+    sodium_memzero(auth_key.bytes.data(), auth_key.bytes.size());
 
     uint8_t rx[crypto_kx_SESSIONKEYBYTES]{};
     uint8_t tx[crypto_kx_SESSIONKEYBYTES]{};
@@ -212,12 +255,23 @@ auto IpcChannel::raw_recv_exact(void* buf, std::size_t n) noexcept -> bool
 auto IpcChannel::write_frame(std::string_view plaintext) noexcept -> bool
 {
     auto const pt_len = plaintext.size();
-    if (pt_len > kIpcMaxFrameBytes)
+    if (pt_len > max_frame_bytes_)
     {
         return false;
     }
     auto const ct_len = static_cast<std::uint32_t>(pt_len + crypto_secretstream_xchacha20poly1305_ABYTES);
-    auto ct = std::vector<uint8_t>(ct_len);
+    // Allocation can throw std::bad_alloc; this function is noexcept, so an
+    // uncaught exception would call std::terminate. Allocate defensively and
+    // treat allocation failure as a normal send failure (issue #324).
+    auto ct = std::vector<uint8_t>{};
+    try
+    {
+        ct.resize(ct_len);
+    }
+    catch (std::bad_alloc const&)
+    {
+        return false;
+    }
 
     crypto_secretstream_xchacha20poly1305_push(&push_state_, ct.data(), nullptr,
                                                reinterpret_cast<uint8_t const*>(plaintext.data()), pt_len, nullptr, 0,
@@ -236,19 +290,36 @@ auto IpcChannel::read_frame() noexcept -> std::optional<std::string>
     }
     auto const ct_len = ntohl(net_len);
     if (ct_len < static_cast<std::uint32_t>(crypto_secretstream_xchacha20poly1305_ABYTES) ||
-        ct_len > kIpcMaxFrameBytes + static_cast<std::uint32_t>(crypto_secretstream_xchacha20poly1305_ABYTES))
+        ct_len > max_frame_bytes_ + static_cast<std::uint32_t>(crypto_secretstream_xchacha20poly1305_ABYTES))
     {
         return std::nullopt;
     }
 
-    auto ct = std::vector<uint8_t>(ct_len);
+    // See write_frame: defend the noexcept contract against std::bad_alloc.
+    auto ct = std::vector<uint8_t>{};
+    try
+    {
+        ct.resize(ct_len);
+    }
+    catch (std::bad_alloc const&)
+    {
+        return std::nullopt;
+    }
     if (!raw_recv_exact(ct.data(), ct_len))
     {
         return std::nullopt;
     }
 
     auto const pt_len = ct_len - static_cast<std::uint32_t>(crypto_secretstream_xchacha20poly1305_ABYTES);
-    auto pt = std::string(pt_len, '\0');
+    auto pt = std::string{};
+    try
+    {
+        pt.resize(pt_len);
+    }
+    catch (std::bad_alloc const&)
+    {
+        return std::nullopt;
+    }
     uint8_t tag{};
     if (crypto_secretstream_xchacha20poly1305_pull(&pull_state_, reinterpret_cast<uint8_t*>(pt.data()), nullptr, &tag,
                                                    ct.data(), ct_len, nullptr, 0) != 0)
@@ -281,8 +352,27 @@ auto IpcChannel::build_frame(std::uint64_t id, std::optional<std::uint64_t> repl
     return frame;
 }
 
+auto IpcChannel::report_oversize_drop(std::string_view json_body, char const* kind) const noexcept -> void
+{
+    // Extract the frame "type" for diagnostics without trusting the body to be
+    // well-formed; a failed parse just yields an empty type string.
+    auto const type = ipc::ipc_json_get_str(json_body, "type");
+    LOG_WARNING("ipc: dropping oversize " + std::string{kind} +
+                " frame: body_bytes=" + std::to_string(json_body.size()) + " cap=" + std::to_string(max_frame_bytes_) +
+                " type=\"" + type + "\"");
+}
+
 auto IpcChannel::send_request(std::string_view json_body, std::chrono::seconds timeout) -> std::optional<std::string>
 {
+    // Reject before build_frame so an oversize body never pins a huge allocation
+    // (issue #325). The id/reply_to overhead is < 64 bytes, so a body within the
+    // cap cannot push the frame materially over it; the edge case is caught by
+    // write_frame's cap check.
+    if (json_body.size() > max_frame_bytes_)
+    {
+        report_oversize_drop(json_body, "request");
+        return std::nullopt;
+    }
     auto const id = next_id_.fetch_add(1U, std::memory_order_relaxed);
     auto const frame = build_frame(id, std::nullopt, json_body);
 
@@ -317,6 +407,11 @@ auto IpcChannel::send_request(std::string_view json_body, std::chrono::seconds t
 
 auto IpcChannel::send_response(std::uint64_t reply_to, std::string_view json_body) -> void
 {
+    if (json_body.size() > max_frame_bytes_)
+    {
+        report_oversize_drop(json_body, "response");
+        return;
+    }
     auto const id = next_id_.fetch_add(1U, std::memory_order_relaxed);
     auto const frame = build_frame(id, reply_to, json_body);
     auto const lk = std::lock_guard{write_mu_};
@@ -325,6 +420,11 @@ auto IpcChannel::send_response(std::uint64_t reply_to, std::string_view json_bod
 
 auto IpcChannel::send_notification(std::string_view json_body) -> void
 {
+    if (json_body.size() > max_frame_bytes_)
+    {
+        report_oversize_drop(json_body, "notification");
+        return;
+    }
     auto const id = next_id_.fetch_add(1U, std::memory_order_relaxed);
     auto const frame = build_frame(id, std::nullopt, json_body);
     auto const lk = std::lock_guard{write_mu_};
@@ -342,8 +442,20 @@ auto IpcChannel::reader_loop() -> void
             break;
         }
 
-        auto const id = json_uint64(*frame, "id").value_or(0U);
-        auto const reply_to = json_uint64(*frame, "reply_to");
+        // Parse the frame once with the fuzzed, depth-bounded canonicaljson
+        // parser and read id/reply_to from the DOM. The previous substring
+        // scanner misparsed frames whose body string values contained
+        // `"id":`-shaped substrings (issue #320). On a malformed frame, drop
+        // it and stop the loop rather than act on garbage routing metadata.
+        auto const parsed = canonicaljson::parse_json(*frame);
+        auto const* obj = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+        if (parsed.error != canonicaljson::ParseError::none || obj == nullptr)
+        {
+            healthy_.store(false);
+            break;
+        }
+        auto const id = extract_uint64(*obj, "id").value_or(0U);
+        auto const reply_to = extract_uint64(*obj, "reply_to");
 
         if (reply_to.has_value())
         {

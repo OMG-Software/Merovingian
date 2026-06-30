@@ -5,6 +5,7 @@
 #include "merovingian/core/file_descriptor.hpp"
 #include "merovingian/federation_worker/args.hpp"
 #include "merovingian/observability/logger.hpp"
+#include "merovingian/platform/runtime_hardening.hpp"
 #include "worker_event_loop.hpp"
 
 #include <cerrno>
@@ -100,6 +101,31 @@ auto main(int argc, char const* const* argv) -> int
 
     auto ipc_fd = merovingian::core::FileDescriptor{raw_fd};
     auto const threads = parse_result.config.federation_worker().threads;
+
+    // Apply the worker-specific runtime hardening sequence (issue #319): core
+    // dump policy, PR_SET_NO_NEW_PRIVS, capability-bounding drop, then the
+    // worker seccomp-bpf filter (which denies execve/execveat — the worker never
+    // spawns). Done after config + master-key file are read and the IPC fd is
+    // validated, but before the event loop opens the DB and starts threads. The
+    // worker filter still allows open()/socket()/clone() etc, so startup is not
+    // blocked. Fail-closed: a failed control aborts the worker. The
+    // apply_hardening config flag lets tests run the worker unfiltered while the
+    // allowlist itself is validated in unit tests.
+    if (parse_result.config.federation_worker().apply_hardening)
+    {
+        auto const hardening = merovingian::platform::apply_worker_hardening();
+        if (!hardening.accepted)
+        {
+            LOG_CRITICAL("Federation worker: runtime hardening failed: " + hardening.reason);
+            return 1;
+        }
+        LOG_INFO("Federation worker: runtime hardening applied (seccomp filter active)");
+    }
+    else
+    {
+        LOG_WARNING("Federation worker: runtime hardening disabled by config "
+                    "(federation.worker.apply_hardening=false)");
+    }
 
     auto loop = merovingian::federation_worker::WorkerEventLoop{std::move(ipc_fd), parse_result.config, threads,
                                                                 args.shard_index};

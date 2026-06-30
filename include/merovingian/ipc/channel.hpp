@@ -3,6 +3,7 @@
 #pragma once
 
 #include "merovingian/core/file_descriptor.hpp"
+#include "merovingian/crypto/ipc_auth_key.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -22,15 +23,22 @@
 namespace merovingian::ipc
 {
 
-// Maximum plaintext size for a single IPC frame (50 MiB).
-// Federation transactions have no hard spec limit; common implementations accept
-// up to 50 MiB.  4 MiB was too small for large rooms with many auth-chain events.
-inline constexpr std::uint32_t kIpcMaxFrameBytes{50U * 1024U * 1024U};
+// Default maximum plaintext size for a single IPC frame (16 MiB).
+// Federation transactions have no hard spec limit, but a 50 MiB cap (the prior
+// default) let a single oversized frame pin 50 MiB of heap and silently stall
+// federation when it was dropped. 16 MiB bounds the per-frame allocation while
+// still exceeding any realistic transaction/backup-response payload. The cap
+// is configurable per worker via federation.worker.max_ipc_frame_bytes.
+inline constexpr std::uint32_t kIpcMaxFrameBytes{16U * 1024U * 1024U};
 
 // Bidirectional encrypted IPC channel over an AF_UNIX socketpair fd.
 //
 // Security model:
 //   - Ephemeral crypto_kx key exchange on construction; keys are wiped after derivation.
+//   - The KX handshake is mutually authenticated: both peers derive the same
+//     crypto::IpcAuthKey from the operator master-key file and MAC each other's
+//     ephemeral public keys with it. A peer that cannot prove possession of the
+//     master key is rejected (fail-closed). crypto_kx alone is confidentiality only.
 //   - All subsequent traffic is AEAD-encrypted via crypto_secretstream_xchacha20poly1305.
 //   - No filesystem socket path: fd is inherited from posix_spawn, invisible to ls/netstat.
 //
@@ -59,9 +67,12 @@ public:
     // Must not block — dispatch expensive work to a thread pool.
     using RequestHandler = std::function<void(std::uint64_t id, std::string json)>;
 
-    // Performs the ephemeral key exchange synchronously. Throws std::runtime_error on failure.
-    // Does not start the reader thread; call start() after set_request_handler().
-    explicit IpcChannel(core::FileDescriptor fd, Role role);
+    // Performs the ephemeral key exchange synchronously and authenticates the
+    // peer by MACing the ephemeral KX public keys with auth_key. Throws
+    // std::runtime_error on failure (including authentication failure). Does not
+    // start the reader thread; call start() after set_request_handler().
+    explicit IpcChannel(core::FileDescriptor fd, Role role, crypto::IpcAuthKey auth_key,
+                        std::uint32_t max_frame_bytes = kIpcMaxFrameBytes);
     ~IpcChannel();
 
     IpcChannel(IpcChannel const&) = delete;
@@ -81,8 +92,8 @@ public:
     // Sends a request and blocks until a matching reply_to frame arrives.
     // Returns nullopt on timeout or channel failure.
     // json_body: a JSON object WITHOUT "id" or "reply_to".
-    [[nodiscard]] auto send_request(std::string_view json_body, std::chrono::seconds timeout = std::chrono::seconds{
-                                                                    30}) -> std::optional<std::string>;
+    [[nodiscard]] auto send_request(std::string_view json_body, std::chrono::seconds timeout = std::chrono::seconds{30})
+        -> std::optional<std::string>;
 
     // Sends a response to an inbound request. json_body: without "id"/"reply_to".
     auto send_response(std::uint64_t reply_to, std::string_view json_body) -> void;
@@ -97,12 +108,18 @@ private:
     [[nodiscard]] auto raw_recv_exact(void* buf, std::size_t n) noexcept -> bool;
     [[nodiscard]] auto write_frame(std::string_view plaintext) noexcept -> bool;
     [[nodiscard]] auto read_frame() noexcept -> std::optional<std::string>;
-    [[nodiscard]] auto build_frame(std::uint64_t id, std::optional<std::uint64_t> reply_to,
-                                   std::string_view body) -> std::string;
+    [[nodiscard]] auto build_frame(std::uint64_t id, std::optional<std::uint64_t> reply_to, std::string_view body)
+        -> std::string;
+    // Logs a warning that a frame of `body.size()` bytes for the given IPC
+    // message kind was dropped for exceeding the frame cap. The frame "type"
+    // is extracted from the body for diagnostics. Used by the send paths so an
+    // oversize frame is never silently dropped (issue #325).
+    auto report_oversize_drop(std::string_view json_body, char const* kind) const noexcept -> void;
     auto reader_loop() -> void;
 
     core::FileDescriptor fd_;
     Role role_;
+    std::uint32_t max_frame_bytes_{kIpcMaxFrameBytes};
 
     crypto_secretstream_xchacha20poly1305_state push_state_{};
     crypto_secretstream_xchacha20poly1305_state pull_state_{};

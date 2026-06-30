@@ -121,27 +121,64 @@ SCENARIO("fed_request frame escapes body content that contains JSON delimiters",
     }
 }
 
-SCENARIO("fed_request frame preserves headers", "[ipc][federation][frame]")
+SCENARIO("fed_request body containing a headers-shaped substring is not misparsed",
+         "[ipc][federation][frame][security]")
 {
-    GIVEN("a federation request with custom headers")
+    // Regression for issue #320: the previous hand-rolled substring scanner
+    // searched for `"headers":[` anywhere in the frame, so a body string value
+    // that itself contained that text was misparsed as the real headers array
+    // (and escaped quotes inside it terminated values early). The frame is now
+    // parsed as a DOM, so a value shaped like structure is just a string.
+    GIVEN("a request whose body embeds a headers-shaped substring with escapes")
     {
         auto original = LocalHttpRequest{};
-        original.method = "GET";
-        original.target = "/_matrix/federation/v1/state/!room:example.com";
-        original.headers.push_back({"Authorization", "X-Matrix origin=...,destination=..."});
+        original.method = "PUT";
+        original.target = "/_matrix/federation/v1/send/txn-2";
+        original.remote_addr = "203.0.113.7";
         original.headers.push_back({"Content-Type", "application/json"});
+        // The body carries a literal `"headers":[...]` fragment and an escaped
+        // quote — exactly the text that fooled the old scanner.
+        original.body = R"(payload "headers":[{"n":"x","v":"a\"b"}] end)";
 
         WHEN("it is serialized and deserialized")
         {
             auto const roundtripped = deserialize_fed_request(serialize_fed_request(original));
 
-            THEN("all headers are preserved in order")
+            THEN("the body is preserved verbatim and only the real header survives")
             {
-                REQUIRE(roundtripped.headers.size() == 2U);
-                REQUIRE(roundtripped.headers[0].name == "Authorization");
-                REQUIRE(roundtripped.headers[0].value == "X-Matrix origin=...,destination=...");
-                REQUIRE(roundtripped.headers[1].name == "Content-Type");
-                REQUIRE(roundtripped.headers[1].value == "application/json");
+                REQUIRE(roundtripped.body == original.body);
+                REQUIRE(roundtripped.headers.size() == 1U);
+                REQUIRE(roundtripped.headers[0].name == "Content-Type");
+                REQUIRE(roundtripped.headers[0].value == "application/json");
+            }
+        }
+    }
+}
+
+SCENARIO("fed_request frame strips credential headers but preserves other headers",
+         "[ipc][federation][frame][security]")
+{
+    // #323: credential headers (Authorization, X-Matrix) must never cross the
+    // IPC boundary, even when a caller populated them. The worker receives
+    // only the verified peer identity, not the raw peer credential.
+    GIVEN("a federation request whose headers include a raw Authorization value")
+    {
+        auto original = LocalHttpRequest{};
+        original.method = "GET";
+        original.target = "/_matrix/federation/v1/state/!room:example.com";
+        original.headers.push_back({"Authorization", "X-Matrix origin=...,destination=...,key=...,sig=..."});
+        original.headers.push_back({"X-Matrix", "origin=...,sig=..."});
+        original.headers.push_back({"Content-Type", "application/json"});
+
+        WHEN("it is serialized and deserialized for IPC")
+        {
+            auto const roundtripped = deserialize_fed_request(serialize_fed_request(original));
+
+            THEN("the credential headers are dropped and only the safe header survives")
+            {
+                REQUIRE(roundtripped.headers.size() == 1U);
+                REQUIRE(roundtripped.headers[0].name == "Content-Type");
+                REQUIRE(roundtripped.headers[0].value == "application/json");
             }
         }
     }
@@ -295,27 +332,46 @@ SCENARIO("fed_response frame defaults invalid or missing status to 500", "[ipc][
     }
 }
 
-SCENARIO("fed_request frame preserves the X-Matrix access_token across IPC", "[ipc][federation][frame][security]")
+SCENARIO("fed_request frame carries the verified identity, not the raw access_token",
+         "[ipc][federation][frame][security]")
 {
-    GIVEN("an inbound federation request with an X-Matrix Authorization header")
+    // #323: the main process verifies the X-Matrix signature and forwards only
+    // the verified peer identity over the authenticated IPC channel. The raw
+    // peer Authorization header (access_token) must not appear in the frame, so
+    // a compromised worker cannot harvest the peer's reusable origin/key/sig.
+    GIVEN("an inbound federation request with a verified peer identity")
     {
         auto original = LocalHttpRequest{};
         original.method = "PUT";
         original.target = "/_matrix/federation/v1/send/txn123";
         original.remote_addr = "203.0.113.5";
-        // access_token carries the full Authorization header value; handle_federation_http_request()
-        // reads request.access_token for X-Matrix parsing rather than re-scanning raw headers.
+        // access_token holds the raw peer credential; main must clear it before
+        // serialization so it never crosses IPC.
         original.access_token = "X-Matrix origin=\"remote.example\",destination=\"local.example\","
                                 "key=\"ed25519:abc\",sig=\"base64sighere\"";
         original.body = R"({"pdus":[]})";
+        original.sig_verified = true;
+        original.verified_origin = "remote.example";
+        original.verified_key_id = "ed25519:abc";
 
         WHEN("the request is serialized and deserialized for IPC")
         {
-            auto const roundtripped = deserialize_fed_request(serialize_fed_request(original));
+            auto const serialized = serialize_fed_request(original);
+            auto const roundtripped = deserialize_fed_request(serialized);
 
-            THEN("access_token is preserved so X-Matrix auth succeeds in the worker")
+            THEN("the verified identity is preserved and the raw credential is absent")
             {
-                REQUIRE(roundtripped.access_token == original.access_token);
+                REQUIRE(roundtripped.sig_verified);
+                REQUIRE(roundtripped.verified_origin == "remote.example");
+                REQUIRE(roundtripped.verified_key_id == "ed25519:abc");
+                // No access_token field is emitted or read back.
+                REQUIRE(roundtripped.access_token.empty());
+            }
+
+            THEN("no access_token field appears in the serialized frame")
+            {
+                REQUIRE(serialized.find("access_token") == std::string::npos);
+                REQUIRE(serialized.find("sig=\"base64sighere\"") == std::string::npos);
             }
 
             THEN("all other fields are also preserved")
@@ -328,19 +384,22 @@ SCENARIO("fed_request frame preserves the X-Matrix access_token across IPC", "[i
         }
     }
 
-    GIVEN("an inbound federation request with no Authorization header")
+    GIVEN("an inbound federation request with no verified identity")
     {
         auto original = LocalHttpRequest{};
         original.method = "GET";
         original.target = "/_matrix/federation/v1/key/server";
         original.remote_addr = "203.0.113.5";
 
-        WHEN("the request is serialized and deserialized for IPC")
+        WHEN("it is serialized and deserialized for IPC")
         {
             auto const roundtripped = deserialize_fed_request(serialize_fed_request(original));
 
-            THEN("access_token remains empty")
+            THEN("sig_verified is false and the verified identity fields are empty")
             {
+                REQUIRE_FALSE(roundtripped.sig_verified);
+                REQUIRE(roundtripped.verified_origin.empty());
+                REQUIRE(roundtripped.verified_key_id.empty());
                 REQUIRE(roundtripped.access_token.empty());
             }
         }

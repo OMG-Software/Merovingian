@@ -34,8 +34,12 @@ public:
     // request_timeout: per-request IPC timeout forwarded to channel usage.
     // shard_index: index of this worker (0..shards-1); passed to the worker
     // as --shard so it can include the index in log output.
+    // master_key_file: path to the operator master-key file, read by both this
+    // process and the worker to independently derive the IPC channel auth key.
+    // If empty or unreadable the supervisor refuses to spawn (fail-closed),
+    // because an unauthenticated IPC handshake would let any peer inject frames.
     WorkerSupervisor(std::string worker_path, std::string config_path, std::uint32_t request_timeout_seconds,
-                     std::uint32_t shard_index = 0U);
+                     std::uint32_t shard_index = 0U, std::string master_key_file = {});
     ~WorkerSupervisor();
 
     WorkerSupervisor(WorkerSupervisor const&) = delete;
@@ -80,6 +84,7 @@ private:
     std::string config_path_;
     std::uint32_t request_timeout_seconds_{};
     std::uint32_t shard_index_{};
+    std::string master_key_file_;
     ipc::IpcChannel::RequestHandler request_handler_{};
 
     // channel_ and channel_mu_ guard the IpcChannel pointer against concurrent

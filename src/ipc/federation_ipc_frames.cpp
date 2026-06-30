@@ -3,18 +3,164 @@
 
 #include "merovingian/ipc/federation_ipc_frames.hpp"
 
+#include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/http/outbound_client.hpp"
 #include "merovingian/http/request.hpp"
 
-#include <charconv>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <string_view>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace merovingian::ipc
 {
+
+namespace
+{
+
+    // The IPC frames use insertion-order (non-canonical) keys and may carry
+    // string values that themselves contain `"headers":[...]`-shaped substrings or
+    // escaped quotes. The hand-rolled substring scanners previously used here
+    // misparsed those cases (issue #320). Parsing once with the fuzzed,
+    // depth-bounded canonicaljson parser and walking the resulting DOM removes
+    // that class of bug. parse_json (not parse_lossless) is used because the
+    // frames are not canonical (unsorted keys) and need not be signing-safe.
+
+    [[nodiscard]] auto object_of(canonicaljson::Value const& v) -> canonicaljson::Object const*
+    {
+        return std::get_if<canonicaljson::Object>(&v.storage());
+    }
+
+    [[nodiscard]] auto find_member(canonicaljson::Object const& obj, std::string_view key)
+        -> canonicaljson::Value const*
+    {
+        for (auto const& member : obj)
+        {
+            if (member.key == key)
+            {
+                return member.value.get();
+            }
+        }
+        return nullptr;
+    }
+
+    [[nodiscard]] auto get_str(canonicaljson::Object const& obj, std::string_view key) -> std::string
+    {
+        auto const* value = find_member(obj, key);
+        if (value == nullptr)
+        {
+            return {};
+        }
+        auto const* str = std::get_if<std::string>(&value->storage());
+        return (str != nullptr) ? *str : std::string{};
+    }
+
+    [[nodiscard]] auto get_int(canonicaljson::Object const& obj, std::string_view key) -> std::int64_t
+    {
+        auto const* value = find_member(obj, key);
+        if (value == nullptr)
+        {
+            return 0;
+        }
+        auto const* num = std::get_if<std::int64_t>(&value->storage());
+        return (num != nullptr) ? *num : 0;
+    }
+
+    [[nodiscard]] auto get_bool(canonicaljson::Object const& obj, std::string_view key) -> bool
+    {
+        auto const* value = find_member(obj, key);
+        if (value == nullptr)
+        {
+            return false;
+        }
+        auto const* b = std::get_if<bool>(&value->storage());
+        return (b != nullptr) ? *b : false;
+    }
+
+    [[nodiscard]] auto get_array(canonicaljson::Object const& obj, std::string_view key) -> canonicaljson::Array const*
+    {
+        auto const* value = find_member(obj, key);
+        if (value == nullptr)
+        {
+            return nullptr;
+        }
+        return std::get_if<canonicaljson::Array>(&value->storage());
+    }
+
+    // Extracts an array of {"n":...,"v":...} header objects into a container of
+    // {name, value} pairs. Works for http::Header, OutboundHeader, and
+    // std::pair<std::string, std::string> (all two-string aggregate/brace-init).
+    template <typename Container>
+    auto extract_headers(canonicaljson::Array const& arr, Container& out) -> void
+    {
+        for (auto const& elem : arr)
+        {
+            auto const* obj = object_of(elem);
+            if (obj == nullptr)
+            {
+                continue;
+            }
+            auto name = get_str(*obj, "n");
+            auto value = get_str(*obj, "v");
+            if (!name.empty())
+            {
+                out.push_back({std::move(name), std::move(value)});
+            }
+        }
+    }
+
+    // Numeric IPC fields are stored as int64 in the canonicaljson DOM. Clamp
+    // into the narrower unsigned destination types, returning 0 for negative
+    // or out-of-range values (matching the prior from_chars fallback on
+    // malformed input, which left the destination at its zero-initialised value).
+    [[nodiscard]] auto clamp_to_u32(std::int64_t v) -> std::uint64_t
+    {
+        if (v < 0 || v > static_cast<std::int64_t>(std::numeric_limits<std::uint32_t>::max()))
+        {
+            return 0U;
+        }
+        return static_cast<std::uint64_t>(v);
+    }
+
+    [[nodiscard]] auto clamp_to_u64(std::int64_t v) -> std::uint64_t
+    {
+        if (v < 0)
+        {
+            return 0U;
+        }
+        return static_cast<std::uint64_t>(v);
+    }
+
+    // #323: case-insensitive comparison of a header name against the credential
+    // headers that must never cross the IPC boundary. "authorization" covers
+    // the X-Matrix federation header (sent as `Authorization: X-Matrix ...`);
+    // "x-matrix" is matched explicitly in case a caller splits the scheme.
+    [[nodiscard]] auto is_credential_header_name(std::string_view name) -> bool
+    {
+        auto equals_ci = [](std::string_view a, std::string_view b) noexcept -> bool {
+            if (a.size() != b.size())
+            {
+                return false;
+            }
+            for (std::size_t i = 0U; i < a.size(); ++i)
+            {
+                auto const to_lower = [](unsigned char c) noexcept -> char {
+                    return static_cast<char>(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c);
+                };
+                if (to_lower(static_cast<unsigned char>(a[i])) != to_lower(static_cast<unsigned char>(b[i])))
+                {
+                    return false;
+                }
+            }
+            return true;
+        };
+        return equals_ci(name, "authorization") || equals_ci(name, "x-matrix");
+    }
+
+} // namespace
 
 auto ipc_json_str(std::string_view s) -> std::string
 {
@@ -67,59 +213,24 @@ auto ipc_json_str(std::string_view s) -> std::string
 
 auto ipc_json_get_str(std::string_view json, std::string_view key) -> std::string
 {
-    auto const needle = std::string{"\""} + std::string{key} + "\":\"";
-    auto const pos = json.find(needle);
-    if (pos == std::string_view::npos)
+    // Parse the whole document and read the key from the top-level object.
+    // This correctly handles escaped quotes and string values that themselves
+    // contain `"key":`-shaped substrings (issue #320) — the substring scanner
+    // previously used here misparsed both. On any parse error or a non-string
+    // value the empty string is returned, matching the prior fallback shape.
+    // The ParseResult must live for the whole function so the Object pointer
+    // into its Value remains valid while the field is read.
+    auto const parsed = canonicaljson::parse_json(json);
+    if (parsed.error != canonicaljson::ParseError::none)
     {
         return {};
     }
-    auto i = pos + needle.size();
-    auto result = std::string{};
-    while (i < json.size())
+    auto const* obj = object_of(parsed.value);
+    if (obj == nullptr)
     {
-        auto const ch = json[i];
-        if (ch == '\"')
-        {
-            break;
-        }
-        if (ch == '\\' && i + 1 < json.size())
-        {
-            ++i;
-            switch (json[i])
-            {
-            case '\"':
-                result += '\"';
-                break;
-            case '\\':
-                result += '\\';
-                break;
-            case 'b':
-                result += '\b';
-                break;
-            case 'f':
-                result += '\f';
-                break;
-            case 'n':
-                result += '\n';
-                break;
-            case 'r':
-                result += '\r';
-                break;
-            case 't':
-                result += '\t';
-                break;
-            default:
-                result += json[i];
-                break;
-            }
-        }
-        else
-        {
-            result += ch;
-        }
-        ++i;
+        return {};
     }
-    return result;
+    return get_str(*obj, key);
 }
 
 auto serialize_fed_request(homeserver::LocalHttpRequest const& request) -> std::string
@@ -132,15 +243,27 @@ auto serialize_fed_request(homeserver::LocalHttpRequest const& request) -> std::
     body += ipc_json_str(request.target);
     body += R"(,"remote_addr":)";
     body += ipc_json_str(request.remote_addr);
-    // access_token carries the raw Authorization header value (X-Matrix scheme
-    // for federation). The worker's handle_federation_http_request() reads it
-    // directly from request.access_token, so it must cross the IPC boundary.
-    body += R"(,"access_token":)";
-    body += ipc_json_str(request.access_token);
+    // #323: the main process verifies the X-Matrix signature and forwards only
+    // the verified peer identity. The raw Authorization header (access_token)
+    // never crosses IPC, so a compromised worker cannot harvest the peer's
+    // reusable origin/key/sig credential. sig_verified asserts the identity
+    // was verified by main over the authenticated channel.
+    body += R"(,"sig_verified":)";
+    body += request.sig_verified ? "true" : "false";
+    body += R"(,"verified_origin":)";
+    body += ipc_json_str(request.verified_origin);
+    body += R"(,"verified_key_id":)";
+    body += ipc_json_str(request.verified_key_id);
     body += R"(,"headers":[)";
     auto first = true;
     for (auto const& hdr : request.headers)
     {
+        // Defense-in-depth: never forward credential headers over IPC even if a
+        // caller populated them. The worker receives only the verified identity.
+        if (is_credential_header_name(hdr.name))
+        {
+            continue;
+        }
         if (!first)
         {
             body += ',';
@@ -161,40 +284,24 @@ auto serialize_fed_request(homeserver::LocalHttpRequest const& request) -> std::
 auto deserialize_fed_request(std::string_view json) -> homeserver::LocalHttpRequest
 {
     auto request = homeserver::LocalHttpRequest{};
-    request.method = ipc_json_get_str(json, "method");
-    request.target = ipc_json_get_str(json, "target");
-    request.remote_addr = ipc_json_get_str(json, "remote_addr");
-    request.access_token = ipc_json_get_str(json, "access_token");
-    request.body = ipc_json_get_str(json, "body");
-
-    auto const headers_key = std::string_view{R"("headers":[)"};
-    auto const hpos = json.find(headers_key);
-    if (hpos != std::string_view::npos)
+    auto const parsed = canonicaljson::parse_json(json);
+    auto const* obj = object_of(parsed.value);
+    if (parsed.error != canonicaljson::ParseError::none || obj == nullptr)
     {
-        auto pos = hpos + headers_key.size();
-        while (pos < json.size() && json[pos] != ']')
-        {
-            auto const obj_start = json.find('{', pos);
-            if (obj_start == std::string_view::npos)
-            {
-                break;
-            }
-            auto const obj_end = json.find('}', obj_start);
-            if (obj_end == std::string_view::npos)
-            {
-                break;
-            }
-            auto const obj = json.substr(obj_start, obj_end - obj_start + 1U);
-            auto name = ipc_json_get_str(obj, "n");
-            auto value = ipc_json_get_str(obj, "v");
-            if (!name.empty())
-            {
-                request.headers.emplace_back(std::move(name), std::move(value));
-            }
-            pos = obj_end + 1U;
-        }
+        return request;
     }
-
+    request.method = get_str(*obj, "method");
+    request.target = get_str(*obj, "target");
+    request.remote_addr = get_str(*obj, "remote_addr");
+    // #323: the worker receives the verified identity, not the raw credential.
+    request.sig_verified = get_bool(*obj, "sig_verified");
+    request.verified_origin = get_str(*obj, "verified_origin");
+    request.verified_key_id = get_str(*obj, "verified_key_id");
+    request.body = get_str(*obj, "body");
+    if (auto const* headers = get_array(*obj, "headers"))
+    {
+        extract_headers(*headers, request.headers);
+    }
     return request;
 }
 
@@ -225,77 +332,32 @@ auto serialize_fed_response(homeserver::LocalHttpResponse const& response) -> st
     return result;
 }
 
-namespace
-{
-
-    [[nodiscard]] auto ipc_json_get_u64(std::string_view json, std::string_view key) -> std::uint64_t
-    {
-        auto const needle = std::string{"\""} + std::string{key} + "\":";
-        auto const pos = json.find(needle);
-        if (pos == std::string_view::npos)
-        {
-            return 0U;
-        }
-        auto i = pos + needle.size();
-        auto skip = std::size_t{0U};
-        while (i + skip < json.size() && (json[i + skip] == ' ' || json[i + skip] == '\t'))
-        {
-            ++skip;
-        }
-        i += skip;
-        auto value = std::uint64_t{0U};
-        auto start = json.data() + i;
-        auto end = json.data() + json.size();
-        std::ignore = std::from_chars(start, end, value);
-        return value;
-    }
-
-} // namespace
-
 auto deserialize_fed_response(std::string_view json) -> homeserver::LocalHttpResponse
 {
     auto response = homeserver::LocalHttpResponse{};
+    auto const parsed = canonicaljson::parse_json(json);
+    auto const* obj = object_of(parsed.value);
+    if (parsed.error != canonicaljson::ParseError::none || obj == nullptr)
     {
-        auto const value = ipc_json_get_u64(json, "status");
-        if (value == 0U || value > 999U)
+        response.status = 500U;
+        return response;
+    }
+    {
+        auto const status = get_int(*obj, "status");
+        if (status <= 0 || status > 999)
         {
             response.status = 500U;
         }
         else
         {
-            response.status = static_cast<std::uint16_t>(value);
+            response.status = static_cast<std::uint16_t>(status);
         }
     }
-    response.body = ipc_json_get_str(json, "body");
-
-    auto const headers_key = std::string_view{R"("headers":[)"};
-    auto const hpos = json.find(headers_key);
-    if (hpos != std::string_view::npos)
+    response.body = get_str(*obj, "body");
+    if (auto const* headers = get_array(*obj, "headers"))
     {
-        auto pos = hpos + headers_key.size();
-        while (pos < json.size() && json[pos] != ']')
-        {
-            auto const obj_start = json.find('{', pos);
-            if (obj_start == std::string_view::npos)
-            {
-                break;
-            }
-            auto const obj_end = json.find('}', obj_start);
-            if (obj_end == std::string_view::npos)
-            {
-                break;
-            }
-            auto const obj = json.substr(obj_start, obj_end - obj_start + 1U);
-            auto name = ipc_json_get_str(obj, "n");
-            auto value = ipc_json_get_str(obj, "v");
-            if (!name.empty())
-            {
-                response.headers.emplace_back(std::move(name), std::move(value));
-            }
-            pos = obj_end + 1U;
-        }
+        extract_headers(*headers, response.headers);
     }
-
     return response;
 }
 
@@ -348,93 +410,36 @@ auto serialize_outbound_http_request(http::OutboundRequest const& request) -> st
 auto deserialize_outbound_http_request(std::string_view json) -> http::OutboundRequest
 {
     auto request = http::OutboundRequest{};
-    request.method = ipc_json_get_str(json, "method");
-    request.url = ipc_json_get_str(json, "url");
-    request.body = ipc_json_get_str(json, "body");
-
-    auto const headers_key = std::string_view{R"("headers":[)"};
-    auto const hpos = json.find(headers_key);
-    if (hpos != std::string_view::npos)
+    auto const parsed = canonicaljson::parse_json(json);
+    auto const* obj = object_of(parsed.value);
+    if (parsed.error != canonicaljson::ParseError::none || obj == nullptr)
     {
-        auto pos = hpos + headers_key.size();
-        while (pos < json.size() && json[pos] != ']')
+        return request;
+    }
+    request.method = get_str(*obj, "method");
+    request.url = get_str(*obj, "url");
+    request.body = get_str(*obj, "body");
+    if (auto const* headers = get_array(*obj, "headers"))
+    {
+        extract_headers(*headers, request.headers);
+    }
+    if (auto const* pinned = get_array(*obj, "pinned_addresses"))
+    {
+        for (auto const& elem : *pinned)
         {
-            auto const obj_start = json.find('{', pos);
-            if (obj_start == std::string_view::npos)
+            auto const* addr = std::get_if<std::string>(&elem.storage());
+            if (addr != nullptr && !addr->empty())
             {
-                break;
+                request.pinned_addresses.push_back(*addr);
             }
-            auto const obj_end = json.find('}', obj_start);
-            if (obj_end == std::string_view::npos)
-            {
-                break;
-            }
-            auto const obj = json.substr(obj_start, obj_end - obj_start + 1U);
-            auto name = ipc_json_get_str(obj, "n");
-            auto value = ipc_json_get_str(obj, "v");
-            if (!name.empty())
-            {
-                request.headers.push_back({std::move(name), std::move(value)});
-            }
-            pos = obj_end + 1U;
         }
     }
-
-    auto const pinned_key = std::string_view{R"("pinned_addresses":[)"};
-    auto const ppos = json.find(pinned_key);
-    if (ppos != std::string_view::npos)
-    {
-        auto pos = ppos + pinned_key.size();
-        while (pos < json.size() && json[pos] != ']')
-        {
-            if (json[pos] == '"')
-            {
-                ++pos;
-                auto addr = std::string{};
-                while (pos < json.size() && json[pos] != '"')
-                {
-                    addr += json[pos++];
-                }
-                if (!addr.empty())
-                {
-                    request.pinned_addresses.push_back(std::move(addr));
-                }
-            }
-            ++pos;
-        }
-    }
-
-    {
-        auto const needle = std::string_view{R"("connect_timeout":)"};
-        auto const p = json.find(needle);
-        if (p != std::string_view::npos)
-        {
-            auto val = std::uint32_t{};
-            std::ignore = std::from_chars(json.data() + p + needle.size(), json.data() + json.size(), val);
-            request.connect_timeout_seconds = val;
-        }
-    }
-    {
-        auto const needle = std::string_view{R"("total_timeout":)"};
-        auto const p = json.find(needle);
-        if (p != std::string_view::npos)
-        {
-            auto val = std::uint32_t{};
-            std::ignore = std::from_chars(json.data() + p + needle.size(), json.data() + json.size(), val);
-            request.total_timeout_seconds = val;
-        }
-    }
-    {
-        auto const needle = std::string_view{R"("max_body_bytes":)"};
-        auto const p = json.find(needle);
-        if (p != std::string_view::npos)
-        {
-            auto val = std::size_t{};
-            std::ignore = std::from_chars(json.data() + p + needle.size(), json.data() + json.size(), val);
-            request.max_response_body_bytes = val;
-        }
-    }
-
+    // Numeric fields are stored as int64 in the canonicaljson DOM; clamp into
+    // the narrower unsigned fields. A negative or out-of-range value falls back
+    // to 0, matching the prior from_chars behaviour on malformed input.
+    request.connect_timeout_seconds = static_cast<std::uint32_t>(clamp_to_u32(get_int(*obj, "connect_timeout")));
+    request.total_timeout_seconds = static_cast<std::uint32_t>(clamp_to_u32(get_int(*obj, "total_timeout")));
+    request.max_response_body_bytes = static_cast<std::size_t>(clamp_to_u64(get_int(*obj, "max_body_bytes")));
     return request;
 }
 
@@ -459,31 +464,19 @@ auto serialize_outbound_http_response(http::OutboundResult const& result) -> std
 auto deserialize_outbound_http_response(std::string_view json) -> http::OutboundResult
 {
     auto result = http::OutboundResult{};
-
-    auto const ok_needle = std::string_view{R"("ok":)"};
-    auto const ok_pos = json.find(ok_needle);
-    if (ok_pos != std::string_view::npos)
+    auto const parsed = canonicaljson::parse_json(json);
+    auto const* obj = object_of(parsed.value);
+    if (parsed.error != canonicaljson::ParseError::none || obj == nullptr)
     {
-        auto const after = json.substr(ok_pos + ok_needle.size());
-        result.ok = after.starts_with("true");
+        result.error = http::OutboundError::network_error;
+        return result;
     }
-
-    {
-        auto const needle = std::string_view{R"("http_status":)"};
-        auto const p = json.find(needle);
-        if (p != std::string_view::npos)
-        {
-            auto val = std::uint16_t{};
-            std::ignore = std::from_chars(json.data() + p + needle.size(), json.data() + json.size(), val);
-            result.response.status = val;
-        }
-    }
-
-    result.response.body = ipc_json_get_str(json, "body");
-    result.error_detail = ipc_json_get_str(json, "error_detail");
+    result.ok = get_bool(*obj, "ok");
+    result.response.status = static_cast<std::uint16_t>(clamp_to_u32(get_int(*obj, "http_status")));
+    result.response.body = get_str(*obj, "body");
+    result.error_detail = get_str(*obj, "error_detail");
     // error code is informational; callers inspect ok + http_status.
     result.error = result.ok ? http::OutboundError::none : http::OutboundError::network_error;
-
     return result;
 }
 

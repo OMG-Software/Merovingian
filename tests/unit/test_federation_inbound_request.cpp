@@ -1249,3 +1249,140 @@ SCENARIO("Inbound transaction with an unknown EDU type does not invoke the edu_s
         }
     }
 }
+
+// #323: the main process verifies the inbound X-Matrix signature itself and
+// forwards only the verified identity to the federation worker over the
+// authenticated IPC channel. verify_inbound_federation_signature is the
+// main-side entry point; handle_inbound_federation_request honours
+// signature_verified=true (set by the worker on the trusted path) by skipping
+// the crypto check. These scenarios pin both halves of the split.
+
+SCENARIO("verify_inbound_federation_signature accepts a validly signed request and returns the identity",
+         "[federation][inbound][security]")
+{
+    GIVEN("a runtime with a known remote and a validly signed request")
+    {
+        REQUIRE(sodium_is_ready());
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const token = std::string{"verify-token"};
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
+        auto const request = signed_request(origin, key_id, token, transaction_body(origin, pdu_for(origin)));
+
+        WHEN("the main process verifies the signature before forwarding to the worker")
+        {
+            auto const result = merovingian::federation::verify_inbound_federation_signature(runtime, request);
+
+            THEN("verification is accepted and the verified peer identity is returned")
+            {
+                REQUIRE(result.accepted);
+                REQUIRE(result.identity.origin == origin);
+                REQUIRE(result.identity.key_id == key_id);
+            }
+        }
+    }
+}
+
+SCENARIO("verify_inbound_federation_signature rejects a request with a bad signature",
+         "[federation][inbound][security]")
+{
+    GIVEN("a runtime with a known remote and a request signed with the wrong key")
+    {
+        REQUIRE(sodium_is_ready());
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, "real-key"));
+        // Sign with a different key than the one the remote published.
+        auto request = signed_request(origin, key_id, "wrong-key", transaction_body(origin, pdu_for(origin)));
+
+        WHEN("the main process verifies the signature")
+        {
+            auto const result = merovingian::federation::verify_inbound_federation_signature(runtime, request);
+
+            THEN("verification is rejected and an error response is returned (not forwarded to the worker)")
+            {
+                REQUIRE_FALSE(result.accepted);
+                REQUIRE(result.error.status == 403U);
+                REQUIRE(result.identity.origin.empty());
+            }
+        }
+    }
+}
+
+SCENARIO("verify_inbound_federation_signature rejects an unknown remote", "[federation][inbound][security]")
+{
+    GIVEN("a runtime with no resolver and a request from an unknown remote")
+    {
+        REQUIRE(sodium_is_ready());
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const token = std::string{"verify-token"};
+        // No upsert_remote and no remote_key_resolver: the remote is unknown.
+        auto const request = signed_request(origin, key_id, token, transaction_body(origin, pdu_for(origin)));
+
+        WHEN("the main process verifies the signature")
+        {
+            auto const result = merovingian::federation::verify_inbound_federation_signature(runtime, request);
+
+            THEN("verification is rejected with 403 remote-unknown (not forwarded to the worker)")
+            {
+                REQUIRE_FALSE(result.accepted);
+                REQUIRE(result.error.status == 403U);
+            }
+        }
+    }
+}
+
+SCENARIO("A signature_verified request is handled without re-checking the raw signature",
+         "[federation][inbound][security]")
+{
+    // #323 worker-trusted path: when main has already verified and set
+    // signature_verified=true, handle_inbound_federation_request skips the
+    // crypto check. A request whose raw signature is absent/garbage is still
+    // accepted because the verified identity travels over the authenticated
+    // IPC channel, not the raw credential.
+    GIVEN("a runtime with a known remote and a request marked signature_verified")
+    {
+        REQUIRE(sodium_is_ready());
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const token = std::string{"verify-token"};
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
+        // Build a request with NO valid raw signature, then mark it verified.
+        // The PDU is validly signed so Block C returns cleanly; the point is
+        // that the garbage request signature does not cause a 403.
+        auto request =
+            signed_request(origin, key_id, token, transaction_body(origin, signed_json_pdu(origin, key_id, token)));
+        request.signature = "not-a-real-signature";
+        request.signature_verified = true;
+
+        WHEN("the worker handles the trusted request")
+        {
+            auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
+
+            THEN("the request is accepted (the raw signature is not re-verified)")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(response.body == R"({"pdus":{}})");
+            }
+        }
+
+        AND_WHEN("the same request is handled WITHOUT the trusted flag")
+        {
+            auto untrusted =
+                signed_request(origin, key_id, token, transaction_body(origin, signed_json_pdu(origin, key_id, token)));
+            untrusted.signature = "not-a-real-signature";
+            // signature_verified defaults to false.
+            auto const response = merovingian::federation::handle_inbound_federation_request(runtime, untrusted);
+
+            THEN("the bad raw signature is rejected (proving the trusted flag is what skips the check)")
+            {
+                REQUIRE(response.status == 403U);
+            }
+        }
+    }
+}

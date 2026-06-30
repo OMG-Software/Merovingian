@@ -48,7 +48,7 @@ flowchart TB
     fedgate["Federation edge gate<br/>X-Matrix sig · PDU hash+sig · auth rules"]
     headergate["Header/transport validation<br/>no test-only auth on prod listener"]
     mediagate["Media decode boundary<br/>sandboxed worker · decode-bomb guard"]
-    ipcgate["IPC channel gate<br/>ephemeral KX · AEAD frames · no secrets in transit"]
+    ipcgate["IPC channel gate<br/>master-key-authenticated KX · AEAD frames · verified identity only · no secrets in transit"]
 
     localuser --> clientgate --> state
     peer --> fedgate --> state
@@ -64,7 +64,7 @@ flowchart TB
 | Remote exhaustion attacker | Listeners, queues, parsers | Bounded queues, rate limiting, resource limits, circuit breakers |
 | Media upload attacker | Image decoding | Out-of-process seccomp/rlimit-sandboxed worker, pixel-count decode-bomb guard, MIME sniffing, quarantine |
 | Malicious reverse proxy | Header/transport trust | Production listener rejects test-only credential encodings; response header validation |
-| Malicious local process | IPC channel sniffing | Ephemeral `crypto_kx` + AEAD encryption; no filesystem socket path; signing key never loaded in worker and never forwarded over IPC; access tokens stripped |
+| Malicious local process | IPC channel sniffing | Master-key-authenticated `crypto_kx` handshake (#318) + AEAD encryption; no filesystem socket path; signing key never loaded in worker and never forwarded over IPC (#317); main verifies inbound X-Matrix signatures and forwards only the verified peer identity — the raw peer `access_token`/`Authorization` never crosses IPC (#323) |
 | DB exfiltration attacker | Persistence | Prepared statements only, runtime/migration role separation, audit redaction; at-rest encryption for the server signing secret when a master key is configured; Argon2id hashing for registration tokens |
 | Supply-chain attacker | Dependencies, release | Vendored/pinned subprojects, secret scanning, SBOM; signing/provenance tracked in production milestone |
 | Compromised administrator | Admin surface | Audited admin actions; richer admin authZ tracked as a gap |
@@ -279,14 +279,30 @@ threat it closes; the controls above are the standing defences these reinforce.
   verification, state resolution, and membership work, making all connected
   clients unresponsive. The attack surface is the IPC channel between the main
   process and the new `merovingian-fed-worker` child. Mitigations: (a) the
-  channel uses an ephemeral `crypto_kx` key exchange and
-  `crypto_secretstream_xchacha20poly1305` AEAD so a local process that can
-  read the socket pair sees only ciphertext; (b) client access tokens are
-  stripped before serialisation so the worker receives only the validated
-  context it needs; (c) the channel uses an `AF_UNIX` socket pair inherited at
-  spawn with `SOCK_CLOEXEC` and no filesystem path, removing the impersonation
-  surface; (d) PDU writes to the persistent store remain exclusively in the main
-  process so stream-ordering integrity is preserved.
+  channel uses a **master-key-authenticated** `crypto_kx` key exchange (#318):
+  both processes derive the same IPC auth key from the operator master-key file
+  and MAC each other's ephemeral public keys before deriving session keys, so a
+  local process that reaches the inherited fd without the master key cannot
+  complete the handshake; frames are then `crypto_secretstream_xchacha20poly1305`
+  AEAD-encrypted so a process that can read the socket pair sees only ciphertext;
+  (b) the main process verifies the inbound X-Matrix signature itself and
+  forwards only the verified peer identity (`origin`/`key_id`/`sig_verified`) —
+  the raw peer `access_token` and `Authorization`/`X-Matrix` headers are stripped
+  and never cross IPC (#323), so a compromised worker cannot harvest or replay
+  peer homeserver credentials; (c) the channel uses an `AF_UNIX` socket pair
+  inherited at spawn with `SOCK_CLOEXEC` and no filesystem path, removing the
+  impersonation surface; (d) PDU writes to the persistent store remain
+  exclusively in the main process so stream-ordering integrity is preserved.
+  **Residual worker-trust model after #318/#319/#323:** the worker is trusted to
+  act on the verified identity main forwards (it cannot forge peer credentials,
+  and the signing secret never enters the worker per #317), but the outbound
+  `Authorization` header the worker places on its own outbound HTTP requests is
+  still pre-signed in main and carried across IPC — it is our own request-bound
+  X-Matrix signature (bound to the method/url/body/destination of the exact
+  request), not a reusable peer credential, so it carries no harvest/replay value.
+  Relocating outbound signing into the worker via `IpcEd25519Provider` so the
+  signed value never crosses IPC is deferred (requires a `build_outbound_request`
+  provider-abstraction refactor) for minimal additional security value.
 
 - **Signing secret in federation worker address space (v0.10.2):**
   in Phase 1 the worker loaded the server signing secret from the database, so a

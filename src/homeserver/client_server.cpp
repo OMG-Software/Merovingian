@@ -4808,9 +4808,7 @@ namespace
             wire_federation_callbacks(rt.homeserver);
             auto const signing_key = ensure_runtime_server_signing_key(rt.homeserver);
             auto const key_id = signing_key.has_value() ? signing_key->key_id : std::string{};
-            auto const secret =
-                std::string{reinterpret_cast<char const*>(rt.homeserver.database.signing_secret_key.bytes().data()),
-                            rt.homeserver.database.signing_secret_key.bytes().size()};
+            auto const secret = rt.homeserver.database.signing_secret_key.bytes();
             for (auto const& [server, uid_list] : remote_by_server)
             {
                 auto remote_dk = canonicaljson::Object{};
@@ -4965,9 +4963,7 @@ namespace
             wire_federation_callbacks(rt.homeserver);
             auto const signing_key = ensure_runtime_server_signing_key(rt.homeserver);
             auto const key_id = signing_key.has_value() ? signing_key->key_id : std::string{};
-            auto const secret =
-                std::string{reinterpret_cast<char const*>(rt.homeserver.database.signing_secret_key.bytes().data()),
-                            rt.homeserver.database.signing_secret_key.bytes().size()};
+            auto const secret = rt.homeserver.database.signing_secret_key.bytes();
             for (auto& [server, user_claims] : remote_by_server)
             {
                 auto claim_body_obj = canonicaljson::Object{};
@@ -6815,9 +6811,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             wire_federation_callbacks(rt.homeserver);
             auto const signing_key = ensure_runtime_server_signing_key(rt.homeserver);
             auto const key_id = signing_key.has_value() ? signing_key->key_id : std::string{};
-            auto const secret =
-                std::string{reinterpret_cast<char const*>(rt.homeserver.database.signing_secret_key.bytes().data()),
-                            rt.homeserver.database.signing_secret_key.bytes().size()};
+            auto const secret = rt.homeserver.database.signing_secret_key.bytes();
             auto limit = std::optional<std::size_t>{};
             if (auto const lv = query_param_value(req.target, "limit"); lv.has_value() && !lv->empty())
             {
@@ -6882,9 +6876,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             wire_federation_callbacks(rt.homeserver);
             auto const signing_key = ensure_runtime_server_signing_key(rt.homeserver);
             auto const key_id = signing_key.has_value() ? signing_key->key_id : std::string{};
-            auto const secret =
-                std::string{reinterpret_cast<char const*>(rt.homeserver.database.signing_secret_key.bytes().data()),
-                            rt.homeserver.database.signing_secret_key.bytes().size()};
+            auto const secret = rt.homeserver.database.signing_secret_key.bytes();
             auto const opt_since = since_raw.empty() ? std::nullopt : std::make_optional<std::string_view>(since_raw);
             // Use POST when filter_term is set so servers supporting
             // POST /_matrix/federation/v1/publicRooms can apply the filter.
@@ -6928,9 +6920,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             wire_federation_callbacks(rt.homeserver);
             auto const signing_key = ensure_runtime_server_signing_key(rt.homeserver);
             auto const key_id = signing_key.has_value() ? signing_key->key_id : std::string{};
-            auto const secret =
-                std::string{reinterpret_cast<char const*>(rt.homeserver.database.signing_secret_key.bytes().data()),
-                            rt.homeserver.database.signing_secret_key.bytes().size()};
+            auto const secret = rt.homeserver.database.signing_secret_key.bytes();
             auto const target = std::string{"/_matrix/federation/v1/query/directory?room_alias="} +
                                 core::percent_encode_path_component(room_alias);
             auto const tx =
@@ -9641,9 +9631,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 wire_federation_callbacks(rt.homeserver);
                 auto const signing_key = ensure_runtime_server_signing_key(rt.homeserver);
                 auto const key_id = signing_key.has_value() ? signing_key->key_id : std::string{};
-                auto const secret =
-                    std::string{reinterpret_cast<char const*>(rt.homeserver.database.signing_secret_key.bytes().data()),
-                                rt.homeserver.database.signing_secret_key.bytes().size()};
+                auto const secret = rt.homeserver.database.signing_secret_key.bytes();
                 auto const target = std::string{"/_matrix/federation/v1/query/directory?room_alias="} +
                                     core::percent_encode_path_component(decoded_room_segment);
                 auto const tx =

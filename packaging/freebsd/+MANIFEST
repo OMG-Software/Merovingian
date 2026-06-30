@@ -1,5 +1,5 @@
 name: "merovingian"
-version: "0.10.8"
+version: "0.10.9"
 origin: net/merovingian
 comment: Secure Matrix Protocol homeserver
 desc: "Merovingian is a beta Matrix Protocol homeserver."

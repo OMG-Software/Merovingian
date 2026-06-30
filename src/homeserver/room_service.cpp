@@ -1326,7 +1326,7 @@ namespace
 // HTTP call runs in the worker's thread pool, freeing this handler thread.
 [[nodiscard]] auto perform_sync_outbound_call(HomeserverRuntime& runtime, std::string_view room_id,
                                               federation::OutboundTransaction const& transaction,
-                                              std::string_view key_id, std::string_view secret_key,
+                                              std::string_view key_id, std::span<std::uint8_t const> secret_key,
                                               std::string_view diagnostic_event, std::uint32_t timeout_seconds)
     -> std::pair<bool, std::string>
 {
@@ -1360,7 +1360,9 @@ namespace
     call.resolved_port = resolution.resolved_port;
     call.pinned_addresses = resolution.pinned_addresses;
     call.key_id = std::string{key_id};
-    call.secret_key = std::string{secret_key};
+    // Borrow the caller's span (backed by the runtime's SecretBuffer) for the
+    // synchronous build+send below. No std::string materialisation of the key.
+    call.secret_key = secret_key;
     call.connect_timeout_seconds = std::min(timeout_seconds, 30U);
     call.total_timeout_seconds = timeout_seconds;
 
@@ -2538,13 +2540,12 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
         // Best-effort: load the key_id from the persistent store. If no usable key
         // record exists, perform_sync_outbound_call fails with "server signing key not
         // initialized", which join_room surfaces as 502 — the correct status for an
-        // upstream federation failure. The signing secret is already held by the runtime
-        // provider; keep a local string view only for the X-Matrix authorization header.
+        // upstream federation failure. The signing secret stays in the runtime's
+        // mlocked SecretBuffer; we borrow a span of it for the X-Matrix header,
+        // never copying the key into an unpinned std::string.
         auto const signing_key = find_active_server_signing_key(runtime);
         auto const key_id = signing_key.has_value() ? signing_key->key_id : std::string{};
-        auto const secret_key =
-            std::string{reinterpret_cast<char const*>(runtime.database.signing_secret_key.bytes().data()),
-                        runtime.database.signing_secret_key.bytes().size()};
+        auto const secret_key = runtime.database.signing_secret_key.bytes();
         guard.unlock();
         // Try each candidate resident server's make_join until one responds successfully.
         auto remote_server = std::string{};
@@ -3244,9 +3245,7 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
         auto const remote_server = std::string{room_domain};
         auto const signing_key = find_active_server_signing_key(runtime);
         auto const key_id = signing_key.has_value() ? signing_key->key_id : std::string{};
-        auto const secret_key =
-            std::string{reinterpret_cast<char const*>(runtime.database.signing_secret_key.bytes().data()),
-                        runtime.database.signing_secret_key.bytes().size()};
+        auto const secret_key = runtime.database.signing_secret_key.bytes();
 
         guard.unlock();
 

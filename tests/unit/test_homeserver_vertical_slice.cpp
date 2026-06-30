@@ -37,10 +37,12 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include <sodium.h>
 
@@ -468,11 +470,14 @@ SCENARIO("Homeserver admin observability endpoints expose runtime metrics and du
 // Spec: Merovingian security policy
 //
 // Passwords MUST be stored as Argon2id hashes - never in plaintext, never as
-// a weaker algorithm. Access tokens MUST be stored as versioned hashes with the
-// "token-hash:v3:" prefix and MUST be random and unique per session.
+// a weaker algorithm. Access tokens MUST be stored as versioned hashes and MUST
+// be random and unique per session. With a master key configured, tokens use
+// the master-key-derived v4 hash; without a master key, v3/v4 are unavailable
+// (issue #322 moved v3 off the Ed25519 seed onto a master-key-derived key) and
+// the code falls back to the unkeyed v2 hash so local operations still work.
 SCENARIO("Homeserver local auth stores hardened password and token hashes", "[homeserver][vertical][auth][security]")
 {
-    GIVEN("a started runtime with local registration enabled")
+    GIVEN("a started runtime with local registration enabled but no master key")
     {
         auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
         REQUIRE(started.started);
@@ -519,10 +524,11 @@ SCENARIO("Homeserver local auth stores hardened password and token hashes", "[ho
                 // Spec MUST: two distinct sessions MUST be stored for two logins.
                 // Do NOT remove - fewer sessions means tokens were aliased, breaking revocation.
                 REQUIRE(runtime.database.sessions.size() == 2U);
-                // Spec MUST: token hashes MUST carry the versioned "token-hash:v3:" prefix.
-                // Do NOT remove - prefix validates the hashing algorithm version on lookup.
-                REQUIRE(runtime.database.sessions.front().access_token_hash.rfind("token-hash:v3:", 0U) == 0U);
-                REQUIRE(runtime.database.sessions.back().access_token_hash.rfind("token-hash:v3:", 0U) == 0U);
+                // Spec MUST (#322): with no master key, v3/v4 are unavailable and the issued hash
+                // MUST carry the "token-hash:v2:" prefix (the unkeyed fallback). v3 is no longer
+                // backed by the Ed25519 seed; it now requires a master key, so it is not issued here.
+                REQUIRE(runtime.database.sessions.front().access_token_hash.rfind("token-hash:v2:", 0U) == 0U);
+                REQUIRE(runtime.database.sessions.back().access_token_hash.rfind("token-hash:v2:", 0U) == 0U);
                 // Spec MUST: stored token hashes MUST be distinct across sessions.
                 // Do NOT remove - identical hashes allow one token to authenticate as another.
                 REQUIRE(runtime.database.sessions.front().access_token_hash !=
@@ -608,12 +614,24 @@ SCENARIO("Homeserver with master key issues master-key-derived v4 token hashes",
     }
 }
 
-SCENARIO("Homeserver upgrades a stored v3 token to v4 on first use when a master key is present",
+// --- Legacy v3 invalidation (#322) -------------------------------------------
+// Spec: Merovingian security policy
+//
+// The legacy v3 access-token HMAC key was the first 32 bytes of the Ed25519
+// signing seed, which violated key separation. #322 moved v3 onto a
+// master-key-derived key with a distinct domain separator. A stored hash
+// produced under the OLD seed-derived key MUST NOT authenticate once the
+// master-key-derived v3 key is in effect — the two keys are independent, so
+// the token fails closed and the user must re-login (and is then issued a v4
+// hash). This is the accepted #322 tradeoff: legacy v3 sessions are invalidated.
+SCENARIO("Homeserver rejects a legacy seed-derived v3 hash once v3 is master-key-derived",
          "[homeserver][vertical][auth][security]")
 {
-    GIVEN("a runtime that initially has no master key, a registered user, and a v3 access token")
+    GIVEN("a runtime with a master key, a logged-in user, and a session whose stored hash was "
+          "produced under the old seed-derived v3 key")
     {
-        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        auto started = merovingian::homeserver::start_runtime(
+            registration_enabled_config_with_master_key(merovingian::tests::master_key_file()));
         REQUIRE(started.started);
         auto& runtime = started.runtime;
 
@@ -621,24 +639,42 @@ SCENARIO("Homeserver upgrades a stored v3 token to v4 on first use when a master
             runtime, {"POST",
                       "/_matrix/client/v3/register",
                       {},
-                      merovingian::tests::registration_pipe("alice", "CorrectHorse7!")});
+                      merovingian::tests::registration_pipe("legacyalice", "CorrectHorse7!")});
         REQUIRE(user.status == 200U);
         auto const login = merovingian::homeserver::handle_local_http_request(
             runtime, {"POST", "/_matrix/client/v3/login", {}, user.body + "|CorrectHorse7!|DEVICE1"});
         REQUIRE(login.status == 200U);
-        REQUIRE(runtime.database.sessions.front().access_token_hash.rfind("token-hash:v3:", 0U) == 0U);
+        REQUIRE(runtime.database.sessions.size() == 1U);
 
-        WHEN("the runtime is reconfigured with a master key and the same v3 token is used")
+        // Recreate the pre-#322 v3 hash of the issued token: an unkeyed-style
+        // generichash keyed with the first 32 bytes of the Ed25519 signing seed.
+        auto const seed_bytes = runtime.database.signing_secret_key.bytes();
+        REQUIRE(seed_bytes.size() >= crypto_generichash_KEYBYTES);
+        auto old_key = std::array<unsigned char, crypto_generichash_KEYBYTES>{};
+        std::copy_n(seed_bytes.begin(), crypto_generichash_KEYBYTES, old_key.begin());
+        auto digest = std::array<unsigned char, 32U>{};
+        std::ignore =
+            crypto_generichash(digest.data(), digest.size(), reinterpret_cast<unsigned char const*>(login.body.data()),
+                               login.body.size(), old_key.data(), old_key.size());
+        static constexpr auto hex = "0123456789abcdef";
+        auto hash = std::string{"token-hash:v3:"};
+        hash.reserve(hash.size() + digest.size() * 2U);
+        for (auto const b : digest)
         {
-            runtime.config.security().secrets.master_key_file = merovingian::tests::master_key_file();
+            hash.push_back(hex[(b >> 4U) & 0x0FU]);
+            hash.push_back(hex[b & 0x0FU]);
+        }
+        runtime.database.sessions.front().access_token_hash = hash;
 
+        WHEN("the token is presented for authentication")
+        {
             auto const authenticated = merovingian::homeserver::authenticated_user(runtime, login.body);
 
-            THEN("the token authenticates and the stored hash is transparently upgraded to v4")
+            THEN("authentication fails closed — the legacy v3 hash is not validatable, forcing re-login")
             {
-                REQUIRE(authenticated.has_value());
-                REQUIRE(authenticated.value() == user.body);
-                REQUIRE(runtime.database.sessions.front().access_token_hash.rfind("token-hash:v4:", 0U) == 0U);
+                // Spec MUST (#322): the master-key-derived v3 key is independent from the
+                // seed-derived key, so the stored legacy hash matches neither v3, v4, nor v2.
+                REQUIRE_FALSE(authenticated.has_value());
             }
         }
     }
@@ -1070,8 +1106,7 @@ SCENARIO("ensure_runtime_server_signing_key migrates a legacy ed25519:auto key b
         // "ed25519:auto", which notary servers (e.g. matrix.org) may have cached with a
         // far-future valid_until_ts, making it impossible to rotate via normal expiry.
         runtime.database.persistent_store.server_signing_keys.push_back({
-            server_name,
-            "ed25519:auto",
+            server_name, "ed25519:auto",
             "cHVibGlja2V5", // base64("pubkey") - syntactically valid but not real Ed25519
             32503680000000ULL,
             "c2VjcmV0a2V5", // base64("secretkey") - valid base64, wrong size

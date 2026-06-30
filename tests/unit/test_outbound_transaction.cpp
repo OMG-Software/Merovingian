@@ -226,7 +226,8 @@ SCENARIO("Destination retry policy respects circuit breaker and backoff", "[fede
 namespace
 {
 
-[[nodiscard]] auto make_sample_call() -> merovingian::federation::OutboundCall
+[[nodiscard]] auto make_sample_call(merovingian::federation::test::SigningKeypair const& kp)
+    -> merovingian::federation::OutboundCall
 {
     auto call = merovingian::federation::OutboundCall{};
     call.transaction = merovingian::federation::make_outbound_transaction(
@@ -235,8 +236,15 @@ namespace
     call.resolved_port = 8448U;
     call.pinned_addresses = {"203.0.113.10"};
     call.key_id = "ed25519:auto";
-    call.secret_key = merovingian::federation::test::keypair_from_seed("deterministic-test-token").secret_key;
+    // Borrow the keypair's secret key as a span — kp must outlive the call, which
+    // each scenario guarantees by holding kp in the enclosing GIVEN scope.
+    call.secret_key = merovingian::federation::test::secret_key_span(kp);
     return call;
+}
+
+[[nodiscard]] auto sample_keypair() -> merovingian::federation::test::SigningKeypair
+{
+    return merovingian::federation::test::keypair_from_seed("deterministic-test-token");
 }
 
 } // namespace
@@ -245,7 +253,8 @@ SCENARIO("Outbound request builder produces a federation HTTPS request shape", "
 {
     GIVEN("a federation call composed from a transaction, resolution, and signing identity")
     {
-        auto const call = make_sample_call();
+        auto const kp = sample_keypair();
+        auto const call = make_sample_call(kp);
 
         WHEN("the outbound HTTP request is built")
         {
@@ -366,7 +375,8 @@ SCENARIO("Outbound request builder brackets IPv6 literals in the URL", "[federat
 {
     GIVEN("a federation call whose resolved host is an IPv6 literal")
     {
-        auto call = make_sample_call();
+        auto const kp = sample_keypair();
+        auto call = make_sample_call(kp);
         call.resolved_host = "2001:db8::1";
 
         WHEN("the outbound HTTP request is built")
@@ -382,7 +392,8 @@ SCENARIO("Outbound request builder brackets IPv6 literals in the URL", "[federat
 
     GIVEN("a federation call whose resolved host is an IPv4 literal")
     {
-        auto call = make_sample_call();
+        auto const kp = sample_keypair();
+        auto call = make_sample_call(kp);
         call.resolved_host = "203.0.113.10";
 
         WHEN("the outbound HTTP request is built")
@@ -409,7 +420,8 @@ SCENARIO("Outbound transaction respects the circuit breaker without any network 
         destination.retry_after_ts = 1000000ULL;
         destination.state = "backoff";
 
-        auto const call = make_sample_call();
+        auto const kp = sample_keypair();
+        auto const call = make_sample_call(kp);
         auto const before_failures = destination.consecutive_failures;
         auto const before_retry_after = destination.retry_after_ts;
 

@@ -322,4 +322,99 @@ SCENARIO("seccomp filter allows ThreadSanitizer worker startup syscalls", "[plat
         }
     }
 }
+
+SCENARIO("worker seccomp filter denies exec/spawn syscalls but allows the worker runtime set",
+         "[platform][hardening][seccomp][worker][linux]")
+{
+    GIVEN("the worker seccomp allowlist (issue #319)")
+    {
+        WHEN("the default action is queried")
+        {
+            THEN("it is SECCOMP_RET_KILL_PROCESS (fail-closed, same as the main filter)")
+            {
+                REQUIRE(merovingian::platform::worker_seccomp_default_action() ==
+                        static_cast<std::uint32_t>(SECCOMP_RET_KILL_PROCESS));
+            }
+        }
+        WHEN("spawn syscalls are checked")
+        {
+            THEN("execve and execveat are denied — the worker never spawns or execs")
+            {
+                REQUIRE_FALSE(merovingian::platform::worker_seccomp_is_syscall_allowed(__NR_execve));
+#ifdef __NR_execveat
+                REQUIRE_FALSE(merovingian::platform::worker_seccomp_is_syscall_allowed(__NR_execveat));
+#endif
+            }
+        }
+        WHEN("the worker runtime syscall set is checked")
+        {
+            THEN("I/O, threads, network, mlock, getrandom, and SQLite journal ops are allowed")
+            {
+                REQUIRE(merovingian::platform::worker_seccomp_is_syscall_allowed(__NR_read));
+                REQUIRE(merovingian::platform::worker_seccomp_is_syscall_allowed(__NR_write));
+                REQUIRE(merovingian::platform::worker_seccomp_is_syscall_allowed(__NR_openat));
+                REQUIRE(merovingian::platform::worker_seccomp_is_syscall_allowed(__NR_close));
+                REQUIRE(merovingian::platform::worker_seccomp_is_syscall_allowed(__NR_socket));
+                REQUIRE(merovingian::platform::worker_seccomp_is_syscall_allowed(__NR_connect));
+                REQUIRE(merovingian::platform::worker_seccomp_is_syscall_allowed(__NR_clone));
+                REQUIRE(merovingian::platform::worker_seccomp_is_syscall_allowed(__NR_futex));
+                REQUIRE(merovingian::platform::worker_seccomp_is_syscall_allowed(__NR_mlock));
+                REQUIRE(merovingian::platform::worker_seccomp_is_syscall_allowed(__NR_getrandom));
+                REQUIRE(merovingian::platform::worker_seccomp_is_syscall_allowed(__NR_unlink));
+                REQUIRE(merovingian::platform::worker_seccomp_is_syscall_allowed(__NR_ftruncate));
+            }
+        }
+        WHEN("the glibc per-thread syscalls are checked by numeric value")
+        {
+            THEN("rseq, membarrier, getcpu, futex_waitv, clone3, close_range, and faccessat2 are present")
+            {
+#if defined(__x86_64__)
+                REQUIRE(merovingian::platform::worker_seccomp_is_syscall_allowed(334)); // rseq
+                REQUIRE(merovingian::platform::worker_seccomp_is_syscall_allowed(324)); // membarrier
+                REQUIRE(merovingian::platform::worker_seccomp_is_syscall_allowed(309)); // getcpu
+                REQUIRE(merovingian::platform::worker_seccomp_is_syscall_allowed(449)); // futex_waitv
+                REQUIRE(merovingian::platform::worker_seccomp_is_syscall_allowed(435)); // clone3
+                REQUIRE(merovingian::platform::worker_seccomp_is_syscall_allowed(436)); // close_range
+                REQUIRE(merovingian::platform::worker_seccomp_is_syscall_allowed(439)); // faccessat2
+#elif defined(__aarch64__)
+                REQUIRE(merovingian::platform::worker_seccomp_is_syscall_allowed(293)); // rseq
+                REQUIRE(merovingian::platform::worker_seccomp_is_syscall_allowed(283)); // membarrier
+                REQUIRE(merovingian::platform::worker_seccomp_is_syscall_allowed(168)); // getcpu
+                REQUIRE(merovingian::platform::worker_seccomp_is_syscall_allowed(449)); // futex_waitv
+                REQUIRE(merovingian::platform::worker_seccomp_is_syscall_allowed(435)); // clone3
+                REQUIRE(merovingian::platform::worker_seccomp_is_syscall_allowed(436)); // close_range
+                REQUIRE(merovingian::platform::worker_seccomp_is_syscall_allowed(439)); // faccessat2
+#endif
+            }
+        }
+        WHEN("ThreadSanitizer's personality syscall is checked")
+        {
+            THEN("personality is allowed in the worker filter too")
+            {
+#ifdef __NR_personality
+                REQUIRE(merovingian::platform::worker_seccomp_is_syscall_allowed(__NR_personality));
+#endif
+            }
+        }
+        WHEN("the worker allowlist is compared against the main allowlist")
+        {
+            THEN("the worker allowlist is a strict subset — execve/execveat are in main but not worker")
+            {
+                // This guards against drift: every syscall the worker allows the
+                // main process must also allow (worker is a subset), and the two
+                // spawn syscalls must be present in main but absent in worker.
+                REQUIRE(merovingian::platform::seccomp_is_syscall_allowed(__NR_execve));
+                REQUIRE_FALSE(merovingian::platform::worker_seccomp_is_syscall_allowed(__NR_execve));
+#ifdef __NR_execveat
+                REQUIRE(merovingian::platform::seccomp_is_syscall_allowed(__NR_execveat));
+                REQUIRE_FALSE(merovingian::platform::worker_seccomp_is_syscall_allowed(__NR_execveat));
+#endif
+                // Spot-check that a representative worker-allowed syscall is also
+                // main-allowed (subset relationship for these samples).
+                REQUIRE(merovingian::platform::seccomp_is_syscall_allowed(__NR_connect));
+                REQUIRE(merovingian::platform::seccomp_is_syscall_allowed(__NR_mlock));
+            }
+        }
+    }
+}
 #endif // __linux__

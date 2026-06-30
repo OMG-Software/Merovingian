@@ -170,6 +170,81 @@ SCENARIO("X-Matrix Authorization header is parsed into credentials", "[federatio
     }
 }
 
+// Spec: Matrix Server-Server API v1.18
+// Endpoint / Section: Request Authentication (X-Matrix)
+// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#request-authentication
+//
+// The X-Matrix Authorization header uses RFC 7230 quoted-string values. A
+// backslash escapes the next character, so a value containing `\"` must NOT
+// terminate the field early. The parser must skip `\"`/`\\` escape sequences
+// when scanning for the closing quote and decode them in the extracted value.
+SCENARIO("X-Matrix quoted values handle backslash-escaped quotes per RFC 7230",
+         "[federation][x-matrix][parsing][conformance][security]")
+{
+    GIVEN("an X-Matrix header whose sig value contains an escaped quote")
+    {
+        // Raw header bytes: sig="ab\"cd==" — the \" is an escaped quote inside
+        // the value, not the closing delimiter.
+        auto const header = std::string_view{R"(X-Matrix origin="matrix.example.org",)"
+                                             R"(key="ed25519:auto",sig="ab\"cd==")"};
+
+        WHEN("the header is parsed")
+        {
+            auto const result = merovingian::federation::parse_x_matrix_authorization_header(header);
+
+            THEN("the escaped quote is decoded and the field is not terminated early")
+            {
+                // Spec MUST (RFC 7230 §3.2.6): a backslash escapes the next char, so the
+                // closing quote is the one after `cd==`, and the value decodes to ab"cd==.
+                REQUIRE(result.has_value());
+                REQUIRE(result->origin == "matrix.example.org");
+                REQUIRE(result->key_id == "ed25519:auto");
+                REQUIRE(result->signature == "ab\"cd==");
+            }
+        }
+    }
+
+    GIVEN("an X-Matrix header whose origin value contains an escaped backslash")
+    {
+        auto const header = std::string_view{R"(X-Matrix origin="x\\y.org",)"
+                                             R"(key="ed25519:auto",sig="abc==")"};
+
+        WHEN("the header is parsed")
+        {
+            auto const result = merovingian::federation::parse_x_matrix_authorization_header(header);
+
+            THEN("the escaped backslash is decoded to a single backslash")
+            {
+                REQUIRE(result.has_value());
+                REQUIRE(result->origin == "x\\y.org");
+                REQUIRE(result->key_id == "ed25519:auto");
+                REQUIRE(result->signature == "abc==");
+            }
+        }
+    }
+
+    GIVEN("an X-Matrix header where an earlier field's escaped quote is followed by a later field")
+    {
+        // The escaped quote in key must not consume the key's closing quote and
+        // corrupt the subsequent sig field.
+        auto const header = std::string_view{R"(X-Matrix origin="matrix.example.org",)"
+                                             R"(key="ed25519:a\"b",sig="sigval==")"};
+
+        WHEN("the header is parsed")
+        {
+            auto const result = merovingian::federation::parse_x_matrix_authorization_header(header);
+
+            THEN("each field is extracted independently despite the embedded escape")
+            {
+                REQUIRE(result.has_value());
+                REQUIRE(result->origin == "matrix.example.org");
+                REQUIRE(result->key_id == "ed25519:a\"b");
+                REQUIRE(result->signature == "sigval==");
+            }
+        }
+    }
+}
+
 SCENARIO("TLS-bound origin validation gates inbound federation requests", "[federation][inbound][tls]")
 {
     GIVEN("a runtime with a known remote and a valid signed request")

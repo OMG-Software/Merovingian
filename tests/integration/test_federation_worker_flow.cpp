@@ -8,6 +8,7 @@
 // |  sign-back channel, and in-process fallback when the worker is down.    |
 // +-------------------------------------------------------------------------+
 
+#include "../support/master_key.hpp"
 #include "../support/temp_directory.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/homeserver/federation_proxy.hpp"
@@ -99,11 +100,19 @@ auto write_file(std::filesystem::path const& path, std::string_view content) -> 
 
     auto security = SecurityConfig{};
     security.federation.enabled = true;
+    // The IPC channel is now mutually authenticated via a master-key-derived
+    // MAC (issue #318). Both the main process and the worker derive the same
+    // auth key from this file, so the worker cannot start without it.
+    security.secrets.master_key_file = merovingian::tests::master_key_file();
 
     auto fw = FederationWorkerConfig{};
     fw.shards = 2U;
     fw.threads = 1U;
     fw.request_timeout_seconds = 10U;
+    // Default: existing scenarios run the worker WITHOUT the seccomp filter so
+    // they do not regress if the worker allowlist is incomplete. The hardened
+    // scenario below sets this true to validate the worker runs under the filter.
+    fw.apply_hardening = false;
 
     return Config{server, ListenersConfig{}, database, security, ClientRateLimitsConfig{}, LogModulesConfig{}, fw};
 }
@@ -118,10 +127,17 @@ auto write_worker_config(std::filesystem::path const& path, Config const& config
     content += "database.sqlite_path=" + config.database().sqlite_path + "\n";
     content += "database.role=runtime\n";
     content += "security.federation.enabled=true\n";
+    content += "security.secrets.master_key_file=" + config.security().secrets.master_key_file + "\n";
     content += "federation.worker.shards=" + std::to_string(config.federation_worker().shards) + "\n";
     content += "federation.worker.threads=" + std::to_string(config.federation_worker().threads) + "\n";
     content += "federation.worker.request_timeout_seconds=" +
                std::to_string(config.federation_worker().request_timeout_seconds) + "\n";
+    // Emit the apply_hardening flag so scenarios that opt into the worker
+    // seccomp filter (issue #319) get it; the default config sets it false so
+    // the bulk of scenarios run the worker unfiltered and do not regress.
+    content += "federation.worker.apply_hardening=";
+    content += config.federation_worker().apply_hardening ? "true" : "false";
+    content += "\n";
     write_file(path, content);
 }
 
@@ -550,6 +566,66 @@ SCENARIO("FederationProxy delegates outbound HTTP requests to the worker pool vi
             THEN("the proxy forwards the request through IPC and returns a network failure")
             {
                 REQUIRE_FALSE(result.ok);
+            }
+        }
+    }
+}
+
+SCENARIO("The federation worker starts and serves a request under the worker seccomp filter",
+         "[integration][federation-worker][hardening][seccomp]")
+{
+    GIVEN("a config that enables the worker runtime hardening sequence (issue #319)")
+    {
+        if (worker_binary_path().empty())
+        {
+            SKIP("MEROVINGIAN_TEST_FEDERATION_WORKER is not defined");
+        }
+#ifdef __SANITIZE_THREAD__
+        // ThreadSanitizer needs syscalls the strict worker filter may not
+        // enumerate; the startup-hardening tests skip under TSan for the same
+        // reason. The allowlist itself is validated in unit tests.
+        SKIP("worker seccomp scenario skipped under ThreadSanitizer");
+#endif
+
+        REQUIRE(sodium_init() >= 0);
+
+        auto const tmp_dir = unique_temp_dir("merovingian-fed-worker-hardened");
+        auto config = make_federation_worker_config(tmp_dir);
+        config.federation_worker().apply_hardening = true;
+        auto const config_path = tmp_dir / "merovingian.conf";
+        write_worker_config(config_path, config);
+
+        auto started = start_runtime(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        WHEN("a WorkerPool is constructed with the hardened worker binary")
+        {
+            auto pool = WorkerPool{config.federation_worker(), runtime, std::string{worker_binary_path()},
+                                   config_path.string()};
+
+            THEN("the worker installs the filter and still reaches healthy")
+            {
+                // If the worker allowlist were incomplete the child would be
+                // killed by SECCOMP_RET_KILL_PROCESS at startup and the pool
+                // would never go healthy, failing here rather than hanging.
+                REQUIRE(wait_for_worker(pool, std::chrono::seconds{15}));
+            }
+
+            AND_WHEN("a non-room federation request is forwarded through the hardened worker")
+            {
+                auto request = make_fed_request("GET", "/_matrix/federation/v1/query/profile?user_id=@x:y");
+                auto response = LocalHttpResponse{};
+                auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds{30};
+                do
+                {
+                    response = pool.handle(request, "");
+                } while (response.status == 503U && std::chrono::steady_clock::now() < deadline);
+
+                THEN("the worker handles the request end-to-end under the filter (any non-503 status)")
+                {
+                    REQUIRE(response.status != 503U);
+                }
             }
         }
     }

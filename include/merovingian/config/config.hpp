@@ -196,6 +196,13 @@ struct FederationWorkerConfig final
     // Absolute path to the merovingian-fed-worker binary. Empty means use
     // the compile-time libexec default.
     std::string worker_binary{};
+    // Apply the worker-specific runtime hardening sequence (RLIMIT_CORE=0,
+    // PR_SET_NO_NEW_PRIVS, capability-bounding drop, worker seccomp-bpf filter
+    // that denies execve/execveat) at worker startup (issue #319). Default true
+    // so production workers are sandboxed; tests that exercise the worker
+    // binary directly set this false to avoid the strict filter while the
+    // filter allowlist is validated separately in unit tests.
+    bool apply_hardening{true};
 };
 
 struct SecurityConfig final

@@ -37,7 +37,8 @@ namespace
     auto config = merovingian::federation::DispatchWorkerConfig{};
     config.origin = "origin.example.org";
     config.key_id = "ed25519:auto";
-    config.secret_key = merovingian::federation::test::keypair_from_seed("deterministic-test-token").secret_key;
+    config.secret_key = merovingian::federation::test::secret_key_buffer(
+        merovingian::federation::test::keypair_from_seed("deterministic-test-token"));
     config.max_queue_depth = 16U;
     config.max_retries = 3U;
     config.idle_poll = std::chrono::milliseconds{5};

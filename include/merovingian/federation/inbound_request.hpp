@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <functional>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -64,6 +65,12 @@ struct SignedFederationRequest final
     // the Matrix request-signing scheme itself carries no timestamp.
     std::uint64_t now_ts{0U};
     bool canonical_json_verified{false};
+    // True when the X-Matrix request signature has already been verified by a
+    // trusted upstream — the main process, over the authenticated IPC channel
+    // (#323). When set, handle_inbound_federation_request skips the
+    // signature-verify step and trusts the origin/key_id fields. The raw
+    // signature is absent in this case; only the verified identity travels.
+    bool signature_verified{false};
     std::string body{};
     // Non-empty when the request arrived on a TLS connection. The inbound
     // handler compares this against the X-Matrix origin claim so a relay
@@ -252,11 +259,27 @@ struct FederationResponse final
 // Signs a federation request with this server's real Ed25519 secret key.
 // The signed payload is the Matrix canonical JSON object
 // {content?, destination, method, origin, uri} — content is omitted for a
-// body-less request. `secret_key` is the raw 64-byte libsodium secret key.
+// body-less request. `secret_key` is the raw 64-byte libsodium secret key,
+// passed as a span so the caller never has to materialise an unpinned
+// std::string copy of the key (the runtime keeps it in a SecretBuffer).
 // Returns the Base64-encoded signature, or an empty string on any failure.
 [[nodiscard]] auto make_federation_signature(std::string_view origin, std::string_view destination,
                                              std::string_view method, std::string_view target, std::string_view body,
-                                             std::string_view secret_key) -> std::string;
+                                             std::span<std::uint8_t const> secret_key) -> std::string;
+
+// Inline adapter so legacy callers that still hold the raw secret as a
+// std::string (notably the test keypair helpers) keep compiling without a
+// span materialisation at every call site. The std::string_view argument
+// lifetime covers this full expression, so the borrowed span is valid for
+// the duration of the signing call only — callers must not retain it.
+[[nodiscard]] inline auto make_federation_signature(std::string_view origin, std::string_view destination,
+                                                    std::string_view method, std::string_view target,
+                                                    std::string_view body, std::string_view secret_key) -> std::string
+{
+    return make_federation_signature(
+        origin, destination, method, target, body,
+        std::span<std::uint8_t const>{reinterpret_cast<std::uint8_t const*>(secret_key.data()), secret_key.size()});
+}
 // Verifies a federation request against the remote's published Ed25519 public
 // key. Rebuilds the Matrix signed-request object and checks the detached
 // signature; also rejects a request signed with a key past its validity.
@@ -279,6 +302,36 @@ auto upsert_remote(FederationRuntimeState& runtime, FederationRemoteRuntime remo
     -> FederationPdu;
 [[nodiscard]] auto handle_inbound_federation_request(FederationRuntimeState& runtime,
                                                      SignedFederationRequest const& request) -> FederationResponse;
+
+// Verified peer identity for an inbound federation request whose X-Matrix
+// signature has been checked by the main process.
+struct VerifiedFederationIdentity final
+{
+    std::string origin{};
+    std::string key_id{};
+};
+
+// Outcome of verifying an inbound federation request's X-Matrix signature in
+// the main process. On success `accepted` is true and `identity` holds the
+// authenticated peer. On failure `accepted` is false and `error` is the
+// FederationResponse to return to the peer directly.
+struct InboundSignatureVerification final
+{
+    bool accepted{false};
+    VerifiedFederationIdentity identity{};
+    FederationResponse error{};
+};
+
+// Verifies an inbound federation request's X-Matrix signature using the main
+// process federation runtime (remote key resolution + Ed25519 verify + policy).
+// Returns the verified peer identity on success, or the error response to
+// return on failure. The main process calls this before forwarding only the
+// verified identity to the federation worker over the authenticated IPC
+// channel (#323), so the raw peer Authorization header (origin/key/sig) never
+// crosses the IPC boundary and cannot be harvested by a compromised worker.
+[[nodiscard]] auto verify_inbound_federation_signature(FederationRuntimeState& runtime,
+                                                       SignedFederationRequest const& request)
+    -> InboundSignatureVerification;
 [[nodiscard]] auto federation_runtime_summary(FederationRuntimeState const& runtime) -> std::string;
 [[nodiscard]] auto federation_audit_is_safe(FederationRuntimeState const& runtime) noexcept -> bool;
 

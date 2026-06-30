@@ -9,6 +9,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <span>
+#include <vector>
 
 #include <fcntl.h>
 #include <linux/audit.h>
@@ -367,6 +369,286 @@ namespace
     // clang-format on
 #undef ALLOW_SYSCALL
 
+    // Worker syscall allowlist (issue #319). This is the main allowlist MINUS
+    // execve/execveat: the federation worker never spawns or execs child
+    // processes, so denying those closes the "compromised worker runs a shell"
+    // escalation path. Every syscall the worker needs post-exec — I/O for the
+    // config/master-key/DB files, threads (clone/clone3/futex/rseq/membarrier/
+    // getcpu/futex_waitv), outbound network, mlock for SecretBuffer, getrandom —
+    // is present. The list mirrors the ALLOW_SYSCALL entries above; the unit
+    // test asserts it is a strict subset of the main allowlist, so the two
+    // cannot silently drift. close_range is retained because glibc may issue
+    // it outside the posix_spawn child path; it is harmless when unused.
+    constexpr int k_worker_allowed_syscalls[] = {
+        // NOLINT(*-avoid-c-arrays)
+        // ── I/O ────────────────────────────────────────────────────────────
+        __NR_read,
+        __NR_write,
+        __NR_readv,
+        __NR_writev,
+        __NR_pread64,
+        __NR_pwrite64,
+        __NR_preadv,
+        __NR_pwritev,
+        __NR_sendfile,
+        // ── File system ────────────────────────────────────────────────────
+        __NR_open,
+        __NR_openat,
+        __NR_close,
+        __NR_stat,
+        __NR_fstat,
+        __NR_lstat,
+        __NR_access,
+        __NR_faccessat,
+#ifdef __NR_faccessat2
+        __NR_faccessat2,
+#elif defined(__x86_64__) || defined(__aarch64__)
+        439,
+#endif
+        __NR_lseek,
+        __NR_fcntl,
+        __NR_ioctl,
+        __NR_flock,
+        __NR_fsync,
+        __NR_fdatasync,
+        __NR_getcwd,
+        __NR_chdir,
+        __NR_mkdirat,
+        __NR_readlink,
+        __NR_readlinkat,
+        __NR_getdents64,
+        __NR_dup,
+        __NR_dup2,
+        __NR_dup3,
+        __NR_pipe,
+        __NR_pipe2,
+        __NR_memfd_create,
+        __NR_ftruncate,
+        __NR_unlink,
+        __NR_unlinkat,
+        __NR_rename,
+        __NR_renameat,
+#ifdef __NR_renameat2
+        __NR_renameat2,
+#endif
+        __NR_fstatfs,
+        __NR_statfs,
+#ifdef __NR_fallocate
+        __NR_fallocate,
+#endif
+#ifdef __NR_statx
+        __NR_statx,
+#endif
+#ifdef __NR_newfstatat
+        __NR_newfstatat,
+#endif
+#ifdef __NR_openat2
+        __NR_openat2,
+#endif
+        // ── Memory ─────────────────────────────────────────────────────────
+        __NR_mmap,
+        __NR_munmap,
+        __NR_mprotect,
+        __NR_madvise,
+        __NR_brk,
+        __NR_mremap,
+        __NR_mlock,
+        __NR_munlock,
+        __NR_mlockall,
+        __NR_munlockall,
+        __NR_mincore,
+        // ── Network ────────────────────────────────────────────────────────
+        __NR_socket,
+        __NR_bind,
+        __NR_listen,
+        __NR_accept,
+        __NR_accept4,
+        __NR_connect,
+        __NR_getsockname,
+        __NR_getpeername,
+        __NR_sendto,
+        __NR_recvfrom,
+        __NR_sendmsg,
+        __NR_recvmsg,
+        __NR_sendmmsg,
+        __NR_recvmmsg,
+        __NR_setsockopt,
+        __NR_getsockopt,
+        __NR_shutdown,
+        __NR_socketpair,
+        // ── Poll and event notification ────────────────────────────────────
+        __NR_select,
+        __NR_pselect6,
+        __NR_poll,
+        __NR_ppoll,
+        __NR_epoll_create,
+        __NR_epoll_create1,
+        __NR_epoll_ctl,
+        __NR_epoll_wait,
+        __NR_epoll_pwait,
+        __NR_eventfd,
+        __NR_eventfd2,
+        __NR_timerfd_create,
+        __NR_timerfd_gettime,
+        __NR_timerfd_settime,
+        __NR_signalfd,
+        __NR_signalfd4,
+        __NR_inotify_init1,
+        __NR_inotify_add_watch,
+#ifdef __NR_epoll_pwait2
+        __NR_epoll_pwait2,
+#endif
+        // ── Threads and synchronisation ──────────────────────────────────
+        // No execve/execveat here — that is the whole point of the worker
+        // profile. clone/clone3 remain because the worker runs a thread pool.
+        __NR_futex,
+        __NR_set_robust_list,
+        __NR_get_robust_list,
+        __NR_sched_yield,
+        __NR_clone,
+        __NR_nanosleep,
+        __NR_clock_nanosleep,
+        __NR_restart_syscall,
+        __NR_wait4,
+        __NR_waitid,
+        __NR_exit,
+        __NR_exit_group,
+        __NR_set_tid_address,
+#ifdef __NR_clone3
+        __NR_clone3,
+#elif defined(__x86_64__) || defined(__aarch64__)
+        435,
+#endif
+#ifdef __NR_futex_waitv
+        __NR_futex_waitv,
+#elif defined(__x86_64__) || defined(__aarch64__)
+        449,
+#endif
+#ifdef __NR_rseq
+        __NR_rseq,
+#elif defined(__x86_64__)
+        334,
+#elif defined(__aarch64__)
+        293,
+#endif
+#ifdef __NR_membarrier
+        __NR_membarrier,
+#elif defined(__x86_64__)
+        324,
+#elif defined(__aarch64__)
+        283,
+#endif
+#ifdef __NR_getcpu
+        __NR_getcpu,
+#elif defined(__x86_64__)
+        309,
+#elif defined(__aarch64__)
+        168,
+#endif
+#ifdef __NR_close_range
+        __NR_close_range,
+#elif defined(__x86_64__) || defined(__aarch64__)
+        436,
+#endif
+        // ── Signals ────────────────────────────────────────────────────────
+        __NR_rt_sigaction,
+        __NR_rt_sigprocmask,
+        __NR_rt_sigreturn,
+        __NR_rt_sigsuspend,
+        __NR_sigaltstack,
+        __NR_kill,
+        __NR_tgkill,
+        __NR_tkill,
+        // ── Security and privilege ─────────────────────────────────────────
+        __NR_prctl,
+        __NR_arch_prctl,
+        __NR_seccomp,
+        __NR_getrandom,
+        __NR_capget,
+        __NR_capset,
+        __NR_personality,
+        // ── Process identity ───────────────────────────────────────────────
+        __NR_getpid,
+        __NR_getppid,
+        __NR_gettid,
+        __NR_getuid,
+        __NR_geteuid,
+        __NR_getgid,
+        __NR_getegid,
+        __NR_getgroups,
+        // ── Resource limits and scheduling ─────────────────────────────────
+        __NR_getrlimit,
+        __NR_setrlimit,
+        __NR_prlimit64,
+        __NR_sched_getaffinity,
+        __NR_getrusage,
+        // ── Time ───────────────────────────────────────────────────────────
+        __NR_clock_gettime,
+        __NR_clock_getres,
+        __NR_gettimeofday,
+        __NR_time,
+        // ── System information ─────────────────────────────────────────────
+        __NR_uname,
+        __NR_sysinfo,
+    };
+
+    // Builds a seccomp-bpf program for the given syscall allowlist with the
+    // given default action. Used to install the worker filter from
+    // k_worker_allowed_syscalls without duplicating the hand-written BPF
+    // array. The structure mirrors k_seccomp_filter: architecture guard, load
+    // syscall number, one JEQ+ALLOW pair per allowed syscall, then the default
+    // fail-closed return.
+    [[nodiscard]] auto build_seccomp_program(std::span<int const> allowed, std::uint32_t default_action)
+        -> std::vector<::sock_filter>
+    {
+        auto filt = std::vector<::sock_filter>{};
+        filt.reserve(4U + (2U * allowed.size()));
+#if defined(__x86_64__)
+        filt.push_back(
+            BPF_STMT(BPF_LD | BPF_W | BPF_ABS, static_cast<uint32_t>(offsetof(struct ::seccomp_data, arch))));
+        filt.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_X86_64, 1, 0));
+        filt.push_back(BPF_STMT(BPF_RET | BPF_K, default_action));
+#elif defined(__aarch64__)
+        filt.push_back(
+            BPF_STMT(BPF_LD | BPF_W | BPF_ABS, static_cast<uint32_t>(offsetof(struct ::seccomp_data, arch))));
+        filt.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_AARCH64, 1, 0));
+        filt.push_back(BPF_STMT(BPF_RET | BPF_K, default_action));
+#else
+        std::ignore = allowed;
+        filt.push_back(BPF_STMT(BPF_RET | BPF_K, default_action));
+        return filt;
+#endif
+        filt.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS, static_cast<uint32_t>(offsetof(struct ::seccomp_data, nr))));
+        for (auto const nr : allowed)
+        {
+            filt.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, static_cast<uint32_t>(nr), 0, 1));
+            filt.push_back(BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW));
+        }
+        filt.push_back(BPF_STMT(BPF_RET | BPF_K, default_action));
+        return filt;
+    }
+
+    [[nodiscard]] auto install_seccomp_program(std::vector<::sock_filter>&& filt, std::uint32_t default_action) noexcept
+        -> bool
+    {
+        if (filt.empty())
+        {
+            return false;
+        }
+        // Replace the final fail-closed return with the caller's default action
+        // so the test variant can use SECCOMP_RET_TRAP for diagnosability.
+        filt.back() = BPF_STMT(BPF_RET | BPF_K, default_action);
+        auto const prog = ::sock_fprog{
+            .len = static_cast<unsigned short>(filt.size()),
+            .filter = filt.data(),
+        };
+        if (::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0)
+        {
+            return false;
+        }
+        return ::syscall(__NR_seccomp, SECCOMP_SET_MODE_FILTER, 0, &prog) == 0;
+    }
+
     [[nodiscard]] auto install_seccomp_filter_with_default(std::uint32_t default_action) noexcept -> bool
     {
         // Reuse the production allowlist exactly (no drift between the filter
@@ -452,6 +734,25 @@ auto apply_seccomp_filter_with_default([[maybe_unused]] std::uint32_t default_ac
 #endif
 }
 
+auto apply_worker_seccomp_filter() noexcept -> bool
+{
+#ifdef __linux__
+    return install_seccomp_program(build_seccomp_program(k_worker_allowed_syscalls, k_seccomp_ret_kill_process),
+                                   k_seccomp_ret_kill_process);
+#else
+    return false;
+#endif
+}
+
+auto apply_worker_seccomp_filter_with_default([[maybe_unused]] std::uint32_t default_action) noexcept -> bool
+{
+#ifdef __linux__
+    return install_seccomp_program(build_seccomp_program(k_worker_allowed_syscalls, default_action), default_action);
+#else
+    return false;
+#endif
+}
+
 auto probe_seccomp_status() -> SeccompProbeResult
 {
 #ifdef __linux__
@@ -497,6 +798,24 @@ auto seccomp_expected_architecture() noexcept -> std::optional<std::uint32_t>
 #else
     return std::nullopt;
 #endif
+}
+
+auto worker_seccomp_default_action() noexcept -> std::uint32_t
+{
+    return k_seccomp_ret_kill_process;
+}
+
+auto worker_seccomp_is_syscall_allowed(int const syscall_number) noexcept -> bool
+{
+    // The worker allowlist is a plain syscall-number array (no BPF to scan).
+    for (auto const nr : k_worker_allowed_syscalls)
+    {
+        if (nr == syscall_number)
+        {
+            return true;
+        }
+    }
+    return false;
 }
 #endif // __linux__
 

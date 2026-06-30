@@ -17,6 +17,12 @@ public:
 
     explicit SecretBuffer(std::size_t size);
 
+    // Owns a freshly mlocked+zeroised copy of the supplied bytes. Used to move
+    // secret material (e.g. the server signing key) out of an unpinned span into
+    // a self-managing owner such as DispatchWorkerConfig::secret_key. The caller
+    // keeps responsibility for wiping the source; this constructor only copies.
+    explicit SecretBuffer(std::span<std::uint8_t const> bytes);
+
     SecretBuffer(SecretBuffer const&) = delete;
     auto operator=(SecretBuffer const&) -> SecretBuffer& = delete;
 

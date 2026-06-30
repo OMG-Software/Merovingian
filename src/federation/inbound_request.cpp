@@ -1000,7 +1000,7 @@ auto signing_key_summary(FederationSigningKey const& key) -> std::string
 }
 
 auto make_federation_signature(std::string_view origin, std::string_view destination, std::string_view method,
-                               std::string_view target, std::string_view body, std::string_view secret_key)
+                               std::string_view target, std::string_view body, std::span<std::uint8_t const> secret_key)
     -> std::string
 {
     if (!sodium_is_ready() || secret_key.size() != crypto_sign_SECRETKEYBYTES)
@@ -1032,7 +1032,9 @@ auto make_federation_signature(std::string_view origin, std::string_view destina
     // libsodium Ed25519 secret keys are [seed(32) | public_key(32)]. Derive and
     // log the embedded public key so operators can compare it against the value
     // published at /_matrix/key/v2/server to catch signing/publishing key mismatches.
-    auto const embedded_pk = events::matrix_base64_from_bytes(secret_key.substr(32U));
+    auto const pk_span = secret_key.subspan(32U);
+    auto const embedded_pk = events::matrix_base64_from_bytes(
+        std::string_view{reinterpret_cast<char const*>(pk_span.data()), pk_span.size()});
     log_diagnostic("signature.signing", {
                                             {"origin",        std::string{origin},             false},
                                             {"destination",   std::string{destination},        false},
@@ -1093,31 +1095,57 @@ auto parse_x_matrix_authorization_header(std::string_view header_value) -> std::
             return std::nullopt;
         }
         remaining = remaining.substr(1U);
-        auto const close_pos = remaining.find('"');
-        if (close_pos == std::string_view::npos)
+        // Scan the quoted value per RFC 7230 §3.2.6: a backslash escapes the
+        // next character, so an embedded `\"` is part of the value, not the
+        // closing delimiter. Decode `\"`→`"` and `\\`→`\` (and any other
+        // quoted-pair by dropping the backslash and keeping the following
+        // char). A trailing lone backslash is malformed → reject (issue #321).
+        auto value = std::string{};
+        auto closed = false;
+        auto i = std::size_t{0U};
+        for (; i < remaining.size(); ++i)
+        {
+            auto const ch = remaining[i];
+            if (ch == '"')
+            {
+                closed = true;
+                break;
+            }
+            if (ch == '\\')
+            {
+                if (i + 1U >= remaining.size())
+                {
+                    return std::nullopt; // lone trailing backslash
+                }
+                value.push_back(remaining[i + 1U]);
+                ++i;
+                continue;
+            }
+            value.push_back(ch);
+        }
+        if (!closed)
         {
             return std::nullopt;
         }
-        auto const value = remaining.substr(0U, close_pos);
-        remaining = remaining.substr(close_pos + 1U);
+        remaining = remaining.substr(i + 1U);
         if (name == "origin")
         {
-            credentials.origin = std::string{value};
+            credentials.origin = value;
             origin_found = true;
         }
         else if (name == "key")
         {
-            credentials.key_id = std::string{value};
+            credentials.key_id = value;
             key_found = true;
         }
         else if (name == "sig")
         {
-            credentials.signature = std::string{value};
+            credentials.signature = value;
             sig_found = true;
         }
         else if (name == "destination")
         {
-            credentials.destination = std::string{value};
+            credentials.destination = value;
         }
         while (!remaining.empty() && (remaining.front() == ' ' || remaining.front() == '\t'))
         {
@@ -1300,6 +1328,209 @@ auto parse_federation_pdu(std::string_view encoded, RoomVersionResolver const& v
     return {fields[0], fields[1], fields[2], fields[3], {{fields[4], fields[5], fields[6]}}, {}, "12"};
 }
 
+namespace
+{
+
+    // Outcome of resolving an inbound request's remote record and policy state
+    // (#323 verify/handle split). On success `accepted` is true, `route_match`
+    // holds the matched federation route, and `remote` points into `runtime`
+    // (non-null). On failure `accepted` is false and `error` is the response to
+    // return to the peer.
+    struct InboundResolveOutcome final
+    {
+        bool accepted{false};
+        FederationRouteMatch route_match{};
+        FederationRemoteRuntime* remote{nullptr};
+        FederationResponse error{};
+    };
+
+    // Block A of the inbound pipeline: route match, TLS origin check, server
+    // policy, remote key resolution (with cache refresh), discovery policy, and
+    // trust policy. Shared by the main-process signature verifier and the
+    // (worker-side) full handler so both walk the same gating sequence.
+    [[nodiscard]] auto resolve_inbound_remote(FederationRuntimeState& runtime, SignedFederationRequest const& request)
+        -> InboundResolveOutcome
+    {
+        auto const route_match = match_federation_route(request.method, request.target);
+        if (!route_match.matched)
+        {
+            log_diagnostic("request.route_not_found",
+                           {
+                               {"method", request.method,                                       false},
+                               {"target", observability::sanitized_http_target(request.target), false},
+                               {"origin", request.origin,                                       false},
+                               {"status", "404",                                                false},
+                               {"reason", route_match.reason,                                   false}
+            });
+            return {
+                .accepted = false, .error = {404U, route_match.reason}
+            };
+        }
+        // Reject early when the TLS peer name is known and does not match the
+        // X-Matrix origin claim: a relay cannot legitimately present a different
+        // server name in the TLS handshake than in the federation auth header.
+        if (!request.tls_peer_server_name.empty() && request.tls_peer_server_name != request.origin)
+        {
+            audit_federation(runtime, "federation.rejected", request.origin, request.target, "TLS origin mismatch");
+            return {
+                .accepted = false, .error = {403U, "TLS peer name does not match request origin"}
+            };
+        }
+        auto const server_policy = federation_server_policy(runtime.config, request.origin);
+        if (!server_policy.allowed)
+        {
+            log_diagnostic("request.rejected",
+                           {
+                               {"origin", request.origin,                                       false},
+                               {"target", observability::sanitized_http_target(request.target), false},
+                               {"status", "403",                                                false},
+                               {"reason", server_policy.reason,                                 false}
+            });
+            audit_federation(runtime, "federation.rejected", request.origin, request.target, server_policy.reason);
+            return {
+                .accepted = false, .error = {403U, server_policy.reason}
+            };
+        }
+        auto* remote = find_remote(runtime, request.origin);
+        if (remote == nullptr && runtime.remote_key_resolver)
+        {
+            // Unknown remote: try the injected resolver to discover, fetch, and
+            // verify the remote's published signing keys, then upsert a full
+            // runtime record so the discovery/trust policy checks below have
+            // something to validate against. The resolver caches through the
+            // persistent store, so subsequent requests see the new record
+            // without another network round-trip.
+            auto resolved = runtime.remote_key_resolver(request.origin, request.key_id);
+            if (resolved.has_value())
+            {
+                if (resolved->server_name.empty())
+                {
+                    resolved->server_name = std::string{request.origin};
+                }
+                if (resolved->trust.reputation_score == 0U)
+                {
+                    resolved->trust.reputation_score = 100U;
+                }
+                upsert_remote(runtime, std::move(*resolved));
+                remote = find_remote(runtime, request.origin);
+            }
+        }
+        if (remote == nullptr)
+        {
+            log_diagnostic("request.rejected",
+                           {
+                               {"origin", request.origin,                                       false},
+                               {"target", observability::sanitized_http_target(request.target), false},
+                               {"status", "403",                                                false},
+                               {"reason", "remote is unknown",                                  false}
+            });
+            audit_federation(runtime, "federation.rejected", request.origin, request.target, "remote is unknown");
+            return {
+                .accepted = false, .error = {403U, "remote is unknown"}
+            };
+        }
+        // Known remote, but the cached key doesn't match the request key_id or
+        // has expired: try the resolver to refresh before falling back to the
+        // stored record. Federation peers rotate keys, so the cache must follow.
+        // We keep the existing discovery/trust state and only swap in the new
+        // signing key — discovery doesn't change just because a key rotated.
+        auto const cached_key_id_mismatches = remote->signing_key.key_id != request.key_id;
+        auto const cached_key_expired =
+            remote->signing_key.valid_until_ts != 0U && request.now_ts >= remote->signing_key.valid_until_ts;
+        if (runtime.remote_key_resolver && (cached_key_id_mismatches || cached_key_expired))
+        {
+            auto refreshed = runtime.remote_key_resolver(request.origin, request.key_id);
+            if (refreshed.has_value() && !refreshed->signing_key.public_key_bytes.empty())
+            {
+                remote->signing_key = std::move(refreshed->signing_key);
+            }
+        }
+        auto const discovery = federation_discovery_policy(remote->discovery);
+        if (!discovery.accepted)
+        {
+            log_diagnostic("request.rejected",
+                           {
+                               {"origin", request.origin,                                       false},
+                               {"target", observability::sanitized_http_target(request.target), false},
+                               {"status", "403",                                                false},
+                               {"reason", discovery.reason,                                     false}
+            });
+            audit_federation(runtime, "federation.rejected", request.origin, request.target, discovery.reason);
+            return {
+                .accepted = false, .error = {403U, discovery.reason}
+            };
+        }
+        auto const trust = remote_trust_policy(remote->trust);
+        if (!trust.accepted)
+        {
+            log_diagnostic("request.rejected",
+                           {
+                               {"origin", request.origin,                                       false},
+                               {"target", observability::sanitized_http_target(request.target), false},
+                               {"status", std::to_string(trust.apply_backoff ? 429U : 403U),    false},
+                               {"reason", trust.reason,                                         false}
+            });
+            audit_federation(runtime, "federation.rejected", request.origin, request.target, trust.reason);
+            auto const status = static_cast<std::uint16_t>(trust.apply_backoff ? 429U : 403U);
+            return {
+                .accepted = false, .error = {status, trust.reason}
+            };
+        }
+        return {.accepted = true, .route_match = route_match, .remote = remote, .error = FederationResponse{}};
+    }
+
+    // Block B: the X-Matrix request signature verify. Returns nullopt when the
+    // signature is accepted, or the error FederationResponse on rejection (also
+    // increments consecutive_failures, logs, and audits). Skipped by the worker
+    // when the main process has already verified and set request.signature_verified.
+    [[nodiscard]] auto check_inbound_request_signature(FederationRuntimeState& runtime,
+                                                       SignedFederationRequest const& request,
+                                                       FederationRemoteRuntime& remote)
+        -> std::optional<FederationResponse>
+    {
+        auto const request_signature = verify_signed_federation_request(request, remote.signing_key);
+        if (!request_signature.accepted)
+        {
+            ++remote.trust.consecutive_failures;
+            log_diagnostic("request.rejected",
+                           {
+                               {"origin",               request.origin,                                       false},
+                               {"target",               observability::sanitized_http_target(request.target), false},
+                               {"status",               std::to_string(request_signature.status),             false},
+                               {"reason",               request_signature.reason,                             false},
+                               {"consecutive_failures", std::to_string(remote.trust.consecutive_failures),    false}
+            });
+            audit_federation(runtime, "federation.rejected", request.origin, request.target, request_signature.reason);
+            return FederationResponse{request_signature.status, request_signature.reason};
+        }
+        return std::nullopt;
+    }
+
+} // namespace
+
+auto verify_inbound_federation_signature(FederationRuntimeState& runtime, SignedFederationRequest const& request)
+    -> InboundSignatureVerification
+{
+    auto resolution = resolve_inbound_remote(runtime, request);
+    if (!resolution.accepted)
+    {
+        return {.accepted = false, .identity = VerifiedFederationIdentity{}, .error = std::move(resolution.error)};
+    }
+    if (!request.signature_verified)
+    {
+        auto const rejection = check_inbound_request_signature(runtime, request, *resolution.remote);
+        if (rejection.has_value())
+        {
+            return {.accepted = false, .identity = VerifiedFederationIdentity{}, .error = std::move(*rejection)};
+        }
+    }
+    return {
+        .accepted = true,
+        .identity = VerifiedFederationIdentity{request.origin, request.key_id},
+        .error = FederationResponse{}
+    };
+}
+
 auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFederationRequest const& request)
     -> FederationResponse
 {
@@ -1310,130 +1541,26 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
                                            {"key_id",     request.key_id,                                       false},
                                            {"body_bytes", std::to_string(request.body.size()),                  false}
     });
-    auto const route_match = match_federation_route(request.method, request.target);
-    if (!route_match.matched)
+    auto const inbound_resolution = resolve_inbound_remote(runtime, request);
+    if (!inbound_resolution.accepted)
     {
-        log_diagnostic("request.route_not_found",
-                       {
-                           {"method", request.method,                                       false},
-                           {"target", observability::sanitized_http_target(request.target), false},
-                           {"origin", request.origin,                                       false},
-                           {"status", "404",                                                false},
-                           {"reason", route_match.reason,                                   false}
-        });
-        return {404U, route_match.reason};
+        return inbound_resolution.error;
     }
-    // Reject early when the TLS peer name is known and does not match the
-    // X-Matrix origin claim: a relay cannot legitimately present a different
-    // server name in the TLS handshake than in the federation auth header.
-    if (!request.tls_peer_server_name.empty() && request.tls_peer_server_name != request.origin)
+    // The main process verifies the X-Matrix signature before forwarding the
+    // request to the worker over the authenticated IPC channel (#323). When
+    // signature_verified is set we trust that result and skip the crypto check
+    // here; the worker still ran resolve_inbound_remote above to obtain its
+    // own remote record (PDU verification needs the peer's published key).
+    if (!request.signature_verified)
     {
-        audit_federation(runtime, "federation.rejected", request.origin, request.target, "TLS origin mismatch");
-        return {403U, "TLS peer name does not match request origin"};
-    }
-    auto const server_policy = federation_server_policy(runtime.config, request.origin);
-    if (!server_policy.allowed)
-    {
-        log_diagnostic("request.rejected", {
-                                               {"origin", request.origin,                                       false},
-                                               {"target", observability::sanitized_http_target(request.target), false},
-                                               {"status", "403",                                                false},
-                                               {"reason", server_policy.reason,                                 false}
-        });
-        audit_federation(runtime, "federation.rejected", request.origin, request.target, server_policy.reason);
-        return {403U, server_policy.reason};
-    }
-    auto* remote = find_remote(runtime, request.origin);
-    if (remote == nullptr && runtime.remote_key_resolver)
-    {
-        // Unknown remote: try the injected resolver to discover, fetch, and
-        // verify the remote's published signing keys, then upsert a full
-        // runtime record so the discovery/trust policy checks below have
-        // something to validate against. The resolver caches through the
-        // persistent store, so subsequent requests see the new record
-        // without another network round-trip.
-        auto resolved = runtime.remote_key_resolver(request.origin, request.key_id);
-        if (resolved.has_value())
+        auto const rejection = check_inbound_request_signature(runtime, request, *inbound_resolution.remote);
+        if (rejection.has_value())
         {
-            if (resolved->server_name.empty())
-            {
-                resolved->server_name = std::string{request.origin};
-            }
-            if (resolved->trust.reputation_score == 0U)
-            {
-                resolved->trust.reputation_score = 100U;
-            }
-            upsert_remote(runtime, std::move(*resolved));
-            remote = find_remote(runtime, request.origin);
+            return *rejection;
         }
     }
-    if (remote == nullptr)
-    {
-        log_diagnostic("request.rejected", {
-                                               {"origin", request.origin,                                       false},
-                                               {"target", observability::sanitized_http_target(request.target), false},
-                                               {"status", "403",                                                false},
-                                               {"reason", "remote is unknown",                                  false}
-        });
-        audit_federation(runtime, "federation.rejected", request.origin, request.target, "remote is unknown");
-        return {403U, "remote is unknown"};
-    }
-    // Known remote, but the cached key doesn't match the request key_id or
-    // has expired: try the resolver to refresh before falling back to the
-    // stored record. Federation peers rotate keys, so the cache must follow.
-    // We keep the existing discovery/trust state and only swap in the new
-    // signing key — discovery doesn't change just because a key rotated.
-    auto const cached_key_id_mismatches = remote->signing_key.key_id != request.key_id;
-    auto const cached_key_expired =
-        remote->signing_key.valid_until_ts != 0U && request.now_ts >= remote->signing_key.valid_until_ts;
-    if (runtime.remote_key_resolver && (cached_key_id_mismatches || cached_key_expired))
-    {
-        auto refreshed = runtime.remote_key_resolver(request.origin, request.key_id);
-        if (refreshed.has_value() && !refreshed->signing_key.public_key_bytes.empty())
-        {
-            remote->signing_key = std::move(refreshed->signing_key);
-        }
-    }
-    auto const discovery = federation_discovery_policy(remote->discovery);
-    if (!discovery.accepted)
-    {
-        log_diagnostic("request.rejected", {
-                                               {"origin", request.origin,                                       false},
-                                               {"target", observability::sanitized_http_target(request.target), false},
-                                               {"status", "403",                                                false},
-                                               {"reason", discovery.reason,                                     false}
-        });
-        audit_federation(runtime, "federation.rejected", request.origin, request.target, discovery.reason);
-        return {403U, discovery.reason};
-    }
-    auto const trust = remote_trust_policy(remote->trust);
-    if (!trust.accepted)
-    {
-        log_diagnostic("request.rejected", {
-                                               {"origin", request.origin,                                       false},
-                                               {"target", observability::sanitized_http_target(request.target), false},
-                                               {"status", std::to_string(trust.apply_backoff ? 429U : 403U),    false},
-                                               {"reason", trust.reason,                                         false}
-        });
-        audit_federation(runtime, "federation.rejected", request.origin, request.target, trust.reason);
-        auto const status = static_cast<std::uint16_t>(trust.apply_backoff ? 429U : 403U);
-        return {status, trust.reason};
-    }
-    auto const request_signature = verify_signed_federation_request(request, remote->signing_key);
-    if (!request_signature.accepted)
-    {
-        ++remote->trust.consecutive_failures;
-        log_diagnostic("request.rejected",
-                       {
-                           {"origin",               request.origin,                                       false},
-                           {"target",               observability::sanitized_http_target(request.target), false},
-                           {"status",               std::to_string(request_signature.status),             false},
-                           {"reason",               request_signature.reason,                             false},
-                           {"consecutive_failures", std::to_string(remote->trust.consecutive_failures),   false}
-        });
-        audit_federation(runtime, "federation.rejected", request.origin, request.target, request_signature.reason);
-        return {request_signature.status, request_signature.reason};
-    }
+    auto const& route_match = inbound_resolution.route_match;
+    auto* remote = inbound_resolution.remote;
     if (route_match.route.endpoint != FederationEndpoint::transaction)
     {
         auto const non_transaction_response =

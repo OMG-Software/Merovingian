@@ -12,6 +12,7 @@ homeserver_sources = files(
   'runtime.cpp',
   'space_hierarchy.cpp',
   'tls.cpp',
+  'worker_env.cpp',
   'worker_pool.cpp',
   'worker_supervisor.cpp',
 )

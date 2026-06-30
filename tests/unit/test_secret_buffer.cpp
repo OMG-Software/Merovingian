@@ -1,9 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "merovingian/core/secret_buffer.hpp"
+#include "merovingian/federation/outbound_transaction.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
+#include <cstdint>
+#include <span>
+#include <string>
 #include <utility>
 
 SCENARIO("SecretBuffer allocates requested size", "[core][secret]")
@@ -133,6 +138,88 @@ SCENARIO("SecretBuffer of zero size and default construction are safe to destroy
         {
             REQUIRE(empty_default.bytes().empty());
             REQUIRE(empty_sized.bytes().empty());
+        }
+    }
+}
+
+// #317: the span constructor is the path production uses to move the server
+// signing key out of an unpinned std::string into an owning, mlocked SecretBuffer
+// (DispatchWorkerConfig::secret_key). It must take its own copy so the source
+// can be wiped or mutated independently afterward.
+SCENARIO("SecretBuffer span constructor owns an independent copy of the source bytes", "[core][secret][security]")
+{
+    GIVEN("a source byte buffer holding sensitive material")
+    {
+        auto source = std::array<std::uint8_t, 4U>{0xDEU, 0xADU, 0xBEU, 0xEFU};
+        auto source_span = std::span<std::uint8_t const>{source};
+
+        WHEN("a SecretBuffer is constructed from the span")
+        {
+            auto owned = merovingian::core::SecretBuffer{source_span};
+
+            THEN("the owner holds a copy of the source bytes")
+            {
+                REQUIRE(owned.bytes().size() == source.size());
+                REQUIRE(std::ranges::equal(owned.bytes(), source_span));
+            }
+
+            AND_WHEN("the source is mutated after construction")
+            {
+                source[0] = 0x00U;
+                source[1] = 0x00U;
+
+                THEN("the owned copy is unaffected — it is independent of the source")
+                {
+                    REQUIRE(owned.bytes()[0] == 0xDEU);
+                    REQUIRE(owned.bytes()[1] == 0xADU);
+                    REQUIRE(owned.bytes()[2] == 0xBEU);
+                    REQUIRE(owned.bytes()[3] == 0xEFU);
+                }
+            }
+        }
+    }
+}
+
+// #317: OutboundCall::secret_key is now a non-owning span that borrows from an
+// owner (the runtime SecretBuffer for synchronous calls, DispatchWorkerConfig for
+// async dispatch). build_outbound_request signs synchronously through that borrowed
+// span and produces a real X-Matrix signature — proving the signing path works
+// without ever materialising the key into an unpinned std::string.
+SCENARIO("OutboundCall borrows the signing key as a span and signs without a std::string copy",
+         "[federation][outbound][secret][security]")
+{
+    GIVEN("a SecretBuffer owning a 64-byte Ed25519 secret key and an OutboundCall borrowing it")
+    {
+        // A 64-byte key is what make_federation_signature requires; any nonzero
+        // bytes suffice to prove the signing path runs against the borrowed span.
+        auto key_owner = merovingian::core::SecretBuffer{64U};
+        std::ranges::fill(key_owner.bytes(), std::uint8_t{0x42U});
+
+        auto call = merovingian::federation::OutboundCall{};
+        call.transaction = merovingian::federation::make_outbound_transaction(
+            "remote.example.org", "PUT", "/_matrix/federation/v1/send/txn1", "origin.example.org", R"({"pdus":[]})");
+        call.resolved_host = "remote.example.org";
+        call.resolved_port = 8448U;
+        call.pinned_addresses = {"203.0.113.10"};
+        call.key_id = "ed25519:auto";
+        // Borrow, do not copy — the call holds only a span into key_owner.
+        call.secret_key = key_owner.bytes();
+
+        WHEN("the outbound request is built from the borrowed span")
+        {
+            auto const request = merovingian::federation::build_outbound_request(call);
+
+            THEN("the X-Matrix Authorization header carries a non-empty signature")
+            {
+                auto const it = std::ranges::find_if(request.headers, [](auto const& h) {
+                    return h.name == "Authorization";
+                });
+                REQUIRE(it != request.headers.end());
+                // The sig= field is present and populated (not `sig=""`), proving
+                // the borrowed span reached make_federation_signature as a usable key.
+                REQUIRE(it->value.find("sig=\"") != std::string::npos);
+                REQUIRE(it->value.find("sig=\"\"") == std::string::npos);
+            }
         }
     }
 }

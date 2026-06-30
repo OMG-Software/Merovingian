@@ -8,7 +8,9 @@
 #include "merovingian/rooms/room_version_policy.hpp"
 
 #include <cstddef>
+#include <cstdint>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -91,9 +93,12 @@ struct ValidatedMakeLeaveResponse final
 // federation proxy (worker thread pool) if available, else direct outbound client.
 // Returns {true, body} on HTTP 2xx, {false, reason} otherwise.
 // room_id is used only for worker shard routing; pass {} for non-room requests.
+// `secret_key` is the raw 64-byte Ed25519 secret key as a non-owning span —
+// callers pass runtime.database.signing_secret_key.bytes() directly so the key
+// is never copied into an unpinned std::string. The runtime outlives the call.
 [[nodiscard]] auto perform_sync_outbound_call(HomeserverRuntime& runtime, std::string_view room_id,
                                               federation::OutboundTransaction const& transaction,
-                                              std::string_view key_id, std::string_view secret_key,
+                                              std::string_view key_id, std::span<std::uint8_t const> secret_key,
                                               std::string_view diagnostic_event, std::uint32_t timeout_seconds)
     -> std::pair<bool, std::string>;
 

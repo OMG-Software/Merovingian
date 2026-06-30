@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/core/secret_buffer.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/federation/outbound_transaction.hpp"
 #include "merovingian/federation/server_discovery.hpp"
@@ -50,10 +51,12 @@ struct DispatchWorkerConfig final
 {
     // Identity used when signing outbound traffic. The signing identity
     // mirrors the runtime's persisted Ed25519 signing key. `secret_key` is
-    // the raw 64-byte libsodium Ed25519 secret key.
+    // the raw 64-byte libsodium Ed25519 secret key, held in an owning,
+    // mlocked, zeroised SecretBuffer so the worker never keeps an unpinned
+    // std::string copy. Per-call OutboundCall objects borrow it via .bytes().
     std::string origin{};
     std::string key_id{};
-    std::string secret_key{};
+    core::SecretBuffer secret_key{};
     // Bound on the in-memory enqueue list. Enforced fail-closed: enqueue
     // returns false once the limit is hit. Zero disables the bound for tests.
     std::size_t max_queue_depth{1024U};
