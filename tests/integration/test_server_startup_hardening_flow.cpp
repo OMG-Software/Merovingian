@@ -16,6 +16,7 @@
 // cannot satisfy that requirement. The skip is detected from the server log
 // rather than by duplicating the readiness logic in the test runner.
 
+#include "../support/master_key.hpp"
 #include "../support/temp_directory.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -132,11 +133,12 @@ struct TempDir final
 
 // Write a minimal no-TLS SQLite config that the server can start with.
 // SQLite auto-migrates on first open so no separate db-migrate step is needed.
-// The signing key is stored in the database (plaintext fallback when no
-// security.secrets.master_key_file is configured); no separate key file is needed.
+// A master key file is generated so the federation worker IPC channel can be
+// mutually authenticated (issue #318); the worker fails closed without it.
 auto write_minimal_config(std::filesystem::path const& config_path, std::filesystem::path const& db_path,
                           std::string_view worker_binary, std::uint16_t client_port, std::uint16_t fed_port) -> void
 {
+    auto const master_key_path = merovingian::tests::master_key_file();
     {
         auto f = std::ofstream{config_path};
         f << "server.name=localhost.test\n"
@@ -147,6 +149,7 @@ auto write_minimal_config(std::filesystem::path const& config_path, std::filesys
           << "listeners.federation.tls=false\n"
           << "database.backend=sqlite\n"
           << "database.sqlite_path=" << db_path.string() << "\n"
+          << "security.secrets.master_key_file=" << master_key_path << "\n"
           << "federation.worker.binary=" << worker_binary << "\n";
     }
     // The server rejects config files with group/other write permission.

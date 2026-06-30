@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/core/secret_buffer.hpp"
 #include "merovingian/events/event_signer.hpp"
 
 #include <array>
+#include <cstdint>
+#include <span>
 #include <string>
 #include <string_view>
 
@@ -43,6 +46,25 @@ struct SigningKeypair final
 [[nodiscard]] inline auto pubkey_b64(SigningKeypair const& kp) -> std::string
 {
     return merovingian::events::matrix_base64_from_bytes(kp.public_key);
+}
+
+// Returns a non-owning span over the keypair's raw 64-byte Ed25519 secret key.
+// The caller MUST keep `kp` alive for as long as the span is used — e.g. across
+// a synchronous build_outbound_request call where the OutboundCall borrows it.
+// Used by tests that wire OutboundCall::secret_key (now a span) without
+// materialising an unpinned std::string copy of the key.
+[[nodiscard]] inline auto secret_key_span(SigningKeypair const& kp) -> std::span<std::uint8_t const>
+{
+    return {reinterpret_cast<std::uint8_t const*>(kp.secret_key.data()), kp.secret_key.size()};
+}
+
+// Copies the keypair's raw 64-byte Ed25519 secret key into an owning, mlocked,
+// zeroised SecretBuffer — the shape production uses for DispatchWorkerConfig and
+// the runtime signing key. The caller no longer needs to keep `kp` alive after
+// this returns, because the SecretBuffer holds its own copy of the bytes.
+[[nodiscard]] inline auto secret_key_buffer(SigningKeypair const& kp) -> core::SecretBuffer
+{
+    return core::SecretBuffer{secret_key_span(kp)};
 }
 
 // Signs `payload` with the Ed25519 secret key and returns the unpadded base64

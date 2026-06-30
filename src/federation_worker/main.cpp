@@ -5,6 +5,7 @@
 #include "merovingian/core/file_descriptor.hpp"
 #include "merovingian/federation_worker/args.hpp"
 #include "merovingian/observability/logger.hpp"
+#include "merovingian/platform/runtime_hardening.hpp"
 #include "worker_event_loop.hpp"
 
 #include <cerrno>
@@ -23,6 +24,26 @@
 
 #ifdef __linux__
 #include <sys/prctl.h>
+#endif
+
+#if defined(__SANITIZE_ADDRESS__) || (defined(__has_feature) && __has_feature(address_sanitizer))
+// The federation worker runs under a strict seccomp filter (issue #319) that
+// denies ptrace by design — ptrace is an escalation primitive a compromised
+// worker must never possess. ASan's exit-time LeakSanitizer uses ptrace (via
+// StopTheWorld) to suspend all threads before scanning for leaks; with ptrace
+// denied, the tracer thread is killed and StopTheWorld spins in sched_yield
+// forever, so the worker process never exits and the supervisor's wait4()
+// hangs (the asan-ubsan CI integration timeout). Disable exit-time leak
+// detection in the worker. The main process retains full ASan/LSan coverage of
+// the shared code paths; the worker's own correctness is exercised by its unit
+// and integration tests. Defined at global scope with C linkage so the ASan
+// runtime resolves it as the weak default-options hook. ASAN_OPTIONS, when
+// present in the environment, takes precedence over this default — the
+// worker's minimal env (#330) carries no ASAN_OPTIONS, so this applies.
+extern "C" auto __asan_default_options() -> char const* // NOLINT(readability-identifier-naming)
+{
+    return "detect_leaks=0";
+}
 #endif
 
 namespace
@@ -100,6 +121,31 @@ auto main(int argc, char const* const* argv) -> int
 
     auto ipc_fd = merovingian::core::FileDescriptor{raw_fd};
     auto const threads = parse_result.config.federation_worker().threads;
+
+    // Apply the worker-specific runtime hardening sequence (issue #319): core
+    // dump policy, PR_SET_NO_NEW_PRIVS, capability-bounding drop, then the
+    // worker seccomp-bpf filter (which denies execve/execveat — the worker never
+    // spawns). Done after config + master-key file are read and the IPC fd is
+    // validated, but before the event loop opens the DB and starts threads. The
+    // worker filter still allows open()/socket()/clone() etc, so startup is not
+    // blocked. Fail-closed: a failed control aborts the worker. The
+    // apply_hardening config flag lets tests run the worker unfiltered while the
+    // allowlist itself is validated in unit tests.
+    if (parse_result.config.federation_worker().apply_hardening)
+    {
+        auto const hardening = merovingian::platform::apply_worker_hardening();
+        if (!hardening.accepted)
+        {
+            LOG_CRITICAL("Federation worker: runtime hardening failed: " + hardening.reason);
+            return 1;
+        }
+        LOG_INFO("Federation worker: runtime hardening applied (seccomp filter active)");
+    }
+    else
+    {
+        LOG_WARNING("Federation worker: runtime hardening disabled by config "
+                    "(federation.worker.apply_hardening=false)");
+    }
 
     auto loop = merovingian::federation_worker::WorkerEventLoop{std::move(ipc_fd), parse_result.config, threads,
                                                                 args.shard_index};

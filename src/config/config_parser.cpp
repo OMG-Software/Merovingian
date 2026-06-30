@@ -466,6 +466,13 @@ namespace
         {
             federation_worker.worker_binary = std::string{value};
         }
+        else if (key == "federation.worker.apply_hardening")
+        {
+            if (!parse_bool_value(value, federation_worker.apply_hardening))
+            {
+                add_parse_finding(findings, std::string{key}, "expected boolean (true/false)");
+            }
+        }
         else
         {
             add_parse_finding(findings, std::string{key}, "unknown configuration key");

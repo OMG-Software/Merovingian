@@ -158,6 +158,16 @@ struct HardeningGate final
 // are open and the federation worker is spawned. Portable: no-op.
 [[nodiscard]] auto apply_runtime_hardening_controls(RuntimeHardeningProfile const& profile) -> HardeningPlanDecision;
 
+// Apply the STRICTER hardening sequence for the federation worker child
+// (issue #319). Called from the worker's main() after config + master-key file
+// are read and the IPC fd is validated, but BEFORE the event loop opens the DB
+// and starts threads. Linux sequence: RLIMIT_CORE=0 + PR_SET_DUMPABLE=0,
+// PR_SET_NO_NEW_PRIVS, drop all capabilities from the bounding set, then
+// install the worker seccomp-bpf allowlist (which denies execve/execveat — the
+// worker never spawns). Fail-closed: returns rejected if any required control
+// fails. Non-Linux: accepted no-op (seccomp is Linux-only).
+[[nodiscard]] auto apply_worker_hardening() -> HardeningPlanDecision;
+
 // Probe: true when OpenBSD pledge(2) has been applied in this process.
 // On all non-OpenBSD platforms the inline stub returns false at compile time.
 #ifdef __OpenBSD__

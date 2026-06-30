@@ -1515,9 +1515,10 @@ namespace
             auto dispatch_config = federation::DispatchWorkerConfig{};
             dispatch_config.origin = runtime.config.server().server_name;
             dispatch_config.key_id = key->key_id;
-            dispatch_config.secret_key =
-                std::string{reinterpret_cast<char const*>(runtime.database.signing_secret_key.bytes().data()),
-                            runtime.database.signing_secret_key.bytes().size()};
+            // Move the signing key into the worker's own mlocked, zeroised
+            // SecretBuffer rather than an unpinned std::string. The runtime
+            // retains its own SecretBuffer; both are wiped independently.
+            dispatch_config.secret_key = core::SecretBuffer{runtime.database.signing_secret_key.bytes()};
             auto* discovery_ptr = discovery;
             auto const discovery_timeout = timeout > 0U ? timeout : 30U;
             auto resolver = [discovery_ptr, discovery_timeout](
@@ -1950,26 +1951,54 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
     if (starts_with(request.target, "/_matrix/federation/"))
     {
         auto signed_request_opt = std::optional<federation::SignedFederationRequest>{};
-        auto const x_matrix = federation::parse_x_matrix_authorization_header(request.access_token);
-        if (x_matrix.has_value())
+        if (request.sig_verified)
         {
+            // #323: the main process already verified the X-Matrix signature and
+            // forwarded only the verified identity over the authenticated IPC
+            // channel. Build the signed request directly from the verified
+            // fields (no raw signature crosses IPC) and mark it verified so
+            // handle_inbound_federation_request skips the crypto check.
             auto req = federation::SignedFederationRequest{};
             req.method = request.method;
             req.target = request.target;
-            req.origin = x_matrix->origin;
+            req.origin = request.verified_origin;
             // The signed request object binds the destination to this server's
             // own name; the verifier must rebuild the payload with our name,
             // not the (untrusted) header claim, or a request signed for a
             // different server would verify here.
             req.destination = runtime.config.server().server_name;
-            req.key_id = x_matrix->key_id;
-            req.signature = x_matrix->signature;
+            req.key_id = request.verified_key_id;
             req.now_ts = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
                                                         std::chrono::system_clock::now().time_since_epoch())
                                                         .count());
             req.canonical_json_verified = true;
+            req.signature_verified = true;
             req.body = request.body;
             signed_request_opt = std::move(req);
+        }
+        else
+        {
+            auto const x_matrix = federation::parse_x_matrix_authorization_header(request.access_token);
+            if (x_matrix.has_value())
+            {
+                auto req = federation::SignedFederationRequest{};
+                req.method = request.method;
+                req.target = request.target;
+                req.origin = x_matrix->origin;
+                // The signed request object binds the destination to this server's
+                // own name; the verifier must rebuild the payload with our name,
+                // not the (untrusted) header claim, or a request signed for a
+                // different server would verify here.
+                req.destination = runtime.config.server().server_name;
+                req.key_id = x_matrix->key_id;
+                req.signature = x_matrix->signature;
+                req.now_ts = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                            std::chrono::system_clock::now().time_since_epoch())
+                                                            .count());
+                req.canonical_json_verified = true;
+                req.body = request.body;
+                signed_request_opt = std::move(req);
+            }
         }
         if (!signed_request_opt.has_value())
         {

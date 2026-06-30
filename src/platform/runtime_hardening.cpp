@@ -5,6 +5,7 @@
 
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
+#include "merovingian/platform/seccomp_hardening.hpp"
 
 #include <algorithm>
 #include <string>
@@ -539,6 +540,38 @@ auto apply_runtime_hardening_controls(RuntimeHardeningProfile const& profile) ->
     // Portable profile: service-manager units apply privilege drop and filesystem
     // restrictions; the process only validates that the plan documents them.
     return accept();
+}
+
+auto apply_worker_hardening() -> HardeningPlanDecision
+{
+#ifdef __linux__
+    // Order matters: each control is fail-closed. The worker has already read
+    // its config + master-key file and validated the IPC fd before this is
+    // called, and the worker seccomp allowlist still permits open() (needed for
+    // the DB file the event loop opens next), so installing the filter here
+    // does not block subsequent startup.
+    if (!apply_linux_core_dump_policy())
+    {
+        return reject("worker hardening: failed to apply core dump policy");
+    }
+    if (!apply_linux_no_new_privs())
+    {
+        return reject("worker hardening: failed to apply PR_SET_NO_NEW_PRIVS");
+    }
+    if (!apply_linux_capability_bounding_set())
+    {
+        return reject("worker hardening: failed to drop capability bounding set");
+    }
+    if (!apply_worker_seccomp_filter())
+    {
+        return reject("worker hardening: failed to install worker seccomp filter");
+    }
+    return accept();
+#else
+    // seccomp-bpf is Linux-only; on other platforms the worker hardening
+    // sequence is a no-op, mirroring apply_seccomp_filter()'s behaviour.
+    return accept();
+#endif
 }
 
 } // namespace merovingian::platform

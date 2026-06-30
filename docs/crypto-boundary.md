@@ -27,6 +27,30 @@ implementing custom cryptographic primitives.
 - Sign-back IPC channel for the out-of-process federation worker: the worker
   delegates Ed25519 signing to the main process over the encrypted IPC channel
   via `IpcEd25519Provider`; the private key never enters the worker address space.
+- Master-key-authenticated IPC key exchange (#318): both the main process and the
+  worker derive the same 32-byte IPC auth key from the operator master-key file
+  (the same material used for at-rest signing-secret encryption and v4
+  access-token keys) via a domain-separated label `merovingian:ipc-channel-auth:1`
+  (distinct from the v3/v4 access-token HMAC labels). Each side MACs the other's
+  ephemeral `crypto_kx` public key (and its role) with `crypto_auth` before
+  deriving session keys, so a local process that reaches the inherited `AF_UNIX`
+  fd without the master key cannot complete the handshake or inject AEAD frames.
+  The auth key is wiped with `sodium_memzero` after the handshake.
+- Verified-identity IPC forwarding (#323): the main process verifies the inbound
+  peer X-Matrix signature and forwards only the verified identity
+  (`origin`/`key_id`/`sig_verified`) to the worker; the raw peer `access_token`
+  and `Authorization`/`X-Matrix` headers are stripped from the `fed_request` frame
+  and never cross IPC, so a compromised worker cannot harvest or replay peer
+  homeserver credentials. The outbound `Authorization` header that does cross IPC
+  is our own request-bound X-Matrix signature (not a reusable peer credential);
+  the signing secret itself never enters the worker (#317).
+- The outbound signing path keeps the server signing secret in a `core::SecretBuffer`
+  or a borrowing `std::span<std::uint8_t const>`, never a `std::string`. `make_federation_signature`,
+  `OutboundCall::secret_key`, `DispatchWorkerConfig::secret_key`, and `perform_sync_outbound_call`
+  accept a span; production call sites pass `signing_secret_key.bytes()` directly, and
+  `DispatchWorkerConfig::secret_key` owns an mlocked `SecretBuffer` copy constructed from
+  that span. This removes the `std::string{reinterpret_cast<…>(…bytes().data()…)}` copies that
+  left the key unpinned and unzeroised on the heap.
 - Validation for Ed25519 public-key shape, signature shape, and key IDs.
 - Bounded random request-size validation.
 - Event-signing integration tests using deterministic provider doubles.
@@ -53,7 +77,11 @@ persisted rows.
   and is zeroised when the buffer is destroyed or moved-from. The wipe is non-elidable
   (`sodium_munlock`/`sodium_memzero`), and custom move-ctor/move-assign transfer the
   mlock to the destination while wiping the source, so the secret is never duplicated
-  in memory and never left pinned in a moved-from object.
+  in memory and never left pinned in a moved-from object. The outbound federation
+  signing path (`make_federation_signature`, `OutboundCall`, `DispatchWorkerConfig`,
+  `perform_sync_outbound_call`) consumes the key as a borrowing span off the
+  `SecretBuffer` (or an owned `SecretBuffer` copy in the dispatch worker), so the key
+  is never copied into an unpinned, unzeroised `std::string` to sign a request.
 
 The runtime signing key is generated using `crypto_sign_keypair`, which produces
 a cryptographically random keypair. When `security.secrets.master_key_file` is

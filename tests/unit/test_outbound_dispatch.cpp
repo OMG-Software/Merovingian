@@ -48,7 +48,8 @@ namespace
     auto config = merovingian::federation::DispatchWorkerConfig{};
     config.origin = "example.org";
     config.key_id = "ed25519:auto";
-    config.secret_key = merovingian::federation::test::keypair_from_seed("outbound-dispatch-test").secret_key;
+    config.secret_key = merovingian::federation::test::secret_key_buffer(
+        merovingian::federation::test::keypair_from_seed("outbound-dispatch-test"));
     config.max_queue_depth = 64U;
     config.max_retries = 2U;
     config.idle_poll = std::chrono::milliseconds{5};

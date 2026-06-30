@@ -4,6 +4,9 @@
 #include "merovingian/homeserver/worker_supervisor.hpp"
 
 #include "merovingian/core/file_descriptor.hpp"
+#include "merovingian/crypto/ipc_auth_key.hpp"
+#include "merovingian/crypto/master_key.hpp"
+#include "merovingian/homeserver/worker_env.hpp"
 #include "merovingian/observability/logger.hpp"
 
 #include <array>
@@ -14,6 +17,7 @@
 #include <string>
 #include <thread>
 #include <utility>
+#include <vector>
 
 #include <spawn.h>
 #include <sys/socket.h>
@@ -39,11 +43,13 @@ namespace
 } // namespace
 
 WorkerSupervisor::WorkerSupervisor(std::string worker_path, std::string config_path,
-                                   std::uint32_t request_timeout_seconds, std::uint32_t shard_index)
+                                   std::uint32_t request_timeout_seconds, std::uint32_t shard_index,
+                                   std::string master_key_file)
     : worker_path_{std::move(worker_path)}
     , config_path_{std::move(config_path)}
     , request_timeout_seconds_{request_timeout_seconds}
     , shard_index_{shard_index}
+    , master_key_file_{std::move(master_key_file)}
 {
 }
 
@@ -157,10 +163,14 @@ auto WorkerSupervisor::spawn_and_connect() -> void
     // Place client_fd at the fixed kWorkerIpcFd in the child.
     ::posix_spawn_file_actions_adddup2(&file_actions, client_fd.get(), kWorkerIpcFd);
 
+    // Minimal allowlist environment: PATH only (issue #330). The strings and
+    // pointer array live for the duration of the posix_spawn call below.
+    auto const worker_env = homeserver::build_minimal_worker_env();
+
     pid_t pid{-1};
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast) — posix_spawn argv is char* const*
-    auto const rc =
-        ::posix_spawn(&pid, worker_path_.c_str(), &file_actions, nullptr, const_cast<char* const*>(argv), nullptr);
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast) — posix_spawn argv/envp are char* const*
+    auto const rc = ::posix_spawn(&pid, worker_path_.c_str(), &file_actions, nullptr, const_cast<char* const*>(argv),
+                                  const_cast<char* const*>(worker_env.argv.data()));
     ::posix_spawn_file_actions_destroy(&file_actions);
 
     if (rc != 0)
@@ -171,7 +181,25 @@ auto WorkerSupervisor::spawn_and_connect() -> void
     client_fd.reset();
     worker_pid_ = pid;
 
-    auto new_channel = std::make_shared<ipc::IpcChannel>(std::move(server_fd), ipc::IpcChannel::Role::server);
+    // Derive the IPC auth key from the operator master-key file. Both this
+    // process and the worker read the same file and derive the same key, so
+    // the worker can authenticate the handshake without the key ever crossing
+    // the IPC boundary. Fail closed if the master key is unavailable: an
+    // unauthenticated handshake would let any peer inject AEAD frames.
+    auto const master_material = crypto::load_master_key_material(master_key_file_);
+    if (!master_material.has_value())
+    {
+        throw std::runtime_error{"ipc: master key file '" + master_key_file_ +
+                                 "' is unavailable; cannot authenticate worker IPC channel"};
+    }
+    auto const auth_key = crypto::derive_ipc_auth_key(*master_material);
+    if (!auth_key.has_value())
+    {
+        throw std::runtime_error{"ipc: failed to derive worker IPC auth key from master key file"};
+    }
+
+    auto new_channel =
+        std::make_shared<ipc::IpcChannel>(std::move(server_fd), ipc::IpcChannel::Role::server, *auth_key);
     if (request_handler_)
     {
         new_channel->set_request_handler(request_handler_);

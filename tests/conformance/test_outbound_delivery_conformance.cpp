@@ -47,12 +47,13 @@ auto const remote_dest = std::string{"remote.example.org"};
 auto const test_key_seed = std::string{"outbound-delivery-conformance"};
 auto const test_key_id = std::string{"ed25519:auto"};
 
-[[nodiscard]] auto local_secret_key() -> std::string
+[[nodiscard]] auto local_keypair() -> merovingian::federation::test::SigningKeypair
 {
-    return merovingian::federation::test::keypair_from_seed(test_key_seed).secret_key;
+    return merovingian::federation::test::keypair_from_seed(test_key_seed);
 }
 
-[[nodiscard]] auto make_test_call(std::string_view transaction_id, std::string_view body)
+[[nodiscard]] auto make_test_call(std::string_view transaction_id, std::string_view body,
+                                  merovingian::federation::test::SigningKeypair const& kp)
     -> merovingian::federation::OutboundCall
 {
     auto txn = merovingian::federation::OutboundTransaction{};
@@ -69,7 +70,9 @@ auto const test_key_id = std::string{"ed25519:auto"};
     call.resolved_port = 8448U;
     call.pinned_addresses = {"203.0.113.1"};
     call.key_id = test_key_id;
-    call.secret_key = local_secret_key();
+    // Borrow the keypair's secret key as a span — kp must outlive the call, which
+    // each scenario guarantees by holding kp in the enclosing GIVEN scope.
+    call.secret_key = merovingian::federation::test::secret_key_span(kp);
     return call;
 }
 
@@ -412,7 +415,8 @@ SCENARIO("build_outbound_request produces a PUT request to the correct federatio
     GIVEN("a prepared outbound call for transaction txn_abc")
     {
         auto const body = std::string{R"({"origin":"local.example.org","origin_server_ts":1,"pdus":[]})"};
-        auto const call = make_test_call("txn_abc", body);
+        auto const kp = local_keypair();
+        auto const call = make_test_call("txn_abc", body, kp);
 
         WHEN("the outbound request is built")
         {
@@ -463,7 +467,8 @@ SCENARIO("build_outbound_request carries an Authorization X-Matrix header", "[fe
     GIVEN("a prepared outbound call")
     {
         auto const body = std::string{R"({"origin":"local.example.org","origin_server_ts":1,"pdus":[]})"};
-        auto const call = make_test_call("txn_xmatrix", body);
+        auto const kp = local_keypair();
+        auto const call = make_test_call("txn_xmatrix", body, kp);
 
         WHEN("the outbound request is built")
         {
@@ -506,7 +511,8 @@ SCENARIO("X-Matrix Authorization header contains origin, destination, key, and s
     GIVEN("a prepared outbound call for local to remote")
     {
         auto const body = std::string{R"({"origin":"local.example.org","origin_server_ts":1,"pdus":[]})"};
-        auto const call = make_test_call("txn_fields", body);
+        auto const kp = local_keypair();
+        auto const call = make_test_call("txn_fields", body, kp);
 
         WHEN("the outbound request is built")
         {

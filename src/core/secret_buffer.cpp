@@ -22,6 +22,17 @@ SecretBuffer::SecretBuffer(std::size_t size)
     }
 }
 
+SecretBuffer::SecretBuffer(std::span<std::uint8_t const> bytes)
+    : m_buffer(bytes.begin(), bytes.end())
+{
+    // Copy then pin: the source span may live in an unpinned std::string or a
+    // caller-owned buffer, so this owner takes its own mlocked, zeroised copy.
+    if (!m_buffer.empty())
+    {
+        m_mlocked = sodium_mlock(m_buffer.data(), m_buffer.size()) == 0;
+    }
+}
+
 SecretBuffer::SecretBuffer(SecretBuffer&& other) noexcept
     : m_buffer(std::move(other.m_buffer))
     , m_mlocked(std::exchange(other.m_mlocked, false))

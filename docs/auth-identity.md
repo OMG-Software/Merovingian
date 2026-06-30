@@ -50,9 +50,19 @@ production-gated.
 - Login failures for unknown users, wrong passwords, and locked accounts
   collapse to the same external `invalid login` result while still recording
   the internal rejection reason in audit logs.
-- Newly issued access and refresh tokens are persisted as keyed
-  `token-hash:v3:` digests derived from runtime secret material; token lookup
-  still accepts legacy `token-hash:v2:` rows during migration.
+- Newly issued access and refresh tokens are persisted as keyed digests derived
+  from the operator's master key file via domain-separated BLAKE2b. With a master
+  key configured, issuance uses the `token-hash:v4:` scheme; the legacy
+  `token-hash:v3:` scheme is retained only for validation and is itself now
+  master-key-derived (distinct domain separator `merovingian:access-token-hmac:legacy-v3:1`)
+  — it is no longer backed by the Ed25519 signing seed (issue #322, cryptographic
+  key separation). **Breaking (v0.10.9):** pre-#322 `token-hash:v3:` hashes were
+  derived from the Ed25519 signing seed and no longer validate under the new
+  master-key-derived v3 key; affected sessions fail closed and must re-login,
+  after which they are issued v4 tokens. Without a master key configured, both
+  v3 and v4 are unavailable and issuance falls back to the unkeyed
+  `token-hash:v2:` hash so local operations keep working — configure a master
+  key for hardened token hashing (the federation worker already requires one).
 - Client-server auth/device/key actions append durable audit rows without
   logging plaintext credentials, bearer tokens, or key payloads.
 - Unit coverage for identity validation, account lock/suspension behavior, password policy, token activity, and log redaction.

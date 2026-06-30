@@ -30,6 +30,16 @@ struct LocalHttpRequest final
     // this value with the leftmost X-Forwarded-For address before
     // constructing the per-IP rate-limit bucket key.
     std::string remote_addr{};
+    // #323: when sig_verified is true, the X-Matrix request signature was
+    // already verified by the main process over the authenticated IPC channel
+    // and verified_origin/verified_key_id carry the authenticated peer identity.
+    // access_token is empty in that case and Authorization headers are stripped
+    // from `headers` before the frame crosses IPC, so a compromised worker
+    // cannot harvest the peer's reusable credential. The worker builds a
+    // SignedFederationRequest directly from these fields and skips re-verification.
+    bool sig_verified{false};
+    std::string verified_origin{};
+    std::string verified_key_id{};
 };
 
 struct LocalHttpResponse final

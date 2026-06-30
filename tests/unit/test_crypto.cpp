@@ -11,6 +11,7 @@
 
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 
 #include <sodium.h>
@@ -447,6 +448,84 @@ SCENARIO("TokenHmacKey fails closed with empty material", "[crypto][token_key]")
             THEN("derivation is rejected")
             {
                 REQUIRE_FALSE(key.has_value());
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// derive_token_hmac_key_v3 — issue #322 key separation
+// ---------------------------------------------------------------------------
+// The legacy v3 access-token HMAC key MUST be derived from the operator's
+// master key (NOT the Ed25519 signing seed), using a domain separator distinct
+// from the v4 key. This guarantees (a) v3 and v4 keys are independent and
+// (b) the v3 key has no relationship to the Ed25519 seed that previously backed
+// it. Existing seed-derived v3 hashes are invalidated by this change; affected
+// sessions must re-login and are upgraded to v4.
+SCENARIO("derive_token_hmac_key_v3 is domain-separated from v4 and from the Ed25519 seed",
+         "[crypto][token_key][security]")
+{
+    GIVEN("master key material, an Ed25519-shaped seed, and a token")
+    {
+        auto const material = std::vector<std::uint8_t>(32U, 0xABU);
+        auto const seed = std::vector<std::uint8_t>(crypto_sign_SECRETKEYBYTES, 0x11U);
+        auto const token = std::vector<std::uint8_t>{'m', 'v', 's', '_', 't', 'o', 'k', 'e', 'n'};
+
+        WHEN("v3 and v4 keys are derived and the token is hashed under each key and under the raw seed")
+        {
+            auto const v3_key = merovingian::crypto::derive_token_hmac_key_v3(material);
+            auto const v4_key = merovingian::crypto::derive_token_hmac_key(material);
+            REQUIRE(v3_key.has_value());
+            REQUIRE(v4_key.has_value());
+
+            // Old (pre-#322) v3 HMAC key: the first 32 bytes of the Ed25519 seed.
+            auto old_seed_key = std::array<unsigned char, crypto_generichash_KEYBYTES>{};
+            std::copy_n(seed.begin(), crypto_generichash_KEYBYTES, old_seed_key.begin());
+
+            auto hash_under = [](std::vector<std::uint8_t> const& tok, std::span<unsigned char const> key) {
+                auto digest = std::array<unsigned char, 32U>{};
+                std::ignore =
+                    crypto_generichash(digest.data(), digest.size(), tok.data(), tok.size(), key.data(), key.size());
+                return digest;
+            };
+            auto const v3_hash = hash_under(token, v3_key->bytes);
+            auto const v4_hash = hash_under(token, v4_key->bytes);
+            auto const old_seed_hash = hash_under(token, old_seed_key);
+
+            THEN("the v3 key differs from the v4 key and from the raw seed key")
+            {
+                // Spec MUST (#322): full key separation from the Ed25519 seed.
+                REQUIRE(v3_key->bytes != old_seed_key);
+                // Domain separation: v3 and v4 derive independent keys from the same master material.
+                REQUIRE(v3_key->bytes != v4_key->bytes);
+                // Consequently the token hashes under each key are all distinct.
+                REQUIRE(v3_hash != v4_hash);
+                REQUIRE(v3_hash != old_seed_hash);
+            }
+        }
+    }
+}
+
+SCENARIO("derive_token_hmac_key_v3 is deterministic and fails closed on empty material",
+         "[crypto][token_key][security]")
+{
+    GIVEN("two equal master key byte strings and one empty string")
+    {
+        auto const material = std::vector<std::uint8_t>{0x01U, 0x02U, 0x03U, 0x04U, 0x05U};
+        auto const empty = std::vector<std::uint8_t>{};
+
+        WHEN("v3 keys are derived")
+        {
+            auto const key_a = merovingian::crypto::derive_token_hmac_key_v3(material);
+            auto const key_b = merovingian::crypto::derive_token_hmac_key_v3(material);
+            auto const key_empty = merovingian::crypto::derive_token_hmac_key_v3(empty);
+
+            THEN("identical material yields identical keys and empty material is rejected")
+            {
+                REQUIRE(key_a.has_value());
+                REQUIRE(key_b.has_value());
+                REQUIRE(key_a->bytes == key_b->bytes);
+                REQUIRE_FALSE(key_empty.has_value());
             }
         }
     }

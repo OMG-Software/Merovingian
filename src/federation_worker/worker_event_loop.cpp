@@ -3,6 +3,8 @@
 
 #include "worker_event_loop.hpp"
 
+#include "merovingian/crypto/ipc_auth_key.hpp"
+#include "merovingian/crypto/master_key.hpp"
 #include "merovingian/events/event.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
@@ -19,7 +21,6 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
-#include <cstdio>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -35,113 +36,11 @@ namespace merovingian::federation_worker
 namespace
 {
 
-    // ---- Minimal JSON helpers (same schema as federation_proxy.cpp) -------------
-
-    auto json_str(std::string_view s) -> std::string
-    {
-        auto result = std::string{};
-        result.reserve(s.size() + 2U);
-        result += '"';
-        for (auto const raw_ch : s)
-        {
-            auto const ch = static_cast<unsigned char>(raw_ch);
-            switch (ch)
-            {
-            case '"':
-                result += "\\\"";
-                break;
-            case '\\':
-                result += "\\\\";
-                break;
-            case '\b':
-                result += "\\b";
-                break;
-            case '\f':
-                result += "\\f";
-                break;
-            case '\n':
-                result += "\\n";
-                break;
-            case '\r':
-                result += "\\r";
-                break;
-            case '\t':
-                result += "\\t";
-                break;
-            default:
-                if (ch < 0x20U)
-                {
-                    char buf[8];
-                    std::snprintf(buf, sizeof(buf), "\\u%04x", static_cast<unsigned>(ch));
-                    result += buf;
-                }
-                else
-                {
-                    result += static_cast<char>(ch);
-                }
-                break;
-            }
-        }
-        result += '"';
-        return result;
-    }
-
-    auto json_get_str(std::string_view json, std::string_view key) -> std::string
-    {
-        auto const needle = std::string{"\""} + std::string{key} + "\":\"";
-        auto const pos = json.find(needle);
-        if (pos == std::string_view::npos)
-        {
-            return {};
-        }
-        auto i = pos + needle.size();
-        auto result = std::string{};
-        while (i < json.size())
-        {
-            auto const ch = json[i];
-            if (ch == '"')
-            {
-                break;
-            }
-            if (ch == '\\' && i + 1 < json.size())
-            {
-                ++i;
-                switch (json[i])
-                {
-                case '"':
-                    result += '"';
-                    break;
-                case '\\':
-                    result += '\\';
-                    break;
-                case 'b':
-                    result += '\b';
-                    break;
-                case 'f':
-                    result += '\f';
-                    break;
-                case 'n':
-                    result += '\n';
-                    break;
-                case 'r':
-                    result += '\r';
-                    break;
-                case 't':
-                    result += '\t';
-                    break;
-                default:
-                    result += json[i];
-                    break;
-                }
-            }
-            else
-            {
-                result += ch;
-            }
-            ++i;
-        }
-        return result;
-    }
+    // ---- JSON helpers --------------------------------------------------------
+    // The pdu_ingest frame uses the same JSON schema as the federation IPC
+    // frames. Rather than keep a second hand-rolled parser here (which shared
+    // the escaped-quote/substring bug of issue #320), route through the shared
+    // canonicaljson-based helpers in merovingian::ipc.
 
     // Serialize an InboundPduEnvelope for the pdu_ingest IPC call to main.
     auto serialize_pdu_ingest(federation::InboundPduEnvelope const& env) -> std::string
@@ -149,19 +48,19 @@ namespace
         auto result = std::string{};
         result.reserve(512U + env.json.size());
         result += R"({"type":"pdu_ingest","event_id":)";
-        result += json_str(env.event_id);
+        result += ipc::ipc_json_str(env.event_id);
         result += R"(,"room_id":)";
-        result += json_str(env.room_id);
+        result += ipc::ipc_json_str(env.room_id);
         result += R"(,"room_version":)";
-        result += json_str(env.room_version);
+        result += ipc::ipc_json_str(env.room_version);
         result += R"(,"sender":)";
-        result += json_str(env.sender);
+        result += ipc::ipc_json_str(env.sender);
         result += R"(,"event_type":)";
-        result += json_str(env.event_type);
+        result += ipc::ipc_json_str(env.event_type);
         if (env.state_key.has_value())
         {
             result += R"(,"state_key":)";
-            result += json_str(*env.state_key);
+            result += ipc::ipc_json_str(*env.state_key);
         }
         result += R"(,"origin_server_ts":)";
         result += std::to_string(env.origin_server_ts);
@@ -176,7 +75,7 @@ namespace
                 result += ',';
             }
             first = false;
-            result += json_str(id);
+            result += ipc::ipc_json_str(id);
         }
         result += R"(],"prev_event_ids":[)";
         first = true;
@@ -187,7 +86,7 @@ namespace
                 result += ',';
             }
             first = false;
-            result += json_str(id);
+            result += ipc::ipc_json_str(id);
         }
         result += R"(],"signatures":[)";
         first = true;
@@ -199,15 +98,15 @@ namespace
             }
             first = false;
             result += R"({"sn":)";
-            result += json_str(sig.server_name);
+            result += ipc::ipc_json_str(sig.server_name);
             result += R"(,"ki":)";
-            result += json_str(sig.key_id);
+            result += ipc::ipc_json_str(sig.key_id);
             result += R"(,"sig":)";
-            result += json_str(sig.signature);
+            result += ipc::ipc_json_str(sig.signature);
             result += '}';
         }
         result += R"(],"json":)";
-        result += json_str(env.json);
+        result += ipc::ipc_json_str(env.json);
         result += '}';
         return result;
     }
@@ -216,7 +115,7 @@ namespace
     auto deserialize_pdu_ingest_result(std::string_view json) -> federation::PduIngestionResult
     {
         auto result = federation::PduIngestionResult{};
-        auto const status_str = json_get_str(json, "status");
+        auto const status_str = ipc::ipc_json_get_str(json, "status");
         if (status_str == "accepted")
         {
             result.status = federation::PduIngestionStatus::accepted;
@@ -237,7 +136,7 @@ namespace
         {
             result.status = federation::PduIngestionStatus::internal_error;
         }
-        result.reason = json_get_str(json, "reason");
+        result.reason = ipc::ipc_json_get_str(json, "reason");
         return result;
     }
 
@@ -259,10 +158,30 @@ auto WorkerEventLoop::shard_index() const noexcept -> std::uint32_t
 
 auto WorkerEventLoop::run() -> void
 {
+    // Derive the IPC auth key from the operator master-key file so the worker
+    // can authenticate the crypto_kx handshake. The main process derives the
+    // same key from the same file; the key never crosses the IPC boundary.
+    // The worker seccomp filter (issue #319) is installed in main() before
+    // run(), but it allows open(), so reading the master-key file here works
+    // under the filter. Fail closed if the master key is unavailable.
+    auto const master_material = crypto::load_master_key_material(config_.security().secrets.master_key_file);
+    if (!master_material.has_value())
+    {
+        LOG_CRITICAL("Federation worker: master key file '" + config_.security().secrets.master_key_file +
+                     "' is unavailable; cannot authenticate IPC channel");
+        return;
+    }
+    auto const auth_key = crypto::derive_ipc_auth_key(*master_material);
+    if (!auth_key.has_value())
+    {
+        LOG_CRITICAL("Federation worker: failed to derive IPC auth key from master key file");
+        return;
+    }
+
     // Create the IPC channel first; the blocking key exchange completes here
     // before any runtime signing operation can be requested. The worker is the
     // client side of the exchange.
-    auto channel = std::make_unique<ipc::IpcChannel>(std::move(ipc_fd_), ipc::IpcChannel::Role::client);
+    auto channel = std::make_unique<ipc::IpcChannel>(std::move(ipc_fd_), ipc::IpcChannel::Role::client, *auth_key);
     auto* channel_ptr = channel.get();
 
     // Delegate all Ed25519 signing to the main process so the Matrix signing
@@ -316,7 +235,7 @@ auto WorkerEventLoop::run() -> void
     };
 
     channel->set_request_handler([&runtime, channel_ptr, &pool, signal_shutdown](std::uint64_t id, std::string json) {
-        auto const type = json_get_str(json, "type");
+        auto const type = ipc::ipc_json_get_str(json, "type");
         if (type == "fed_request")
         {
             // Dispatch to pool; do not block the reader thread.

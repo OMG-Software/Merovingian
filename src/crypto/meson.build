@@ -1,6 +1,8 @@
 crypto_sources = files(
   'constant_time.cpp',
   'ed25519.cpp',
+  'ipc_auth_key.cpp',
+  'master_key.cpp',
   'random.cpp',
   'secret_box.cpp',
   'signing_service.cpp',

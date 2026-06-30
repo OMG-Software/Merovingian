@@ -141,19 +141,56 @@ every other inherited fd is closed by the `posix_spawn` file actions.
 The channel is hardened against a local attacker who gains access to a
 separate process on the same host:
 
-* **Ephemeral encryption**: every session uses a fresh `crypto_kx_keypair`
-  pair and `crypto_secretstream_xchacha20poly1305` AEAD. The session keys
-  are never stored or logged; a captured IPC stream is useless after the
-  session ends.
-* **No secrets in transit**: the Matrix signing key is never forwarded.
-  The worker reads it from the database at startup under the same access
-  control that governs the main process. Client access tokens are stripped
-  from every forwarded request before serialisation.
+* **Authenticated ephemeral encryption** (#318): every session uses a fresh
+  `crypto_kx_keypair` pair and `crypto_secretstream_xchacha20poly1305` AEAD, and
+  the key exchange itself is authenticated — both processes derive the same
+  32-byte IPC auth key from the operator master-key file (domain-separated label
+  `merovingian:ipc-channel-auth:1`) and MAC each other's ephemeral public keys
+  (and role) with `crypto_auth` before deriving session keys. A local process
+  that reaches the inherited fd without the master key cannot complete the
+  handshake or inject AEAD frames. The session keys are never stored or logged;
+  a captured IPC stream is useless after the session ends.
+* **No peer credentials in transit** (#323): the main process verifies the
+  inbound X-Matrix signature itself and forwards only the verified peer identity
+  (`origin`/`key_id`/`sig_verified`); the raw peer `access_token` and
+  `Authorization`/`X-Matrix` headers are stripped from the `fed_request` frame and
+  never cross IPC, so a compromised worker cannot harvest or replay peer
+  homeserver credentials. The Ed25519 signing key is never forwarded either —
+  the worker delegates signing to the main process over the same channel via
+  `IpcEd25519Provider`, so the private key never enters the worker address space
+  (#317). (The outbound `Authorization` header that does cross IPC is our own
+  request-bound X-Matrix signature, not a reusable peer credential.)
 * **No filesystem socket path**: the transport is an `AF_UNIX` socket pair
   with no pathname in the filesystem namespace, so there is no socket file
   to impersonate or intercept via filesystem access.
 * **SOCK_CLOEXEC**: the socket pair is created `SOCK_CLOEXEC` so it is
   not inherited by any further child processes.
+* **Minimal worker environment** (#330): the worker is spawned with an
+  explicit minimal environment (`PATH` only) rather than inheriting the parent
+  environment, so no parent secret leaked via environment reaches the
+  lower-privilege worker child.
+* **Bounded IPC frames** (#325): the per-frame cap is 16 MiB by default
+  (configurable via `federation_worker.max_ipc_frame_bytes`), lowered from the
+  prior 50 MiB cap to bound memory-exhaustion DoS across concurrent workers;
+  oversize frames are logged and propagated as send/request failures rather
+  than silently dropped.
+* **Worker-specific seccomp + runtime hardening** (#319): the worker applies
+  `PR_SET_NO_NEW_PRIVS`, drops capabilities, sets resource limits, and installs
+  a stricter seccomp-bpf filter (on top of the inherited server filter) that
+  denies `execve`/`execveat`/spawn-oriented `clone` — the worker never execs or
+  spawns, so those syscalls are unreachable in normal operation and kill the
+  worker on attempted abuse.
+* **ASan exit-time leak check disabled in the worker (#319):** the worker
+  filter denies `ptrace` — an escalation primitive a compromised worker must
+  never possess. AddressSanitizer's exit-time LeakSanitizer suspends all
+  threads with `ptrace` (`StopTheWorld`) before scanning; with `ptrace`
+  denied the tracer is killed and the scan spins forever, so the worker would
+  never exit and the supervisor's `waitpid` would hang. The worker therefore
+  defines `__asan_default_options()` returning `detect_leaks=0` (guarded to
+  ASan builds, C linkage at global scope). This affects only sanitised test
+  builds — production builds compile the guard out — and only the worker; the
+  main process retains full ASan/LSan coverage, and the worker's correctness
+  is covered by its own unit and integration tests.
 * **WorkerSupervisor isolation**: the supervisor thread monitors the child
   pid with `waitpid`. If the worker exits unexpectedly the supervisor
   closes the channel and respawns — the main process never acts on a

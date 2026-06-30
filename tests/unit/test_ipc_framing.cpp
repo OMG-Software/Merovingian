@@ -10,6 +10,7 @@
 
 #include "merovingian/core/file_descriptor.hpp"
 #include "merovingian/crypto/ed25519.hpp"
+#include "merovingian/crypto/ipc_auth_key.hpp"
 #include "merovingian/events/event_signer.hpp"
 #include "merovingian/ipc/channel.hpp"
 #include "merovingian/ipc/ipc_ed25519_provider.hpp"
@@ -19,9 +20,12 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
+#include <string_view>
 #include <thread>
 
 #include <sodium.h>
@@ -51,6 +55,17 @@ struct ChannelPair final
     std::unique_ptr<merovingian::ipc::IpcChannel> server{};
     std::unique_ptr<merovingian::ipc::IpcChannel> client{};
 };
+
+// Derive a deterministic IpcAuthKey from fixed test material so both sides of
+// a test channel pair share the same authenticated-handshake key without
+// touching the filesystem.
+[[nodiscard]] auto make_test_auth_key(std::string_view seed = "ipc-auth-test-key") -> merovingian::crypto::IpcAuthKey
+{
+    auto const key = merovingian::crypto::derive_ipc_auth_key(
+        std::span<std::uint8_t const>{reinterpret_cast<std::uint8_t const*>(seed.data()), seed.size()});
+    REQUIRE(key.has_value());
+    return *key;
+}
 
 // Extract a JSON string value for `key`. Returns empty on failure.
 [[nodiscard]] auto json_get_str(std::string_view json, std::string_view key) -> std::string
@@ -118,11 +133,14 @@ struct ChannelPair final
     auto server_ex = std::exception_ptr{};
     auto client_ex = std::exception_ptr{};
 
+    // Both sides must share the same IpcAuthKey for the authenticated handshake.
+    auto const auth_key = make_test_auth_key();
+
     auto t1 = std::thread{[&]() {
         try
         {
-            pair.server = std::make_unique<merovingian::ipc::IpcChannel>(std::move(server_fd),
-                                                                         merovingian::ipc::IpcChannel::Role::server);
+            pair.server = std::make_unique<merovingian::ipc::IpcChannel>(
+                std::move(server_fd), merovingian::ipc::IpcChannel::Role::server, auth_key);
         }
         catch (...)
         {
@@ -132,8 +150,8 @@ struct ChannelPair final
     auto t2 = std::thread{[&]() {
         try
         {
-            pair.client = std::make_unique<merovingian::ipc::IpcChannel>(std::move(client_fd),
-                                                                         merovingian::ipc::IpcChannel::Role::client);
+            pair.client = std::make_unique<merovingian::ipc::IpcChannel>(
+                std::move(client_fd), merovingian::ipc::IpcChannel::Role::client, auth_key);
         }
         catch (...)
         {
@@ -148,6 +166,46 @@ struct ChannelPair final
     REQUIRE(pair.server != nullptr);
     REQUIRE(pair.client != nullptr);
     return pair;
+}
+
+// Construct a server and client with MISMATCHED IpcAuthKeys. Used to prove the
+// authenticated handshake fails closed: construction must throw rather than
+// silently establishing an unauthenticated channel.
+[[nodiscard]] auto make_mismatched_channel_pair() -> std::pair<std::exception_ptr, std::exception_ptr>
+{
+    auto [server_fd, client_fd] = make_socketpair();
+    auto server_ex = std::exception_ptr{};
+    auto client_ex = std::exception_ptr{};
+    auto server_ptr = std::unique_ptr<merovingian::ipc::IpcChannel>{};
+    auto client_ptr = std::unique_ptr<merovingian::ipc::IpcChannel>{};
+    auto const server_key = make_test_auth_key("server-only-key");
+    auto const client_key = make_test_auth_key("client-only-key");
+
+    auto t1 = std::thread{[&]() {
+        try
+        {
+            server_ptr = std::make_unique<merovingian::ipc::IpcChannel>(
+                std::move(server_fd), merovingian::ipc::IpcChannel::Role::server, server_key);
+        }
+        catch (...)
+        {
+            server_ex = std::current_exception();
+        }
+    }};
+    auto t2 = std::thread{[&]() {
+        try
+        {
+            client_ptr = std::make_unique<merovingian::ipc::IpcChannel>(
+                std::move(client_fd), merovingian::ipc::IpcChannel::Role::client, client_key);
+        }
+        catch (...)
+        {
+            client_ex = std::current_exception();
+        }
+    }};
+    t1.join();
+    t2.join();
+    return {server_ex, client_ex};
 }
 
 } // namespace
@@ -174,6 +232,25 @@ SCENARIO("IpcChannel performs encrypted key exchange on construction", "[ipc][ch
 
             pair.server->stop();
             pair.client->stop();
+        }
+    }
+}
+
+SCENARIO("IpcChannel rejects a peer that lacks the shared IPC auth key", "[ipc][channel][security]")
+{
+    GIVEN("a socketpair where the server and client derive different IpcAuthKeys")
+    {
+        WHEN("both sides attempt the authenticated handshake")
+        {
+            auto const [server_ex, client_ex] = make_mismatched_channel_pair();
+
+            THEN("at least one side throws a runtime_error (fail-closed)")
+            {
+                // The MAC exchange is symmetric: the side that receives the
+                // wrong peer MAC throws. Exactly which side throws depends on
+                // scheduling, but the handshake must not silently succeed.
+                REQUIRE((server_ex != nullptr || client_ex != nullptr));
+            }
         }
     }
 }
@@ -345,7 +422,12 @@ SCENARIO("IpcChannel handles multiple concurrent requests with matching replies"
 
         pair.server->set_request_handler([server = pair.server.get()](std::uint64_t id, std::string json) {
             auto const id_str = std::to_string(id);
-            server->send_response(id, std::string{R"({"type":"echo","id":)"} + id_str + R"(,"json":)" + json + "}");
+            // The channel injects "id"/"reply_to" into every frame, so the body
+            // must NOT reuse those keys (canonicaljson rejects duplicate keys,
+            // which would make the client's reader_loop drop the reply). Echo
+            // the request id under a non-conflicting key instead.
+            server->send_response(id,
+                                  std::string{R"({"type":"echo","echoed_id":)"} + id_str + R"(,"json":)" + json + "}");
         });
         pair.server->start();
         pair.client->start();

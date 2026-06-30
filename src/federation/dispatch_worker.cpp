@@ -325,7 +325,10 @@ auto DispatchWorker::run_once() -> bool
     call.resolved_port = resolution->resolved_port;
     call.pinned_addresses = resolution->pinned_addresses;
     call.key_id = config_.key_id;
-    call.secret_key = config_.secret_key;
+    // Borrow the owned, mlocked signing key for the duration of this synchronous
+    // signing+send operation. The OutboundCall is stack-local and discarded
+    // before config_.secret_key can be released, so the span never dangles.
+    call.secret_key = config_.secret_key.bytes();
 
     auto& destination = find_or_create_destination(transaction.destination);
     auto const result = perform_outbound_transaction(client_, call, destination, now);

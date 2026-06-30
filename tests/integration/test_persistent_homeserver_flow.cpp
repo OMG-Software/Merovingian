@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "../federation_signing_test_support.hpp"
+#include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "../support/temp_directory.hpp"
 #include "merovingian/config/config.hpp"
@@ -26,6 +27,19 @@ namespace
 {
     auto security = merovingian::config::SecurityConfig{};
     merovingian::tests::enable_token_registration(security);
+    return {
+        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
+        merovingian::config::DatabaseConfig{},         security,
+        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+    };
+}
+
+[[nodiscard]] auto registration_enabled_config_with_master_key(std::string master_key_path)
+    -> merovingian::config::Config
+{
+    auto security = merovingian::config::SecurityConfig{};
+    merovingian::tests::enable_token_registration(security);
+    security.secrets.master_key_file = std::move(master_key_path);
     return {
         merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
         merovingian::config::DatabaseConfig{},         security,
@@ -318,9 +332,10 @@ SCENARIO("Persistent homeserver startup fails closed on schema mismatch", "[data
 SCENARIO("Persistent homeserver store records the client-server flow",
          "[database][homeserver][client-server][integration]")
 {
-    GIVEN("a started client-server runtime")
+    GIVEN("a started client-server runtime with a master key configured")
     {
-        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        auto started = merovingian::homeserver::start_client_server(
+            registration_enabled_config_with_master_key(merovingian::tests::master_key_file()));
         REQUIRE(started.started);
         auto& runtime = started.runtime;
 
@@ -373,11 +388,13 @@ SCENARIO("Persistent homeserver store records the client-server flow",
                     return t.revoked;
                 });
                 REQUIRE(revoked == 1U);
-                // Both tokens must use the v3 hash format.
-                auto const all_v3 = std::all_of(all_tokens.begin(), all_tokens.end(), [](auto const& t) {
-                    return t.token_hash.find("token-hash:v3:") == 0U;
+                // Both tokens must use the master-key-derived v4 hash format. With a master
+                // key configured (#322), v3/v4 are available and v4 is preferred; v3 is now
+                // master-key-derived (no longer the Ed25519 seed) and is not issued.
+                auto const all_v4 = std::all_of(all_tokens.begin(), all_tokens.end(), [](auto const& t) {
+                    return t.token_hash.find("token-hash:v4:") == 0U;
                 });
-                REQUIRE(all_v3);
+                REQUIRE(all_v4);
                 REQUIRE(runtime.homeserver.database.persistent_store.rooms.size() == 1U);
                 REQUIRE(runtime.homeserver.database.persistent_store.memberships.size() == 1U);
                 REQUIRE(runtime.homeserver.database.persistent_store.events.size() == 8U);

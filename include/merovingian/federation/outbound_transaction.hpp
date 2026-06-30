@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -54,8 +55,13 @@ struct OutboundCall final
     std::vector<std::string> pinned_addresses{};
     std::string key_id{};
     // Raw 64-byte libsodium Ed25519 secret key for this server's signing
-    // identity. Used to sign the X-Matrix Authorization header.
-    std::string secret_key{};
+    // identity, used to sign the X-Matrix Authorization header. Carried as a
+    // non-owning span: the caller (the runtime's SecretBuffer for synchronous
+    // calls, or DispatchWorkerConfig::secret_key for async dispatch) owns and
+    // outlives the signing operation, so the key is never copied into an
+    // unpinned std::string. build_outbound_request signs synchronously and
+    // discards the span before the owner can be released.
+    std::span<std::uint8_t const> secret_key{};
     std::uint32_t connect_timeout_seconds{10U};
     std::uint32_t total_timeout_seconds{60U};
 };

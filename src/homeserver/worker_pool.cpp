@@ -348,8 +348,8 @@ WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRunt
     workers_.reserve(count);
     for (auto i = std::uint32_t{0U}; i < count; ++i)
     {
-        auto supervisor =
-            std::make_unique<WorkerSupervisor>(worker_path_, config_path_, cfg_.request_timeout_seconds, i);
+        auto supervisor = std::make_unique<WorkerSupervisor>(worker_path_, config_path_, cfg_.request_timeout_seconds,
+                                                             i, runtime_.config.security().secrets.master_key_file);
 
         // Per-worker request handler: the lambda must respond on the channel
         // that received the request, so capture the supervisor reference.

@@ -5,6 +5,7 @@
 
 #include "merovingian/auth/identity.hpp"
 #include "merovingian/auth/session.hpp"
+#include "merovingian/crypto/master_key.hpp"
 #include "merovingian/crypto/token_key.hpp"
 #include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/observability/logger.hpp"
@@ -143,58 +144,26 @@ namespace
         return "token-hash:v2:" + to_hex(digest.data(), digest.size());
     }
 
-    // Load operator-supplied master key material from the configured file.
-    // Mirrors the loader in room_service.cpp; kept local to the auth boundary so
-    // the token HMAC key never leaves the crypto module.
-    [[nodiscard]] auto load_master_key_material(std::string_view path) -> std::optional<std::vector<std::uint8_t>>
-    {
-        if (path.empty())
-        {
-            return std::nullopt;
-        }
-        auto stream = std::ifstream{std::string{path}, std::ios::binary};
-        if (!stream)
-        {
-            return std::nullopt;
-        }
-        auto content = std::vector<std::uint8_t>{};
-        auto constexpr size_limit = std::size_t{4096U};
-        auto buffer = std::array<char, 1024U>{};
-        while (stream.good())
-        {
-            stream.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
-            auto const count = stream.gcount();
-            if (count <= 0)
-            {
-                break;
-            }
-            auto const added = static_cast<std::size_t>(count);
-            if (content.size() + added > size_limit)
-            {
-                return std::nullopt;
-            }
-            content.insert(content.end(), reinterpret_cast<std::uint8_t*>(buffer.data()),
-                           reinterpret_cast<std::uint8_t*>(buffer.data()) + added);
-        }
-        if (content.empty())
-        {
-            return std::nullopt;
-        }
-        return content;
-    }
+    // Master key material loading is shared with the federation worker process
+    // via crypto::load_master_key_material (declared in
+    // merovingian/crypto/master_key.hpp) so both processes derive the same keys
+    // from the same file without the material crossing the IPC boundary.
 
-    // v3 HMAC key: derived from the Ed25519 signing secret. Retained only for
-    // validating legacy tokens; new tokens MUST use the master-key-derived v4 key.
+    // v3 HMAC key: derived from the operator's master key file with a distinct
+    // domain separator from the v4 key (issue #322). Retained only for validating
+    // legacy tokens; new tokens MUST use the v4 key. Deriving v3 from the master
+    // key — instead of copying the Ed25519 signing seed — enforces key
+    // separation. This invalidates stored token-hash:v3: hashes; affected
+    // sessions re-login and are upgraded to v4 via upgrade_v3_access_token_to_v4.
+    // If no master key is configured, v3 hashing is unavailable (fail-closed).
     [[nodiscard]] auto token_hmac_key_v3(HomeserverRuntime const& runtime) -> std::optional<crypto::TokenHmacKey>
     {
-        if (!sodium_is_ready() || runtime.database.signing_secret_key.bytes().size() < crypto_generichash_KEYBYTES)
+        auto const material = crypto::load_master_key_material(runtime.config.security().secrets.master_key_file);
+        if (!material.has_value())
         {
             return std::nullopt;
         }
-        auto key = crypto::TokenHmacKey{};
-        std::copy_n(runtime.database.signing_secret_key.bytes().begin(), crypto_generichash_KEYBYTES,
-                    key.bytes.begin());
-        return key;
+        return crypto::derive_token_hmac_key_v3(*material);
     }
 
     // v4 HMAC key: derived from the operator's master key file, completely
@@ -202,7 +171,7 @@ namespace
     // v4 hashing is unavailable and the code falls back to v3/v2.
     [[nodiscard]] auto token_hmac_key_v4(HomeserverRuntime const& runtime) -> std::optional<crypto::TokenHmacKey>
     {
-        auto const material = load_master_key_material(runtime.config.security().secrets.master_key_file);
+        auto const material = crypto::load_master_key_material(runtime.config.security().secrets.master_key_file);
         if (!material.has_value())
         {
             return std::nullopt;
@@ -871,9 +840,11 @@ auto authenticated_user(HomeserverRuntime& runtime, std::string_view access_toke
                              "access_token.rejected", "<unknown>", "<unknown>", rejection_reason);
         return std::nullopt;
     }
-    // If the session still uses the legacy v3 hash, opportunistically rehash to
-    // the master-key-derived v4 hash on successful use. This transparently
-    // removes the signing-secret-derived key from the token path.
+    // If the session still uses a v3 hash, opportunistically rehash to the
+    // master-key-derived v4 hash on successful use. Post-#322 the v3 key is
+    // itself master-key-derived (no longer the Ed25519 seed); legacy seed-derived
+    // v3 hashes fail closed earlier and force a re-login. This path migrates any
+    // remaining v3 sessions (e.g. v3 hashes created under the new key) to v4.
     upgrade_v3_access_token_to_v4(runtime, access_token, session->access_token_hash);
     if (find_user(runtime.database, session->user_id) == nullptr)
     {
