@@ -447,6 +447,18 @@ jobs:
             export PKG_PATH="https://ftp.netbsd.org/pub/pkgsrc/packages/NetBSD/$(uname -m)/$(uname -r | sed 's/_.*//')/All/"
             /usr/sbin/pkg_add -U gdb || true
             if ! sh scripts/build-bsd.sh --builddir build; then
+                echo "::group::NetBSD Catch2 failure report (runtime logs filtered out)"
+                if [ -f build/meson-logs/testlog.txt ]; then
+                    # The unit test binary emits thousands of structured runtime
+                    # log lines (timestamp + <LEVEL> + module:) that bury Catch2's
+                    # own failure report. Drop those and the [netbsd-diag] markers
+                    # so what remains is Catch2 section headers, FAILED assertions,
+                    # and the test-case summary — i.e. the failing test name + file:line.
+                    grep -vE '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]+ \+[0-9]{4}  <(INFO|WARNING|ERROR|DEBUG|CRITICAL)>' build/meson-logs/testlog.txt \
+                        | grep -vE '^\[netbsd-diag\]' \
+                        | tail -n 150
+                fi
+                echo "::endgroup::"
                 echo "::group::NetBSD core backtraces"
                 for core in $(find build -name '*.core' 2>/dev/null); do
                     # NetBSD truncates the core name to the first 16 chars of the
