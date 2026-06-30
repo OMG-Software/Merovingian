@@ -6,6 +6,7 @@
 #include "merovingian/core/secret_buffer.hpp"
 #include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/database/persistent_store.hpp"
+#include "merovingian/federation/cached_server_discovery.hpp"
 #include "merovingian/federation/dispatch_worker.hpp"
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/server_discovery.hpp"
@@ -174,6 +175,11 @@ struct HomeserverRuntime final
     std::function<trust_safety::PolicyServerHook(trust_safety::PolicySurface, std::string_view)>
         trust_safety_policy_server{};
     std::unique_ptr<federation::ServerDiscoveryNetwork> discovery_network{};
+    // TTL-bounded cache wrapping `discovery_network`. Non-null in the main
+    // process after start_runtime; null in the federation worker and in test
+    // harnesses that wire only the raw network. Callers MUST prefer this over
+    // `discovery_network` so repeated lookups skip the DNS cascade.
+    std::unique_ptr<federation::CachedServerDiscovery> cached_discovery{};
     std::unique_ptr<federation::DispatchWorker> dispatch_worker{};
     // Non-null when federation.worker.enabled = true. Intercepts inbound
     // federation requests and forwards them to the out-of-process worker.

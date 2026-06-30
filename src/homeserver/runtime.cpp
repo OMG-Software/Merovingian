@@ -657,6 +657,19 @@ auto start_runtime(RuntimeStartOptions opts) -> RuntimeStartResult
     runtime.federation = federation::make_federation_runtime_state(federation::make_runtime_federation_config(config));
     runtime.outbound_client = std::make_unique<http::OutboundClient>();
     runtime.discovery_network = federation::make_system_server_discovery_network();
+    if (runtime.discovery_network != nullptr)
+    {
+        // Wrap the raw network with a 60s TTL cache so repeated lookups for the
+        // same server name skip the .well-known + SRV + DNS cascade. A monotonic
+        // clock drives the TTL so a wall-clock jump cannot flush the cache or
+        // keep stale SSRF pins alive past their bound.
+        runtime.cached_discovery = std::make_unique<federation::CachedServerDiscovery>(
+            *runtime.discovery_network, std::uint64_t{60U * 1000U}, []() -> std::uint64_t {
+                return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                      std::chrono::steady_clock::now().time_since_epoch())
+                                                      .count());
+            });
+    }
     runtime.media_repository = media::make_local_media_repository(media::make_runtime_media_config(config));
     hydrate_media_repository(runtime.media_repository, runtime.database.persistent_store);
     // Tests run in a long-lived Catch2 process. Applying seccomp/pledge/unveil
