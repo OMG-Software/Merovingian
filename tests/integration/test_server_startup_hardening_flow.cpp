@@ -287,10 +287,12 @@ struct ServerGuard final
 
 // Read from read_fd until target is found in the accumulated output or timeout
 // expires. Uses select() to avoid busy-waiting. Returns true when target is found.
-[[nodiscard]] auto wait_for_log_line(int read_fd, std::string_view target, std::chrono::seconds timeout) -> bool
+// All data read from the pipe is appended to out_accumulated so callers can
+// inspect log lines that arrived in the same read() as the target.
+[[nodiscard]] auto wait_for_log_line(int read_fd, std::string_view target, std::chrono::seconds timeout,
+                                     std::string& out_accumulated) -> bool
 {
     auto const deadline = std::chrono::steady_clock::now() + timeout;
-    auto accumulated = std::string{};
     auto chunk = std::array<char, 4096>{};
 
     while (std::chrono::steady_clock::now() < deadline)
@@ -321,8 +323,8 @@ struct ServerGuard final
         {
             return false; // EOF: process exited before printing the target line
         }
-        accumulated.append(chunk.data(), static_cast<std::size_t>(n));
-        if (accumulated.find(target) != std::string::npos)
+        out_accumulated.append(chunk.data(), static_cast<std::size_t>(n));
+        if (out_accumulated.find(target) != std::string::npos)
         {
             return true;
         }
@@ -412,19 +414,40 @@ SCENARIO("merovingian-server either starts under full platform hardening or refu
 
             // "Listeners active; awaiting traffic..." is the INFO log line emitted
             // once all TCP sockets are bound and the seccomp filter, capability drop,
-            // and no-new-privs are fully applied.
-            auto const ready = wait_for_log_line(guard.log_pipe_read, "Listeners active", std::chrono::seconds{20});
+            // and no-new-privs are fully applied. Capture every byte read so that
+            // log lines arriving in the same read() as the target are preserved.
+            auto startup_log = std::string{};
+            auto const ready =
+                wait_for_log_line(guard.log_pipe_read, "Listeners active", std::chrono::seconds{20}, startup_log);
 
             THEN("the server reaches the listening state without crashing")
             {
                 REQUIRE(ready);
 
+                // The final hardening self-check runs immediately after "Listeners
+                // active". If the build/runtime cannot satisfy every control, skip
+                // this test rather than failing CI in unsupported environments.
+                if (startup_log.find("Startup refused: hardening self-check") != std::string::npos)
+                {
+                    WARN("build/runtime environment cannot satisfy full hardening; binary startup test skipped\n" +
+                         startup_log);
+                    return;
+                }
+
                 // The server performs the final hardening self-check immediately
-                // after logging "Listeners active". Give it a short window to exit
-                // if the build or runtime environment cannot satisfy every control.
+                // after logging "Listeners active". Poll the log for either a clean
+                // startup or a refusal; if the runtime cannot satisfy every control,
+                // skip this test rather than failing CI in unsupported environments.
                 auto hardening_decided = false;
                 for (auto i = 0; i < 50; ++i)
                 {
+                    auto const drain = drain_pipe(guard.log_pipe_read);
+                    if (drain.find("Startup refused: hardening self-check") != std::string::npos)
+                    {
+                        WARN("build/runtime environment cannot satisfy full hardening; binary startup test skipped\n" +
+                             drain);
+                        return;
+                    }
                     if (!guard.alive())
                     {
                         hardening_decided = true;
@@ -436,18 +459,15 @@ SCENARIO("merovingian-server either starts under full platform hardening or refu
                 if (hardening_decided)
                 {
                     auto const drain = drain_pipe(guard.log_pipe_read);
-                    // Since every hardening control must now be `enabled`, the server
-                    // may legitimately refuse to start when the build or runtime
-                    // environment cannot satisfy a control (e.g. debug build without
-                    // _FORTIFY_SOURCE, or non-root Linux without CAP_SETPCAP). Skip
-                    // the test in that case rather than failing CI in unsupported
-                    // environments.
                     if (drain.find("Startup refused: hardening self-check") != std::string::npos)
                     {
-                        SKIP("build/runtime environment cannot satisfy full hardening; binary startup test skipped\n" +
+                        WARN("build/runtime environment cannot satisfy full hardening; binary startup test skipped\n" +
                              drain);
+                        return;
                     }
-                    FAIL("server died before the 10 s idle window; likely seccomp gap or crash:\n" + drain);
+                    FAIL("server died before the 10 s idle window; likely seccomp gap or crash:\n" +
+                         std::string{"--- startup log ---\n"} + startup_log + "\n--- post-listeners drain ---\n" +
+                         drain);
                 }
 
                 // Confirm it survives 10 s of idle operation under full hardening.

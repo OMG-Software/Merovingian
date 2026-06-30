@@ -329,6 +329,10 @@ namespace
         ALLOW_SYSCALL(__NR_getrandom),
         ALLOW_SYSCALL(__NR_capget),
         ALLOW_SYSCALL(__NR_capset),
+        // ThreadSanitizer disables ASLR by calling personality(ADDR_NO_RANDOMIZE)
+        // during worker startup after exec. The child inherits the server's filter, so
+        // the syscall must be permitted for sanitizer builds to reach full handshake.
+        ALLOW_SYSCALL(__NR_personality),
 
         // ── Process identity ───────────────────────────────────────────────
         ALLOW_SYSCALL(__NR_getpid),

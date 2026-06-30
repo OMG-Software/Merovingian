@@ -215,6 +215,15 @@ and after `fork()`:
 | `membarrier` | — | glibc 2.31+ issues `MEMBARRIER_CMD_PRIVATE_EXPEDITED` from the `malloc` fast path on multi-processor systems. |
 | `getcpu` | — | Returns the running CPU/NUMA node; used by glibc's per-CPU TLS and `malloc` implementation. |
 
+**Runtime-instrumentation syscalls** — allowed because sanitiser-instrumented
+binaries use them after the filter is installed. The federation worker inherits the
+server's seccomp filter across `execve`, so any syscall the sanitizer runtime
+needs in the child must also be present:
+
+| Syscall | Nr (x86-64/aarch64) | Reason |
+| --- | --- | --- |
+| `personality` | 135 | ThreadSanitizer calls `personality(ADDR_NO_RANDOMIZE)` in the worker after `execve` to disable ASLR for deterministic shadow-memory layout. Blocking it kills the child with SIGSYS before the IPC handshake completes. |
+
 **Build-header caveat** — `clone3`, `close_range`, and `faccessat2` were added in
 Linux 5.3, 5.9, and 5.8 respectively. Kernel headers shipped with older build
 environments (e.g. Ubuntu 20.04 `linux-libc-dev` at 5.4) may not define the

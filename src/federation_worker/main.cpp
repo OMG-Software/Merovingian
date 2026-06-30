@@ -18,7 +18,12 @@
 #include <string_view>
 
 #include <fcntl.h>
+#include <signal.h>
 #include <unistd.h>
+
+#ifdef __linux__
+#include <sys/prctl.h>
+#endif
 
 namespace
 {
@@ -82,6 +87,16 @@ auto main(int argc, char const* const* argv) -> int
 
     LOG_INFO("Federation worker starting: shard=" + std::to_string(args.shard_index) + " config=" + *args.config_path +
              " ipc_fd=" + std::to_string(raw_fd));
+
+#ifdef __linux__
+    // Ask the kernel to terminate this child automatically if the parent thread
+    // that spawned it exits. This prevents orphaned federation workers from
+    // lingering when the main server process crashes or is killed.
+    if (::prctl(PR_SET_PDEATHSIG, SIGTERM) != 0)
+    {
+        LOG_WARNING("Federation worker: prctl(PR_SET_PDEATHSIG, SIGTERM) failed: " + std::string{::strerror(errno)});
+    }
+#endif
 
     auto ipc_fd = merovingian::core::FileDescriptor{raw_fd};
     auto const threads = parse_result.config.federation_worker().threads;

@@ -302,4 +302,24 @@ SCENARIO("seccomp filter allows SQLite journal ops and blocks privilege-escalati
         }
     }
 }
+
+SCENARIO("seccomp filter allows ThreadSanitizer worker startup syscalls", "[platform][hardening][seccomp][linux]")
+{
+    GIVEN("the seccomp allowlist constants")
+    {
+        WHEN("sanitizer runtime syscalls are checked")
+        {
+            THEN("personality is allowed")
+            {
+                // ThreadSanitizer calls personality(ADDR_NO_RANDOMIZE) in the
+                // federation worker after exec to disable ASLR for deterministic
+                // shadow-memory layout. The worker inherits the server's seccomp
+                // filter, so blocking personality kills the child with SIGSYS.
+#ifdef __NR_personality
+                REQUIRE(merovingian::platform::seccomp_is_syscall_allowed(__NR_personality));
+#endif
+            }
+        }
+    }
+}
 #endif // __linux__
