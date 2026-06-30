@@ -113,6 +113,13 @@ struct FederationSecurityConfig final
     };
     std::string max_transaction_size{"10MiB"};
     std::string remote_timeout{"60s"};
+    // Separate, extendable budget for the make_join/send_join/make_leave/send_leave
+    // membership dance. A large remote room's make_join can take longer than the
+    // 60s general federation timeout; this is distinct from `remote_timeout`.
+    std::string join_timeout{"180s"};
+    // Cap on concurrent make_join candidate probes and inbound sender-key fan-out.
+    // Must be >= 1 (validated); 0 would degenerate to no work.
+    std::uint32_t join_parallelism{8U};
 };
 
 struct MediaSecurityConfig final

@@ -41,6 +41,7 @@ auto make_runtime_federation_config(config::Config const& config) -> RuntimeFede
 {
     auto const max_transaction_size = config::parse_size_limit(config.security().federation.max_transaction_size);
     auto const remote_timeout = config::parse_duration_seconds(config.security().federation.remote_timeout);
+    auto const join_timeout = config::parse_duration_seconds(config.security().federation.join_timeout);
 
     return {
         config.security().federation.enabled,
@@ -52,6 +53,8 @@ auto make_runtime_federation_config(config::Config const& config) -> RuntimeFede
         config.security().federation.deny_ip_ranges,
         max_transaction_size.valid ? max_transaction_size.bytes : 0U,
         remote_timeout.valid ? remote_timeout.seconds : 0U,
+        join_timeout.valid ? join_timeout.seconds : 0U,
+        config.security().federation.join_parallelism,
         config.server().server_name,
     };
 }
@@ -63,7 +66,9 @@ auto federation_summary(RuntimeFederationConfig const& config) -> std::string
            " allowed_servers=" + std::to_string(config.allowed_servers.size()) +
            " denied_servers=" + std::to_string(config.denied_servers.size()) +
            " max_transaction_bytes=" + std::to_string(config.max_transaction_bytes) +
-           " remote_timeout_seconds=" + std::to_string(config.remote_timeout_seconds);
+           " remote_timeout_seconds=" + std::to_string(config.remote_timeout_seconds) +
+           " join_timeout_seconds=" + std::to_string(config.join_timeout_seconds) +
+           " join_parallelism=" + std::to_string(config.join_parallelism);
 }
 
 auto federation_server_policy(RuntimeFederationConfig const& config, std::string_view server_name)
