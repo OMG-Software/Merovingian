@@ -26,6 +26,26 @@
 #include <sys/prctl.h>
 #endif
 
+#if defined(__SANITIZE_ADDRESS__) || (defined(__has_feature) && __has_feature(address_sanitizer))
+// The federation worker runs under a strict seccomp filter (issue #319) that
+// denies ptrace by design — ptrace is an escalation primitive a compromised
+// worker must never possess. ASan's exit-time LeakSanitizer uses ptrace (via
+// StopTheWorld) to suspend all threads before scanning for leaks; with ptrace
+// denied, the tracer thread is killed and StopTheWorld spins in sched_yield
+// forever, so the worker process never exits and the supervisor's wait4()
+// hangs (the asan-ubsan CI integration timeout). Disable exit-time leak
+// detection in the worker. The main process retains full ASan/LSan coverage of
+// the shared code paths; the worker's own correctness is exercised by its unit
+// and integration tests. Defined at global scope with C linkage so the ASan
+// runtime resolves it as the weak default-options hook. ASAN_OPTIONS, when
+// present in the environment, takes precedence over this default — the
+// worker's minimal env (#330) carries no ASAN_OPTIONS, so this applies.
+extern "C" auto __asan_default_options() -> char const* // NOLINT(readability-identifier-naming)
+{
+    return "detect_leaks=0";
+}
+#endif
+
 namespace
 {
 

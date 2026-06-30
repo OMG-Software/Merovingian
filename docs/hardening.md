@@ -180,6 +180,17 @@ separate process on the same host:
   denies `execve`/`execveat`/spawn-oriented `clone` — the worker never execs or
   spawns, so those syscalls are unreachable in normal operation and kill the
   worker on attempted abuse.
+* **ASan exit-time leak check disabled in the worker (#319):** the worker
+  filter denies `ptrace` — an escalation primitive a compromised worker must
+  never possess. AddressSanitizer's exit-time LeakSanitizer suspends all
+  threads with `ptrace` (`StopTheWorld`) before scanning; with `ptrace`
+  denied the tracer is killed and the scan spins forever, so the worker would
+  never exit and the supervisor's `waitpid` would hang. The worker therefore
+  defines `__asan_default_options()` returning `detect_leaks=0` (guarded to
+  ASan builds, C linkage at global scope). This affects only sanitised test
+  builds — production builds compile the guard out — and only the worker; the
+  main process retains full ASan/LSan coverage, and the worker's correctness
+  is covered by its own unit and integration tests.
 * **WorkerSupervisor isolation**: the supervisor thread monitors the child
   pid with `waitpid`. If the worker exits unexpectedly the supervisor
   closes the channel and respawns — the main process never acts on a
