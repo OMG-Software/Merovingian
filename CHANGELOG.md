@@ -1,3 +1,13 @@
+## 0.10.10
+
+### Fixed
+- **fix(federation): configurable join timeout for make_join/send_join/make_leave/send_leave:** the make_join call used the shared 60s `security.federation.remote_timeout`, so joining a large remote room (e.g. on matrix.org) timed out with `502 make_join failed: timeout` when the resident server's make_join was slow. A new `security.federation.join_timeout` (default `180s`, reloadable) gives join/leave membership calls a separate, extendable budget, independent of the 60s general federation timeout.
+- **fix(federation): race make_join across candidate servers in parallel:** the candidate loop tried each `via`/`server_name` resident server sequentially with the full timeout each. `make_join` now runs against all candidates concurrently (capped by `security.federation.join_parallelism`, default `8`, reloadable) and the first success wins; `send_join` targets that server (spec §Joining Rooms). If one via server is fast and another is slow, the join completes at the speed of the fastest, and a genuinely-slow-but-eventual resident server gets the full `join_timeout` budget.
+- **fix(federation): TTL discovery cache for server-name resolution:** the remote key resolver re-ran the full `.well-known` + SRV + DNS discovery cascade on every call, even on cache hits. A new `CachedServerDiscovery` (60s TTL, negative cache, thread-safe, mutex-guarded) wraps the discovery network so cache-hit lookups skip the cascade, removing repeated DNS latency from key resolution and outbound calls. SSRF `pinned_addresses` are never returned stale past TTL.
+- **fix(federation): parallel inbound PDU sender-key resolution:** the inbound `/send` handler resolved each PDU sender's signing key serially. Distinct `(sender_domain, key_id)` pairs across the transaction are now resolved concurrently (capped by `join_parallelism`) before per-PDU verification, while preserving fail-closed per-PDU rejection and the HTTP 200 + per-PDU error-map response (returning 4xx/5xx makes Synapse back off the whole destination).
+
+> Deferred: multi-server signing-key batching via `POST /_matrix/federation/v1/query/keys` — that endpoint is for E2EE device keys, not server signing keys; the v1.18 spec defines no signing-key batch endpoint (signing keys are single-server `GET /_matrix/key/v2/server`). Parallel fan-out achieves the same wall-time without a spec deviation or a new untested inbound handler.
+
 ## 0.10.9
 
 ### Fixed
