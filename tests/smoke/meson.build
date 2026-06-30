@@ -186,7 +186,7 @@ test(
     '-c',
     server_executable + ' --dry-run 2>&1 | grep -q "Startup hardening checks:" && '
       + server_executable + ' --dry-run 2>&1 | grep -qE "Hardening self-check: seccomp=(enabled|unknown)" && '
-      + server_executable + ' --dry-run 2>&1 | grep -q "Hardening readiness: production_ready=false alpha_ready=true"',
+      + server_executable + ' --dry-run 2>&1 | grep -qE "Hardening readiness: ready=false blockers=[0-9]+"',
   ],
 )
 

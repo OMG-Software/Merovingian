@@ -2,7 +2,7 @@ project(
   'merovingian',
   'cpp',
   'c',
-  version: '0.10.7',
+  version: '0.10.8',
   license: 'GPL-3.0-or-later',
   meson_version: '>=1.1.0',
   default_options: [
@@ -96,7 +96,10 @@ relro_now_flags = ['-Wl,-z,relro', '-Wl,-z,now']
 
 hardening_link_flags = [noexecstack_flag]
 if host_machine.system() == 'linux'
-  hardening_link_flags += relro_now_flags
+  # -pie makes the binary ET_DYN (PIE-linked). Combined with -fPIE on the objects
+  # this allows the ELF probe to confirm PIE at runtime. The packaging scripts
+  # (build-*.sh) may also pass -pie or -static-pie; the linker tolerates duplicates.
+  hardening_link_flags += ['-pie'] + relro_now_flags
 endif
 
 add_project_arguments(cpp.get_supported_arguments(warning_flags), language: 'cpp')

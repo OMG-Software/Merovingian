@@ -233,6 +233,11 @@ if get_option ('build_tests')
   # libexecdir installation.
   federation_worker_test_args = ['-DMEROVINGIAN_TEST_FEDERATION_WORKER="' + federation_worker_exe.full_path() + '"']
 
+  # The binary startup hardening test spawns the real merovingian-server to
+  # confirm that the seccomp filter allows all syscalls needed post-startup
+  # (rseq, membarrier, etc.) on every supported platform.
+  server_test_args = ['-DMEROVINGIAN_TEST_SERVER_BINARY="' + server_exe.full_path() + '"']
+
   integration_tests = executable(
     'merovingian-integration-tests',
     sources: files(
@@ -250,6 +255,7 @@ if get_option ('build_tests')
       'integration/test_postgresql_persistence_flow.cpp',
       'integration/test_runtime_hardening_flow.cpp',
       'integration/test_seccomp_sqlite_flow.cpp',
+      'integration/test_server_startup_hardening_flow.cpp',
       'integration/test_sliding_sync_flow.cpp',
       'integration/test_sync_complement_fixture.cpp',
       'integration/test_trust_safety_policy_flow.cpp',
@@ -257,7 +263,7 @@ if get_option ('build_tests')
     include_directories: inc,
     dependencies: [catch2_dep, thread_dep, libsodium_dep, openssl_dep, libpq_dep, sqlite_dep, libcurl_dep, resolv_dep],
     link_with: [auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, events_lib, federation_lib, federation_worker_lib, homeserver_lib, http_lib, ipc_lib, media_lib, net_lib, observability_lib, platform_lib, rooms_lib, sync_lib, trust_safety_lib],
-    cpp_args: [thumbnail_test_args, federation_worker_test_args],
+    cpp_args: [thumbnail_test_args, federation_worker_test_args, server_test_args],
   )
 
   # Integration tests spawn real dependencies (PostgreSQL, SQLite, thumbnail

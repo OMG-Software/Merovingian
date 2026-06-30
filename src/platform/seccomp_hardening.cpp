@@ -266,25 +266,50 @@ namespace
 #elif defined(__x86_64__) || defined(__aarch64__)
         ALLOW_SYSCALL(435),
 #endif
+        // futex_waitv (Linux 5.16, x86_64 = 449, aarch64 = 449): newer
+        // condition-variable / wait-on-multiple-futexes implementation.
+        // Numeric fallback for builds against kernel headers < 5.16
+        // (e.g. Ubuntu 22.04 ships Linux 5.15 headers).
 #ifdef __NR_futex_waitv
         ALLOW_SYSCALL(__NR_futex_waitv),
+#elif defined(__x86_64__) || defined(__aarch64__)
+        ALLOW_SYSCALL(449),
 #endif
         // glibc 2.35+ per-thread restartable-sequence registration. The child
         // process re-registers its rseq area after fork(), and glibc 2.36+
         // also uses rseq inside the malloc per-CPU cache implementation.
+        // Numeric fallback for builds against kernel headers < 4.18
+        // (e.g. Ubuntu 18.04 ships Linux 4.15 headers where __NR_rseq is absent).
+        // Without this fallback, the first pthread_create after seccomp
+        // installation kills the process under SECCOMP_RET_KILL_PROCESS because
+        // glibc's thread init unconditionally calls sys_rseq().
 #ifdef __NR_rseq
         ALLOW_SYSCALL(__NR_rseq),
+#elif defined(__x86_64__)
+        ALLOW_SYSCALL(334),
+#elif defined(__aarch64__)
+        ALLOW_SYSCALL(293),
 #endif
         // glibc 2.31+ issues membarrier(MEMBARRIER_CMD_PRIVATE_EXPEDITED) in
         // the malloc fast path on multi-processor systems. Without this the
         // call gets SIGSYS on distros whose glibc enables it by default.
+        // Numeric fallback for builds against kernel headers < 4.3.
 #ifdef __NR_membarrier
         ALLOW_SYSCALL(__NR_membarrier),
+#elif defined(__x86_64__)
+        ALLOW_SYSCALL(324),
+#elif defined(__aarch64__)
+        ALLOW_SYSCALL(283),
 #endif
         // getcpu: returns the running CPU and NUMA node; used by glibc's
         // per-CPU TLS cache and malloc implementation.
+        // Numeric fallback for builds against very old kernel headers.
 #ifdef __NR_getcpu
         ALLOW_SYSCALL(__NR_getcpu),
+#elif defined(__x86_64__)
+        ALLOW_SYSCALL(309),
+#elif defined(__aarch64__)
+        ALLOW_SYSCALL(168),
 #endif
 
         // ── Signals ────────────────────────────────────────────────────────
@@ -304,6 +329,10 @@ namespace
         ALLOW_SYSCALL(__NR_getrandom),
         ALLOW_SYSCALL(__NR_capget),
         ALLOW_SYSCALL(__NR_capset),
+        // ThreadSanitizer disables ASLR by calling personality(ADDR_NO_RANDOMIZE)
+        // during worker startup after exec. The child inherits the server's filter, so
+        // the syscall must be permitted for sanitizer builds to reach full handshake.
+        ALLOW_SYSCALL(__NR_personality),
 
         // ── Process identity ───────────────────────────────────────────────
         ALLOW_SYSCALL(__NR_getpid),

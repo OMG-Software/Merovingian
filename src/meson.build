@@ -19,7 +19,7 @@ subdir('trust_safety')
 
 subdir('federation_worker')
 
-executable(
+server_exe = executable(
   'merovingian-server',
   sources: files('main.cpp'),
   include_directories: inc,

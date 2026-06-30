@@ -690,12 +690,13 @@ auto start_runtime(RuntimeStartOptions opts) -> RuntimeStartResult
                        {"reason",   hardening_controls.reason,                      false},
     },
                    observability::LogEventSeverity::info);
+    // Capture a hardening self-check snapshot for the health endpoint. The final
+    // startup gate in main.cpp re-runs the check after all platform controls are
+    // applied and overwrites runtime.hardening with the definitive result.
     runtime.hardening = platform::run_startup_hardening_self_check();
     log_diagnostic("start.complete",
                    {
-                       {"hardening_checks",      std::to_string(runtime.hardening.count()),             false},
-                       {"hardening_alpha_ready", runtime.hardening.is_alpha_ready() ? "true" : "false", false},
-                       {"federation_enabled",    runtime.federation.config.enabled ? "true" : "false",  false}
+                       {"federation_enabled", runtime.federation.config.enabled ? "true" : "false", false}
     },
                    observability::LogEventSeverity::info);
     append_local_audit(runtime.database, observability::AuditCategory::admin, "runtime.started", "server", "homeserver",

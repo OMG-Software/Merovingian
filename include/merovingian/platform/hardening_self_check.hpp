@@ -17,7 +17,6 @@ enum class HardeningStatus : std::uint8_t
     enabled,
     disabled,
     unknown,
-    alpha_exception,
 };
 
 struct HardeningCheck final
@@ -37,8 +36,7 @@ public:
     [[nodiscard]] auto count() const noexcept -> std::size_t;
     [[nodiscard]] auto production_blockers() const -> std::vector<HardeningCheck>;
     [[nodiscard]] auto production_blocker_count() const noexcept -> std::size_t;
-    [[nodiscard]] auto is_production_ready() const noexcept -> bool;
-    [[nodiscard]] auto is_alpha_ready() const noexcept -> bool;
+    [[nodiscard]] auto is_ready() const noexcept -> bool;
 
 private:
     std::vector<HardeningCheck> m_checks{};
@@ -61,6 +59,8 @@ private:
 //   unknown — probe could not confirm (filter not applied, probe failed, non-Linux).
 // Never returns `disabled` — absence of the filter is indistinguishable from
 // a kernel that does not support CONFIG_SECCOMP_FILTER at probe time.
+// `HardeningStatus::alpha_exception` no longer exists; the server refuses to
+// start unless every hardening check reports `enabled`.
 [[nodiscard]] auto seccomp_check_from_probe(SeccompProbeResult const& result) -> HardeningCheck;
 
 } // namespace merovingian::platform
