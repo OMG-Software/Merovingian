@@ -15,8 +15,13 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <array>
+#include <atomic>
+#include <chrono>
+#include <map>
+#include <memory>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -81,6 +86,49 @@ namespace
 {
     return std::string{"{\"origin\":\""} + origin + R"(","origin_server_ts":1000,"pdus":[)" + pdu_json + "]}";
 }
+
+// Builds a transaction body carrying several PDUs, used to exercise the
+// parallel inbound sender-key resolution path (multiple relayed senders
+// inside one /send transaction).
+[[nodiscard]] auto transaction_body_pdus(std::string const& origin, std::vector<std::string> const& pdus) -> std::string
+{
+    auto joined = std::string{};
+    for (auto i = std::size_t{0U}; i < pdus.size(); ++i)
+    {
+        if (i != 0U)
+        {
+            joined += ",";
+        }
+        joined += pdus[i];
+    }
+    return std::string{"{\"origin\":\""} + origin + R"(","origin_server_ts":1000,"pdus":[)" + joined + "]}";
+}
+
+// Shared state for a counting fake RemoteKeyResolver. Tracks how many times
+// the resolver was invoked, the peak number of concurrent invocations, and
+// optionally stalls each call for `delay` so a parallel fan-out is
+// distinguishable from a serial one by wall time. `keys` holds the
+// FederationRemoteRuntime to return per (server_name, key_id); a missing
+// entry models resolution failure (returns nullopt). `keys` is populated
+// before the resolver is ever invoked, so concurrent reads are race-free.
+struct CountingResolverState final
+{
+    std::atomic<std::size_t> calls{0U};
+    std::atomic<std::size_t> in_flight{0U};
+    std::atomic<std::size_t> peak{0U};
+    std::chrono::milliseconds delay{};
+    std::map<std::pair<std::string, std::string>, merovingian::federation::FederationRemoteRuntime> keys{};
+
+    // Updates `peak` to track the high-water mark of concurrent invocations.
+    auto record_concurrency() -> void
+    {
+        auto const current = in_flight.fetch_add(1U) + 1U;
+        auto prev_peak = peak.load();
+        while (current > prev_peak && !peak.compare_exchange_weak(prev_peak, current))
+        {
+        }
+    }
+};
 
 [[nodiscard]] auto sodium_is_ready() noexcept -> bool
 {
@@ -1382,6 +1430,228 @@ SCENARIO("A signature_verified request is handled without re-checking the raw si
             THEN("the bad raw signature is rejected (proving the trusted flag is what skips the check)")
             {
                 REQUIRE(response.status == 403U);
+            }
+        }
+    }
+}
+
+// Spec: Matrix Server-Server API v1.18 — Signing Events / Transactions
+// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#signing-events
+//
+// A relayed /send transaction may carry PDUs authored by many distinct sender
+// servers. Resolving each sender-domain signing key serially pays N
+// discovery+fetch round-trips; the inbound handler fans the distinct
+// (sender_domain, key_id) resolutions out concurrently, capped by
+// `join_parallelism`. These scenarios pin the parallel behaviour, the dedup,
+// and the fail-closed HTTP-200-with-per-PDU-errors contract.
+SCENARIO("Parallel inbound /send resolves distinct relayed sender keys concurrently",
+         "[federation][inbound][pdu][parallel][conformance]")
+{
+    GIVEN("a relayed transaction with four PDUs authored by distinct sender servers")
+    {
+        auto config = runtime_config();
+        config.join_parallelism = 8U;
+        auto runtime = merovingian::federation::make_federation_runtime_state(config);
+
+        auto const relay_origin = std::string{"relay.example.org"};
+        auto const relay_key_id = std::string{"ed25519:relay"};
+        auto const relay_token = std::string{"relay-server-key"};
+        merovingian::federation::upsert_remote(runtime, remote_for(relay_origin, relay_key_id, relay_token));
+
+        auto const servers =
+            std::vector<std::string>{"s1.example.org", "s2.example.org", "s3.example.org", "s4.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const tokens = std::vector<std::string>{"t1", "t2", "t3", "t4"};
+
+        auto state = std::make_shared<CountingResolverState>();
+        state->delay = std::chrono::milliseconds(200);
+        for (auto i = std::size_t{0U}; i < servers.size(); ++i)
+        {
+            state->keys[{servers[i], key_id}] = remote_for(servers[i], key_id, tokens[i]);
+        }
+        runtime.remote_key_resolver = [state](std::string_view server_name, std::string_view request_key_id)
+            -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+            state->calls.fetch_add(1U);
+            state->record_concurrency();
+            std::this_thread::sleep_for(state->delay);
+            state->in_flight.fetch_sub(1U);
+            auto const it = state->keys.find({std::string{server_name}, std::string{request_key_id}});
+            if (it == state->keys.end())
+            {
+                return std::nullopt;
+            }
+            return it->second;
+        };
+
+        auto sink_count = std::atomic<std::size_t>{0U};
+        runtime.pdu_sink =
+            [&sink_count](
+                merovingian::federation::InboundPduEnvelope const&) -> merovingian::federation::PduIngestionResult {
+            sink_count.fetch_add(1U);
+            return {merovingian::federation::PduIngestionStatus::accepted, {}};
+        };
+
+        auto pdus_json = std::vector<std::string>{};
+        pdus_json.reserve(servers.size());
+        for (auto i = std::size_t{0U}; i < servers.size(); ++i)
+        {
+            pdus_json.push_back(signed_json_pdu(servers[i], key_id, tokens[i]));
+        }
+        auto const request =
+            signed_request(relay_origin, relay_key_id, relay_token, transaction_body_pdus(relay_origin, pdus_json));
+
+        WHEN("the transaction is handled")
+        {
+            auto const start = std::chrono::steady_clock::now();
+            auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
+            auto const elapsed_ms =
+                std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+
+            THEN("all four PDUs are accepted and distinct sender keys are resolved concurrently")
+            {
+                // Spec MUST: signature from sender_domain(pdu.sender) is verified.
+                // Parallel fan-out resolves the four distinct sender keys at once
+                // rather than serially — peak concurrency > 1 and wall time is well
+                // under the serial N*delay budget (4 * 200ms = 800ms).
+                REQUIRE(response.status == 200U);
+                REQUIRE(sink_count.load() == servers.size());
+                REQUIRE(state->calls.load() == servers.size());
+                REQUIRE(state->peak.load() >= 2U);
+                REQUIRE(static_cast<std::int64_t>(elapsed_ms) < static_cast<std::int64_t>(servers.size() * 200));
+            }
+        }
+    }
+}
+
+SCENARIO("Parallel inbound /send fail-closes relayed PDUs whose key resolution fails with HTTP 200",
+         "[federation][inbound][pdu][parallel][security]")
+{
+    GIVEN("a relayed transaction with one resolvable PDU and one unresolvable PDU")
+    {
+        auto config = runtime_config();
+        config.join_parallelism = 8U;
+        auto runtime = merovingian::federation::make_federation_runtime_state(config);
+
+        auto const relay_origin = std::string{"relay.example.org"};
+        auto const relay_key_id = std::string{"ed25519:relay"};
+        auto const relay_token = std::string{"relay-server-key"};
+        merovingian::federation::upsert_remote(runtime, remote_for(relay_origin, relay_key_id, relay_token));
+
+        auto const good_server = std::string{"good.example.org"};
+        auto const bad_server = std::string{"bad.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const good_token = std::string{"good-token"};
+
+        auto state = std::make_shared<CountingResolverState>();
+        state->keys[{good_server, key_id}] = remote_for(good_server, key_id, good_token);
+        // bad_server intentionally absent → resolver returns nullopt → fail-closed.
+        runtime.remote_key_resolver = [state](std::string_view server_name, std::string_view request_key_id)
+            -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+            state->calls.fetch_add(1U);
+            state->record_concurrency();
+            std::this_thread::sleep_for(state->delay);
+            state->in_flight.fetch_sub(1U);
+            auto const it = state->keys.find({std::string{server_name}, std::string{request_key_id}});
+            if (it == state->keys.end())
+            {
+                return std::nullopt;
+            }
+            return it->second;
+        };
+
+        auto sink_count = std::atomic<std::size_t>{0U};
+        runtime.pdu_sink =
+            [&sink_count](
+                merovingian::federation::InboundPduEnvelope const&) -> merovingian::federation::PduIngestionResult {
+            sink_count.fetch_add(1U);
+            return {merovingian::federation::PduIngestionStatus::accepted, {}};
+        };
+
+        auto const good_pdu = signed_json_pdu(good_server, key_id, good_token);
+        auto const bad_pdu = signed_json_pdu(bad_server, key_id, "bad-token");
+        auto const request = signed_request(relay_origin, relay_key_id, relay_token,
+                                            transaction_body_pdus(relay_origin, {good_pdu, bad_pdu}));
+
+        WHEN("the transaction is handled")
+        {
+            auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
+
+            THEN("the resolvable PDU is accepted and the unresolvable PDU is rejected fail-closed at HTTP 200")
+            {
+                // Spec: /send returns HTTP 200 with per-PDU errors — never 4xx/5xx,
+                // or Synapse backs off the whole destination. Fail-closed: a relayed
+                // PDU whose sender-domain key cannot be resolved MUST be rejected,
+                // not persisted unverified.
+                REQUIRE(response.status == 200U);
+                REQUIRE(response.body.find("\"error\"") != std::string::npos);
+                REQUIRE(sink_count.load() == 1U);
+                REQUIRE(state->calls.load() == 2U);
+            }
+        }
+    }
+}
+
+SCENARIO("Parallel inbound /send resolves each distinct sender key once even with duplicate senders",
+         "[federation][inbound][pdu][parallel]")
+{
+    GIVEN("a relayed transaction with two senders each authoring two PDUs")
+    {
+        auto config = runtime_config();
+        config.join_parallelism = 8U;
+        auto runtime = merovingian::federation::make_federation_runtime_state(config);
+
+        auto const relay_origin = std::string{"relay.example.org"};
+        auto const relay_key_id = std::string{"ed25519:relay"};
+        auto const relay_token = std::string{"relay-server-key"};
+        merovingian::federation::upsert_remote(runtime, remote_for(relay_origin, relay_key_id, relay_token));
+
+        auto const s1 = std::string{"s1.example.org"};
+        auto const s2 = std::string{"s2.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const t1 = std::string{"t1"};
+        auto const t2 = std::string{"t2"};
+
+        auto state = std::make_shared<CountingResolverState>();
+        state->delay = std::chrono::milliseconds(100);
+        state->keys[{s1, key_id}] = remote_for(s1, key_id, t1);
+        state->keys[{s2, key_id}] = remote_for(s2, key_id, t2);
+        runtime.remote_key_resolver = [state](std::string_view server_name, std::string_view request_key_id)
+            -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+            state->calls.fetch_add(1U);
+            state->record_concurrency();
+            std::this_thread::sleep_for(state->delay);
+            state->in_flight.fetch_sub(1U);
+            auto const it = state->keys.find({std::string{server_name}, std::string{request_key_id}});
+            if (it == state->keys.end())
+            {
+                return std::nullopt;
+            }
+            return it->second;
+        };
+
+        auto sink_count = std::atomic<std::size_t>{0U};
+        runtime.pdu_sink =
+            [&sink_count](
+                merovingian::federation::InboundPduEnvelope const&) -> merovingian::federation::PduIngestionResult {
+            sink_count.fetch_add(1U);
+            return {merovingian::federation::PduIngestionStatus::accepted, {}};
+        };
+
+        // Four PDUs but only two distinct sender domains.
+        auto const request = signed_request(
+            relay_origin, relay_key_id, relay_token,
+            transaction_body_pdus(relay_origin, {signed_json_pdu(s1, key_id, t1), signed_json_pdu(s1, key_id, t1),
+                                                 signed_json_pdu(s2, key_id, t2), signed_json_pdu(s2, key_id, t2)}));
+
+        WHEN("the transaction is handled")
+        {
+            auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
+
+            THEN("the resolver runs once per distinct sender domain and every PDU is accepted")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(sink_count.load() == 4U);
+                REQUIRE(state->calls.load() == 2U);
             }
         }
     }
