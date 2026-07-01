@@ -22,6 +22,7 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <future>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -207,6 +208,18 @@ struct HomeserverRuntime final
     // Handlers must release it before outbound network I/O so unrelated
     // requests can continue while a federation round-trip is in flight.
     mutable std::recursive_mutex mutex{};
+    // Loser futures from the parallel make_join race (see race_make_join_candidates
+    // in room_service.cpp). When the race finds a winner it returns immediately;
+    // the still-running loser tasks (in-flight outbound make_join calls that
+    // cannot be cancelled) are moved here so the caller does not block on them.
+    // They are drained (removed once ready) at the start of the next race and
+    // waited on at runtime destruction. Declared LAST so it is destroyed FIRST:
+    // the dtor joins the loser tasks while outbound_client/discovery_network
+    // (declared earlier) are still alive, and the tasks' captured `&runtime`
+    // reference stays valid throughout the drain. Moves only happen at startup
+    // (before any race creates orphans), so the vector is empty at move time.
+    std::mutex orphan_futures_mutex_{};
+    std::vector<std::future<void>> orphan_futures_{};
 };
 
 // Typing-state helpers used by client-server and federation handlers.

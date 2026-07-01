@@ -667,3 +667,41 @@ SCENARIO("perform_sync_outbound_call returns failure immediately when discovery_
         }
     }
 }
+
+// --- parallel make_join race ---------------------------------------------------
+
+SCENARIO("parallel make_join race returns 502 when all candidates are unreachable",
+         "[homeserver][rooms][join][federation][error]")
+{
+    GIVEN("a started runtime with an authenticated user and no reachable discovery infrastructure")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const reg = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                      merovingian::tests::registration_token);
+        REQUIRE(reg.ok);
+        auto const login = merovingian::homeserver::login_local_user(runtime, reg.value, "CorrectHorse7!", "DEVICE1");
+        REQUIRE(login.ok);
+
+        // Disable server discovery so every make_join candidate fails instantly
+        // rather than timing out; the race must still converge and return 502.
+        runtime.discovery_network.reset();
+        runtime.cached_discovery.reset();
+
+        WHEN("join_room is called with two unreachable candidate servers and parallelism = 2")
+        {
+            runtime.federation.config.join_parallelism = 2U;
+            auto const result = merovingian::homeserver::join_room(runtime, login.value, "!abc:remote.example.com",
+                                                                   {"s1.remote.example.com", "s2.remote.example.com"});
+
+            THEN("join fails with 502 — all candidates exhausted without a winner")
+            {
+                REQUIRE_FALSE(result.ok);
+                REQUIRE(result.status == 502U);
+            }
+        }
+    }
+}
