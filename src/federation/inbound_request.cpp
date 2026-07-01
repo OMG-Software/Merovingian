@@ -21,10 +21,14 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <future>
+#include <map>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include <sodium.h>
 
@@ -38,6 +42,40 @@ namespace
     {
         observability::log_diagnostic("federation", event, fields, severity);
     }
+
+    // Portable counting semaphore — std::counting_semaphore is not available on
+    // all supported platforms (e.g. NetBSD libc++).
+    class PortableSemaphore
+    {
+    public:
+        explicit PortableSemaphore(int count) noexcept
+            : count_{count}
+        {
+        }
+
+        auto acquire() -> void
+        {
+            auto lk = std::unique_lock{mtx_};
+            cv_.wait(lk, [this] {
+                return count_ > 0;
+            });
+            --count_;
+        }
+
+        auto release() noexcept -> void
+        {
+            {
+                auto const lk = std::lock_guard{mtx_};
+                ++count_;
+            }
+            cv_.notify_one();
+        }
+
+    private:
+        std::mutex mtx_{};
+        std::condition_variable cv_{};
+        int count_;
+    };
 
     [[nodiscard]] auto sodium_is_ready() noexcept -> bool
     {
@@ -1662,6 +1700,82 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
     // remote server (e.g. Synapse) to back off the entire destination for a
     // backoff period, blocking all subsequent federation.
     auto pdu_errors = canonicaljson::Object{};
+    // Pre-resolve distinct relayed sender-domain signing keys in parallel so a
+    // large inbound transaction carrying PDUs from many senders does not pay N
+    // serial discovery+fetch round-trips. Each task writes a disjoint slot in
+    // `resolved` (no synchronisation on the vector); the resolver callable is
+    // thread-safe — PersistentStore reads are guarded, OutboundClient uses a
+    // thread_local CURL handle, and CachedServerDiscovery is mutex-guarded.
+    // Fan-out is capped by `join_parallelism` (the federation-wide concurrency
+    // cap; see docs/configuration.md). A configured value of 0 is clamped to 1
+    // (sequential) — config validation already rejects 0, this is defensive.
+    auto sender_key_map = std::map<std::pair<std::string, std::string>, std::optional<FederationKeyRecord>>{};
+    if (runtime.remote_key_resolver && !transaction.pdus.empty())
+    {
+        auto distinct_pairs = std::vector<std::pair<std::string, std::string>>{};
+        auto seen = std::set<std::pair<std::string, std::string>>{};
+        for (auto const& encoded_pdu : transaction.pdus)
+        {
+            auto const pdu = parse_federation_pdu(encoded_pdu, runtime.room_version_resolver);
+            auto const dom = std::string{sender_domain(pdu.sender)};
+            if (dom.empty() || dom == request.origin)
+            {
+                continue;
+            }
+            auto key_id = std::string{};
+            for (auto const& sig : pdu.signatures)
+            {
+                if (sig.server_name == dom)
+                {
+                    key_id = sig.key_id;
+                    break;
+                }
+            }
+            if (key_id.empty())
+            {
+                continue;
+            }
+            auto const key = std::make_pair(dom, key_id);
+            if (seen.insert(key).second)
+            {
+                distinct_pairs.push_back(key);
+            }
+        }
+        if (!distinct_pairs.empty())
+        {
+            auto const configured = runtime.config.join_parallelism;
+            auto const parallelism = std::clamp<std::uint32_t>(configured == 0U ? 1U : configured, 1U, 64U);
+            auto resolved = std::vector<std::optional<FederationRemoteRuntime>>(distinct_pairs.size());
+            auto sem = PortableSemaphore{static_cast<int>(parallelism)};
+            auto tasks = std::vector<std::future<void>>{};
+            tasks.reserve(distinct_pairs.size());
+            auto const& resolver = runtime.remote_key_resolver;
+            for (auto i = std::size_t{0U}; i < distinct_pairs.size(); ++i)
+            {
+                // Block until a concurrency slot is free, then launch the task.
+                // The task releases its slot on completion so the next acquire
+                // can proceed even if this thread is still inside std::async.
+                sem.acquire();
+                auto const pair = distinct_pairs[i];
+                tasks.push_back(std::async(std::launch::async, [&resolved, &sem, &resolver, pair, i]() {
+                    resolved[i] = resolver(pair.first, pair.second);
+                    sem.release();
+                }));
+            }
+            // Join every task before reading `resolved` (disjoint slots, but
+            // the vector must not be read while tasks are still writing).
+            for (auto& task : tasks)
+            {
+                task.get();
+            }
+            for (auto i = std::size_t{0U}; i < distinct_pairs.size(); ++i)
+            {
+                auto const& record = resolved[i];
+                sender_key_map[distinct_pairs[i]] =
+                    record.has_value() ? std::optional<FederationKeyRecord>{record->signing_key} : std::nullopt;
+            }
+        }
+    }
     for (auto const& encoded_pdu : transaction.pdus)
     {
         // Resolve room version from local state when the runtime provides a
@@ -1689,10 +1803,26 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
             }
             if (!sender_key_id.empty())
             {
-                auto resolved = runtime.remote_key_resolver(pdu_sender_dom, sender_key_id);
-                if (resolved.has_value())
+                // Use the pre-resolved sender key from the parallel fan-out
+                // above. Fall back to a synchronous resolve only if the pre-pass
+                // missed this pair (defensive — the pre-pass collects every
+                // relayed (sender_domain, key_id) pair), then apply the same
+                // fail-closed contract: no key → PDU rejected, not persisted.
+                auto resolved_key = std::optional<FederationKeyRecord>{};
+                auto const it = sender_key_map.find(std::pair<std::string, std::string>{pdu_sender_dom, sender_key_id});
+                if (it != sender_key_map.end())
                 {
-                    key_for_pdu = resolved->signing_key;
+                    resolved_key = it->second;
+                }
+                else
+                {
+                    auto resolved = runtime.remote_key_resolver(pdu_sender_dom, sender_key_id);
+                    resolved_key =
+                        resolved.has_value() ? std::optional<FederationKeyRecord>{resolved->signing_key} : std::nullopt;
+                }
+                if (resolved_key.has_value())
+                {
+                    key_for_pdu = *resolved_key;
                 }
                 else
                 {

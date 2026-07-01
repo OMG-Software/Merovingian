@@ -6,6 +6,7 @@
 #include "merovingian/core/secret_buffer.hpp"
 #include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/database/persistent_store.hpp"
+#include "merovingian/federation/cached_server_discovery.hpp"
 #include "merovingian/federation/dispatch_worker.hpp"
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/server_discovery.hpp"
@@ -21,6 +22,7 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <future>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -174,6 +176,11 @@ struct HomeserverRuntime final
     std::function<trust_safety::PolicyServerHook(trust_safety::PolicySurface, std::string_view)>
         trust_safety_policy_server{};
     std::unique_ptr<federation::ServerDiscoveryNetwork> discovery_network{};
+    // TTL-bounded cache wrapping `discovery_network`. Non-null in the main
+    // process after start_runtime; null in the federation worker and in test
+    // harnesses that wire only the raw network. Callers MUST prefer this over
+    // `discovery_network` so repeated lookups skip the DNS cascade.
+    std::unique_ptr<federation::CachedServerDiscovery> cached_discovery{};
     std::unique_ptr<federation::DispatchWorker> dispatch_worker{};
     // Non-null when federation.worker.enabled = true. Intercepts inbound
     // federation requests and forwards them to the out-of-process worker.
@@ -201,6 +208,18 @@ struct HomeserverRuntime final
     // Handlers must release it before outbound network I/O so unrelated
     // requests can continue while a federation round-trip is in flight.
     mutable std::recursive_mutex mutex{};
+    // Loser futures from the parallel make_join race (see race_make_join_candidates
+    // in room_service.cpp). When the race finds a winner it returns immediately;
+    // the still-running loser tasks (in-flight outbound make_join calls that
+    // cannot be cancelled) are moved here so the caller does not block on them.
+    // They are drained (removed once ready) at the start of the next race and
+    // waited on at runtime destruction. Declared LAST so it is destroyed FIRST:
+    // the dtor joins the loser tasks while outbound_client/discovery_network
+    // (declared earlier) are still alive, and the tasks' captured `&runtime`
+    // reference stays valid throughout the drain. Moves only happen at startup
+    // (before any race creates orphans), so the vector is empty at move time.
+    std::mutex orphan_futures_mutex_{};
+    std::vector<std::future<void>> orphan_futures_{};
 };
 
 // Typing-state helpers used by client-server and federation handlers.

@@ -52,6 +52,15 @@ struct RemoteKeyFetchResult final
                                             std::string_view server_name, std::uint32_t timeout_seconds)
     -> RemoteKeyFetchResult;
 
+class CachedServerDiscovery;
+
+// As above, but server-name resolution goes through a TTL-bounded
+// `CachedServerDiscovery` so repeated key fetches for the same server skip the
+// .well-known + SRV + DNS cascade.
+[[nodiscard]] auto fetch_remote_server_keys(http::OutboundClient& client, CachedServerDiscovery& discovery,
+                                            std::string_view server_name, std::uint32_t timeout_seconds)
+    -> RemoteKeyFetchResult;
+
 // Refresh threshold helper. A remote key needs refresh when the current
 // timestamp is at or past `valid_until_ts`, or within a small skew window
 // before expiry so verifications never trip on a key that is about to expire.
@@ -84,6 +93,13 @@ using RemoteKeyClock = std::function<std::uint64_t()>;
 // fetch which is verified and stored before being returned.
 [[nodiscard]] auto make_persistent_remote_key_resolver(database::PersistentStore& store, http::OutboundClient& client,
                                                        ServerDiscoveryNetwork& network, std::uint32_t timeout_seconds,
+                                                       RemoteKeyClock now_ms) -> RemoteKeyResolver;
+
+// As above, but both the resolver's own discovery lookup and the fetch's
+// internal lookup go through a TTL-bounded `CachedServerDiscovery`, so cache
+// hits pay no DNS cascade and a miss pays it once for both.
+[[nodiscard]] auto make_persistent_remote_key_resolver(database::PersistentStore& store, http::OutboundClient& client,
+                                                       CachedServerDiscovery& discovery, std::uint32_t timeout_seconds,
                                                        RemoteKeyClock now_ms) -> RemoteKeyResolver;
 
 } // namespace merovingian::federation

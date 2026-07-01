@@ -651,6 +651,19 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
             {"security.federation.remote_timeout", "federation remote timeout must be a positive bounded duration"});
     }
 
+    auto const federation_join_timeout = parse_duration_seconds(config.security().federation.join_timeout);
+    if (!federation_join_timeout.valid)
+    {
+        findings.push_back(
+            {"security.federation.join_timeout", "federation join timeout must be a positive bounded duration"});
+    }
+
+    if (config.security().federation.join_parallelism == 0U)
+    {
+        findings.push_back(
+            {"security.federation.join_parallelism", "federation join parallelism must be a positive integer"});
+    }
+
     auto const media_max_upload_size = parse_size_limit(config.security().media.max_upload_size);
     if (!media_max_upload_size.valid)
     {

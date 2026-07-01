@@ -317,7 +317,24 @@ HomeserverRuntime::HomeserverRuntime()
 {
 }
 
-HomeserverRuntime::~HomeserverRuntime() = default;
+HomeserverRuntime::~HomeserverRuntime()
+{
+    // Join any still-running loser tasks from a parallel make_join race before
+    // other members (outbound_client, discovery_network, the signing SecretBuffer)
+    // are destroyed. orphan_futures_ is declared last so it is destroyed first;
+    // this explicit wait makes that ordering guarantee obvious and keeps the
+    // tasks' captured `&runtime` reference valid for the duration of the drain.
+    // The wait is bounded by each task's per-call timeout (join_timeout_seconds),
+    // so a hung remote cannot pin runtime destruction indefinitely.
+    auto const lk = std::lock_guard{orphan_futures_mutex_};
+    for (auto& future : orphan_futures_)
+    {
+        if (future.valid())
+        {
+            future.wait();
+        }
+    }
+}
 
 HomeserverRuntime::HomeserverRuntime(HomeserverRuntime&& other) noexcept
     : config(std::move(other.config))
@@ -338,6 +355,7 @@ HomeserverRuntime::HomeserverRuntime(HomeserverRuntime&& other) noexcept
     , outbound_client(std::move(other.outbound_client))
     , trust_safety_policy_server(std::move(other.trust_safety_policy_server))
     , discovery_network(std::move(other.discovery_network))
+    , cached_discovery(std::move(other.cached_discovery))
     , dispatch_worker(std::move(other.dispatch_worker))
     , federation_proxy(std::move(other.federation_proxy))
     , crypto_provider_owned(std::move(other.crypto_provider_owned))
@@ -346,6 +364,7 @@ HomeserverRuntime::HomeserverRuntime(HomeserverRuntime&& other) noexcept
     , typing_users(std::move(other.typing_users))
     , receipts(std::move(other.receipts))
     , room_typing_stream_id(std::move(other.room_typing_stream_id))
+    , orphan_futures_(std::move(other.orphan_futures_))
 {
     other.crypto_provider = nullptr;
 }
@@ -374,6 +393,7 @@ auto HomeserverRuntime::operator=(HomeserverRuntime&& other) noexcept -> Homeser
     outbound_client = std::move(other.outbound_client);
     trust_safety_policy_server = std::move(other.trust_safety_policy_server);
     discovery_network = std::move(other.discovery_network);
+    cached_discovery = std::move(other.cached_discovery);
     dispatch_worker = std::move(other.dispatch_worker);
     federation_proxy = std::move(other.federation_proxy);
     crypto_provider_owned = std::move(other.crypto_provider_owned);
@@ -383,6 +403,7 @@ auto HomeserverRuntime::operator=(HomeserverRuntime&& other) noexcept -> Homeser
     typing_users = std::move(other.typing_users);
     receipts = std::move(other.receipts);
     room_typing_stream_id = std::move(other.room_typing_stream_id);
+    orphan_futures_ = std::move(other.orphan_futures_);
     return *this;
 }
 
@@ -657,6 +678,19 @@ auto start_runtime(RuntimeStartOptions opts) -> RuntimeStartResult
     runtime.federation = federation::make_federation_runtime_state(federation::make_runtime_federation_config(config));
     runtime.outbound_client = std::make_unique<http::OutboundClient>();
     runtime.discovery_network = federation::make_system_server_discovery_network();
+    if (runtime.discovery_network != nullptr)
+    {
+        // Wrap the raw network with a 60s TTL cache so repeated lookups for the
+        // same server name skip the .well-known + SRV + DNS cascade. A monotonic
+        // clock drives the TTL so a wall-clock jump cannot flush the cache or
+        // keep stale SSRF pins alive past their bound.
+        runtime.cached_discovery = std::make_unique<federation::CachedServerDiscovery>(
+            *runtime.discovery_network, std::uint64_t{60U * 1000U}, []() -> std::uint64_t {
+                return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                      std::chrono::steady_clock::now().time_since_epoch())
+                                                      .count());
+            });
+    }
     runtime.media_repository = media::make_local_media_repository(media::make_runtime_media_config(config));
     hydrate_media_repository(runtime.media_repository, runtime.database.persistent_store);
     // Tests run in a long-lived Catch2 process. Applying seccomp/pledge/unveil

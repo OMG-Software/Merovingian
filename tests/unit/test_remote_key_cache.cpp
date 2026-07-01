@@ -25,14 +25,20 @@
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/events/event_signer.hpp"
+#include "merovingian/federation/cached_server_discovery.hpp"
 #include "merovingian/federation/remote_key_cache.hpp"
+#include "merovingian/http/outbound_client.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <array>
+#include <atomic>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <string_view>
+#include <thread>
+#include <vector>
 
 #include <sodium.h>
 
@@ -464,6 +470,360 @@ SCENARIO("Remote key resolver caches the first fetch and serves later requests f
                 // Spec MUST: key_id in the cached record MUST match what was stored, proving a cache hit.
                 // Do NOT remove/change - a wrong key_id means the cache returned the wrong entry.
                 REQUIRE(found->key_id == "ed25519:auto");
+            }
+        }
+    }
+}
+
+// --- CachedServerDiscovery ---------------------------------------------------
+// The remote key resolver and outbound membership paths used to re-run the
+// full .well-known + SRV + DNS cascade on every call. CachedServerDiscovery
+// wraps the network with a TTL-bounded in-memory cache. These tests cover the
+// cache contract: fresh hits skip the network, entries expire at TTL, negative
+// results are cached, SSRF pinned_addresses never go stale past TTL, and the
+// cache is safe under concurrent access.
+
+namespace
+{
+
+// A counting, configurable ServerDiscoveryNetwork. The discover() free
+// function drives the IP-literal path (server_name "192.0.2.1" is TEST-NET-1,
+// public, not private/loopback), so `lookup_addresses` is the single network
+// call we count and control.
+struct CountingDiscoveryNetwork final : public merovingian::federation::ServerDiscoveryNetwork
+{
+    std::uint64_t lookup_calls{0U};
+    std::uint64_t well_known_calls{0U};
+    merovingian::federation::ResolvedAddressSet addresses_to_return{};
+
+    [[nodiscard]] auto fetch_well_known(std::string_view, std::uint32_t)
+        -> merovingian::federation::WellKnownServerResult override
+    {
+        ++well_known_calls;
+        return {};
+    }
+
+    [[nodiscard]] auto lookup_srv(std::string_view) -> std::vector<merovingian::federation::SrvRecord> override
+    {
+        return {};
+    }
+
+    [[nodiscard]] auto lookup_addresses(std::string_view, std::uint16_t)
+        -> merovingian::federation::ResolvedAddressSet override
+    {
+        ++lookup_calls;
+        return addresses_to_return;
+    }
+};
+
+} // namespace
+
+SCENARIO("CachedServerDiscovery serves fresh hits without calling the network", "[federation][discovery-cache]")
+{
+    GIVEN("a cached discovery with a counting upstream and a positive result")
+    {
+        auto network = CountingDiscoveryNetwork{};
+        network.addresses_to_return = {/*ok=*/true, {"192.0.2.1"}, {}};
+
+        auto now_ms = std::uint64_t{1000U};
+        auto clock = std::function<std::uint64_t()>{[&now_ms]() {
+            return now_ms;
+        }};
+        auto cached = merovingian::federation::CachedServerDiscovery{network, /*ttl_ms=*/60'000U, clock};
+
+        WHEN("the same server is discovered twice within the TTL")
+        {
+            auto const first = cached.discover("192.0.2.1", 30U);
+            auto const second = cached.discover("192.0.2.1", 30U);
+
+            THEN("the second call is served from cache with one upstream call")
+            {
+                REQUIRE(first.discovery_allowed);
+                REQUIRE(second.discovery_allowed);
+                REQUIRE(second.pinned_addresses == std::vector<std::string>{"192.0.2.1"});
+                REQUIRE(network.lookup_calls == 1U);
+            }
+        }
+    }
+}
+
+SCENARIO("CachedServerDiscovery re-fetches after the TTL expires", "[federation][discovery-cache]")
+{
+    GIVEN("a cached discovery with a counting upstream")
+    {
+        auto network = CountingDiscoveryNetwork{};
+        network.addresses_to_return = {/*ok=*/true, {"192.0.2.1"}, {}};
+
+        auto now_ms = std::uint64_t{1000U};
+        auto clock = std::function<std::uint64_t()>{[&now_ms]() {
+            return now_ms;
+        }};
+        auto cached = merovingian::federation::CachedServerDiscovery{network, /*ttl_ms=*/60'000U, clock};
+
+        WHEN("the clock advances past the TTL before the second discovery")
+        {
+            std::ignore = cached.discover("192.0.2.1", 30U);
+            now_ms = 1000U + 60'000U; // exactly at TTL boundary -> stale (>= ttl is a miss)
+            network.addresses_to_return = {/*ok=*/true, {"198.51.100.7"}, {}};
+            auto const second = cached.discover("192.0.2.1", 30U);
+
+            THEN("the upstream is called again and the fresh result is returned")
+            {
+                REQUIRE(second.discovery_allowed);
+                REQUIRE(second.pinned_addresses == std::vector<std::string>{"198.51.100.7"});
+                REQUIRE(network.lookup_calls == 2U);
+            }
+        }
+    }
+}
+
+SCENARIO("CachedServerDiscovery caches negative results for the TTL", "[federation][discovery-cache]")
+{
+    GIVEN("a cached discovery whose upstream reports an unreachable server")
+    {
+        auto network = CountingDiscoveryNetwork{};
+        network.addresses_to_return = {/*ok=*/false, {}, "no addresses"};
+
+        auto now_ms = std::uint64_t{1000U};
+        auto clock = std::function<std::uint64_t()>{[&now_ms]() {
+            return now_ms;
+        }};
+        auto cached = merovingian::federation::CachedServerDiscovery{network, /*ttl_ms=*/60'000U, clock};
+
+        WHEN("the failing server is discovered twice within the TTL")
+        {
+            auto const first = cached.discover("192.0.2.2", 30U);
+            auto const second = cached.discover("192.0.2.2", 30U);
+
+            THEN("the negative result is cached and no second network call is made")
+            {
+                REQUIRE_FALSE(first.discovery_allowed);
+                REQUIRE_FALSE(second.discovery_allowed);
+                REQUIRE(network.lookup_calls == 1U);
+            }
+        }
+    }
+}
+
+SCENARIO("CachedServerDiscovery never returns stale pinned_addresses past TTL", "[federation][discovery-cache]")
+{
+    GIVEN("a cached discovery that first pins one address")
+    {
+        auto network = CountingDiscoveryNetwork{};
+        network.addresses_to_return = {/*ok=*/true, {"192.0.2.1"}, {}};
+
+        auto now_ms = std::uint64_t{1000U};
+        auto clock = std::function<std::uint64_t()>{[&now_ms]() {
+            return now_ms;
+        }};
+        auto cached = merovingian::federation::CachedServerDiscovery{network, /*ttl_ms=*/60'000U, clock};
+
+        std::ignore = cached.discover("192.0.2.1", 30U);
+        REQUIRE(network.lookup_calls == 1U);
+
+        WHEN("DNS changes and the next discovery happens past the TTL")
+        {
+            now_ms = 1000U + 60'000U;
+            network.addresses_to_return = {/*ok=*/true, {"198.51.100.1"}, {}};
+            auto const refreshed = cached.discover("192.0.2.1", 30U);
+
+            THEN("the refreshed pinned_addresses are the new SSRF-safe pins")
+            {
+                // SSRF safety: a stale pin would keep routing to an address the
+                // operator no longer intends; the cache MUST re-run discovery
+                // and return fresh pins once TTL has elapsed.
+                REQUIRE(refreshed.discovery_allowed);
+                REQUIRE(refreshed.pinned_addresses == std::vector<std::string>{"198.51.100.1"});
+                REQUIRE(network.lookup_calls == 2U);
+            }
+        }
+    }
+}
+
+SCENARIO("CachedServerDiscovery is safe under concurrent access", "[federation][discovery-cache][thread-safety]")
+{
+    GIVEN("a cached discovery shared across many threads")
+    {
+        auto network = CountingDiscoveryNetwork{};
+        network.addresses_to_return = {/*ok=*/true, {"192.0.2.1"}, {}};
+
+        auto now_ms = std::uint64_t{1000U};
+        auto clock = std::function<std::uint64_t()>{[&now_ms]() {
+            return now_ms;
+        }};
+        auto cached = merovingian::federation::CachedServerDiscovery{network, /*ttl_ms=*/60'000U, clock};
+
+        auto const threads = 16U;
+        auto const per_thread = 64U;
+        auto failures = std::atomic<std::uint64_t>{0U};
+
+        WHEN("many threads discover the same server concurrently")
+        {
+            auto workers = std::vector<std::thread>{};
+            workers.reserve(threads);
+            for (auto i = std::uint64_t{0U}; i < threads; ++i)
+            {
+                workers.emplace_back([&cached, &failures]() {
+                    for (auto j = std::uint64_t{0U}; j < per_thread; ++j)
+                    {
+                        auto const result = cached.discover("192.0.2.1", 30U);
+                        if (!result.discovery_allowed ||
+                            result.pinned_addresses != std::vector<std::string>{"192.0.2.1"})
+                        {
+                            ++failures;
+                        }
+                    }
+                });
+            }
+            for (auto& worker : workers)
+            {
+                worker.join();
+            }
+
+            THEN("every call returns a valid result and the upstream is hit at most once per miss")
+            {
+                REQUIRE(failures.load() == 0U);
+                // The first miss populates the cache; all subsequent calls are
+                // hits. The cache MAY issue additional misses only if they
+                // race ahead of the first store; either way it is bounded and
+                // every result is valid (asserted above). Sanity bound: at
+                // most one miss per thread.
+                REQUIRE(network.lookup_calls <= threads);
+            }
+        }
+    }
+}
+
+// --- fetch_remote_server_keys(CachedServerDiscovery&) -------------------------
+// Spec: Matrix Server-Server API v1.18, Sec. 3 Retrieving server keys
+// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#retrieving-server-keys
+//
+// fetch_remote_server_keys has a CachedServerDiscovery overload so a key fetch's
+// internal discovery lookup shares the same TTL cache as the resolver's own
+// lookup. When discovery fails the fetch MUST fail closed before any outbound
+// HTTP call is attempted, and the negative discovery result MUST be served
+// from cache on a second fetch for the same server.
+SCENARIO("fetch_remote_server_keys via CachedServerDiscovery fails closed on discovery failure without a network call",
+         "[federation][remote-key-cache][discovery-cache]")
+{
+    GIVEN("a CachedServerDiscovery whose upstream reports an unreachable server")
+    {
+        auto network = CountingDiscoveryNetwork{};
+        network.addresses_to_return = {/*ok=*/false, {}, "no addresses"};
+        auto cached = merovingian::federation::CachedServerDiscovery{network, /*ttl_ms=*/60'000U, {}};
+        auto client = merovingian::http::OutboundClient{};
+
+        WHEN("the same unreachable server is fetched twice")
+        {
+            auto const first = merovingian::federation::fetch_remote_server_keys(client, cached, "192.0.2.40", 1U);
+            auto const second = merovingian::federation::fetch_remote_server_keys(client, cached, "192.0.2.40", 1U);
+
+            THEN("both fetches fail closed and only one discovery lookup was performed")
+            {
+                // Spec MUST: a key fetch MUST fail closed when the server cannot be
+                // discovered SSRF-safely — it MUST NOT fabricate or skip the discovery
+                // step. Do NOT remove/change - bypassing discovery on fetch would
+                // reintroduce the exact SSRF surface CachedServerDiscovery closes.
+                REQUIRE_FALSE(first.ok);
+                REQUIRE_FALSE(first.reason.empty());
+                REQUIRE_FALSE(second.ok);
+                // The negative discovery result is served from the cache, proving the
+                // fetch overload shares the same TTL cache as the resolver's lookup.
+                REQUIRE(network.lookup_calls == 1U);
+            }
+        }
+    }
+}
+
+// --- make_persistent_remote_key_resolver(CachedServerDiscovery&) --------------
+// Spec: Matrix Server-Server API v1.18, Sec. 3 Retrieving server keys
+// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#retrieving-server-keys
+//
+// This is the resolver overload wired by the homeserver in production whenever
+// `cached_discovery` is available (see local_http_router.cpp). Both the
+// resolver's own discovery lookup and the fetch's internal lookup are meant to
+// go through the same TTL cache, so a cache-hit key resolution never repeats
+// discovery for the same server. A fresh cached key MUST short-circuit before
+// any outbound key fetch — proven here because the fake OutboundClient never
+// receives a live server to talk to.
+SCENARIO("make_persistent_remote_key_resolver via CachedServerDiscovery serves a fresh cached key without "
+         "repeating discovery",
+         "[federation][remote-key-cache][resolver][discovery-cache]")
+{
+    GIVEN("a persistent store primed with a fresh verified key and a CachedServerDiscovery upstream")
+    {
+        auto open_result = merovingian::database::open_persistent_store();
+        REQUIRE(open_result.ok);
+        auto const signed_response = build_signed_key_response("192.0.2.41", "ed25519:auto", 9'999'999'999'999ULL);
+        auto const parsed =
+            merovingian::federation::parse_and_verify_remote_key_response(signed_response.body, "192.0.2.41");
+        REQUIRE(parsed.ok);
+        REQUIRE(merovingian::federation::cache_remote_server_keys(open_result.store, parsed.response));
+
+        auto network = CountingDiscoveryNetwork{};
+        network.addresses_to_return = {/*ok=*/true, {"192.0.2.41"}, {}};
+        auto cached = merovingian::federation::CachedServerDiscovery{network, /*ttl_ms=*/60'000U, {}};
+        auto client = merovingian::http::OutboundClient{};
+        // Fixed clock well before valid_until_ts (and outside the refresh slack
+        // window) so the cached key is treated as fresh on every call.
+        auto const clock = merovingian::federation::RemoteKeyClock{[]() -> std::uint64_t {
+            return 1'000'000U;
+        }};
+        auto resolver =
+            merovingian::federation::make_persistent_remote_key_resolver(open_result.store, client, cached, 1U, clock);
+
+        WHEN("the resolver is asked for the same server/key pair twice")
+        {
+            auto const first = resolver("192.0.2.41", "ed25519:auto");
+            auto const second = resolver("192.0.2.41", "ed25519:auto");
+
+            THEN("both resolutions are served from the cached key and discovery ran only once")
+            {
+                // Spec MUST: find_cached_remote_key MUST short-circuit an outbound
+                // fetch for a fresh, non-expired cached key.
+                REQUIRE(first.has_value());
+                REQUIRE(first->signing_key.server_name == "192.0.2.41");
+                REQUIRE(first->signing_key.key_id == "ed25519:auto");
+                REQUIRE(first->signing_key.public_key_bytes.size() == crypto_sign_PUBLICKEYBYTES);
+                REQUIRE(second.has_value());
+                REQUIRE(second->signing_key.key_id == "ed25519:auto");
+                // Proves the resolver's discovery lookup goes through the shared TTL
+                // cache: two resolver calls only ever cost one upstream discovery.
+                REQUIRE(network.lookup_calls == 1U);
+            }
+        }
+    }
+}
+
+SCENARIO("make_persistent_remote_key_resolver via CachedServerDiscovery returns nullopt when discovery fails and "
+         "no cached key exists",
+         "[federation][remote-key-cache][resolver][discovery-cache]")
+{
+    GIVEN("an empty persistent store and a CachedServerDiscovery whose upstream cannot reach the server")
+    {
+        auto open_result = merovingian::database::open_persistent_store();
+        REQUIRE(open_result.ok);
+
+        auto network = CountingDiscoveryNetwork{};
+        network.addresses_to_return = {/*ok=*/false, {}, "no route to host"};
+        auto cached = merovingian::federation::CachedServerDiscovery{network, /*ttl_ms=*/60'000U, {}};
+        auto client = merovingian::http::OutboundClient{};
+        auto resolver = merovingian::federation::make_persistent_remote_key_resolver(
+            open_result.store, client, cached, 1U, merovingian::federation::RemoteKeyClock{});
+
+        WHEN("the resolver is asked for a server it has never cached, twice")
+        {
+            auto const first = resolver("192.0.2.42", "ed25519:auto");
+            auto const second = resolver("192.0.2.42", "ed25519:auto");
+
+            THEN("both resolutions fail closed and discovery is served from the negative cache on the second call")
+            {
+                // Spec MUST: a remote server MUST NOT be admitted when it cannot be
+                // discovered SSRF-safely, even absent any cached key history.
+                // Do NOT remove/change - returning a key here would bypass discovery.
+                REQUIRE_FALSE(first.has_value());
+                REQUIRE_FALSE(second.has_value());
+                REQUIRE(network.lookup_calls == 1U);
             }
         }
     }

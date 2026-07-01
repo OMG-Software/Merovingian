@@ -31,16 +31,22 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <charconv>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <fstream>
+#include <future>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <ranges>
 #include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -57,6 +63,40 @@ namespace
     {
         observability::log_diagnostic("rooms", event, fields, severity);
     }
+
+    // Portable counting semaphore — std::counting_semaphore is not available on
+    // all supported platforms (e.g. NetBSD libc++).
+    class PortableSemaphore
+    {
+    public:
+        explicit PortableSemaphore(int count) noexcept
+            : count_{count}
+        {
+        }
+
+        auto acquire() -> void
+        {
+            auto lk = std::unique_lock{mtx_};
+            cv_.wait(lk, [this] {
+                return count_ > 0;
+            });
+            --count_;
+        }
+
+        auto release() noexcept -> void
+        {
+            {
+                auto const lk = std::lock_guard{mtx_};
+                ++count_;
+            }
+            cv_.notify_one();
+        }
+
+    private:
+        std::mutex mtx_{};
+        std::condition_variable cv_{};
+        int count_;
+    };
 
     [[nodiscard]] auto json_object_member(canonicaljson::Object const& object, std::string_view key) noexcept
         -> canonicaljson::Value const*
@@ -2547,43 +2587,149 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
         auto const key_id = signing_key.has_value() ? signing_key->key_id : std::string{};
         auto const secret_key = runtime.database.signing_secret_key.bytes();
         guard.unlock();
-        // Try each candidate resident server's make_join until one responds successfully.
-        auto remote_server = std::string{};
-        auto make_body = std::string{};
-        auto make_ok = false;
+        // Parallel make_join race: fire up to join_parallelism concurrent make_join
+        // calls and return on the first successful response. Still-running losers are
+        // moved into runtime.orphan_futures_ to complete in the background; they are
+        // drained in HomeserverRuntime::~HomeserverRuntime() before any member is
+        // destroyed. Completed orphans from a previous race are pruned first.
+        {
+            auto orphan_lk = std::lock_guard{runtime.orphan_futures_mutex_};
+            auto kept = std::vector<std::future<void>>{};
+            kept.reserve(runtime.orphan_futures_.size());
+            for (auto& f : runtime.orphan_futures_)
+            {
+                if (f.valid() && f.wait_for(std::chrono::seconds{0}) != std::future_status::ready)
+                {
+                    kept.push_back(std::move(f));
+                }
+            }
+            runtime.orphan_futures_ = std::move(kept);
+        }
+        // join_timeout_seconds is the per-call budget for each make_join attempt.
+        // Fall back to remote_timeout_seconds only when the join timeout is
+        // unconfigured (zero), so the default 180s join budget is always preferred
+        // over the 30s general federation timeout for large-room joins.
+        static constexpr auto k_max_join_parallelism = std::ptrdiff_t{512};
+        auto const parallelism = std::min(
+            static_cast<std::ptrdiff_t>(std::max(std::uint32_t{1U}, runtime.federation.config.join_parallelism)),
+            k_max_join_parallelism);
+        auto const per_call_timeout = runtime.federation.config.join_timeout_seconds > 0U
+                                          ? runtime.federation.config.join_timeout_seconds
+                                          : runtime.federation.config.remote_timeout_seconds;
+        struct MakeJoinRaceState
+        {
+            std::mutex mtx{};
+            std::condition_variable cv{};
+            std::optional<std::pair<std::string, std::string>> winner{}; // {server, body}
+            std::string last_error{};
+            int remaining{0};
+        };
+        auto race_state = std::make_shared<MakeJoinRaceState>();
+        race_state->remaining = static_cast<int>(candidates.size());
+        // Semaphore caps the number of concurrent in-flight make_join HTTP calls.
+        auto race_sem = std::make_shared<PortableSemaphore>(static_cast<int>(parallelism));
+        // Owned copies so tasks moved into orphan_futures_ are self-contained
+        // and do not dangle on stack variables in join_room.
+        auto room_id_copy = std::string{room_id};
+        auto user_id_copy = *user_id;
+        auto our_server_copy = std::string{our_server};
+        auto key_id_copy = key_id;
+        auto sv_copy = supported_versions;
+        auto race_futures = std::vector<std::future<void>>{};
+        race_futures.reserve(candidates.size());
         for (auto const& candidate : candidates)
         {
-            auto make_join_tx =
-                federation::make_outbound_make_membership(federation::FederationEndpoint::make_join, candidate,
-                                                          our_server, room_id, *user_id, supported_versions);
             log_diagnostic("room.join.remote.make_join", {
-                                                             {"actor",         *user_id,             false},
-                                                             {"room_id",       std::string{room_id}, false},
-                                                             {"remote_server", candidate,            false}
+                                                             {"actor",         user_id_copy, false},
+                                                             {"room_id",       room_id_copy, false},
+                                                             {"remote_server", candidate,    false}
             });
-            auto [ok, body] = perform_sync_outbound_call(runtime, room_id, make_join_tx, key_id, secret_key,
-                                                         "room.join.remote.make_join_failed",
-                                                         runtime.federation.config.remote_timeout_seconds);
-            // Keep the latest body: on success it is the make_join response; on failure it
-            // is the reason, surfaced below if every candidate server fails.
-            make_body = std::move(body);
-            if (ok)
+            race_futures.push_back(std::async(
+                std::launch::async, [&runtime, race_state, race_sem, room_id_copy, user_id_copy, our_server_copy,
+                                     key_id_copy, secret_key, sv_copy, per_call_timeout, cand = candidate]() mutable {
+                    // Acquire a concurrency slot before making the HTTP call.
+                    race_sem->acquire();
+                    struct SemRelease
+                    {
+                        PortableSemaphore& s;
+                        ~SemRelease() noexcept
+                        {
+                            s.release();
+                        }
+                    } sem_guard{*race_sem};
+                    // Bail early if another task already won.
+                    {
+                        auto lk = std::unique_lock{race_state->mtx};
+                        if (race_state->winner.has_value())
+                        {
+                            if (--race_state->remaining == 0)
+                            {
+                                lk.unlock();
+                                race_state->cv.notify_one();
+                            }
+                            return;
+                        }
+                    }
+                    auto tx =
+                        federation::make_outbound_make_membership(federation::FederationEndpoint::make_join, cand,
+                                                                  our_server_copy, room_id_copy, user_id_copy, sv_copy);
+                    auto [ok, body] = perform_sync_outbound_call(runtime, room_id_copy, tx, key_id_copy, secret_key,
+                                                                 "room.join.remote.make_join_failed", per_call_timeout);
+                    auto lk = std::unique_lock{race_state->mtx};
+                    if (ok && !race_state->winner.has_value())
+                    {
+                        race_state->winner = {cand, std::move(body)};
+                    }
+                    else if (!ok && !race_state->winner.has_value())
+                    {
+                        race_state->last_error = std::move(body);
+                    }
+                    if (--race_state->remaining == 0 || race_state->winner.has_value())
+                    {
+                        lk.unlock();
+                        race_state->cv.notify_one();
+                    }
+                }));
+        }
+        // Block until first winner or all candidates exhausted.
+        {
+            auto lk = std::unique_lock{race_state->mtx};
+            race_state->cv.wait(lk, [&race_state] {
+                return race_state->winner.has_value() || race_state->remaining <= 0;
+            });
+        }
+        // Park still-running losers in orphan_futures_; discard completed ones.
+        {
+            auto orphan_lk = std::lock_guard{runtime.orphan_futures_mutex_};
+            for (auto& f : race_futures)
             {
-                remote_server = candidate;
-                make_ok = true;
-                break;
+                if (!f.valid())
+                {
+                    continue;
+                }
+                if (f.wait_for(std::chrono::seconds{0}) == std::future_status::ready)
+                {
+                    // Completed loser — let the future destructor clean up silently.
+                }
+                else
+                {
+                    runtime.orphan_futures_.push_back(std::move(f));
+                }
             }
         }
-        if (!make_ok)
+        if (!race_state->winner.has_value())
         {
-            log_diagnostic("room.join.rejected", {
-                                                     {"actor",   *user_id,                              false},
-                                                     {"room_id", std::string{room_id},                  false},
-                                                     {"status",  "502",                                 false},
-                                                     {"reason",  "make_join failed via all candidates", false}
-            });
-            return make_operation_result(false, {}, "make_join failed: " + make_body, 502U);
+            log_diagnostic("room.join.rejected",
+                           {
+                               {"actor",   user_id_copy,                          false},
+                               {"room_id", room_id_copy,                          false},
+                               {"status",  "502",                                 false},
+                               {"reason",  "make_join failed via all candidates", false}
+            },
+                           observability::LogEventSeverity::warning);
+            return make_operation_result(false, {}, "make_join failed: " + race_state->last_error, 502U);
         }
+        auto [remote_server, make_body] = std::move(*race_state->winner);
         // Parse the make_join response and validate the template before we sign it.
         auto const make_response = canonicaljson::parse_lossless(make_body);
         auto const* make_obj = std::get_if<canonicaljson::Object>(&make_response.value.storage());

@@ -17,6 +17,8 @@ SCENARIO("Runtime federation config parses validated transaction limits", "[fede
         security.federation.denied_servers = {"bad.example"};
         security.federation.max_transaction_size = "8MiB";
         security.federation.remote_timeout = "45s";
+        security.federation.join_timeout = "200s";
+        security.federation.join_parallelism = 12U;
         auto const config = merovingian::config::Config{
             merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
             merovingian::config::DatabaseConfig{},         security,
@@ -37,6 +39,8 @@ SCENARIO("Runtime federation config parses validated transaction limits", "[fede
                 REQUIRE(runtime_federation.verify_json_signatures);
                 REQUIRE(runtime_federation.max_transaction_bytes == 8388608U);
                 REQUIRE(runtime_federation.remote_timeout_seconds == 45U);
+                REQUIRE(runtime_federation.join_timeout_seconds == 200U);
+                REQUIRE(runtime_federation.join_parallelism == 12U);
                 REQUIRE(runtime_federation.deny_ip_ranges.size() == 6U);
             }
         }
@@ -54,6 +58,8 @@ SCENARIO("Runtime federation summary exposes bounded operational values", "[fede
         runtime_federation.denied_servers = {"bad.example"};
         runtime_federation.max_transaction_bytes = 10485760U;
         runtime_federation.remote_timeout_seconds = 30U;
+        runtime_federation.join_timeout_seconds = 180U;
+        runtime_federation.join_parallelism = 8U;
 
         WHEN("the federation summary is generated")
         {
@@ -67,6 +73,8 @@ SCENARIO("Runtime federation summary exposes bounded operational values", "[fede
                 REQUIRE(summary.find("denied_servers=1") != std::string::npos);
                 REQUIRE(summary.find("max_transaction_bytes=10485760") != std::string::npos);
                 REQUIRE(summary.find("remote_timeout_seconds=30") != std::string::npos);
+                REQUIRE(summary.find("join_timeout_seconds=180") != std::string::npos);
+                REQUIRE(summary.find("join_parallelism=8") != std::string::npos);
             }
         }
     }

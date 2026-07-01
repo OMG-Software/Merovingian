@@ -995,6 +995,27 @@ Deny-by-default federation requires a non-empty `allowed_servers` list while fed
 
 `security.federation.deny_ip_ranges` remains separate from server-name policy and is used for private or loopback network-range blocking.
 
+## Federation join timeout and parallelism
+
+Joining a remote room runs the `make_join`/`send_join` dance against the resident
+server(s). A large room on a slow resident server (e.g. matrix.org) can take
+longer than the 60s general `security.federation.remote_timeout`, surfacing as
+`502 make_join failed: timeout`. Two keys give that dance a separate,
+extendable budget and parallelise candidate probes:
+
+```text
+security.federation.join_timeout=180s
+security.federation.join_parallelism=8
+```
+
+| Key | Type | Default | Reload | Notes |
+|-----|------|---------|--------|-------|
+| `security.federation.join_timeout` | duration | `180s` | reloadable (`requires_restart=false`) | Budget for `make_join`/`send_join`/`make_leave`/`send_leave`. Separate from `remote_timeout` (60s), which still governs all other federation calls. |
+| `security.federation.join_parallelism` | unsigned int | `8` | reloadable (`requires_restart=false`) | Cap on concurrent `make_join` candidate probes (first success wins; `send_join` targets the winner) and concurrent inbound `/send` sender-key resolution. Must be `>= 1`; `0` is rejected at validation. |
+
+`join_timeout` accepts the same positive bounded duration suffixes (`s`, `m`)
+as `remote_timeout`; `0s` is rejected.
+
 ## Federation worker (out-of-process)
 
 When a user joins a large federated room, the inbound PDU verification, state

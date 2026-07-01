@@ -685,6 +685,7 @@ namespace
         auto* rt = &runtime;
         auto* outbound = runtime.outbound_client.get();
         auto* discovery = runtime.discovery_network.get();
+        auto* cached = runtime.cached_discovery.get();
         auto const timeout = runtime.federation.config.remote_timeout_seconds;
 
         runtime.federation.pdu_sink =
@@ -1498,12 +1499,24 @@ namespace
 
         if (outbound && discovery)
         {
-            runtime.federation.remote_key_resolver = federation::make_persistent_remote_key_resolver(
-                runtime.database.persistent_store, *outbound, *discovery, timeout, [] {
-                    return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
-                                                          std::chrono::system_clock::now().time_since_epoch())
-                                                          .count());
-                });
+            // Prefer the TTL-bounded discovery cache so repeated key resolutions
+            // for the same server skip the DNS cascade; fall back to the raw
+            // network in test harnesses that wire only discovery_network.
+            auto const key_clock = []() -> std::uint64_t {
+                return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                      std::chrono::system_clock::now().time_since_epoch())
+                                                      .count());
+            };
+            if (cached != nullptr)
+            {
+                runtime.federation.remote_key_resolver = federation::make_persistent_remote_key_resolver(
+                    runtime.database.persistent_store, *outbound, *cached, timeout, key_clock);
+            }
+            else
+            {
+                runtime.federation.remote_key_resolver = federation::make_persistent_remote_key_resolver(
+                    runtime.database.persistent_store, *outbound, *discovery, timeout, key_clock);
+            }
             auto key = ensure_runtime_server_signing_key(runtime);
             if (!key.has_value() || runtime.database.signing_secret_key.bytes().size() != crypto_sign_SECRETKEYBYTES)
             {
@@ -1520,10 +1533,14 @@ namespace
             // retains its own SecretBuffer; both are wiped independently.
             dispatch_config.secret_key = core::SecretBuffer{runtime.database.signing_secret_key.bytes()};
             auto* discovery_ptr = discovery;
+            auto* cached_ptr = cached;
             auto const discovery_timeout = timeout > 0U ? timeout : 30U;
-            auto resolver = [discovery_ptr, discovery_timeout](
+            auto resolver = [discovery_ptr, cached_ptr, discovery_timeout](
                                 std::string_view server_name) -> std::optional<federation::ServerDiscoveryResult> {
-                auto result = federation::discover_server(server_name, *discovery_ptr, discovery_timeout);
+                // Prefer the TTL cache; fall back to the raw network for tests.
+                auto result = cached_ptr != nullptr
+                                  ? cached_ptr->discover(server_name, discovery_timeout)
+                                  : federation::discover_server(server_name, *discovery_ptr, discovery_timeout);
                 if (!result.discovery_allowed)
                 {
                     return std::nullopt;

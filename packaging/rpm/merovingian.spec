@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.10.9
+Version:        0.10.10
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -101,6 +101,8 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Mon Jun 30 2026 James Chapman <claude@ping.me.uk> - 0.10.10-1
+- fix(federation): parallel make_join across candidate servers, configurable join timeout, TTL discovery cache, parallel inbound key resolution for faster remote room joins
 * Mon Jun 30 2026 James Chapman <claude@ping.me.uk> - 0.10.9-1
 - fix(security): harden federation-worker IPC boundary and key separation - authenticate crypto_kx handshake with master-key MAC (#318); replace hand-rolled IPC JSON parser with fuzzed canonicaljson (#320); noexcept allocation-failure safety in IpcChannel (#324); lower IPC frame cap to 16 MiB and surface oversize drops (#325); minimal worker environment via posix_spawn (#330); worker-specific seccomp + runtime hardening (#319); derive legacy v3 access-token HMAC key from master key, not the Ed25519 seed (#322, breaking - re-login required); handle escaped quotes in X-Matrix Authorization parser (#321); keep server signing secret in SecretBuffer/span, not std::string (#317); main verifies inbound X-Matrix signature and forwards only the verified peer identity to the worker - raw peer credentials never cross IPC (#323)
 * Mon Jun 29 2026 James Chapman <claude@ping.me.uk> - 0.10.8-1

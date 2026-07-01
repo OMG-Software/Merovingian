@@ -347,6 +347,17 @@ namespace
         {
             security.federation.remote_timeout = std::string{value};
         }
+        else if (key == "security.federation.join_timeout")
+        {
+            security.federation.join_timeout = std::string{value};
+        }
+        else if (key == "security.federation.join_parallelism")
+        {
+            if (!parse_u32_value(value, security.federation.join_parallelism))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
         else if (key == "security.media.max_upload_size")
         {
             security.media.max_upload_size = std::string{value};

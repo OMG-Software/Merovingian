@@ -202,6 +202,14 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "security.federation.remote_timeout");
     }
+    if (current.security().federation.join_timeout != next.security().federation.join_timeout)
+    {
+        add_change(plan, "security.federation.join_timeout");
+    }
+    if (current.security().federation.join_parallelism != next.security().federation.join_parallelism)
+    {
+        add_change(plan, "security.federation.join_parallelism");
+    }
 
     if (current.security().media.max_upload_size != next.security().media.max_upload_size)
     {

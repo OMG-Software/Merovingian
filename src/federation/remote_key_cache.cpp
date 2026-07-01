@@ -8,6 +8,7 @@
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/events/event_signer.hpp"
+#include "merovingian/federation/cached_server_discovery.hpp"
 #include "merovingian/federation/security.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
@@ -195,6 +196,55 @@ namespace
                                            reinterpret_cast<unsigned char const*>(public_key_bytes.data())) == 0;
     }
 
+    // Builds the outbound GET /_matrix/key/v2/server request from a resolved
+    // discovery result, performs it, and self-verifies the response. Shared by
+    // the raw-network and cached-discovery overloads of fetch_remote_server_keys
+    // so the cache wraps both discovery cascades (the resolver's own lookup and
+    // the fetch's internal lookup).
+    [[nodiscard]] auto fetch_with_discovery(http::OutboundClient& client, std::string_view server_name,
+                                            std::uint32_t timeout_seconds, ServerDiscoveryResult const& discovery)
+        -> RemoteKeyFetchResult
+    {
+        if (!discovery.discovery_allowed)
+        {
+            return {false, {}, discovery.reason.empty() ? "discovery failed" : discovery.reason};
+        }
+        auto url = std::string{"https://"};
+        auto const needs_brackets =
+            discovery.resolved_host.find(':') != std::string::npos && discovery.resolved_host.front() != '[';
+        if (needs_brackets)
+        {
+            url += '[';
+        }
+        url += discovery.resolved_host;
+        if (needs_brackets)
+        {
+            url += ']';
+        }
+        url += ':';
+        url += std::to_string(discovery.resolved_port);
+        url += key_endpoint;
+
+        auto request = http::OutboundRequest{};
+        request.method = "GET";
+        request.url = std::move(url);
+        request.pinned_addresses = discovery.pinned_addresses;
+        request.connect_timeout_seconds = timeout_seconds;
+        request.total_timeout_seconds = timeout_seconds;
+        request.max_response_body_bytes = 64U * 1024U;
+
+        auto const result = client.perform(request);
+        if (!result.ok)
+        {
+            return {false, {}, result.error_detail.empty() ? "outbound key fetch failed" : result.error_detail};
+        }
+        if (result.response.status != 200U)
+        {
+            return {false, {}, "remote key endpoint returned status " + std::to_string(result.response.status)};
+        }
+        return parse_and_verify_remote_key_response(result.response.body, server_name);
+    }
+
 } // namespace
 
 auto parse_and_verify_remote_key_response(std::string_view body, std::string_view expected_server_name)
@@ -254,44 +304,17 @@ auto fetch_remote_server_keys(http::OutboundClient& client, ServerDiscoveryNetwo
                               std::string_view server_name, std::uint32_t timeout_seconds) -> RemoteKeyFetchResult
 {
     auto const discovery = discover_server(server_name, network, timeout_seconds);
-    if (!discovery.discovery_allowed)
-    {
-        return {false, {}, discovery.reason.empty() ? "discovery failed" : discovery.reason};
-    }
-    auto url = std::string{"https://"};
-    auto const needs_brackets =
-        discovery.resolved_host.find(':') != std::string::npos && discovery.resolved_host.front() != '[';
-    if (needs_brackets)
-    {
-        url += '[';
-    }
-    url += discovery.resolved_host;
-    if (needs_brackets)
-    {
-        url += ']';
-    }
-    url += ':';
-    url += std::to_string(discovery.resolved_port);
-    url += key_endpoint;
+    return fetch_with_discovery(client, server_name, timeout_seconds, discovery);
+}
 
-    auto request = http::OutboundRequest{};
-    request.method = "GET";
-    request.url = std::move(url);
-    request.pinned_addresses = discovery.pinned_addresses;
-    request.connect_timeout_seconds = timeout_seconds;
-    request.total_timeout_seconds = timeout_seconds;
-    request.max_response_body_bytes = 64U * 1024U;
-
-    auto const result = client.perform(request);
-    if (!result.ok)
-    {
-        return {false, {}, result.error_detail.empty() ? "outbound key fetch failed" : result.error_detail};
-    }
-    if (result.response.status != 200U)
-    {
-        return {false, {}, "remote key endpoint returned status " + std::to_string(result.response.status)};
-    }
-    return parse_and_verify_remote_key_response(result.response.body, server_name);
+auto fetch_remote_server_keys(http::OutboundClient& client, CachedServerDiscovery& discovery,
+                              std::string_view server_name, std::uint32_t timeout_seconds) -> RemoteKeyFetchResult
+{
+    // Reuse the cached discovery result so a key fetch does not re-run the
+    // .well-known + SRV + DNS cascade. The cache was populated by the
+    // resolver's own discovery call one step earlier, so this is a hot hit.
+    auto const result = discovery.discover(server_name, timeout_seconds);
+    return fetch_with_discovery(client, server_name, timeout_seconds, result);
 }
 
 auto remote_key_needs_refresh(std::uint64_t valid_until_ts, std::uint64_t now_ts) noexcept -> bool
@@ -408,6 +431,96 @@ namespace
         return runtime;
     }
 
+    using DiscoverFn = std::function<ServerDiscoveryResult(std::string_view, std::uint32_t)>;
+    using FetchKeysFn = std::function<RemoteKeyFetchResult(http::OutboundClient&, std::string_view, std::uint32_t)>;
+
+    // Shared body of the remote-key resolver. `discover` resolves a server
+    // name to a destination (raw `discover_server` or a TTL cache) and
+    // `fetch_keys` performs the outbound GET /_matrix/key/v2/server using the
+    // same discovery strategy. Both callables are copied into the returned
+    // resolver; they capture the underlying network/cache by pointer, which
+    // must outlive the resolver (the runtime owns both).
+    [[nodiscard]] auto make_resolver_impl(database::PersistentStore& store, http::OutboundClient& client,
+                                          std::uint32_t timeout_seconds, RemoteKeyClock clock, DiscoverFn discover,
+                                          FetchKeysFn fetch_keys) -> RemoteKeyResolver
+    {
+        return [&store, &client, timeout_seconds, clock = std::move(clock), discover = std::move(discover),
+                fetch_keys = std::move(fetch_keys)](std::string_view server_name,
+                                                    std::string_view key_id) -> std::optional<FederationRemoteRuntime> {
+            auto const now = clock();
+            auto cached_key = find_cached_remote_key(store, server_name, key_id);
+            auto const discovery = discover(server_name, timeout_seconds);
+            if (!discovery.discovery_allowed)
+            {
+                log_resolver("discovery_failed", {
+                                                     {"server_name", std::string{server_name}, false},
+                                                     {"reason",      discovery.reason,         false},
+                });
+            }
+            if (cached_key.has_value() && !remote_key_needs_refresh(cached_key->valid_until_ts, now) &&
+                discovery.discovery_allowed)
+            {
+                log_resolver("cache.hit", {
+                                              {"server_name", std::string{server_name},                   false},
+                                              {"key_id",      std::string{key_id},                        false},
+                                              {"valid_until", std::to_string(cached_key->valid_until_ts), false}
+                });
+                return build_remote_runtime(server_name, std::move(*cached_key), discovery);
+            }
+            auto const fetched = fetch_keys(client, server_name, timeout_seconds);
+            if (!fetched.ok)
+            {
+                log_resolver("key_fetch_failed", {
+                                                     {"server_name", std::string{server_name}, false},
+                                                     {"reason",      fetched.reason,           false},
+                });
+            }
+            if (fetched.ok)
+            {
+                log_resolver("key_fetch_accepted",
+                             {
+                                 {"server_name", std::string{server_name},                            false},
+                                 {"key_count",   std::to_string(fetched.response.verify_keys.size()), false},
+                                 {"valid_until", std::to_string(fetched.response.valid_until_ts),     false}
+                });
+                std::ignore = cache_remote_server_keys(store, fetched.response);
+                auto refreshed = find_cached_remote_key(store, server_name, key_id);
+                if (refreshed.has_value() && discovery.discovery_allowed)
+                {
+                    return build_remote_runtime(server_name, std::move(*refreshed), discovery);
+                }
+                if (!refreshed.has_value())
+                {
+                    // The fetch and self-verification succeeded, but the key_id the
+                    // request was signed with is absent from the published set.
+                    log_resolver("request_key_id_not_published", {
+                                                                     {"server_name", std::string{server_name}, false},
+                                                                     {"key_id",      std::string{key_id},      false},
+                    });
+                }
+            }
+            // Fall back to the (possibly expired) cached entry — a stale key still
+            // lets the caller distinguish "we have history with this server" from
+            // "we have never heard of it". Discovery must still succeed: a remote
+            // we cannot reach SSRF-safely should not be admitted.
+            if (cached_key.has_value() && discovery.discovery_allowed)
+            {
+                log_resolver("cache.stale_fallback",
+                             {
+                                 {"server_name", std::string{server_name},                   false},
+                                 {"key_id",      std::string{key_id},                        false},
+                                 {"valid_until", std::to_string(cached_key->valid_until_ts), false}
+                });
+                return build_remote_runtime(server_name, std::move(*cached_key), discovery);
+            }
+            log_resolver("unresolved", {
+                                           {"server_name", std::string{server_name}, false},
+                                           {"key_id",      std::string{key_id},      false},
+            });
+            return std::nullopt;
+        };
+    }
+
 } // namespace
 
 auto make_persistent_remote_key_resolver(database::PersistentStore& store, http::OutboundClient& client,
@@ -418,80 +531,32 @@ auto make_persistent_remote_key_resolver(database::PersistentStore& store, http:
     // callback. Returning 0 from a missing clock made every cached key look
     // fresh and prevented refresh-on-expiry from ever firing.
     auto clock = now_ms ? std::move(now_ms) : RemoteKeyClock{default_wall_clock_ms};
-    return [&store, &client, &network, timeout_seconds, clock = std::move(clock)](
-               std::string_view server_name, std::string_view key_id) -> std::optional<FederationRemoteRuntime> {
-        auto const now = clock();
-        auto cached_key = find_cached_remote_key(store, server_name, key_id);
-        auto const discovery = discover_server(server_name, network, timeout_seconds);
-        if (!discovery.discovery_allowed)
-        {
-            log_resolver("discovery_failed", {
-                                                 {"server_name", std::string{server_name}, false},
-                                                 {"reason",      discovery.reason,         false},
-            });
-        }
-        if (cached_key.has_value() && !remote_key_needs_refresh(cached_key->valid_until_ts, now) &&
-            discovery.discovery_allowed)
-        {
-            log_resolver("cache.hit", {
-                                          {"server_name", std::string{server_name},                   false},
-                                          {"key_id",      std::string{key_id},                        false},
-                                          {"valid_until", std::to_string(cached_key->valid_until_ts), false}
-            });
-            return build_remote_runtime(server_name, std::move(*cached_key), discovery);
-        }
-        auto const fetched = fetch_remote_server_keys(client, network, server_name, timeout_seconds);
-        if (!fetched.ok)
-        {
-            log_resolver("key_fetch_failed", {
-                                                 {"server_name", std::string{server_name}, false},
-                                                 {"reason",      fetched.reason,           false},
-            });
-        }
-        if (fetched.ok)
-        {
-            log_resolver("key_fetch_accepted",
-                         {
-                             {"server_name", std::string{server_name},                            false},
-                             {"key_count",   std::to_string(fetched.response.verify_keys.size()), false},
-                             {"valid_until", std::to_string(fetched.response.valid_until_ts),     false}
-            });
-            std::ignore = cache_remote_server_keys(store, fetched.response);
-            auto refreshed = find_cached_remote_key(store, server_name, key_id);
-            if (refreshed.has_value() && discovery.discovery_allowed)
-            {
-                return build_remote_runtime(server_name, std::move(*refreshed), discovery);
-            }
-            if (!refreshed.has_value())
-            {
-                // The fetch and self-verification succeeded, but the key_id the
-                // request was signed with is absent from the published set.
-                log_resolver("request_key_id_not_published", {
-                                                                 {"server_name", std::string{server_name}, false},
-                                                                 {"key_id",      std::string{key_id},      false},
-                });
-            }
-        }
-        // Fall back to the (possibly expired) cached entry — a stale key still
-        // lets the caller distinguish "we have history with this server" from
-        // "we have never heard of it". Discovery must still succeed: a remote
-        // we cannot reach SSRF-safely should not be admitted.
-        if (cached_key.has_value() && discovery.discovery_allowed)
-        {
-            log_resolver("cache.stale_fallback",
-                         {
-                             {"server_name", std::string{server_name},                   false},
-                             {"key_id",      std::string{key_id},                        false},
-                             {"valid_until", std::to_string(cached_key->valid_until_ts), false}
-            });
-            return build_remote_runtime(server_name, std::move(*cached_key), discovery);
-        }
-        log_resolver("unresolved", {
-                                       {"server_name", std::string{server_name}, false},
-                                       {"key_id",      std::string{key_id},      false},
+    return make_resolver_impl(
+        store, client, timeout_seconds, std::move(clock),
+        [&network](std::string_view sn, std::uint32_t ts) {
+            return discover_server(sn, network, ts);
+        },
+        [&network](http::OutboundClient& c, std::string_view sn, std::uint32_t ts) {
+            return fetch_remote_server_keys(c, network, sn, ts);
         });
-        return std::nullopt;
-    };
+}
+
+auto make_persistent_remote_key_resolver(database::PersistentStore& store, http::OutboundClient& client,
+                                         CachedServerDiscovery& discovery, std::uint32_t timeout_seconds,
+                                         RemoteKeyClock now_ms) -> RemoteKeyResolver
+{
+    auto clock = now_ms ? std::move(now_ms) : RemoteKeyClock{default_wall_clock_ms};
+    // Both the resolver's own discovery lookup and the fetch's internal lookup
+    // go through the cache, so a cache hit skips the .well-known + SRV + DNS
+    // cascade entirely and a miss pays it once for both.
+    return make_resolver_impl(
+        store, client, timeout_seconds, std::move(clock),
+        [&discovery](std::string_view sn, std::uint32_t ts) {
+            return discovery.discover(sn, ts);
+        },
+        [&discovery](http::OutboundClient& c, std::string_view sn, std::uint32_t ts) {
+            return fetch_remote_server_keys(c, discovery, sn, ts);
+        });
 }
 
 } // namespace merovingian::federation

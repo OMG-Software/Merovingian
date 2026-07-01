@@ -98,6 +98,7 @@ if get_option ('build_tests')
       'unit/test_client_server.cpp',
       'unit/test_config_defaults.cpp',
       'unit/test_config_media_timeout.cpp',
+      'unit/test_config_federation_join.cpp',
       'unit/test_config_client_rate_limits.cpp',
       'unit/test_config_log_modules.cpp',
       'unit/test_config_parser.cpp',
