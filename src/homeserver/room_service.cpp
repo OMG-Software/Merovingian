@@ -42,7 +42,6 @@
 #include <mutex>
 #include <optional>
 #include <ranges>
-#include <semaphore>
 #include <span>
 #include <string>
 #include <string_view>
@@ -64,6 +63,40 @@ namespace
     {
         observability::log_diagnostic("rooms", event, fields, severity);
     }
+
+    // Portable counting semaphore — std::counting_semaphore is not available on
+    // all supported platforms (e.g. NetBSD libc++).
+    class PortableSemaphore
+    {
+    public:
+        explicit PortableSemaphore(int count) noexcept
+            : count_{count}
+        {
+        }
+
+        auto acquire() -> void
+        {
+            auto lk = std::unique_lock{mtx_};
+            cv_.wait(lk, [this] {
+                return count_ > 0;
+            });
+            --count_;
+        }
+
+        auto release() noexcept -> void
+        {
+            {
+                auto const lk = std::lock_guard{mtx_};
+                ++count_;
+            }
+            cv_.notify_one();
+        }
+
+    private:
+        std::mutex mtx_{};
+        std::condition_variable cv_{};
+        int count_;
+    };
 
     [[nodiscard]] auto json_object_member(canonicaljson::Object const& object, std::string_view key) noexcept
         -> canonicaljson::Value const*
@@ -2594,7 +2627,7 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
         auto race_state = std::make_shared<MakeJoinRaceState>();
         race_state->remaining = static_cast<int>(candidates.size());
         // Semaphore caps the number of concurrent in-flight make_join HTTP calls.
-        auto race_sem = std::make_shared<std::counting_semaphore<k_max_join_parallelism>>(parallelism);
+        auto race_sem = std::make_shared<PortableSemaphore>(static_cast<int>(parallelism));
         // Owned copies so tasks moved into orphan_futures_ are self-contained
         // and do not dangle on stack variables in join_room.
         auto room_id_copy = std::string{room_id};
@@ -2618,7 +2651,7 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
                     race_sem->acquire();
                     struct SemRelease
                     {
-                        std::counting_semaphore<k_max_join_parallelism>& s;
+                        PortableSemaphore& s;
                         ~SemRelease() noexcept
                         {
                             s.release();

@@ -24,7 +24,6 @@
 #include <future>
 #include <map>
 #include <optional>
-#include <semaphore>
 #include <set>
 #include <string>
 #include <string_view>
@@ -43,6 +42,40 @@ namespace
     {
         observability::log_diagnostic("federation", event, fields, severity);
     }
+
+    // Portable counting semaphore — std::counting_semaphore is not available on
+    // all supported platforms (e.g. NetBSD libc++).
+    class PortableSemaphore
+    {
+    public:
+        explicit PortableSemaphore(int count) noexcept
+            : count_{count}
+        {
+        }
+
+        auto acquire() -> void
+        {
+            auto lk = std::unique_lock{mtx_};
+            cv_.wait(lk, [this] {
+                return count_ > 0;
+            });
+            --count_;
+        }
+
+        auto release() noexcept -> void
+        {
+            {
+                auto const lk = std::lock_guard{mtx_};
+                ++count_;
+            }
+            cv_.notify_one();
+        }
+
+    private:
+        std::mutex mtx_{};
+        std::condition_variable cv_{};
+        int count_;
+    };
 
     [[nodiscard]] auto sodium_is_ready() noexcept -> bool
     {
@@ -1713,7 +1746,7 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
             auto const configured = runtime.config.join_parallelism;
             auto const parallelism = std::clamp<std::uint32_t>(configured == 0U ? 1U : configured, 1U, 64U);
             auto resolved = std::vector<std::optional<FederationRemoteRuntime>>(distinct_pairs.size());
-            auto sem = std::counting_semaphore<64>{static_cast<std::ptrdiff_t>(parallelism)};
+            auto sem = PortableSemaphore{static_cast<int>(parallelism)};
             auto tasks = std::vector<std::future<void>>{};
             tasks.reserve(distinct_pairs.size());
             auto const& resolver = runtime.remote_key_resolver;
