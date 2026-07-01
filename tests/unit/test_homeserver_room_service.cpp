@@ -27,7 +27,12 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <future>
+#include <mutex>
 #include <string>
+#include <thread>
 
 #include <sodium.h>
 
@@ -913,6 +918,47 @@ SCENARIO("parallel make_join race returns 502 when all candidates are unreachabl
             {
                 REQUIRE_FALSE(result.ok);
                 REQUIRE(result.status == 502U);
+            }
+        }
+    }
+}
+
+// --- orphan future draining (HomeserverRuntime destructor) ----------------------
+
+SCENARIO("HomeserverRuntime destructor waits for orphaned make_join race loser futures",
+         "[homeserver][rooms][join][federation][concurrency]")
+{
+    GIVEN("a started runtime with a slow orphaned future parked in orphan_futures_")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto completed = std::atomic<bool>{false};
+
+        WHEN("the runtime is destroyed while the orphan future is still running")
+        {
+            {
+                auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+                REQUIRE(started.started);
+                auto& runtime = started.runtime;
+
+                auto future = std::async(std::launch::async, [&completed]() {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                    completed = true;
+                });
+                {
+                    auto const lock = std::lock_guard{runtime.orphan_futures_mutex_};
+                    runtime.orphan_futures_.push_back(std::move(future));
+                }
+            } // `started` goes out of scope here — the HomeserverRuntime destructor runs.
+
+            THEN("destruction blocks until the orphaned task finishes")
+            {
+                // The dtor explicitly waits on every future in orphan_futures_ before
+                // any other member (outbound_client, discovery_network, the signing
+                // SecretBuffer) is torn down. If it returned without waiting, this
+                // flag could still be false here despite the 50ms sleep having had
+                // time to elapse — proving the destructor actually blocks, not just
+                // that the background thread eventually finishes on its own.
+                REQUIRE(completed.load());
             }
         }
     }
