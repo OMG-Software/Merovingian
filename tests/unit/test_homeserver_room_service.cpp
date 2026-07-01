@@ -848,6 +848,93 @@ SCENARIO("parallel make_join race uses join_timeout_seconds when it is configure
     }
 }
 
+SCENARIO("parallel make_join race truncates the candidate list to join_max_candidates before racing",
+         "[homeserver][rooms][join][federation][error][concurrency]")
+{
+    GIVEN("a started runtime with join_max_candidates=3 and no reachable discovery infrastructure")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const reg = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                      merovingian::tests::registration_token);
+        REQUIRE(reg.ok);
+        auto const login = merovingian::homeserver::login_local_user(runtime, reg.value, "CorrectHorse7!", "DEVICE1");
+        REQUIRE(login.ok);
+
+        runtime.discovery_network.reset();
+        runtime.cached_discovery.reset();
+
+        WHEN("join_room is called with ten via candidates and join_max_candidates capped at 3")
+        {
+            // join_candidate_servers would build 10 candidates; cap_join_candidates
+            // (proven order-preserving/truncating in test_join_routing.cpp) trims that
+            // to the first 3 before a single make_join future is spawned. Here we only
+            // need to prove join_room wires the config value through without hanging
+            // or crashing on an oversized via list — the precise truncation semantics
+            // are unit-tested directly on cap_join_candidates.
+            runtime.federation.config.join_parallelism = 8U;
+            runtime.federation.config.join_max_candidates = 3U;
+            auto const result = merovingian::homeserver::join_room(
+                runtime, login.value, "!abc:remote.example.com",
+                {"s1.remote.example.com", "s2.remote.example.com", "s3.remote.example.com", "s4.remote.example.com",
+                 "s5.remote.example.com", "s6.remote.example.com", "s7.remote.example.com", "s8.remote.example.com",
+                 "s9.remote.example.com", "s10.remote.example.com"});
+
+            THEN("join fails with 502 after exhausting only the capped candidate set")
+            {
+                REQUIRE_FALSE(result.ok);
+                REQUIRE(result.status == 502U);
+            }
+        }
+    }
+}
+
+SCENARIO("parallel make_join race honours a configured overall race deadline",
+         "[homeserver][rooms][join][federation][error][concurrency]")
+{
+    GIVEN("a started runtime with join_race_deadline_seconds=2 and no reachable discovery infrastructure")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const reg = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                      merovingian::tests::registration_token);
+        REQUIRE(reg.ok);
+        auto const login = merovingian::homeserver::login_local_user(runtime, reg.value, "CorrectHorse7!", "DEVICE1");
+        REQUIRE(login.ok);
+
+        runtime.discovery_network.reset();
+        runtime.cached_discovery.reset();
+
+        WHEN("join_room is called with join_race_deadline_seconds=2 (non-zero — bounds the whole race)")
+        {
+            // With discovery unavailable every candidate fails near-instantly, so this
+            // does not prove the deadline PREEMPTS a slow candidate (that requires a
+            // live outbound call and belongs in integration coverage); it proves the
+            // deadline-configured branch (cv.wait_until vs. cv.wait) executes correctly
+            // and still converges to the same 502 result as the unbounded path.
+            runtime.federation.config.join_race_deadline_seconds = 2U;
+            runtime.federation.config.join_parallelism = 1U;
+            auto const started_at = std::chrono::steady_clock::now();
+            auto const result = merovingian::homeserver::join_room(runtime, login.value, "!abc:remote.example.com",
+                                                                   {"s1.remote.example.com", "s2.remote.example.com"});
+            auto const elapsed = std::chrono::steady_clock::now() - started_at;
+
+            THEN("join fails with 502 well within the configured deadline")
+            {
+                REQUIRE_FALSE(result.ok);
+                REQUIRE(result.status == 502U);
+                REQUIRE(elapsed < std::chrono::seconds(2));
+            }
+        }
+    }
+}
+
 SCENARIO("parallel make_join race with more candidates than parallelism throttles via semaphore",
          "[homeserver][rooms][join][federation][error][concurrency]")
 {

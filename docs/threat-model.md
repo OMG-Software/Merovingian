@@ -325,6 +325,30 @@ threat it closes; the controls above are the standing defences these reinforce.
   be launched. The `WorkerSupervisor` restarts crashed workers automatically
   with exponential back-off.
 
+- **Unbounded client-supplied `via` list drove unbounded thread spawning and
+  unbounded join latency (v0.10.11):** `POST /join`'s `via`/`server_name` query
+  parameters are attacker/client-controlled and were passed straight through to
+  the parallel make_join race (v0.10.10) with no upper bound. Every candidate
+  was spawned as an OS thread immediately via `std::launch::async` — only
+  throttled to *run* by `join_parallelism`, not to *spawn* — so a client (or a
+  room whose federation state legitimately spans dozens of servers) could
+  make the server spin up one thread per via entry on every join attempt. The
+  same unbounded candidate count meant the race had no upper bound on wall-clock
+  time either: with `join_parallelism` concurrent slots and up to `join_timeout`
+  per candidate, total race time scaled with candidate count and could run for
+  many minutes — long after the calling client's own HTTP request (and any
+  reverse proxy in front) had already timed out, so the client observed a
+  generic fetch failure while the server kept working unseen. Fixed by two
+  independent bounds: `security.federation.join_max_candidates` (default `20`)
+  truncates the ordered candidate list to the first N entries *before* any
+  `std::async` task is spawned, capping upfront thread creation regardless of
+  `via` list size; `security.federation.join_race_deadline` (default `45s`)
+  bounds the *entire* race's wall-clock time independent of the per-candidate
+  `join_timeout`, so `join_room` always returns a definitive response within a
+  bounded window. Candidates still in flight when either bound is hit are
+  parked in the existing `orphan_futures_` background-drain queue, unchanged
+  from the losing-candidate path.
+
 ## Security principles
 
 - Fail closed.

@@ -21,6 +21,7 @@
 #include <string>
 #include <vector>
 
+using merovingian::homeserver::cap_join_candidates;
 using merovingian::homeserver::join_candidate_servers;
 using merovingian::homeserver::parse_join_via_servers;
 using Servers = std::vector<std::string>;
@@ -141,6 +142,62 @@ SCENARIO("join_candidate_servers routes pre-v12 rooms by domain and v12 rooms by
                 REQUIRE(join_candidate_servers({"home.example", "s1.example"}, "!abc:home.example", our) ==
                         Servers{"s1.example"});
                 REQUIRE(join_candidate_servers({"s1.example"}, "!abc:s1.example", our) == Servers{"s1.example"});
+            }
+        }
+    }
+}
+
+SCENARIO("cap_join_candidates bounds an unbounded via list before any make_join probe is spawned",
+         "[join][federation][routing][concurrency]")
+{
+    GIVEN("a candidate list shorter than the cap")
+    {
+        auto const candidates = Servers{"a.example", "b.example"};
+
+        WHEN("capped at a larger max_candidates")
+        {
+            THEN("the list is returned unchanged")
+            {
+                REQUIRE(cap_join_candidates(candidates, 5U) == candidates);
+            }
+        }
+    }
+
+    GIVEN("a candidate list longer than the cap")
+    {
+        auto const candidates = Servers{"a.example", "b.example", "c.example", "d.example", "e.example"};
+
+        WHEN("capped at a smaller max_candidates")
+        {
+            THEN("only the first max_candidates entries survive, in order")
+            {
+                // Via lists are recommended to be ordered by likelihood of being
+                // resident, so truncation must keep the FRONT of the list.
+                REQUIRE(cap_join_candidates(candidates, 2U) == Servers{"a.example", "b.example"});
+            }
+        }
+    }
+
+    GIVEN("max_candidates == 0")
+    {
+        auto const candidates = Servers{"a.example", "b.example"};
+
+        WHEN("the candidate list is capped")
+        {
+            THEN("zero is clamped to 1 — at least one candidate is always attempted")
+            {
+                REQUIRE(cap_join_candidates(candidates, 0U) == Servers{"a.example"});
+            }
+        }
+    }
+
+    GIVEN("an empty candidate list")
+    {
+        WHEN("the candidate list is capped at any positive value")
+        {
+            THEN("it stays empty")
+            {
+                REQUIRE(cap_join_candidates({}, 10U).empty());
             }
         }
     }

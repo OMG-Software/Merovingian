@@ -2371,6 +2371,16 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
     return candidates;
 }
 
+auto cap_join_candidates(std::vector<std::string> candidates, std::uint32_t max_candidates) -> std::vector<std::string>
+{
+    auto const cap = static_cast<std::size_t>(std::max(std::uint32_t{1U}, max_candidates));
+    if (candidates.size() > cap)
+    {
+        candidates.resize(cap);
+    }
+    return candidates;
+}
+
 // Persists the `state` array from a send_join response. Each event is stored to
 // the persistent event graph. Events that carry a "state_key" field in their raw
 // JSON (even when that value is "") are also written to the state table. That is
@@ -2564,7 +2574,7 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
         // servers come from the join endpoint's via/server_name parameters, plus the
         // room ID's domain for room versions < 12 (v12 IDs are domain-less, MSC4291).
         auto const our_server = runtime.config.server().server_name;
-        auto const candidates = join_candidate_servers(via_servers, room_id, our_server);
+        auto candidates = join_candidate_servers(via_servers, room_id, our_server);
         if (candidates.empty())
         {
             log_diagnostic("room.join.rejected", {
@@ -2575,8 +2585,41 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
             });
             return make_operation_result(false, {}, "unknown room: no resident server to join via", 404U);
         }
+        // Cap the candidate count before spawning any make_join probes: every
+        // candidate gets an OS thread immediately (std::launch::async), only
+        // throttled to RUN by join_parallelism, not to spawn — an unbounded via
+        // list would otherwise mean unbounded upfront thread creation.
+        if (candidates.size() > runtime.federation.config.join_max_candidates)
+        {
+            log_diagnostic(
+                "room.join.candidates_truncated",
+                {
+                    {"actor",           *user_id,                                                      false},
+                    {"room_id",         std::string{room_id},                                          false},
+                    {"candidate_count", std::to_string(candidates.size()),                             false},
+                    {"max_candidates",  std::to_string(runtime.federation.config.join_max_candidates), false}
+            });
+            candidates = cap_join_candidates(std::move(candidates), runtime.federation.config.join_max_candidates);
+        }
         wire_federation_callbacks(runtime);
-        auto const supported_versions = std::vector<std::string>{"10", "11", "12"};
+        // Advertise every room version this server actually implements (v1-v12,
+        // rooms::room_version_policy.cpp — the single source of truth, enforced by
+        // tests/conformance/test_room_version_table_conformance.cpp's "MUST be able
+        // to participate in rooms of all stable versions"). A resident server picks
+        // a room's actual version from this list and replies 400
+        // M_INCOMPATIBLE_ROOM_VERSION if none match — so a hardcoded {"10","11","12"}
+        // here made every join fail against any room not on those three versions,
+        // even though the rest of the join pipeline (validate_make_join_event,
+        // sign_event_for_server, make_reference_hash_event_id) already handles
+        // whatever version the response reports via find_room_version_policy.
+        auto const supported_versions = [] {
+            auto versions = std::vector<std::string>{};
+            for (auto const& policy : rooms::known_room_versions())
+            {
+                versions.emplace_back(policy.id);
+            }
+            return versions;
+        }();
         // Best-effort: load the key_id from the persistent store. If no usable key
         // record exists, perform_sync_outbound_call fails with "server signing key not
         // initialized", which join_room surfaces as 502 — the correct status for an
@@ -2691,12 +2734,27 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
                     }
                 }));
         }
-        // Block until first winner or all candidates exhausted.
+        // Block until first winner, all candidates exhausted, or the overall race
+        // deadline elapses — whichever comes first. The deadline bounds the WHOLE
+        // race (unlike per_call_timeout, which bounds one candidate), so a large via
+        // list cannot grind past what a calling client's own HTTP timeout allows.
+        // A deadline of 0 (unconfigured) preserves the old unbounded wait.
+        auto race_deadline_exceeded = false;
         {
             auto lk = std::unique_lock{race_state->mtx};
-            race_state->cv.wait(lk, [&race_state] {
+            auto const predicate = [&race_state] {
                 return race_state->winner.has_value() || race_state->remaining <= 0;
-            });
+            };
+            if (runtime.federation.config.join_race_deadline_seconds > 0U)
+            {
+                auto const deadline = std::chrono::steady_clock::now() +
+                                      std::chrono::seconds(runtime.federation.config.join_race_deadline_seconds);
+                race_deadline_exceeded = !race_state->cv.wait_until(lk, deadline, predicate);
+            }
+            else
+            {
+                race_state->cv.wait(lk, predicate);
+            }
         }
         // Park still-running losers in orphan_futures_; discard completed ones.
         {
@@ -2719,15 +2777,20 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
         }
         if (!race_state->winner.has_value())
         {
+            auto const reason =
+                race_deadline_exceeded ? "make_join race deadline exceeded" : "make_join failed via all candidates";
             log_diagnostic("room.join.rejected",
                            {
-                               {"actor",   user_id_copy,                          false},
-                               {"room_id", room_id_copy,                          false},
-                               {"status",  "502",                                 false},
-                               {"reason",  "make_join failed via all candidates", false}
+                               {"actor",   user_id_copy, false},
+                               {"room_id", room_id_copy, false},
+                               {"status",  "502",        false},
+                               {"reason",  reason,       false}
             },
                            observability::LogEventSeverity::warning);
-            return make_operation_result(false, {}, "make_join failed: " + race_state->last_error, 502U);
+            auto const message = race_deadline_exceeded
+                                     ? "make_join failed: race deadline exceeded before any candidate succeeded"
+                                     : "make_join failed: " + race_state->last_error;
+            return make_operation_result(false, {}, message, 502U);
         }
         auto [remote_server, make_body] = std::move(*race_state->winner);
         // Parse the make_join response and validate the template before we sign it.

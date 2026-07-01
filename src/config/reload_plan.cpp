@@ -210,6 +210,14 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "security.federation.join_parallelism");
     }
+    if (current.security().federation.join_race_deadline != next.security().federation.join_race_deadline)
+    {
+        add_change(plan, "security.federation.join_race_deadline");
+    }
+    if (current.security().federation.join_max_candidates != next.security().federation.join_max_candidates)
+    {
+        add_change(plan, "security.federation.join_max_candidates");
+    }
 
     if (current.security().media.max_upload_size != next.security().media.max_upload_size)
     {

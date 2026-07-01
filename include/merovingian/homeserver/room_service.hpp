@@ -85,6 +85,12 @@ struct ValidatedMakeLeaveResponse final
 // duplicates are removed.
 [[nodiscard]] auto join_candidate_servers(std::vector<std::string> const& via_servers, std::string_view room_id,
                                           std::string_view our_server) -> std::vector<std::string>;
+// Truncates an ordered candidate list to at most `max_candidates` entries, preserving
+// order — via lists are recommended to be ordered by likelihood of being resident, so
+// the first entries are kept. Guards against an unbounded via list spawning an
+// unbounded number of make_join probe threads. `max_candidates == 0` is clamped to 1.
+[[nodiscard]] auto cap_join_candidates(std::vector<std::string> candidates, std::uint32_t max_candidates)
+    -> std::vector<std::string>;
 [[nodiscard]] auto validate_make_join_response(std::string_view requested_room_id, std::string_view requested_user_id,
                                                std::string_view body) -> ValidatedMakeJoinResponse;
 [[nodiscard]] auto validate_make_leave_response(std::string_view requested_room_id, std::string_view requested_user_id,

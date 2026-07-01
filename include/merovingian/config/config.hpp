@@ -120,6 +120,19 @@ struct FederationSecurityConfig final
     // Cap on concurrent make_join candidate probes and inbound sender-key fan-out.
     // Must be >= 1 (validated); 0 would degenerate to no work.
     std::uint32_t join_parallelism{8U};
+    // Overall wall-clock budget for the whole make_join race across ALL candidates,
+    // independent of the per-candidate `join_timeout`. Without this, a large `via`
+    // list races in batches of `join_parallelism` and can take many minutes even
+    // though each individual candidate stays within its own budget — long after the
+    // calling client's own HTTP request has timed out. Candidates still in flight
+    // when the deadline is reached are moved to `orphan_futures_` to finish in the
+    // background, same as when a candidate loses to a winner.
+    std::string join_race_deadline{"45s"};
+    // Hard cap on the number of via-derived candidates actually raced. Every
+    // candidate is spawned as an OS thread immediately (throttled to run by
+    // `join_parallelism`, but not to spawn), so an unbounded `via` list means
+    // unbounded upfront thread creation. Must be >= 1 (validated).
+    std::uint32_t join_max_candidates{20U};
 };
 
 struct MediaSecurityConfig final

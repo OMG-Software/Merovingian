@@ -1016,6 +1016,31 @@ security.federation.join_parallelism=8
 `join_timeout` accepts the same positive bounded duration suffixes (`s`, `m`)
 as `remote_timeout`; `0s` is rejected.
 
+### Join race deadline and candidate cap
+
+`join_parallelism` bounds *concurrency*, not *total elapsed time*. A room with
+a large `via` candidate list (dozens of resident servers, e.g. from a
+well-federated public room) races in batches of `join_parallelism`, and with
+no overall bound the whole race can take `ceil(candidate_count / join_parallelism) *
+up_to_join_timeout` — many minutes for a large `via` list — even though each
+individual candidate stays within its own `join_timeout` budget. The calling
+client's own HTTP request (and any reverse proxy in front of the homeserver)
+typically times out long before that, surfacing as a client-side "Failed to
+fetch" while the server keeps working. Two more keys close that gap:
+
+```text
+security.federation.join_race_deadline=45s
+security.federation.join_max_candidates=20
+```
+
+| Key | Type | Default | Reload | Notes |
+|-----|------|---------|--------|-------|
+| `security.federation.join_race_deadline` | duration | `45s` | reloadable (`requires_restart=false`) | Overall wall-clock budget for the *entire* make_join race across all candidates, independent of the per-candidate `join_timeout`. When it elapses without a winner, `join_room` returns `502` immediately; candidates still in flight are parked in the background orphan-future queue and drained on shutdown, same as a losing candidate. `0s` is rejected — the deadline cannot be disabled via config, only extended. |
+| `security.federation.join_max_candidates` | unsigned int | `20` | reloadable (`requires_restart=false`) | Hard cap on the number of `via`-derived candidates actually raced. Every candidate is spawned as an OS thread immediately (`std::launch::async`), throttled to *run* by `join_parallelism` but not to *spawn* — an unbounded `via` list otherwise means unbounded upfront thread creation. The ordered candidate list is truncated to the first N entries (via lists are recommended to be ordered by likelihood of being resident), so truncation keeps the most-likely candidates. Must be `>= 1`; `0` is rejected at validation. |
+
+`join_race_deadline` accepts the same positive bounded duration suffixes
+(`s`, `m`) as `join_timeout`; `0s` is rejected.
+
 ## Federation worker (out-of-process)
 
 When a user joins a large federated room, the inbound PDU verification, state
