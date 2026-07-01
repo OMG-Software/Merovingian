@@ -349,6 +349,29 @@ threat it closes; the controls above are the standing defences these reinforce.
   parked in the existing `orphan_futures_` background-drain queue, unchanged
   from the losing-candidate path.
 
+- **`send_join` state and auth_chain events were persisted with no signature
+  verification (v0.10.11):** `join_room`'s ingestion of a `send_join`
+  response's `state` and `auth_chain` arrays parsed each event and wrote it
+  straight to the persistent event graph, trusting the resident server's
+  response wholesale — no Ed25519 signature check, no remote signing-key
+  fetch, in direct violation of `src/federation/AGENTS.md` rule 2 ("Verify
+  every inbound PDU's signature... Unverified events must be silently
+  dropped"). A resident server (or an attacker able to act as one, e.g. via
+  DNS/BGP hijack of a room's resident server) could inject arbitrary
+  membership or state events into a joining server's view of the room with no
+  cryptographic check. Fixed by `filter_verified_send_join_events`: distinct
+  `(sender_domain, key_id)` pairs across both arrays are resolved via the
+  existing `remote_key_resolver`/key-cache infrastructure (bounded
+  concurrency, `security.federation.join_state_key_parallelism`, default
+  `100`), and each event's signature is verified against its resolved key
+  before being handed to `ingest_send_join_state` / the auth_chain persistence
+  loop. Events whose sender is our own server are trusted without a resolver
+  round trip (self-signed). Fail-closed: an event whose key cannot be
+  resolved or whose signature does not verify is silently dropped, not
+  persisted, and does not fail the join — a resident server acting in bad
+  faith degrades the joining server's view of the room rather than being able
+  to inject forged state.
+
 ## Security principles
 
 - Fail closed.

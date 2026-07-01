@@ -1038,6 +1038,25 @@ security.federation.join_max_candidates=20
 | `security.federation.join_race_deadline` | duration | `45s` | reloadable (`requires_restart=false`) | Overall wall-clock budget for the *entire* make_join race across all candidates, independent of the per-candidate `join_timeout`. When it elapses without a winner, `join_room` returns `502` immediately; candidates still in flight are parked in the background orphan-future queue and drained on shutdown, same as a losing candidate. `0s` is rejected — the deadline cannot be disabled via config, only extended. |
 | `security.federation.join_max_candidates` | unsigned int | `20` | reloadable (`requires_restart=false`) | Hard cap on the number of `via`-derived candidates actually raced. Every candidate is spawned as an OS thread immediately (`std::launch::async`), throttled to *run* by `join_parallelism` but not to *spawn* — an unbounded `via` list otherwise means unbounded upfront thread creation. The ordered candidate list is truncated to the first N entries (via lists are recommended to be ordered by likelihood of being resident), so truncation keeps the most-likely candidates. Must be `>= 1`; `0` is rejected at validation. |
 
+### send_join signature verification key parallelism
+
+A `send_join` response's `state` array carries one `m.room.member` event per
+room member — potentially thousands for a large room, each one signed by that
+member's home server. `join_room` verifies every event's Ed25519 signature
+before it enters the event graph (spec MUST; `src/federation/AGENTS.md` rule
+2) rather than trusting the resident server's response wholesale. Distinct
+`(sender_domain, key_id)` pairs are resolved via the same remote-key-cache
+infrastructure the inbound `/send` path uses, with concurrent fan-out capped
+independently of `join_parallelism`:
+
+```text
+security.federation.join_state_key_parallelism=100
+```
+
+| Key | Type | Default | Reload | Notes |
+|-----|------|---------|--------|-------|
+| `security.federation.join_state_key_parallelism` | unsigned int | `100` | reloadable (`requires_restart=false`) | Cap on concurrent remote signing-key resolutions while verifying a `send_join` response's `state`/`auth_chain` arrays. Distinct `(sender_domain, key_id)` pairs are deduplicated before this cap is applied, so it bounds concurrent *distinct home servers* contacted (typically far fewer than the member count), not concurrent events. Events whose sender is our own server are verified without a resolver round trip. An event whose sender-domain key cannot be resolved, or whose signature does not verify, is silently dropped — not persisted, and does not fail the join. Must be `>= 1`; `0` is rejected at validation. |
+
 `join_race_deadline` accepts the same positive bounded duration suffixes
 (`s`, `m`) as `join_timeout`; `0s` is rejected.
 

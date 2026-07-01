@@ -58,6 +58,7 @@ auto make_runtime_federation_config(config::Config const& config) -> RuntimeFede
         config.security().federation.join_parallelism,
         join_race_deadline.valid ? join_race_deadline.seconds : 0U,
         config.security().federation.join_max_candidates,
+        config.security().federation.join_state_key_parallelism,
         config.server().server_name,
     };
 }
@@ -73,7 +74,8 @@ auto federation_summary(RuntimeFederationConfig const& config) -> std::string
            " join_timeout_seconds=" + std::to_string(config.join_timeout_seconds) +
            " join_parallelism=" + std::to_string(config.join_parallelism) +
            " join_race_deadline_seconds=" + std::to_string(config.join_race_deadline_seconds) +
-           " join_max_candidates=" + std::to_string(config.join_max_candidates);
+           " join_max_candidates=" + std::to_string(config.join_max_candidates) +
+           " join_state_key_parallelism=" + std::to_string(config.join_state_key_parallelism);
 }
 
 auto federation_server_policy(RuntimeFederationConfig const& config, std::string_view server_name)

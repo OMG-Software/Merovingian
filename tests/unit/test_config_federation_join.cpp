@@ -52,6 +52,19 @@ SCENARIO("Federation join race deadline and max candidates have secure defaults"
     }
 }
 
+SCENARIO("Federation join state key parallelism has a secure default", "[config][federation][join]")
+{
+    GIVEN("the default configuration")
+    {
+        auto const config = merovingian::config::Config{};
+
+        THEN("the default bounds concurrent send_join state signing-key resolutions to 100")
+        {
+            REQUIRE(config.security().federation.join_state_key_parallelism == 100U);
+        }
+    }
+}
+
 SCENARIO("Federation join timeout and parallelism are parsed from key-value config",
          "[config][federation][join][parser]")
 {
@@ -91,6 +104,25 @@ SCENARIO("Federation join race deadline and max candidates are parsed from key-v
                 REQUIRE(result.findings.empty());
                 REQUIRE(result.config.security().federation.join_race_deadline == "30s");
                 REQUIRE(result.config.security().federation.join_max_candidates == 10U);
+            }
+        }
+    }
+}
+
+SCENARIO("Federation join state key parallelism is parsed from key-value config", "[config][federation][join][parser]")
+{
+    GIVEN("key-value configuration containing join state key parallelism")
+    {
+        auto const input = std::string{"security.federation.join_state_key_parallelism=50\n"};
+
+        WHEN("the config is parsed")
+        {
+            auto const result = merovingian::config::parse_key_value_config(input);
+
+            THEN("the value is applied")
+            {
+                REQUIRE(result.findings.empty());
+                REQUIRE(result.config.security().federation.join_state_key_parallelism == 50U);
             }
         }
     }
@@ -180,6 +212,32 @@ SCENARIO("Federation join max candidates rejects zero", "[config][federation][jo
     {
         auto security = merovingian::config::SecurityConfig{};
         security.federation.join_max_candidates = 0U;
+        auto const config = merovingian::config::Config{
+            merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
+            merovingian::config::DatabaseConfig{},         security,
+            merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+        };
+
+        WHEN("the config is validated")
+        {
+            auto const findings = merovingian::config::validate(config);
+            auto const valid = merovingian::config::is_valid(config);
+
+            THEN("validation fails")
+            {
+                REQUIRE_FALSE(findings.empty());
+                REQUIRE_FALSE(valid);
+            }
+        }
+    }
+}
+
+SCENARIO("Federation join state key parallelism rejects zero", "[config][federation][join][validation]")
+{
+    GIVEN("configuration with zero join state key parallelism")
+    {
+        auto security = merovingian::config::SecurityConfig{};
+        security.federation.join_state_key_parallelism = 0U;
         auto const config = merovingian::config::Config{
             merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
             merovingian::config::DatabaseConfig{},         security,
@@ -330,6 +388,40 @@ SCENARIO("Federation join max candidates changes are reloadable", "[config][fede
             {
                 REQUIRE(plan.changes().size() == 1U);
                 REQUIRE(plan.changes()[0].key == "security.federation.join_max_candidates");
+                REQUIRE(plan.changes()[0].policy == merovingian::config::ReloadPolicy::reloadable);
+            }
+        }
+    }
+}
+
+SCENARIO("Federation join state key parallelism changes are reloadable", "[config][federation][join][reload]")
+{
+    GIVEN("current and next configs with different join state key parallelism")
+    {
+        auto current_security = merovingian::config::SecurityConfig{};
+        auto next_security = merovingian::config::SecurityConfig{};
+        current_security.federation.join_state_key_parallelism = 100U;
+        next_security.federation.join_state_key_parallelism = 200U;
+
+        auto const current = merovingian::config::Config{
+            merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
+            merovingian::config::DatabaseConfig{},         current_security,
+            merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+        };
+        auto const next = merovingian::config::Config{
+            merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
+            merovingian::config::DatabaseConfig{},         next_security,
+            merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+        };
+
+        WHEN("a reload plan is built")
+        {
+            auto const plan = merovingian::config::build_reload_plan(current, next);
+
+            THEN("the join state key parallelism change is marked reloadable")
+            {
+                REQUIRE(plan.changes().size() == 1U);
+                REQUIRE(plan.changes()[0].key == "security.federation.join_state_key_parallelism");
                 REQUIRE(plan.changes()[0].policy == merovingian::config::ReloadPolicy::reloadable);
             }
         }

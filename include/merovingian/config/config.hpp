@@ -133,6 +133,13 @@ struct FederationSecurityConfig final
     // `join_parallelism`, but not to spawn), so an unbounded `via` list means
     // unbounded upfront thread creation. Must be >= 1 (validated).
     std::uint32_t join_max_candidates{20U};
+    // Cap on concurrent remote signing-key resolutions when verifying the
+    // signatures of events in a send_join response's `state`/`auth_chain`
+    // arrays (one m.room.member per room member — thousands for a large
+    // room). Distinct (sender_domain, key_id) pairs are deduplicated before
+    // this cap is applied, so it bounds concurrent *distinct home servers*
+    // contacted, not concurrent events. Must be >= 1 (validated).
+    std::uint32_t join_state_key_parallelism{100U};
 };
 
 struct MediaSecurityConfig final

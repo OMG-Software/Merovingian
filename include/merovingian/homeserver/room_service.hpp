@@ -117,6 +117,21 @@ struct ValidatedMakeLeaveResponse final
 // membership="join" among the ingested state entries.
 [[nodiscard]] auto ingest_send_join_state(HomeserverRuntime& runtime, canonicaljson::Array const& state_arr,
                                           rooms::RoomVersionPolicy const& policy) -> std::vector<std::string>;
+// Filters a send_join response's `state` or `auth_chain` array down to the
+// events whose Ed25519 signature verifies against their sender domain's
+// published signing key. A large room's state array carries one m.room.member
+// per member — thousands of distinct sender home servers for a large room —
+// so distinct (sender_domain, key_id) pairs are resolved via
+// runtime.federation.remote_key_resolver with concurrent fan-out capped at
+// `security.federation.join_state_key_parallelism` (default 100) rather than
+// serially. Events whose sender_domain equals `our_server` are kept without a
+// resolver round trip (self-signed, already trusted — we hold that key).
+// Fail-closed (src/federation/AGENTS.md rule 2): an event whose sender-domain
+// key cannot be resolved, or whose signature does not verify, is silently
+// dropped from the returned array rather than persisted or failing the join.
+[[nodiscard]] auto filter_verified_send_join_events(HomeserverRuntime& runtime, canonicaljson::Array const& events,
+                                                    rooms::RoomVersionPolicy const& policy, std::string_view our_server)
+    -> canonicaljson::Array;
 
 [[nodiscard]] auto ensure_runtime_server_signing_key(HomeserverRuntime& runtime)
     -> std::optional<database::PersistentServerSigningKey>;

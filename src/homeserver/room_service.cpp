@@ -15,6 +15,7 @@
 #include "merovingian/events/event.hpp"
 #include "merovingian/events/event_id.hpp"
 #include "merovingian/events/event_signer.hpp"
+#include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/membership_endpoints.hpp"
 #include "merovingian/federation/outbound_membership.hpp"
 #include "merovingian/federation/outbound_transaction.hpp"
@@ -38,10 +39,12 @@
 #include <cstdint>
 #include <fstream>
 #include <future>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <ranges>
+#include <set>
 #include <span>
 #include <string>
 #include <string_view>
@@ -210,6 +213,14 @@ namespace
     {
         auto const pos = room_id.rfind(':');
         return pos == std::string_view::npos ? std::string_view{} : room_id.substr(pos + 1);
+    }
+
+    // Extract the home server domain from a Matrix user ID (@localpart:domain).
+    // Mirrors the equivalent local helper in src/federation/inbound_request.cpp.
+    [[nodiscard]] auto sender_domain_from_user_id(std::string_view sender) noexcept -> std::string_view
+    {
+        auto const pos = sender.rfind(':');
+        return pos == std::string_view::npos || pos + 1U >= sender.size() ? std::string_view{} : sender.substr(pos + 1);
     }
 
     auto generate_random_signing_keypair(std::array<unsigned char, crypto_sign_PUBLICKEYBYTES>& public_key,
@@ -2498,6 +2509,172 @@ auto cap_join_candidates(std::vector<std::string> candidates, std::uint32_t max_
     return joined_members;
 }
 
+auto filter_verified_send_join_events(HomeserverRuntime& runtime, canonicaljson::Array const& events,
+                                      rooms::RoomVersionPolicy const& policy, std::string_view our_server)
+    -> canonicaljson::Array
+{
+    if (events.empty())
+    {
+        return {};
+    }
+    // Pre-resolve distinct (sender_domain, key_id) pairs in parallel so a state
+    // array carrying one m.room.member per room member (thousands for a large
+    // room) does not pay N serial key discovery+fetch round trips. Mirrors the
+    // fan-out pattern in src/federation/inbound_request.cpp's parallel inbound
+    // PDU sender-key resolution. Fan-out is capped by join_state_key_parallelism
+    // (default 100); a configured value of 0 is clamped to 1 defensively
+    // (config validation already rejects 0).
+    auto sender_key_map =
+        std::map<std::pair<std::string, std::string>, std::optional<federation::FederationKeyRecord>>{};
+    if (runtime.federation.remote_key_resolver)
+    {
+        auto distinct_pairs = std::vector<std::pair<std::string, std::string>>{};
+        auto seen = std::set<std::pair<std::string, std::string>>{};
+        for (auto const& entry : events)
+        {
+            auto const parsed = events::parse_event_envelope(entry);
+            if (!parsed.error.empty())
+            {
+                continue;
+            }
+            auto const dom = sender_domain_from_user_id(parsed.event.sender);
+            if (dom.empty() || dom == our_server)
+            {
+                continue;
+            }
+            auto key_id = std::string{};
+            for (auto const& sig : parsed.event.signatures)
+            {
+                if (sig.server_name == dom)
+                {
+                    key_id = sig.key_id;
+                    break;
+                }
+            }
+            if (key_id.empty())
+            {
+                continue;
+            }
+            auto const key = std::make_pair(std::string{dom}, std::move(key_id));
+            if (seen.insert(key).second)
+            {
+                distinct_pairs.push_back(key);
+            }
+        }
+        if (!distinct_pairs.empty())
+        {
+            static constexpr auto k_max_join_state_key_parallelism = std::ptrdiff_t{1024};
+            auto const configured = runtime.federation.config.join_state_key_parallelism;
+            auto const parallelism = std::min(static_cast<std::ptrdiff_t>(std::max(std::uint32_t{1U}, configured)),
+                                              k_max_join_state_key_parallelism);
+            auto resolved = std::vector<std::optional<federation::FederationRemoteRuntime>>(distinct_pairs.size());
+            auto sem = PortableSemaphore{static_cast<int>(parallelism)};
+            auto tasks = std::vector<std::future<void>>{};
+            tasks.reserve(distinct_pairs.size());
+            auto const& resolver = runtime.federation.remote_key_resolver;
+            for (auto i = std::size_t{0U}; i < distinct_pairs.size(); ++i)
+            {
+                // Block until a concurrency slot is free, then launch the task.
+                sem.acquire();
+                auto const pair = distinct_pairs[i];
+                tasks.push_back(std::async(std::launch::async, [&resolved, &sem, &resolver, pair, i]() {
+                    resolved[i] = resolver(pair.first, pair.second);
+                    sem.release();
+                }));
+            }
+            // Join every task before reading `resolved` (disjoint slots, but the
+            // vector must not be read while tasks are still writing).
+            for (auto& task : tasks)
+            {
+                task.get();
+            }
+            for (auto i = std::size_t{0U}; i < distinct_pairs.size(); ++i)
+            {
+                auto const& record = resolved[i];
+                sender_key_map[distinct_pairs[i]] =
+                    record.has_value() ? std::optional<federation::FederationKeyRecord>{record->signing_key}
+                                       : std::nullopt;
+            }
+        }
+    }
+    // Verify each event's signature against its resolved sender-domain key,
+    // dropping events that fail. Fail-closed (src/federation/AGENTS.md rule 2):
+    // an event whose sender-domain key was not resolved, or whose signature
+    // does not verify, is silently dropped — never persisted.
+    auto verified = canonicaljson::Array{};
+    verified.reserve(events.size());
+    for (auto const& entry : events)
+    {
+        auto const parsed = events::parse_event_envelope(entry);
+        if (!parsed.error.empty())
+        {
+            continue;
+        }
+        auto const dom = sender_domain_from_user_id(parsed.event.sender);
+        if (dom.empty())
+        {
+            continue;
+        }
+        if (dom == our_server)
+        {
+            // Self-signed: we hold this key already, no resolver round trip needed.
+            verified.push_back(entry);
+            continue;
+        }
+        auto key_id = std::string{};
+        for (auto const& sig : parsed.event.signatures)
+        {
+            if (sig.server_name == dom)
+            {
+                key_id = sig.key_id;
+                break;
+            }
+        }
+        if (key_id.empty())
+        {
+            log_diagnostic("room.join.state_event_rejected",
+                           {
+                               {"sender_domain", std::string{dom},                          false},
+                               {"reason",        "no signature from event sender's domain", false}
+            },
+                           observability::LogEventSeverity::warning);
+            continue;
+        }
+        auto const map_it = sender_key_map.find(std::pair<std::string, std::string>{std::string{dom}, key_id});
+        auto const& resolved_key =
+            map_it != sender_key_map.end() ? map_it->second : std::optional<federation::FederationKeyRecord>{};
+        if (!resolved_key.has_value())
+        {
+            log_diagnostic("room.join.state_event_rejected",
+                           {
+                               {"sender_domain", std::string{dom},                        false},
+                               {"reason",        "sender domain signing key unavailable", false}
+            },
+                           observability::LogEventSeverity::warning);
+            continue;
+        }
+        if (runtime.crypto_provider == nullptr)
+        {
+            continue;
+        }
+        auto const verification = events::verify_event_signature(
+            entry, policy, events::SigningKeyId{resolved_key->server_name, resolved_key->key_id},
+            crypto::Ed25519PublicKey{resolved_key->public_key_bytes}, *runtime.crypto_provider);
+        if (!verification.valid)
+        {
+            log_diagnostic("room.join.state_event_rejected",
+                           {
+                               {"sender_domain", std::string{dom},   false},
+                               {"reason",        verification.error, false}
+            },
+                           observability::LogEventSeverity::warning);
+            continue;
+        }
+        verified.push_back(entry);
+    }
+    return verified;
+}
+
 [[nodiscard]] auto join_room(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id,
                              std::vector<std::string> const& via_servers) -> OperationResult
 {
@@ -2953,11 +3130,18 @@ auto cap_join_candidates(std::vector<std::string> candidates, std::uint32_t max_
             auto const* state_arr = std::get_if<canonicaljson::Array>(&state_arr_member->value->storage());
             if (state_arr != nullptr)
             {
-                // Persist every state event in the send_join response. ingest_send_join_state
-                // correctly handles events with empty state_key (m.room.encryption,
-                // m.room.create, m.room.power_levels, etc.) by checking the raw JSON for
-                // the presence of the "state_key" field rather than its emptiness.
-                auto const state_members = ingest_send_join_state(runtime, *state_arr, *policy);
+                // Verify each event's signature before it enters the event graph
+                // (src/federation/AGENTS.md rule 2) — a large room's state array
+                // carries one m.room.member per member, so this resolves distinct
+                // sender-domain signing keys with bounded parallelism rather than
+                // trusting the resident server's response wholesale. Unverifiable
+                // events are silently dropped, not persisted.
+                auto const verified_state = filter_verified_send_join_events(runtime, *state_arr, *policy, our_server);
+                // Persist every verified state event. ingest_send_join_state correctly
+                // handles events with empty state_key (m.room.encryption, m.room.create,
+                // m.room.power_levels, etc.) by checking the raw JSON for the presence of
+                // the "state_key" field rather than its emptiness.
+                auto const state_members = ingest_send_join_state(runtime, verified_state, *policy);
                 for (auto const& m : state_members)
                 {
                     append_unique_member(joined_members, m);
@@ -2973,7 +3157,10 @@ auto cap_join_candidates(std::vector<std::string> candidates, std::uint32_t max_
             auto const* auth_arr = std::get_if<canonicaljson::Array>(&auth_arr_member->value->storage());
             if (auth_arr != nullptr)
             {
-                for (auto const& auth_entry : *auth_arr)
+                // Same fail-closed signature verification as the state array above.
+                auto const verified_auth_chain =
+                    filter_verified_send_join_events(runtime, *auth_arr, *policy, our_server);
+                for (auto const& auth_entry : verified_auth_chain)
                 {
                     auto const serialized = canonicaljson::serialize_canonical(auth_entry);
                     if (serialized.error == canonicaljson::CanonicalJsonError::none)
