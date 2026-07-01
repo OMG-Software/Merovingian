@@ -1057,6 +1057,17 @@ security.federation.join_state_key_parallelism=100
 |-----|------|---------|--------|-------|
 | `security.federation.join_state_key_parallelism` | unsigned int | `100` | reloadable (`requires_restart=false`) | Cap on concurrent remote signing-key resolutions while verifying a `send_join` response's `state`/`auth_chain` arrays. Distinct `(sender_domain, key_id)` pairs are deduplicated before this cap is applied, so it bounds concurrent *distinct home servers* contacted (typically far fewer than the member count), not concurrent events. Events whose sender is our own server are verified without a resolver round trip. An event whose sender-domain key cannot be resolved, or whose signature does not verify, is silently dropped — not persisted, and does not fail the join. Must be `>= 1`; `0` is rejected at validation. |
 
+**Fast join:** `auth_chain` and the room's own critical state (create,
+power_levels, join_rules, history_visibility, our own membership) are always
+verified and persisted before `join_room` returns. The bulk of `state` — every
+*other* member's `m.room.member` event, which is where nearly all of the
+`(sender_domain, key_id)` fan-out above actually comes from for a large room —
+is verified and persisted by a background task after the join response is
+already back with the client, so the response does not wait on the full
+membership list. `join_state_key_parallelism` governs the background task's
+fan-out exactly the same way it governs the synchronous critical-state pass.
+See `docs/threat-model.md` for the partial-state trade-off this implies.
+
 `join_race_deadline` accepts the same positive bounded duration suffixes
 (`s`, `m`) as `join_timeout`; `0s` is rejected.
 

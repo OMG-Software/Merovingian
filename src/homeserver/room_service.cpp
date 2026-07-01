@@ -2675,6 +2675,22 @@ auto filter_verified_send_join_events(HomeserverRuntime& runtime, canonicaljson:
     return verified;
 }
 
+auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::string_view our_user_id)
+    -> SendJoinStateSplit
+{
+    auto split = SendJoinStateSplit{};
+    for (auto const& entry : state_arr)
+    {
+        auto const* entry_obj = std::get_if<canonicaljson::Object>(&entry.storage());
+        auto const* type_field = entry_obj != nullptr ? json_string_member(*entry_obj, "type") : nullptr;
+        auto const* state_key_field = entry_obj != nullptr ? json_string_member(*entry_obj, "state_key") : nullptr;
+        auto const is_other_member = type_field != nullptr && *type_field == "m.room.member" &&
+                                     state_key_field != nullptr && *state_key_field != our_user_id;
+        (is_other_member ? split.background : split.critical).push_back(entry);
+    }
+    return split;
+}
+
 [[nodiscard]] auto join_room(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id,
                              std::vector<std::string> const& via_servers) -> OperationResult
 {
@@ -3117,134 +3133,148 @@ auto filter_verified_send_join_events(HomeserverRuntime& runtime, canonicaljson:
             });
             return make_operation_result(false, {}, "malformed send_join response", 502U);
         }
+        // Fast join: split the state array into "critical" state (everything
+        // except OTHER users' m.room.member — create, power_levels, join_rules,
+        // history_visibility, encryption, our own membership, etc.) and
+        // "background" state (every other member's m.room.member). Critical
+        // state is small — usually a handful of events from one or two signing
+        // domains — and is verified and persisted before this call returns, so
+        // the room is immediately usable (auth checks on the joining user's own
+        // actions only ever depend on critical state). The bulk of a large
+        // room's membership list, and its potentially hundreds of distinct
+        // signing domains, is verified and persisted in the background after
+        // the join response is returned to the client — this is the same
+        // "partial state room" trade-off Synapse's faster-joins feature makes.
+        // Signature verification itself (network-bound key resolution) runs
+        // BEFORE guard.lock() below so it never holds runtime.mutex.
+        auto const state_arr_member = std::ranges::find_if(*send_obj, [](canonicaljson::ObjectMember const& m) {
+            return m.key == "state";
+        });
+        auto const* state_arr = state_arr_member != send_obj->end()
+                                    ? std::get_if<canonicaljson::Array>(&state_arr_member->value->storage())
+                                    : nullptr;
+        auto state_split =
+            state_arr != nullptr ? split_send_join_state_events(*state_arr, *user_id) : SendJoinStateSplit{};
+        auto& critical_state = state_split.critical;
+        auto& background_state = state_split.background;
+        auto const background_member_count = background_state.size();
+        // Verify each event's signature before it enters the event graph
+        // (src/federation/AGENTS.md rule 2) — resolves distinct sender-domain
+        // signing keys with bounded parallelism rather than trusting the
+        // resident server's response wholesale. Unverifiable events are
+        // silently dropped, not persisted.
+        auto const verified_critical_state =
+            filter_verified_send_join_events(runtime, critical_state, *policy, our_server);
+        auto const auth_arr_member = std::ranges::find_if(*send_obj, [](canonicaljson::ObjectMember const& m) {
+            return m.key == "auth_chain";
+        });
+        auto const* auth_arr = auth_arr_member != send_obj->end()
+                                   ? std::get_if<canonicaljson::Array>(&auth_arr_member->value->storage())
+                                   : nullptr;
+        auto const verified_auth_chain = auth_arr != nullptr
+                                             ? filter_verified_send_join_events(runtime, *auth_arr, *policy, our_server)
+                                             : canonicaljson::Array{};
+
         guard.lock();
         // Persist the room locally with the joined user as a member.
         // State events from the remote response are persisted to the
         // database so the room has enough state for auth checks.
         auto joined_members = std::vector<std::string>{*user_id};
-        auto const state_arr_member = std::ranges::find_if(*send_obj, [](canonicaljson::ObjectMember const& m) {
-            return m.key == "state";
-        });
-        if (state_arr_member != send_obj->end())
+        // ingest_send_join_state correctly handles events with empty state_key
+        // (m.room.encryption, m.room.create, m.room.power_levels, etc.) by
+        // checking the raw JSON for the presence of the "state_key" field
+        // rather than its emptiness.
+        auto const state_members = ingest_send_join_state(runtime, verified_critical_state, *policy);
+        for (auto const& m : state_members)
         {
-            auto const* state_arr = std::get_if<canonicaljson::Array>(&state_arr_member->value->storage());
-            if (state_arr != nullptr)
-            {
-                // Verify each event's signature before it enters the event graph
-                // (src/federation/AGENTS.md rule 2) — a large room's state array
-                // carries one m.room.member per member, so this resolves distinct
-                // sender-domain signing keys with bounded parallelism rather than
-                // trusting the resident server's response wholesale. Unverifiable
-                // events are silently dropped, not persisted.
-                auto const verified_state = filter_verified_send_join_events(runtime, *state_arr, *policy, our_server);
-                // Persist every verified state event. ingest_send_join_state correctly
-                // handles events with empty state_key (m.room.encryption, m.room.create,
-                // m.room.power_levels, etc.) by checking the raw JSON for the presence of
-                // the "state_key" field rather than its emptiness.
-                auto const state_members = ingest_send_join_state(runtime, verified_state, *policy);
-                for (auto const& m : state_members)
-                {
-                    append_unique_member(joined_members, m);
-                }
-            }
+            append_unique_member(joined_members, m);
         }
-        // Persist auth chain events for auth-rule resolution.
-        auto const auth_arr_member = std::ranges::find_if(*send_obj, [](canonicaljson::ObjectMember const& m) {
-            return m.key == "auth_chain";
-        });
-        if (auth_arr_member != send_obj->end())
+        // Persist auth chain events for auth-rule resolution. Signatures were
+        // already verified above (filter_verified_send_join_events), before
+        // guard.lock() was taken.
+        for (auto const& auth_entry : verified_auth_chain)
         {
-            auto const* auth_arr = std::get_if<canonicaljson::Array>(&auth_arr_member->value->storage());
-            if (auth_arr != nullptr)
+            auto const serialized = canonicaljson::serialize_canonical(auth_entry);
+            if (serialized.error == canonicaljson::CanonicalJsonError::none)
             {
-                // Same fail-closed signature verification as the state array above.
-                auto const verified_auth_chain =
-                    filter_verified_send_join_events(runtime, *auth_arr, *policy, our_server);
-                for (auto const& auth_entry : verified_auth_chain)
+                auto const parsed = events::parse_event_envelope(auth_entry);
+                if (parsed.error.empty())
                 {
-                    auto const serialized = canonicaljson::serialize_canonical(auth_entry);
-                    if (serialized.error == canonicaljson::CanonicalJsonError::none)
+                    auto const* entry_obj = std::get_if<canonicaljson::Object>(&auth_entry.storage());
+                    auto event_id = std::string{};
+                    if (entry_obj != nullptr)
                     {
-                        auto const parsed = events::parse_event_envelope(auth_entry);
-                        if (parsed.error.empty())
+                        if (policy->event_id_format == rooms::EventIdFormat::reference_hash)
                         {
-                            auto const* entry_obj = std::get_if<canonicaljson::Object>(&auth_entry.storage());
-                            auto event_id = std::string{};
-                            if (entry_obj != nullptr)
+                            auto const eid = events::make_reference_hash_event_id(auth_entry, *policy);
+                            event_id = eid.event_id;
+                        }
+                        else
+                        {
+                            auto const* id_field = json_string_member(*entry_obj, "event_id");
+                            if (id_field != nullptr)
                             {
-                                if (policy->event_id_format == rooms::EventIdFormat::reference_hash)
-                                {
-                                    auto const eid = events::make_reference_hash_event_id(auth_entry, *policy);
-                                    event_id = eid.event_id;
-                                }
-                                else
-                                {
-                                    auto const* id_field = json_string_member(*entry_obj, "event_id");
-                                    if (id_field != nullptr)
-                                    {
-                                        event_id = *id_field;
-                                    }
-                                }
+                                event_id = *id_field;
                             }
-                            auto depth = std::uint64_t{0U};
-                            if (entry_obj != nullptr)
-                            {
-                                if (auto const* d = json_integer_member(*entry_obj, "depth"); d != nullptr && *d >= 0)
-                                {
-                                    depth = static_cast<std::uint64_t>(*d);
-                                }
-                            }
-                            auto prev_ids = std::vector<std::string>{};
-                            auto auth_ids = std::vector<std::string>{};
-                            if (entry_obj != nullptr)
-                            {
-                                if (auto const* pv = json_object_member(*entry_obj, "prev_events"); pv != nullptr)
-                                {
-                                    prev_ids = json_string_array(*pv);
-                                }
-                                if (auto const* av = json_object_member(*entry_obj, "auth_events"); av != nullptr)
-                                {
-                                    auth_ids = json_string_array(*av);
-                                }
-                            }
-                            auto const stream_ordering = runtime.database.next_stream_ordering++;
-                            // Detect state events by JSON field presence, not .empty(): the
-                            // state_key field exists even when "" (e.g. m.room.create).
-                            // v12 (MSC4291): m.room.create has no room_id field; derive it.
-                            auto const auth_effective_room_id = [&]() -> std::string {
-                                if (!parsed.event.room_id.empty())
-                                {
-                                    return parsed.event.room_id;
-                                }
-                                if (policy != nullptr && policy->create_event_is_room_id && !event_id.empty())
-                                {
-                                    return "!" + event_id.substr(1);
-                                }
-                                return {};
-                            }();
-                            auto state = std::optional<database::PersistentStateEvent>{};
-                            if (entry_obj != nullptr)
-                            {
-                                if (auto const* raw_sk = json_string_member(*entry_obj, "state_key"); raw_sk != nullptr)
-                                {
-                                    state = database::PersistentStateEvent{auth_effective_room_id,
-                                                                           parsed.event.event_type, *raw_sk, event_id};
-                                }
-                            }
-                            auto pe = database::PersistentEvent{};
-                            pe.event_id = event_id;
-                            pe.room_id = auth_effective_room_id;
-                            pe.sender_user_id = parsed.event.sender;
-                            pe.json = serialized.output;
-                            pe.depth = depth;
-                            pe.stream_ordering = stream_ordering;
-                            pe.prev_event_ids = std::move(prev_ids);
-                            pe.auth_event_ids = std::move(auth_ids);
-                            pe.signatures = parsed.event.signatures;
-                            std::ignore = database::store_event_with_state(runtime.database.persistent_store,
-                                                                           std::move(pe), state);
                         }
                     }
+                    auto depth = std::uint64_t{0U};
+                    if (entry_obj != nullptr)
+                    {
+                        if (auto const* d = json_integer_member(*entry_obj, "depth"); d != nullptr && *d >= 0)
+                        {
+                            depth = static_cast<std::uint64_t>(*d);
+                        }
+                    }
+                    auto prev_ids = std::vector<std::string>{};
+                    auto auth_ids = std::vector<std::string>{};
+                    if (entry_obj != nullptr)
+                    {
+                        if (auto const* pv = json_object_member(*entry_obj, "prev_events"); pv != nullptr)
+                        {
+                            prev_ids = json_string_array(*pv);
+                        }
+                        if (auto const* av = json_object_member(*entry_obj, "auth_events"); av != nullptr)
+                        {
+                            auth_ids = json_string_array(*av);
+                        }
+                    }
+                    auto const stream_ordering = runtime.database.next_stream_ordering++;
+                    // Detect state events by JSON field presence, not .empty(): the
+                    // state_key field exists even when "" (e.g. m.room.create).
+                    // v12 (MSC4291): m.room.create has no room_id field; derive it.
+                    auto const auth_effective_room_id = [&]() -> std::string {
+                        if (!parsed.event.room_id.empty())
+                        {
+                            return parsed.event.room_id;
+                        }
+                        if (policy != nullptr && policy->create_event_is_room_id && !event_id.empty())
+                        {
+                            return "!" + event_id.substr(1);
+                        }
+                        return {};
+                    }();
+                    auto state = std::optional<database::PersistentStateEvent>{};
+                    if (entry_obj != nullptr)
+                    {
+                        if (auto const* raw_sk = json_string_member(*entry_obj, "state_key"); raw_sk != nullptr)
+                        {
+                            state = database::PersistentStateEvent{auth_effective_room_id, parsed.event.event_type,
+                                                                   *raw_sk, event_id};
+                        }
+                    }
+                    auto pe = database::PersistentEvent{};
+                    pe.event_id = event_id;
+                    pe.room_id = auth_effective_room_id;
+                    pe.sender_user_id = parsed.event.sender;
+                    pe.json = serialized.output;
+                    pe.depth = depth;
+                    pe.stream_ordering = stream_ordering;
+                    pe.prev_event_ids = std::move(prev_ids);
+                    pe.auth_event_ids = std::move(auth_ids);
+                    pe.signatures = parsed.event.signatures;
+                    std::ignore =
+                        database::store_event_with_state(runtime.database.persistent_store, std::move(pe), state);
                 }
             }
         }
@@ -3396,6 +3426,65 @@ auto filter_verified_send_join_events(HomeserverRuntime& runtime, canonicaljson:
         if (runtime.sync_notifier != nullptr)
         {
             runtime.sync_notifier->publish(runtime.database.next_stream_ordering - 1U, sync_stream_id);
+        }
+        // Fast join: the room is fully usable now (create/power_levels/join_rules/
+        // etc. and our own membership are already verified and persisted above).
+        // The remaining member rows — deferred above as `background_state` — are
+        // verified and persisted off the request path so this call does not wait
+        // on resolving a signing key for every distinct home server in a large
+        // room. Until this completes the room is in a "partial state": queries
+        // like room_has_member()/the /members endpoint may not yet list every
+        // member. This mirrors Synapse's faster-joins partial-state rooms.
+        if (background_member_count > 0U)
+        {
+            auto room_id_bg = std::string{room_id};
+            auto our_server_bg = our_server;
+            auto policy_bg = *policy;
+            auto bg_future =
+                std::async(std::launch::async, [&runtime, room_id_bg, our_server_bg, policy_bg, background_member_count,
+                                                background_state_bg = std::move(background_state)]() mutable {
+                    // Network-bound key resolution — deliberately outside runtime.mutex.
+                    auto const verified =
+                        filter_verified_send_join_events(runtime, background_state_bg, policy_bg, our_server_bg);
+                    auto bg_guard = std::unique_lock<std::recursive_mutex>{runtime.mutex};
+                    auto const newly_joined = ingest_send_join_state(runtime, verified, policy_bg);
+                    auto stored = std::size_t{0U};
+                    auto const room_it = std::ranges::find_if(runtime.database.rooms, [&](LocalRoom const& r) {
+                        return r.room_id == room_id_bg;
+                    });
+                    for (auto const& member : newly_joined)
+                    {
+                        auto const result = database::store_membership(
+                            runtime.database.persistent_store,
+                            {room_id_bg, member, "join", runtime.database.next_stream_ordering++});
+                        if (result == database::MembershipStoreResult::already_exists)
+                        {
+                            std::ignore = database::update_membership(runtime.database.persistent_store, room_id_bg,
+                                                                      member, "join");
+                        }
+                        if (room_it != runtime.database.rooms.end())
+                        {
+                            append_unique_member(room_it->members, member);
+                        }
+                        ++stored;
+                    }
+                    if (stored > 0U && runtime.sync_notifier != nullptr)
+                    {
+                        auto const bg_sync_stream_id =
+                            database::allocate_sync_stream_id(runtime.database.persistent_store);
+                        runtime.sync_notifier->publish(runtime.database.next_stream_ordering - 1U, bg_sync_stream_id);
+                    }
+                    log_diagnostic("room.join.background_state_complete",
+                                   {
+                                       {"room_id",           room_id_bg,                              false},
+                                       {"members_submitted", std::to_string(background_member_count), false},
+                                       {"members_verified",  std::to_string(newly_joined.size()),     false},
+                                       {"members_stored",    std::to_string(stored),                  false}
+                    },
+                                   observability::LogEventSeverity::info);
+                });
+            auto orphan_lk = std::lock_guard{runtime.orphan_futures_mutex_};
+            runtime.orphan_futures_.push_back(std::move(bg_future));
         }
         return make_operation_result(true, std::string{room_id});
     }

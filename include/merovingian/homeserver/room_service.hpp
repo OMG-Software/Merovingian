@@ -50,6 +50,14 @@ struct ValidatedMakeLeaveResponse final
     canonicaljson::Object event{};
 };
 
+// Result of splitting a send_join `state` array for fast join (see
+// split_send_join_state_events below).
+struct SendJoinStateSplit final
+{
+    canonicaljson::Array critical{};
+    canonicaljson::Array background{};
+};
+
 [[nodiscard]] auto create_room(HomeserverRuntime& runtime, std::string_view access_token) -> OperationResult;
 [[nodiscard]] auto create_room(HomeserverRuntime& runtime, std::string_view access_token,
                                CreateRoomOptions const& options) -> OperationResult;
@@ -132,6 +140,17 @@ struct ValidatedMakeLeaveResponse final
 [[nodiscard]] auto filter_verified_send_join_events(HomeserverRuntime& runtime, canonicaljson::Array const& events,
                                                     rooms::RoomVersionPolicy const& policy, std::string_view our_server)
     -> canonicaljson::Array;
+// Splits a send_join response's `state` array into "critical" state (every
+// event except another user's m.room.member — create, power_levels,
+// join_rules, history_visibility, encryption, our own membership, etc.) and
+// "background" state (every OTHER member's m.room.member). Fast join: the
+// caller verifies and persists `critical` synchronously — a small set, from
+// typically one or two signing domains, sufficient for the room to be
+// immediately usable — and defers `background` (which scales with room size
+// and can span hundreds of distinct member home servers) to an async task,
+// so the join response does not wait on the full membership list.
+[[nodiscard]] auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::string_view our_user_id)
+    -> SendJoinStateSplit;
 
 [[nodiscard]] auto ensure_runtime_server_signing_key(HomeserverRuntime& runtime)
     -> std::optional<database::PersistentServerSigningKey>;

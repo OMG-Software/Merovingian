@@ -372,6 +372,32 @@ threat it closes; the controls above are the standing defences these reinforce.
   faith degrades the joining server's view of the room rather than being able
   to inject forged state.
 
+- **Fast join / partial-state trade-off (v0.10.11):** verifying a large room's
+  full `state` array before returning `join_room`'s response means the client
+  waits on resolving a signing key for every distinct member home server —
+  potentially hundreds for a 30,000-member room — even though only a handful
+  of *room-level* state events (create, power_levels, join_rules,
+  history_visibility, our own membership) are actually needed for the room to
+  be usable. `split_send_join_state_events` separates those from every other
+  member's `m.room.member` event; the former is verified and persisted
+  synchronously (the join response does not return until this completes), the
+  latter is verified and persisted by a background task tracked in the
+  existing `orphan_futures_` queue (same drain-on-shutdown guarantee as a
+  losing make_join race candidate). The verify-before-persist invariant is
+  unchanged for every event, including deferred ones — nothing enters the
+  event graph without a checked signature, and `/sync` only ever reads
+  persisted rows, so no unverified data is exposed to clients regardless of
+  timing. The trade-off is a "partial state" window: `room_has_member()`, the
+  `/members` endpoint, and the `LocalRoom.members` cache may not list every
+  member until the background task completes (`room.join.background_state_complete`
+  logs when it does), which fails closed (a not-yet-backfilled member looks
+  absent, not present) but can surface as a temporarily incomplete member
+  list to the joining client. This is deliberately narrower than Synapse's
+  full "faster joins" (MSC2775-derived) implementation — there is no explicit
+  device-list-change gating, resync coordination, or blocking of specific
+  operations while partial: it is a bounded-scope version of the same idea,
+  suitable because critical auth-relevant state is never deferred.
+
 ## Security principles
 
 - Fail closed.
