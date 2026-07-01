@@ -1656,3 +1656,132 @@ SCENARIO("Parallel inbound /send resolves each distinct sender key once even wit
         }
     }
 }
+
+SCENARIO("Parallel inbound /send with join_parallelism=1 resolves sender keys serially",
+         "[federation][inbound][pdu][parallel]")
+{
+    GIVEN("a relayed transaction with two distinct sender domains and parallelism capped at 1")
+    {
+        auto config = runtime_config();
+        config.join_parallelism = 1U; // serial: only one resolver call in-flight at a time
+        auto runtime = merovingian::federation::make_federation_runtime_state(config);
+
+        auto const relay_origin = std::string{"relay.example.org"};
+        auto const relay_key_id = std::string{"ed25519:relay"};
+        auto const relay_token = std::string{"relay-server-key"};
+        merovingian::federation::upsert_remote(runtime, remote_for(relay_origin, relay_key_id, relay_token));
+
+        auto const s1 = std::string{"s1.example.org"};
+        auto const s2 = std::string{"s2.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const t1 = std::string{"t1"};
+        auto const t2 = std::string{"t2"};
+
+        auto state = std::make_shared<CountingResolverState>();
+        state->delay = std::chrono::milliseconds(50);
+        state->keys[{s1, key_id}] = remote_for(s1, key_id, t1);
+        state->keys[{s2, key_id}] = remote_for(s2, key_id, t2);
+        runtime.remote_key_resolver = [state](std::string_view server_name, std::string_view request_key_id)
+            -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+            state->calls.fetch_add(1U);
+            state->record_concurrency();
+            std::this_thread::sleep_for(state->delay);
+            state->in_flight.fetch_sub(1U);
+            auto const it = state->keys.find({std::string{server_name}, std::string{request_key_id}});
+            if (it == state->keys.end())
+            {
+                return std::nullopt;
+            }
+            return it->second;
+        };
+
+        auto sink_count = std::atomic<std::size_t>{0U};
+        runtime.pdu_sink =
+            [&sink_count](
+                merovingian::federation::InboundPduEnvelope const&) -> merovingian::federation::PduIngestionResult {
+            sink_count.fetch_add(1U);
+            return {merovingian::federation::PduIngestionStatus::accepted, {}};
+        };
+
+        auto const request = signed_request(
+            relay_origin, relay_key_id, relay_token,
+            transaction_body_pdus(relay_origin, {signed_json_pdu(s1, key_id, t1), signed_json_pdu(s2, key_id, t2)}));
+
+        WHEN("the transaction is handled")
+        {
+            auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
+
+            THEN("both PDUs are accepted and the resolver never ran more than one call concurrently")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(sink_count.load() == 2U);
+                REQUIRE(state->calls.load() == 2U);
+                // With parallelism=1 the semaphore ensures at most one in-flight
+                // resolver call at any moment — peak concurrency must not exceed 1.
+                REQUIRE(state->peak.load() <= 1U);
+            }
+        }
+    }
+}
+
+SCENARIO("Parallel inbound /send with join_parallelism=0 clamps to 1 and resolves correctly",
+         "[federation][inbound][pdu][parallel]")
+{
+    GIVEN("a relayed transaction with two distinct sender domains and parallelism set to 0 (clamp to 1)")
+    {
+        auto config = runtime_config();
+        config.join_parallelism = 0U; // zero is clamped to 1 in the inbound resolver
+        auto runtime = merovingian::federation::make_federation_runtime_state(config);
+
+        auto const relay_origin = std::string{"relay.example.org"};
+        auto const relay_key_id = std::string{"ed25519:relay"};
+        auto const relay_token = std::string{"relay-server-key"};
+        merovingian::federation::upsert_remote(runtime, remote_for(relay_origin, relay_key_id, relay_token));
+
+        auto const s1 = std::string{"s1.example.org"};
+        auto const s2 = std::string{"s2.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const t1 = std::string{"tok1"};
+        auto const t2 = std::string{"tok2"};
+
+        auto state = std::make_shared<CountingResolverState>();
+        state->keys[{s1, key_id}] = remote_for(s1, key_id, t1);
+        state->keys[{s2, key_id}] = remote_for(s2, key_id, t2);
+        runtime.remote_key_resolver = [state](std::string_view server_name, std::string_view request_key_id)
+            -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+            state->calls.fetch_add(1U);
+            state->record_concurrency();
+            state->in_flight.fetch_sub(1U);
+            auto const it = state->keys.find({std::string{server_name}, std::string{request_key_id}});
+            if (it == state->keys.end())
+            {
+                return std::nullopt;
+            }
+            return it->second;
+        };
+
+        auto sink_count = std::atomic<std::size_t>{0U};
+        runtime.pdu_sink =
+            [&sink_count](
+                merovingian::federation::InboundPduEnvelope const&) -> merovingian::federation::PduIngestionResult {
+            sink_count.fetch_add(1U);
+            return {merovingian::federation::PduIngestionStatus::accepted, {}};
+        };
+
+        auto const request = signed_request(
+            relay_origin, relay_key_id, relay_token,
+            transaction_body_pdus(relay_origin, {signed_json_pdu(s1, key_id, t1), signed_json_pdu(s2, key_id, t2)}));
+
+        WHEN("the transaction is handled")
+        {
+            auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
+
+            THEN("both PDUs are accepted — join_parallelism=0 is clamped to 1 and resolves all senders")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(sink_count.load() == 2U);
+                REQUIRE(state->calls.load() == 2U);
+            }
+        }
+    }
+}

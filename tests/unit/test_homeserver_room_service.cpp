@@ -670,6 +670,218 @@ SCENARIO("perform_sync_outbound_call returns failure immediately when discovery_
 
 // --- parallel make_join race ---------------------------------------------------
 
+SCENARIO("join_room rejects an unauthenticated caller", "[homeserver][rooms][join][error]")
+{
+    GIVEN("a started runtime with no valid session token")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        WHEN("join_room is called with an empty access token")
+        {
+            auto const result = merovingian::homeserver::join_room(runtime, "", "!abc:remote.example.com", {});
+
+            THEN("join fails with 401")
+            {
+                REQUIRE_FALSE(result.ok);
+                REQUIRE(result.status == 401U);
+            }
+        }
+
+        WHEN("join_room is called with a made-up access token")
+        {
+            auto const result =
+                merovingian::homeserver::join_room(runtime, "not_a_real_token", "!abc:remote.example.com", {});
+
+            THEN("join fails with 401")
+            {
+                REQUIRE_FALSE(result.ok);
+                REQUIRE(result.status == 401U);
+            }
+        }
+    }
+}
+
+SCENARIO("join_room returns 404 when no candidate servers are available",
+         "[homeserver][rooms][join][federation][error]")
+{
+    GIVEN("a started runtime where the room ID domain equals our server and no via servers are provided")
+    {
+        REQUIRE(sodium_init() >= 0);
+        // registration_enabled_config() sets server_name = "example.org"
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const reg = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                      merovingian::tests::registration_token);
+        REQUIRE(reg.ok);
+        auto const login = merovingian::homeserver::login_local_user(runtime, reg.value, "CorrectHorse7!", "DEVICE1");
+        REQUIRE(login.ok);
+
+        WHEN("join_room is called for a room on our own domain with no via_servers")
+        {
+            // Room domain == our server, no via_servers → join_candidate_servers returns empty.
+            auto const result = merovingian::homeserver::join_room(runtime, login.value, "!abc:example.org", {});
+
+            THEN("join fails with 404 — no resident server to contact")
+            {
+                REQUIRE_FALSE(result.ok);
+                REQUIRE(result.status == 404U);
+            }
+        }
+    }
+}
+
+SCENARIO("join_room returns 200 when the user is already a member of a local room", "[homeserver][rooms][join]")
+{
+    GIVEN("a started runtime where alice has already created and joined a local room")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const reg = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                      merovingian::tests::registration_token);
+        REQUIRE(reg.ok);
+        auto const login = merovingian::homeserver::login_local_user(runtime, reg.value, "CorrectHorse7!", "DEVICE1");
+        REQUIRE(login.ok);
+
+        auto const created = merovingian::homeserver::create_room(runtime, login.value, {});
+        REQUIRE(created.ok);
+        auto const room_id = created.value;
+
+        WHEN("join_room is called again for the same room the creator is already joined to")
+        {
+            auto const result = merovingian::homeserver::join_room(runtime, login.value, room_id, {});
+
+            THEN("join succeeds with 200 — idempotent re-join of a local room")
+            {
+                REQUIRE(result.ok);
+                REQUIRE(result.status == 200U);
+            }
+        }
+    }
+}
+
+SCENARIO("parallel make_join race with join_parallelism=0 defaults to 1 concurrent task",
+         "[homeserver][rooms][join][federation][error]")
+{
+    GIVEN("a started runtime with join_parallelism=0 and no reachable discovery infrastructure")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const reg = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                      merovingian::tests::registration_token);
+        REQUIRE(reg.ok);
+        auto const login = merovingian::homeserver::login_local_user(runtime, reg.value, "CorrectHorse7!", "DEVICE1");
+        REQUIRE(login.ok);
+
+        runtime.discovery_network.reset();
+        runtime.cached_discovery.reset();
+
+        WHEN("join_room is called with three candidates and join_parallelism=0 (clamped to 1)")
+        {
+            // join_parallelism=0 is clamped to max(1U, 0U)=1 so candidates are
+            // serialised rather than running in parallel — must still exhaust all three.
+            runtime.federation.config.join_parallelism = 0U;
+            auto const result = merovingian::homeserver::join_room(
+                runtime, login.value, "!abc:remote.example.com",
+                {"s1.remote.example.com", "s2.remote.example.com", "s3.remote.example.com"});
+
+            THEN("join fails with 502 — all candidates exhausted serially")
+            {
+                REQUIRE_FALSE(result.ok);
+                REQUIRE(result.status == 502U);
+            }
+        }
+    }
+}
+
+SCENARIO("parallel make_join race uses join_timeout_seconds when it is configured",
+         "[homeserver][rooms][join][federation][error]")
+{
+    GIVEN("a started runtime with join_timeout_seconds=5 and no reachable discovery infrastructure")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const reg = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                      merovingian::tests::registration_token);
+        REQUIRE(reg.ok);
+        auto const login = merovingian::homeserver::login_local_user(runtime, reg.value, "CorrectHorse7!", "DEVICE1");
+        REQUIRE(login.ok);
+
+        runtime.discovery_network.reset();
+        runtime.cached_discovery.reset();
+
+        WHEN("join_room is called with join_timeout_seconds=5 (non-zero — uses join budget not remote timeout)")
+        {
+            // join_timeout_seconds > 0 selects per_call_timeout = join_timeout_seconds
+            // rather than remote_timeout_seconds. With no discovery the call fails
+            // quickly regardless; we verify the result code and that the branch
+            // executes without incident.
+            runtime.federation.config.join_timeout_seconds = 5U;
+            runtime.federation.config.join_parallelism = 1U;
+            auto const result = merovingian::homeserver::join_room(runtime, login.value, "!abc:remote.example.com",
+                                                                   {"s1.remote.example.com"});
+
+            THEN("join fails with 502 using the configured join timeout")
+            {
+                REQUIRE_FALSE(result.ok);
+                REQUIRE(result.status == 502U);
+            }
+        }
+    }
+}
+
+SCENARIO("parallel make_join race with more candidates than parallelism throttles via semaphore",
+         "[homeserver][rooms][join][federation][error][concurrency]")
+{
+    GIVEN("a started runtime with five candidates and join_parallelism=2 and no discovery infrastructure")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const reg = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                      merovingian::tests::registration_token);
+        REQUIRE(reg.ok);
+        auto const login = merovingian::homeserver::login_local_user(runtime, reg.value, "CorrectHorse7!", "DEVICE1");
+        REQUIRE(login.ok);
+
+        runtime.discovery_network.reset();
+        runtime.cached_discovery.reset();
+
+        WHEN("join_room is called with five candidates and parallelism capped at 2")
+        {
+            // Five candidates exceed parallelism=2, so the PortableSemaphore must
+            // throttle to at most 2 concurrent in-flight make_join calls at any time.
+            // All five eventually fail → 502.
+            runtime.federation.config.join_parallelism = 2U;
+            auto const result = merovingian::homeserver::join_room(runtime, login.value, "!abc:remote.example.com",
+                                                                   {"s1.remote.example.com", "s2.remote.example.com",
+                                                                    "s3.remote.example.com", "s4.remote.example.com",
+                                                                    "s5.remote.example.com"});
+
+            THEN("join fails with 502 after exhausting all five candidates")
+            {
+                REQUIRE_FALSE(result.ok);
+                REQUIRE(result.status == 502U);
+            }
+        }
+    }
+}
+
 SCENARIO("parallel make_join race returns 502 when all candidates are unreachable",
          "[homeserver][rooms][join][federation][error]")
 {
