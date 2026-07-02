@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.10.12
+Version:        0.10.13
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -112,6 +112,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Thu Jul 02 2026 James Chapman <claude@ping.me.uk> - 0.10.13-1
+- fix(federation): send_join used remote_timeout_seconds instead of the join_timeout_seconds budget, causing large-room joins to fail with 502 "IPC timeout waiting for outbound HTTP result"; also guard perform_sync_outbound_call against timeout_seconds=0 collapsing the IPC window to 10s
+- fix(config): add the missing security.federation.join_timeout/join_parallelism/join_race_deadline/join_max_candidates/join_state_key_parallelism and federation.worker.apply_hardening keys to config/merovingian.conf.example
 * Thu Jul 02 2026 James Chapman <claude@ping.me.uk> - 0.10.12-1
 - test(federation): add a live join_room integration test covering the fast-join/signature-verification code path against a real local TLS server, closing the codecov/patch gap from #341; adds a test-only outbound destination override to HomeserverRuntime (never set by production code) so tests can point federation calls at a local server without weakening the SSRF/loopback policy or the TLS CA trust store
 * Wed Jul 01 2026 James Chapman <claude@ping.me.uk> - 0.10.11-1
