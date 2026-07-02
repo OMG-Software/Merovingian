@@ -123,15 +123,38 @@ security.federation.deny_ip_ranges=127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.
 security.federation.max_transaction_size=20MiB
 security.federation.remote_timeout=60s
 
+# Join/leave membership budget
+# make_join/send_join/make_leave/send_leave get a separate, longer budget than
+# remote_timeout above, because a large remote room's send_join response (full
+# room state) can take much longer than a typical federation call. Without
+# this, joining a room with tens of thousands of members can fail with
+# "502 send_join failed: IPC timeout waiting for outbound HTTP result" even
+# though the resident server eventually answers successfully.
+# join_parallelism caps concurrent make_join candidate probes (first success
+# wins). join_race_deadline bounds the whole candidate race, independent of
+# join_timeout. join_max_candidates truncates an oversized via list before
+# racing. join_state_key_parallelism caps concurrent remote signing-key
+# resolutions when verifying a send_join response's state/auth_chain events.
+# See docs/configuration.md for full details.
+security.federation.join_timeout=180s
+security.federation.join_parallelism=8
+security.federation.join_race_deadline=45s
+security.federation.join_max_candidates=20
+security.federation.join_state_key_parallelism=100
+
 # Out-of-process federation worker (mandatory)
 # All inbound federation requests are forwarded to a separate
 # merovingian-fed-worker child process over an encrypted AF_UNIX IPC channel,
 # freeing the main thread pool for client-server traffic. The worker is always
 # required; startup fails if it cannot be launched. Rooms are sharded across
 # federation.worker.shards independent worker processes using FNV-1a hashing.
+# apply_hardening applies PR_SET_NO_NEW_PRIVS, a capability-bounding drop, and
+# a seccomp-bpf filter denying execve/execveat at worker startup; keep this
+# true in production.
 federation.worker.threads=4
 federation.worker.request_timeout_seconds=30
 federation.worker.shards=2
+federation.worker.apply_hardening=true
 # federation.worker.binary=
 
 # Media safety policy

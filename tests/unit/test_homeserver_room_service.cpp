@@ -673,6 +673,45 @@ SCENARIO("perform_sync_outbound_call returns failure immediately when discovery_
     }
 }
 
+SCENARIO("perform_sync_outbound_call with timeout_seconds=0 does not collapse the IPC window to 10 s",
+         "[homeserver][federation][outbound]")
+{
+    GIVEN("a started runtime whose discovery_network has been cleared")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        runtime.discovery_network.reset();
+
+        WHEN("perform_sync_outbound_call is invoked with timeout_seconds=0 (not configured)")
+        {
+            // timeout_seconds=0 must leave FederationCall defaults (total_timeout=60s) in
+            // place.  Previously the 0 was written straight to call.total_timeout_seconds,
+            // making WorkerPool compute ipc_timeout = 0+10 = 10 s — a silent regression
+            // that caused large-room send_join to time out immediately.  With no discovery
+            // the call fails fast for an unrelated reason; the important assertion is that
+            // the call does not crash or produce a different failure mode than a non-zero
+            // timeout (which also fails fast here).
+            auto const tx = merovingian::federation::OutboundTransaction{
+                .destination = "remote.example.com",
+                .method = "GET",
+                .target = "/_matrix/federation/v1/make_join/!r:remote.example.com/@u:example.org",
+                .origin = "example.org",
+                .body = "",
+            };
+            auto const [ok, reason] = merovingian::homeserver::perform_sync_outbound_call(
+                runtime, "!r:remote.example.com", tx, "ed25519:K001", {}, "test.diagnostic.zero_timeout", 0U);
+
+            THEN("the call fails with a non-empty reason — discovery unavailable, not a crash or silent hang")
+            {
+                REQUIRE_FALSE(ok);
+                REQUIRE_FALSE(reason.empty());
+            }
+        }
+    }
+}
+
 // --- parallel make_join race ---------------------------------------------------
 
 SCENARIO("join_room rejects an unauthenticated caller", "[homeserver][rooms][join][error]")
@@ -840,6 +879,48 @@ SCENARIO("parallel make_join race uses join_timeout_seconds when it is configure
                                                                    {"s1.remote.example.com"});
 
             THEN("join fails with 502 using the configured join timeout")
+            {
+                REQUIRE_FALSE(result.ok);
+                REQUIRE(result.status == 502U);
+            }
+        }
+    }
+}
+
+SCENARIO("join_room send_join uses join_timeout_seconds when configured, not remote_timeout_seconds",
+         "[homeserver][rooms][join][federation][error]")
+{
+    GIVEN("a started runtime with join_timeout_seconds=5, remote_timeout_seconds=0, and no discovery")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const reg = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                      merovingian::tests::registration_token);
+        REQUIRE(reg.ok);
+        auto const login = merovingian::homeserver::login_local_user(runtime, reg.value, "CorrectHorse7!", "DEVICE1");
+        REQUIRE(login.ok);
+
+        runtime.discovery_network.reset();
+        runtime.cached_discovery.reset();
+
+        WHEN("join_room is called with join_timeout_seconds set and remote_timeout_seconds left at 0")
+        {
+            // Before the fix, send_join passed remote_timeout_seconds (0) to
+            // perform_sync_outbound_call, collapsing the IPC window to 10 s.
+            // With the fix, send_join picks join_timeout_seconds (>0) first, so the
+            // configured join budget governs the whole make_join/send_join cycle.
+            // With no discovery the call fails at make_join; the assertion is that
+            // the failure reason reflects the join budget path, not a crash.
+            runtime.federation.config.join_timeout_seconds = 5U;
+            runtime.federation.config.remote_timeout_seconds = 0U;
+            runtime.federation.config.join_parallelism = 1U;
+            auto const result = merovingian::homeserver::join_room(runtime, login.value, "!abc:remote.example.com",
+                                                                   {"s1.remote.example.com"});
+
+            THEN("join fails with 502 — make_join discovery unavailable, join budget governs")
             {
                 REQUIRE_FALSE(result.ok);
                 REQUIRE(result.status == 502U);

@@ -1439,8 +1439,14 @@ namespace
     // Borrow the caller's span (backed by the runtime's SecretBuffer) for the
     // synchronous build+send below. No std::string materialisation of the key.
     call.secret_key = secret_key;
-    call.connect_timeout_seconds = std::min(timeout_seconds, 30U);
-    call.total_timeout_seconds = timeout_seconds;
+    // 0 means "not configured — use FederationCall defaults (connect=10s, total=60s)".
+    // Overwriting with 0 would make the IPC wait only 10 s (0+10 buffer in WorkerPool),
+    // so only apply the caller's budget when it is actually set.
+    if (timeout_seconds > 0U)
+    {
+        call.connect_timeout_seconds = std::min(timeout_seconds, 30U);
+        call.total_timeout_seconds = timeout_seconds;
+    }
 
     // Sign the request in-process — the Ed25519 secret never crosses the IPC boundary.
     auto const request = federation::build_outbound_request(call);
@@ -3119,9 +3125,14 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
                                                          {"remote_server", std::string{remote_server}, false},
                                                          {"event_id",      event_id_result.event_id,   false}
         });
-        auto const [send_ok, send_body] = perform_sync_outbound_call(runtime, room_id, send_join_tx, key_id, secret_key,
-                                                                     "room.join.remote.send_join_failed",
-                                                                     runtime.federation.config.remote_timeout_seconds);
+        // send_join can return megabytes of room state for large rooms, so give it
+        // the full join budget rather than the shorter remote_timeout used for key
+        // and discovery calls.  Mirror the same fallback chain as make_join.
+        auto const send_join_timeout = runtime.federation.config.join_timeout_seconds > 0U
+                                           ? runtime.federation.config.join_timeout_seconds
+                                           : runtime.federation.config.remote_timeout_seconds;
+        auto const [send_ok, send_body] = perform_sync_outbound_call(
+            runtime, room_id, send_join_tx, key_id, secret_key, "room.join.remote.send_join_failed", send_join_timeout);
         if (!send_ok)
         {
             log_diagnostic("room.join.rejected",
