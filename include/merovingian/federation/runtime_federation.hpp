@@ -27,6 +27,14 @@ struct RuntimeFederationConfig final
     std::uint32_t join_timeout_seconds{0U};
     // Cap on concurrent make_join candidate probes and inbound sender-key fan-out.
     std::uint32_t join_parallelism{0U};
+    // Overall wall-clock budget for the whole make_join race, independent of
+    // join_timeout_seconds (default 45s). 0 disables the deadline (unbounded wait).
+    std::uint32_t join_race_deadline_seconds{0U};
+    // Hard cap on the number of via-derived candidates actually raced (default 20).
+    std::uint32_t join_max_candidates{0U};
+    // Cap on concurrent remote signing-key resolutions when verifying send_join
+    // state/auth_chain event signatures (default 100). See config.hpp.
+    std::uint32_t join_state_key_parallelism{0U};
     // Local server name (e.g. "matrix.example.org"). Surfaced into outbound
     // federation traffic and into response bodies that include the issuing
     // server's identity (notably the backfill response). Mirrors

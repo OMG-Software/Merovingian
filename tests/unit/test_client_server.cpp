@@ -3650,11 +3650,17 @@ SCENARIO("Capabilities endpoint returns server feature flags for authenticated c
                 REQUIRE(response.response.body.find(R"("default":"12")") != std::string::npos);
             }
 
-            THEN("m.room_versions lists 10 11 and 12 as stable")
+            THEN("m.room_versions lists every server-supported version (1-12) as stable")
             {
-                REQUIRE(response.response.body.find(R"("10":"stable")") != std::string::npos);
-                REQUIRE(response.response.body.find(R"("11":"stable")") != std::string::npos);
-                REQUIRE(response.response.body.find(R"("12":"stable")") != std::string::npos);
+                // The server must advertise every version rooms::room_version_policy.cpp
+                // implements, not a hardcoded subset — a stale list here previously
+                // caused federation joins to fail against any room not on 10/11/12,
+                // since the outbound make_join ver= list came from the same source.
+                for (auto const* version : {"1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"})
+                {
+                    auto const expected = "\"" + std::string{version} + "\":\"stable\"";
+                    REQUIRE(response.response.body.find(expected) != std::string::npos);
+                }
             }
         }
 

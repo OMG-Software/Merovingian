@@ -358,6 +358,24 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected unsigned integer");
             }
         }
+        else if (key == "security.federation.join_race_deadline")
+        {
+            security.federation.join_race_deadline = std::string{value};
+        }
+        else if (key == "security.federation.join_max_candidates")
+        {
+            if (!parse_u32_value(value, security.federation.join_max_candidates))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "security.federation.join_state_key_parallelism")
+        {
+            if (!parse_u32_value(value, security.federation.join_state_key_parallelism))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
         else if (key == "security.media.max_upload_size")
         {
             security.media.max_upload_size = std::string{value};

@@ -1016,6 +1016,61 @@ security.federation.join_parallelism=8
 `join_timeout` accepts the same positive bounded duration suffixes (`s`, `m`)
 as `remote_timeout`; `0s` is rejected.
 
+### Join race deadline and candidate cap
+
+`join_parallelism` bounds *concurrency*, not *total elapsed time*. A room with
+a large `via` candidate list (dozens of resident servers, e.g. from a
+well-federated public room) races in batches of `join_parallelism`, and with
+no overall bound the whole race can take `ceil(candidate_count / join_parallelism) *
+up_to_join_timeout` — many minutes for a large `via` list — even though each
+individual candidate stays within its own `join_timeout` budget. The calling
+client's own HTTP request (and any reverse proxy in front of the homeserver)
+typically times out long before that, surfacing as a client-side "Failed to
+fetch" while the server keeps working. Two more keys close that gap:
+
+```text
+security.federation.join_race_deadline=45s
+security.federation.join_max_candidates=20
+```
+
+| Key | Type | Default | Reload | Notes |
+|-----|------|---------|--------|-------|
+| `security.federation.join_race_deadline` | duration | `45s` | reloadable (`requires_restart=false`) | Overall wall-clock budget for the *entire* make_join race across all candidates, independent of the per-candidate `join_timeout`. When it elapses without a winner, `join_room` returns `502` immediately; candidates still in flight are parked in the background orphan-future queue and drained on shutdown, same as a losing candidate. `0s` is rejected — the deadline cannot be disabled via config, only extended. |
+| `security.federation.join_max_candidates` | unsigned int | `20` | reloadable (`requires_restart=false`) | Hard cap on the number of `via`-derived candidates actually raced. Every candidate is spawned as an OS thread immediately (`std::launch::async`), throttled to *run* by `join_parallelism` but not to *spawn* — an unbounded `via` list otherwise means unbounded upfront thread creation. The ordered candidate list is truncated to the first N entries (via lists are recommended to be ordered by likelihood of being resident), so truncation keeps the most-likely candidates. Must be `>= 1`; `0` is rejected at validation. |
+
+### send_join signature verification key parallelism
+
+A `send_join` response's `state` array carries one `m.room.member` event per
+room member — potentially thousands for a large room, each one signed by that
+member's home server. `join_room` verifies every event's Ed25519 signature
+before it enters the event graph (spec MUST; `src/federation/AGENTS.md` rule
+2) rather than trusting the resident server's response wholesale. Distinct
+`(sender_domain, key_id)` pairs are resolved via the same remote-key-cache
+infrastructure the inbound `/send` path uses, with concurrent fan-out capped
+independently of `join_parallelism`:
+
+```text
+security.federation.join_state_key_parallelism=100
+```
+
+| Key | Type | Default | Reload | Notes |
+|-----|------|---------|--------|-------|
+| `security.federation.join_state_key_parallelism` | unsigned int | `100` | reloadable (`requires_restart=false`) | Cap on concurrent remote signing-key resolutions while verifying a `send_join` response's `state`/`auth_chain` arrays. Distinct `(sender_domain, key_id)` pairs are deduplicated before this cap is applied, so it bounds concurrent *distinct home servers* contacted (typically far fewer than the member count), not concurrent events. Events whose sender is our own server are verified without a resolver round trip. An event whose sender-domain key cannot be resolved, or whose signature does not verify, is silently dropped — not persisted, and does not fail the join. Must be `>= 1`; `0` is rejected at validation. |
+
+**Fast join:** `auth_chain` and the room's own critical state (create,
+power_levels, join_rules, history_visibility, our own membership) are always
+verified and persisted before `join_room` returns. The bulk of `state` — every
+*other* member's `m.room.member` event, which is where nearly all of the
+`(sender_domain, key_id)` fan-out above actually comes from for a large room —
+is verified and persisted by a background task after the join response is
+already back with the client, so the response does not wait on the full
+membership list. `join_state_key_parallelism` governs the background task's
+fan-out exactly the same way it governs the synchronous critical-state pass.
+See `docs/threat-model.md` for the partial-state trade-off this implies.
+
+`join_race_deadline` accepts the same positive bounded duration suffixes
+(`s`, `m`) as `join_timeout`; `0s` is rejected.
+
 ## Federation worker (out-of-process)
 
 When a user joins a large federated room, the inbound PDU verification, state

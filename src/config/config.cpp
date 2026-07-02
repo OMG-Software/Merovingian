@@ -664,6 +664,25 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
             {"security.federation.join_parallelism", "federation join parallelism must be a positive integer"});
     }
 
+    auto const federation_join_race_deadline = parse_duration_seconds(config.security().federation.join_race_deadline);
+    if (!federation_join_race_deadline.valid)
+    {
+        findings.push_back({"security.federation.join_race_deadline",
+                            "federation join race deadline must be a positive bounded duration"});
+    }
+
+    if (config.security().federation.join_max_candidates == 0U)
+    {
+        findings.push_back(
+            {"security.federation.join_max_candidates", "federation join max candidates must be a positive integer"});
+    }
+
+    if (config.security().federation.join_state_key_parallelism == 0U)
+    {
+        findings.push_back({"security.federation.join_state_key_parallelism",
+                            "federation join state key parallelism must be a positive integer"});
+    }
+
     auto const media_max_upload_size = parse_size_limit(config.security().media.max_upload_size);
     if (!media_max_upload_size.valid)
     {

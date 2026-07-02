@@ -325,6 +325,79 @@ threat it closes; the controls above are the standing defences these reinforce.
   be launched. The `WorkerSupervisor` restarts crashed workers automatically
   with exponential back-off.
 
+- **Unbounded client-supplied `via` list drove unbounded thread spawning and
+  unbounded join latency (v0.10.11):** `POST /join`'s `via`/`server_name` query
+  parameters are attacker/client-controlled and were passed straight through to
+  the parallel make_join race (v0.10.10) with no upper bound. Every candidate
+  was spawned as an OS thread immediately via `std::launch::async` — only
+  throttled to *run* by `join_parallelism`, not to *spawn* — so a client (or a
+  room whose federation state legitimately spans dozens of servers) could
+  make the server spin up one thread per via entry on every join attempt. The
+  same unbounded candidate count meant the race had no upper bound on wall-clock
+  time either: with `join_parallelism` concurrent slots and up to `join_timeout`
+  per candidate, total race time scaled with candidate count and could run for
+  many minutes — long after the calling client's own HTTP request (and any
+  reverse proxy in front) had already timed out, so the client observed a
+  generic fetch failure while the server kept working unseen. Fixed by two
+  independent bounds: `security.federation.join_max_candidates` (default `20`)
+  truncates the ordered candidate list to the first N entries *before* any
+  `std::async` task is spawned, capping upfront thread creation regardless of
+  `via` list size; `security.federation.join_race_deadline` (default `45s`)
+  bounds the *entire* race's wall-clock time independent of the per-candidate
+  `join_timeout`, so `join_room` always returns a definitive response within a
+  bounded window. Candidates still in flight when either bound is hit are
+  parked in the existing `orphan_futures_` background-drain queue, unchanged
+  from the losing-candidate path.
+
+- **`send_join` state and auth_chain events were persisted with no signature
+  verification (v0.10.11):** `join_room`'s ingestion of a `send_join`
+  response's `state` and `auth_chain` arrays parsed each event and wrote it
+  straight to the persistent event graph, trusting the resident server's
+  response wholesale — no Ed25519 signature check, no remote signing-key
+  fetch, in direct violation of `src/federation/AGENTS.md` rule 2 ("Verify
+  every inbound PDU's signature... Unverified events must be silently
+  dropped"). A resident server (or an attacker able to act as one, e.g. via
+  DNS/BGP hijack of a room's resident server) could inject arbitrary
+  membership or state events into a joining server's view of the room with no
+  cryptographic check. Fixed by `filter_verified_send_join_events`: distinct
+  `(sender_domain, key_id)` pairs across both arrays are resolved via the
+  existing `remote_key_resolver`/key-cache infrastructure (bounded
+  concurrency, `security.federation.join_state_key_parallelism`, default
+  `100`), and each event's signature is verified against its resolved key
+  before being handed to `ingest_send_join_state` / the auth_chain persistence
+  loop. Events whose sender is our own server are trusted without a resolver
+  round trip (self-signed). Fail-closed: an event whose key cannot be
+  resolved or whose signature does not verify is silently dropped, not
+  persisted, and does not fail the join — a resident server acting in bad
+  faith degrades the joining server's view of the room rather than being able
+  to inject forged state.
+
+- **Fast join / partial-state trade-off (v0.10.11):** verifying a large room's
+  full `state` array before returning `join_room`'s response means the client
+  waits on resolving a signing key for every distinct member home server —
+  potentially hundreds for a 30,000-member room — even though only a handful
+  of *room-level* state events (create, power_levels, join_rules,
+  history_visibility, our own membership) are actually needed for the room to
+  be usable. `split_send_join_state_events` separates those from every other
+  member's `m.room.member` event; the former is verified and persisted
+  synchronously (the join response does not return until this completes), the
+  latter is verified and persisted by a background task tracked in the
+  existing `orphan_futures_` queue (same drain-on-shutdown guarantee as a
+  losing make_join race candidate). The verify-before-persist invariant is
+  unchanged for every event, including deferred ones — nothing enters the
+  event graph without a checked signature, and `/sync` only ever reads
+  persisted rows, so no unverified data is exposed to clients regardless of
+  timing. The trade-off is a "partial state" window: `room_has_member()`, the
+  `/members` endpoint, and the `LocalRoom.members` cache may not list every
+  member until the background task completes (`room.join.background_state_complete`
+  logs when it does), which fails closed (a not-yet-backfilled member looks
+  absent, not present) but can surface as a temporarily incomplete member
+  list to the joining client. This is deliberately narrower than Synapse's
+  full "faster joins" (MSC2775-derived) implementation — there is no explicit
+  device-list-change gating, resync coordination, or blocking of specific
+  operations while partial: it is a bounded-scope version of the same idea,
+  suitable because critical auth-relevant state is never deferred.
+
 ## Security principles
 
 - Fail closed.

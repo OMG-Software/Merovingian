@@ -19,6 +19,9 @@ SCENARIO("Runtime federation config parses validated transaction limits", "[fede
         security.federation.remote_timeout = "45s";
         security.federation.join_timeout = "200s";
         security.federation.join_parallelism = 12U;
+        security.federation.join_race_deadline = "50s";
+        security.federation.join_max_candidates = 15U;
+        security.federation.join_state_key_parallelism = 75U;
         auto const config = merovingian::config::Config{
             merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
             merovingian::config::DatabaseConfig{},         security,
@@ -41,6 +44,9 @@ SCENARIO("Runtime federation config parses validated transaction limits", "[fede
                 REQUIRE(runtime_federation.remote_timeout_seconds == 45U);
                 REQUIRE(runtime_federation.join_timeout_seconds == 200U);
                 REQUIRE(runtime_federation.join_parallelism == 12U);
+                REQUIRE(runtime_federation.join_race_deadline_seconds == 50U);
+                REQUIRE(runtime_federation.join_max_candidates == 15U);
+                REQUIRE(runtime_federation.join_state_key_parallelism == 75U);
                 REQUIRE(runtime_federation.deny_ip_ranges.size() == 6U);
             }
         }
@@ -60,6 +66,9 @@ SCENARIO("Runtime federation summary exposes bounded operational values", "[fede
         runtime_federation.remote_timeout_seconds = 30U;
         runtime_federation.join_timeout_seconds = 180U;
         runtime_federation.join_parallelism = 8U;
+        runtime_federation.join_race_deadline_seconds = 45U;
+        runtime_federation.join_max_candidates = 20U;
+        runtime_federation.join_state_key_parallelism = 100U;
 
         WHEN("the federation summary is generated")
         {
@@ -75,6 +84,9 @@ SCENARIO("Runtime federation summary exposes bounded operational values", "[fede
                 REQUIRE(summary.find("remote_timeout_seconds=30") != std::string::npos);
                 REQUIRE(summary.find("join_timeout_seconds=180") != std::string::npos);
                 REQUIRE(summary.find("join_parallelism=8") != std::string::npos);
+                REQUIRE(summary.find("join_race_deadline_seconds=45") != std::string::npos);
+                REQUIRE(summary.find("join_max_candidates=20") != std::string::npos);
+                REQUIRE(summary.find("join_state_key_parallelism=100") != std::string::npos);
             }
         }
     }

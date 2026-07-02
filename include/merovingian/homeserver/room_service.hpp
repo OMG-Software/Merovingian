@@ -50,6 +50,14 @@ struct ValidatedMakeLeaveResponse final
     canonicaljson::Object event{};
 };
 
+// Result of splitting a send_join `state` array for fast join (see
+// split_send_join_state_events below).
+struct SendJoinStateSplit final
+{
+    canonicaljson::Array critical{};
+    canonicaljson::Array background{};
+};
+
 [[nodiscard]] auto create_room(HomeserverRuntime& runtime, std::string_view access_token) -> OperationResult;
 [[nodiscard]] auto create_room(HomeserverRuntime& runtime, std::string_view access_token,
                                CreateRoomOptions const& options) -> OperationResult;
@@ -85,6 +93,12 @@ struct ValidatedMakeLeaveResponse final
 // duplicates are removed.
 [[nodiscard]] auto join_candidate_servers(std::vector<std::string> const& via_servers, std::string_view room_id,
                                           std::string_view our_server) -> std::vector<std::string>;
+// Truncates an ordered candidate list to at most `max_candidates` entries, preserving
+// order — via lists are recommended to be ordered by likelihood of being resident, so
+// the first entries are kept. Guards against an unbounded via list spawning an
+// unbounded number of make_join probe threads. `max_candidates == 0` is clamped to 1.
+[[nodiscard]] auto cap_join_candidates(std::vector<std::string> candidates, std::uint32_t max_candidates)
+    -> std::vector<std::string>;
 [[nodiscard]] auto validate_make_join_response(std::string_view requested_room_id, std::string_view requested_user_id,
                                                std::string_view body) -> ValidatedMakeJoinResponse;
 [[nodiscard]] auto validate_make_leave_response(std::string_view requested_room_id, std::string_view requested_user_id,
@@ -111,6 +125,32 @@ struct ValidatedMakeLeaveResponse final
 // membership="join" among the ingested state entries.
 [[nodiscard]] auto ingest_send_join_state(HomeserverRuntime& runtime, canonicaljson::Array const& state_arr,
                                           rooms::RoomVersionPolicy const& policy) -> std::vector<std::string>;
+// Filters a send_join response's `state` or `auth_chain` array down to the
+// events whose Ed25519 signature verifies against their sender domain's
+// published signing key. A large room's state array carries one m.room.member
+// per member — thousands of distinct sender home servers for a large room —
+// so distinct (sender_domain, key_id) pairs are resolved via
+// runtime.federation.remote_key_resolver with concurrent fan-out capped at
+// `security.federation.join_state_key_parallelism` (default 100) rather than
+// serially. Events whose sender_domain equals `our_server` are kept without a
+// resolver round trip (self-signed, already trusted — we hold that key).
+// Fail-closed (src/federation/AGENTS.md rule 2): an event whose sender-domain
+// key cannot be resolved, or whose signature does not verify, is silently
+// dropped from the returned array rather than persisted or failing the join.
+[[nodiscard]] auto filter_verified_send_join_events(HomeserverRuntime& runtime, canonicaljson::Array const& events,
+                                                    rooms::RoomVersionPolicy const& policy, std::string_view our_server)
+    -> canonicaljson::Array;
+// Splits a send_join response's `state` array into "critical" state (every
+// event except another user's m.room.member — create, power_levels,
+// join_rules, history_visibility, encryption, our own membership, etc.) and
+// "background" state (every OTHER member's m.room.member). Fast join: the
+// caller verifies and persists `critical` synchronously — a small set, from
+// typically one or two signing domains, sufficient for the room to be
+// immediately usable — and defers `background` (which scales with room size
+// and can span hundreds of distinct member home servers) to an async task,
+// so the join response does not wait on the full membership list.
+[[nodiscard]] auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::string_view our_user_id)
+    -> SendJoinStateSplit;
 
 [[nodiscard]] auto ensure_runtime_server_signing_key(HomeserverRuntime& runtime)
     -> std::optional<database::PersistentServerSigningKey>;

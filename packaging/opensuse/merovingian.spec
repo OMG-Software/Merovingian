@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.10.10
+Version:        0.10.11
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -112,6 +112,11 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Wed Jul 01 2026 James Chapman <claude@ping.me.uk> - 0.10.11-1
+- feat(federation): fast join - verify and persist critical room state (create/power_levels/join_rules/our own membership) synchronously, defer the bulk membership list to a background task tracked in orphan_futures_, so a large room's join response no longer waits on resolving every member's home server key
+- fix(security): verify send_join state/auth_chain event signatures with bounded-parallel remote key resolution (security.federation.join_state_key_parallelism, default 100) instead of trusting the resident server's response wholesale
+- fix(federation): advertise all server-supported room versions (v1-v12) in outbound make_join and GET /capabilities instead of a hardcoded v10-v12, which made federation joins to any older-versioned room fail with 400 M_INCOMPATIBLE_ROOM_VERSION against every real resident server
+- fix(federation): bound the make_join race with a configurable overall deadline and cap the number of via candidates actually raced, so a join against a large well-federated room returns a definitive response before the client's own fetch times out
 * Mon Jun 30 2026 James Chapman <claude@ping.me.uk> - 0.10.10-1
 - fix(federation): parallel make_join across candidate servers, configurable join timeout, TTL discovery cache, parallel inbound key resolution for faster remote room joins
 * Mon Jun 30 2026 James Chapman <claude@ping.me.uk> - 0.10.9-1

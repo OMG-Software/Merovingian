@@ -7774,6 +7774,16 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     // as features are implemented.
     if (req.method == "GET" && req.target == "/_matrix/client/v3/capabilities")
     {
+        // Advertise every room version rooms::room_version_policy.cpp actually
+        // implements (v1-v12), not a hardcoded subset — clients use this list to
+        // decide which versions are valid for room creation/upgrade, and a stale
+        // list here is the same class of bug as the outbound make_join fix:
+        // claiming less support than the server actually has.
+        auto available_versions = canonicaljson::Object{};
+        for (auto const& policy : rooms::known_room_versions())
+        {
+            available_versions.push_back(json_member(std::string{policy.id}, json_str("stable")));
+        }
         return dispatch_resp(
             req, rt, 200U,
             json_serialize(json_obj(
@@ -7784,11 +7794,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                  json_member("m.room_versions",
                                              json_obj({
                                                  json_member("default", json_str("12")),
-                                                 json_member("available", json_obj({
-                                                                              json_member("10", json_str("stable")),
-                                                                              json_member("11", json_str("stable")),
-                                                                              json_member("12", json_str("stable")),
-                                                                          })),
+                                                 json_member("available", json_obj(std::move(available_versions))),
                                              })),
                              }))})));
     }

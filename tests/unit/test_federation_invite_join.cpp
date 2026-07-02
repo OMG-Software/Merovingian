@@ -31,11 +31,13 @@
 #include "../support/registration_token.hpp"
 #include "federation_signing_test_support.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/events/event.hpp"
 #include "merovingian/events/event_id.hpp"
+#include "merovingian/events/event_signer.hpp"
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/runtime_federation.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
@@ -47,10 +49,15 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <array>
+#include <atomic>
+#include <chrono>
 #include <iostream>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #include <sodium.h>
@@ -1659,6 +1666,458 @@ SCENARIO("ingest_send_join_state stores v12 m.room.create with room_id derived f
                 REQUIRE_FALSE(has_empty);
             }
             MEROVINGIAN_NETBSD_DIAG("scenario end");
+        }
+    }
+}
+
+// --- filter_verified_send_join_events ---------------------------------------
+// Spec: Server-Server API v1.18 — a joining server MUST verify the signature
+// of every event before admitting it to the event graph
+// (src/federation/AGENTS.md rule 2). A send_join response's `state` array
+// carries one m.room.member per room member — thousands for a large room —
+// so these scenarios also prove the resolver fan-out is bounded, not
+// unbounded, per the configured `join_state_key_parallelism`.
+namespace
+{
+
+[[nodiscard]] auto remote_for(std::string const& server_name, std::string const& key_id, std::string const& seed)
+    -> merovingian::federation::FederationRemoteRuntime
+{
+    auto remote = merovingian::federation::FederationRemoteRuntime{};
+    remote.server_name = server_name;
+    remote.signing_key = {server_name, key_id, 2000U,
+                          merovingian::federation::test::keypair_from_seed(seed).public_key};
+    remote.discovery.server_name = server_name;
+    remote.trust.reputation_score = 100U;
+    return remote;
+}
+
+// Builds a signed m.room.member event: content is signed with the keypair
+// derived from `sign_seed`, and the signature is attached under
+// `{claimed_server, claimed_key_id}` — normally the same as the signing
+// keypair's own server/key, but scenarios that need a signature/key mismatch
+// pass a different `sign_seed` than the resolver's registered key.
+[[nodiscard]] auto signed_member_event(std::string const& room_id, std::string const& user_id,
+                                       std::string const& claimed_server, std::string const& claimed_key_id,
+                                       std::string const& sign_seed,
+                                       merovingian::rooms::RoomVersionPolicy const& policy)
+    -> merovingian::canonicaljson::Value
+{
+    auto raw = std::string{R"({"type":"m.room.member","state_key":")"};
+    raw += user_id;
+    raw += R"(","room_id":")";
+    raw += room_id;
+    raw += R"(","sender":")";
+    raw += user_id;
+    raw += R"(","depth":5,"origin_server_ts":1000,"prev_events":[],"auth_events":[],)";
+    raw += R"("hashes":{"sha256":"aGFzaA"},"content":{"membership":"join"}})";
+    auto const parsed = merovingian::canonicaljson::parse_lossless(raw);
+    REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+    auto const payload = merovingian::events::make_event_signing_payload(parsed.value, policy);
+    REQUIRE(payload.error == merovingian::canonicaljson::CanonicalJsonError::none);
+    auto const kp = merovingian::federation::test::keypair_from_seed(sign_seed);
+    auto sig = std::array<unsigned char, crypto_sign_BYTES>{};
+    crypto_sign_detached(sig.data(), nullptr, reinterpret_cast<unsigned char const*>(payload.output.data()),
+                         payload.output.size(), reinterpret_cast<unsigned char const*>(kp.secret_key.data()));
+    auto const sig_b64 =
+        merovingian::events::matrix_base64_from_bytes({reinterpret_cast<char const*>(sig.data()), crypto_sign_BYTES});
+    auto const attached =
+        merovingian::events::attach_event_signature(parsed.value, {claimed_server, claimed_key_id}, sig_b64);
+    REQUIRE(attached.error == merovingian::canonicaljson::CanonicalJsonError::none);
+    auto const reparsed = merovingian::canonicaljson::parse_lossless(attached.output);
+    REQUIRE(reparsed.error == merovingian::canonicaljson::ParseError::none);
+    return reparsed.value;
+}
+
+} // namespace
+
+SCENARIO("filter_verified_send_join_events keeps an event with a valid signature",
+         "[homeserver][federation][send_join][security]")
+{
+    GIVEN("a state array with one event validly signed by its sender's home server, and a matching resolver")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        runtime.federation.remote_key_resolver =
+            [](std::string_view server_name,
+               std::string_view key_id) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+            if (server_name != remote_origin || key_id != remote_key_id)
+            {
+                return std::nullopt;
+            }
+            return remote_for_test();
+        };
+
+        auto const room_id = std::string{"!room:matrix.example.org"};
+        auto const bob = std::string{"@bob:"} + remote_origin;
+        auto const policy = *merovingian::rooms::find_room_version_policy("10");
+        auto array = merovingian::canonicaljson::Array{};
+        array.push_back(signed_member_event(room_id, bob, remote_origin, remote_key_id, remote_key_seed, policy));
+
+        WHEN("filter_verified_send_join_events is called")
+        {
+            auto const filtered =
+                merovingian::homeserver::filter_verified_send_join_events(runtime, array, policy, local_server);
+
+            THEN("the validly signed event survives")
+            {
+                REQUIRE(filtered.size() == 1U);
+            }
+        }
+    }
+}
+
+SCENARIO("filter_verified_send_join_events drops an event with an invalid signature",
+         "[homeserver][federation][send_join][security]")
+{
+    GIVEN("a state array with one event whose bytes were NOT signed by the key the resolver returns")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        runtime.federation.remote_key_resolver =
+            [](std::string_view server_name,
+               std::string_view key_id) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+            if (server_name != remote_origin || key_id != remote_key_id)
+            {
+                return std::nullopt;
+            }
+            // Returns the REAL remote_key_seed public key; the event below is
+            // signed with a different key entirely, so verification must fail.
+            return remote_for_test();
+        };
+
+        auto const room_id = std::string{"!room:matrix.example.org"};
+        auto const bob = std::string{"@bob:"} + remote_origin;
+        auto const policy = *merovingian::rooms::find_room_version_policy("10");
+        auto array = merovingian::canonicaljson::Array{};
+        // Claims to be signed by remote_origin/remote_key_id, but the bytes were
+        // actually produced with an unrelated keypair — signature verification
+        // against the resolver's real public key must fail.
+        array.push_back(
+            signed_member_event(room_id, bob, remote_origin, remote_key_id, "an-entirely-different-seed", policy));
+
+        WHEN("filter_verified_send_join_events is called")
+        {
+            auto const filtered =
+                merovingian::homeserver::filter_verified_send_join_events(runtime, array, policy, local_server);
+
+            THEN("the event is silently dropped, not persisted")
+            {
+                REQUIRE(filtered.empty());
+            }
+        }
+    }
+}
+
+SCENARIO("filter_verified_send_join_events drops an event whose sender-domain key cannot be resolved",
+         "[homeserver][federation][send_join][security]")
+{
+    GIVEN("a state array with a foreign-domain event and no wired remote_key_resolver")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        // remote_key_resolver is left default-constructed (empty) — fail-closed.
+
+        auto const room_id = std::string{"!room:matrix.example.org"};
+        auto const bob = std::string{"@bob:"} + remote_origin;
+        auto const policy = *merovingian::rooms::find_room_version_policy("10");
+        auto array = merovingian::canonicaljson::Array{};
+        array.push_back(signed_member_event(room_id, bob, remote_origin, remote_key_id, remote_key_seed, policy));
+
+        WHEN("filter_verified_send_join_events is called")
+        {
+            auto const filtered =
+                merovingian::homeserver::filter_verified_send_join_events(runtime, array, policy, local_server);
+
+            THEN("the event is dropped rather than trusted without verification")
+            {
+                REQUIRE(filtered.empty());
+            }
+        }
+    }
+}
+
+SCENARIO("filter_verified_send_join_events keeps a self-signed event without calling the resolver",
+         "[homeserver][federation][send_join][security]")
+{
+    GIVEN("a state array event whose sender is our own server, and a resolver that must not be invoked")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto resolver_called = std::make_shared<std::atomic<bool>>(false);
+        runtime.federation.remote_key_resolver =
+            [resolver_called](std::string_view,
+                              std::string_view) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+            *resolver_called = true;
+            return std::nullopt;
+        };
+
+        auto const room_id = std::string{"!room:matrix.example.org"};
+        auto const alice = std::string{"@alice:"} + local_server;
+        auto const policy = *merovingian::rooms::find_room_version_policy("10");
+        auto array = merovingian::canonicaljson::Array{};
+        // Sender domain equals our own server — kept without a resolver round trip.
+        array.push_back(signed_member_event(room_id, alice, local_server, "ed25519:whatever", remote_key_seed, policy));
+
+        WHEN("filter_verified_send_join_events is called")
+        {
+            auto const filtered =
+                merovingian::homeserver::filter_verified_send_join_events(runtime, array, policy, local_server);
+
+            THEN("the self-signed event is kept and the resolver is never called")
+            {
+                REQUIRE(filtered.size() == 1U);
+                REQUIRE_FALSE(resolver_called->load());
+            }
+        }
+    }
+}
+
+SCENARIO("filter_verified_send_join_events bounds concurrent key resolutions to join_state_key_parallelism",
+         "[homeserver][federation][send_join][security][concurrency]")
+{
+    GIVEN("a state array with six distinct sender domains and join_state_key_parallelism=2")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        runtime.federation.config.join_state_key_parallelism = 2U;
+
+        static constexpr auto k_domain_count = std::size_t{6U};
+        auto calls = std::make_shared<std::atomic<std::size_t>>(0U);
+        auto in_flight = std::make_shared<std::atomic<std::size_t>>(0U);
+        auto peak = std::make_shared<std::atomic<std::size_t>>(0U);
+        auto keys = std::make_shared<
+            std::map<std::pair<std::string, std::string>, merovingian::federation::FederationRemoteRuntime>>();
+
+        auto const room_id = std::string{"!room:matrix.example.org"};
+        auto const policy = *merovingian::rooms::find_room_version_policy("10");
+        auto array = merovingian::canonicaljson::Array{};
+        for (auto i = std::size_t{0U}; i < k_domain_count; ++i)
+        {
+            auto const domain = "sender" + std::to_string(i) + ".example.org";
+            auto const key_id = std::string{"ed25519:auto"};
+            auto const seed = "bounded-parallelism-seed-" + std::to_string(i);
+            (*keys)[{domain, key_id}] = remote_for(domain, key_id, seed);
+            auto const user_id = "@user" + std::to_string(i) + ":" + domain;
+            array.push_back(signed_member_event(room_id, user_id, domain, key_id, seed, policy));
+        }
+
+        runtime.federation.remote_key_resolver =
+            [calls, in_flight, peak,
+             keys](std::string_view server_name,
+                   std::string_view key_id) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+            calls->fetch_add(1U);
+            auto const current = in_flight->fetch_add(1U) + 1U;
+            auto prev_peak = peak->load();
+            while (current > prev_peak && !peak->compare_exchange_weak(prev_peak, current))
+            {
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds{30});
+            in_flight->fetch_sub(1U);
+            auto const it =
+                keys->find(std::pair<std::string, std::string>{std::string{server_name}, std::string{key_id}});
+            return it != keys->end() ? std::optional{it->second} : std::nullopt;
+        };
+
+        WHEN("filter_verified_send_join_events is called")
+        {
+            auto const filtered =
+                merovingian::homeserver::filter_verified_send_join_events(runtime, array, policy, local_server);
+
+            THEN("every event verifies, each distinct domain is resolved exactly once, and concurrency never exceeds 2")
+            {
+                REQUIRE(filtered.size() == k_domain_count);
+                REQUIRE(calls->load() == k_domain_count);
+                REQUIRE(peak->load() <= 2U);
+            }
+        }
+    }
+}
+
+// --- split_send_join_state_events (fast join) --------------------------------
+// Fast join: a send_join `state` array is split into "critical" state (verified
+// and persisted synchronously, before the join response returns) and
+// "background" state (every OTHER member's m.room.member, verified and
+// persisted after the response returns — see room.join.background_state_complete).
+// These scenarios are pure JSON classification with no crypto involved, so
+// events below are unsigned; signature verification is filter_verified_send_join_events's
+// job, tested separately above.
+namespace
+{
+
+[[nodiscard]] auto bare_event(std::string const& type, std::string const& state_key, std::string const& sender)
+    -> merovingian::canonicaljson::Value
+{
+    auto const raw = std::string{R"({"type":")"} + type + R"(","state_key":")" + state_key + R"(","sender":")" +
+                     sender +
+                     R"(","room_id":"!room:matrix.example.org","depth":1,)"
+                     R"("origin_server_ts":1000,"prev_events":[],"auth_events":[],)"
+                     R"("content":{}})";
+    auto const parsed = merovingian::canonicaljson::parse_lossless(raw);
+    REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+    return parsed.value;
+}
+
+} // namespace
+
+SCENARIO("split_send_join_state_events keeps non-membership state events critical",
+         "[homeserver][federation][send_join][fast-join]")
+{
+    GIVEN("a state array of room-level state events with empty state_key")
+    {
+        auto const alice = std::string{"@alice:"} + local_server;
+        auto array = merovingian::canonicaljson::Array{};
+        array.push_back(bare_event("m.room.create", "", alice));
+        array.push_back(bare_event("m.room.power_levels", "", alice));
+        array.push_back(bare_event("m.room.join_rules", "", alice));
+        array.push_back(bare_event("m.room.history_visibility", "", alice));
+        array.push_back(bare_event("m.room.encryption", "", alice));
+
+        WHEN("the state array is split")
+        {
+            auto const split = merovingian::homeserver::split_send_join_state_events(array, alice);
+
+            THEN("every event is critical and none are deferred")
+            {
+                REQUIRE(split.critical.size() == 5U);
+                REQUIRE(split.background.empty());
+            }
+        }
+    }
+}
+
+SCENARIO("split_send_join_state_events keeps the joining user's own membership critical",
+         "[homeserver][federation][send_join][fast-join]")
+{
+    GIVEN("a state array with only the joining user's own m.room.member event")
+    {
+        auto const alice = std::string{"@alice:"} + local_server;
+        auto array = merovingian::canonicaljson::Array{};
+        array.push_back(bare_event("m.room.member", alice, alice));
+
+        WHEN("the state array is split")
+        {
+            auto const split = merovingian::homeserver::split_send_join_state_events(array, alice);
+
+            THEN("the event is critical, not deferred")
+            {
+                REQUIRE(split.critical.size() == 1U);
+                REQUIRE(split.background.empty());
+            }
+        }
+    }
+}
+
+SCENARIO("split_send_join_state_events defers other members' membership events",
+         "[homeserver][federation][send_join][fast-join]")
+{
+    GIVEN("a state array with three OTHER users' m.room.member events")
+    {
+        auto const alice = std::string{"@alice:"} + local_server;
+        auto const bob = std::string{"@bob:"} + remote_origin;
+        auto const carol = std::string{"@carol:"} + remote_origin;
+        auto const dave = std::string{"@dave:"} + remote_origin;
+        auto array = merovingian::canonicaljson::Array{};
+        array.push_back(bare_event("m.room.member", bob, bob));
+        array.push_back(bare_event("m.room.member", carol, carol));
+        array.push_back(bare_event("m.room.member", dave, dave));
+
+        WHEN("the state array is split for the joining user alice")
+        {
+            auto const split = merovingian::homeserver::split_send_join_state_events(array, alice);
+
+            THEN("all three are deferred to background, none are critical")
+            {
+                REQUIRE(split.critical.empty());
+                REQUIRE(split.background.size() == 3U);
+            }
+        }
+    }
+}
+
+SCENARIO("split_send_join_state_events splits a realistic mixed state array correctly",
+         "[homeserver][federation][send_join][fast-join]")
+{
+    GIVEN("create, power_levels, the joining user's membership, and two other members")
+    {
+        auto const alice = std::string{"@alice:"} + local_server;
+        auto const bob = std::string{"@bob:"} + remote_origin;
+        auto const carol = std::string{"@carol:"} + remote_origin;
+        auto array = merovingian::canonicaljson::Array{};
+        array.push_back(bare_event("m.room.create", "", bob));
+        array.push_back(bare_event("m.room.power_levels", "", bob));
+        array.push_back(bare_event("m.room.member", alice, alice));
+        array.push_back(bare_event("m.room.member", bob, bob));
+        array.push_back(bare_event("m.room.member", carol, carol));
+
+        WHEN("the state array is split for the joining user alice")
+        {
+            auto const split = merovingian::homeserver::split_send_join_state_events(array, alice);
+
+            THEN("create, power_levels, and alice's own membership are critical; bob and carol are deferred")
+            {
+                REQUIRE(split.critical.size() == 3U);
+                REQUIRE(split.background.size() == 2U);
+            }
+        }
+    }
+}
+
+SCENARIO("split_send_join_state_events treats malformed entries as critical, not silently dropped",
+         "[homeserver][federation][send_join][fast-join]")
+{
+    GIVEN("a state array entry with no state_key field at all")
+    {
+        auto const alice = std::string{"@alice:"} + local_server;
+        auto const bob = std::string{"@bob:"} + remote_origin;
+        auto const raw = std::string{R"({"type":"m.room.member","sender":")"} + bob +
+                         R"(","room_id":"!room:matrix.example.org","depth":1,)"
+                         R"("origin_server_ts":1000,"prev_events":[],"auth_events":[],"content":{}})";
+        auto const parsed = merovingian::canonicaljson::parse_lossless(raw);
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+        auto array = merovingian::canonicaljson::Array{};
+        array.push_back(parsed.value);
+
+        WHEN("the state array is split")
+        {
+            auto const split = merovingian::homeserver::split_send_join_state_events(array, alice);
+
+            THEN("the unclassifiable entry defaults to the synchronous critical path, not lost")
+            {
+                REQUIRE(split.critical.size() == 1U);
+                REQUIRE(split.background.empty());
+            }
+        }
+    }
+}
+
+SCENARIO("split_send_join_state_events returns an empty split for an empty state array",
+         "[homeserver][federation][send_join][fast-join]")
+{
+    GIVEN("an empty state array")
+    {
+        auto const alice = std::string{"@alice:"} + local_server;
+
+        WHEN("the state array is split")
+        {
+            auto const split =
+                merovingian::homeserver::split_send_join_state_events(merovingian::canonicaljson::Array{}, alice);
+
+            THEN("both halves are empty")
+            {
+                REQUIRE(split.critical.empty());
+                REQUIRE(split.background.empty());
+            }
         }
     }
 }
