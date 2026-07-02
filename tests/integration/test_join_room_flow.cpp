@@ -486,6 +486,11 @@ SCENARIO("join_room completes a live federated join and defers the bulk membersh
                 REQUIRE(result.status == 200U);
                 REQUIRE(result.value == room_id);
 
+                // The background member-fill task (see HomeserverRuntime::orphan_futures_)
+                // is still running at this point and writes to persistent_store under
+                // runtime.mutex; every reader must take the same lock or race against it.
+                auto const lock = std::lock_guard{runtime.mutex};
+
                 auto const& state = runtime.database.persistent_store.state;
                 REQUIRE(std::ranges::any_of(state, [&](auto const& s) {
                     return s.room_id == room_id && s.event_type == "m.room.create";
