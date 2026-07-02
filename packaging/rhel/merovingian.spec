@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.10.13
+Version:        0.10.14
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -97,12 +97,13 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
-* Thu Jul 02 2026 James Chapman <claude@ping.me.uk> - 0.10.13-1
-- fix(federation): send_join used remote_timeout_seconds instead of the join_timeout_seconds budget, causing large-room joins to fail with 502 "IPC timeout waiting for outbound HTTP result"; also guard perform_sync_outbound_call against timeout_seconds=0 collapsing the IPC window to 10s
-- fix(config): add the missing security.federation.join_timeout/join_parallelism/join_race_deadline/join_max_candidates/join_state_key_parallelism and federation.worker.apply_hardening keys to config/merovingian.conf.example
+* Thu Jul 02 2026 James Chapman <claude@ping.me.uk> - 0.10.14-1
 - fix(federation): add security.federation.join_response_max_size (default 64MiB) so send_join for a huge room is no longer rejected with 502 "response_too_large" once it fits within the join timeout budget; the federation-worker IPC frame cap now scales with this value via ipc::frame_bytes_for_response_cap (restart required)
 - fix(federation): notify the federation worker via a new room_sync IPC message when create_room/join_room/leave_room change this server's residency, and add database::reload_room() so the worker refreshes its otherwise permanently-stale per-room PersistentStore snapshot instead of 404ing inbound make_join/state for rooms created or joined after its own startup
 - fix(database): add database::reconstruct_event_relations() so PersistentEvent prev_event_ids/auth_event_ids/signatures are populated from the event_edges/event_auth/event_signatures tables on every store hydration, not silently left empty after a restart
+* Thu Jul 02 2026 James Chapman <claude@ping.me.uk> - 0.10.13-1
+- fix(federation): send_join used remote_timeout_seconds instead of the join_timeout_seconds budget, causing large-room joins to fail with 502 "IPC timeout waiting for outbound HTTP result"; also guard perform_sync_outbound_call against timeout_seconds=0 collapsing the IPC window to 10s
+- fix(config): add the missing security.federation.join_timeout/join_parallelism/join_race_deadline/join_max_candidates/join_state_key_parallelism and federation.worker.apply_hardening keys to config/merovingian.conf.example
 * Thu Jul 02 2026 James Chapman <claude@ping.me.uk> - 0.10.12-1
 - test(federation): add a live join_room integration test covering the fast-join/signature-verification code path against a real local TLS server, closing the codecov/patch gap from #341; adds a test-only outbound destination override to HomeserverRuntime (never set by production code) so tests can point federation calls at a local server without weakening the SSRF/loopback policy or the TLS CA trust store
 * Wed Jul 01 2026 James Chapman <claude@ping.me.uk> - 0.10.11-1
