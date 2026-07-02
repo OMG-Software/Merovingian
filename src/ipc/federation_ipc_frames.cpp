@@ -10,10 +10,13 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <variant>
 #include <vector>
+
+#include <sodium.h>
 
 namespace merovingian::ipc
 {
@@ -158,6 +161,43 @@ namespace
             return true;
         };
         return equals_ci(name, "authorization") || equals_ci(name, "x-matrix");
+    }
+
+    // Encodes bytes as standard padded base64 for embedding in an IPC JSON
+    // frame's "body" field. Response bodies (HTTP response bytes relayed
+    // between the federation worker and main) are otherwise embedded via
+    // ipc_json_str, which `"`/`\`-escapes byte-for-byte and turns raw control
+    // bytes into `\u00XX` (6 bytes for 1). A response body already at
+    // http::OutboundRequest::max_response_body_bytes (16 MiB by default) can
+    // therefore need well over the IPC frame cap once wrapped, get silently
+    // dropped by the oversize-frame guard, and surface to the caller as a
+    // plain IPC timeout — exactly what large-room send_join responses hit.
+    // Base64 has a fixed, content-independent 4/3 expansion, so the frame cap
+    // can be sized against a known worst case instead of the escaped size of
+    // whatever bytes a remote peer happened to send back.
+    [[nodiscard]] auto base64_encode_body(std::string_view bytes) -> std::string
+    {
+        auto out = std::string(sodium_base64_ENCODED_LEN(bytes.size(), sodium_base64_VARIANT_ORIGINAL), '\0');
+        std::ignore = sodium_bin2base64(out.data(), out.size(), reinterpret_cast<unsigned char const*>(bytes.data()),
+                                        bytes.size(), sodium_base64_VARIANT_ORIGINAL);
+        out.resize(std::char_traits<char>::length(out.c_str()));
+        return out;
+    }
+
+    // Decodes a base64 "body" field produced by base64_encode_body. Returns
+    // an empty string on malformed input, matching the prior fallback shape
+    // for other malformed IPC fields.
+    [[nodiscard]] auto base64_decode_body(std::string_view encoded) -> std::string
+    {
+        auto out = std::string((encoded.size() / 4U + 1U) * 3U, '\0');
+        auto decoded_length = std::size_t{0U};
+        if (sodium_base642bin(reinterpret_cast<unsigned char*>(out.data()), out.size(), encoded.data(), encoded.size(),
+                              nullptr, &decoded_length, nullptr, sodium_base64_VARIANT_ORIGINAL) != 0)
+        {
+            return {};
+        }
+        out.resize(decoded_length);
+        return out;
     }
 
 } // namespace
@@ -308,7 +348,9 @@ auto deserialize_fed_request(std::string_view json) -> homeserver::LocalHttpRequ
 auto serialize_fed_response(homeserver::LocalHttpResponse const& response) -> std::string
 {
     auto result = std::string{};
-    result.reserve(64U + response.body.size());
+    // Base64 inflates the body ~4/3x; reserve against that instead of the raw
+    // size so appending the encoded body does not reallocate.
+    result.reserve(64U + (response.body.size() * 4U) / 3U + 4U);
     result += R"({"type":"fed_response","status":)";
     result += std::to_string(response.status);
     result += R"(,"headers":[)";
@@ -326,8 +368,11 @@ auto serialize_fed_response(homeserver::LocalHttpResponse const& response) -> st
         result += ipc_json_str(value);
         result += '}';
     }
+    // The body is base64-encoded before framing (see base64_encode_body) so
+    // its contribution to the frame size is bounded by a fixed 4/3 expansion
+    // instead of the content-dependent blowup of raw JSON-string escaping.
     result += R"(],"body":)";
-    result += ipc_json_str(response.body);
+    result += ipc_json_str(base64_encode_body(response.body));
     result += '}';
     return result;
 }
@@ -353,7 +398,7 @@ auto deserialize_fed_response(std::string_view json) -> homeserver::LocalHttpRes
             response.status = static_cast<std::uint16_t>(status);
         }
     }
-    response.body = get_str(*obj, "body");
+    response.body = base64_decode_body(get_str(*obj, "body"));
     if (auto const* headers = get_array(*obj, "headers"))
     {
         extract_headers(*headers, response.headers);
@@ -446,13 +491,20 @@ auto deserialize_outbound_http_request(std::string_view json) -> http::OutboundR
 auto serialize_outbound_http_response(http::OutboundResult const& result) -> std::string
 {
     auto body = std::string{};
-    body.reserve(128U + result.response.body.size());
+    // Base64 inflates the body ~4/3x; reserve against that instead of the raw
+    // size so appending the encoded body does not reallocate.
+    body.reserve(128U + (result.response.body.size() * 4U) / 3U + 4U);
     body += R"({"type":"outbound_http_response","ok":)";
     body += result.ok ? "true" : "false";
     body += R"(,"http_status":)";
     body += std::to_string(result.response.status);
+    // The body is base64-encoded before framing (see base64_encode_body) so
+    // its contribution to the frame size is bounded by a fixed 4/3 expansion
+    // instead of the content-dependent blowup of raw JSON-string escaping —
+    // a large-room send_join response near max_response_body_bytes otherwise
+    // busts the IPC frame cap after escaping and is silently dropped.
     body += R"(,"body":)";
-    body += ipc_json_str(result.response.body);
+    body += ipc_json_str(base64_encode_body(result.response.body));
     body += R"(,"error":)";
     body += ipc_json_str(result.ok ? std::string_view{} : http::outbound_error_name(result.error));
     body += R"(,"error_detail":)";
@@ -473,7 +525,7 @@ auto deserialize_outbound_http_response(std::string_view json) -> http::Outbound
     }
     result.ok = get_bool(*obj, "ok");
     result.response.status = static_cast<std::uint16_t>(clamp_to_u32(get_int(*obj, "http_status")));
-    result.response.body = get_str(*obj, "body");
+    result.response.body = base64_decode_body(get_str(*obj, "body"));
     result.error_detail = get_str(*obj, "error_detail");
     // error code is informational; callers inspect ok + http_status.
     result.error = result.ok ? http::OutboundError::none : http::OutboundError::network_error;

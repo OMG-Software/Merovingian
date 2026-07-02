@@ -249,6 +249,7 @@ if get_option ('build_tests')
       'integration/test_federation_worker_flow.cpp',
       'integration/test_homeserver_vertical_slice_flow.cpp',
       'integration/test_http_server_listener_flow.cpp',
+      'integration/test_join_room_flow.cpp',
       'integration/test_media_repository_security.cpp',
       'integration/test_media_thumbnail_flow.cpp',
       'integration/test_observability_flow.cpp',

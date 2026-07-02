@@ -23,13 +23,22 @@
 namespace merovingian::ipc
 {
 
-// Default maximum plaintext size for a single IPC frame (16 MiB).
+// Default maximum plaintext size for a single IPC frame (24 MiB).
 // Federation transactions have no hard spec limit, but a 50 MiB cap (the prior
 // default) let a single oversized frame pin 50 MiB of heap and silently stall
-// federation when it was dropped. 16 MiB bounds the per-frame allocation while
-// still exceeding any realistic transaction/backup-response payload. The cap
-// is configurable per worker via federation.worker.max_ipc_frame_bytes.
-inline constexpr std::uint32_t kIpcMaxFrameBytes{16U * 1024U * 1024U};
+// federation when it was dropped. 16 MiB (the immediately prior default)
+// bounded the per-frame allocation but was sized as if a frame's body cost
+// equalled the raw HTTP payload it carries. It doesn't: outbound_http_response
+// and fed_response frames (src/ipc/federation_ipc_frames.cpp) base64-encode
+// the HTTP response body before framing, a fixed 4/3 expansion. A response
+// body at http::OutboundRequest::max_response_body_bytes (16 MiB by default —
+// the ceiling a large room's send_join response legitimately reaches) becomes
+// ~21.3 MiB once encoded plus envelope overhead, which no longer fits under a
+// 16 MiB cap; the oversize-frame guard below then drops it and the caller
+// sees a bare IPC timeout instead of the join succeeding. 24 MiB restores
+// headroom above that ~21.3 MiB worst case while still keeping the per-frame
+// allocation a compromised worker can pin tightly bounded.
+inline constexpr std::uint32_t kIpcMaxFrameBytes{24U * 1024U * 1024U};
 
 // Bidirectional encrypted IPC channel over an AF_UNIX socketpair fd.
 //

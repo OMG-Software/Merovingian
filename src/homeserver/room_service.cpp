@@ -1381,22 +1381,46 @@ namespace
                                               std::string_view diagnostic_event, std::uint32_t timeout_seconds)
     -> std::pair<bool, std::string>
 {
-    auto* discovery_network = runtime.discovery_network.get();
-    if (discovery_network == nullptr)
+    // Test-only: bypass discover_server() entirely when the destination has a
+    // forced resolution wired (see TestOnlyForcedOutboundResolution in
+    // runtime.hpp). Always empty in production, so this branch never executes
+    // outside tests/integration/test_join_room_flow.cpp.
+    auto const forced_it = runtime.test_forced_outbound_resolution.find(std::string{transaction.destination});
+    auto const forced = forced_it != runtime.test_forced_outbound_resolution.end();
+    auto resolved_host = std::string{};
+    auto resolved_port = std::uint16_t{8448U};
+    auto pinned_addresses = std::vector<std::string>{};
+    auto trusted_ca_pem = std::string{};
+    if (forced)
     {
-        log_diagnostic(diagnostic_event, {
-                                             {"reason", "federation infrastructure not available", false}
-        });
-        return {false, "federation not available"};
+        resolved_host = forced_it->second.resolved_host;
+        resolved_port = forced_it->second.resolved_port;
+        pinned_addresses = forced_it->second.pinned_addresses;
+        trusted_ca_pem = forced_it->second.trusted_ca_pem;
     }
-    auto const resolution = federation::discover_server(transaction.destination, *discovery_network, timeout_seconds);
-    if (!resolution.discovery_allowed)
+    else
     {
-        log_diagnostic(diagnostic_event, {
-                                             {"destination", transaction.destination,   false},
-                                             {"reason",      "server discovery failed", false}
-        });
-        return {false, "server discovery failed"};
+        auto* discovery_network = runtime.discovery_network.get();
+        if (discovery_network == nullptr)
+        {
+            log_diagnostic(diagnostic_event, {
+                                                 {"reason", "federation infrastructure not available", false}
+            });
+            return {false, "federation not available"};
+        }
+        auto const resolution =
+            federation::discover_server(transaction.destination, *discovery_network, timeout_seconds);
+        if (!resolution.discovery_allowed)
+        {
+            log_diagnostic(diagnostic_event, {
+                                                 {"destination", transaction.destination,   false},
+                                                 {"reason",      "server discovery failed", false}
+            });
+            return {false, "server discovery failed"};
+        }
+        resolved_host = resolution.resolved_host;
+        resolved_port = resolution.resolved_port;
+        pinned_addresses = resolution.pinned_addresses;
     }
     if (secret_key.size() != crypto_sign_SECRETKEYBYTES)
     {
@@ -1407,9 +1431,10 @@ namespace
     }
     auto call = federation::OutboundCall{};
     call.transaction = transaction;
-    call.resolved_host = resolution.resolved_host;
-    call.resolved_port = resolution.resolved_port;
-    call.pinned_addresses = resolution.pinned_addresses;
+    call.resolved_host = resolved_host;
+    call.resolved_port = resolved_port;
+    call.pinned_addresses = pinned_addresses;
+    call.trusted_ca_pem = trusted_ca_pem;
     call.key_id = std::string{key_id};
     // Borrow the caller's span (backed by the runtime's SecretBuffer) for the
     // synchronous build+send below. No std::string materialisation of the key.

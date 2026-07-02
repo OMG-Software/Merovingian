@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "merovingian/ipc/channel.hpp"
 #include "merovingian/ipc/federation_ipc_frames.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -21,6 +22,7 @@ using merovingian::ipc::deserialize_outbound_http_request;
 using merovingian::ipc::deserialize_outbound_http_response;
 using merovingian::ipc::ipc_json_get_str;
 using merovingian::ipc::ipc_json_str;
+using merovingian::ipc::kIpcMaxFrameBytes;
 using merovingian::ipc::serialize_fed_request;
 using merovingian::ipc::serialize_fed_response;
 using merovingian::ipc::serialize_outbound_http_request;
@@ -233,6 +235,43 @@ SCENARIO("fed_response frame handles non-200 statuses and special body character
     }
 }
 
+SCENARIO("fed_response frame carries a large body containing NUL bytes without busting the IPC frame cap",
+         "[ipc][federation][frame][regression]")
+{
+    // Regression for issue #342: fed_response previously embedded the body via
+    // raw JSON-string escaping, which turns each control byte (e.g. NUL) into
+    // a 6-byte "\u00XX" escape. A response body at
+    // OutboundRequest::max_response_body_bytes (16 MiB by default) filled
+    // with control bytes could balloon to ~6x its raw size, busting the IPC
+    // frame cap and getting silently dropped. The body is now base64-encoded
+    // before framing, a fixed 4/3 expansion regardless of content.
+    GIVEN("a response body at the default max_response_body_bytes size, filled with NUL bytes")
+    {
+        auto const max_body = OutboundRequest{}.max_response_body_bytes;
+        auto original = LocalHttpResponse{};
+        original.status = 200U;
+        original.body = std::string(max_body, '\0');
+
+        WHEN("it is serialized for IPC")
+        {
+            auto const serialized = serialize_fed_response(original);
+
+            THEN("the serialized frame body stays within the IPC frame cap")
+            {
+                REQUIRE(serialized.size() <= kIpcMaxFrameBytes);
+            }
+
+            AND_THEN("the body round-trips byte-for-byte, including every NUL byte")
+            {
+                auto const roundtripped = deserialize_fed_response(serialized);
+                REQUIRE(roundtripped.status == 200U);
+                REQUIRE(roundtripped.body == original.body);
+                REQUIRE(roundtripped.body.size() == max_body);
+            }
+        }
+    }
+}
+
 SCENARIO("IPC JSON string extraction handles every escape sequence", "[ipc][federation][json]")
 {
     GIVEN("a JSON object containing escaped control characters")
@@ -283,9 +322,13 @@ SCENARIO("IPC JSON escaping covers control characters", "[ipc][federation][json]
 
 SCENARIO("fed_response frame defaults invalid or missing status to 500", "[ipc][federation][frame]")
 {
+    // The "body" field is base64 (see base64_encode_body/base64_decode_body
+    // in federation_ipc_frames.cpp), so hand-crafted frames below carry the
+    // base64 form of the intended body: "{}" -> "e30=", "error" -> "ZXJyb3I=",
+    // "teapot" -> "dGVhcG90".
     GIVEN("a response JSON with status 0")
     {
-        auto const json = R"({"type":"fed_response","status":0,"body":"{}"})";
+        auto const json = R"({"type":"fed_response","status":0,"body":"e30="})";
 
         WHEN("it is deserialized")
         {
@@ -301,7 +344,7 @@ SCENARIO("fed_response frame defaults invalid or missing status to 500", "[ipc][
 
     GIVEN("a response JSON with a status above the HTTP range")
     {
-        auto const json = R"({"type":"fed_response","status":1234,"body":"error"})";
+        auto const json = R"({"type":"fed_response","status":1234,"body":"ZXJyb3I="})";
 
         WHEN("it is deserialized")
         {
@@ -317,7 +360,7 @@ SCENARIO("fed_response frame defaults invalid or missing status to 500", "[ipc][
 
     GIVEN("a response JSON with whitespace after the status key")
     {
-        auto const json = R"({"type":"fed_response","status": 418,"body":"teapot"})";
+        auto const json = R"({"type":"fed_response","status": 418,"body":"dGVhcG90"})";
 
         WHEN("it is deserialized")
         {
@@ -735,6 +778,59 @@ SCENARIO("outbound_http_response normalises any failure error code to network_er
                 REQUIRE_FALSE(rt.ok);
                 REQUIRE(rt.error == OutboundError::network_error);
                 REQUIRE(rt.error_detail == tls_result.error_detail);
+            }
+        }
+    }
+}
+
+SCENARIO("outbound_http_response round-trips a body at the default max_response_body_bytes size without "
+         "busting the IPC frame cap",
+         "[ipc][federation][outbound][regression]")
+{
+    // Regression for issue #342: joining a large room's send_join response can
+    // legitimately reach OutboundRequest::max_response_body_bytes (16 MiB by
+    // default — the full room state for a large room). Before the frame body
+    // switched to base64, embedding it via raw JSON-string escaping doubled
+    // every quote/backslash byte; a quote-dense JSON payload of that size
+    // pushed the serialized frame past the (then-equal) 16 MiB IPC frame cap,
+    // so WorkerPool::send_outbound_request saw the frame silently dropped and
+    // the join failed with a bare IPC timeout even though the remote server
+    // had already answered successfully.
+    GIVEN("a 200 response body at the default max_response_body_bytes size, dense with JSON metacharacters")
+    {
+        auto const max_body = OutboundRequest{}.max_response_body_bytes;
+        // Alternating quote/backslash pairs are the worst case for JSON-string
+        // escaping (every byte doubles) and representative of the quote
+        // density in real Matrix event JSON (repeated key/value framing).
+        auto body = std::string{};
+        body.reserve(max_body);
+        while (body.size() < max_body)
+        {
+            body += "\"\\";
+        }
+        body.resize(max_body);
+
+        auto original = OutboundResult{};
+        original.ok = true;
+        original.response.status = 200U;
+        original.response.body = body;
+        original.error = OutboundError::none;
+
+        WHEN("it is serialized for IPC")
+        {
+            auto const serialized = serialize_outbound_http_response(original);
+
+            THEN("the serialized frame stays within the IPC frame cap")
+            {
+                REQUIRE(serialized.size() <= kIpcMaxFrameBytes);
+            }
+
+            AND_THEN("the body round-trips byte-for-byte")
+            {
+                auto const rt = deserialize_outbound_http_response(serialized);
+                REQUIRE(rt.ok);
+                REQUIRE(rt.response.body == original.response.body);
+                REQUIRE(rt.response.body.size() == max_body);
             }
         }
     }

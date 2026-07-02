@@ -151,6 +151,44 @@ absent, crashing the GIVEN block before any assertion runs.
   executes many scenarios in one process. Direct invocations of a test binary
   (for example a focused PostgreSQL integration run) must set it manually.
 
+## Live join_room integration tests
+
+`join_room`'s outbound calls always resolve through `federation::discover_server()`,
+which unconditionally rejects loopback and private-range addresses
+(`src/federation/security.cpp` `ip_address_is_private_or_loopback`) with no config
+or environment override, and production outbound calls never populate an
+in-memory CA bundle — so a local test TLS server can never be reached through the
+real discovery path, and a self-signed test certificate always fails TLS
+verification. `HomeserverRuntime::test_forced_outbound_resolution` (see
+`include/merovingian/homeserver/runtime.hpp`) closes that gap: a map from
+destination `server_name` to a forced `{resolved_host, resolved_port,
+pinned_addresses, trusted_ca_pem}`, consulted first in `perform_sync_outbound_call`
+before it would otherwise call `discover_server()`. No production construction
+path (`start_runtime`, `main.cpp`, the federation worker) ever populates this
+map, so real-server SSRF and TLS-trust behaviour is unchanged.
+
+`tests/integration/test_join_room_flow.cpp` is the canonical example:
+1. Generate a self-signed TLS certificate and stand up a real `TcpAcceptor` +
+   `TlsServerContext` (the same pattern as `test_federation_outbound_flow.cpp`)
+   answering `make_join` then `send_join`.
+2. Set `runtime.test_forced_outbound_resolution[destination]` to route that
+   destination at `127.0.0.1:<bound port>` with the certificate's PEM as the
+   trusted CA.
+3. Call `wire_federation_callbacks(runtime)` **before** setting
+   `runtime.federation.remote_key_resolver` — `join_room` calls it internally
+   the first time `runtime.federation.pdu_sink` is unset, and that call
+   overwrites `remote_key_resolver` with the real DNS/key-fetch resolver,
+   clobbering a test double set beforehand. Calling it explicitly first (and
+   setting the test resolver *after*) makes `join_room`'s internal call a
+   no-op via the `pdu_sink` guard.
+4. Drive `join_room` and assert on `runtime.database.persistent_store`/`.rooms`.
+   To wait for the background membership-fill task (see `docs/threat-model.md`
+   "Fast join / partial-state trade-off") deterministically rather than
+   sleeping, lock `runtime.orphan_futures_mutex_` and call `.wait()` on every
+   valid future in `runtime.orphan_futures_` — waiting does not consume or
+   invalidate a `std::future`, so this is safe to do from the test thread
+   before making further assertions.
+
 ## Sanitizers and concurrency tests
 
 - CI runs the suite under sanitizers in `.github/workflows/sanitizers.yml`:
