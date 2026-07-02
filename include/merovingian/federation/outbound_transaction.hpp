@@ -64,6 +64,11 @@ struct OutboundCall final
     std::span<std::uint8_t const> secret_key{};
     std::uint32_t connect_timeout_seconds{10U};
     std::uint32_t total_timeout_seconds{60U};
+    // Optional PEM CA bundle trusted in place of the system trust store,
+    // forwarded to http::OutboundRequest::trusted_ca_pem. Empty means "use
+    // system trust" (all production federation traffic). Only ever populated
+    // by HomeserverRuntime's test-only forced-resolution override.
+    std::string trusted_ca_pem{};
 };
 
 [[nodiscard]] auto make_outbound_transaction(std::string_view destination, std::string_view method,

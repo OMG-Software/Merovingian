@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.10.11
+Version:        0.10.12
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -112,6 +112,8 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Thu Jul 02 2026 James Chapman <claude@ping.me.uk> - 0.10.12-1
+- test(federation): add a live join_room integration test covering the fast-join/signature-verification code path against a real local TLS server, closing the codecov/patch gap from #341; adds a test-only outbound destination override to HomeserverRuntime (never set by production code) so tests can point federation calls at a local server without weakening the SSRF/loopback policy or the TLS CA trust store
 * Wed Jul 01 2026 James Chapman <claude@ping.me.uk> - 0.10.11-1
 - feat(federation): fast join - verify and persist critical room state (create/power_levels/join_rules/our own membership) synchronously, defer the bulk membership list to a background task tracked in orphan_futures_, so a large room's join response no longer waits on resolving every member's home server key
 - fix(security): verify send_join state/auth_chain event signatures with bounded-parallel remote key resolution (security.federation.join_state_key_parallelism, default 100) instead of trusting the resident server's response wholesale

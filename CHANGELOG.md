@@ -1,3 +1,8 @@
+## 0.10.12
+
+### Added
+- **test(federation): live `join_room` integration test against a real local TLS server, closing the codecov/patch gap from #341:** `join_room`'s post-send_join-success path (fast-join state splitting, signature verification, background membership fill) had no integration coverage because `perform_sync_outbound_call` always resolves destinations through `federation::discover_server()`, which unconditionally rejects loopback/private-range addresses (`src/federation/security.cpp` `ip_address_is_private_or_loopback`, no config or test-mode override) — so a local test server can never be reached through the real discovery path, and production outbound calls never populate `OutboundRequest.trusted_ca_pem`, so a self-signed test certificate would fail TLS verification even if discovery succeeded. `HomeserverRuntime` gains a test-only outbound override (a map from destination `server_name` to a forced resolution + trusted CA PEM), consulted first in `perform_sync_outbound_call`; unset in every production construction path, so real-server SSRF and TLS-trust behaviour is unchanged. New `tests/integration/test_join_room_flow.cpp` reuses the TLS test-certificate/`TcpAcceptor` pattern from `test_federation_outbound_flow.cpp` to stand up a real resident server answering `make_join`/`send_join`, driving `join_room` through an actual signed federation round trip.
+
 ## 0.10.11
 
 ### Added

@@ -233,6 +233,7 @@ auto build_outbound_request(OutboundCall const& call) -> http::OutboundRequest
     request.pinned_addresses = call.pinned_addresses;
     request.connect_timeout_seconds = call.connect_timeout_seconds;
     request.total_timeout_seconds = call.total_timeout_seconds;
+    request.trusted_ca_pem = call.trusted_ca_pem;
     request.headers.push_back(http::OutboundHeader{"Authorization", build_authorization_header(call)});
     request.headers.push_back(http::OutboundHeader{"Content-Type", "application/json"});
     return request;

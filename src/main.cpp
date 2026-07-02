@@ -48,7 +48,7 @@
 namespace
 {
 
-constexpr auto version = std::string_view{"0.10.11"};
+constexpr auto version = std::string_view{"0.10.12"};
 
 struct BootstrapConfigResult final
 {

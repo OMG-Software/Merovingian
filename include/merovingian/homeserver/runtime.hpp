@@ -148,6 +148,33 @@ struct InboundReceipt final
 // this header. See the class definition for the full contract.
 class LocalDatabaseScope;
 
+// Test-only override for a single outbound federation destination.
+//
+// perform_sync_outbound_call (room_service.cpp) always resolves a destination
+// through federation::discover_server(), which unconditionally rejects
+// loopback and private-range addresses (src/federation/security.cpp
+// ip_address_is_private_or_loopback) with no config or environment override —
+// and production outbound calls never populate an in-memory CA bundle, so a
+// self-signed test certificate would fail TLS verification even if discovery
+// succeeded. There is therefore no way to integration-test a live federation
+// round trip against a local test server without this seam.
+//
+// When HomeserverRuntime::test_forced_outbound_resolution has an entry keyed
+// by the transaction's destination server_name, perform_sync_outbound_call
+// uses it directly instead of calling discover_server(), and its
+// trusted_ca_pem is forwarded to the outbound TLS call in place of the
+// system trust store. No production construction path (start_runtime,
+// main.cpp, the federation worker) ever populates this map — it is empty by
+// default, so production SSRF and TLS-trust behaviour is unchanged. Used
+// exclusively by tests/integration/test_join_room_flow.cpp.
+struct TestOnlyForcedOutboundResolution final
+{
+    std::string resolved_host{};
+    std::uint16_t resolved_port{8448U};
+    std::vector<std::string> pinned_addresses{};
+    std::string trusted_ca_pem{};
+};
+
 struct HomeserverRuntime final
 {
     HomeserverRuntime();
@@ -181,6 +208,9 @@ struct HomeserverRuntime final
     // harnesses that wire only the raw network. Callers MUST prefer this over
     // `discovery_network` so repeated lookups skip the DNS cascade.
     std::unique_ptr<federation::CachedServerDiscovery> cached_discovery{};
+    // Test-only: see TestOnlyForcedOutboundResolution above. Always empty in
+    // production; keyed by destination server_name.
+    std::map<std::string, TestOnlyForcedOutboundResolution> test_forced_outbound_resolution{};
     std::unique_ptr<federation::DispatchWorker> dispatch_worker{};
     // Non-null when federation.worker.enabled = true. Intercepts inbound
     // federation requests and forwards them to the out-of-process worker.
