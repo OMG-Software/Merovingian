@@ -20,6 +20,17 @@ auto reload_policy_for_key(std::string_view key) noexcept -> ReloadPolicy
         return ReloadPolicy::restart_required;
     }
 
+    // join_response_max_size also sizes the federation-worker IPC channel's
+    // max_frame_bytes (see WorkerPool::WorkerPool), which is fixed for the
+    // lifetime of the worker process spawned at startup. Raising the byte cap
+    // via SIGHUP would change the per-request OutboundRequest cap immediately
+    // but leave the already-running worker's undersized frame budget in
+    // place, silently dropping any response that grew into the gap.
+    if (key == "security.federation.join_response_max_size")
+    {
+        return ReloadPolicy::restart_required;
+    }
+
     // Per-endpoint rate-limit policies and per-module log level overrides
     // are read once at `start_client_server()` time when the rate-limit
     // engine and the logger module map are constructed. SIGHUP does not

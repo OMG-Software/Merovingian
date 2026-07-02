@@ -55,6 +55,16 @@ public:
     [[nodiscard]] auto send_outbound_request(http::OutboundRequest const& request, std::string_view room_id)
         -> http::OutboundResult;
 
+    // Tells the worker shard that owns room_id to re-read that room from the
+    // database. The worker's PersistentStore is otherwise a snapshot taken
+    // once at worker startup — it never learns about rooms created or joined
+    // by the main process afterward (see docs/architecture.md, "Federation
+    // worker room staleness"). Fire-and-forget: no reply is expected, and a
+    // failure to deliver the notification (e.g. an unhealthy shard) is not
+    // surfaced to the caller, matching the "best-effort cache refresh, not a
+    // correctness-critical write" nature of this call.
+    auto notify_room_changed(std::string_view room_id) -> void;
+
     // True when all configured workers are healthy.
     [[nodiscard]] auto healthy() const noexcept -> bool;
 

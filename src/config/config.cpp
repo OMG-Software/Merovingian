@@ -683,6 +683,14 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
                             "federation join state key parallelism must be a positive integer"});
     }
 
+    auto const federation_join_response_max_size =
+        parse_size_limit(config.security().federation.join_response_max_size);
+    if (!federation_join_response_max_size.valid)
+    {
+        findings.push_back({"security.federation.join_response_max_size",
+                            "federation join response max size must be a positive bounded byte size"});
+    }
+
     auto const media_max_upload_size = parse_size_limit(config.security().media.max_upload_size);
     if (!media_max_upload_size.valid)
     {

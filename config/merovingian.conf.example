@@ -135,12 +135,17 @@ security.federation.remote_timeout=60s
 # join_timeout. join_max_candidates truncates an oversized via list before
 # racing. join_state_key_parallelism caps concurrent remote signing-key
 # resolutions when verifying a send_join response's state/auth_chain events.
+# join_response_max_size overrides the general 16 MiB response-body cap for
+# make_join/send_join specifically: a large room's full state can exceed
+# 16 MiB even once it arrives within budget. Also sizes the federation-worker
+# IPC frame cap, so changing it requires restarting the server (and worker).
 # See docs/configuration.md for full details.
 security.federation.join_timeout=180s
 security.federation.join_parallelism=8
 security.federation.join_race_deadline=45s
 security.federation.join_max_candidates=20
 security.federation.join_state_key_parallelism=100
+security.federation.join_response_max_size=64MiB
 
 # Out-of-process federation worker (mandatory)
 # All inbound federation requests are forwarded to a separate

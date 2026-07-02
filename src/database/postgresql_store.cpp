@@ -1197,6 +1197,7 @@ auto open_postgresql_persistent_store(std::string_view conninfo) -> PersistentSt
         });
         return {false, "unable to hydrate PostgreSQL persistent rows", {}};
     }
+    reconstruct_event_relations(store);
     restore_sync_stream_id(store);
 
     auto compatibility = validate_persistent_store(store);
@@ -1287,6 +1288,184 @@ auto current_postgresql_user(PostgresqlConnection& connection) -> std::string
     return result.rows.front().front();
 }
 
+namespace
+{
+
+    // Builds a "$1,$2,...,$N" placeholder list for an IN (...) clause with
+    // `count` entries. Only the placeholder count is interpolated — the
+    // actual values are always bound as statement parameters by the caller.
+    [[nodiscard]] auto in_clause_placeholders(std::size_t count) -> std::string
+    {
+        auto result = std::string{};
+        result.reserve(count * 3U);
+        for (auto i = std::size_t{0U}; i < count; ++i)
+        {
+            if (i != 0U)
+            {
+                result += ',';
+            }
+            result += '$' + std::to_string(i + 1U);
+        }
+        return result;
+    }
+
+    [[nodiscard]] auto load_room_snapshot_impl(PostgresqlConnection& connection, std::string_view room_id)
+        -> std::optional<RoomReloadSnapshot>
+    {
+        auto const room_id_str = std::string{room_id};
+        auto snapshot = RoomReloadSnapshot{};
+
+        auto room = connection.execute({"postgresql_reload_room",
+                                        "SELECT room_id, creator_user_id FROM rooms WHERE "
+                                        "room_id = $1",
+                                        {{room_id_str, false}}});
+        if (!room.ok)
+        {
+            return std::nullopt;
+        }
+        if (!room.rows.empty() && room.rows.front().size() >= 2U)
+        {
+            snapshot.room = PersistentRoom{room.rows.front()[0], room.rows.front()[1]};
+        }
+
+        auto memberships = connection.execute(
+            {"postgresql_reload_membership",
+             "SELECT room_id, user_id, membership, stream_ordering FROM membership WHERE room_id = $1",
+             {{room_id_str, false}}});
+        if (!memberships.ok)
+        {
+            return std::nullopt;
+        }
+        for (auto const& row : memberships.rows)
+        {
+            if (row.size() >= 4U)
+            {
+                snapshot.memberships.push_back({row[0], row[1], row[2], parse_u64(row[3])});
+            }
+        }
+
+        auto invites = connection.execute({"postgresql_reload_invites",
+                                           "SELECT room_id, user_id, sender_user_id, event_id, signed_event_json, "
+                                           "invite_state_json, stream_ordering FROM invites WHERE room_id = $1",
+                                           {{room_id_str, false}}});
+        if (!invites.ok)
+        {
+            return std::nullopt;
+        }
+        for (auto const& row : invites.rows)
+        {
+            if (row.size() >= 7U)
+            {
+                snapshot.invites.push_back({row[0], row[1], row[2], row[3], row[4],
+                                            parse_invite_state_events_json(row[5]), parse_u64(row[6])});
+            }
+        }
+
+        auto events = connection.execute(
+            {"postgresql_reload_events",
+             "SELECT event_id, room_id, sender_user_id, json, depth, stream_ordering FROM events WHERE room_id = $1",
+             {{room_id_str, false}}});
+        if (!events.ok)
+        {
+            return std::nullopt;
+        }
+        for (auto const& row : events.rows)
+        {
+            if (row.size() >= 6U)
+            {
+                snapshot.events.push_back({row[0], row[1], row[2], row[3], parse_u64(row[4]), parse_u64(row[5])});
+            }
+        }
+
+        auto state =
+            connection.execute({"postgresql_reload_current_state",
+                                "SELECT room_id, event_type, state_key, event_id FROM current_state WHERE room_id = $1",
+                                {{room_id_str, false}}});
+        if (!state.ok)
+        {
+            return std::nullopt;
+        }
+        for (auto const& row : state.rows)
+        {
+            if (row.size() >= 4U)
+            {
+                snapshot.state.push_back({row[0], row[1], row[2], row[3]});
+            }
+        }
+
+        if (snapshot.events.empty())
+        {
+            return snapshot;
+        }
+
+        // Scope the relation-table reads to exactly this room's event ids
+        // rather than reading the (potentially much larger) full tables.
+        auto event_id_params = std::vector<BoundValue>{};
+        event_id_params.reserve(snapshot.events.size());
+        for (auto const& event : snapshot.events)
+        {
+            event_id_params.push_back({event.event_id, false});
+        }
+        auto const placeholders = in_clause_placeholders(event_id_params.size());
+        auto relations = PersistentStore{};
+        relations.events = snapshot.events;
+
+        auto edges = connection.execute(
+            {"postgresql_reload_event_edges",
+             "SELECT event_id, prev_event_id FROM event_edges WHERE event_id IN (" + placeholders + ")",
+             event_id_params});
+        if (!edges.ok)
+        {
+            return std::nullopt;
+        }
+        for (auto const& row : edges.rows)
+        {
+            if (row.size() >= 2U)
+            {
+                relations.event_edges.push_back({row[0], row[1]});
+            }
+        }
+
+        auto auth = connection.execute(
+            {"postgresql_reload_event_auth",
+             "SELECT event_id, auth_event_id FROM event_auth WHERE event_id IN (" + placeholders + ")",
+             event_id_params});
+        if (!auth.ok)
+        {
+            return std::nullopt;
+        }
+        for (auto const& row : auth.rows)
+        {
+            if (row.size() >= 2U)
+            {
+                relations.event_auth.push_back({row[0], row[1]});
+            }
+        }
+
+        auto signatures = connection.execute(
+            {"postgresql_reload_event_signatures",
+             "SELECT event_id, server_name, key_id, signature FROM event_signatures WHERE event_id IN (" +
+                 placeholders + ")",
+             event_id_params});
+        if (!signatures.ok)
+        {
+            return std::nullopt;
+        }
+        for (auto const& row : signatures.rows)
+        {
+            if (row.size() >= 4U)
+            {
+                relations.event_signatures.push_back({row[0], row[1], row[2], row[3]});
+            }
+        }
+
+        reconstruct_event_relations(relations);
+        snapshot.events = std::move(relations.events);
+        return snapshot;
+    }
+
+} // namespace
+
 namespace detail
 {
 
@@ -1299,6 +1478,21 @@ namespace detail
         }
         auto opened = open_postgresql_connection(store.postgresql_conninfo);
         return opened.ok && opened.connection.execute_transaction(statements);
+    }
+
+    auto load_room_snapshot_from_postgresql(std::string_view conninfo, std::string_view room_id)
+        -> std::optional<RoomReloadSnapshot>
+    {
+        if (conninfo.empty())
+        {
+            return std::nullopt;
+        }
+        auto opened = open_postgresql_connection(conninfo);
+        if (!opened.ok)
+        {
+            return std::nullopt;
+        }
+        return load_room_snapshot_impl(opened.connection, room_id);
     }
 
 } // namespace detail

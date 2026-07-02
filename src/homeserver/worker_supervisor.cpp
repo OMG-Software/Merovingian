@@ -44,12 +44,13 @@ namespace
 
 WorkerSupervisor::WorkerSupervisor(std::string worker_path, std::string config_path,
                                    std::uint32_t request_timeout_seconds, std::uint32_t shard_index,
-                                   std::string master_key_file)
+                                   std::string master_key_file, std::uint32_t max_frame_bytes)
     : worker_path_{std::move(worker_path)}
     , config_path_{std::move(config_path)}
     , request_timeout_seconds_{request_timeout_seconds}
     , shard_index_{shard_index}
     , master_key_file_{std::move(master_key_file)}
+    , max_frame_bytes_{max_frame_bytes}
 {
 }
 
@@ -198,8 +199,8 @@ auto WorkerSupervisor::spawn_and_connect() -> void
         throw std::runtime_error{"ipc: failed to derive worker IPC auth key from master key file"};
     }
 
-    auto new_channel =
-        std::make_shared<ipc::IpcChannel>(std::move(server_fd), ipc::IpcChannel::Role::server, *auth_key);
+    auto new_channel = std::make_shared<ipc::IpcChannel>(std::move(server_fd), ipc::IpcChannel::Role::server, *auth_key,
+                                                         max_frame_bytes_);
     if (request_handler_)
     {
         new_channel->set_request_handler(request_handler_);

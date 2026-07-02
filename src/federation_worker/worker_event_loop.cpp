@@ -5,6 +5,7 @@
 
 #include "merovingian/crypto/ipc_auth_key.hpp"
 #include "merovingian/crypto/master_key.hpp"
+#include "merovingian/database/persistent_store.hpp"
 #include "merovingian/events/event.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
@@ -180,8 +181,15 @@ auto WorkerEventLoop::run() -> void
 
     // Create the IPC channel first; the blocking key exchange completes here
     // before any runtime signing operation can be requested. The worker is the
-    // client side of the exchange.
-    auto channel = std::make_unique<ipc::IpcChannel>(std::move(ipc_fd_), ipc::IpcChannel::Role::client, *auth_key);
+    // client side of the exchange. max_frame_bytes must match what
+    // WorkerPool derives for the supervisor side of this same channel (see
+    // ipc::frame_bytes_for_response_cap) — both sides parse the same
+    // --config file independently rather than negotiating it over IPC.
+    auto const join_response_max_size = config::parse_size_limit(config_.security().federation.join_response_max_size);
+    auto const max_frame_bytes =
+        ipc::frame_bytes_for_response_cap(join_response_max_size.valid ? join_response_max_size.bytes : 0U);
+    auto channel = std::make_unique<ipc::IpcChannel>(std::move(ipc_fd_), ipc::IpcChannel::Role::client, *auth_key,
+                                                     max_frame_bytes);
     auto* channel_ptr = channel.get();
 
     // Delegate all Ed25519 signing to the main process so the Matrix signing
@@ -262,6 +270,24 @@ auto WorkerEventLoop::run() -> void
                 }
                 channel_ptr->send_response(id, ipc::serialize_outbound_http_response(outcome));
             });
+        }
+        else if (type == "room_sync")
+        {
+            // Fire-and-forget: no reply is sent. Re-reads this one room from
+            // the database into our own PersistentStore snapshot, which is
+            // otherwise frozen as of this worker's own startup (see
+            // database::reload_room and docs/architecture.md, "Federation
+            // worker room staleness"). Runs inline on the reader thread
+            // rather than the pool: it's a bounded, single-room DB read, and
+            // serializing these against each other (rather than letting them
+            // race a concurrent fed_request touching the same room) is the
+            // simpler correctness story.
+            auto const room_id = ipc::ipc_json_get_str(json, "room_id");
+            auto guard = std::unique_lock{runtime.mutex};
+            if (!database::reload_room(runtime.database.persistent_store, room_id))
+            {
+                LOG_WARNING("Federation worker: room_sync reload failed for room_id=" + room_id);
+            }
         }
         else if (type == "shutdown")
         {

@@ -44,4 +44,11 @@ namespace merovingian::ipc
 // Deserializes the JSON body of an outbound_http_response IPC frame.
 [[nodiscard]] auto deserialize_outbound_http_response(std::string_view json) -> http::OutboundResult;
 
+// Serializes a room_sync notification: fire-and-forget, main process to
+// worker, telling the worker's otherwise-static PersistentStore snapshot to
+// re-read this one room from the database. See
+// database::reload_room and docs/architecture.md, "Federation worker room
+// staleness".
+[[nodiscard]] auto serialize_room_sync_notification(std::string_view room_id) -> std::string;
+
 } // namespace merovingian::ipc

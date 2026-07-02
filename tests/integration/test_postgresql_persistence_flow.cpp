@@ -671,3 +671,96 @@ SCENARIO("PostgreSQL concurrent connections enforce isolation and commit visibil
         }
     }
 }
+
+SCENARIO("PostgreSQL reload_room picks up a room committed by a different store handle",
+         "[database][postgresql][integration][reload][regression]")
+{
+    GIVEN("two independent store handles open on the same PostgreSQL database — modelling the federation worker's "
+          "PersistentStore (handle A, hydrated once at worker startup) and the main process's PersistentStore "
+          "(handle B, which keeps writing after that point)")
+    {
+        auto const uri = postgresql_uri_from_environment();
+        if (uri.empty())
+        {
+            SUCCEED("skipped: MEROVINGIAN_TEST_POSTGRESQL_URI is not set");
+            return;
+        }
+        auto opened_a = merovingian::database::open_postgresql_persistent_store(uri);
+        auto opened_b = merovingian::database::open_postgresql_persistent_store(uri);
+        REQUIRE(opened_a.ok);
+        REQUIRE(opened_b.ok);
+
+        auto const suffix = unique_test_suffix();
+        auto const user_id = "@pg-reload-user-" + suffix + ":example.org";
+        auto const room_id = "!pg-reload-room-" + suffix + ":example.org";
+        auto const create_event_id = "$pg-reload-create-" + suffix + ":example.org";
+        auto const member_event_id = "$pg-reload-member-" + suffix + ":example.org";
+
+        WHEN("a room, membership, and events with DAG relations are committed through handle B only")
+        {
+            REQUIRE(merovingian::database::store_room(opened_b.store, {room_id, user_id}));
+            REQUIRE(merovingian::database::store_membership(opened_b.store, {room_id, user_id, "join", 1U}) ==
+                    merovingian::database::MembershipStoreResult::stored);
+            REQUIRE(merovingian::database::store_event_with_state(
+                opened_b.store,
+                {create_event_id, room_id, user_id, R"({"type":"m.room.create","state_key":""})", 1U, 1U, {}, {}, {}},
+                merovingian::database::PersistentStateEvent{room_id, "m.room.create", "", create_event_id}));
+            REQUIRE(merovingian::database::store_event_with_state(
+                opened_b.store,
+                {member_event_id,
+                 room_id,
+                 user_id,
+                 R"({"type":"m.room.member","state_key":"..."})",
+                 2U,
+                 2U,
+                 {create_event_id},
+                 {create_event_id},
+                 {}},
+                merovingian::database::PersistentStateEvent{room_id, "m.room.member", user_id, member_event_id}));
+
+            THEN("handle A, which never saw any of this, has no knowledge of the room before reloading")
+            {
+                REQUIRE(std::ranges::none_of(opened_a.store.rooms,
+                                             [&room_id](merovingian::database::PersistentRoom const& r) {
+                                                 return r.room_id == room_id;
+                                             }));
+            }
+
+            AND_WHEN("reload_room is called on handle A for that room_id")
+            {
+                auto const reloaded = merovingian::database::reload_room(opened_a.store, room_id);
+
+                THEN("it succeeds and handle A now has the room, membership, state, and event with its DAG "
+                     "relations reconstructed")
+                {
+                    REQUIRE(reloaded);
+                    REQUIRE(std::ranges::any_of(opened_a.store.rooms,
+                                                [&room_id](merovingian::database::PersistentRoom const& r) {
+                                                    return r.room_id == room_id;
+                                                }));
+
+                    auto const membership_it = std::ranges::find_if(
+                        opened_a.store.memberships,
+                        [&room_id, &user_id](merovingian::database::PersistentMembership const& m) {
+                            return m.room_id == room_id && m.user_id == user_id;
+                        });
+                    REQUIRE(membership_it != opened_a.store.memberships.end());
+                    REQUIRE(membership_it->membership == "join");
+
+                    REQUIRE(std::ranges::count_if(opened_a.store.state,
+                                                  [&room_id](merovingian::database::PersistentStateEvent const& s) {
+                                                      return s.room_id == room_id;
+                                                  }) == 2U);
+
+                    auto const member_event_it = std::ranges::find_if(
+                        opened_a.store.events, [&member_event_id](merovingian::database::PersistentEvent const& e) {
+                            return e.event_id == member_event_id;
+                        });
+                    REQUIRE(member_event_it != opened_a.store.events.end());
+                    REQUIRE(member_event_it->prev_event_ids == std::vector<std::string>{create_event_id});
+                    REQUIRE(member_event_it->auth_event_ids == std::vector<std::string>{create_event_id});
+                }
+            }
+        }
+    }
+}

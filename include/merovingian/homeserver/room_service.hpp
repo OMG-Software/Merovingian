@@ -110,11 +110,15 @@ struct SendJoinStateSplit final
 // `secret_key` is the raw 64-byte Ed25519 secret key as a non-owning span —
 // callers pass runtime.database.signing_secret_key.bytes() directly so the key
 // is never copied into an unpinned std::string. The runtime outlives the call.
+// `max_response_bytes` overrides the outbound response body cap (0 = use the
+// OutboundCall default of 16 MiB); send_join passes
+// runtime.federation.config.join_response_max_bytes since a large room's
+// full state routinely exceeds the default.
 [[nodiscard]] auto perform_sync_outbound_call(HomeserverRuntime& runtime, std::string_view room_id,
                                               federation::OutboundTransaction const& transaction,
                                               std::string_view key_id, std::span<std::uint8_t const> secret_key,
-                                              std::string_view diagnostic_event, std::uint32_t timeout_seconds)
-    -> std::pair<bool, std::string>;
+                                              std::string_view diagnostic_event, std::uint32_t timeout_seconds,
+                                              std::uint64_t max_response_bytes = 0U) -> std::pair<bool, std::string>;
 
 // Ingests the `state` array from a send_join response. Every event is stored
 // in the persistent event graph. State events — identified by the PRESENCE of

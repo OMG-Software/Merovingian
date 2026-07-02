@@ -7,8 +7,10 @@
 #include "merovingian/ipc/federation_ipc_frames.hpp"
 #include "merovingian/observability/logger.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstring>
+#include <limits>
 #include <new>
 #include <stdexcept>
 #include <string>
@@ -47,6 +49,16 @@ namespace
     }
 
 } // namespace
+
+auto frame_bytes_for_response_cap(std::uint64_t max_response_body_bytes) noexcept -> std::uint32_t
+{
+    constexpr std::uint64_t kEnvelopeHeadroom{2U * 1024U * 1024U};
+    constexpr std::uint64_t kU32Max{static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max())};
+    // base64 expands by 4/3, rounded up to a whole 4-byte group.
+    auto const encoded = ((max_response_body_bytes + 2U) / 3U) * 4U;
+    auto const needed = std::max<std::uint64_t>(encoded + kEnvelopeHeadroom, kIpcMaxFrameBytes);
+    return static_cast<std::uint32_t>(std::min(needed, kU32Max));
+}
 
 IpcChannel::IpcChannel(core::FileDescriptor fd, Role role, crypto::IpcAuthKey auth_key, std::uint32_t max_frame_bytes)
     : fd_{std::move(fd)}

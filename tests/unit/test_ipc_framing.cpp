@@ -210,6 +210,49 @@ struct ChannelPair final
 
 } // namespace
 
+SCENARIO("frame_bytes_for_response_cap sizes the frame off the base64-encoded response, not the raw body",
+         "[ipc][channel][framing]")
+{
+    GIVEN("the default 16 MiB OutboundCall response cap")
+    {
+        WHEN("the frame budget is computed")
+        {
+            auto const frame_bytes = merovingian::ipc::frame_bytes_for_response_cap(16U * 1024U * 1024U);
+
+            THEN("it never returns less than kIpcMaxFrameBytes, preserving today's behaviour")
+            {
+                REQUIRE(frame_bytes >= merovingian::ipc::kIpcMaxFrameBytes);
+            }
+        }
+    }
+
+    GIVEN("a large custom response cap, e.g. join_response_max_size=64MiB for a huge room's send_join")
+    {
+        WHEN("the frame budget is computed")
+        {
+            auto const frame_bytes = merovingian::ipc::frame_bytes_for_response_cap(64U * 1024U * 1024U);
+
+            THEN("it comfortably exceeds the base64-encoded 4/3 expansion of the response cap")
+            {
+                REQUIRE(frame_bytes > (64U * 1024U * 1024U * 4U) / 3U);
+            }
+        }
+    }
+
+    GIVEN("a response cap of zero")
+    {
+        WHEN("the frame budget is computed")
+        {
+            auto const frame_bytes = merovingian::ipc::frame_bytes_for_response_cap(0U);
+
+            THEN("it falls back to kIpcMaxFrameBytes rather than an unusably small frame")
+            {
+                REQUIRE(frame_bytes == merovingian::ipc::kIpcMaxFrameBytes);
+            }
+        }
+    }
+}
+
 SCENARIO("IpcChannel performs encrypted key exchange on construction", "[ipc][channel][security]")
 {
     GIVEN("a socketpair with server and client fds")

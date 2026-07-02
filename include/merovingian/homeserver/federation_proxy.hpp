@@ -47,6 +47,10 @@ public:
     [[nodiscard]] auto send_outbound_request(http::OutboundRequest const& request, std::string_view room_id)
         -> http::OutboundResult;
 
+    // Tells the worker shard that owns room_id to refresh its otherwise-stale
+    // copy of that room from the database. See WorkerPool::notify_room_changed.
+    auto notify_room_changed(std::string_view room_id) -> void;
+
 private:
     HomeserverRuntime& runtime_;
     std::unique_ptr<WorkerPool> pool_{};

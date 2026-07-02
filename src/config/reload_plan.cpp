@@ -223,6 +223,10 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "security.federation.join_state_key_parallelism");
     }
+    if (current.security().federation.join_response_max_size != next.security().federation.join_response_max_size)
+    {
+        add_change(plan, "security.federation.join_response_max_size");
+    }
 
     if (current.security().media.max_upload_size != next.security().media.max_upload_size)
     {
