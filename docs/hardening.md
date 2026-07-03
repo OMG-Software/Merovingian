@@ -170,17 +170,23 @@ separate process on the same host:
   environment, so no parent secret leaked via environment reaches the
   lower-privilege worker child.
 * **Bounded IPC frames** (#325): the per-frame cap is 24 MiB
-  (`merovingian::ipc::kIpcMaxFrameBytes`), lowered from a prior 50 MiB cap to
-  bound memory-exhaustion DoS across concurrent workers; oversize frames are
-  logged and propagated as send/request failures rather than silently
-  dropped. Response bodies (`fed_response`/`outbound_http_response`) are
-  base64-encoded before framing — a fixed 4/3 expansion — instead of raw
+  (`merovingian::ipc::kIpcMaxFrameBytes`) by default, lowered from a prior
+  50 MiB cap to bound memory-exhaustion DoS across concurrent workers;
+  oversize frames are logged and propagated as send/request failures rather
+  than silently dropped. Response bodies (`fed_response`/`outbound_http_response`)
+  are base64-encoded before framing — a fixed 4/3 expansion — instead of raw
   JSON-string escaping, whose expansion depends on the response content and
-  could otherwise push a response already at
-  `http::OutboundRequest::max_response_body_bytes` (16 MiB by default, the
-  ceiling a large room's `send_join` response legitimately reaches) over the
-  frame cap after escaping (issue #342). The cap is a compile-time constant;
-  it is not currently exposed as a runtime config option.
+  could otherwise push a response already at the response cap over the frame
+  cap after escaping (issue #342). `WorkerPool` and the worker process each
+  independently derive the channel's actual `max_frame_bytes` from
+  `security.federation.join_response_max_size` via
+  `ipc::frame_bytes_for_response_cap` (main process: `WorkerPool::WorkerPool`;
+  worker: `WorkerEventLoop::run`) — both sides parse the same `--config` file,
+  so they agree without negotiating the value over the channel itself. The
+  24 MiB constant is only the floor used when that config value is at its
+  16 MiB-equivalent minimum; raising `join_response_max_size` raises the
+  frame cap in lockstep, and both processes must restart to pick up a change
+  (see `docs/configuration.md`).
 * **Worker-specific seccomp + runtime hardening** (#319): the worker applies
   `PR_SET_NO_NEW_PRIVS`, drops capabilities, sets resource limits, and installs
   a stricter seccomp-bpf filter (on top of the inherited server filter) that

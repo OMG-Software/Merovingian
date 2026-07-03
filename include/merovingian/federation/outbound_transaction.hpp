@@ -69,6 +69,11 @@ struct OutboundCall final
     // system trust" (all production federation traffic). Only ever populated
     // by HomeserverRuntime's test-only forced-resolution override.
     std::string trusted_ca_pem{};
+    // Forwarded to http::OutboundRequest::max_response_body_bytes. Defaults
+    // to the same 16 MiB ceiling as OutboundRequest itself; callers whose
+    // response can legitimately exceed that (send_join for a large room)
+    // override it from the caller-supplied config budget.
+    std::size_t max_response_body_bytes{16U * 1024U * 1024U};
 };
 
 [[nodiscard]] auto make_outbound_transaction(std::string_view destination, std::string_view method,

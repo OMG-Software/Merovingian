@@ -33,6 +33,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include <sodium.h>
 
@@ -1127,6 +1128,157 @@ SCENARIO("HomeserverRuntime destructor waits for orphaned make_join race loser f
                 // time to elapse — proving the destructor actually blocks, not just
                 // that the background thread eventually finishes on its own.
                 REQUIRE(completed.load());
+            }
+        }
+    }
+}
+
+// --- federation worker notification contract --------------------------------------
+//
+// merovingian-fed-worker runs its own PersistentStore, hydrated once at worker
+// startup — the only thing that keeps it from going permanently stale for a
+// room this server becomes newly resident in (via create_room, join_room, or
+// leave_room) is HomeserverRuntime::federation_proxy->notify_room_changed()
+// firing on every one of those code paths (see docs/architecture.md,
+// "Federation worker room staleness"). These scenarios pin that contract
+// directly via the test-only HomeserverRuntime::test_room_changed_log hook,
+// so a future change that adds, removes, or breaks one of those call sites
+// fails a fast, deterministic unit test instead of only surfacing as a live
+// 404 against a real federation worker.
+
+SCENARIO("create_room notifies the federation worker of the new room",
+         "[homeserver][rooms][federation-worker][regression]")
+{
+    GIVEN("a started runtime with the test-only room-changed log wired")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto changed_rooms = std::vector<std::string>{};
+        runtime.test_room_changed_log = &changed_rooms;
+
+        auto const reg = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                      merovingian::tests::registration_token);
+        REQUIRE(reg.ok);
+        auto const login = merovingian::homeserver::login_local_user(runtime, reg.value, "CorrectHorse7!", "DEVICE1");
+        REQUIRE(login.ok);
+
+        WHEN("alice creates a room")
+        {
+            auto const room = merovingian::homeserver::create_room(runtime, login.value);
+
+            THEN("the new room_id is logged exactly once")
+            {
+                REQUIRE(room.ok);
+                REQUIRE(changed_rooms == std::vector<std::string>{room.value});
+            }
+        }
+    }
+}
+
+SCENARIO("join_room notifies the federation worker when a local user joins",
+         "[homeserver][rooms][federation-worker][regression]")
+{
+    GIVEN("a room alice created and invited bob to, with the room-changed log wired after creation")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const alice_reg = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                            merovingian::tests::registration_token);
+        REQUIRE(alice_reg.ok);
+        auto const alice_login =
+            merovingian::homeserver::login_local_user(runtime, alice_reg.value, "CorrectHorse7!", "ALICE_DEV");
+        REQUIRE(alice_login.ok);
+        auto const bob_reg = merovingian::homeserver::register_local_user(runtime, "bob", "CorrectHorse7!",
+                                                                          merovingian::tests::registration_token);
+        REQUIRE(bob_reg.ok);
+        auto const bob_login =
+            merovingian::homeserver::login_local_user(runtime, bob_reg.value, "CorrectHorse7!", "BOB_DEV");
+        REQUIRE(bob_login.ok);
+        auto const room = merovingian::homeserver::create_room(runtime, alice_login.value);
+        REQUIRE(room.ok);
+        auto const invite = merovingian::homeserver::invite_user(runtime, alice_login.value, room.value, bob_reg.value);
+        REQUIRE(invite.ok);
+
+        // Wire the log only now, so this scenario isolates join_room's own
+        // notification from create_room's (already covered above).
+        auto changed_rooms = std::vector<std::string>{};
+        runtime.test_room_changed_log = &changed_rooms;
+
+        WHEN("bob joins the room")
+        {
+            auto const join = merovingian::homeserver::join_room(runtime, bob_login.value, room.value);
+
+            THEN("the room_id is logged exactly once")
+            {
+                REQUIRE(join.ok);
+                REQUIRE(changed_rooms == std::vector<std::string>{room.value});
+            }
+        }
+    }
+}
+
+SCENARIO("leave_room notifies the federation worker when a local user leaves",
+         "[homeserver][rooms][federation-worker][regression]")
+{
+    GIVEN("a room with alice and bob joined, with the room-changed log wired after setup")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const ctx = make_two_user_room(runtime);
+
+        auto changed_rooms = std::vector<std::string>{};
+        runtime.test_room_changed_log = &changed_rooms;
+
+        WHEN("bob leaves the room")
+        {
+            auto const leave = merovingian::homeserver::leave_room(runtime, ctx.bob_token, ctx.room_id);
+
+            THEN("the room_id is logged exactly once")
+            {
+                REQUIRE(leave.ok);
+                REQUIRE(changed_rooms == std::vector<std::string>{ctx.room_id});
+            }
+        }
+    }
+}
+
+SCENARIO("Rooms untouched by the current operation are never logged as changed",
+         "[homeserver][rooms][federation-worker][regression]")
+{
+    GIVEN("two established rooms and the room-changed log wired")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const first_ctx = make_two_user_room(runtime);
+
+        auto const carol_reg = merovingian::homeserver::register_local_user(runtime, "carol", "CorrectHorse7!",
+                                                                            merovingian::tests::registration_token);
+        REQUIRE(carol_reg.ok);
+        auto const carol_login =
+            merovingian::homeserver::login_local_user(runtime, carol_reg.value, "CorrectHorse7!", "CAROL_DEV");
+        REQUIRE(carol_login.ok);
+
+        auto changed_rooms = std::vector<std::string>{};
+        runtime.test_room_changed_log = &changed_rooms;
+
+        WHEN("carol creates a brand new, unrelated room")
+        {
+            auto const second_room = merovingian::homeserver::create_room(runtime, carol_login.value);
+
+            THEN("only the new room is logged — the pre-existing room is untouched")
+            {
+                REQUIRE(second_room.ok);
+                REQUIRE(changed_rooms == std::vector<std::string>{second_room.value});
+                REQUIRE(std::ranges::find(changed_rooms, first_ctx.room_id) == changed_rooms.end());
             }
         }
     }

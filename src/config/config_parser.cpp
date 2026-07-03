@@ -376,6 +376,10 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected unsigned integer");
             }
         }
+        else if (key == "security.federation.join_response_max_size")
+        {
+            security.federation.join_response_max_size = std::string{value};
+        }
         else if (key == "security.media.max_upload_size")
         {
             security.media.max_upload_size = std::string{value};

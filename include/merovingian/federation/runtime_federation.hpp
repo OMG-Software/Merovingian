@@ -35,6 +35,9 @@ struct RuntimeFederationConfig final
     // Cap on concurrent remote signing-key resolutions when verifying send_join
     // state/auth_chain event signatures (default 100). See config.hpp.
     std::uint32_t join_state_key_parallelism{0U};
+    // Response body cap for make_join/send_join, distinct from the general
+    // 16 MiB http::OutboundRequest default (default 64 MiB). See config.hpp.
+    std::uint64_t join_response_max_bytes{0U};
     // Local server name (e.g. "matrix.example.org"). Surfaced into outbound
     // federation traffic and into response bodies that include the issuing
     // server's identity (notably the backfill response). Mirrors

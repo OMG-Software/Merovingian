@@ -67,6 +67,28 @@ namespace
         observability::log_diagnostic("rooms", event, fields, severity);
     }
 
+    // Single choke point for the "this server's residency in room_id changed"
+    // signal. Every call site that creates a room, joins one (locally or via
+    // federation), or leaves one MUST call this — it is the only thing that
+    // keeps the out-of-process federation worker's PersistentStore snapshot
+    // from going permanently stale for that room (see docs/architecture.md,
+    // "Federation worker room staleness"). Routed through one function,
+    // rather than each call site poking runtime.federation_proxy directly,
+    // so tests can pin the "every call site notifies" contract via
+    // runtime.test_room_changed_log without spawning a real worker — see
+    // HomeserverRuntime::test_room_changed_log.
+    auto notify_room_changed(HomeserverRuntime& runtime, std::string_view room_id) -> void
+    {
+        if (runtime.federation_proxy)
+        {
+            runtime.federation_proxy->notify_room_changed(room_id);
+        }
+        if (runtime.test_room_changed_log != nullptr)
+        {
+            runtime.test_room_changed_log->emplace_back(room_id);
+        }
+    }
+
     // Portable counting semaphore — std::counting_semaphore is not available on
     // all supported platforms (e.g. NetBSD libc++).
     class PortableSemaphore
@@ -1378,8 +1400,8 @@ namespace
 [[nodiscard]] auto perform_sync_outbound_call(HomeserverRuntime& runtime, std::string_view room_id,
                                               federation::OutboundTransaction const& transaction,
                                               std::string_view key_id, std::span<std::uint8_t const> secret_key,
-                                              std::string_view diagnostic_event, std::uint32_t timeout_seconds)
-    -> std::pair<bool, std::string>
+                                              std::string_view diagnostic_event, std::uint32_t timeout_seconds,
+                                              std::uint64_t max_response_bytes) -> std::pair<bool, std::string>
 {
     // Test-only: bypass discover_server() entirely when the destination has a
     // forced resolution wired (see TestOnlyForcedOutboundResolution in
@@ -1446,6 +1468,12 @@ namespace
     {
         call.connect_timeout_seconds = std::min(timeout_seconds, 30U);
         call.total_timeout_seconds = timeout_seconds;
+    }
+    // 0 means "use the OutboundCall default (16 MiB)"; only override when the
+    // caller supplied a larger, endpoint-specific budget (e.g. send_join).
+    if (max_response_bytes > 0U)
+    {
+        call.max_response_body_bytes = static_cast<std::size_t>(max_response_bytes);
     }
 
     // Sign the request in-process — the Ed25519 secret never crosses the IPC boundary.
@@ -2362,6 +2390,7 @@ namespace
     {
         runtime.sync_notifier->publish(runtime.database.next_stream_ordering - 1U, sync_stream_id);
     }
+    notify_room_changed(runtime, room_id);
     return make_operation_result(true, room_id);
 }
 
@@ -3132,7 +3161,8 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
                                            ? runtime.federation.config.join_timeout_seconds
                                            : runtime.federation.config.remote_timeout_seconds;
         auto const [send_ok, send_body] = perform_sync_outbound_call(
-            runtime, room_id, send_join_tx, key_id, secret_key, "room.join.remote.send_join_failed", send_join_timeout);
+            runtime, room_id, send_join_tx, key_id, secret_key, "room.join.remote.send_join_failed", send_join_timeout,
+            runtime.federation.config.join_response_max_bytes);
         if (!send_ok)
         {
             log_diagnostic("room.join.rejected",
@@ -3463,6 +3493,16 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
         {
             runtime.sync_notifier->publish(runtime.database.next_stream_ordering - 1U, sync_stream_id);
         }
+        // Tell the federation worker to refresh its copy of this room now that
+        // we are a resident participant — otherwise its PersistentStore stays
+        // frozen at its own startup snapshot and a remote server's inbound
+        // make_join/state query against us 404s despite this server having
+        // just completed the join (see docs/architecture.md, "Federation
+        // worker room staleness"). Critical state (create/power_levels/
+        // join_rules/our own membership) is already persisted above, so the
+        // worker can answer correctly even before the background member fill
+        // below completes — same partial-state contract as fast join itself.
+        notify_room_changed(runtime, room_id);
         // Fast join: the room is fully usable now (create/power_levels/join_rules/
         // etc. and our own membership are already verified and persisted above).
         // The remaining member rows — deferred above as `background_state` — are
@@ -3518,6 +3558,10 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
                                        {"members_stored",    std::to_string(stored),                  false}
                     },
                                    observability::LogEventSeverity::info);
+                    if (stored > 0U)
+                    {
+                        notify_room_changed(runtime, room_id_bg);
+                    }
                 });
             auto orphan_lk = std::lock_guard{runtime.orphan_futures_mutex_};
             runtime.orphan_futures_.push_back(std::move(bg_future));
@@ -3660,6 +3704,7 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
     {
         runtime.sync_notifier->publish(runtime.database.next_stream_ordering - 1U, sync_stream_id);
     }
+    notify_room_changed(runtime, room_id);
     return make_operation_result(true, std::string{room_id});
 }
 
@@ -3960,6 +4005,7 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
                            {"room_id", std::string{room_id}, false}
         },
                        observability::LogEventSeverity::info);
+        notify_room_changed(runtime, room_id);
         return make_operation_result(true, std::string{room_id});
     }
 
@@ -3984,6 +4030,7 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
                        {"room_id", std::string{room_id}, false}
     },
                    observability::LogEventSeverity::info);
+    notify_room_changed(runtime, room_id);
     return make_operation_result(true, std::string{room_id});
 }
 

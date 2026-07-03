@@ -360,9 +360,22 @@ SCENARIO("join_room completes a live federated join and defers the bulk membersh
     GIVEN("a real HomeserverRuntime, a logged-in local user, and a real TLS resident server")
     {
         REQUIRE(sodium_init() >= 0);
+        // Declared before `started`/`runtime` so it destructs AFTER them:
+        // HomeserverRuntime's destructor blocks until every orphaned
+        // background future (see orphan_futures_) has finished draining, and
+        // the background member-fill task holds a reference to `runtime` and
+        // may call notify_room_changed() — which writes through
+        // runtime.test_room_changed_log — for as long as it is still
+        // in-flight. If this vector destructed first (the default order for
+        // a variable declared after `runtime`), a THEN block that returns
+        // before explicitly waiting on the background task would free this
+        // vector while that task could still be writing to it through the
+        // now-dangling pointer.
+        auto changed_rooms = std::vector<std::string>{};
         auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
         REQUIRE(started.started);
         auto& runtime = started.runtime;
+        runtime.test_room_changed_log = &changed_rooms;
 
         auto const reg = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
                                                                       merovingian::tests::registration_token);
@@ -537,6 +550,15 @@ SCENARIO("join_room completes a live federated join and defers the bulk membersh
                 REQUIRE(room_it != runtime.database.rooms.end());
                 // alice + 5 deferred members.
                 REQUIRE(room_it->members.size() == k_other_member_count + 1U);
+
+                // The federation worker notification fires once for the
+                // synchronous critical-state join and again once the
+                // background member fill completes (see room_service.cpp's
+                // notify_room_changed call sites) — both for this same room.
+                REQUIRE_FALSE(changed_rooms.empty());
+                REQUIRE(std::ranges::all_of(changed_rooms, [&](auto const& logged_room_id) {
+                    return logged_room_id == room_id;
+                }));
             }
         }
     }

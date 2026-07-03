@@ -43,6 +43,7 @@ auto make_runtime_federation_config(config::Config const& config) -> RuntimeFede
     auto const remote_timeout = config::parse_duration_seconds(config.security().federation.remote_timeout);
     auto const join_timeout = config::parse_duration_seconds(config.security().federation.join_timeout);
     auto const join_race_deadline = config::parse_duration_seconds(config.security().federation.join_race_deadline);
+    auto const join_response_max_size = config::parse_size_limit(config.security().federation.join_response_max_size);
 
     return {
         config.security().federation.enabled,
@@ -59,6 +60,7 @@ auto make_runtime_federation_config(config::Config const& config) -> RuntimeFede
         join_race_deadline.valid ? join_race_deadline.seconds : 0U,
         config.security().federation.join_max_candidates,
         config.security().federation.join_state_key_parallelism,
+        join_response_max_size.valid ? join_response_max_size.bytes : 0U,
         config.server().server_name,
     };
 }
@@ -75,7 +77,8 @@ auto federation_summary(RuntimeFederationConfig const& config) -> std::string
            " join_parallelism=" + std::to_string(config.join_parallelism) +
            " join_race_deadline_seconds=" + std::to_string(config.join_race_deadline_seconds) +
            " join_max_candidates=" + std::to_string(config.join_max_candidates) +
-           " join_state_key_parallelism=" + std::to_string(config.join_state_key_parallelism);
+           " join_state_key_parallelism=" + std::to_string(config.join_state_key_parallelism) +
+           " join_response_max_bytes=" + std::to_string(config.join_response_max_bytes);
 }
 
 auto federation_server_policy(RuntimeFederationConfig const& config, std::string_view server_name)

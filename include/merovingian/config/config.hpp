@@ -140,6 +140,16 @@ struct FederationSecurityConfig final
     // this cap is applied, so it bounds concurrent *distinct home servers*
     // contacted, not concurrent events. Must be >= 1 (validated).
     std::uint32_t join_state_key_parallelism{100U};
+    // Response body cap applied specifically to make_join/send_join, distinct
+    // from the general 16 MiB http::OutboundRequest default. A send_join
+    // response embeds the room's full current state (one m.room.member per
+    // member) plus the auth chain; for a genuinely large room (tens of
+    // thousands of members) this routinely exceeds 16 MiB and the call was
+    // rejected outright with `response_too_large` even after join_timeout
+    // gave it enough wall-clock time. Restart required: this also sizes the
+    // federation-worker IPC frame cap, which is fixed at worker spawn time
+    // (see reload_policy.cpp).
+    std::string join_response_max_size{"64MiB"};
 };
 
 struct MediaSecurityConfig final

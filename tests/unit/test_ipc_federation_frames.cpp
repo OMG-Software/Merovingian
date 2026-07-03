@@ -27,6 +27,7 @@ using merovingian::ipc::serialize_fed_request;
 using merovingian::ipc::serialize_fed_response;
 using merovingian::ipc::serialize_outbound_http_request;
 using merovingian::ipc::serialize_outbound_http_response;
+using merovingian::ipc::serialize_room_sync_notification;
 
 } // namespace
 
@@ -831,6 +832,41 @@ SCENARIO("outbound_http_response round-trips a body at the default max_response_
                 REQUIRE(rt.ok);
                 REQUIRE(rt.response.body == original.response.body);
                 REQUIRE(rt.response.body.size() == max_body);
+            }
+        }
+    }
+}
+
+SCENARIO("room_sync notification carries the room_id and is tagged as a notification, not a request",
+         "[ipc][federation][notification]")
+{
+    GIVEN("a room_id")
+    {
+        auto const room_id = std::string{"!BUVBUduhTRUAsl7_0IMUes5lNKNMTw0d7B4cTRffhGI"};
+
+        WHEN("a room_sync notification is serialized")
+        {
+            auto const serialized = serialize_room_sync_notification(room_id);
+
+            THEN("the type and room_id fields round-trip through the shared JSON helpers")
+            {
+                REQUIRE(ipc_json_get_str(serialized, "type") == "room_sync");
+                REQUIRE(ipc_json_get_str(serialized, "room_id") == room_id);
+            }
+        }
+    }
+
+    GIVEN("a room_id containing characters that require JSON escaping")
+    {
+        auto const room_id = std::string{"!has\"quote\\and\nnewline:example.org"};
+
+        WHEN("a room_sync notification is serialized")
+        {
+            auto const serialized = serialize_room_sync_notification(room_id);
+
+            THEN("the room_id round-trips exactly, proving it was escaped rather than interpolated raw")
+            {
+                REQUIRE(ipc_json_get_str(serialized, "room_id") == room_id);
             }
         }
     }

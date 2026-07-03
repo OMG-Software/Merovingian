@@ -38,8 +38,13 @@ public:
     // process and the worker to independently derive the IPC channel auth key.
     // If empty or unreadable the supervisor refuses to spawn (fail-closed),
     // because an unauthenticated IPC handshake would let any peer inject frames.
+    // max_frame_bytes: IpcChannel frame cap for this channel; 0 means "use
+    // ipc::kIpcMaxFrameBytes". The worker computes the same value from its own
+    // copy of the config, so both sides of the channel must agree — see
+    // ipc::frame_bytes_for_response_cap.
     WorkerSupervisor(std::string worker_path, std::string config_path, std::uint32_t request_timeout_seconds,
-                     std::uint32_t shard_index = 0U, std::string master_key_file = {});
+                     std::uint32_t shard_index = 0U, std::string master_key_file = {},
+                     std::uint32_t max_frame_bytes = 0U);
     ~WorkerSupervisor();
 
     WorkerSupervisor(WorkerSupervisor const&) = delete;
@@ -85,6 +90,7 @@ private:
     std::uint32_t request_timeout_seconds_{};
     std::uint32_t shard_index_{};
     std::string master_key_file_;
+    std::uint32_t max_frame_bytes_{};
     ipc::IpcChannel::RequestHandler request_handler_{};
 
     // channel_ and channel_mu_ guard the IpcChannel pointer against concurrent

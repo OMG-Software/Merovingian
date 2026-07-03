@@ -22,6 +22,7 @@ SCENARIO("Runtime federation config parses validated transaction limits", "[fede
         security.federation.join_race_deadline = "50s";
         security.federation.join_max_candidates = 15U;
         security.federation.join_state_key_parallelism = 75U;
+        security.federation.join_response_max_size = "32MiB";
         auto const config = merovingian::config::Config{
             merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
             merovingian::config::DatabaseConfig{},         security,
@@ -47,6 +48,7 @@ SCENARIO("Runtime federation config parses validated transaction limits", "[fede
                 REQUIRE(runtime_federation.join_race_deadline_seconds == 50U);
                 REQUIRE(runtime_federation.join_max_candidates == 15U);
                 REQUIRE(runtime_federation.join_state_key_parallelism == 75U);
+                REQUIRE(runtime_federation.join_response_max_bytes == 33554432U);
                 REQUIRE(runtime_federation.deny_ip_ranges.size() == 6U);
             }
         }
@@ -69,6 +71,7 @@ SCENARIO("Runtime federation summary exposes bounded operational values", "[fede
         runtime_federation.join_race_deadline_seconds = 45U;
         runtime_federation.join_max_candidates = 20U;
         runtime_federation.join_state_key_parallelism = 100U;
+        runtime_federation.join_response_max_bytes = 67108864U;
 
         WHEN("the federation summary is generated")
         {
@@ -87,6 +90,7 @@ SCENARIO("Runtime federation summary exposes bounded operational values", "[fede
                 REQUIRE(summary.find("join_race_deadline_seconds=45") != std::string::npos);
                 REQUIRE(summary.find("join_max_candidates=20") != std::string::npos);
                 REQUIRE(summary.find("join_state_key_parallelism=100") != std::string::npos);
+                REQUIRE(summary.find("join_response_max_bytes=67108864") != std::string::npos);
             }
         }
     }

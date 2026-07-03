@@ -294,6 +294,28 @@ SCENARIO("Outbound request builder produces a federation HTTPS request shape", "
                 REQUIRE(found_authorization);
                 REQUIRE(found_content_type);
             }
+
+            THEN("the response body cap defaults to OutboundCall's 16 MiB ceiling")
+            {
+                REQUIRE(request.max_response_body_bytes == 16U * 1024U * 1024U);
+            }
+        }
+    }
+
+    GIVEN("a call with a caller-supplied response body cap (e.g. send_join's join_response_max_bytes budget)")
+    {
+        auto const kp = sample_keypair();
+        auto call = make_sample_call(kp);
+        call.max_response_body_bytes = 64U * 1024U * 1024U;
+
+        WHEN("the outbound HTTP request is built")
+        {
+            auto const request = merovingian::federation::build_outbound_request(call);
+
+            THEN("the request carries the caller's cap instead of the OutboundCall default")
+            {
+                REQUIRE(request.max_response_body_bytes == 64U * 1024U * 1024U);
+            }
         }
     }
 }

@@ -416,6 +416,22 @@ struct PersistentStoreOpenResult final
     PersistentStore store{};
 };
 
+// Freshly-read rows for a single room, scoped by room_id, used by reload_room
+// to refresh one room's slice of a PersistentStore without re-reading the
+// entire database. `room` is nullopt when the room no longer exists in the
+// backing database (e.g. it was never local to this server after all); the
+// other fields are empty in that case. `events` carries prev_event_ids,
+// auth_event_ids, and signatures already reconstructed from the flat
+// relation tables — see reconstruct_event_relations.
+struct RoomReloadSnapshot final
+{
+    std::optional<PersistentRoom> room{};
+    std::vector<PersistentMembership> memberships{};
+    std::vector<PersistentInvite> invites{};
+    std::vector<PersistentEvent> events{};
+    std::vector<PersistentStateEvent> state{};
+};
+
 // Serialise a token expiry time_point to its TEXT column form (epoch-ms decimal
 // string, empty for no expiry) and parse it back. Shared by the INSERT paths and
 // the SQLite/PostgreSQL store hydration so the encoding stays consistent.
@@ -475,6 +491,28 @@ enum class MembershipStoreResult
 };
 
 [[nodiscard]] auto store_room(PersistentStore& store, PersistentRoom room) -> bool;
+// Re-derives every PersistentEvent's prev_event_ids/auth_event_ids/signatures
+// from the flat event_edges/event_auth/event_signatures tables. Those fields
+// are populated directly when an event is stored fresh within a process's
+// lifetime (store_event_with_state), but hydrating a store from disk
+// (open_sqlite_persistent_store, open_postgresql_persistent_store, and
+// reload_room below) only loads the flat relation tables — without this call
+// every event's DAG-linkage fields silently read back empty, which breaks
+// prev_events/auth_events selection for make_join and similar responses.
+// Idempotent: safe to call on a store where the fields are already populated.
+auto reconstruct_event_relations(PersistentStore& store) -> void;
+// Re-reads a single room's rows (room, membership, invites, events, state,
+// and the event relation tables scoped to that room's events) from the
+// backing database and replaces this store's in-memory copy of that room
+// with the fresh result. Used by the federation worker, whose PersistentStore
+// is otherwise a point-in-time snapshot taken once at worker startup with no
+// way to learn about rooms created or joined by the main process afterward
+// (see docs/architecture.md, "Federation worker room staleness"). A no-op
+// (returns true) for an in-memory-only store, since there is nothing on disk
+// to reload from. Returns false only on a connection/query failure; a room
+// that no longer exists is not an error — the room's stale rows are simply
+// removed from this store's copy.
+[[nodiscard]] auto reload_room(PersistentStore& store, std::string_view room_id) -> bool;
 [[nodiscard]] auto store_membership(PersistentStore& store, PersistentMembership membership) -> MembershipStoreResult;
 [[nodiscard]] auto update_membership(PersistentStore& store, std::string_view room_id, std::string_view user_id,
                                      std::string_view new_membership) -> bool;
@@ -593,6 +631,18 @@ namespace detail
                                                       std::vector<PreparedStatement> const& statements) -> bool;
     [[nodiscard]] auto persist_transaction_to_postgresql(PersistentStore const& store,
                                                          std::vector<PreparedStatement> const& statements) -> bool;
+
+    // Backend-specific half of reload_room: reads just this room's rows from
+    // the database (not the in-memory store) and returns them with the event
+    // relation fields already reconstructed. Returns nullopt on a
+    // connection/query failure; a room that no longer exists is a successful
+    // result with `room == nullopt` inside the snapshot, not a nullopt return.
+    [[nodiscard]] auto load_room_snapshot_from_backend(PersistentStore const& store, std::string_view room_id)
+        -> std::optional<RoomReloadSnapshot>;
+    [[nodiscard]] auto load_room_snapshot_from_sqlite(std::string const& path, std::string_view room_id)
+        -> std::optional<RoomReloadSnapshot>;
+    [[nodiscard]] auto load_room_snapshot_from_postgresql(std::string_view conninfo, std::string_view room_id)
+        -> std::optional<RoomReloadSnapshot>;
 
 } // namespace detail
 

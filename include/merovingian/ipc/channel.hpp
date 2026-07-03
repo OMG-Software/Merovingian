@@ -40,6 +40,17 @@ namespace merovingian::ipc
 // allocation a compromised worker can pin tightly bounded.
 inline constexpr std::uint32_t kIpcMaxFrameBytes{24U * 1024U * 1024U};
 
+// Computes the max_frame_bytes an IpcChannel needs to carry an
+// outbound_http_response/fed_response frame whose HTTP body is up to
+// max_response_body_bytes (see kIpcMaxFrameBytes above for why the frame
+// must be sized off the base64-encoded 4/3 expansion, not the raw body).
+// Adds 2 MiB of headroom for the surrounding JSON envelope and never returns
+// less than kIpcMaxFrameBytes, so callers passing the 16 MiB default get
+// exactly today's behaviour. Both the supervisor (main process) and the
+// worker must compute this the same way from the same config value, or the
+// smaller side silently drops the other's oversize frames.
+[[nodiscard]] auto frame_bytes_for_response_cap(std::uint64_t max_response_body_bytes) noexcept -> std::uint32_t;
+
 // Bidirectional encrypted IPC channel over an AF_UNIX socketpair fd.
 //
 // Security model:

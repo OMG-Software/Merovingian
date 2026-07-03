@@ -427,3 +427,103 @@ SCENARIO("Federation join state key parallelism changes are reloadable", "[confi
         }
     }
 }
+
+SCENARIO("Federation join response max size has a secure default", "[config][federation][join]")
+{
+    GIVEN("the default configuration")
+    {
+        auto const config = merovingian::config::Config{};
+
+        WHEN("the join response max size is parsed")
+        {
+            auto const join_response_max_size =
+                merovingian::config::parse_size_limit(config.security().federation.join_response_max_size);
+
+            THEN("the default is a bounded, valid byte size large enough for a huge room's send_join state")
+            {
+                REQUIRE(config.security().federation.join_response_max_size == "64MiB");
+                REQUIRE(join_response_max_size.valid);
+                REQUIRE(join_response_max_size.bytes == 64U * 1024U * 1024U);
+            }
+        }
+    }
+}
+
+SCENARIO("Federation join response max size is parsed from key-value config", "[config][federation][join][parser]")
+{
+    GIVEN("key-value configuration containing join response max size")
+    {
+        auto const input = std::string{"security.federation.join_response_max_size=128MiB\n"};
+
+        WHEN("the config is parsed")
+        {
+            auto const result = merovingian::config::parse_key_value_config(input);
+
+            THEN("the value is applied")
+            {
+                REQUIRE(result.findings.empty());
+                REQUIRE(result.config.security().federation.join_response_max_size == "128MiB");
+            }
+        }
+    }
+}
+
+SCENARIO("Federation join response max size rejects an unbounded byte size", "[config][federation][join][validation]")
+{
+    GIVEN("configuration with an invalid join response max size")
+    {
+        auto security = merovingian::config::SecurityConfig{};
+        security.federation.join_response_max_size = "not-a-size";
+        auto const config = merovingian::config::Config{
+            merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
+            merovingian::config::DatabaseConfig{},         security,
+            merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+        };
+
+        WHEN("the config is validated")
+        {
+            auto const findings = merovingian::config::validate(config);
+            auto const valid = merovingian::config::is_valid(config);
+
+            THEN("validation fails")
+            {
+                REQUIRE_FALSE(findings.empty());
+                REQUIRE_FALSE(valid);
+            }
+        }
+    }
+}
+
+SCENARIO("Federation join response max size changes require a restart", "[config][federation][join][reload]")
+{
+    GIVEN("current and next configs with different join response max sizes")
+    {
+        auto current_security = merovingian::config::SecurityConfig{};
+        auto next_security = merovingian::config::SecurityConfig{};
+        current_security.federation.join_response_max_size = "64MiB";
+        next_security.federation.join_response_max_size = "128MiB";
+
+        auto const current = merovingian::config::Config{
+            merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
+            merovingian::config::DatabaseConfig{},         current_security,
+            merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+        };
+        auto const next = merovingian::config::Config{
+            merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
+            merovingian::config::DatabaseConfig{},         next_security,
+            merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+        };
+
+        WHEN("a reload plan is built")
+        {
+            auto const plan = merovingian::config::build_reload_plan(current, next);
+
+            THEN("the change is marked restart_required because it also sizes the worker IPC frame cap")
+            {
+                REQUIRE(plan.changes().size() == 1U);
+                REQUIRE(plan.changes()[0].key == "security.federation.join_response_max_size");
+                REQUIRE(plan.changes()[0].policy == merovingian::config::ReloadPolicy::restart_required);
+            }
+        }
+    }
+}

@@ -215,6 +215,31 @@ struct HomeserverRuntime final
     // Non-null when federation.worker.enabled = true. Intercepts inbound
     // federation requests and forwards them to the out-of-process worker.
     std::unique_ptr<FederationProxy> federation_proxy{};
+    // Test-only: when non-null, every call site that changes this server's
+    // residency in a room (create_room, join_room, leave_room) appends
+    // room_id here, in addition to (not instead of) notifying
+    // federation_proxy. Exercising the real out-of-process worker end to end
+    // for every one of those call sites is impractical (see
+    // docs/architecture.md, "Federation worker room staleness" — it would
+    // require either a live network-reachable remote identity or weakening
+    // the federation worker's SSRF policy, neither of which is worth doing
+    // just to prove a notification fired). This lets tests instead assert
+    // the *design contract* directly and cheaply: every room-residency
+    // change must notify the worker, regardless of whether federation_proxy
+    // happens to be wired to a real worker in that test. Always nullptr in
+    // production; never read except to append to it.
+    //
+    // Lifetime hazard for callers: join_room's background member-fill task
+    // (see orphan_futures_) captures `runtime` by reference and may call
+    // notify_room_changed() — writing through this pointer — for as long as
+    // it is still in flight, and this runtime's destructor blocks until that
+    // task drains. A test that points this at a local std::vector declared
+    // AFTER `runtime` gets the wrong destruction order (the vector frees
+    // first) and the background task can write through a dangling pointer.
+    // Declare the target vector BEFORE the runtime/HomeserverRuntime
+    // variable so it destructs after runtime's blocking dtor has drained
+    // every orphaned future.
+    std::vector<std::string>* test_room_changed_log{nullptr};
     // Owned implementation of the runtime signing provider. Null when an
     // external provider (e.g. IpcEd25519Provider in the federation worker)
     // is supplied via RuntimeStartOptions::signing_override.

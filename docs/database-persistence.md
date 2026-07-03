@@ -127,6 +127,22 @@ remaining work before PostgreSQL-backed production operation.
   startup. Handlers check the table before processing and store the result after
   a successful send, allowing clients to safely retry `PUT /rooms/{roomId}/send`
   and `PUT /sendToDevice` requests.
+- `database::reload_room(store, room_id)` re-reads a single room's rows (room,
+  membership, invites, events, state, and the event-relation tables scoped to
+  that room's events) from the backing database and replaces this store's
+  in-memory copy of that room. Implemented for both SQLite and PostgreSQL with
+  parameterised, room_id-scoped queries (never a full-table re-read). A no-op
+  (returns `true`) for the `memory` backend. Used by the federation worker to
+  refresh its otherwise-stale `PersistentStore` snapshot — see
+  [architecture.md, "Federation worker room staleness"](architecture.md#federation-worker-room-staleness).
+- `database::reconstruct_event_relations(store)` re-derives every
+  `PersistentEvent::prev_event_ids`/`auth_event_ids`/`signatures` from the flat
+  `event_edges`/`event_auth`/`event_signatures` tables. Those fields are only
+  populated directly when an event is stored fresh within a process's own
+  lifetime (`store_event_with_state`); hydrating a store from disk previously
+  left them silently empty. Called at the end of both
+  `open_sqlite_persistent_store`/`open_postgresql_persistent_store` and as
+  part of `reload_room`'s snapshot merge. Idempotent.
 
 ## Security posture
 

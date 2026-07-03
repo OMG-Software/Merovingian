@@ -2258,3 +2258,273 @@ SCENARIO("repair_missing_state_entries selects the highest stream_ordering event
         }
     }
 }
+
+SCENARIO("reconstruct_event_relations populates PersistentEvent DAG fields from the flat relation tables",
+         "[database][persistent_store][reload]")
+{
+    GIVEN("a store whose events carry empty prev_event_ids/auth_event_ids/signatures — as they do straight off "
+          "disk, since the flat event_edges/event_auth/event_signatures tables are the only thing actually loaded "
+          "by hydration — but whose relation tables have the linking rows")
+    {
+        auto store = merovingian::database::PersistentStore{};
+        store.open = true;
+        store.backend = merovingian::database::PersistentStoreBackend::memory;
+        store.events.push_back({.event_id = "$child:example.org",
+                                .room_id = "!r:example.org",
+                                .sender_user_id = "@alice:example.org",
+                                .json = R"({"type":"m.room.member"})",
+                                .depth = 2U,
+                                .stream_ordering = 2U});
+        store.event_edges.push_back({"$child:example.org", "$parent:example.org"});
+        store.event_auth.push_back({"$child:example.org", "$create:example.org"});
+        store.event_signatures.push_back({"$child:example.org", "example.org", "ed25519:1", "sig-base64"});
+
+        WHEN("reconstruct_event_relations is called")
+        {
+            merovingian::database::reconstruct_event_relations(store);
+
+            THEN("the event's DAG fields are populated from the matching relation rows")
+            {
+                REQUIRE(store.events.size() == 1U);
+                REQUIRE(store.events.front().prev_event_ids == std::vector<std::string>{"$parent:example.org"});
+                REQUIRE(store.events.front().auth_event_ids == std::vector<std::string>{"$create:example.org"});
+                REQUIRE(store.events.front().signatures.size() == 1U);
+                REQUIRE(store.events.front().signatures.front().server_name == "example.org");
+                REQUIRE(store.events.front().signatures.front().signature == "sig-base64");
+            }
+        }
+    }
+
+    GIVEN("a store whose events already carry populated DAG fields (as store_event_with_state sets them fresh)")
+    {
+        auto store = merovingian::database::PersistentStore{};
+        store.open = true;
+        store.backend = merovingian::database::PersistentStoreBackend::memory;
+        store.events.push_back({.event_id = "$child:example.org",
+                                .room_id = "!r:example.org",
+                                .sender_user_id = "@alice:example.org",
+                                .json = R"({"type":"m.room.member"})",
+                                .depth = 2U,
+                                .stream_ordering = 2U,
+                                .prev_event_ids = {"$parent:example.org"}});
+        store.event_edges.push_back({"$child:example.org", "$parent:example.org"});
+
+        WHEN("reconstruct_event_relations is called")
+        {
+            merovingian::database::reconstruct_event_relations(store);
+
+            THEN("it is idempotent — the field still reflects exactly the relation table, not a duplicate")
+            {
+                REQUIRE(store.events.front().prev_event_ids == std::vector<std::string>{"$parent:example.org"});
+            }
+        }
+    }
+}
+
+SCENARIO("open_sqlite_persistent_store reconstructs event DAG relations on hydration",
+         "[database][sqlite][reload][regression]")
+{
+    GIVEN("a SQLite store with an event that has prev_events, auth_events, and a signature")
+    {
+        auto const sqlite_path = unique_sqlite_path();
+        std::filesystem::remove(sqlite_path);
+        auto opened = merovingian::database::open_sqlite_persistent_store(sqlite_path.string());
+        REQUIRE(opened.ok);
+        auto& store = opened.store;
+
+        REQUIRE(merovingian::database::store_room(store, {"!r:example.org", "@alice:example.org"}));
+        REQUIRE(
+            merovingian::database::store_event(store, {.event_id = "$child:example.org",
+                                                       .room_id = "!r:example.org",
+                                                       .sender_user_id = "@alice:example.org",
+                                                       .json = R"({"type":"m.room.member"})",
+                                                       .depth = 2U,
+                                                       .stream_ordering = 1U,
+                                                       .prev_event_ids = {"$parent:example.org"},
+                                                       .auth_event_ids = {"$create:example.org"},
+                                                       .signatures = {{"example.org", "ed25519:1", "sig-base64"}}}));
+
+        WHEN("the store is closed and reopened — the only way a fresh process (e.g. the federation worker) ever "
+             "sees this data")
+        {
+            auto reopened = merovingian::database::open_sqlite_persistent_store(sqlite_path.string());
+            REQUIRE(reopened.ok);
+            auto const& event_it =
+                std::ranges::find_if(reopened.store.events, [](merovingian::database::PersistentEvent const& e) {
+                    return e.event_id == "$child:example.org";
+                });
+
+            THEN("prev_event_ids, auth_event_ids, and signatures are populated, not silently empty")
+            {
+                REQUIRE(event_it != reopened.store.events.end());
+                REQUIRE(event_it->prev_event_ids == std::vector<std::string>{"$parent:example.org"});
+                REQUIRE(event_it->auth_event_ids == std::vector<std::string>{"$create:example.org"});
+                REQUIRE(event_it->signatures.size() == 1U);
+                REQUIRE(event_it->signatures.front().signature == "sig-base64");
+            }
+        }
+    }
+}
+
+SCENARIO("reload_room picks up a room committed by a different store handle on the same database",
+         "[database][sqlite][reload][regression]")
+{
+    GIVEN("two independent store handles open on the same SQLite file — modelling the federation worker's "
+          "PersistentStore (handle A, hydrated once at worker startup) and the main process's PersistentStore "
+          "(handle B, which keeps writing after that point)")
+    {
+        auto const sqlite_path = unique_sqlite_path();
+        std::filesystem::remove(sqlite_path);
+        auto opened_a = merovingian::database::open_sqlite_persistent_store(sqlite_path.string());
+        REQUIRE(opened_a.ok);
+        auto& store_a = opened_a.store;
+
+        auto opened_b = merovingian::database::open_sqlite_persistent_store(sqlite_path.string());
+        REQUIRE(opened_b.ok);
+        auto& store_b = opened_b.store;
+
+        WHEN("a room, membership, state event, and event with relations are committed through handle B only")
+        {
+            REQUIRE(merovingian::database::store_room(store_b, {"!new:example.org", "@james:example.org"}));
+            REQUIRE(merovingian::database::store_membership(store_b, {"!new:example.org", "@james:example.org"}) ==
+                    merovingian::database::MembershipStoreResult::stored);
+            REQUIRE(merovingian::database::store_event_with_state(
+                store_b,
+                {.event_id = "$create:example.org",
+                 .room_id = "!new:example.org",
+                 .sender_user_id = "@james:example.org",
+                 .json = R"({"type":"m.room.create","state_key":""})",
+                 .depth = 1U,
+                 .stream_ordering = 1U},
+                merovingian::database::PersistentStateEvent{"!new:example.org", "m.room.create", "",
+                                                            "$create:example.org"}));
+            REQUIRE(merovingian::database::store_event_with_state(
+                store_b,
+                {.event_id = "$member:example.org",
+                 .room_id = "!new:example.org",
+                 .sender_user_id = "@james:example.org",
+                 .json = R"({"type":"m.room.member","state_key":"@james:example.org"})",
+                 .depth = 2U,
+                 .stream_ordering = 2U,
+                 .prev_event_ids = {"$create:example.org"},
+                 .auth_event_ids = {"$create:example.org"}},
+                merovingian::database::PersistentStateEvent{"!new:example.org", "m.room.member", "@james:example.org",
+                                                            "$member:example.org"}));
+
+            THEN("handle A, which never saw any of this, has no knowledge of the room before reloading")
+            {
+                REQUIRE(std::ranges::none_of(store_a.rooms, [](merovingian::database::PersistentRoom const& r) {
+                    return r.room_id == "!new:example.org";
+                }));
+            }
+
+            AND_WHEN("reload_room is called on handle A for that room_id")
+            {
+                auto const reloaded = merovingian::database::reload_room(store_a, "!new:example.org");
+
+                THEN("it succeeds and handle A now has the room, membership, state, and event with its DAG "
+                     "relations reconstructed")
+                {
+                    REQUIRE(reloaded);
+                    auto const room_it =
+                        std::ranges::find_if(store_a.rooms, [](merovingian::database::PersistentRoom const& r) {
+                            return r.room_id == "!new:example.org";
+                        });
+                    REQUIRE(room_it != store_a.rooms.end());
+                    REQUIRE(room_it->creator_user_id == "@james:example.org");
+
+                    auto const membership_it = std::ranges::find_if(
+                        store_a.memberships, [](merovingian::database::PersistentMembership const& m) {
+                            return m.room_id == "!new:example.org" && m.user_id == "@james:example.org";
+                        });
+                    REQUIRE(membership_it != store_a.memberships.end());
+                    REQUIRE(membership_it->membership == "join");
+
+                    REQUIRE(
+                        std::ranges::count_if(store_a.state, [](merovingian::database::PersistentStateEvent const& s) {
+                            return s.room_id == "!new:example.org";
+                        }) == 2U);
+
+                    auto const member_event_it =
+                        std::ranges::find_if(store_a.events, [](merovingian::database::PersistentEvent const& e) {
+                            return e.event_id == "$member:example.org";
+                        });
+                    REQUIRE(member_event_it != store_a.events.end());
+                    REQUIRE(member_event_it->prev_event_ids == std::vector<std::string>{"$create:example.org"});
+                    REQUIRE(member_event_it->auth_event_ids == std::vector<std::string>{"$create:example.org"});
+                }
+            }
+        }
+    }
+}
+
+SCENARIO("reload_room does not leak another room's events into the relation tables it scopes",
+         "[database][sqlite][reload]")
+{
+    GIVEN("two rooms in the same database, each with their own events")
+    {
+        auto const sqlite_path = unique_sqlite_path();
+        std::filesystem::remove(sqlite_path);
+        auto opened = merovingian::database::open_sqlite_persistent_store(sqlite_path.string());
+        REQUIRE(opened.ok);
+        auto& store = opened.store;
+
+        REQUIRE(merovingian::database::store_room(store, {"!a:example.org", "@alice:example.org"}));
+        REQUIRE(merovingian::database::store_event(store, {.event_id = "$a1:example.org",
+                                                           .room_id = "!a:example.org",
+                                                           .sender_user_id = "@alice:example.org",
+                                                           .json = R"({"type":"m.room.create"})",
+                                                           .depth = 1U,
+                                                           .stream_ordering = 1U}));
+        REQUIRE(merovingian::database::store_room(store, {"!b:example.org", "@bob:example.org"}));
+        REQUIRE(merovingian::database::store_event(store, {.event_id = "$b1:example.org",
+                                                           .room_id = "!b:example.org",
+                                                           .sender_user_id = "@bob:example.org",
+                                                           .json = R"({"type":"m.room.create"})",
+                                                           .depth = 1U,
+                                                           .stream_ordering = 2U,
+                                                           .prev_event_ids = {"$a1:example.org"}}));
+
+        WHEN("room !a is reloaded")
+        {
+            auto const reloaded = merovingian::database::reload_room(store, "!a:example.org");
+
+            THEN("room !b's event is untouched and still present")
+            {
+                REQUIRE(reloaded);
+                REQUIRE(std::ranges::any_of(store.events, [](merovingian::database::PersistentEvent const& e) {
+                    return e.event_id == "$b1:example.org";
+                }));
+            }
+        }
+    }
+}
+
+SCENARIO("reload_room clears a room's rows when it no longer exists in the database", "[database][sqlite][reload]")
+{
+    GIVEN("a store handle that knows about a room another handle then deletes the membership rows for")
+    {
+        auto const sqlite_path = unique_sqlite_path();
+        std::filesystem::remove(sqlite_path);
+        auto opened_a = merovingian::database::open_sqlite_persistent_store(sqlite_path.string());
+        REQUIRE(opened_a.ok);
+        auto& store_a = opened_a.store;
+        REQUIRE(merovingian::database::store_room(store_a, {"!gone:example.org", "@alice:example.org"}));
+
+        auto opened_b = merovingian::database::open_sqlite_persistent_store(sqlite_path.string());
+        REQUIRE(opened_b.ok);
+
+        WHEN("reload_room is called for a room_id that was never persisted at all")
+        {
+            auto const reloaded = merovingian::database::reload_room(opened_b.store, "!never-existed:example.org");
+
+            THEN("it succeeds (a missing room is not a failure) and adds nothing")
+            {
+                REQUIRE(reloaded);
+                REQUIRE(std::ranges::none_of(opened_b.store.rooms, [](merovingian::database::PersistentRoom const& r) {
+                    return r.room_id == "!never-existed:example.org";
+                }));
+            }
+        }
+    }
+}

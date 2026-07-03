@@ -1071,6 +1071,24 @@ See `docs/threat-model.md` for the partial-state trade-off this implies.
 `join_race_deadline` accepts the same positive bounded duration suffixes
 (`s`, `m`) as `join_timeout`; `0s` is rejected.
 
+### send_join response size cap
+
+A `send_join` response embeds the room's full current state — one
+`m.room.member` event per member plus the auth chain — as a single HTTP
+response body. For a genuinely large room (tens of thousands of members) this
+routinely exceeds the general 16 MiB `http::OutboundRequest` response cap
+that every other federation call uses, and the call was rejected outright
+with `502 send_join failed: response_too_large` even with `join_timeout`
+giving it enough wall-clock time to complete:
+
+```text
+security.federation.join_response_max_size=64MiB
+```
+
+| Key | Type | Default | Reload | Notes |
+|-----|------|---------|--------|-------|
+| `security.federation.join_response_max_size` | byte size | `64MiB` | **requires restart** | Response body cap applied specifically to `make_join`/`send_join`, overriding the 16 MiB default. Also sizes the federation-worker IPC channel's frame budget (`ipc::frame_bytes_for_response_cap`), which is fixed for the lifetime of the worker process spawned at startup — raising this value takes effect only after both the main process and the worker restart. Must be a positive bounded byte size; accepts the same suffixes (`KiB`, `MiB`, `GiB`) as `max_transaction_size`. |
+
 ## Federation worker (out-of-process)
 
 When a user joins a large federated room, the inbound PDU verification, state

@@ -7,6 +7,7 @@
 #include "merovingian/events/event_signer.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/ipc/channel.hpp"
 #include "merovingian/ipc/federation_ipc_frames.hpp"
 #include "merovingian/observability/logger.hpp"
 
@@ -344,12 +345,21 @@ WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRunt
     , worker_path_{std::move(worker_path)}
     , config_path_{std::move(config_path)}
 {
+    // Both sides of the worker IPC channel must agree on max_frame_bytes (see
+    // ipc::frame_bytes_for_response_cap); this side derives it from the same
+    // config the worker itself parses from --config at spawn time.
+    auto const join_response_max_size =
+        config::parse_size_limit(runtime_.config.security().federation.join_response_max_size);
+    auto const max_frame_bytes =
+        ipc::frame_bytes_for_response_cap(join_response_max_size.valid ? join_response_max_size.bytes : 0U);
+
     auto const count = cfg_.shards > 0U ? cfg_.shards : 1U;
     workers_.reserve(count);
     for (auto i = std::uint32_t{0U}; i < count; ++i)
     {
-        auto supervisor = std::make_unique<WorkerSupervisor>(worker_path_, config_path_, cfg_.request_timeout_seconds,
-                                                             i, runtime_.config.security().secrets.master_key_file);
+        auto supervisor =
+            std::make_unique<WorkerSupervisor>(worker_path_, config_path_, cfg_.request_timeout_seconds, i,
+                                               runtime_.config.security().secrets.master_key_file, max_frame_bytes);
 
         // Per-worker request handler: the lambda must respond on the channel
         // that received the request, so capture the supervisor reference.
@@ -446,6 +456,21 @@ auto WorkerPool::handle(LocalHttpRequest const& request, std::string_view room_i
     }
 
     return ipc::deserialize_fed_response(*reply);
+}
+
+auto WorkerPool::notify_room_changed(std::string_view room_id) -> void
+{
+    auto const index = shard_for(room_id);
+    if (index >= workers_.size())
+    {
+        return;
+    }
+    auto const ch = workers_[index]->channel_snapshot();
+    if (!ch || !ch->healthy())
+    {
+        return;
+    }
+    ch->send_notification(ipc::serialize_room_sync_notification(room_id));
 }
 
 auto WorkerPool::healthy() const noexcept -> bool

@@ -16,6 +16,8 @@
 #include <optional>
 #include <string>
 #include <tuple>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -919,6 +921,142 @@ namespace
             return transaction.transaction_id == transaction_id;
         });
     store.federation_transactions.erase(begin, end);
+    return true;
+}
+
+auto reconstruct_event_relations(PersistentStore& store) -> void
+{
+    auto index_by_event_id = std::unordered_map<std::string, std::size_t>{};
+    index_by_event_id.reserve(store.events.size());
+    for (auto i = std::size_t{0U}; i < store.events.size(); ++i)
+    {
+        auto& event = store.events[i];
+        event.prev_event_ids.clear();
+        event.auth_event_ids.clear();
+        event.signatures.clear();
+        index_by_event_id.emplace(event.event_id, i);
+    }
+    for (auto const& edge : store.event_edges)
+    {
+        auto const it = index_by_event_id.find(edge.event_id);
+        if (it != index_by_event_id.end())
+        {
+            store.events[it->second].prev_event_ids.push_back(edge.prev_event_id);
+        }
+    }
+    for (auto const& auth : store.event_auth)
+    {
+        auto const it = index_by_event_id.find(auth.event_id);
+        if (it != index_by_event_id.end())
+        {
+            store.events[it->second].auth_event_ids.push_back(auth.auth_event_id);
+        }
+    }
+    for (auto const& signature : store.event_signatures)
+    {
+        auto const it = index_by_event_id.find(signature.event_id);
+        if (it != index_by_event_id.end())
+        {
+            store.events[it->second].signatures.push_back(
+                {signature.server_name, signature.key_id, signature.signature});
+        }
+    }
+}
+
+[[nodiscard]] auto reload_room(PersistentStore& store, std::string_view room_id) -> bool
+{
+    if (store.backend == PersistentStoreBackend::memory)
+    {
+        return true;
+    }
+    auto snapshot = detail::load_room_snapshot_from_backend(store, room_id);
+    if (!snapshot.has_value())
+    {
+        log_diagnostic("room.reload_failed",
+                       {
+                           {"room_id", std::string{room_id}, false}
+        },
+                       observability::LogEventSeverity::warning);
+        return false;
+    }
+
+    // Replace this room's slice of the store: drop every existing row keyed
+    // to room_id (rooms/memberships/invites/state and this room's own
+    // events), plus the relation-table rows keyed to those event ids, then
+    // insert the freshly-read snapshot. Erasing by event id (not just
+    // room_id) before reinserting is what keeps event_edges/event_auth/
+    // event_signatures from accumulating duplicates across repeated reloads.
+    auto stale_event_ids = std::unordered_set<std::string>{};
+    for (auto const& event : store.events)
+    {
+        if (event.room_id == room_id)
+        {
+            stale_event_ids.insert(event.event_id);
+        }
+    }
+    for (auto const& event : snapshot->events)
+    {
+        stale_event_ids.insert(event.event_id);
+    }
+
+    std::erase_if(store.rooms, [&](PersistentRoom const& r) {
+        return r.room_id == room_id;
+    });
+    std::erase_if(store.memberships, [&](PersistentMembership const& m) {
+        return m.room_id == room_id;
+    });
+    std::erase_if(store.invites, [&](PersistentInvite const& i) {
+        return i.room_id == room_id;
+    });
+    std::erase_if(store.state, [&](PersistentStateEvent const& s) {
+        return s.room_id == room_id;
+    });
+    std::erase_if(store.events, [&](PersistentEvent const& e) {
+        return e.room_id == room_id;
+    });
+    std::erase_if(store.event_edges, [&](PersistentEventEdge const& e) {
+        return stale_event_ids.contains(e.event_id);
+    });
+    std::erase_if(store.event_auth, [&](PersistentEventAuth const& e) {
+        return stale_event_ids.contains(e.event_id);
+    });
+    std::erase_if(store.event_signatures, [&](PersistentEventSignature const& e) {
+        return stale_event_ids.contains(e.event_id);
+    });
+
+    if (snapshot->room.has_value())
+    {
+        store.rooms.push_back(std::move(*snapshot->room));
+    }
+    for (auto& membership : snapshot->memberships)
+    {
+        store.memberships.push_back(std::move(membership));
+    }
+    for (auto& invite : snapshot->invites)
+    {
+        store.invites.push_back(std::move(invite));
+    }
+    for (auto& state : snapshot->state)
+    {
+        store.state.push_back(std::move(state));
+    }
+    for (auto& event : snapshot->events)
+    {
+        for (auto const& prev_id : event.prev_event_ids)
+        {
+            store.event_edges.push_back({event.event_id, prev_id});
+        }
+        for (auto const& auth_id : event.auth_event_ids)
+        {
+            store.event_auth.push_back({event.event_id, auth_id});
+        }
+        for (auto const& signature : event.signatures)
+        {
+            store.event_signatures.push_back(
+                {event.event_id, signature.server_name, signature.key_id, signature.signature});
+        }
+        store.events.push_back(std::move(event));
+    }
     return true;
 }
 
