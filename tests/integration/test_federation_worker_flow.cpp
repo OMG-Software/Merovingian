@@ -254,6 +254,52 @@ SCENARIO("Room-scoped federation requests are routed to the correct shard",
                 REQUIRE(shard_b < config.federation_worker().shards);
             }
         }
+
+        WHEN("a request-derived shard is compared against notify_room_changed()'s own shard for the same room")
+        {
+            // notify_room_changed() (room_service.cpp) always hashes the plain,
+            // already-decoded room_id — it never touches a URL. The federation
+            // proxy instead hashes whatever federation_worker_room_id_from_request()
+            // extracts from the live HTTP request. If those two ever disagree for
+            // the same logical room, the room-sync notification and the inbound
+            // request it's meant to serve land on different shards: the serving
+            // shard's local store never learns the room exists, and every
+            // room-scoped request against it 404s forever — indistinguishable
+            // from real staleness (see docs/architecture.md, "Federation worker
+            // room staleness") except that retries never heal it. This is the
+            // actual invariant that broke in production; "lands on *a* valid
+            // shard" (above) does not catch it.
+            auto pool = WorkerPool{config.federation_worker(), runtime, std::string{worker_binary_path()},
+                                   config_path.string()};
+            REQUIRE(wait_for_worker(pool, std::chrono::seconds{10}));
+
+            auto const room_id = std::string{"!consistency-check:test.example.org"};
+            auto const notify_side_shard = pool.shard_for(room_id);
+
+            THEN("a plain (unencoded) request path resolves to the same room ID (and therefore shard) "
+                 "notify_room_changed() would use")
+            {
+                auto const extracted = federation_worker_room_id_from_request(make_fed_request(
+                    "GET", "/_matrix/federation/v1/make_join/" + room_id + "/@user:remote.example?ver=12"));
+                // Assert on the extracted string itself, not just the resulting
+                // shard index: with only a handful of shards, two different
+                // strings can coincidentally hash to the same bucket, which
+                // would let a real mismatch slip through a shard-only check.
+                REQUIRE(extracted == room_id);
+                REQUIRE(pool.shard_for(extracted) == notify_side_shard);
+            }
+
+            AND_THEN("a real client's percent-encoded request path also resolves to the same room ID and shard")
+            {
+                // '!' -> %21, ':' -> %3A — exactly how Synapse encodes the room
+                // ID in a real make_join path. This is the case that broke.
+                auto const encoded_room_id = std::string{"%21consistency-check%3Atest.example.org"};
+                auto const extracted = federation_worker_room_id_from_request(make_fed_request(
+                    "GET", "/_matrix/federation/v1/make_join/" + encoded_room_id + "/@user:remote.example?ver=12"));
+                REQUIRE(extracted == room_id);
+                REQUIRE(pool.shard_for(extracted) == notify_side_shard);
+            }
+        }
     }
 }
 
