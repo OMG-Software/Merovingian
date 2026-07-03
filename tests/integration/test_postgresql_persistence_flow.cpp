@@ -710,7 +710,7 @@ SCENARIO("PostgreSQL reload_room picks up a room committed by a different store 
                 {member_event_id,
                  room_id,
                  user_id,
-                 R"({"type":"m.room.member","state_key":"..."})",
+                 R"({"type":"m.room.member","state_key":")" + user_id + R"("})",
                  2U,
                  2U,
                  {create_event_id},
