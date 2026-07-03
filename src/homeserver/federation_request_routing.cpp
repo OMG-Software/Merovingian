@@ -3,6 +3,8 @@
 
 #include "merovingian/homeserver/federation_request_routing.hpp"
 
+#include "merovingian/core/query_params.hpp"
+
 #include <cstdint>
 #include <string_view>
 #include <vector>
@@ -92,7 +94,17 @@ namespace
             "/_matrix/federation/v1/send_leave/",
             "/_matrix/federation/v1/make_knock/",
             "/_matrix/federation/v1/send_knock/",
-            "/_matrix/federation/v1/query/directory/",
+            // Deliberately no entry for /_matrix/federation/v1/query/directory:
+            // per spec its room_alias is a query parameter, not a path segment
+            // (GET .../query/directory?room_alias=...), so a path-prefix entry
+            // here can never match a real request — it would be dead code, not
+            // a fix. Hashing the alias wouldn't be correct anyway: it's an
+            // unrelated string to the room_id notify_room_changed() partitions
+            // by, and reload_room() doesn't sync room_aliases per-room today.
+            // Tracked as a follow-up requiring a real design decision, not a
+            // one-line patch (see docs/architecture.md, "Federation worker
+            // room staleness"). Until then this endpoint always routes to
+            // shard 0, same as any other non-room request.
             // v2 endpoints — required for correct shard routing; without these,
             // v2 requests fall through with no room_id and land on shard 0
             // regardless of which shard owns the room.
@@ -182,7 +194,15 @@ namespace
                 auto const remainder = target.substr(prefix.size());
                 // Stop at next path separator or query string.
                 auto const end = remainder.find_first_of("/?");
-                return std::string{remainder.substr(0U, end)};
+                // Room IDs contain '!' (and aliases '#'), which HTTP clients
+                // percent-encode as a path segment (e.g. "%21room:example.com").
+                // Decode before hashing for shard routing, otherwise this room
+                // ID never matches the plain-text room_id used by
+                // notify_room_changed()/room_service, and the request lands on
+                // a shard that was never synced for this room — every
+                // room-scoped federation request (make_join, send_join, ...)
+                // 404s even though the room exists locally.
+                return core::percent_decode_path_component(remainder.substr(0U, end));
             }
         }
         return {};

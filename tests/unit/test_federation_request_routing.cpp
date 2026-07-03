@@ -5,6 +5,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <string>
+#include <vector>
 
 namespace
 {
@@ -146,13 +147,92 @@ SCENARIO("Room ID is extracted from room-scoped federation path endpoints", "[fe
                 REQUIRE(federation_worker_room_id_from_request(request) == room_id);
             }
         }
+    }
+}
 
-        WHEN("the target is /_matrix/federation/v1/query/directory/{roomAlias}")
+SCENARIO("Room ID is percent-decoded for correct shard routing", "[federation][routing][room-id][shard]")
+{
+    GIVEN("a room ID containing '!' as sent percent-encoded in a real federation path")
+    {
+        // Real clients (Synapse included) percent-encode '!' as a path segment.
+        // notify_room_changed() always uses the plain decoded form (room_service.cpp
+        // never touches a URL) — every endpoint below must resolve to the same
+        // string or its shard-routing hash disagrees with the notification's,
+        // reproducing the make_join 404 this scenario guards against.
+        auto const decoded_room_id = std::string{"!room:example.com"};
+        auto const encoded_room_id = std::string{"%21room%3Aexample.com"};
+
+        WHEN("the target is a single-room-segment v1 endpoint")
         {
-            auto const request = make_request("/_matrix/federation/v1/query/directory/%23alias%3Aexample.com");
-            THEN("the alias is treated as the room ID for routing")
+            auto const prefixes = std::vector<std::string>{
+                "/_matrix/federation/v1/state/",
+                "/_matrix/federation/v1/state_ids/",
+                "/_matrix/federation/v1/event_auth/",
+                "/_matrix/federation/v1/backfill/",
+                "/_matrix/federation/v1/make_join/",
+                "/_matrix/federation/v1/send_join/",
+                "/_matrix/federation/v1/make_leave/",
+                "/_matrix/federation/v1/send_leave/",
+                "/_matrix/federation/v1/make_knock/",
+                "/_matrix/federation/v1/send_knock/",
+                "/_matrix/federation/v1/get_missing_events/",
+            };
+
+            THEN("every prefix decodes the percent-encoded room ID to the plain-text form")
             {
-                REQUIRE_FALSE(federation_worker_room_id_from_request(request).empty());
+                for (auto const& prefix : prefixes)
+                {
+                    INFO("prefix: " << prefix);
+                    auto const request = make_request(prefix + encoded_room_id);
+                    REQUIRE(federation_worker_room_id_from_request(request) == decoded_room_id);
+                }
+            }
+        }
+
+        WHEN("the target is a two-segment v1 endpoint (room ID then event ID)")
+        {
+            auto const prefixes = std::vector<std::string>{
+                "/_matrix/federation/v1/invite/",
+                "/_matrix/federation/v1/invite2/",
+            };
+
+            THEN("the room ID segment alone is decoded")
+            {
+                for (auto const& prefix : prefixes)
+                {
+                    INFO("prefix: " << prefix);
+                    auto const request = make_request(prefix + encoded_room_id + "/$event");
+                    REQUIRE(federation_worker_room_id_from_request(request) == decoded_room_id);
+                }
+            }
+        }
+
+        WHEN("the target is a v2 endpoint")
+        {
+            auto const prefixes = std::vector<std::string>{
+                "/_matrix/federation/v2/invite/",     "/_matrix/federation/v2/send_join/",
+                "/_matrix/federation/v2/send_leave/", "/_matrix/federation/v2/make_knock/",
+                "/_matrix/federation/v2/send_knock/",
+            };
+
+            THEN("every v2 prefix decodes the percent-encoded room ID")
+            {
+                for (auto const& prefix : prefixes)
+                {
+                    INFO("prefix: " << prefix);
+                    auto const request = make_request(prefix + encoded_room_id + "/$eventId");
+                    REQUIRE(federation_worker_room_id_from_request(request) == decoded_room_id);
+                }
+            }
+        }
+
+        WHEN("the real request also carries a trailing user ID and query string, as make_join does")
+        {
+            auto const request =
+                make_request("/_matrix/federation/v1/make_join/" + encoded_room_id + "/@user:remote.example?ver=12");
+            THEN("the room ID is still decoded correctly, unaffected by what follows it")
+            {
+                REQUIRE(federation_worker_room_id_from_request(request) == decoded_room_id);
             }
         }
     }
@@ -358,6 +438,22 @@ SCENARIO("Non-room federation endpoints return an empty room ID", "[federation][
         {
             auto const request = make_request("/_matrix/federation/v1/query/directory");
             THEN("no room ID is extracted")
+            {
+                REQUIRE(federation_worker_room_id_from_request(request).empty());
+            }
+        }
+
+        WHEN("the target is /_matrix/federation/v1/query/directory?room_alias=... (the real spec shape)")
+        {
+            // room_alias is a query parameter here, not a path segment (unlike
+            // every other room-scoped endpoint above), so it is deliberately
+            // not extracted for shard routing — see docs/architecture.md,
+            // "Federation worker room staleness" / known gap. Pinning empty
+            // here documents the current (still-broken-for-shards>1) behaviour
+            // so a future change to this routing is a visible, deliberate diff.
+            auto const request =
+                make_request("/_matrix/federation/v1/query/directory?room_alias=%23alias%3Aexample.com");
+            THEN("no room ID is extracted; the request always routes to shard 0")
             {
                 REQUIRE(federation_worker_room_id_from_request(request).empty());
             }
