@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.10.15
+Version:        0.10.16
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -97,6 +97,8 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Fri Jul 03 2026 James Chapman <claude@ping.me.uk> - 0.10.16-1
+- fix(sync,federation): leave_room's repeat-leave idempotent path now refreshes stream_ordering and re-notifies sync/federation on every call, not just the first; previously a client whose earlier leave was stuck under the pre-0.10.15 bug would retry /leave forever without ever healing, because the idempotent no-op path skipped the stream_ordering refresh entirely
 * Fri Jul 03 2026 James Chapman <claude@ping.me.uk> - 0.10.15-1
 - fix(database): update_membership() now persists stream_ordering on every membership transition (join->leave, invite, kick, ban, rejoin), not just on first insert; previously an existing row's stream_ordering stayed frozen at its original insert value forever, so any since-token comparison against it could never see a later transition as recent
 - fix(sync): report a room in the /sync `leave` block whenever the caller's own membership changed to leave/ban/kick since the `since` token, regardless of the `include_leave` filter; previously any leave/kick/ban was silently omitted from incremental sync unless the client opted in with `include_leave: true` (which most clients never set), so `/leave` returned 200 but the room never disappeared from the client's room list

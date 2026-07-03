@@ -1249,6 +1249,68 @@ SCENARIO("leave_room notifies the federation worker when a local user leaves",
     }
 }
 
+// Reproduces a real server's logs: a client's earlier /leave landed server-side
+// (membership flipped to "leave") but the stream_ordering bookkeeping bug fixed
+// in 0.10.15 meant /sync never advanced, so the client never learned it had left
+// and retries /leave. Per spec this repeat call is an idempotent no-op on
+// `membership`, but the server must still treat it as a signal that the caller's
+// view is stale and refresh the row's stream_ordering / notifications — otherwise
+// a room a client is stuck seeing as joined never heals, even across a restart
+// onto a fixed build. See docs/architecture.md, "Federation worker room staleness".
+SCENARIO("leave_room refreshes stream_ordering and re-notifies on a repeat leave",
+         "[homeserver][rooms][sync][federation-worker][regression]")
+{
+    GIVEN("a room bob has already left once")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const ctx = make_two_user_room(runtime);
+
+        auto const first_leave = merovingian::homeserver::leave_room(runtime, ctx.bob_token, ctx.room_id);
+        REQUIRE(first_leave.ok);
+
+        auto const membership_after_first = std::ranges::find_if(
+            runtime.database.persistent_store.memberships, [&](merovingian::database::PersistentMembership const& m) {
+                return m.room_id == ctx.room_id && m.user_id == ctx.bob_id;
+            });
+        REQUIRE(membership_after_first != runtime.database.persistent_store.memberships.end());
+        REQUIRE(membership_after_first->membership == "leave");
+        auto const stream_ordering_after_first = membership_after_first->stream_ordering;
+
+        auto changed_rooms = std::vector<std::string>{};
+        runtime.test_room_changed_log = &changed_rooms;
+
+        WHEN("bob calls leave again, believing he is still joined")
+        {
+            auto const second_leave = merovingian::homeserver::leave_room(runtime, ctx.bob_token, ctx.room_id);
+
+            THEN("the call still succeeds idempotently")
+            {
+                REQUIRE(second_leave.ok);
+            }
+
+            THEN("the membership row's stream_ordering advances past the first leave")
+            {
+                auto const membership_after_second =
+                    std::ranges::find_if(runtime.database.persistent_store.memberships,
+                                         [&](merovingian::database::PersistentMembership const& m) {
+                                             return m.room_id == ctx.room_id && m.user_id == ctx.bob_id;
+                                         });
+                REQUIRE(membership_after_second != runtime.database.persistent_store.memberships.end());
+                REQUIRE(membership_after_second->membership == "leave");
+                REQUIRE(membership_after_second->stream_ordering > stream_ordering_after_first);
+            }
+
+            THEN("the federation worker is notified again, not just on the first leave")
+            {
+                REQUIRE(changed_rooms == std::vector<std::string>{ctx.room_id});
+            }
+        }
+    }
+}
+
 SCENARIO("invite_user notifies the federation worker when an existing room gains an invite",
          "[homeserver][rooms][federation-worker][regression]")
 {

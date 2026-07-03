@@ -1,3 +1,8 @@
+## 0.10.16
+
+### Fixed
+- **fix(sync,federation): a repeat `/leave` call on a room the caller already left server-side never healed a client stuck seeing it as joined:** `leave_room`'s idempotent "already left" branch (hit when the membership row is not `"join"`/`"invite"`) returned `200` without calling `persist_membership_transition`, so it never advanced `stream_ordering` or notified `sync_notifier`/the federation worker. Reproduced from a real server's logs, right after upgrading to 0.10.15: a client's *earlier* leave had flipped `membership` to `"leave"` correctly, but under the pre-0.10.15 bug its `stream_ordering` stayed frozen, so `/sync` never told the client it had left; the client, still believing it was joined, retried `/leave` — and that retry hit the idempotent no-op path, which (correctly, per spec, on `membership` alone) did nothing further, leaving the row permanently stuck even across the restart onto the fixed build. A repeat `/leave` call is itself evidence the caller's view is stale, so the idempotent branch now also allocates a fresh `stream_ordering`, persists it via `store_or_update_membership` (membership value unchanged), publishes to `sync_notifier`, and calls `notify_room_changed()` — self-healing rows left in this state by the 0.10.15-era bug without requiring a manual database repair. New regression scenario in `tests/unit/test_homeserver_room_service.cpp` pins that a second `leave_room` call advances `stream_ordering` past the first and re-notifies the federation worker.
+
 ## 0.10.15
 
 ### Fixed
