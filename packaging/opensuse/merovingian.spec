@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.10.14
+Version:        0.10.15
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -112,6 +112,10 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Fri Jul 03 2026 James Chapman <claude@ping.me.uk> - 0.10.15-1
+- fix(database): update_membership() now persists stream_ordering on every membership transition (join->leave, invite, kick, ban, rejoin), not just on first insert; previously an existing row's stream_ordering stayed frozen at its original insert value forever, so any since-token comparison against it could never see a later transition as recent
+- fix(sync): report a room in the /sync `leave` block whenever the caller's own membership changed to leave/ban/kick since the `since` token, regardless of the `include_leave` filter; previously any leave/kick/ban was silently omitted from incremental sync unless the client opted in with `include_leave: true` (which most clients never set), so `/leave` returned 200 but the room never disappeared from the client's room list
+- fix(federation): invite_user/ban_user/kick_user/unban_user now notify the federation worker via room_sync, closing a gap in the 0.10.14 staleness fix that only covered create_room/join_room/leave_room; previously inviting a remote user to an existing, already-resident room could leave the worker permanently unaware of the room, causing the remote server's make_join to 404 indefinitely
 * Thu Jul 02 2026 James Chapman <claude@ping.me.uk> - 0.10.14-1
 - fix(federation): add security.federation.join_response_max_size (default 64MiB) so send_join for a huge room is no longer rejected with 502 "response_too_large" once it fits within the join timeout budget; the federation-worker IPC frame cap now scales with this value via ipc::frame_bytes_for_response_cap (restart required)
 - fix(federation): notify the federation worker via a new room_sync IPC message when create_room/join_room/leave_room change this server's residency, and add database::reload_room() so the worker refreshes its otherwise permanently-stale per-room PersistentStore snapshot instead of 404ing inbound make_join/state for rooms created or joined after its own startup

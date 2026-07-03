@@ -839,7 +839,7 @@ SCENARIO("Incremental sync surfaces newly-joined federated room when user had a 
             merovingian::database::PersistentStateEvent{room_id, "m.room.member", alice_id, join_event_id};
         REQUIRE(merovingian::database::store_event_with_state(
             store, join_pe, std::optional<merovingian::database::PersistentStateEvent>{join_state}));
-        REQUIRE(merovingian::database::update_membership(store, room_id, alice_id, "join"));
+        REQUIRE(merovingian::database::update_membership(store, room_id, alice_id, "join", join_stream));
         std::ignore = merovingian::database::delete_invite(store, room_id, alice_id);
         rt.homeserver.database.rooms.push_back({room_id, alice_id, std::vector<std::string>{alice_id}, {}});
         store.next_sync_stream_id += 1U;

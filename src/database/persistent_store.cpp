@@ -1118,7 +1118,7 @@ auto reconstruct_event_relations(PersistentStore& store) -> void
 }
 
 [[nodiscard]] auto update_membership(PersistentStore& store, std::string_view room_id, std::string_view user_id,
-                                     std::string_view new_membership) -> bool
+                                     std::string_view new_membership, std::uint64_t stream_ordering) -> bool
 {
     auto const it = std::ranges::find_if(store.memberships, [&](PersistentMembership const& m) {
         return m.room_id == room_id && m.user_id == user_id;
@@ -1132,13 +1132,23 @@ auto reconstruct_event_relations(PersistentStore& store) -> void
         });
         return false;
     }
+    // stream_ordering MUST advance on every transition, not just on first
+    // insert: /sync's since-token comparisons (rooms.leave inclusion,
+    // joined_membership_changed_since) key off this column to detect "did
+    // this membership change recently" — leaving it frozen at the row's
+    // original insert value means a later transition (join -> leave, a kick,
+    // a re-invite, ...) is silently invisible to any client polling
+    // incrementally, even though the row's `membership` value is correct.
     if (!record_and_persist(
-            store, record_statement("update_membership",
-                                    "UPDATE membership SET membership = $3 WHERE room_id = $1 AND user_id = $2",
-                                    {
-                                        {std::string{room_id},        false},
-                                        {std::string{user_id},        false},
-                                        {std::string{new_membership}, false}
+            store,
+            record_statement("update_membership",
+                             "UPDATE membership SET membership = $3, stream_ordering = $4 WHERE room_id = $1 AND "
+                             "user_id = $2",
+                             {
+                                 {std::string{room_id},            false},
+                                 {std::string{user_id},            false},
+                                 {std::string{new_membership},     false},
+                                 {std::to_string(stream_ordering), false}
     })))
     {
         log_diagnostic("membership.update.rejected", {
@@ -1149,10 +1159,12 @@ auto reconstruct_event_relations(PersistentStore& store) -> void
         return false;
     }
     it->membership = std::string{new_membership};
+    it->stream_ordering = stream_ordering;
     log_diagnostic("membership.updated", {
-                                             {"room_id",    std::string{room_id},        false},
-                                             {"user_id",    std::string{user_id},        false},
-                                             {"membership", std::string{new_membership}, false}
+                                             {"room_id",         std::string{room_id},            false},
+                                             {"user_id",         std::string{user_id},            false},
+                                             {"membership",      std::string{new_membership},     false},
+                                             {"stream_ordering", std::to_string(stream_ordering), false}
     });
     return true;
 }

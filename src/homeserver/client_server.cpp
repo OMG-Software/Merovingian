@@ -3309,8 +3309,14 @@ namespace
                 })));
         }
 
-        // Invite list. `rooms.leave` is suppressed unless the filter opts in
-        // via `include_leave: true`; we now actually honour that flag.
+        // Invite list. Per spec, a room the caller left *before* the `since`
+        // window (or on an initial sync) is omitted from `rooms.leave` unless
+        // the filter opts in via `include_leave: true`. But a leave/kick/ban
+        // that happened *within* the current window is a state change the
+        // client must be told about regardless of that flag — otherwise a
+        // client that never sets `include_leave` (the common case) never
+        // learns it left a room, whether via its own `/leave` call or a kick
+        // from another user, and the room never disappears from its list.
         auto invite_members = canonicaljson::Object{};
         auto leave_members = canonicaljson::Object{};
         auto knock_members = canonicaljson::Object{};
@@ -3340,7 +3346,9 @@ namespace
                     ++invite_count;
                 }
             }
-            else if (membership.membership == "leave" && filter.room.include_leave)
+            else if (membership.membership == "leave" &&
+                     (filter.room.include_leave ||
+                      (since_token.has_value() && membership.stream_ordering > since_ordering)))
             {
                 if (leave_count < rt.limits.max_sync_rooms)
                 {

@@ -760,7 +760,7 @@ namespace
             return false;
         }
         return result != database::MembershipStoreResult::already_exists ||
-               database::update_membership(store, room_id, user_id, membership);
+               database::update_membership(store, room_id, user_id, membership, stream_ordering);
     }
 
     [[nodiscard]] auto upsert_local_invite_metadata(database::PersistentStore& store, std::string_view room_id,
@@ -2338,7 +2338,8 @@ namespace
                                                                   {room_id, invitee, "invite", membership_stream});
         if (membership_result == database::MembershipStoreResult::error ||
             (membership_result == database::MembershipStoreResult::already_exists &&
-             !database::update_membership(runtime.database.persistent_store, room_id, invitee, "invite")))
+             !database::update_membership(runtime.database.persistent_store, room_id, invitee, "invite",
+                                          membership_stream)))
         {
             return make_operation_result(false, {}, "invite membership persistence failed", 500U);
         }
@@ -3429,7 +3430,8 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
             return make_operation_result(false, {}, "membership persistence failed", 500U);
         }
         if (membership_result == database::MembershipStoreResult::already_exists &&
-            !database::update_membership(runtime.database.persistent_store, room_id, *user_id, "join"))
+            !database::update_membership(runtime.database.persistent_store, room_id, *user_id, "join",
+                                         membership_stream))
         {
             log_diagnostic("room.join.rejected", {
                                                      {"actor",   *user_id,                   false},
@@ -3445,13 +3447,13 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
             {
                 continue;
             }
+            auto const joined_member_stream = runtime.database.next_stream_ordering++;
             auto const result = database::store_membership(
-                runtime.database.persistent_store,
-                {std::string{room_id}, joined_member, "join", runtime.database.next_stream_ordering++});
+                runtime.database.persistent_store, {std::string{room_id}, joined_member, "join", joined_member_stream});
             if (result == database::MembershipStoreResult::already_exists)
             {
-                std::ignore =
-                    database::update_membership(runtime.database.persistent_store, room_id, joined_member, "join");
+                std::ignore = database::update_membership(runtime.database.persistent_store, room_id, joined_member,
+                                                          "join", joined_member_stream);
             }
         }
         if (!database::delete_invite(runtime.database.persistent_store, room_id, *user_id))
@@ -3530,13 +3532,13 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
                     });
                     for (auto const& member : newly_joined)
                     {
-                        auto const result = database::store_membership(
-                            runtime.database.persistent_store,
-                            {room_id_bg, member, "join", runtime.database.next_stream_ordering++});
+                        auto const member_stream = runtime.database.next_stream_ordering++;
+                        auto const result = database::store_membership(runtime.database.persistent_store,
+                                                                       {room_id_bg, member, "join", member_stream});
                         if (result == database::MembershipStoreResult::already_exists)
                         {
                             std::ignore = database::update_membership(runtime.database.persistent_store, room_id_bg,
-                                                                      member, "join");
+                                                                      member, "join", member_stream);
                         }
                         if (room_it != runtime.database.rooms.end())
                         {
@@ -3619,7 +3621,8 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
         }
         // Both stored and already_exists: membership is valid — sync the in-memory state.
         if (result == database::MembershipStoreResult::already_exists &&
-            !database::update_membership(runtime.database.persistent_store, room_id, *user_id, "join"))
+            !database::update_membership(runtime.database.persistent_store, room_id, *user_id, "join",
+                                         membership_stream))
         {
             log_diagnostic("room.join.rejected", {
                                                      {"actor",   *user_id,                   false},
@@ -4060,6 +4063,7 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
     }
     append_local_audit(runtime.database, observability::AuditCategory::admin, "room.invited", *user_id, target_user_id,
                        std::string{room_id});
+    notify_room_changed(runtime, room_id);
     return make_operation_result(true, std::string{room_id});
 }
 
@@ -4089,6 +4093,7 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
     }
     append_local_audit(runtime.database, observability::AuditCategory::admin, "room.banned", *user_id, target_user_id,
                        std::string{room_id});
+    notify_room_changed(runtime, room_id);
     return make_operation_result(true, std::string{room_id});
 }
 
@@ -4118,6 +4123,7 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
     }
     append_local_audit(runtime.database, observability::AuditCategory::admin, "room.kicked", *user_id, target_user_id,
                        std::string{room_id});
+    notify_room_changed(runtime, room_id);
     return make_operation_result(true, std::string{room_id});
 }
 
@@ -4156,6 +4162,7 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
     }
     append_local_audit(runtime.database, observability::AuditCategory::admin, "room.unbanned", *user_id, target_user_id,
                        std::string{room_id});
+    notify_room_changed(runtime, room_id);
     return make_operation_result(true, std::string{room_id});
 }
 

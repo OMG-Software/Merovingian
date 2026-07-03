@@ -2653,6 +2653,80 @@ SCENARIO("Sync surfaces invite and leave room categories alongside Matrix-spec t
     }
 }
 
+SCENARIO("Incremental sync reports a room the caller just left regardless of include_leave",
+         "[homeserver][client-server][sync]")
+{
+    GIVEN("a registered user who has joined and then leaves a room mid-sync-window")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto runtime = std::move(started.runtime);
+
+        auto const register_response = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST",
+                      "/_matrix/client/v3/register",
+                      {},
+                      merovingian::tests::registration_json("carol", "CorrectHorse7!")});
+        REQUIRE(register_response.response.status == 200U);
+        auto const user_id = json_value(register_response.response.body, "\"user_id\":\"");
+
+        auto const login_response = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST",
+                      "/_matrix/client/v3/login",
+                      {},
+                      R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":")" + user_id +
+                          R"("},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login_response.response.status == 200U);
+        auto const token = login_token(login_response.response.body);
+
+        auto const room_response = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", token, "{}"});
+        REQUIRE(room_response.response.status == 200U);
+        auto const room_id = json_value(room_response.response.body, "\"room_id\":\"");
+
+        auto const initial_sync = merovingian::homeserver::handle_client_server_request(
+            runtime, {"GET", "/_matrix/client/v3/sync", token, {}});
+        REQUIRE(initial_sync.response.status == 200U);
+        auto const since_token = json_value(initial_sync.response.body, "\"next_batch\":\"");
+
+        WHEN("the user leaves the room and then syncs incrementally without setting include_leave")
+        {
+            auto const leave_response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/leave", token, "{}"});
+            REQUIRE(leave_response.response.status == 200U);
+
+            auto const incremental = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/sync?since=" + since_token, token, {}});
+
+            THEN("the room appears in rooms.leave so the client learns it is no longer a member")
+            {
+                REQUIRE(incremental.response.status == 200U);
+                REQUIRE(incremental.response.body.find("\"leave\":{\"" + room_id + "\"") != std::string::npos);
+            }
+        }
+
+        WHEN("a later sync is taken after the leave has already been observed")
+        {
+            auto const leave_response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/leave", token, "{}"});
+            REQUIRE(leave_response.response.status == 200U);
+
+            auto const first_incremental = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/sync?since=" + since_token, token, {}});
+            auto const second_since_token = json_value(first_incremental.response.body, "\"next_batch\":\"");
+
+            auto const second_incremental = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/sync?since=" + second_since_token, token, {}});
+
+            THEN("the already-reported leave is not repeated without include_leave")
+            {
+                REQUIRE(second_incremental.response.status == 200U);
+                REQUIRE(second_incremental.response.body.find("\"leave\":{}") != std::string::npos);
+            }
+        }
+    }
+}
+
 SCENARIO("Client-server enforces per-endpoint rate limits with 429 M_LIMIT_EXCEEDED",
          "[homeserver][client-server][rate-limit]")
 {

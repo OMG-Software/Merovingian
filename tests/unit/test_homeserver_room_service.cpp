@@ -1249,6 +1249,135 @@ SCENARIO("leave_room notifies the federation worker when a local user leaves",
     }
 }
 
+SCENARIO("invite_user notifies the federation worker when an existing room gains an invite",
+         "[homeserver][rooms][federation-worker][regression]")
+{
+    GIVEN("a room alice created, with the room-changed log wired after creation")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const alice_reg = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                            merovingian::tests::registration_token);
+        REQUIRE(alice_reg.ok);
+        auto const alice_login =
+            merovingian::homeserver::login_local_user(runtime, alice_reg.value, "CorrectHorse7!", "ALICE_DEV");
+        REQUIRE(alice_login.ok);
+        auto const bob_reg = merovingian::homeserver::register_local_user(runtime, "bob", "CorrectHorse7!",
+                                                                          merovingian::tests::registration_token);
+        REQUIRE(bob_reg.ok);
+        auto const room = merovingian::homeserver::create_room(runtime, alice_login.value);
+        REQUIRE(room.ok);
+
+        // Wire the log only now, so this scenario isolates invite_user's own
+        // notification from create_room's (already covered above). This is
+        // the exact real-world sequence that regresses without invite_user's
+        // own notify: a room created (and possibly already flushed to the
+        // worker) that later gains an invite to a room it was never told
+        // about is invisible to inbound make_join forever — see the
+        // "@james:matrix.ping.me.uk unable to join" incident.
+        auto changed_rooms = std::vector<std::string>{};
+        runtime.test_room_changed_log = &changed_rooms;
+
+        WHEN("alice invites bob to the room")
+        {
+            auto const invite =
+                merovingian::homeserver::invite_user(runtime, alice_login.value, room.value, bob_reg.value);
+
+            THEN("the room_id is logged exactly once")
+            {
+                REQUIRE(invite.ok);
+                REQUIRE(changed_rooms == std::vector<std::string>{room.value});
+            }
+        }
+    }
+}
+
+SCENARIO("ban_user notifies the federation worker when a member is banned",
+         "[homeserver][rooms][federation-worker][regression]")
+{
+    GIVEN("a room with alice and bob joined, with the room-changed log wired after setup")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const ctx = make_two_user_room(runtime);
+
+        auto changed_rooms = std::vector<std::string>{};
+        runtime.test_room_changed_log = &changed_rooms;
+
+        WHEN("alice bans bob from the room")
+        {
+            auto const ban = merovingian::homeserver::ban_user(runtime, ctx.alice_token, ctx.room_id, ctx.bob_id);
+
+            THEN("the room_id is logged exactly once")
+            {
+                REQUIRE(ban.ok);
+                REQUIRE(changed_rooms == std::vector<std::string>{ctx.room_id});
+            }
+        }
+    }
+}
+
+SCENARIO("kick_user notifies the federation worker when a member is kicked",
+         "[homeserver][rooms][federation-worker][regression]")
+{
+    GIVEN("a room with alice and bob joined, with the room-changed log wired after setup")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const ctx = make_two_user_room(runtime);
+
+        auto changed_rooms = std::vector<std::string>{};
+        runtime.test_room_changed_log = &changed_rooms;
+
+        WHEN("alice kicks bob from the room")
+        {
+            auto const kick = merovingian::homeserver::kick_user(runtime, ctx.alice_token, ctx.room_id, ctx.bob_id);
+
+            THEN("the room_id is logged exactly once")
+            {
+                REQUIRE(kick.ok);
+                REQUIRE(changed_rooms == std::vector<std::string>{ctx.room_id});
+            }
+        }
+    }
+}
+
+SCENARIO("unban_user notifies the federation worker when a ban is lifted",
+         "[homeserver][rooms][federation-worker][regression]")
+{
+    GIVEN("a room with alice and bob joined, bob banned, with the room-changed log wired after the ban")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const ctx = make_two_user_room(runtime);
+        auto const ban = merovingian::homeserver::ban_user(runtime, ctx.alice_token, ctx.room_id, ctx.bob_id);
+        REQUIRE(ban.ok);
+
+        auto changed_rooms = std::vector<std::string>{};
+        runtime.test_room_changed_log = &changed_rooms;
+
+        WHEN("alice unbans bob")
+        {
+            auto const unban = merovingian::homeserver::unban_user(runtime, ctx.alice_token, ctx.room_id, ctx.bob_id);
+
+            THEN("the room_id is logged exactly once")
+            {
+                REQUIRE(unban.ok);
+                REQUIRE(changed_rooms == std::vector<std::string>{ctx.room_id});
+            }
+        }
+    }
+}
+
 SCENARIO("Rooms untouched by the current operation are never logged as changed",
          "[homeserver][rooms][federation-worker][regression]")
 {
