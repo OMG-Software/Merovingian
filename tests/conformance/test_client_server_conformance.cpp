@@ -2303,6 +2303,14 @@ SCENARIO("GET /sync returns the full top-level v1.18 sync envelope", "[conforman
     }
 }
 
+// Spec: Matrix Client-Server API v1.18
+// Endpoint / Section: GET /sync — LeftRoom
+// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3sync
+//
+// Spec MUST: rooms.leave.<room_id>.timeline is "the timeline of messages and
+// state changes in the room up to the point when the user left" — not merely
+// an empty container. A client (matrix-js-sdk) derives its own membership
+// state from these events, not from the room_id key's presence alone.
 SCENARIO("GET /sync returns spec-shaped room category objects", "[conformance][client-server][sync][rooms]")
 {
     GIVEN("joined invited and left room state for local users")
@@ -2359,7 +2367,39 @@ SCENARIO("GET /sync returns spec-shaped room category objects", "[conformance][c
                 REQUIRE(left_room != nullptr);
                 auto const* left_timeline = object_member_as_object(*left_room, "timeline");
                 REQUIRE(left_timeline != nullptr);
-                REQUIRE(object_member_as_array(*left_timeline, "events") != nullptr);
+                auto const* left_events = object_member_as_array(*left_timeline, "events");
+                REQUIRE(left_events != nullptr);
+                // Spec MUST: rooms.leave.<room_id>.timeline is "the timeline
+                // of messages and state changes in the room up to the point
+                // when the user left" — an empty array here is a conformance
+                // failure even though the room_id key itself is present,
+                // since real clients derive their own membership from these
+                // state events, not from key presence alone.
+                REQUIRE_FALSE(left_events->empty());
+                auto found_own_leave = false;
+                for (auto const& event_value : *left_events)
+                {
+                    auto const* event = std::get_if<merovingian::canonicaljson::Object>(&event_value.storage());
+                    if (event == nullptr)
+                    {
+                        continue;
+                    }
+                    auto const* type = string_member(*event, "type");
+                    auto const* state_key = string_member(*event, "state_key");
+                    auto const* content = object_member_as_object(*event, "content");
+                    if (type == nullptr || state_key == nullptr || content == nullptr)
+                    {
+                        continue;
+                    }
+                    auto const* membership = string_member(*content, "membership");
+                    if (*type == "m.room.member" && *state_key == "@alice:example.org" && membership != nullptr &&
+                        *membership == "leave")
+                    {
+                        found_own_leave = true;
+                        break;
+                    }
+                }
+                REQUIRE(found_own_leave);
 
                 REQUIRE(bob_sync.response.status == 200U);
                 auto const bob_body = parse_object(bob_sync.response.body);
