@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.10.17
+Version:        0.10.18
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -97,6 +97,8 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Fri Jul 03 2026 James Chapman <claude@ping.me.uk> - 0.10.18-1
+- fix(federation): worker shard routing hashed the raw percent-encoded room ID from room-scoped federation paths (e.g. make_join's "%21room:example.com"), which never matches the plain-text room_id used by notify_room_changed()/room_service; with more than one federation.worker.shards configured this routed the request to a shard that was never synced for the room, so every room-scoped federation request 404'd even though the room existed locally
 * Fri Jul 03 2026 James Chapman <claude@ping.me.uk> - 0.10.17-1
 - fix(sync): rooms.leave.<room_id>.timeline in the /sync response was always an empty events array, so a real client never actually saw itself leave even though the server correctly advanced stream_ordering and notified sync; the timeline now includes the user's m.room.member leave event, which real clients (matrix-js-sdk) require to update their own membership state
 * Fri Jul 03 2026 James Chapman <claude@ping.me.uk> - 0.10.16-1

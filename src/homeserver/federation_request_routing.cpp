@@ -3,6 +3,8 @@
 
 #include "merovingian/homeserver/federation_request_routing.hpp"
 
+#include "merovingian/core/query_params.hpp"
+
 #include <cstdint>
 #include <string_view>
 #include <vector>
@@ -182,7 +184,15 @@ namespace
                 auto const remainder = target.substr(prefix.size());
                 // Stop at next path separator or query string.
                 auto const end = remainder.find_first_of("/?");
-                return std::string{remainder.substr(0U, end)};
+                // Room IDs contain '!' (and aliases '#'), which HTTP clients
+                // percent-encode as a path segment (e.g. "%21room:example.com").
+                // Decode before hashing for shard routing, otherwise this room
+                // ID never matches the plain-text room_id used by
+                // notify_room_changed()/room_service, and the request lands on
+                // a shard that was never synced for this room — every
+                // room-scoped federation request (make_join, send_join, ...)
+                // 404s even though the room exists locally.
+                return core::percent_decode_path_component(remainder.substr(0U, end));
             }
         }
         return {};

@@ -158,6 +158,34 @@ SCENARIO("Room ID is extracted from room-scoped federation path endpoints", "[fe
     }
 }
 
+SCENARIO("Room ID is percent-decoded for correct shard routing", "[federation][routing][room-id][shard]")
+{
+    GIVEN("a room ID containing '!' as sent percent-encoded in a real federation path")
+    {
+        auto const decoded_room_id = std::string{"!room:example.com"};
+        auto const encoded_room_id = std::string{"%21room%3Aexample.com"};
+
+        WHEN("the target is /_matrix/federation/v1/make_join/{encodedRoomId}/{userId}")
+        {
+            auto const request =
+                make_request("/_matrix/federation/v1/make_join/" + encoded_room_id + "/@user:remote.example?ver=12");
+            THEN("the room ID is decoded to match the plain-text form used by notify_room_changed()")
+            {
+                REQUIRE(federation_worker_room_id_from_request(request) == decoded_room_id);
+            }
+        }
+
+        WHEN("the target is /_matrix/federation/v2/send_join/{encodedRoomId}/{eventId}")
+        {
+            auto const request = make_request("/_matrix/federation/v2/send_join/" + encoded_room_id + "/$eventId");
+            THEN("the room ID is decoded")
+            {
+                REQUIRE(federation_worker_room_id_from_request(request) == decoded_room_id);
+            }
+        }
+    }
+}
+
 SCENARIO("Room ID is extracted from /send/{txnId} request bodies", "[federation][routing][room-id][send]")
 {
     GIVEN("a PUT /send/{txnId} request with one PDU")
