@@ -2701,7 +2701,18 @@ SCENARIO("Incremental sync reports a room the caller just left regardless of inc
             THEN("the room appears in rooms.leave so the client learns it is no longer a member")
             {
                 REQUIRE(incremental.response.status == 200U);
-                REQUIRE(incremental.response.body.find("\"leave\":{\"" + room_id + "\"") != std::string::npos);
+                auto const leave_block = incremental.response.body.find("\"leave\":{\"" + room_id + "\"");
+                REQUIRE(leave_block != std::string::npos);
+
+                // Real clients (matrix-js-sdk) derive room.getMyMembership()
+                // from processing rooms.leave.<room_id>.timeline's state
+                // events, not merely from the room_id key being present —
+                // an empty timeline leaves the client believing it is still
+                // joined even though the server-side leave succeeded.
+                auto const member_event_type = incremental.response.body.find("\"m.room.member\"", leave_block);
+                REQUIRE(member_event_type != std::string::npos);
+                auto const membership_value = incremental.response.body.find("\"membership\":\"leave\"", leave_block);
+                REQUIRE(membership_value != std::string::npos);
             }
         }
 
