@@ -3793,12 +3793,28 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
     }
     if (membership_it->membership != "join" && membership_it->membership != "invite")
     {
+        // Idempotent per spec on `membership` alone — but a caller retrying
+        // /leave is itself evidence its view is stale (it still thinks it's
+        // joined), most likely because an earlier leave's stream_ordering
+        // never advanced (see the 0.10.15 update_membership fix). Refresh
+        // stream_ordering and re-notify on every repeat call so a row stuck
+        // in that state before the fix self-heals instead of staying
+        // invisible to /sync forever.
+        auto const membership_stream = runtime.database.next_stream_ordering++;
+        std::ignore = store_or_update_membership(runtime.database.persistent_store, room_id, *user_id,
+                                                 membership_it->membership, membership_stream);
+        auto const sync_stream_id = database::allocate_sync_stream_id(runtime.database.persistent_store);
+        if (runtime.sync_notifier != nullptr)
+        {
+            runtime.sync_notifier->publish(runtime.database.next_stream_ordering - 1U, sync_stream_id);
+        }
         log_diagnostic("room.leave.accepted",
                        {
                            {"actor",   *user_id,             false},
                            {"room_id", std::string{room_id}, false}
         },
                        observability::LogEventSeverity::info);
+        notify_room_changed(runtime, room_id);
         return make_operation_result(true, std::string{room_id});
     }
 
