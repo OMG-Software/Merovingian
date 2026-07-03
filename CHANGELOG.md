@@ -1,3 +1,8 @@
+## 0.10.17
+
+### Fixed
+- **fix(sync): `rooms.leave.<room_id>.timeline` in the `/sync` response was always an empty events array, so a real client (Element/matrix-js-sdk) never actually saw itself leave even though 0.10.16 already fixed `stream_ordering`/`sync_notifier` and the server's own logs showed `leave_count=1` delivered correctly:** confirmed against Element's own network/console log — `POST /leave` returns `200` in 40ms, the in-flight long-poll `GET /sync` wakes and returns `200` with the room correctly keyed under `rooms.leave`, and the room still never disappeared from the client's room list. Per spec, `rooms.leave.<room_id>.timeline` is "the timeline of messages and state changes in the room up to the point when the user left" — matrix-js-sdk derives `room.getMyMembership()` by processing that timeline's state events, not merely from the room_id being present as a key, so an always-empty timeline gave the client nothing to act on. New `build_leave_timeline_events_array()` (`client_server.cpp`) looks up the user's current `m.room.member` state event for the room (authoritative even on an idempotent repeat `/leave`, since `store.state` is upserted in place by every real transition, including kicks and bans) and includes it as the room's sole timeline event, matching what real homeservers send. Strengthened the existing `test_client_server.cpp` leave-sync scenario to assert the timeline actually contains an `m.room.member`/`membership: leave` event, not just the room_id key.
+
 ## 0.10.16
 
 ### Fixed

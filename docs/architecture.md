@@ -347,6 +347,8 @@ Implemented endpoints:
 
 **Sync flow**: Client sends `GET /sync?since=...&timeout=...`. Handler acquires the runtime mutex, builds the response. If no new data since the token, returns `DispatchResult::needs_wait` with `SyncWaitParams`. The HTTP layer releases the mutex, waits on the notifier, re-acquires the lock, and rebuilds the response. Sync waits are offloaded to the dedicated 32-thread `sync_pool`.
 
+**`rooms.leave` timeline content**: `rooms.leave.<room_id>.timeline` must carry the room's state changes up to the point the caller left (spec) — real clients (matrix-js-sdk) derive `room.getMyMembership()` by processing that timeline's state events, not merely from the `room_id` key being present under `rooms.leave`. `build_leave_timeline_events_array()` (`client_server.cpp`) looks up the user's current `m.room.member` state event for the room in `store.state` and includes it as the sole timeline event. This is correct even on an idempotent repeat `/leave` that composed no new event, because `store_event_with_state` upserts `store.state` in place on every real transition (leave, kick, ban), so the state pointer always references the last authoritative membership event regardless of how many no-op retries followed it.
+
 ## Build system
 
 Meson (`>=1.1.0`), C++26, `-Werror`, warning level 3. Hardening: stack protector, PIE, hidden visibility, zero-init, stack clash protection, CF protection, FORTIFY_SOURCE=3, no-exec stack. Link flags: `-Wl,-z,noexecstack`.

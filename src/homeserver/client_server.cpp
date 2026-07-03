@@ -1198,6 +1198,42 @@ namespace
         return result;
     }
 
+    // Per spec, rooms.leave.<room_id>.timeline is "the timeline of messages
+    // and state changes in the room up to the point when the user left" —
+    // matrix-js-sdk (and other real clients) derive `room.getMyMembership()`
+    // by processing this timeline's state events, not merely from the
+    // room_id being present under rooms.leave. An empty timeline here means
+    // the client never learns *that* the caller left, so the room silently
+    // stays in the joined room list even though the server-side leave and
+    // /sync notification both succeeded. The current m.room.member state
+    // event for the user is still authoritative even on an idempotent
+    // repeat /leave call that didn't compose a new event — store.state is
+    // upserted in place, so it always points at the last real transition.
+    [[nodiscard]] auto build_leave_timeline_events_array(database::PersistentStore const& store,
+                                                         std::string_view room_id, std::string_view user_id)
+        -> canonicaljson::Array
+    {
+        auto result = canonicaljson::Array{};
+        auto const state = std::ranges::find_if(store.state, [&](database::PersistentStateEvent const& current) {
+            return current.room_id == room_id && current.event_type == "m.room.member" && current.state_key == user_id;
+        });
+        if (state == store.state.end())
+        {
+            return result;
+        }
+        auto const event_json = event_json_for_id(store, state->event_id);
+        if (!event_json.has_value())
+        {
+            return result;
+        }
+        auto const parsed = canonicaljson::parse_lossless(*event_json);
+        if (parsed.error == canonicaljson::ParseError::none)
+        {
+            result.push_back(parsed.value);
+        }
+        return result;
+    }
+
     [[nodiscard]] auto ascii_equal_case_insensitive(std::string_view left, std::string_view right) noexcept -> bool
     {
         if (left.size() != right.size())
@@ -3352,9 +3388,12 @@ namespace
             {
                 if (leave_count < rt.limits.max_sync_rooms)
                 {
+                    auto leave_timeline_events = build_leave_timeline_events_array(store, membership.room_id, user);
                     leave_members.push_back(json_member(
                         membership.room_id,
-                        json_obj({json_member("timeline", json_obj({json_member("events", json_arr({}))}))})));
+                        json_obj({json_member(
+                            "timeline",
+                            json_obj({json_member("events", json_arr(std::move(leave_timeline_events)))}))})));
                     ++leave_count;
                 }
             }

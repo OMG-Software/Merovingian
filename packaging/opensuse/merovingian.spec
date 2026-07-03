@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.10.16
+Version:        0.10.17
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -112,6 +112,8 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Fri Jul 03 2026 James Chapman <claude@ping.me.uk> - 0.10.17-1
+- fix(sync): rooms.leave.<room_id>.timeline in the /sync response was always an empty events array, so a real client never actually saw itself leave even though the server correctly advanced stream_ordering and notified sync; the timeline now includes the user's m.room.member leave event, which real clients (matrix-js-sdk) require to update their own membership state
 * Fri Jul 03 2026 James Chapman <claude@ping.me.uk> - 0.10.16-1
 - fix(sync,federation): leave_room's repeat-leave idempotent path now refreshes stream_ordering and re-notifies sync/federation on every call, not just the first; previously a client whose earlier leave was stuck under the pre-0.10.15 bug would retry /leave forever without ever healing, because the idempotent no-op path skipped the stream_ordering refresh entirely
 * Fri Jul 03 2026 James Chapman <claude@ping.me.uk> - 0.10.15-1
