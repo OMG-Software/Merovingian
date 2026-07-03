@@ -67,6 +67,28 @@ namespace
         observability::log_diagnostic("rooms", event, fields, severity);
     }
 
+    // Single choke point for the "this server's residency in room_id changed"
+    // signal. Every call site that creates a room, joins one (locally or via
+    // federation), or leaves one MUST call this — it is the only thing that
+    // keeps the out-of-process federation worker's PersistentStore snapshot
+    // from going permanently stale for that room (see docs/architecture.md,
+    // "Federation worker room staleness"). Routed through one function,
+    // rather than each call site poking runtime.federation_proxy directly,
+    // so tests can pin the "every call site notifies" contract via
+    // runtime.test_room_changed_log without spawning a real worker — see
+    // HomeserverRuntime::test_room_changed_log.
+    auto notify_room_changed(HomeserverRuntime& runtime, std::string_view room_id) -> void
+    {
+        if (runtime.federation_proxy)
+        {
+            runtime.federation_proxy->notify_room_changed(room_id);
+        }
+        if (runtime.test_room_changed_log != nullptr)
+        {
+            runtime.test_room_changed_log->emplace_back(room_id);
+        }
+    }
+
     // Portable counting semaphore — std::counting_semaphore is not available on
     // all supported platforms (e.g. NetBSD libc++).
     class PortableSemaphore
@@ -2368,10 +2390,7 @@ namespace
     {
         runtime.sync_notifier->publish(runtime.database.next_stream_ordering - 1U, sync_stream_id);
     }
-    if (runtime.federation_proxy)
-    {
-        runtime.federation_proxy->notify_room_changed(room_id);
-    }
+    notify_room_changed(runtime, room_id);
     return make_operation_result(true, room_id);
 }
 
@@ -3483,10 +3502,7 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
         // join_rules/our own membership) is already persisted above, so the
         // worker can answer correctly even before the background member fill
         // below completes — same partial-state contract as fast join itself.
-        if (runtime.federation_proxy)
-        {
-            runtime.federation_proxy->notify_room_changed(room_id);
-        }
+        notify_room_changed(runtime, room_id);
         // Fast join: the room is fully usable now (create/power_levels/join_rules/
         // etc. and our own membership are already verified and persisted above).
         // The remaining member rows — deferred above as `background_state` — are
@@ -3542,9 +3558,9 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
                                        {"members_stored",    std::to_string(stored),                  false}
                     },
                                    observability::LogEventSeverity::info);
-                    if (stored > 0U && runtime.federation_proxy)
+                    if (stored > 0U)
                     {
-                        runtime.federation_proxy->notify_room_changed(room_id_bg);
+                        notify_room_changed(runtime, room_id_bg);
                     }
                 });
             auto orphan_lk = std::lock_guard{runtime.orphan_futures_mutex_};
@@ -3688,10 +3704,7 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
     {
         runtime.sync_notifier->publish(runtime.database.next_stream_ordering - 1U, sync_stream_id);
     }
-    if (runtime.federation_proxy)
-    {
-        runtime.federation_proxy->notify_room_changed(room_id);
-    }
+    notify_room_changed(runtime, room_id);
     return make_operation_result(true, std::string{room_id});
 }
 
@@ -3992,10 +4005,7 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
                            {"room_id", std::string{room_id}, false}
         },
                        observability::LogEventSeverity::info);
-        if (runtime.federation_proxy)
-        {
-            runtime.federation_proxy->notify_room_changed(room_id);
-        }
+        notify_room_changed(runtime, room_id);
         return make_operation_result(true, std::string{room_id});
     }
 
@@ -4020,10 +4030,7 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
                        {"room_id", std::string{room_id}, false}
     },
                    observability::LogEventSeverity::info);
-    if (runtime.federation_proxy)
-    {
-        runtime.federation_proxy->notify_room_changed(room_id);
-    }
+    notify_room_changed(runtime, room_id);
     return make_operation_result(true, std::string{room_id});
 }
 
