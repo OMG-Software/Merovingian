@@ -279,7 +279,7 @@ namespace
         }
         if (result == database::MembershipStoreResult::already_exists)
         {
-            return database::update_membership(store, room_id, user_id, membership);
+            return database::update_membership(store, room_id, user_id, membership, stream_ordering);
         }
         return false;
     } // end emit_state

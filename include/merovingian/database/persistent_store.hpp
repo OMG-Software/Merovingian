@@ -515,7 +515,7 @@ auto reconstruct_event_relations(PersistentStore& store) -> void;
 [[nodiscard]] auto reload_room(PersistentStore& store, std::string_view room_id) -> bool;
 [[nodiscard]] auto store_membership(PersistentStore& store, PersistentMembership membership) -> MembershipStoreResult;
 [[nodiscard]] auto update_membership(PersistentStore& store, std::string_view room_id, std::string_view user_id,
-                                     std::string_view new_membership) -> bool;
+                                     std::string_view new_membership, std::uint64_t stream_ordering) -> bool;
 [[nodiscard]] auto delete_membership(PersistentStore& store, std::string_view room_id, std::string_view user_id)
     -> bool;
 [[nodiscard]] auto upsert_invite(PersistentStore& store, PersistentInvite invite) -> bool;
