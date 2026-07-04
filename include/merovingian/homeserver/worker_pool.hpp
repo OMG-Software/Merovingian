@@ -35,6 +35,42 @@ struct HomeserverRuntime;
 [[nodiscard]] auto handle_membership_ingest_request(HomeserverRuntime& runtime, std::string_view request_json)
     -> std::string;
 
+// Handles an "edu_ingest" IPC request (a worker relaying an inbound EDU —
+// m.typing, m.receipt, m.presence, m.direct_to_device, or
+// m.device_list_update — so it reaches main's edu_sink instead of being
+// dropped inside the worker process). See docs/architecture.md, "Federation
+// worker EDU relay". Exposed as a free function for the same reason
+// handle_membership_ingest_request is: a seam tests can drive directly
+// without spawning a real worker subprocess. Takes and returns the same wire
+// JSON a worker sends/receives over the IPC channel.
+[[nodiscard]] auto handle_edu_ingest_request(HomeserverRuntime& runtime, std::string_view request_json) -> std::string;
+
+// Handles an "invite_ingest" IPC request (a worker relaying an inbound
+// PUT /_matrix/federation/{v1,v2}/invite acceptance so the invite's
+// membership row, invite metadata, and event persist through main's own
+// PersistentStore rather than the worker's — the same class of gap
+// membership_ingest closes for send_join/send_leave/send_knock. See
+// docs/architecture.md, "Federation worker invite relay"). Exposed as a free
+// function for the same test-seam reason handle_membership_ingest_request
+// is. Takes and returns the same wire JSON a worker sends/receives over the
+// IPC channel.
+[[nodiscard]] auto handle_invite_ingest_request(HomeserverRuntime& runtime, std::string_view request_json)
+    -> std::string;
+
+// Handles an "otk_claim_ingest" IPC request (a worker relaying an inbound
+// POST /_matrix/federation/v1/user/keys/claim so the claim — which deletes
+// the claimed one-time key — is decided against main's own PersistentStore
+// instead of a worker's, avoiding the same key being handed out twice from
+// two independent per-process snapshots (breaking Olm's single-use
+// guarantee) and a worker's claim view going stale once its startup-time
+// snapshot is exhausted even as fresh keys are uploaded through main. See
+// docs/architecture.md, "Federation worker one-time-key claim relay").
+// Exposed as a free function for the same test-seam reason
+// handle_membership_ingest_request is. Takes and returns the same wire JSON
+// a worker sends/receives over the IPC channel.
+[[nodiscard]] auto handle_otk_claim_ingest_request(HomeserverRuntime& runtime, std::string_view request_json)
+    -> std::string;
+
 // Owns N out-of-process federation worker supervisors. Routes each inbound
 // federation request to the worker that owns the request's room ID.
 //

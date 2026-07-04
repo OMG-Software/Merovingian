@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.10.19
+Version:        0.10.21
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -97,6 +97,12 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Sat Jul 04 2026 James Chapman <claude@ping.me.uk> - 0.10.21-1
+- fix(federation): federation worker's invite_handler persisted a federated invite's membership row, invite metadata, and event only into the worker's own local store, never relaying it to main — the same class of bug 0.10.19 fixed for membership_acceptor. A remote server inviting a local user to a room hosted elsewhere was silently swallowed with no trace anywhere. invite_handler now relays through main via a new invite_ingest IPC call
+- fix(federation,security): federation worker's one_time_keys_claim_provider decided key availability from a per-process in-memory snapshot taken once at worker startup, risking a one-time prekey being handed out twice (breaking Olm's single-use guarantee) if a worker ever fell back to main, and going permanently stale once its startup snapshot was exhausted even as fresh keys were uploaded through main. one_time_keys_claim_provider now relays through main via a new otk_claim_ingest IPC call so every claim is decided against the single authoritative store
+- fix(federation): ordinary messages and state changes never refreshed a federation worker's room snapshot — only the 7 membership-mutating calls did — so worker-served backfill/event/state/state_ids/get_missing_events queries could silently omit recent history in active rooms. send_event and the main-side pdu_ingest relay handler now also call notify_room_changed
+* Sat Jul 04 2026 James Chapman <claude@ping.me.uk> - 0.10.20-1
+- fix(federation): federation worker's edu_sink was a hard no-op, silently dropping every inbound EDU it handled — including m.direct_to_device, the transport for E2EE megolm room-key shares — while still counting them as "dispatched" in logs; recipients whose key-share transaction landed on a worker shard were left permanently unable to decrypt affected messages with no trace of the failure anywhere in the server logs. edu_sink now relays through main via a new edu_ingest IPC call, the same way pdu_sink and membership_acceptor already do
 * Sat Jul 04 2026 James Chapman <claude@ping.me.uk> - 0.10.19-1
 - fix(federation): a federated join/leave/knock accepted by a federation worker was never visible to the main process's own room state; every subsequent message from that member was rejected with "sender is not joined to the room" — membership_acceptor now relays through main via a new membership_ingest IPC call, the same way pdu_sink already does
 * Fri Jul 03 2026 James Chapman <claude@ping.me.uk> - 0.10.18-1

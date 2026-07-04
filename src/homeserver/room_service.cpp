@@ -4353,6 +4353,17 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
         runtime.sync_notifier->publish(runtime.database.next_stream_ordering - 1U,
                                        runtime.database.persistent_store.next_sync_stream_id);
     }
+    // Refresh any federation worker's snapshot of this room the same way the
+    // 7 membership-mutating calls already do (create_room, join_room,
+    // leave_room, invite_user, ban_user, kick_user, unban_user) — see
+    // docs/architecture.md, "Federation worker room staleness". Without
+    // this, an ordinary message never reaches a worker's own PersistentStore
+    // (pdu_sink for inbound-relayed events, and this function for
+    // locally-sent ones, both write only through main), so
+    // backfill/event/state/state_ids/get_missing_events served by a worker
+    // for this room could omit every message sent since the room's last
+    // membership-triggered reload.
+    notify_room_changed(runtime, room_id);
     wire_federation_callbacks(runtime);
     if (runtime.dispatch_worker != nullptr)
     {
