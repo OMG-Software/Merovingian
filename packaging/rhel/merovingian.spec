@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.10.21
+Version:        0.10.22
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -97,6 +97,8 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Sat Jul 04 2026 James Chapman <claude@ping.me.uk> - 0.10.22-1
+- test(federation): add failure-path integration coverage for the 0.10.19-0.10.21 worker/main relay fixes — membership_ingest (room not found, acceptor unwired), edu_ingest (malformed content, sink unwired), invite_ingest (unknown local invitee, handler unwired), and otk_claim_ingest (double-claim consumption, no key available) — closing gaps where only the accepted/happy path was previously tested
 * Sat Jul 04 2026 James Chapman <claude@ping.me.uk> - 0.10.21-1
 - fix(federation): federation worker's invite_handler persisted a federated invite's membership row, invite metadata, and event only into the worker's own local store, never relaying it to main — the same class of bug 0.10.19 fixed for membership_acceptor. A remote server inviting a local user to a room hosted elsewhere was silently swallowed with no trace anywhere. invite_handler now relays through main via a new invite_ingest IPC call
 - fix(federation,security): federation worker's one_time_keys_claim_provider decided key availability from a per-process in-memory snapshot taken once at worker startup, risking a one-time prekey being handed out twice (breaking Olm's single-use guarantee) if a worker ever fell back to main, and going permanently stale once its startup snapshot was exhausted even as fresh keys were uploaded through main. one_time_keys_claim_provider now relays through main via a new otk_claim_ingest IPC call so every claim is decided against the single authoritative store

@@ -165,6 +165,25 @@ auto write_worker_config(std::filesystem::path const& path, Config const& config
     return pool.healthy();
 }
 
+// Mirrors ipc::ipc_json_str's escaping for a JSON string embedded inside one
+// of the *_ingest wire frames built by hand in this file's scenarios — the
+// same escaping every *_ingest scenario below needs for its embedded event/
+// content JSON.
+[[nodiscard]] auto ipc_escape_json_string(std::string_view raw) -> std::string
+{
+    auto escaped = std::string{'"'};
+    for (auto const ch : raw)
+    {
+        if (ch == '"' || ch == '\\')
+        {
+            escaped += '\\';
+        }
+        escaped += ch;
+    }
+    escaped += '"';
+    return escaped;
+}
+
 } // namespace
 
 SCENARIO("The federation worker pool starts real worker processes and routes non-room requests",
@@ -563,6 +582,106 @@ SCENARIO("handle_membership_ingest_request persists a worker-relayed federated j
     }
 }
 
+SCENARIO("handle_membership_ingest_request rejects a relayed join for a room main does not have",
+         "[integration][federation-worker][membership][send_join][error-paths]")
+{
+    // The default membership_acceptor's only precondition is that the room
+    // row already exists (see local_http_router.cpp: "room not found", 404).
+    // A worker relaying a send_join for a room main never learned about
+    // (e.g. a stale worker snapshot, or a genuinely bogus remote request)
+    // must not silently persist a member into a non-existent room.
+    GIVEN("a runtime with the default federation callbacks wired and no rooms stored")
+    {
+        REQUIRE(sodium_init() >= 0);
+
+        auto const tmp_dir = unique_temp_dir("merovingian-fed-worker-membership-404");
+        auto config = make_federation_worker_config(tmp_dir);
+        config.database().sqlite_path = (tmp_dir / "membership-404-test.sqlite3").string();
+
+        auto started = start_runtime(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+        REQUIRE(runtime.federation.membership_acceptor);
+
+        WHEN("a membership_ingest request targets a room that was never stored")
+        {
+            auto const room_id = std::string{"!never-stored:example.com"};
+            auto const sender = std::string{"@remote:matrix.example.org"};
+            auto const event_json = std::string{R"({"room_id":")"} + room_id + R"(","sender":")" + sender +
+                                    R"(","origin_server_ts":1234,"type":"m.room.member",)" + R"("state_key":")" +
+                                    sender + R"(","content":{"membership":"join"}})";
+            auto const request_json =
+                std::string{
+                    R"({"type":"membership_ingest","endpoint":"send_join","event_id":"$placeholder-event-id")"} +
+                R"(,"room_id":")" + room_id + R"(","room_version":"10","sender":")" + sender +
+                R"(","event_type":"m.room.member","state_key":")" + sender +
+                R"(","origin_server_ts":1234,"depth":0,"auth_event_ids":[],"prev_event_ids":[],"signatures":[],)" +
+                R"("json":)" + ipc_escape_json_string(event_json) + "}";
+
+            auto const response_json = merovingian::homeserver::handle_membership_ingest_request(runtime, request_json);
+
+            THEN("the response reports the join as rejected with a 404 status, not silently persisted")
+            {
+                INFO("response: " << response_json);
+                REQUIRE(response_json.find(R"("accepted":false)") != std::string::npos);
+                REQUIRE(response_json.find(R"("status":404)") != std::string::npos);
+            }
+
+            AND_THEN("main's own store gained no membership row for the non-existent room")
+            {
+                auto const has_membership_row =
+                    std::ranges::any_of(runtime.database.persistent_store.memberships,
+                                        [&](merovingian::database::PersistentMembership const& m) {
+                                            return m.room_id == room_id;
+                                        });
+                REQUIRE_FALSE(has_membership_row);
+            }
+        }
+    }
+}
+
+SCENARIO("handle_membership_ingest_request reports 501 when membership_acceptor is not wired",
+         "[integration][federation-worker][membership][error-paths]")
+{
+    // Guards the explicit fallback branch in handle_membership_ingest_request:
+    // if a future refactor ever reaches main with membership_acceptor unset
+    // (e.g. an ordering bug in startup wiring), the relay must fail closed
+    // with a clear 501 rather than segfaulting on an empty std::function or
+    // silently dropping the join.
+    GIVEN("a runtime whose federation callbacks were never wired")
+    {
+        REQUIRE(sodium_init() >= 0);
+
+        auto const tmp_dir = unique_temp_dir("merovingian-fed-worker-membership-unwired");
+        auto config = make_federation_worker_config(tmp_dir);
+        config.database().sqlite_path = (tmp_dir / "membership-unwired-test.sqlite3").string();
+
+        auto started = start_runtime(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        REQUIRE_FALSE(runtime.federation.membership_acceptor);
+
+        WHEN("a membership_ingest request is handled anyway")
+        {
+            auto const request_json = std::string{
+                R"({"type":"membership_ingest","endpoint":"send_join","event_id":"$x","room_id":"!x:example.com",)"
+                R"("room_version":"10","sender":"@remote:example.org","event_type":"m.room.member",)"
+                R"("state_key":"@remote:example.org","origin_server_ts":1234,"depth":0,)"
+                R"("auth_event_ids":[],"prev_event_ids":[],"signatures":[],"json":"{}"})"};
+
+            auto const response_json = merovingian::homeserver::handle_membership_ingest_request(runtime, request_json);
+
+            THEN("the response reports 501 rather than crashing or silently dropping the join")
+            {
+                INFO("response: " << response_json);
+                REQUIRE(response_json.find(R"("accepted":false)") != std::string::npos);
+                REQUIRE(response_json.find(R"("status":501)") != std::string::npos);
+            }
+        }
+    }
+}
+
 SCENARIO("handle_edu_ingest_request delivers a worker-relayed m.direct_to_device EDU to main's to-device queue",
          "[integration][federation-worker][edu][to-device][e2ee]")
 {
@@ -646,6 +765,89 @@ SCENARIO("handle_edu_ingest_request delivers a worker-relayed m.direct_to_device
                                                    m.content_json.find("sess123") != std::string::npos;
                                         });
                 REQUIRE(has_key_share);
+            }
+        }
+    }
+}
+
+SCENARIO("handle_edu_ingest_request rejects a malformed m.direct_to_device EDU instead of accepting it",
+         "[integration][federation-worker][edu][error-paths]")
+{
+    // federation::parse_inbound_edu_envelope validates content_json shape per
+    // EDU type before deserialize_edu_ingest ever builds an envelope (see
+    // edu_content_is_valid: direct_to_device requires sender/type/messages).
+    // A worker relaying a malformed EDU — or a bug in the worker's own
+    // serialize_edu_ingest — must not silently succeed or reach the to-device
+    // queue with garbage.
+    GIVEN("a runtime with the default federation callbacks wired")
+    {
+        REQUIRE(sodium_init() >= 0);
+
+        auto const tmp_dir = unique_temp_dir("merovingian-fed-worker-edu-malformed");
+        auto config = make_federation_worker_config(tmp_dir);
+        config.database().sqlite_path = (tmp_dir / "edu-malformed-test.sqlite3").string();
+
+        auto started = start_runtime(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+        REQUIRE(runtime.federation.edu_sink);
+
+        WHEN("an edu_ingest request's content_json is missing the required \"messages\" field")
+        {
+            auto const content_json =
+                std::string{R"({"sender":"@remote:matrix.example.org","type":"m.room_key","message_id":"m1"})"};
+            auto const request_json = std::string{R"({"type":"edu_ingest","edu_type":"m.direct_to_device",)"} +
+                                      R"("origin":"matrix.example.org","content_json":)" +
+                                      ipc_escape_json_string(content_json) + "}";
+
+            auto const response_json = merovingian::homeserver::handle_edu_ingest_request(runtime, request_json);
+
+            THEN("the response reports the EDU as rejected_invalid, not accepted")
+            {
+                INFO("response: " << response_json);
+                REQUIRE(response_json.find(R"("status":"rejected_invalid")") != std::string::npos);
+            }
+
+            AND_THEN("nothing was written to main's to-device queue")
+            {
+                REQUIRE(runtime.database.persistent_store.to_device_messages.empty());
+            }
+        }
+    }
+}
+
+SCENARIO("handle_edu_ingest_request reports rejected_invalid when edu_sink is not wired",
+         "[integration][federation-worker][edu][error-paths]")
+{
+    GIVEN("a runtime whose federation callbacks were never wired")
+    {
+        REQUIRE(sodium_init() >= 0);
+
+        auto const tmp_dir = unique_temp_dir("merovingian-fed-worker-edu-unwired");
+        auto config = make_federation_worker_config(tmp_dir);
+        config.database().sqlite_path = (tmp_dir / "edu-unwired-test.sqlite3").string();
+
+        auto started = start_runtime(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        REQUIRE_FALSE(runtime.federation.edu_sink);
+
+        WHEN("a well-formed edu_ingest request is handled anyway")
+        {
+            auto const content_json = std::string{
+                R"({"sender":"@remote:matrix.example.org","type":"m.room_key","message_id":"m1","messages":{}})"};
+            auto const request_json = std::string{R"({"type":"edu_ingest","edu_type":"m.direct_to_device",)"} +
+                                      R"("origin":"matrix.example.org","content_json":)" +
+                                      ipc_escape_json_string(content_json) + "}";
+
+            auto const response_json = merovingian::homeserver::handle_edu_ingest_request(runtime, request_json);
+
+            THEN("the response reports rejected_invalid rather than crashing or silently dropping the EDU")
+            {
+                INFO("response: " << response_json);
+                REQUIRE(response_json.find(R"("status":"rejected_invalid")") != std::string::npos);
+                REQUIRE(response_json.find("edu_sink not wired") != std::string::npos);
             }
         }
     }
@@ -754,6 +956,105 @@ SCENARIO("handle_invite_ingest_request persists a worker-relayed federated invit
     }
 }
 
+SCENARIO("handle_invite_ingest_request rejects a federated invite to a user this server does not host",
+         "[integration][federation-worker][invite][error-paths]")
+{
+    // Mirrors the invite_handler branch in local_http_router.cpp: {false,
+    // 404, "invited local user not found"} when the invite's target state_key
+    // is not registered locally. A worker must relay this rejection through
+    // main unchanged, not silently drop it or persist a membership row for a
+    // user main has never heard of.
+    GIVEN("a runtime with the default federation callbacks wired and no matching local invitee")
+    {
+        REQUIRE(sodium_init() >= 0);
+
+        auto const tmp_dir = unique_temp_dir("merovingian-fed-worker-invite-404");
+        auto config = make_federation_worker_config(tmp_dir);
+        config.database().sqlite_path = (tmp_dir / "invite-404-test.sqlite3").string();
+
+        auto started = start_runtime(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+        REQUIRE(runtime.federation.invite_handler);
+        // Deliberately do NOT register target_user in runtime.database.users.
+
+        WHEN("an invite_ingest request targets a user who was never registered locally")
+        {
+            auto const room_id = std::string{"!invite-room-404:matrix.example.org"};
+            auto const sender = std::string{"@remote:matrix.example.org"};
+            auto const target_user = std::string{"@nobody:"} + config.server().server_name;
+            auto const event_json = std::string{R"({"room_id":")"} + room_id + R"(","sender":")" + sender +
+                                    R"(","origin_server_ts":1234,"type":"m.room.member",)" + R"("state_key":")" +
+                                    target_user + R"(","content":{"membership":"invite"}})";
+
+            auto const request_json =
+                std::string{R"({"type":"invite_ingest","room_id":)"} + ipc_escape_json_string(room_id) +
+                R"(,"event_id":"$placeholder-event-id","room_version":"10",)" + R"("invite_event_json":)" +
+                ipc_escape_json_string(event_json) + R"(,"invite_room_state_json":[]})";
+
+            auto const response_json = merovingian::homeserver::handle_invite_ingest_request(runtime, request_json);
+
+            THEN("the response reports the invite as rejected with a 404 status")
+            {
+                INFO("response: " << response_json);
+                REQUIRE(response_json.find(R"("accepted":false)") != std::string::npos);
+                REQUIRE(response_json.find(R"("status":404)") != std::string::npos);
+            }
+
+            AND_THEN("main's own store gained no membership or invite row for the unknown user")
+            {
+                auto const has_membership_row =
+                    std::ranges::any_of(runtime.database.persistent_store.memberships,
+                                        [&](merovingian::database::PersistentMembership const& m) {
+                                            return m.user_id == target_user;
+                                        });
+                REQUIRE_FALSE(has_membership_row);
+
+                auto const has_invite_row = std::ranges::any_of(runtime.database.persistent_store.invites,
+                                                                [&](merovingian::database::PersistentInvite const& i) {
+                                                                    return i.user_id == target_user;
+                                                                });
+                REQUIRE_FALSE(has_invite_row);
+            }
+        }
+    }
+}
+
+SCENARIO("handle_invite_ingest_request reports 501 when invite_handler is not wired",
+         "[integration][federation-worker][invite][error-paths]")
+{
+    GIVEN("a runtime whose federation callbacks were never wired")
+    {
+        REQUIRE(sodium_init() >= 0);
+
+        auto const tmp_dir = unique_temp_dir("merovingian-fed-worker-invite-unwired");
+        auto config = make_federation_worker_config(tmp_dir);
+        config.database().sqlite_path = (tmp_dir / "invite-unwired-test.sqlite3").string();
+
+        auto started = start_runtime(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        REQUIRE_FALSE(runtime.federation.invite_handler);
+
+        WHEN("an invite_ingest request is handled anyway")
+        {
+            auto const request_json =
+                std::string{R"({"type":"invite_ingest","room_id":"!x:example.com","event_id":"$x","room_version":"10",)"
+                            R"("invite_event_json":"{}","invite_room_state_json":[]})"};
+
+            auto const response_json = merovingian::homeserver::handle_invite_ingest_request(runtime, request_json);
+
+            THEN("the response reports 501 rather than crashing or silently dropping the invite")
+            {
+                INFO("response: " << response_json);
+                REQUIRE(response_json.find(R"("accepted":false)") != std::string::npos);
+                REQUIRE(response_json.find(R"("status":501)") != std::string::npos);
+            }
+        }
+    }
+}
+
 SCENARIO("handle_otk_claim_ingest_request decides a one-time-key claim against main's own store",
          "[integration][federation-worker][e2ee][otk]")
 {
@@ -832,6 +1133,98 @@ SCENARIO("handle_otk_claim_ingest_request decides a one-time-key claim against m
                         return k.user_id == user_id && k.device_id == device_id && k.key_id == key_id;
                     });
                 REQUIRE_FALSE(still_present);
+            }
+        }
+    }
+}
+
+SCENARIO("handle_otk_claim_ingest_request cannot reissue a one-time key a prior claim already consumed",
+         "[integration][federation-worker][e2ee][otk][error-paths]")
+{
+    // This is the actual split-brain scenario 0.10.21 closes, driven entirely
+    // through the ingest entry point rather than two racing processes: the
+    // first claim must consume the key from main's single store so an
+    // immediately following second claim for the identical (user, device,
+    // algorithm) gets nothing back. Before the fix, two independent
+    // processes each holding their own PersistentStore snapshot could both
+    // answer such a pair of claims with the same key material; routing both
+    // claims through this one function against one store is what prevents it.
+    GIVEN("a runtime with a single one-time key already claimed once via otk_claim_ingest")
+    {
+        REQUIRE(sodium_init() >= 0);
+
+        auto const tmp_dir = unique_temp_dir("merovingian-fed-worker-otk-doubleclaim");
+        auto config = make_federation_worker_config(tmp_dir);
+        config.database().sqlite_path = (tmp_dir / "otk-doubleclaim-test.sqlite3").string();
+
+        auto started = start_runtime(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+        REQUIRE(runtime.federation.one_time_keys_claim_provider);
+
+        auto const user_id = std::string{"@local:"} + config.server().server_name;
+        auto const device_id = std::string{"DEVICE1"};
+        auto const key_id = std::string{"signed_curve25519:AAAAAA"};
+        REQUIRE(merovingian::database::store_one_time_key(
+            runtime.database.persistent_store, {user_id, device_id, key_id, R"({"key":"fakeCurve25519KeyMaterial"})"}));
+
+        auto const claim_request_body =
+            std::string{R"({"one_time_keys":{")"} + user_id + R"(":{")" + device_id + R"(":"signed_curve25519"}}})";
+        auto const request_json = std::string{R"({"type":"otk_claim_ingest","request_body":)"} +
+                                  ipc_escape_json_string(claim_request_body) + "}";
+
+        auto const first_response = merovingian::homeserver::handle_otk_claim_ingest_request(runtime, request_json);
+        REQUIRE(first_response.find("fakeCurve25519KeyMaterial") != std::string::npos);
+
+        WHEN("a second otk_claim_ingest request for the same user/device/algorithm is handled immediately after")
+        {
+            auto const second_response =
+                merovingian::homeserver::handle_otk_claim_ingest_request(runtime, request_json);
+
+            THEN("no key material is returned — the one-time key was already consumed by the first claim")
+            {
+                INFO("response: " << second_response);
+                REQUIRE(second_response.find("fakeCurve25519KeyMaterial") == std::string::npos);
+                REQUIRE(second_response.find(device_id) == std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("handle_otk_claim_ingest_request returns no keys when the requested device has none available",
+         "[integration][federation-worker][e2ee][otk][error-paths]")
+{
+    GIVEN("a runtime with the default federation callbacks wired and no one-time keys stored for the device")
+    {
+        REQUIRE(sodium_init() >= 0);
+
+        auto const tmp_dir = unique_temp_dir("merovingian-fed-worker-otk-none");
+        auto config = make_federation_worker_config(tmp_dir);
+        config.database().sqlite_path = (tmp_dir / "otk-none-test.sqlite3").string();
+
+        auto started = start_runtime(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+        REQUIRE(runtime.federation.one_time_keys_claim_provider);
+
+        auto const user_id = std::string{"@local:"} + config.server().server_name;
+        auto const device_id = std::string{"DEVICE-WITH-NO-KEYS"};
+
+        WHEN("an otk_claim_ingest request is handled for a device with no stored one-time or fallback key")
+        {
+            auto const claim_request_body =
+                std::string{R"({"one_time_keys":{")"} + user_id + R"(":{")" + device_id + R"(":"signed_curve25519"}}})";
+            auto const request_json = std::string{R"({"type":"otk_claim_ingest","request_body":)"} +
+                                      ipc_escape_json_string(claim_request_body) + "}";
+
+            auto const response_json = merovingian::homeserver::handle_otk_claim_ingest_request(runtime, request_json);
+
+            THEN("the response body carries an empty one_time_keys object rather than an error or crash")
+            {
+                INFO("response: " << response_json);
+                REQUIRE(response_json.find(R"(\"one_time_keys\":{}})") != std::string::npos);
             }
         }
     }
