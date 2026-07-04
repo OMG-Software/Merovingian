@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.10.18
+Version:        0.10.19
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -97,6 +97,8 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Sat Jul 04 2026 James Chapman <claude@ping.me.uk> - 0.10.19-1
+- fix(federation): a federated join/leave/knock accepted by a federation worker was never visible to the main process's own room state; every subsequent message from that member was rejected with "sender is not joined to the room" — membership_acceptor now relays through main via a new membership_ingest IPC call, the same way pdu_sink already does
 * Fri Jul 03 2026 James Chapman <claude@ping.me.uk> - 0.10.18-1
 - fix(federation): worker shard routing hashed the raw percent-encoded room ID from room-scoped federation paths (e.g. make_join's "%21room:example.com"), which never matches the plain-text room_id used by notify_room_changed()/room_service; with more than one federation.worker.shards configured this routed the request to a shard that was never synced for the room, so every room-scoped federation request 404'd even though the room existed locally
 * Fri Jul 03 2026 James Chapman <claude@ping.me.uk> - 0.10.17-1

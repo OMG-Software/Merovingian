@@ -23,6 +23,18 @@ struct HomeserverRuntime;
 // Uses FNV-1a 32-bit: shard = fnv1a_32(room_id) % shards.
 [[nodiscard]] auto federation_worker_shard_for(std::string_view room_id, std::uint32_t shards) noexcept -> std::size_t;
 
+// Handles a "membership_ingest" IPC request (a worker relaying a send_join /
+// send_leave / send_knock acceptance so it persists through main's own
+// PersistentStore rather than the worker's — see docs/architecture.md,
+// "Federation worker room staleness"). Exposed as a free function, separate
+// from WorkerPool's private per-worker request-handler lambda, so it has a
+// seam tests can drive directly without spawning a real worker subprocess
+// (which would additionally have to clear the unrelated "remote is unknown"
+// federation-policy gate before ever reaching this code). Takes and returns
+// the same wire JSON a worker sends/receives over the IPC channel.
+[[nodiscard]] auto handle_membership_ingest_request(HomeserverRuntime& runtime, std::string_view request_json)
+    -> std::string;
+
 // Owns N out-of-process federation worker supervisors. Routes each inbound
 // federation request to the worker that owns the request's room ID.
 //

@@ -3,11 +3,15 @@
 
 #include "worker_event_loop.hpp"
 
+#include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/crypto/ipc_auth_key.hpp"
 #include "merovingian/crypto/master_key.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/events/event.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
+#include "merovingian/federation/membership_endpoints.hpp"
+#include "merovingian/federation/transactions.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/http/outbound_client.hpp"
@@ -43,12 +47,13 @@ namespace
     // the escaped-quote/substring bug of issue #320), route through the shared
     // canonicaljson-based helpers in merovingian::ipc.
 
-    // Serialize an InboundPduEnvelope for the pdu_ingest IPC call to main.
-    auto serialize_pdu_ingest(federation::InboundPduEnvelope const& env) -> std::string
+    // Shared body for both pdu_ingest and membership_ingest frames — the two
+    // IPC calls carry the identical InboundPduEnvelope payload, differing only
+    // in the "type" (and membership_ingest's extra "endpoint") field, which
+    // the caller writes before/after calling this.
+    auto append_envelope_fields(std::string& result, federation::InboundPduEnvelope const& env) -> void
     {
-        auto result = std::string{};
-        result.reserve(512U + env.json.size());
-        result += R"({"type":"pdu_ingest","event_id":)";
+        result += R"("event_id":)";
         result += ipc::ipc_json_str(env.event_id);
         result += R"(,"room_id":)";
         result += ipc::ipc_json_str(env.room_id);
@@ -108,6 +113,49 @@ namespace
         }
         result += R"(],"json":)";
         result += ipc::ipc_json_str(env.json);
+    }
+
+    // Serialize an InboundPduEnvelope for the pdu_ingest IPC call to main.
+    auto serialize_pdu_ingest(federation::InboundPduEnvelope const& env) -> std::string
+    {
+        auto result = std::string{R"({"type":"pdu_ingest",)"};
+        result.reserve(512U + env.json.size());
+        append_envelope_fields(result, env);
+        result += '}';
+        return result;
+    }
+
+    // FederationEndpoint values that reach membership_acceptor (send_join,
+    // send_leave, send_knock only — see inbound_request.cpp's route dispatch).
+    [[nodiscard]] auto membership_endpoint_to_string(federation::FederationEndpoint endpoint) -> std::string_view
+    {
+        switch (endpoint)
+        {
+        case federation::FederationEndpoint::send_join:
+            return "send_join";
+        case federation::FederationEndpoint::send_leave:
+            return "send_leave";
+        case federation::FederationEndpoint::send_knock:
+            return "send_knock";
+        default:
+            return "";
+        }
+    }
+
+    // Serialize an (endpoint, InboundPduEnvelope) pair for the membership_ingest
+    // IPC call to main. See docs/architecture.md, "Federation worker room
+    // staleness" — membership_acceptor must relay through main the same way
+    // pdu_sink already does, or a join/leave/knock accepted by a worker is
+    // invisible to main's own store (and therefore to every subsequent /send
+    // message from that member, which main authorizes against its own state).
+    auto serialize_membership_ingest(federation::FederationEndpoint endpoint, federation::InboundPduEnvelope const& env)
+        -> std::string
+    {
+        auto result = std::string{R"({"type":"membership_ingest","endpoint":)"};
+        result.reserve(512U + env.json.size());
+        result += ipc::ipc_json_str(membership_endpoint_to_string(endpoint));
+        result += ',';
+        append_envelope_fields(result, env);
         result += '}';
         return result;
     }
@@ -138,6 +186,109 @@ namespace
             result.status = federation::PduIngestionStatus::internal_error;
         }
         result.reason = ipc::ipc_json_get_str(json, "reason");
+        return result;
+    }
+
+    // MembershipAcceptResult carries whole event JSON blobs (auth_chain_json,
+    // state_json) that can legitimately contain arbitrary remote-user content
+    // — including strings that look like `"status":123` or `"accepted":true`
+    // if a message body happens to contain them. A substring-needle scanner
+    // (as pdu_ingest's simpler string/int-only fields use above) would then
+    // misparse the *outer* frame, exactly the class of bug issue #320 fixed
+    // for ipc::ipc_json_get_str. Parse the whole frame as real JSON instead.
+    [[nodiscard]] auto field_string(canonicaljson::Object const& obj, std::string_view key) -> std::string
+    {
+        for (auto const& member : obj)
+        {
+            if (member.key == key)
+            {
+                if (auto const* text = std::get_if<std::string>(&member.value->storage()); text != nullptr)
+                {
+                    return *text;
+                }
+            }
+        }
+        return {};
+    }
+
+    [[nodiscard]] auto field_bool(canonicaljson::Object const& obj, std::string_view key) -> bool
+    {
+        for (auto const& member : obj)
+        {
+            if (member.key == key)
+            {
+                if (auto const* flag = std::get_if<bool>(&member.value->storage()); flag != nullptr)
+                {
+                    return *flag;
+                }
+            }
+        }
+        return false;
+    }
+
+    [[nodiscard]] auto field_int(canonicaljson::Object const& obj, std::string_view key) -> std::int64_t
+    {
+        for (auto const& member : obj)
+        {
+            if (member.key == key)
+            {
+                if (auto const* number = std::get_if<std::int64_t>(&member.value->storage()); number != nullptr)
+                {
+                    return *number;
+                }
+            }
+        }
+        return 0;
+    }
+
+    [[nodiscard]] auto field_string_array(canonicaljson::Object const& obj, std::string_view key)
+        -> std::vector<std::string>
+    {
+        auto out = std::vector<std::string>{};
+        for (auto const& member : obj)
+        {
+            if (member.key != key)
+            {
+                continue;
+            }
+            auto const* array = std::get_if<canonicaljson::Array>(&member.value->storage());
+            if (array == nullptr)
+            {
+                break;
+            }
+            for (auto const& entry : *array)
+            {
+                if (auto const* text = std::get_if<std::string>(&entry.storage()); text != nullptr)
+                {
+                    out.push_back(*text);
+                }
+            }
+        }
+        return out;
+    }
+
+    // Deserialize a `membership_ingest_result` JSON frame from main.
+    auto deserialize_membership_ingest_result(std::string_view json) -> federation::MembershipAcceptResult
+    {
+        auto result = federation::MembershipAcceptResult{};
+        auto const parsed = canonicaljson::parse_lossless(json);
+        auto const* obj = parsed.error == canonicaljson::ParseError::none
+                              ? std::get_if<canonicaljson::Object>(&parsed.value.storage())
+                              : nullptr;
+        if (obj == nullptr)
+        {
+            result.status = 500U;
+            result.reason = "membership_ingest_result frame did not parse as a JSON object";
+            return result;
+        }
+        result.accepted = field_bool(*obj, "accepted");
+        result.status = static_cast<std::uint16_t>(field_int(*obj, "status"));
+        result.reason = field_string(*obj, "reason");
+        result.room_version = field_string(*obj, "room_version");
+        result.signed_event_json = field_string(*obj, "signed_event_json");
+        result.auth_chain_json = field_string_array(*obj, "auth_chain_json");
+        result.state_json = field_string_array(*obj, "state_json");
+        result.knock_room_state_json = field_string_array(*obj, "knock_room_state_json");
         return result;
     }
 
@@ -220,6 +371,31 @@ auto WorkerEventLoop::run() -> void
             return {federation::PduIngestionStatus::internal_error, "pdu_ingest IPC timeout"};
         }
         return deserialize_pdu_ingest_result(*reply);
+    };
+
+    // Override membership_acceptor the same way: wire_federation_callbacks()'s
+    // default implementation (still used above for membership_template_provider,
+    // invite_handler, etc.) writes send_join/send_leave/send_knock acceptances
+    // straight into this process's own PersistentStore — which, per the "does
+    // NOT write events" invariant this file states for pdu_sink above, main
+    // never sees. A room this worker just accepted a remote join into would be
+    // invisible to main's own store, and every subsequent /send message from
+    // that member — authorized by main via pdu_sink against main's own state —
+    // would then fail with "sender is not joined to the room" even though the
+    // join genuinely succeeded. See docs/architecture.md, "Federation worker
+    // room staleness".
+    runtime.federation.membership_acceptor =
+        [channel_ptr](federation::FederationEndpoint endpoint, std::string_view room_id, std::string_view event_id,
+                      federation::InboundPduEnvelope const& envelope) -> federation::MembershipAcceptResult {
+        std::ignore = room_id;  // envelope.room_id carries the same value
+        std::ignore = event_id; // unused by the default implementation too
+        auto const json_body = serialize_membership_ingest(endpoint, envelope);
+        auto const reply = channel_ptr->send_request(json_body, std::chrono::seconds{60});
+        if (!reply.has_value())
+        {
+            return {false, 503U, "membership_ingest IPC timeout", {}, {}};
+        }
+        return deserialize_membership_ingest_result(*reply);
     };
 
     // EDU sink is a no-op in Phase 1; EDUs are ephemeral and acceptable to drop.

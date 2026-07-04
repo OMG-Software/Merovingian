@@ -6,6 +6,8 @@
 #include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/events/event_signer.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
+#include "merovingian/federation/membership_endpoints.hpp"
+#include "merovingian/federation/transactions.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/ipc/channel.hpp"
 #include "merovingian/ipc/federation_ipc_frames.hpp"
@@ -293,6 +295,63 @@ namespace
         return body;
     }
 
+    // membership_ingest reuses pdu_ingest's envelope wire shape (see
+    // append_envelope_fields in worker_event_loop.cpp) plus one extra
+    // "endpoint" field, so the existing envelope parser handles everything
+    // except that field.
+    [[nodiscard]] auto federation_endpoint_from_string(std::string_view value) noexcept
+        -> federation::FederationEndpoint
+    {
+        if (value == "send_leave")
+        {
+            return federation::FederationEndpoint::send_leave;
+        }
+        if (value == "send_knock")
+        {
+            return federation::FederationEndpoint::send_knock;
+        }
+        return federation::FederationEndpoint::send_join;
+    }
+
+    auto json_str_array_literal(std::vector<std::string> const& values) -> std::string
+    {
+        auto body = std::string{"["};
+        auto first = true;
+        for (auto const& value : values)
+        {
+            if (!first)
+            {
+                body += ',';
+            }
+            first = false;
+            body += json_str(value);
+        }
+        body += ']';
+        return body;
+    }
+
+    auto serialize_membership_ingest_result(federation::MembershipAcceptResult const& result) -> std::string
+    {
+        auto body = std::string{R"({"type":"membership_ingest_result","accepted":)"};
+        body += result.accepted ? "true" : "false";
+        body += R"(,"status":)";
+        body += std::to_string(result.status);
+        body += R"(,"reason":)";
+        body += json_str(result.reason);
+        body += R"(,"room_version":)";
+        body += json_str(result.room_version);
+        body += R"(,"signed_event_json":)";
+        body += json_str(result.signed_event_json);
+        body += R"(,"auth_chain_json":)";
+        body += json_str_array_literal(result.auth_chain_json);
+        body += R"(,"state_json":)";
+        body += json_str_array_literal(result.state_json);
+        body += R"(,"knock_room_state_json":)";
+        body += json_str_array_literal(result.knock_room_state_json);
+        body += '}';
+        return body;
+    }
+
     auto serialize_sign_response(crypto::SignatureResult const& result) -> std::string
     {
         auto signature_b64 = std::string{};
@@ -336,6 +395,33 @@ auto federation_worker_shard_for(std::string_view room_id, std::uint32_t shards)
         return 0U;
     }
     return static_cast<std::size_t>(fnv1a_32(room_id) % shards);
+}
+
+auto handle_membership_ingest_request(HomeserverRuntime& runtime, std::string_view request_json) -> std::string
+{
+    // send_join/send_leave/send_knock accepted by a worker must be persisted
+    // through main's own store, not the worker's — see docs/architecture.md,
+    // "Federation worker room staleness", "Shard routing must key on the same
+    // room ID string...". The default membership_acceptor (wired via
+    // wire_federation_callbacks, same as pdu_sink's default) already calls
+    // sync_notifier->publish itself on success, so unlike pdu_ingest this does
+    // not need to publish separately.
+    auto const endpoint = federation_endpoint_from_string(json_get_str(request_json, "endpoint"));
+    auto const env = deserialize_pdu_ingest(request_json);
+    auto result = federation::MembershipAcceptResult{};
+    {
+        auto guard = std::unique_lock{runtime.mutex};
+        if (runtime.federation.membership_acceptor)
+        {
+            result = runtime.federation.membership_acceptor(endpoint, env.room_id, {}, env);
+        }
+        else
+        {
+            result.status = 501U;
+            result.reason = "membership_acceptor not wired";
+        }
+    }
+    return serialize_membership_ingest_result(result);
 }
 
 WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRuntime& runtime, std::string worker_path,
@@ -392,6 +478,10 @@ WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRunt
                     }
                 }
                 ptr->channel().send_response(id, serialize_pdu_ingest_result(result));
+            }
+            else if (type == "membership_ingest")
+            {
+                ptr->channel().send_response(id, handle_membership_ingest_request(runtime_, json));
             }
             else if (type == "sign_request")
             {
