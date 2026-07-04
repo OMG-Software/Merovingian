@@ -11,6 +11,9 @@
 #include "../support/master_key.hpp"
 #include "../support/temp_directory.hpp"
 #include "merovingian/config/config.hpp"
+#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/federation/inbound_ingestion.hpp"
+#include "merovingian/federation/transactions.hpp"
 #include "merovingian/homeserver/federation_proxy.hpp"
 #include "merovingian/homeserver/federation_request_routing.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
@@ -20,6 +23,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -449,6 +453,111 @@ SCENARIO("PUT /send transactions are routed to a worker and receive a JSON respo
             {
                 REQUIRE(response.status != 503U);
                 REQUIRE_FALSE(response.body.empty());
+            }
+        }
+    }
+}
+
+SCENARIO("handle_membership_ingest_request persists a worker-relayed federated join to main's own store",
+         "[integration][federation-worker][membership][send_join]")
+{
+    // This drives the actual new code from this fix — worker_pool.cpp's
+    // handle_membership_ingest_request() — through its real wire format: a raw
+    // JSON string shaped exactly like worker_event_loop.cpp's
+    // serialize_membership_ingest() produces, in and out. Driving a real
+    // send_join through a real worker subprocess end-to-end would additionally
+    // require it to pass the "remote is unknown" federation-policy gate ahead
+    // of membership_acceptor (src/federation/inbound_request.cpp), which needs
+    // a live, network-resolvable remote signing key — orthogonal infrastructure
+    // this bug isn't about. That gate is exactly why this file's *other*
+    // scenarios only assert `status != 503` rather than a specific success
+    // code; none of them exercise real acceptance logic either. Calling
+    // handle_membership_ingest_request directly, with the same JSON a worker
+    // would actually send, verifies the real claim this fix makes — that a
+    // relayed acceptance persists into main's own store — without fighting
+    // that unrelated gate.
+    GIVEN("a resident room and a runtime with the default federation callbacks wired")
+    {
+        REQUIRE(sodium_init() >= 0);
+
+        auto const tmp_dir = unique_temp_dir("merovingian-fed-worker-membership");
+        auto config = make_federation_worker_config(tmp_dir);
+        // sqlite ":memory:" (this file's default, fine for scenarios that never
+        // write) opens a brand-new, schema-less connection on every single
+        // write/read call (see detail::persist_transaction_to_backend) — every
+        // persistence call would silently no-op against an empty ephemeral
+        // database, making this test pass vacuously. Use a real file so writes
+        // and reads share the same underlying database, as they do in production.
+        config.database().sqlite_path = (tmp_dir / "membership-test.sqlite3").string();
+
+        auto started = start_runtime(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+        REQUIRE(runtime.federation.membership_acceptor);
+
+        auto const room_id = std::string{"!membership-room:example.com"};
+        // membership_acceptor's only precondition is that the room exists —
+        // a bare room row is enough; no create/power_levels/join_rules state is
+        // required to persist a join and its m.room.member state row.
+        REQUIRE(
+            merovingian::database::store_room(runtime.database.persistent_store, {room_id, "@resident:example.com"}));
+
+        WHEN("a membership_ingest request shaped like a real worker's is handled")
+        {
+            auto const sender = std::string{"@remote:matrix.example.org"};
+            auto const event_json = std::string{R"({"room_id":")"} + room_id + R"(","sender":")" + sender +
+                                    R"(","origin_server_ts":1234,"type":"m.room.member",)" + R"("state_key":")" +
+                                    sender + R"(","content":{"membership":"join"}})";
+            auto const request_json =
+                std::string{
+                    R"({"type":"membership_ingest","endpoint":"send_join","event_id":"$placeholder-event-id")"} +
+                R"(,"room_id":")" + room_id + R"(","room_version":"10","sender":")" + sender +
+                R"(","event_type":"m.room.member","state_key":")" + sender +
+                R"(","origin_server_ts":1234,"depth":0,"auth_event_ids":[],"prev_event_ids":[],"signatures":[],)" +
+                R"("json":)" +
+                [&] {
+                    // Mirror ipc::ipc_json_str's escaping for the embedded event JSON.
+                    auto escaped = std::string{'"'};
+                    for (auto const ch : event_json)
+                    {
+                        if (ch == '"' || ch == '\\')
+                        {
+                            escaped += '\\';
+                        }
+                        escaped += ch;
+                    }
+                    escaped += '"';
+                    return escaped;
+                }() +
+                "}";
+
+            auto const response_json = merovingian::homeserver::handle_membership_ingest_request(runtime, request_json);
+
+            THEN("the response reports the join as accepted with a 200 status")
+            {
+                INFO("response: " << response_json);
+                REQUIRE(response_json.find(R"("accepted":true)") != std::string::npos);
+                REQUIRE(response_json.find(R"("status":200)") != std::string::npos);
+            }
+
+            AND_THEN("main's own store has the new member's m.room.member state, so a later /send message from "
+                     "that sender (authorized by pdu_sink against this same store) sees them as joined — the bug "
+                     "this fix closes: membership_acceptor previously ran unmodified inside the worker process "
+                     "instead of being relayed here, writing only to the worker's own, separate store")
+            {
+                auto const has_join_state = std::ranges::any_of(
+                    runtime.database.persistent_store.state, [&](merovingian::database::PersistentStateEvent const& s) {
+                        return s.room_id == room_id && s.event_type == "m.room.member" && s.state_key == sender;
+                    });
+                REQUIRE(has_join_state);
+
+                auto const has_membership_row = std::ranges::any_of(
+                    runtime.database.persistent_store.memberships,
+                    [&](merovingian::database::PersistentMembership const& m) {
+                        return m.room_id == room_id && m.user_id == sender && m.membership == "join";
+                    });
+                REQUIRE(has_membership_row);
             }
         }
     }
