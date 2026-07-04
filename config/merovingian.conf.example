@@ -177,11 +177,33 @@ security.media.max_upload_size=50MiB
 security.media.quarantine_unknown_mime=true
 # Commented out: no AV engine integration is wired yet. This flag only changes
 # how Merovingian treats a scanner verdict supplied by an upstream caller/test
-# harness; it does not invoke or configure an antivirus scanner itself.
+# harness; it does not invoke or configure an antivirus scanner itself. Note
+# that encrypted-room attachments (application/octet-stream) are opaque
+# ciphertext the server cannot decrypt, so no scanner — upstream or otherwise
+# — can inspect their real content regardless of this setting; it only
+# matters for plaintext media in unencrypted rooms.
 # security.media.enable_av_scanner=true
+# Acceptance disposition for authenticated local uploads: allow,
+# allow-after-scan, quarantine, or deny. Defaults to allow-after-scan, which
+# accepts a clean scanner verdict and quarantines/rejects otherwise — the only
+# behaviour that existed before this setting was introduced.
+# security.media.local_upload_policy=allow-after-scan
+# Acceptance disposition for bytes fetched from a federated origin server,
+# same four values as local_upload_policy above. Defaults to quarantine
+# rather than mirroring local_upload_policy's default: a remote origin server
+# has no accountable local identity behind it, and Merovingian never produces
+# a real scanner verdict for remote-fetched bytes (see enable_av_scanner
+# above), so there is no genuine "clean" result to trust. Set to
+# allow-after-scan or allow only if you accept that risk or front this server
+# with a scanning proxy that decrypts/inspects plaintext media before it
+# reaches Merovingian.
+# security.media.remote_fetch_media_policy=quarantine
 security.media.block_private_ip_fetches=true
-# Commented out: remote media fetch is not implemented in this milestone and
-# these values are not consulted by the live code path.
+# Remote media fetching is opt-in and live: the homeserver resolves the
+# origin server, fetches the media over HTTPS, and ingests the response
+# through remote_fetch_media_policy above. remote_fetch_timeout is parsed and
+# validated, but the live fetch path still uses hard-coded discovery/HTTP
+# timeout values.
 # security.media.remote_fetch_enabled=false
 # security.media.remote_fetch_timeout=30s
 security.media.decode_in_sandbox=true

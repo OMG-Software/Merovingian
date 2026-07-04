@@ -97,6 +97,14 @@ auto server_name_is_valid(std::string_view server_name) noexcept -> bool
            contains_no_control_or_space(server_name);
 }
 
+auto ip_address_is_valid(std::string_view address) noexcept -> bool
+{
+    auto const text = std::string{address};
+    auto v4 = in_addr{};
+    auto v6 = in6_addr{};
+    return ::inet_pton(AF_INET, text.c_str(), &v4) == 1 || ::inet_pton(AF_INET6, text.c_str(), &v6) == 1;
+}
+
 auto ip_address_is_private_or_loopback(std::string_view address) noexcept -> bool
 {
     auto const text = std::string{address};

@@ -28,6 +28,14 @@ namespace merovingian::homeserver
                                             std::string_view media_id, std::string_view reason) -> OperationResult;
 [[nodiscard]] auto remote_media_fetch_disabled(HomeserverRuntime& runtime, std::string_view origin_server,
                                                std::string_view media_id) -> OperationResult;
+// Builds the outbound Matrix federation media download URL:
+// /_matrix/media/v3/download/{serverName}/{mediaId}
+// (server-server-api.md#get_matrixmediav3downloadservernamemediaid). origin_server
+// and media_id are percent-encoded so a reserved character in either cannot be
+// misinterpreted as an extra path segment or a different route on the resolved
+// host. Exposed for unit testing.
+[[nodiscard]] auto remote_media_download_url(std::string_view resolved_host, std::uint16_t resolved_port,
+                                             std::string_view origin_server, std::string_view media_id) -> std::string;
 [[nodiscard]] auto media_metrics_summary(HomeserverRuntime const& runtime) -> std::string;
 
 } // namespace merovingian::homeserver

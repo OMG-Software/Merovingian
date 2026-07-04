@@ -146,6 +146,71 @@ SCENARIO("Integrated local media repository flow covers upload download dedupe q
     }
 }
 
+// Security audit finding: admin media routes extracted the raw path suffix
+// as the media ID with no validation, unlike the download/thumbnail routes
+// (local_media_download_parts) which strip query strings and reject
+// embedded slashes. A request like ".../remove/<id>?reason=x" would treat
+// the query string as part of the media ID, silently acting on the wrong
+// object (or none) instead of the intended one. Fixed via
+// admin_media_id_from_suffix() in local_http_router.cpp.
+SCENARIO("Admin media routes reject query strings and path-confusion characters in the media ID",
+         "[media][repository][integration][security]")
+{
+    GIVEN("a running homeserver with an uploaded, quarantinable media item")
+    {
+        auto started = merovingian::homeserver::start_runtime(media_test_config());
+        REQUIRE(started.started);
+        auto runtime = std::move(started.runtime);
+        auto const token = register_and_login_admin(runtime);
+
+        auto const upload = merovingian::homeserver::handle_local_http_request(
+            runtime, {"POST", "/_matrix/media/v3/upload", token, "text/plain|text/plain|clean|hello"});
+        auto const media_id = media_id_from_upload_response(upload.body);
+
+        WHEN("a quarantine request's media ID is followed by a query string")
+        {
+            auto const result = merovingian::homeserver::handle_local_http_request(
+                runtime,
+                {"POST", "/_merovingian/admin/media/quarantine/" + media_id + "?reason=x", token, "policy review"});
+
+            THEN("the query string is stripped and the correct object is quarantined, not left as a stale no-op")
+            {
+                // Before the fix, the raw "?reason=x" suffix was treated as part
+                // of the media ID, so no record matched it and the intended
+                // media item was silently left untouched — success from the
+                // caller's perspective while nothing actually happened.
+                REQUIRE(result.status == 200U);
+                REQUIRE(runtime.media_repository.records.front().state ==
+                        merovingian::media::LocalMediaState::quarantined);
+            }
+        }
+
+        WHEN("a remove request's media ID contains a path traversal sequence")
+        {
+            auto const result = merovingian::homeserver::handle_local_http_request(
+                runtime, {"POST", "/_merovingian/admin/media/remove/../" + media_id, token, "operator removal"});
+
+            THEN("the request is rejected outright")
+            {
+                REQUIRE(result.status == 400U);
+                REQUIRE(runtime.media_repository.records.front().state ==
+                        merovingian::media::LocalMediaState::available);
+            }
+        }
+
+        WHEN("a release request's media ID is empty")
+        {
+            auto const result = merovingian::homeserver::handle_local_http_request(
+                runtime, {"POST", "/_merovingian/admin/media/release/", token, {}});
+
+            THEN("the request is rejected outright")
+            {
+                REQUIRE(result.status == 400U);
+            }
+        }
+    }
+}
+
 SCENARIO("Integrated media repository restores durable blob storage after restart",
          "[media][repository][integration][persistence]")
 {

@@ -171,6 +171,7 @@ if get_option ('build_tests')
       'unit/test_homeserver_error_paths.cpp',
       'unit/test_homeserver_auth_service.cpp',
       'unit/test_homeserver_room_service.cpp',
+      'unit/test_homeserver_media_service.cpp',
       'unit/test_federation_server_name.cpp',
       'unit/test_event_signer.cpp',
       'unit/test_ipc_framing.cpp',

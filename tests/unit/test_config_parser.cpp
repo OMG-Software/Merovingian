@@ -75,6 +75,8 @@ SCENARIO("Key-value config parser applies booleans and lists", "[config][parser]
                                        "listeners.client.tls_private_key_file=/etc/merovingian/client.key\n"
                                        "security.media.enable_av_scanner=false\n"
                                        "security.media.remote_fetch_enabled=true\n"
+                                       "security.media.local_upload_policy=allow\n"
+                                       "security.media.remote_fetch_media_policy=deny\n"
                                        "security.trust_safety.enabled=true\n"
                                        "security.trust_safety.policy_server_url=https://policy.example.org/check\n"
                                        "security.trust_safety.policy_server_timeout=7s\n"
@@ -96,6 +98,8 @@ SCENARIO("Key-value config parser applies booleans and lists", "[config][parser]
                 REQUIRE(result.config.listeners().client.tls_private_key_file == "/etc/merovingian/client.key");
                 REQUIRE_FALSE(result.config.security().media.enable_av_scanner);
                 REQUIRE(result.config.security().media.remote_fetch_enabled);
+                REQUIRE(result.config.security().media.local_upload_policy == "allow");
+                REQUIRE(result.config.security().media.remote_fetch_media_policy == "deny");
                 REQUIRE(result.config.security().trust_safety.enabled);
                 REQUIRE(result.config.security().trust_safety.policy_server_url == "https://policy.example.org/check");
                 REQUIRE(result.config.security().trust_safety.policy_server_timeout == "7s");

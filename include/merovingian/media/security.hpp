@@ -23,6 +23,29 @@ struct MediaPolicyDecision final
     std::string reason{};
 };
 
+// Operator-selectable disposition for a class of media (local upload or
+// remote/federated fetch), configured via `security.media.local_upload_policy`
+// and `security.media.remote_fetch_media_policy`:
+//   allow            - accept unconditionally; the scanner verdict is ignored.
+//   allow_after_scan - accept only when the scanner verdict is clean (the
+//                      historical, only, behaviour before this policy existed).
+//   quarantine       - always hold for manual admin review, regardless of
+//                      the scanner verdict.
+//   deny             - reject unconditionally; this class of media is disabled.
+enum class MediaAcceptancePolicy
+{
+    allow,
+    allow_after_scan,
+    quarantine,
+    deny,
+};
+
+[[nodiscard]] auto media_acceptance_policy_name(MediaAcceptancePolicy policy) noexcept -> std::string_view;
+// Falls back to the safest option (quarantine) for unrecognised input. Config
+// parsing validates the string against exactly these four spellings before
+// this ever runs, so the fallback is a defence-in-depth net, not a live path.
+[[nodiscard]] auto parse_media_acceptance_policy(std::string_view value) noexcept -> MediaAcceptancePolicy;
+
 struct MediaUploadPolicy final
 {
     std::uint64_t max_upload_bytes{0U};
@@ -30,6 +53,7 @@ struct MediaUploadPolicy final
     bool require_content_sniffing{true};
     bool quarantine_unknown_mime{true};
     bool quarantine_scanner_failures{true};
+    MediaAcceptancePolicy acceptance_policy{MediaAcceptancePolicy::allow_after_scan};
 };
 
 struct MediaUploadRequest final

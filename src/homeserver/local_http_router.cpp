@@ -669,6 +669,28 @@ namespace
         return std::array<std::string_view, 2U>{server_name, media_id};
     }
 
+    // Admin media routes (quarantine/release/remove) take a single path
+    // segment with no server_name prefix, unlike the download/thumbnail
+    // routes above. Strips any query string, then rejects anything that
+    // isn't a safe single path segment: non-empty, no '/', no "..", no
+    // embedded space (the same constraints media::upload_local_media applies
+    // via media_id_is_safe() in repository.cpp when it mints a media ID).
+    // Without this, a request like
+    // ".../admin/media/remove/m1_digest?reason=x" would treat the query
+    // string as part of the media ID and silently act on the wrong object
+    // (or no object at all) instead of rejecting the request outright.
+    [[nodiscard]] auto admin_media_id_from_suffix(std::string_view suffix) noexcept -> std::optional<std::string_view>
+    {
+        auto const query_pos = suffix.find('?');
+        auto const media_id = query_pos == std::string_view::npos ? suffix : suffix.substr(0U, query_pos);
+        if (media_id.empty() || media_id.find('/') != std::string_view::npos ||
+            media_id.find("..") != std::string_view::npos || media_id.find(' ') != std::string_view::npos)
+        {
+            return std::nullopt;
+        }
+        return media_id;
+    }
+
     // Wires all FederationRuntimeState callbacks to production implementations.
     // Called lazily on the first federation request so the runtime is already
     // at a stable address when the lambdas capture references to its fields.
@@ -1845,22 +1867,34 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
     auto constexpr quarantine_prefix = std::string_view{"/_merovingian/admin/media/quarantine/"};
     if (request.method == "POST" && starts_with(request.target, quarantine_prefix))
     {
-        auto const media_id = path_suffix(request.target, quarantine_prefix);
-        auto const result = admin_quarantine_local_media(runtime, request.access_token, media_id, request.body);
+        auto const media_id = admin_media_id_from_suffix(path_suffix(request.target, quarantine_prefix));
+        if (!media_id.has_value())
+        {
+            return response(400U, "invalid media id");
+        }
+        auto const result = admin_quarantine_local_media(runtime, request.access_token, *media_id, request.body);
         return response_from_media_operation(result);
     }
     auto constexpr release_prefix = std::string_view{"/_merovingian/admin/media/release/"};
     if (request.method == "POST" && starts_with(request.target, release_prefix))
     {
-        auto const media_id = path_suffix(request.target, release_prefix);
-        auto const result = admin_release_local_media(runtime, request.access_token, media_id);
+        auto const media_id = admin_media_id_from_suffix(path_suffix(request.target, release_prefix));
+        if (!media_id.has_value())
+        {
+            return response(400U, "invalid media id");
+        }
+        auto const result = admin_release_local_media(runtime, request.access_token, *media_id);
         return response_from_media_operation(result);
     }
     auto constexpr remove_prefix = std::string_view{"/_merovingian/admin/media/remove/"};
     if (request.method == "POST" && starts_with(request.target, remove_prefix))
     {
-        auto const media_id = path_suffix(request.target, remove_prefix);
-        auto const result = admin_remove_local_media(runtime, request.access_token, media_id, request.body);
+        auto const media_id = admin_media_id_from_suffix(path_suffix(request.target, remove_prefix));
+        if (!media_id.has_value())
+        {
+            return response(400U, "invalid media id");
+        }
+        auto const result = admin_remove_local_media(runtime, request.access_token, *media_id, request.body);
         return response_from_media_operation(result);
     }
     if (request.method == "POST" && request.target == "/_matrix/client/v3/createRoom")

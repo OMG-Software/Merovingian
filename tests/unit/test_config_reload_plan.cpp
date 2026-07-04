@@ -4,6 +4,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -75,6 +76,49 @@ SCENARIO("Reload plan marks runtime policy changes as reloadable", "[config][rel
                 REQUIRE(plan.changes()[3].policy == merovingian::config::ReloadPolicy::reloadable);
                 REQUIRE(merovingian::config::reload_plan_summary(plan) ==
                         "Reload plan: changes=4 reloadable=4 restart_required=0");
+            }
+        }
+    }
+}
+
+SCENARIO("Reload plan marks media acceptance policy changes as reloadable", "[config][reload][media]")
+{
+    GIVEN("current and next configs differing only in the media acceptance policy keys")
+    {
+        auto current_security = merovingian::config::SecurityConfig{};
+        auto next_security = merovingian::config::SecurityConfig{};
+        next_security.media.local_upload_policy = "allow";
+        next_security.media.remote_fetch_media_policy = "deny";
+
+        auto const current = merovingian::config::Config{
+            merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
+            merovingian::config::DatabaseConfig{},         current_security,
+            merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+        };
+        auto const next = merovingian::config::Config{
+            merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
+            merovingian::config::DatabaseConfig{},         next_security,
+            merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+        };
+
+        WHEN("a reload plan is built")
+        {
+            auto const plan = merovingian::config::build_reload_plan(current, next);
+
+            THEN("both keys are reported as reloadable, not restart-required")
+            {
+                REQUIRE(plan.has_changes());
+                REQUIRE_FALSE(plan.has_restart_required_changes());
+                REQUIRE(plan.changes().size() == 2U);
+                REQUIRE(std::ranges::all_of(plan.changes(), [](auto const& change) {
+                    return change.policy == merovingian::config::ReloadPolicy::reloadable;
+                }));
+                REQUIRE(std::ranges::any_of(plan.changes(), [](auto const& change) {
+                    return change.key == "security.media.local_upload_policy";
+                }));
+                REQUIRE(std::ranges::any_of(plan.changes(), [](auto const& change) {
+                    return change.key == "security.media.remote_fetch_media_policy";
+                }));
             }
         }
     }

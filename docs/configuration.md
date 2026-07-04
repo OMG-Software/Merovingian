@@ -1185,6 +1185,35 @@ Two `security.media.*` keys are not fully wired end to end yet:
 - `security.media.remote_fetch_timeout` is parsed and validated, but the live
   remote-fetch path still uses hard-coded discovery and outbound HTTP timeouts.
 
+`security.media.local_upload_policy` and `security.media.remote_fetch_media_policy`
+select the acceptance disposition for authenticated local uploads and for bytes
+fetched from a federated origin server, independently. Each accepts one of:
+
+- `allow` — accept unconditionally; the scanner verdict is ignored.
+- `allow-after-scan` — accept only when the scanner verdict is clean; quarantine
+  or reject otherwise per `security.media.quarantine_unknown_mime`-style policy
+  (see `evaluate_media_upload()`). This is the only behaviour that existed
+  before these two keys were introduced.
+- `quarantine` — always hold for manual admin review via the
+  `/_merovingian/admin/media/{quarantine,release,remove}` routes, regardless of
+  the scanner verdict.
+- `deny` — reject unconditionally; this class of media is disabled.
+
+```text
+security.media.local_upload_policy=allow-after-scan
+security.media.remote_fetch_media_policy=quarantine
+```
+
+`local_upload_policy` defaults to `allow-after-scan`, preserving the only
+behaviour that existed before this setting was introduced.
+`remote_fetch_media_policy` defaults to `quarantine` rather than mirroring that
+default: unlike a local upload, a federated origin server has no accountable
+local identity behind it, and Merovingian does not run a real AV scanner for
+*any* media source today (see above), so there is never a genuine "clean"
+verdict to trust for remote-fetched bytes. Operators who accept that risk (or
+who front the server with a real scanning proxy that populates the scanner
+verdict) can set this to `allow-after-scan` or `allow` explicitly.
+
 ## Trust and safety policy transport
 
 The trust-safety transport is opt-in and fail-closed by default:

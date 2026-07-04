@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.10.22
+Version:        0.10.23
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -97,6 +97,11 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Sat Jul 04 2026 James Chapman <claude@ping.me.uk> - 0.10.23-1
+- fix(media,security): remote-fetched media fabricated a scanner-clean/decoder-safe verdict for federated content; the remote fetch now reports scanner_clean=false honestly, and a new MediaAcceptancePolicy (allow/allow-after-scan/quarantine/deny) is configurable independently for local uploads and remote fetches (security.media.local_upload_policy, security.media.remote_fetch_media_policy), defaulting remote-fetched media to quarantine
+- fix(media,security): the outbound federation media download URL omitted the {serverName} path segment required by the spec and neither segment was percent-encoded; both are now included and encoded via remote_media_download_url()
+- fix(http,security): trusted-proxy X-Forwarded-For rate-limit keying accepted any non-empty value verbatim with no IP validation, letting spoofed pseudo-IP values defeat per-IP rate limiting; the candidate is now validated as a real IPv4/IPv6 literal and falls back to the direct peer address otherwise
+- fix(media,security): admin media quarantine/release/remove routes accepted unsanitized media IDs from the raw path suffix, treating a trailing query string or path-traversal sequence as part of the media ID; admin_media_id_from_suffix() now strips query strings and rejects unsafe IDs before the admin action runs
 * Sat Jul 04 2026 James Chapman <claude@ping.me.uk> - 0.10.22-1
 - test(federation): add failure-path integration coverage for the 0.10.19-0.10.21 worker/main relay fixes — membership_ingest (room not found, acceptor unwired), edu_ingest (malformed content, sink unwired), invite_ingest (unknown local invitee, handler unwired), and otk_claim_ingest (double-claim consumption, no key available) — closing gaps where only the accepted/happy path was previously tested
 * Sat Jul 04 2026 James Chapman <claude@ping.me.uk> - 0.10.21-1

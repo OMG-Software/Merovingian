@@ -52,9 +52,14 @@ namespace
         return output;
     }
 
-    [[nodiscard]] auto upload_policy(RuntimeMediaConfig const& config) -> MediaUploadPolicy
+    [[nodiscard]] auto upload_policy(RuntimeMediaConfig const& config, bool from_remote_fetch) -> MediaUploadPolicy
     {
-        return {config.max_upload_bytes, config.allowed_mime_types, true, config.quarantine_unknown_mime, true};
+        return {config.max_upload_bytes,
+                config.allowed_mime_types,
+                true,
+                config.quarantine_unknown_mime,
+                true,
+                from_remote_fetch ? config.remote_fetch_media_policy : config.local_upload_policy};
     }
 
     [[nodiscard]] auto canonical_content_type(LocalMediaUploadRequest const& request) -> std::string
@@ -375,9 +380,9 @@ auto upload_local_media(LocalMediaRepository& repository, std::string_view serve
                 "media digest calculation failed"};
     }
     auto const scanner_clean = repository.config.enable_av_scanner ? request.scanner_clean : true;
-    auto const decision =
-        evaluate_media_upload(upload_policy(repository.config), {size_bytes, request.declared_mime_type,
-                                                                 request.sniffed_mime_type, digest, scanner_clean});
+    auto const decision = evaluate_media_upload(
+        upload_policy(repository.config, request.from_remote_fetch),
+        {size_bytes, request.declared_mime_type, request.sniffed_mime_type, digest, scanner_clean});
 
     if (decision.disposition == MediaDisposition::reject)
     {
@@ -702,6 +707,7 @@ auto fetch_remote_media(LocalMediaRepository& repository, RemoteMediaDownloadReq
     upload.pixel_count = request.pixel_count;
     upload.animation_frame_count = request.animation_frame_count;
     upload.decoder_marked_safe = request.decoder_marked_safe;
+    upload.from_remote_fetch = true;
     auto const result = upload_local_media(repository, request.origin_server, upload);
     if (!result.ok)
     {
