@@ -1440,6 +1440,45 @@ SCENARIO("unban_user notifies the federation worker when a ban is lifted",
     }
 }
 
+SCENARIO("send_event notifies the federation worker when an ordinary message is sent",
+         "[homeserver][rooms][federation-worker][regression]")
+{
+    // Unlike the seven scenarios above, this one is new — send_event was
+    // never in the set of calls covered by this contract. Without it, a
+    // federation worker's room snapshot only ever refreshes on membership
+    // churn (create/join/leave/invite/ban/kick/unban); an ordinary message
+    // sent afterward reaches only main's own PersistentStore (pdu_sink for
+    // inbound-relayed events, send_event for locally-sent ones — neither
+    // writes to a worker's own store), so a worker-served backfill/event/
+    // state/state_ids/get_missing_events query for that room could silently
+    // omit every message sent since the room's last membership-triggered
+    // reload. See docs/architecture.md, "Federation worker room staleness".
+    GIVEN("a room with alice and bob joined, with the room-changed log wired after the room is established")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const ctx = make_two_user_room(runtime);
+
+        auto changed_rooms = std::vector<std::string>{};
+        runtime.test_room_changed_log = &changed_rooms;
+
+        WHEN("alice sends an ordinary message")
+        {
+            auto const event = merovingian::homeserver::send_event(
+                runtime, ctx.alice_token, ctx.room_id,
+                R"({"type":"m.room.message","content":{"msgtype":"m.text","body":"hello"}})");
+
+            THEN("the room_id is logged exactly once")
+            {
+                REQUIRE(event.ok);
+                REQUIRE(changed_rooms == std::vector<std::string>{ctx.room_id});
+            }
+        }
+    }
+}
+
 SCENARIO("Rooms untouched by the current operation are never logged as changed",
          "[homeserver][rooms][federation-worker][regression]")
 {

@@ -651,6 +651,192 @@ SCENARIO("handle_edu_ingest_request delivers a worker-relayed m.direct_to_device
     }
 }
 
+SCENARIO("handle_invite_ingest_request persists a worker-relayed federated invite to main's own store",
+         "[integration][federation-worker][invite]")
+{
+    // Drives worker_pool.cpp's handle_invite_ingest_request() through its
+    // real wire format: a raw JSON string shaped exactly like
+    // worker_event_loop.cpp's serialize_invite_ingest() produces, in and out
+    // — the same pattern the membership_ingest and edu_ingest scenarios
+    // above use, and for the same reason: a real end-to-end PUT
+    // /_matrix/federation/{v1,v2}/invite through a real worker subprocess
+    // would additionally need to clear the unrelated "remote is unknown"
+    // federation-policy gate ahead of invite_handler, which needs a live,
+    // network-resolvable remote signing key.
+    //
+    // This pins the fix for the bug where invite_handler's default
+    // implementation (local_http_router.cpp) persisted the invite's
+    // membership row, invite metadata, and event straight into whichever
+    // process's PersistentStore ran it — and since PUT /invite is
+    // room-scoped, with federation.worker.shards >= 1 (the shipped example
+    // config) that process is a worker, never main. A remote server's
+    // invite to a local user was silently swallowed: nothing else ever
+    // syncs an invite into main's store, so the invited user's own /sync
+    // (served exclusively by main) never saw it.
+    GIVEN("a runtime with the default federation callbacks wired and a local invitee")
+    {
+        REQUIRE(sodium_init() >= 0);
+
+        auto const tmp_dir = unique_temp_dir("merovingian-fed-worker-invite");
+        auto config = make_federation_worker_config(tmp_dir);
+        config.database().sqlite_path = (tmp_dir / "invite-test.sqlite3").string();
+
+        auto started = start_runtime(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+        REQUIRE(runtime.federation.invite_handler);
+
+        auto const target_user = std::string{"@local:"} + config.server().server_name;
+        // invite_handler's local_user_exists() checks HomeserverRuntime::database.users
+        // (the LocalUser cache) — a different vector from
+        // database.persistent_store.users — so the invitee must be registered there,
+        // not via database::store_user().
+        runtime.database.users.push_back({target_user, "", false, false, false});
+
+        WHEN("an invite_ingest request shaped like a real worker's is handled")
+        {
+            auto const room_id = std::string{"!invite-room:matrix.example.org"};
+            auto const sender = std::string{"@remote:matrix.example.org"};
+            auto const event_json = std::string{R"({"room_id":")"} + room_id + R"(","sender":")" + sender +
+                                    R"(","origin_server_ts":1234,"type":"m.room.member",)" + R"("state_key":")" +
+                                    target_user + R"(","content":{"membership":"invite"}})";
+
+            // Mirror ipc::ipc_json_str's escaping for the embedded event JSON,
+            // same as the membership_ingest scenario above does.
+            auto const escape = [](std::string_view raw) {
+                auto escaped = std::string{'"'};
+                for (auto const ch : raw)
+                {
+                    if (ch == '"' || ch == '\\')
+                    {
+                        escaped += '\\';
+                    }
+                    escaped += ch;
+                }
+                escaped += '"';
+                return escaped;
+            };
+
+            auto const request_json = std::string{R"({"type":"invite_ingest","room_id":)"} + escape(room_id) +
+                                      R"(,"event_id":"$placeholder-event-id","room_version":"10",)" +
+                                      R"("invite_event_json":)" + escape(event_json) +
+                                      R"(,"invite_room_state_json":[]})";
+
+            auto const response_json = merovingian::homeserver::handle_invite_ingest_request(runtime, request_json);
+
+            THEN("the response reports the invite as accepted")
+            {
+                INFO("response: " << response_json);
+                REQUIRE(response_json.find(R"("accepted":true)") != std::string::npos);
+                REQUIRE(response_json.find(R"("status":200)") != std::string::npos);
+            }
+
+            AND_THEN("main's own store has the invite's membership row and event — the bug this fix closes: "
+                     "invite_handler previously ran unmodified inside the worker process instead of being relayed "
+                     "here, writing only to the worker's own, separate store, so the invited user's own /sync "
+                     "(served exclusively by main) never saw the invite at all")
+            {
+                auto const has_invite_membership = std::ranges::any_of(
+                    runtime.database.persistent_store.memberships,
+                    [&](merovingian::database::PersistentMembership const& m) {
+                        return m.room_id == room_id && m.user_id == target_user && m.membership == "invite";
+                    });
+                REQUIRE(has_invite_membership);
+
+                auto const has_invite_row = std::ranges::any_of(
+                    runtime.database.persistent_store.invites, [&](merovingian::database::PersistentInvite const& i) {
+                        return i.room_id == room_id && i.user_id == target_user;
+                    });
+                REQUIRE(has_invite_row);
+            }
+        }
+    }
+}
+
+SCENARIO("handle_otk_claim_ingest_request decides a one-time-key claim against main's own store",
+         "[integration][federation-worker][e2ee][otk]")
+{
+    // Drives worker_pool.cpp's handle_otk_claim_ingest_request() through its
+    // real wire format, the same pattern the other *_ingest scenarios in
+    // this file use.
+    //
+    // This pins the fix for the bug where one_time_keys_claim_provider's
+    // default implementation (local_http_router.cpp) decided key
+    // availability from PersistentStore::one_time_keys — a per-process
+    // in-memory snapshot hydrated once at worker startup — before issuing a
+    // DELETE. Two independent processes (main and a worker, or two workers)
+    // could each believe the same key was still available and both return
+    // it to their own caller, reusing an Olm one-time prekey. Routing every
+    // claim through main's single authoritative copy via a new
+    // otk_claim_ingest IPC call removes that split-brain.
+    GIVEN("a runtime with the default federation callbacks wired and a one-time key on a local device")
+    {
+        REQUIRE(sodium_init() >= 0);
+
+        auto const tmp_dir = unique_temp_dir("merovingian-fed-worker-otk");
+        auto config = make_federation_worker_config(tmp_dir);
+        config.database().sqlite_path = (tmp_dir / "otk-test.sqlite3").string();
+
+        auto started = start_runtime(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+        REQUIRE(runtime.federation.one_time_keys_claim_provider);
+
+        auto const user_id = std::string{"@local:"} + config.server().server_name;
+        auto const device_id = std::string{"DEVICE1"};
+        auto const key_id = std::string{"signed_curve25519:AAAAAA"};
+        REQUIRE(merovingian::database::store_one_time_key(
+            runtime.database.persistent_store, {user_id, device_id, key_id, R"({"key":"fakeCurve25519KeyMaterial"})"}));
+
+        WHEN("an otk_claim_ingest request shaped like a real worker's is handled")
+        {
+            auto const claim_request_body =
+                std::string{R"({"one_time_keys":{")"} + user_id + R"(":{")" + device_id + R"(":"signed_curve25519"}}})";
+
+            // Mirror ipc::ipc_json_str's escaping, same as the other scenarios above.
+            auto const escape = [](std::string_view raw) {
+                auto escaped = std::string{'"'};
+                for (auto const ch : raw)
+                {
+                    if (ch == '"' || ch == '\\')
+                    {
+                        escaped += '\\';
+                    }
+                    escaped += ch;
+                }
+                escaped += '"';
+                return escaped;
+            };
+
+            auto const request_json =
+                std::string{R"({"type":"otk_claim_ingest","request_body":)"} + escape(claim_request_body) + "}";
+
+            auto const response_json = merovingian::homeserver::handle_otk_claim_ingest_request(runtime, request_json);
+
+            THEN("the response echoes the claimed key back for the requested device")
+            {
+                INFO("response: " << response_json);
+                REQUIRE(response_json.find(device_id) != std::string::npos);
+                REQUIRE(response_json.find("fakeCurve25519KeyMaterial") != std::string::npos);
+            }
+
+            AND_THEN("the key is gone from main's own store — the bug this fix closes: a worker claiming a key "
+                     "locally deleted it only from its own snapshot, so main (or another worker) could still "
+                     "believe the same key was available and hand it out a second time")
+            {
+                auto const still_present = std::ranges::any_of(
+                    runtime.database.persistent_store.one_time_keys,
+                    [&](merovingian::database::PersistentOneTimeKey const& k) {
+                        return k.user_id == user_id && k.device_id == device_id && k.key_id == key_id;
+                    });
+                REQUIRE_FALSE(still_present);
+            }
+        }
+    }
+}
+
 SCENARIO("WorkerPool routes outbound HTTP requests through the federation worker IPC channel",
          "[integration][federation-worker][outbound][ipc]")
 {

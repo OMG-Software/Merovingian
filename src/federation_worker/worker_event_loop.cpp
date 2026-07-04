@@ -333,6 +333,83 @@ namespace
         return result;
     }
 
+    // Serialize an InviteRequest for the invite_ingest IPC call to main.
+    // invite_event_json and each invite_room_state_json entry are embedded as
+    // escaped JSON string values via ipc::ipc_json_str, the same technique
+    // append_envelope_fields uses for a raw PDU's "json" field above — safe
+    // for arbitrary nested event content for the same reason.
+    auto serialize_invite_ingest(federation::InviteRequest const& request) -> std::string
+    {
+        auto result = std::string{R"({"type":"invite_ingest","room_id":)"};
+        result.reserve(512U + request.invite_event_json.size());
+        result += ipc::ipc_json_str(request.room_id);
+        result += R"(,"event_id":)";
+        result += ipc::ipc_json_str(request.event_id);
+        result += R"(,"room_version":)";
+        result += ipc::ipc_json_str(request.room_version);
+        result += R"(,"invite_event_json":)";
+        result += ipc::ipc_json_str(request.invite_event_json);
+        result += R"(,"invite_room_state_json":[)";
+        auto first = true;
+        for (auto const& state_json : request.invite_room_state_json)
+        {
+            if (!first)
+            {
+                result += ',';
+            }
+            first = false;
+            result += ipc::ipc_json_str(state_json);
+        }
+        result += "]}";
+        return result;
+    }
+
+    // Deserialize an `invite_ingest_result` JSON frame from main. Reuses the
+    // same full-JSON-parse approach as deserialize_membership_ingest_result
+    // above: "accepted"/"status" are raw bool/int fields that
+    // ipc::ipc_json_get_str (a quote-terminated string extractor) cannot
+    // parse at all, and signed_event_json can legitimately carry arbitrary
+    // nested event content.
+    auto deserialize_invite_ingest_result(std::string_view json) -> federation::InviteAcceptResult
+    {
+        auto result = federation::InviteAcceptResult{};
+        auto const parsed = canonicaljson::parse_lossless(json);
+        auto const* obj = parsed.error == canonicaljson::ParseError::none
+                              ? std::get_if<canonicaljson::Object>(&parsed.value.storage())
+                              : nullptr;
+        if (obj == nullptr)
+        {
+            result.status = 500U;
+            result.reason = "invite_ingest_result frame did not parse as a JSON object";
+            return result;
+        }
+        result.accepted = field_bool(*obj, "accepted");
+        result.status = static_cast<std::uint16_t>(field_int(*obj, "status"));
+        result.reason = field_string(*obj, "reason");
+        result.signed_event_json = field_string(*obj, "signed_event_json");
+        return result;
+    }
+
+    // Serialize a raw one-time-keys-claim request body for the
+    // otk_claim_ingest IPC call to main. The body is the untouched federation
+    // request payload (embedded as an escaped JSON string, same technique as
+    // above), so main's own one_time_keys_claim_provider parses it exactly as
+    // if it had received the federation request directly.
+    auto serialize_otk_claim_ingest(std::string_view request_body) -> std::string
+    {
+        auto result = std::string{R"({"type":"otk_claim_ingest","request_body":)"};
+        result.reserve(128U + request_body.size());
+        result += ipc::ipc_json_str(request_body);
+        result += '}';
+        return result;
+    }
+
+    // Deserialize an `otk_claim_ingest_result` JSON frame from main.
+    auto deserialize_otk_claim_ingest_result(std::string_view json) -> std::string
+    {
+        return ipc::ipc_json_get_str(json, "response_body");
+    }
+
 } // namespace
 
 WorkerEventLoop::WorkerEventLoop(core::FileDescriptor ipc_fd, config::Config config, std::uint32_t threads,
@@ -416,7 +493,7 @@ auto WorkerEventLoop::run() -> void
 
     // Override membership_acceptor the same way: wire_federation_callbacks()'s
     // default implementation (still used above for membership_template_provider,
-    // invite_handler, etc.) writes send_join/send_leave/send_knock acceptances
+    // etc.) writes send_join/send_leave/send_knock acceptances
     // straight into this process's own PersistentStore — which, per the "does
     // NOT write events" invariant this file states for pdu_sink above, main
     // never sees. A room this worker just accepted a remote join into would be
@@ -437,6 +514,29 @@ auto WorkerEventLoop::run() -> void
             return {false, 503U, "membership_ingest IPC timeout", {}, {}};
         }
         return deserialize_membership_ingest_result(*reply);
+    };
+
+    // Override invite_handler the same way as membership_acceptor above: the
+    // default implementation (local_http_router.cpp) persists the invite's
+    // membership row, invite metadata, and event straight into this
+    // process's own PersistentStore. PUT /_matrix/federation/{v1,v2}/invite
+    // is room-scoped, so with federation.worker.shards >= 1 (the shipped
+    // example config) it is handled by a worker, and the write landed only
+    // in that worker's own store — invisible to main, which is the only
+    // process a real client's /sync ever reaches. A remote server inviting
+    // one of this server's local users to a room hosted elsewhere was
+    // therefore silently swallowed: the invite never appeared in the
+    // invited user's own sync, with nothing to indicate why. See
+    // docs/architecture.md, "Federation worker invite relay".
+    runtime.federation.invite_handler =
+        [channel_ptr](federation::InviteRequest const& request) -> federation::InviteAcceptResult {
+        auto const json_body = serialize_invite_ingest(request);
+        auto const reply = channel_ptr->send_request(json_body, std::chrono::seconds{60});
+        if (!reply.has_value())
+        {
+            return {false, 503U, "invite_ingest IPC timeout", {}};
+        }
+        return deserialize_invite_ingest_result(*reply);
     };
 
     // Override edu_sink the same way as pdu_sink/membership_acceptor above:
@@ -462,6 +562,31 @@ auto WorkerEventLoop::run() -> void
             return {federation::EduDispositionStatus::rejected_invalid, "edu_ingest IPC timeout"};
         }
         return deserialize_edu_ingest_result(*reply);
+    };
+
+    // Override one_time_keys_claim_provider: relay the raw claim request body
+    // to main via IPC instead of deciding it against this process's own
+    // PersistentStore::one_time_keys. The default implementation
+    // (local_http_router.cpp) decides key availability from an in-memory
+    // vector hydrated once at worker startup, then issues a DELETE. Two
+    // processes each running this locally can both believe the same
+    // one-time key is still available — main's copy is never invalidated by
+    // a DELETE a worker issued, and vice versa — handing the same key to two
+    // different claimants and reusing an Olm one-time prekey, exactly the
+    // property it exists to prevent. It also goes stale in one direction
+    // only: keys uploaded through main after this worker started are
+    // invisible to it, so claims can dry up here even as the user's client
+    // keeps replenishing keys. Routing every claim through main's single
+    // authoritative copy removes the split-brain. See docs/architecture.md,
+    // "Federation worker one-time-key claim relay".
+    runtime.federation.one_time_keys_claim_provider = [channel_ptr](std::string_view request_body) -> std::string {
+        auto const json_body = serialize_otk_claim_ingest(request_body);
+        auto const reply = channel_ptr->send_request(json_body, std::chrono::seconds{60});
+        if (!reply.has_value())
+        {
+            return {};
+        }
+        return deserialize_otk_claim_ingest_result(*reply);
     };
 
     // Thread pool for handling concurrent fed_request messages.

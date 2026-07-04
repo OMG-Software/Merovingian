@@ -419,6 +419,47 @@ namespace
         return body;
     }
 
+    // Deserializes an "invite_ingest" wire frame into an InviteRequest.
+    // invite_room_state_json reuses json_str_array, the same array parser
+    // deserialize_pdu_ingest uses for auth_event_ids/prev_event_ids above.
+    [[nodiscard]] auto deserialize_invite_ingest(std::string_view json) -> federation::InviteRequest
+    {
+        auto request = federation::InviteRequest{};
+        request.room_id = json_get_str(json, "room_id");
+        request.event_id = json_get_str(json, "event_id");
+        request.room_version = json_get_str(json, "room_version");
+        request.invite_event_json = json_get_str(json, "invite_event_json");
+        auto const irs_needle = std::string_view{R"("invite_room_state_json":[)"};
+        auto const irs_pos = json.find(irs_needle);
+        if (irs_pos != std::string_view::npos)
+        {
+            request.invite_room_state_json = json_str_array(json, irs_pos + irs_needle.size());
+        }
+        return request;
+    }
+
+    auto serialize_invite_ingest_result(federation::InviteAcceptResult const& result) -> std::string
+    {
+        auto body = std::string{R"({"type":"invite_ingest_result","accepted":)"};
+        body += result.accepted ? "true" : "false";
+        body += R"(,"status":)";
+        body += std::to_string(result.status);
+        body += R"(,"reason":)";
+        body += json_str(result.reason);
+        body += R"(,"signed_event_json":)";
+        body += json_str(result.signed_event_json);
+        body += '}';
+        return body;
+    }
+
+    auto serialize_otk_claim_ingest_result(std::string_view response_body) -> std::string
+    {
+        auto body = std::string{R"({"type":"otk_claim_ingest_result","response_body":)"};
+        body += json_str(response_body);
+        body += '}';
+        return body;
+    }
+
 } // namespace
 
 auto federation_worker_shard_for(std::string_view room_id, std::uint32_t shards) noexcept -> std::size_t
@@ -494,6 +535,60 @@ auto handle_edu_ingest_request(HomeserverRuntime& runtime, std::string_view requ
     return serialize_edu_ingest_result(result);
 }
 
+auto handle_invite_ingest_request(HomeserverRuntime& runtime, std::string_view request_json) -> std::string
+{
+    // A federated invite accepted by a worker must be persisted through
+    // main's own store, not the worker's — see docs/architecture.md,
+    // "Federation worker invite relay", the same class of gap
+    // handle_membership_ingest_request closes for send_join/send_leave/
+    // send_knock. The default invite_handler (wired via
+    // wire_federation_callbacks, same as membership_acceptor's default)
+    // already calls sync_notifier->publish itself on success, so this does
+    // not need to publish separately either.
+    auto const request = deserialize_invite_ingest(request_json);
+    auto result = federation::InviteAcceptResult{};
+    {
+        auto guard = std::unique_lock{runtime.mutex};
+        if (runtime.federation.invite_handler)
+        {
+            result = runtime.federation.invite_handler(request);
+        }
+        else
+        {
+            result.status = 501U;
+            result.reason = "invite_handler not wired";
+        }
+    }
+    return serialize_invite_ingest_result(result);
+}
+
+auto handle_otk_claim_ingest_request(HomeserverRuntime& runtime, std::string_view request_json) -> std::string
+{
+    // A one-time-key claim accepted by a worker must be decided against
+    // main's own store, not a worker's — see docs/architecture.md,
+    // "Federation worker one-time-key claim relay". Unlike pdu_ingest/
+    // membership_ingest/edu_ingest/invite_ingest above, this isn't about a
+    // write becoming invisible to main: database::claim_one_time_key issues
+    // a real DELETE against the shared database either way. The problem is
+    // that the claim *decision* — whether the key is still available — is
+    // made against a per-process in-memory PersistentStore::one_time_keys
+    // snapshot that is never invalidated by another process's write. Two
+    // processes can each believe the same key is still available and both
+    // return it to their caller, reusing an Olm one-time prekey — exactly
+    // the property a one-time key exists to prevent. Routing every claim
+    // through main's own single copy removes the split-brain entirely.
+    auto const request_body = json_get_str(request_json, "request_body");
+    auto response_body = std::string{};
+    {
+        auto guard = std::unique_lock{runtime.mutex};
+        if (runtime.federation.one_time_keys_claim_provider)
+        {
+            response_body = runtime.federation.one_time_keys_claim_provider(request_body);
+        }
+    }
+    return serialize_otk_claim_ingest_result(response_body);
+}
+
 WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRuntime& runtime, std::string worker_path,
                        std::string config_path)
     : cfg_{cfg}
@@ -547,6 +642,23 @@ WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRunt
                         runtime_.sync_notifier->publish(stream_ordering, 0U);
                     }
                 }
+                if (result.status == federation::PduIngestionStatus::accepted)
+                {
+                    // Push the just-committed event back down to whichever
+                    // shard owns this room — in practice the same worker that
+                    // made this exact pdu_ingest call, since shard_for() is a
+                    // pure function of room_id. Without this, a message
+                    // relayed from a worker is only ever visible in main's own
+                    // store: pdu_sink deliberately does not write to the
+                    // worker's own PersistentStore ("does NOT write events",
+                    // see worker_event_loop.cpp), and nothing else refreshes a
+                    // worker's room snapshot for ordinary (non-membership)
+                    // traffic. A later backfill/event/state query for this
+                    // room landing back on that shard would otherwise omit
+                    // this event. See docs/architecture.md, "Federation
+                    // worker room staleness".
+                    notify_room_changed(env.room_id);
+                }
                 ptr->channel().send_response(id, serialize_pdu_ingest_result(result));
             }
             else if (type == "membership_ingest")
@@ -556,6 +668,14 @@ WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRunt
             else if (type == "edu_ingest")
             {
                 ptr->channel().send_response(id, handle_edu_ingest_request(runtime_, json));
+            }
+            else if (type == "invite_ingest")
+            {
+                ptr->channel().send_response(id, handle_invite_ingest_request(runtime_, json));
+            }
+            else if (type == "otk_claim_ingest")
+            {
+                ptr->channel().send_response(id, handle_otk_claim_ingest_request(runtime_, json));
             }
             else if (type == "sign_request")
             {
