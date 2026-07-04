@@ -1177,11 +1177,23 @@ uploaded by clients as opaque ciphertext; without it, every encrypted image or
 file is quarantined and later downloads return 451. Operators who want a stricter
 policy can override the list explicitly.
 
+**AV scanning cannot inspect media in encrypted rooms, under any configuration,
+by design.** Matrix E2EE attachments are encrypted client-side before upload;
+the homeserver only ever receives and stores an opaque ciphertext blob
+(uploaded as `application/octet-stream`) and never holds the decryption key —
+that key travels only inside the (also encrypted) room event, which the
+server cannot read either. No setting described below, no proxy placement,
+and no future scanner integration changes this without breaking E2EE's
+confidentiality guarantee. Everything in this section that mentions a
+"scanner verdict" applies only to plaintext media in unencrypted rooms.
+
 Two `security.media.*` keys are not fully wired end to end yet:
 
 - `security.media.enable_av_scanner` is parsed, but it does **not** configure
   or launch an antivirus engine. It only changes how the media policy treats a
-  scanner verdict supplied by an upstream caller.
+  scanner verdict supplied by an upstream caller — and, per the note above,
+  only for plaintext (unencrypted-room) media; a real scanner integration
+  could never be given a verdict for encrypted attachments either.
 - `security.media.remote_fetch_timeout` is parsed and validated, but the live
   remote-fetch path still uses hard-coded discovery and outbound HTTP timeouts.
 
@@ -1212,7 +1224,10 @@ local identity behind it, and Merovingian does not run a real AV scanner for
 *any* media source today (see above), so there is never a genuine "clean"
 verdict to trust for remote-fetched bytes. Operators who accept that risk (or
 who front the server with a real scanning proxy that populates the scanner
-verdict) can set this to `allow-after-scan` or `allow` explicitly.
+verdict) can set this to `allow-after-scan` or `allow` explicitly. As above,
+none of this changes anything for encrypted-room attachments: `allow-after-scan`
+behaves identically to `allow` for that content today, since there is no
+scanner verdict for it to fail.
 
 ## Trust and safety policy transport
 

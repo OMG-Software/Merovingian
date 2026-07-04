@@ -29,7 +29,9 @@ current in-process runtime path.
   decoder safety, decompression expansion limits, and thumbnail metadata
   generation. Merovingian currently does not launch or configure an AV engine
   itself; `security.media.enable_av_scanner` only controls whether the policy
-  honors the supplied scanner verdict. Because no real scanner verdict is ever
+  honors the supplied scanner verdict — and, as the "Encrypted media is never
+  scannable" section below explains, that verdict can only ever exist for
+  plaintext media in unencrypted rooms. Because no real scanner verdict is ever
   produced for federated media, `fetch_remote_media_live()` reports
   `scanner_clean=false` (never a fabricated `true`) for every remote fetch —
   the final disposition is then decided by `MediaAcceptancePolicy` (see
@@ -48,6 +50,27 @@ current in-process runtime path.
   resampled image rather than the stored placeholder.
 - The media repository is runtime-wired; multipart upload handling remains the
   main outstanding Matrix v1.18 gap.
+
+## Encrypted media is never scannable
+
+**AV scanning cannot inspect the content of media in encrypted rooms, under
+any configuration, present or future.** Matrix E2EE attachments are encrypted
+client-side (AES-CTR) before upload; the homeserver only ever receives and
+stores an opaque ciphertext blob — accepted via the `application/octet-stream`
+entry in the default MIME allow-list — and never holds the decryption key,
+IV, or hashes needed to read it. Those live only inside the `m.room.encrypted`
+event content, itself encrypted end-to-end, which the server also cannot
+read. There is no scanner integration, proxy placement, or protocol change
+that closes this gap without breaking E2EE's confidentiality guarantee: a
+server that could inspect encrypted attachment content could also read
+encrypted messages.
+
+Every "scanner verdict" mentioned in this document and in
+`security.media.enable_av_scanner` / `local_upload_policy` /
+`remote_fetch_media_policy` (`docs/configuration.md`) therefore applies only
+to plaintext media uploaded to unencrypted rooms. For encrypted attachments,
+`allow-after-scan` behaves identically to `allow` today, since no scanner —
+real or hypothetical — is ever given a verdict to render.
 
 ## Thumbnailing
 
