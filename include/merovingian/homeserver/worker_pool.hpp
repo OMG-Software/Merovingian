@@ -71,6 +71,56 @@ struct HomeserverRuntime;
 [[nodiscard]] auto handle_otk_claim_ingest_request(HomeserverRuntime& runtime, std::string_view request_json)
     -> std::string;
 
+// Handles a "user_devices_ingest" IPC request (a worker relaying an inbound
+// GET /_matrix/federation/v1/user/devices/{userId} so the device list is
+// read from main's own PersistentStore instead of the worker's — the worker's
+// copy of PersistentStore::device_keys is a snapshot taken once at worker
+// startup and never learns about devices whose keys were uploaded through
+// main afterward, so a query landing on the worker could 404 for a device
+// that genuinely exists. See docs/architecture.md, "Federation worker
+// user/device/profile/event query relay"). Exposed as a free function for the same
+// test-seam reason handle_membership_ingest_request is. Takes and returns the
+// same wire JSON a worker sends/receives over the IPC channel.
+[[nodiscard]] auto handle_user_devices_ingest_request(HomeserverRuntime& runtime, std::string_view request_json)
+    -> std::string;
+
+// Handles a "device_keys_query_ingest" IPC request (a worker relaying an
+// inbound POST /_matrix/federation/v1/user/keys/query), for the same reason
+// and against the same stale-snapshot failure mode as
+// handle_user_devices_ingest_request above. See docs/architecture.md,
+// "Federation worker user/device/profile/event query relay".
+[[nodiscard]] auto handle_device_keys_query_ingest_request(HomeserverRuntime& runtime, std::string_view request_json)
+    -> std::string;
+
+// Handles a "profile_query_ingest" IPC request (a worker relaying an inbound
+// GET /_matrix/federation/v1/query/profile), for the same reason and against
+// the same stale-snapshot failure mode as handle_user_devices_ingest_request
+// above — PersistentStore::profiles is likewise a worker-startup snapshot
+// never refreshed by a later client-server profile update on main. See
+// docs/architecture.md, "Federation worker user/device/profile/event query relay".
+[[nodiscard]] auto handle_profile_query_ingest_request(HomeserverRuntime& runtime, std::string_view request_json)
+    -> std::string;
+
+// Handles an "event_query_ingest" IPC request (a worker relaying an inbound
+// GET /_matrix/federation/v1/event/{eventId}). Unlike user_devices_ingest/
+// device_keys_query_ingest/profile_query_ingest above, this route's
+// underlying data (PersistentStore::events) *is* room-scoped and normally
+// kept fresh via notify_room_changed()/reload_room() — but the route itself
+// carries only an event ID, not a room ID, so room_endpoint_prefixes() has
+// no (and can have no) entry for it: it always routes to shard 0 regardless
+// of which shard actually owns the room the event belongs to. A shard that
+// never received that room's room_sync notifications (because it isn't the
+// hash-selected owner) can therefore 404 for an event that genuinely exists
+// on the shard that does own the room. Relaying through main — which
+// receives every event via pdu_sink regardless of shard — sidesteps the
+// routing-alignment problem entirely rather than trying to solve it. See
+// docs/architecture.md, "Federation worker user/device/profile/event query
+// relay". Exposed as a free function for the same test-seam reason
+// handle_membership_ingest_request is. Takes and returns the same wire JSON
+// a worker sends/receives over the IPC channel.
+[[nodiscard]] auto handle_event_query_ingest_request(HomeserverRuntime& runtime, std::string_view request_json)
+    -> std::string;
+
 // Owns N out-of-process federation worker supervisors. Routes each inbound
 // federation request to the worker that owns the request's room ID.
 //

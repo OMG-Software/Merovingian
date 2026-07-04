@@ -1230,6 +1230,204 @@ SCENARIO("handle_otk_claim_ingest_request returns no keys when the requested dev
     }
 }
 
+SCENARIO("handle_user_devices_ingest_request reads a device list from main's own store",
+         "[integration][federation-worker][e2ee][query-relay]")
+{
+    // Drives worker_pool.cpp's handle_user_devices_ingest_request() through
+    // its real wire format, the same pattern the *_ingest scenarios above
+    // use.
+    //
+    // This pins the fix for the bug where user_devices_provider's default
+    // implementation (local_http_router.cpp) read PersistentStore::
+    // device_keys — a per-process in-memory snapshot hydrated once at worker
+    // startup — with no mechanism to ever refresh it, since GET
+    // /_matrix/federation/v1/user/devices/{userId} carries no room ID for
+    // room_sync to key off. A device whose keys were uploaded through main
+    // after a worker started was therefore permanently invisible to that
+    // worker, returning a spurious 404 for a device that genuinely exists.
+    // Routing the query through main's single authoritative copy via a new
+    // user_devices_ingest IPC call removes the staleness structurally.
+    GIVEN("a runtime with the default federation callbacks wired and a device key stored on main's own store")
+    {
+        REQUIRE(sodium_init() >= 0);
+
+        auto const tmp_dir = unique_temp_dir("merovingian-fed-worker-user-devices");
+        auto config = make_federation_worker_config(tmp_dir);
+        config.database().sqlite_path = (tmp_dir / "user-devices-test.sqlite3").string();
+
+        auto started = start_runtime(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+        REQUIRE(runtime.federation.user_devices_provider);
+
+        auto const user_id = std::string{"@local:"} + config.server().server_name;
+        auto const device_id = std::string{"DEVICE1"};
+        REQUIRE(merovingian::database::store_device_key(
+            runtime.database.persistent_store,
+            {user_id, device_id, R"({"algorithms":["m.olm.v1.curve25519-aes-sha2"],"keys":{}})"}));
+
+        WHEN("a user_devices_ingest request shaped like a real worker's is handled")
+        {
+            auto const request_json =
+                std::string{R"({"type":"user_devices_ingest","user_id":)"} + ipc_escape_json_string(user_id) + "}";
+
+            auto const response_json =
+                merovingian::homeserver::handle_user_devices_ingest_request(runtime, request_json);
+
+            THEN("the response reflects main's own store rather than an empty worker-local snapshot")
+            {
+                INFO("response: " << response_json);
+                REQUIRE(response_json.find(device_id) != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("handle_device_keys_query_ingest_request reads device keys from main's own store",
+         "[integration][federation-worker][e2ee][query-relay]")
+{
+    // Same stale-snapshot failure mode as handle_user_devices_ingest_request
+    // above, for POST /_matrix/federation/v1/user/keys/query instead of
+    // GET /user/devices/{userId}.
+    GIVEN("a runtime with the default federation callbacks wired and a device key stored on main's own store")
+    {
+        REQUIRE(sodium_init() >= 0);
+
+        auto const tmp_dir = unique_temp_dir("merovingian-fed-worker-device-keys-query");
+        auto config = make_federation_worker_config(tmp_dir);
+        config.database().sqlite_path = (tmp_dir / "device-keys-query-test.sqlite3").string();
+
+        auto started = start_runtime(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+        REQUIRE(runtime.federation.device_keys_query_provider);
+
+        auto const user_id = std::string{"@local:"} + config.server().server_name;
+        auto const device_id = std::string{"DEVICE1"};
+        REQUIRE(merovingian::database::store_device_key(
+            runtime.database.persistent_store,
+            {user_id, device_id, R"({"algorithms":["m.olm.v1.curve25519-aes-sha2"],"keys":{}})"}));
+
+        WHEN("a device_keys_query_ingest request shaped like a real worker's is handled")
+        {
+            auto const query_request_body = std::string{R"({"device_keys":{")"} + user_id + R"(":[]}})";
+            auto const request_json = std::string{R"({"type":"device_keys_query_ingest","request_body":)"} +
+                                      ipc_escape_json_string(query_request_body) + "}";
+
+            auto const response_json =
+                merovingian::homeserver::handle_device_keys_query_ingest_request(runtime, request_json);
+
+            THEN("the response reflects main's own store rather than an empty worker-local snapshot")
+            {
+                INFO("response: " << response_json);
+                REQUIRE(response_json.find(device_id) != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("handle_profile_query_ingest_request reads a profile from main's own store",
+         "[integration][federation-worker][query-relay]")
+{
+    // Same stale-snapshot failure mode as handle_user_devices_ingest_request
+    // above, for GET /_matrix/federation/v1/query/profile: PersistentStore::
+    // profiles is likewise a worker-startup snapshot never refreshed by a
+    // later client-server profile update on main.
+    GIVEN("a runtime with the default federation callbacks wired and a profile stored on main's own store")
+    {
+        REQUIRE(sodium_init() >= 0);
+
+        auto const tmp_dir = unique_temp_dir("merovingian-fed-worker-profile-query");
+        auto config = make_federation_worker_config(tmp_dir);
+        config.database().sqlite_path = (tmp_dir / "profile-query-test.sqlite3").string();
+
+        auto started = start_runtime(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+        REQUIRE(runtime.federation.profile_query_provider);
+
+        auto const user_id = std::string{"@local:"} + config.server().server_name;
+        REQUIRE(merovingian::database::store_profile(runtime.database.persistent_store,
+                                                     {user_id, "Test Display Name", "mxc://example.com/avatar"}));
+
+        WHEN("a profile_query_ingest request shaped like a real worker's is handled")
+        {
+            auto const request_json =
+                std::string{R"({"type":"profile_query_ingest","user_id":)"} + ipc_escape_json_string(user_id) + "}";
+
+            auto const response_json =
+                merovingian::homeserver::handle_profile_query_ingest_request(runtime, request_json);
+
+            THEN("the response reflects main's own store rather than an empty worker-local snapshot")
+            {
+                INFO("response: " << response_json);
+                REQUIRE(response_json.find(R"("found":true)") != std::string::npos);
+                REQUIRE(response_json.find("Test Display Name") != std::string::npos);
+                REQUIRE(response_json.find("mxc://example.com/avatar") != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("handle_event_query_ingest_request reads an event from main's own store regardless of shard ownership",
+         "[integration][federation-worker][query-relay]")
+{
+    // Drives worker_pool.cpp's handle_event_query_ingest_request() through
+    // its real wire format, the same pattern the *_ingest scenarios above
+    // use.
+    //
+    // This pins the fix for a routing-alignment bug distinct from the
+    // stale-snapshot bug the three scenarios above fix: GET
+    // /_matrix/federation/v1/event/{eventId} carries no room ID, so
+    // room_endpoint_prefixes() cannot route it to the shard that actually
+    // owns the event's room the way state/state_ids/backfill/
+    // get_missing_events are — it always lands on shard 0. A shard that
+    // never received that room's room_sync notifications (because it isn't
+    // the hash-selected owner) would 404 for an event that genuinely exists
+    // on the shard that does own the room. Relaying through main — which
+    // receives every event via pdu_sink regardless of which shard accepted
+    // it — answers correctly no matter which shard the request lands on.
+    GIVEN("a runtime with the default federation callbacks wired and an event stored on main's own store")
+    {
+        REQUIRE(sodium_init() >= 0);
+
+        auto const tmp_dir = unique_temp_dir("merovingian-fed-worker-event-query");
+        auto config = make_federation_worker_config(tmp_dir);
+        config.database().sqlite_path = (tmp_dir / "event-query-test.sqlite3").string();
+
+        auto started = start_runtime(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+        REQUIRE(runtime.federation.event_query_provider);
+
+        auto const event_id = std::string{"$eventquerytest:"} + config.server().server_name;
+        auto const room_id = std::string{"!room:"} + config.server().server_name;
+        REQUIRE(merovingian::database::store_event(
+            runtime.database.persistent_store,
+            {event_id, room_id, std::string{"@sender:"} + config.server().server_name,
+             R"({"type":"m.room.message","content":{"body":"event-query-relay-marker"}})"}));
+
+        WHEN("an event_query_ingest request shaped like a real worker's is handled")
+        {
+            auto const request_json =
+                std::string{R"({"type":"event_query_ingest","event_id":)"} + ipc_escape_json_string(event_id) + "}";
+
+            auto const response_json =
+                merovingian::homeserver::handle_event_query_ingest_request(runtime, request_json);
+
+            THEN("the response reflects main's own store rather than an empty worker-local snapshot")
+            {
+                INFO("response: " << response_json);
+                REQUIRE(response_json.find("event-query-relay-marker") != std::string::npos);
+            }
+        }
+    }
+}
+
 SCENARIO("WorkerPool routes outbound HTTP requests through the federation worker IPC channel",
          "[integration][federation-worker][outbound][ipc]")
 {
