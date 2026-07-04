@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.10.19
+Version:        0.10.20
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -101,6 +101,8 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Sat Jul 04 2026 James Chapman <claude@ping.me.uk> - 0.10.20-1
+- fix(federation): federation worker's edu_sink was a hard no-op, silently dropping every inbound EDU it handled — including m.direct_to_device, the transport for E2EE megolm room-key shares — while still counting them as "dispatched" in logs; recipients whose key-share transaction landed on a worker shard were left permanently unable to decrypt affected messages with no trace of the failure anywhere in the server logs. edu_sink now relays through main via a new edu_ingest IPC call, the same way pdu_sink and membership_acceptor already do
 * Sat Jul 04 2026 James Chapman <claude@ping.me.uk> - 0.10.19-1
 - fix(federation): a federated join/leave/knock accepted by a federation worker was never visible to the main process's own room state; every subsequent message from that member was rejected with "sender is not joined to the room" — membership_acceptor now relays through main via a new membership_ingest IPC call, the same way pdu_sink already does
 * Fri Jul 03 2026 James Chapman <claude@ping.me.uk> - 0.10.18-1

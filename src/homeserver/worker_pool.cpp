@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -382,6 +383,42 @@ namespace
         return hash;
     }
 
+    // Deserializes an "edu_ingest" wire frame into an InboundEduEnvelope,
+    // reusing federation::parse_inbound_edu_envelope so an unknown/malformed
+    // edu_type or non-object content_json is rejected the same way it would
+    // be if this EDU had been processed directly by main instead of relayed
+    // from a worker.
+    [[nodiscard]] auto deserialize_edu_ingest(std::string_view json) -> std::optional<federation::InboundEduEnvelope>
+    {
+        auto const edu_type = json_get_str(json, "edu_type");
+        auto const origin = json_get_str(json, "origin");
+        auto const content_json = json_get_str(json, "content_json");
+        return federation::parse_inbound_edu_envelope(edu_type, origin, content_json);
+    }
+
+    auto serialize_edu_ingest_result(federation::EduDispositionResult const& result) -> std::string
+    {
+        auto status_str = std::string_view{};
+        switch (result.status)
+        {
+        case federation::EduDispositionStatus::accepted:
+            status_str = "accepted";
+            break;
+        case federation::EduDispositionStatus::rejected_invalid:
+            status_str = "rejected_invalid";
+            break;
+        case federation::EduDispositionStatus::dropped_unknown_type:
+            status_str = "dropped_unknown_type";
+            break;
+        }
+        auto body = std::string{R"({"type":"edu_ingest_result","status":)"};
+        body += json_str(status_str);
+        body += R"(,"reason":)";
+        body += json_str(result.reason);
+        body += '}';
+        return body;
+    }
+
 } // namespace
 
 auto federation_worker_shard_for(std::string_view room_id, std::uint32_t shards) noexcept -> std::size_t
@@ -422,6 +459,39 @@ auto handle_membership_ingest_request(HomeserverRuntime& runtime, std::string_vi
         }
     }
     return serialize_membership_ingest_result(result);
+}
+
+auto handle_edu_ingest_request(HomeserverRuntime& runtime, std::string_view request_json) -> std::string
+{
+    // EDUs (typing, receipts, presence, m.direct_to_device, device list
+    // updates) accepted by a worker must reach main's own edu_sink the same
+    // way pdu_ingest/membership_ingest already relay PDUs and membership
+    // acceptances — see docs/architecture.md, "Federation worker EDU relay".
+    // m.direct_to_device in particular carries E2EE megolm room-key shares:
+    // a worker that dropped this EDU instead of relaying it would leave the
+    // recipient's device without the key it needs to decrypt the
+    // corresponding room event, with no error surfaced anywhere — the
+    // transaction is still ack'd 200 to the sending server either way.
+    auto const envelope = deserialize_edu_ingest(request_json);
+    if (!envelope.has_value())
+    {
+        return serialize_edu_ingest_result(
+            {federation::EduDispositionStatus::rejected_invalid, "edu_ingest envelope failed to parse"});
+    }
+    auto result = federation::EduDispositionResult{};
+    {
+        auto guard = std::unique_lock{runtime.mutex};
+        if (runtime.federation.edu_sink)
+        {
+            result = runtime.federation.edu_sink(*envelope);
+        }
+        else
+        {
+            result.status = federation::EduDispositionStatus::rejected_invalid;
+            result.reason = "edu_sink not wired";
+        }
+    }
+    return serialize_edu_ingest_result(result);
 }
 
 WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRuntime& runtime, std::string worker_path,
@@ -482,6 +552,10 @@ WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRunt
             else if (type == "membership_ingest")
             {
                 ptr->channel().send_response(id, handle_membership_ingest_request(runtime_, json));
+            }
+            else if (type == "edu_ingest")
+            {
+                ptr->channel().send_response(id, handle_edu_ingest_request(runtime_, json));
             }
             else if (type == "sign_request")
             {

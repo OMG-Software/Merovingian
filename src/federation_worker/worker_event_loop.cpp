@@ -189,6 +189,47 @@ namespace
         return result;
     }
 
+    // Serialize an InboundEduEnvelope for the edu_ingest IPC call to main.
+    // content_json is embedded as an escaped JSON string value (via
+    // ipc::ipc_json_str), the same way append_envelope_fields embeds a raw
+    // PDU's "json" field above — this is what makes it safe for content_json
+    // to itself contain arbitrary nested JSON (including a literal "type"
+    // key, as e.g. m.room_key.withheld content does) without corrupting the
+    // outer frame that ipc_json_get_str parses on the other side.
+    auto serialize_edu_ingest(federation::InboundEduEnvelope const& env) -> std::string
+    {
+        auto result = std::string{R"({"type":"edu_ingest","edu_type":)"};
+        result.reserve(256U + env.content_json.size());
+        result += ipc::ipc_json_str(env.edu_type);
+        result += R"(,"origin":)";
+        result += ipc::ipc_json_str(env.origin);
+        result += R"(,"content_json":)";
+        result += ipc::ipc_json_str(env.content_json);
+        result += '}';
+        return result;
+    }
+
+    // Deserialize an `edu_ingest_result` JSON frame from main.
+    auto deserialize_edu_ingest_result(std::string_view json) -> federation::EduDispositionResult
+    {
+        auto result = federation::EduDispositionResult{};
+        auto const status_str = ipc::ipc_json_get_str(json, "status");
+        if (status_str == "accepted")
+        {
+            result.status = federation::EduDispositionStatus::accepted;
+        }
+        else if (status_str == "dropped_unknown_type")
+        {
+            result.status = federation::EduDispositionStatus::dropped_unknown_type;
+        }
+        else
+        {
+            result.status = federation::EduDispositionStatus::rejected_invalid;
+        }
+        result.reason = ipc::ipc_json_get_str(json, "reason");
+        return result;
+    }
+
     // MembershipAcceptResult carries whole event JSON blobs (auth_chain_json,
     // state_json) that can legitimately contain arbitrary remote-user content
     // — including strings that look like `"status":123` or `"accepted":true`
@@ -398,8 +439,30 @@ auto WorkerEventLoop::run() -> void
         return deserialize_membership_ingest_result(*reply);
     };
 
-    // EDU sink is a no-op in Phase 1; EDUs are ephemeral and acceptable to drop.
-    runtime.federation.edu_sink = {};
+    // Override edu_sink the same way as pdu_sink/membership_acceptor above:
+    // relay the EDU to main via IPC instead of handling (or dropping) it in
+    // this process. A prior "EDUs are ephemeral, safe to drop" design set
+    // this to a hard no-op for every EDU type — but m.direct_to_device
+    // carries E2EE megolm room-key shares and m.room_key.withheld notices,
+    // which are not safe to drop: a recipient whose key-share transaction
+    // landed on this worker shard was left permanently unable to decrypt any
+    // message encrypted with that session, with no trace anywhere in main's
+    // logs (the transaction was still ack'd 200 to the sending server, and
+    // inbound_request.cpp counts an EDU with no edu_sink installed as
+    // "dispatched" rather than "dropped"). Typing/receipt/presence really
+    // are ephemeral, but relaying everything through one uniform path avoids
+    // special-casing by EDU type. See docs/architecture.md, "Federation
+    // worker EDU relay".
+    runtime.federation.edu_sink =
+        [channel_ptr](federation::InboundEduEnvelope const& envelope) -> federation::EduDispositionResult {
+        auto const json_body = serialize_edu_ingest(envelope);
+        auto const reply = channel_ptr->send_request(json_body, std::chrono::seconds{60});
+        if (!reply.has_value())
+        {
+            return {federation::EduDispositionStatus::rejected_invalid, "edu_ingest IPC timeout"};
+        }
+        return deserialize_edu_ingest_result(*reply);
+    };
 
     // Thread pool for handling concurrent fed_request messages.
     auto pool = net::ThreadPool{threads_};

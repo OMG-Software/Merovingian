@@ -563,6 +563,94 @@ SCENARIO("handle_membership_ingest_request persists a worker-relayed federated j
     }
 }
 
+SCENARIO("handle_edu_ingest_request delivers a worker-relayed m.direct_to_device EDU to main's to-device queue",
+         "[integration][federation-worker][edu][to-device][e2ee]")
+{
+    // Drives worker_pool.cpp's handle_edu_ingest_request() through its real
+    // wire format: a raw JSON string shaped exactly like
+    // worker_event_loop.cpp's serialize_edu_ingest() produces, in and out —
+    // the same pattern the membership_ingest scenario above uses, and for the
+    // same reason: exercising the real relay logic without needing a live
+    // remote signing key to clear the federation-policy gate ahead of it.
+    //
+    // This pins the fix for the bug where the federation worker's edu_sink
+    // was a hard no-op (`runtime.federation.edu_sink = {};`), silently
+    // dropping every inbound EDU — including m.direct_to_device, the
+    // transport for E2EE megolm room-key shares. A recipient whose key-share
+    // transaction landed on a worker shard was left permanently unable to
+    // decrypt the corresponding room event, with nothing in the server logs
+    // to show why (inbound_request.cpp counts an EDU with no edu_sink
+    // installed as "dispatched", not "dropped").
+    GIVEN("a runtime with the default federation callbacks wired")
+    {
+        REQUIRE(sodium_init() >= 0);
+
+        auto const tmp_dir = unique_temp_dir("merovingian-fed-worker-edu");
+        auto config = make_federation_worker_config(tmp_dir);
+        config.database().sqlite_path = (tmp_dir / "edu-test.sqlite3").string();
+
+        auto started = start_runtime(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+        REQUIRE(runtime.federation.edu_sink);
+
+        WHEN("an edu_ingest request carrying an m.direct_to_device megolm room-key share is handled")
+        {
+            auto const sender = std::string{"@remote:matrix.example.org"};
+            auto const target_user = std::string{"@local:example.com"};
+            auto const target_device = std::string{"DEVICE1"};
+            auto const content_json = std::string{R"({"sender":")"} + sender +
+                                      R"(","type":"m.room_key","message_id":"m1","messages":{")" + target_user +
+                                      R"(":{")" + target_device +
+                                      R"(":{"algorithm":"m.megolm.v1.aes-sha2","room_id":"!room:example.com",)" +
+                                      R"("session_id":"sess123","session_key":"deadbeef"}}}})";
+
+            // Mirror ipc::ipc_json_str's escaping for the embedded content_json,
+            // same as the membership_ingest scenario above does for its "json" field.
+            auto const escape = [](std::string_view raw) {
+                auto escaped = std::string{'"'};
+                for (auto const ch : raw)
+                {
+                    if (ch == '"' || ch == '\\')
+                    {
+                        escaped += '\\';
+                    }
+                    escaped += ch;
+                }
+                escaped += '"';
+                return escaped;
+            };
+
+            auto const request_json = std::string{R"({"type":"edu_ingest","edu_type":"m.direct_to_device",)"} +
+                                      R"("origin":"matrix.example.org","content_json":)" + escape(content_json) + "}";
+
+            auto const response_json = merovingian::homeserver::handle_edu_ingest_request(runtime, request_json);
+
+            THEN("the response reports the EDU as accepted")
+            {
+                INFO("response: " << response_json);
+                REQUIRE(response_json.find(R"("status":"accepted")") != std::string::npos);
+            }
+
+            AND_THEN("the room-key share reaches main's own to-device queue for the target device — the bug this "
+                     "fix closes: edu_sink was previously a hard no-op inside the worker process, so this message "
+                     "would silently vanish instead of ever reaching main's PersistentStore")
+            {
+                auto const has_key_share =
+                    std::ranges::any_of(runtime.database.persistent_store.to_device_messages,
+                                        [&](merovingian::database::PersistentToDeviceMessage const& m) {
+                                            return m.sender_user_id == sender && m.target_user_id == target_user &&
+                                                   m.target_device_id == target_device &&
+                                                   m.message_type == "m.room_key" &&
+                                                   m.content_json.find("sess123") != std::string::npos;
+                                        });
+                REQUIRE(has_key_share);
+            }
+        }
+    }
+}
+
 SCENARIO("WorkerPool routes outbound HTTP requests through the federation worker IPC channel",
          "[integration][federation-worker][outbound][ipc]")
 {
