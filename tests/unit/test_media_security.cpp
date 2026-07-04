@@ -471,6 +471,161 @@ SCENARIO("evaluate_media_upload rejects (not quarantines) unknown MIME when quar
     }
 }
 
+// ---------------------------------------------------------------------------
+// evaluate_media_upload — MediaAcceptancePolicy (allow / allow-after-scan /
+// quarantine / deny), added to close the security-audit finding that
+// fetch_remote_media_live() fabricated scanner_clean=true for every
+// federated fetch, bypassing the scanner gate entirely for attacker-
+// controlled content.
+// ---------------------------------------------------------------------------
+
+SCENARIO("evaluate_media_upload's deny policy rejects unconditionally regardless of content",
+         "[media][security][upload][policy]")
+{
+    GIVEN("a deny policy and an otherwise perfectly valid, scanner-clean request")
+    {
+        auto policy = default_upload_policy();
+        policy.acceptance_policy = merovingian::media::MediaAcceptancePolicy::deny;
+        auto request = merovingian::media::MediaUploadRequest{};
+        request.byte_size = 512U;
+        request.declared_mime_type = "image/png";
+        request.sniffed_mime_type = "image/png";
+        request.content_hash = "sha256:abc";
+        request.scanner_clean = true;
+
+        WHEN("the upload is evaluated")
+        {
+            auto const result = merovingian::media::evaluate_media_upload(policy, request);
+
+            THEN("the upload is rejected before any other check runs")
+            {
+                REQUIRE(result.disposition == merovingian::media::MediaDisposition::reject);
+                REQUIRE(result.reason == "media acceptance policy is deny");
+            }
+        }
+    }
+}
+
+SCENARIO("evaluate_media_upload's allow policy accepts even when the scanner did not clear the content",
+         "[media][security][upload][policy]")
+{
+    GIVEN("an allow policy and a request the scanner marked unclean")
+    {
+        auto policy = default_upload_policy();
+        policy.acceptance_policy = merovingian::media::MediaAcceptancePolicy::allow;
+        auto request = merovingian::media::MediaUploadRequest{};
+        request.byte_size = 512U;
+        request.declared_mime_type = "image/png";
+        request.sniffed_mime_type = "image/png";
+        request.content_hash = "sha256:abc";
+        request.scanner_clean = false;
+
+        WHEN("the upload is evaluated")
+        {
+            auto const result = merovingian::media::evaluate_media_upload(policy, request);
+
+            THEN("the scanner verdict is ignored and the upload is accepted")
+            {
+                REQUIRE(result.disposition == merovingian::media::MediaDisposition::accept);
+            }
+        }
+    }
+}
+
+SCENARIO("evaluate_media_upload's quarantine policy holds even fully clean content for manual review",
+         "[media][security][upload][policy]")
+{
+    GIVEN("a quarantine policy and an otherwise perfectly valid, scanner-clean request")
+    {
+        auto policy = default_upload_policy();
+        policy.acceptance_policy = merovingian::media::MediaAcceptancePolicy::quarantine;
+        auto request = merovingian::media::MediaUploadRequest{};
+        request.byte_size = 512U;
+        request.declared_mime_type = "image/png";
+        request.sniffed_mime_type = "image/png";
+        request.content_hash = "sha256:abc";
+        request.scanner_clean = true;
+
+        WHEN("the upload is evaluated")
+        {
+            auto const result = merovingian::media::evaluate_media_upload(policy, request);
+
+            THEN("the upload is quarantined rather than accepted")
+            {
+                REQUIRE(result.disposition == merovingian::media::MediaDisposition::quarantine);
+                REQUIRE(result.reason == "media acceptance policy requires manual review");
+            }
+        }
+    }
+}
+
+SCENARIO("evaluate_media_upload's default allow-after-scan policy preserves the historical scanner-gated behaviour",
+         "[media][security][upload][policy]")
+{
+    GIVEN("the default policy (allow-after-scan) and both a clean and an unclean request")
+    {
+        auto const policy = default_upload_policy();
+        REQUIRE(policy.acceptance_policy == merovingian::media::MediaAcceptancePolicy::allow_after_scan);
+        auto clean = merovingian::media::MediaUploadRequest{};
+        clean.byte_size = 512U;
+        clean.declared_mime_type = "image/png";
+        clean.sniffed_mime_type = "image/png";
+        clean.content_hash = "sha256:abc";
+        clean.scanner_clean = true;
+        auto unclean = clean;
+        unclean.scanner_clean = false;
+
+        WHEN("both uploads are evaluated")
+        {
+            auto const accepted = merovingian::media::evaluate_media_upload(policy, clean);
+            auto const quarantined = merovingian::media::evaluate_media_upload(policy, unclean);
+
+            THEN("clean content is accepted and unclean content is quarantined, exactly as before this policy existed")
+            {
+                REQUIRE(accepted.disposition == merovingian::media::MediaDisposition::accept);
+                REQUIRE(quarantined.disposition == merovingian::media::MediaDisposition::quarantine);
+                REQUIRE(quarantined.reason == "media scanner did not clear upload");
+            }
+        }
+    }
+}
+
+SCENARIO("media_acceptance_policy_name and parse_media_acceptance_policy round-trip every value",
+         "[media][security][policy][parse]")
+{
+    GIVEN("every MediaAcceptancePolicy value")
+    {
+        WHEN("each is converted to its config string and parsed back")
+        {
+            THEN("the round trip is lossless for all four values")
+            {
+                using merovingian::media::media_acceptance_policy_name;
+                using merovingian::media::MediaAcceptancePolicy;
+                using merovingian::media::parse_media_acceptance_policy;
+
+                REQUIRE(media_acceptance_policy_name(MediaAcceptancePolicy::allow) == "allow");
+                REQUIRE(media_acceptance_policy_name(MediaAcceptancePolicy::allow_after_scan) == "allow-after-scan");
+                REQUIRE(media_acceptance_policy_name(MediaAcceptancePolicy::quarantine) == "quarantine");
+                REQUIRE(media_acceptance_policy_name(MediaAcceptancePolicy::deny) == "deny");
+
+                REQUIRE(parse_media_acceptance_policy("allow") == MediaAcceptancePolicy::allow);
+                REQUIRE(parse_media_acceptance_policy("allow-after-scan") == MediaAcceptancePolicy::allow_after_scan);
+                REQUIRE(parse_media_acceptance_policy("quarantine") == MediaAcceptancePolicy::quarantine);
+                REQUIRE(parse_media_acceptance_policy("deny") == MediaAcceptancePolicy::deny);
+            }
+        }
+
+        WHEN("an unrecognised value is parsed")
+        {
+            THEN("it falls back to the safest option (quarantine)")
+            {
+                REQUIRE(merovingian::media::parse_media_acceptance_policy("bogus") ==
+                        merovingian::media::MediaAcceptancePolicy::quarantine);
+            }
+        }
+    }
+}
+
 SCENARIO("evaluate_media_upload rejects (not quarantines) scanner failures when quarantine_scanner_failures is false",
          "[media][security][upload][scanner]")
 {

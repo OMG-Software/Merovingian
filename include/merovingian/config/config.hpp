@@ -158,6 +158,18 @@ struct MediaSecurityConfig final
     std::vector<std::string> allowed_mime_types{};
     bool quarantine_unknown_mime{true};
     bool enable_av_scanner{true};
+    // Acceptance disposition for authenticated local uploads. One of "allow",
+    // "allow-after-scan", "quarantine", "deny". Validated by validate_config()
+    // via is_valid_media_acceptance_policy(); parsed into
+    // media::MediaAcceptancePolicy by media::make_runtime_media_config().
+    std::string local_upload_policy{"allow-after-scan"};
+    // Acceptance disposition for bytes fetched from a federated origin
+    // server. Defaults to "quarantine" rather than mirroring
+    // local_upload_policy's default: remote media has no accountable local
+    // uploader and, unlike a local upload, is never covered by a real scanner
+    // verdict today, so it is held for admin review unless an operator opts
+    // into a looser policy.
+    std::string remote_fetch_media_policy{"quarantine"};
     bool block_private_ip_fetches{true};
     std::string remote_fetch_timeout{"30s"};
     bool remote_fetch_enabled{false};
@@ -325,6 +337,7 @@ struct DurationParseResult final
 [[nodiscard]] auto is_safe_cleartext_listener(ListenerConfig const& listener) noexcept -> bool;
 [[nodiscard]] auto is_valid_public_baseurl(std::string_view public_baseurl) noexcept -> bool;
 [[nodiscard]] auto is_valid_federation_policy(std::string_view policy) noexcept -> bool;
+[[nodiscard]] auto is_valid_media_acceptance_policy(std::string_view policy) noexcept -> bool;
 [[nodiscard]] auto is_valid_federation_server_name(std::string_view server_name) noexcept -> bool;
 [[nodiscard]] auto parse_size_limit(std::string_view value) noexcept -> SizeLimitParseResult;
 [[nodiscard]] auto parse_duration_seconds(std::string_view value) noexcept -> DurationParseResult;

@@ -163,9 +163,23 @@ federation.worker.apply_hardening=true
 # federation.worker.binary=
 
 # Media safety policy
-# max_upload_size bounds local uploads. Unknown MIME types are quarantined, AV
-# scanning is expected, private-IP remote fetches are blocked, and decoding is
-# treated as sandbox-only work.
+# max_upload_size bounds local uploads. Unknown MIME types are quarantined,
+# private-IP remote fetches are blocked, and decoding is treated as
+# sandbox-only work. AV scanning is a policy hook only — see the WARNING
+# below before assuming it protects anything.
+#
+# WARNING: AV scanning CANNOT inspect media in encrypted rooms, ever, by
+# design. Matrix E2EE attachments are encrypted client-side before upload;
+# the server only ever receives and stores an opaque ciphertext blob
+# (uploaded as application/octet-stream) and never holds the decryption key
+# — that key travels only inside the encrypted room event, which the server
+# also cannot read. There is no configuration, proxy placement, or future
+# Merovingian release that changes this without breaking end-to-end
+# encryption's confidentiality guarantee. Nothing below — enable_av_scanner,
+# local_upload_policy, remote_fetch_media_policy — can make encrypted
+# attachments scannable; they only affect plaintext media in unencrypted
+# rooms (and, for enable_av_scanner specifically, only once a real scanner is
+# integrated — see below).
 security.media.max_upload_size=50MiB
 # allowed_mime_types is a comma-separated allow-list. When empty (the default),
 # Merovingian uses its built-in default list, which includes image/png,
@@ -177,11 +191,37 @@ security.media.max_upload_size=50MiB
 security.media.quarantine_unknown_mime=true
 # Commented out: no AV engine integration is wired yet. This flag only changes
 # how Merovingian treats a scanner verdict supplied by an upstream caller/test
-# harness; it does not invoke or configure an antivirus scanner itself.
+# harness; it does not invoke or configure an antivirus scanner itself. And as
+# the WARNING above explains, even a real scanner integration could only ever
+# see plaintext media from unencrypted rooms — application/octet-stream
+# (encrypted-room attachments) is unscannable ciphertext no matter what this
+# flag is set to.
 # security.media.enable_av_scanner=true
+# Acceptance disposition for authenticated local uploads: allow,
+# allow-after-scan, quarantine, or deny. Defaults to allow-after-scan, which
+# accepts a clean scanner verdict and quarantines/rejects otherwise — the only
+# behaviour that existed before this setting was introduced. For encrypted
+# attachments this scanner verdict is never meaningful (see the WARNING
+# above): allow-after-scan behaves identically to allow for that content
+# today, since there is no verdict to fail.
+# security.media.local_upload_policy=allow-after-scan
+# Acceptance disposition for bytes fetched from a federated origin server,
+# same four values as local_upload_policy above. Defaults to quarantine
+# rather than mirroring local_upload_policy's default: a remote origin server
+# has no accountable local identity behind it, and Merovingian never produces
+# a real scanner verdict for remote-fetched bytes (see enable_av_scanner
+# above), so there is no genuine "clean" result to trust — and, per the
+# WARNING above, never can be for encrypted-room attachments regardless of
+# this setting. Set to allow-after-scan or allow only if you accept that risk
+# for plaintext media, or front this server with a scanning proxy that
+# inspects plaintext media before it reaches Merovingian.
+# security.media.remote_fetch_media_policy=quarantine
 security.media.block_private_ip_fetches=true
-# Commented out: remote media fetch is not implemented in this milestone and
-# these values are not consulted by the live code path.
+# Remote media fetching is opt-in and live: the homeserver resolves the
+# origin server, fetches the media over HTTPS, and ingests the response
+# through remote_fetch_media_policy above. remote_fetch_timeout is parsed and
+# validated, but the live fetch path still uses hard-coded discovery/HTTP
+# timeout values.
 # security.media.remote_fetch_enabled=false
 # security.media.remote_fetch_timeout=30s
 security.media.decode_in_sandbox=true

@@ -253,6 +253,11 @@ auto is_valid_federation_policy(std::string_view policy) noexcept -> bool
     return policy == "allow" || policy == "deny";
 }
 
+auto is_valid_media_acceptance_policy(std::string_view policy) noexcept -> bool
+{
+    return policy == "allow" || policy == "allow-after-scan" || policy == "quarantine" || policy == "deny";
+}
+
 auto is_valid_federation_server_name(std::string_view server_name) noexcept -> bool
 {
     if (server_name.empty() || server_name.size() > 255U || server_name.front() == '.' || server_name.back() == '.')
@@ -588,6 +593,18 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
     if (!is_valid_federation_policy(config.security().federation.default_policy))
     {
         findings.push_back({"security.federation.default_policy", "federation default policy must be allow or deny"});
+    }
+
+    if (!is_valid_media_acceptance_policy(config.security().media.local_upload_policy))
+    {
+        findings.push_back({"security.media.local_upload_policy",
+                            "media acceptance policy must be allow, allow-after-scan, quarantine, or deny"});
+    }
+
+    if (!is_valid_media_acceptance_policy(config.security().media.remote_fetch_media_policy))
+    {
+        findings.push_back({"security.media.remote_fetch_media_policy",
+                            "media acceptance policy must be allow, allow-after-scan, quarantine, or deny"});
     }
 
     if (config.security().federation.enabled && config.security().federation.default_policy == "deny" &&

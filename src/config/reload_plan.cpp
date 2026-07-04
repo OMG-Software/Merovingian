@@ -240,6 +240,14 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "security.media.enable_av_scanner");
     }
+    if (current.security().media.local_upload_policy != next.security().media.local_upload_policy)
+    {
+        add_change(plan, "security.media.local_upload_policy");
+    }
+    if (current.security().media.remote_fetch_media_policy != next.security().media.remote_fetch_media_policy)
+    {
+        add_change(plan, "security.media.remote_fetch_media_policy");
+    }
     if (current.security().media.block_private_ip_fetches != next.security().media.block_private_ip_fetches)
     {
         add_change(plan, "security.media.block_private_ip_fetches");

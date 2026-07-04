@@ -59,6 +59,10 @@ struct RemoteTrustDecision final
 
 [[nodiscard]] auto server_name_is_valid(std::string_view server_name) noexcept -> bool;
 [[nodiscard]] auto ip_address_is_private_or_loopback(std::string_view address) noexcept -> bool;
+// Strict syntactic IPv4/IPv6 literal check (via inet_pton). Used to validate
+// operator-facing values derived from untrusted headers (e.g. X-Forwarded-For)
+// before they are trusted as an effective client address.
+[[nodiscard]] auto ip_address_is_valid(std::string_view address) noexcept -> bool;
 [[nodiscard]] auto federation_discovery_policy(RemoteServerRecord const& remote) -> FederationDiscoveryDecision;
 [[nodiscard]] auto verify_federation_request_signature(FederationRequestSignature const& signature)
     -> FederationVerificationDecision;

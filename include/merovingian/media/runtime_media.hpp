@@ -3,6 +3,7 @@
 #pragma once
 
 #include "merovingian/config/config.hpp"
+#include "merovingian/media/security.hpp"
 
 #include <cstdint>
 #include <string>
@@ -18,6 +19,16 @@ struct RuntimeMediaConfig final
                                                 "application/pdf"};
     bool quarantine_unknown_mime{true};
     bool enable_av_scanner{true};
+    // Acceptance disposition for authenticated local uploads. Defaults to
+    // allow_after_scan, matching the only behaviour that existed before this
+    // policy was introduced.
+    MediaAcceptancePolicy local_upload_policy{MediaAcceptancePolicy::allow_after_scan};
+    // Acceptance disposition for bytes fetched from a federated origin server.
+    // Defaults to quarantine: unlike a local upload, remote media has no
+    // accountable local identity behind it and no real scanner verdict is
+    // ever produced for it today, so every fetch is held for admin review
+    // until an operator explicitly opts into a looser policy.
+    MediaAcceptancePolicy remote_fetch_media_policy{MediaAcceptancePolicy::quarantine};
     bool private_address_fetches_blocked{true};
     std::uint32_t remote_fetch_timeout_seconds{0U};
     bool remote_fetch_enabled{false};

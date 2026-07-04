@@ -3,6 +3,7 @@
 
 #include "merovingian/homeserver/media_service.hpp"
 
+#include "merovingian/core/query_params.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/federation/server_discovery.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
@@ -99,8 +100,8 @@ namespace
             return make_operation_result(false, {}, "server discovery failed", 502U);
         }
 
-        auto url = "https://" + resolution.resolved_host + ':' + std::to_string(resolution.resolved_port) +
-                   "/_matrix/media/v3/download/" + std::string{media_id};
+        auto url =
+            remote_media_download_url(resolution.resolved_host, resolution.resolved_port, origin_server, media_id);
         auto const max_bytes = runtime.media_repository.config.max_upload_bytes > 0U
                                    ? runtime.media_repository.config.max_upload_bytes
                                    : std::uint64_t{16U * 1024U * 1024U};
@@ -171,7 +172,14 @@ namespace
         remote_req.resolved_addresses = resolution.pinned_addresses;
         remote_req.content_type = content_type;
         remote_req.bytes = out_result.response.body;
-        remote_req.scanner_clean = true;
+        // Bytes fetched from a federated origin are never actually scanned here — there is
+        // no AV engine wired into this codebase for any media source yet (see
+        // docs/media-repository.md). Reporting scanner_clean=true would be a fabricated
+        // verdict for attacker-controlled content; media::fetch_remote_media() decides the
+        // real disposition (allow/allow-after-scan/quarantine/deny) via
+        // RuntimeMediaConfig::remote_fetch_media_policy, so this must reflect that no scan
+        // actually happened.
+        remote_req.scanner_clean = false;
         remote_req.decoder_marked_safe = true;
 
         auto const fetch_result = media::fetch_remote_media(runtime.media_repository, remote_req);
@@ -201,6 +209,14 @@ namespace
     }
 
 } // namespace
+
+[[nodiscard]] auto remote_media_download_url(std::string_view resolved_host, std::uint16_t resolved_port,
+                                             std::string_view origin_server, std::string_view media_id) -> std::string
+{
+    return "https://" + std::string{resolved_host} + ':' + std::to_string(resolved_port) +
+           "/_matrix/media/v3/download/" + core::percent_encode_path_component(origin_server) + '/' +
+           core::percent_encode_path_component(media_id);
+}
 
 [[nodiscard]] auto upload_local_media(HomeserverRuntime& runtime, std::string_view access_token,
                                       std::string_view declared_mime_type, std::string_view sniffed_mime_type,

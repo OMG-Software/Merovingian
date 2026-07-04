@@ -94,6 +94,10 @@ struct LocalMediaUploadRequest final
     std::uint64_t pixel_count{0U};
     std::uint64_t animation_frame_count{1U};
     bool decoder_marked_safe{true};
+    // True when these bytes came from fetch_remote_media() rather than a
+    // client's own upload. Selects RuntimeMediaConfig::remote_fetch_media_policy
+    // instead of local_upload_policy when evaluating acceptance.
+    bool from_remote_fetch{false};
 };
 
 struct LocalMediaUploadResult final

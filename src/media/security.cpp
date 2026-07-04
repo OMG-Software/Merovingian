@@ -51,6 +51,39 @@ namespace
 
 } // namespace
 
+auto media_acceptance_policy_name(MediaAcceptancePolicy policy) noexcept -> std::string_view
+{
+    switch (policy)
+    {
+    case MediaAcceptancePolicy::allow:
+        return "allow";
+    case MediaAcceptancePolicy::allow_after_scan:
+        return "allow-after-scan";
+    case MediaAcceptancePolicy::quarantine:
+        return "quarantine";
+    case MediaAcceptancePolicy::deny:
+        return "deny";
+    }
+    return "quarantine";
+}
+
+auto parse_media_acceptance_policy(std::string_view value) noexcept -> MediaAcceptancePolicy
+{
+    if (value == "allow")
+    {
+        return MediaAcceptancePolicy::allow;
+    }
+    if (value == "allow-after-scan")
+    {
+        return MediaAcceptancePolicy::allow_after_scan;
+    }
+    if (value == "deny")
+    {
+        return MediaAcceptancePolicy::deny;
+    }
+    return MediaAcceptancePolicy::quarantine;
+}
+
 auto media_disposition_name(MediaDisposition disposition) noexcept -> char const*
 {
     switch (disposition)
@@ -75,6 +108,13 @@ auto media_mime_type_is_allowed(MediaUploadPolicy const& policy, std::string_vie
 
 auto evaluate_media_upload(MediaUploadPolicy const& policy, MediaUploadRequest const& request) -> MediaPolicyDecision
 {
+    if (policy.acceptance_policy == MediaAcceptancePolicy::deny)
+    {
+        log_diagnostic("upload.rejected", {
+                                              {"reason", "media acceptance policy is deny", false}
+        });
+        return {MediaDisposition::reject, "media acceptance policy is deny"};
+    }
     if (policy.max_upload_bytes == 0U)
     {
         log_diagnostic("upload.rejected", {
@@ -128,7 +168,7 @@ auto evaluate_media_upload(MediaUploadPolicy const& policy, MediaUploadRequest c
         });
         return {disposition, "media MIME type is not allowed"};
     }
-    if (!request.scanner_clean)
+    if (!request.scanner_clean && policy.acceptance_policy != MediaAcceptancePolicy::allow)
     {
         auto const disposition =
             policy.quarantine_scanner_failures ? MediaDisposition::quarantine : MediaDisposition::reject;
@@ -144,6 +184,14 @@ auto evaluate_media_upload(MediaUploadPolicy const& policy, MediaUploadRequest c
                                                  {"reason", "content hash required for deduplication", false}
         });
         return {MediaDisposition::quarantine, "content hash required for deduplication"};
+    }
+
+    if (policy.acceptance_policy == MediaAcceptancePolicy::quarantine)
+    {
+        log_diagnostic("upload.quarantined", {
+                                                 {"reason", "media acceptance policy requires manual review", false}
+        });
+        return {MediaDisposition::quarantine, "media acceptance policy requires manual review"};
     }
 
     return {MediaDisposition::accept, {}};

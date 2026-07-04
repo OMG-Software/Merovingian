@@ -19,6 +19,7 @@
 #include "merovingian/events/event_signer.hpp"
 #include "merovingian/federation/outbound_membership.hpp"
 #include "merovingian/federation/outbound_transaction.hpp"
+#include "merovingian/federation/security.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
@@ -2430,10 +2431,18 @@ namespace
                         {
                             first.remove_suffix(1U);
                         }
-                        if (!first.empty())
+                        // A trusted proxy is only trusted to forward its own view of the
+                        // client address correctly — not to hand us an arbitrary string. A
+                        // malformed or non-IP-literal value (e.g. a proxy that appends
+                        // whatever a client sent, or fails to overwrite an inbound header)
+                        // must not be trusted as an effective IP: falling through to the
+                        // direct peer address below lets an attacker rotate through
+                        // spoofed X-Forwarded-For values to defeat per-IP rate limiting.
+                        if (!first.empty() && federation::ip_address_is_valid(first))
                         {
                             return std::string{first};
                         }
+                        break;
                     }
                 }
             }

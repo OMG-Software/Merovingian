@@ -402,6 +402,14 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected boolean value");
             }
         }
+        else if (key == "security.media.local_upload_policy")
+        {
+            security.media.local_upload_policy = std::string{value};
+        }
+        else if (key == "security.media.remote_fetch_media_policy")
+        {
+            security.media.remote_fetch_media_policy = std::string{value};
+        }
         else if (key == "security.media.block_private_ip_fetches")
         {
             if (!parse_bool_value(value, security.media.block_private_ip_fetches))

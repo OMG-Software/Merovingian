@@ -188,6 +188,22 @@ Endpoint default policies are intentionally simple and conservative:
 
 This is a policy primitive only. Runtime accounting and persistence are future work.
 
+### Trusted-proxy client IP resolution
+
+When the direct TCP peer's address is listed in `server.trusted_proxies`, the
+client-server rate limiter keys on the leftmost non-empty value in
+`X-Forwarded-For` instead of the peer address, so the entire downstream
+network isn't collapsed into one bucket. That value is validated as a real
+IPv4 or IPv6 literal (`federation::ip_address_is_valid()`) before it is
+trusted — a trusted proxy is only trusted to forward its own view of the
+client address correctly, not to hand the server an arbitrary string. If the
+header is missing, empty, or not a valid IP literal, the limiter falls back to
+the direct peer address rather than trusting it verbatim. Without this check,
+an attacker able to reach a trusted proxy (or a proxy that fails to overwrite
+an inbound `X-Forwarded-For` header) could rotate through malformed
+pseudo-IP values to mint a fresh rate-limit bucket per request and defeat
+per-IP limiting on `/login`, `/register`, and every other endpoint entirely.
+
 ## Fuzzing
 
 `fuzz-http-request` exercises the request-head parser against arbitrary input. It is registered with the existing fuzz target group.

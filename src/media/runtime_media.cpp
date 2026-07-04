@@ -41,6 +41,8 @@ auto make_runtime_media_config(config::Config const& config) -> RuntimeMediaConf
         std::move(allowed_types),
         config.security().media.quarantine_unknown_mime,
         config.security().media.enable_av_scanner,
+        parse_media_acceptance_policy(config.security().media.local_upload_policy),
+        parse_media_acceptance_policy(config.security().media.remote_fetch_media_policy),
         config.security().media.block_private_ip_fetches,
         remote_timeout.valid ? remote_timeout.seconds : 0U,
         config.security().media.remote_fetch_enabled,

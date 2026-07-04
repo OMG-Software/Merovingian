@@ -398,6 +398,57 @@ threat it closes; the controls above are the standing defences these reinforce.
   operations while partial: it is a bounded-scope version of the same idea,
   suitable because critical auth-relevant state is never deferred.
 
+- **Remote media fetch fabricated a scanner-clean verdict for federated content
+  (2026-07 audit):** `fetch_remote_media_live()` unconditionally set
+  `scanner_clean=true` on every response fetched from a remote origin server,
+  bypassing the AV-scanner gate for attacker-controlled federated media
+  whenever `security.media.remote_fetch_enabled` is on. Fixed by reporting
+  `scanner_clean=false` (there is no real scanner verdict for remote content,
+  same as local uploads today — see `media-repository.md`) and introducing
+  `MediaAcceptancePolicy` (`allow` / `allow-after-scan` / `quarantine` /
+  `deny`), configured independently for local uploads
+  (`security.media.local_upload_policy`, default `allow-after-scan`, preserving
+  prior behaviour) and remote fetches
+  (`security.media.remote_fetch_media_policy`, default `quarantine`, since
+  federated content has no accountable local uploader and no real scan ever
+  occurs). `decoder_marked_safe` is deliberately left `true` for remote
+  content: `unsafe_decoders_disabled` has no config knob today, so flipping it
+  would hard-reject every remote fetch in every deployment rather than fail
+  safely — tracked as a follow-up alongside real AV-scanner integration.
+- **Remote media download URL omitted the server-name path segment
+  (2026-07 audit):** the outbound federation media fetch built
+  `/_matrix/media/v3/download/{mediaId}` instead of the spec-required
+  `/_matrix/media/v3/download/{serverName}/{mediaId}`
+  (server-server-api.md#get_matrixmediav3downloadservernamemediaid), and
+  neither segment was percent-encoded. Fixed by `remote_media_download_url()`
+  building the correct two-segment path with both `origin_server` and
+  `media_id` passed through `core::percent_encode_path_component()`, so a
+  reserved character in either cannot be misread as an extra path segment or a
+  different route on the resolved host.
+- **Trusted-proxy X-Forwarded-For accepted unvalidated pseudo-IP values
+  (2026-07 audit):** the client-server rate limiter used the leftmost
+  non-empty `X-Forwarded-For` value verbatim as the rate-limit key whenever
+  the direct peer was a configured trusted proxy, with no check that it was a
+  syntactically valid IP address. An attacker able to reach a trusted proxy
+  (or a proxy that fails to overwrite an inbound header) could rotate through
+  malformed strings to mint a fresh bucket per request, defeating brute-force
+  protection on `/login`, `/register`, and every other rate-limited endpoint.
+  Fixed by validating the candidate with the new
+  `federation::ip_address_is_valid()` (strict `inet_pton`-based IPv4/IPv6
+  literal check) before trusting it; a missing or malformed value falls back
+  to the direct peer address instead.
+- **Admin media routes accepted unsanitized media IDs from the raw path
+  suffix (2026-07 audit):** the `/_merovingian/admin/media/{quarantine,
+  release,remove}` routes passed the raw path suffix directly as the media
+  ID, unlike the download/thumbnail routes (`local_media_download_parts()`),
+  which strip query strings and reject embedded slashes. A request like
+  `.../remove/<id>?reason=x` treated the query string as part of the media
+  ID, so no record matched it and the intended object was silently left
+  untouched instead of acted on. Fixed by `admin_media_id_from_suffix()`,
+  which strips any query string and rejects an empty ID, an embedded `/`, a
+  `..` traversal sequence, or an embedded space before the ID reaches the
+  admin action.
+
 ## Security principles
 
 - Fail closed.

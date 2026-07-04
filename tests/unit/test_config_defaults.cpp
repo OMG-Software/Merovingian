@@ -155,6 +155,12 @@ SCENARIO("Config enables media and logging protections by default", "[config][se
                 REQUIRE(media.block_private_ip_fetches);
                 REQUIRE_FALSE(media.remote_fetch_enabled);
                 REQUIRE(media.decode_in_sandbox);
+                REQUIRE(media.local_upload_policy == "allow-after-scan");
+                // Deliberately not the same default as local_upload_policy: remote
+                // media has no accountable local uploader and no real scanner
+                // verdict is ever produced for it today, so it fails closed to
+                // manual review rather than mirroring the local default.
+                REQUIRE(media.remote_fetch_media_policy == "quarantine");
                 REQUIRE_FALSE(trust_safety.enabled);
                 REQUIRE(trust_safety.policy_server_url.empty());
                 REQUIRE(trust_safety.policy_server_timeout == "5s");
@@ -534,6 +540,39 @@ SCENARIO("Config validation rejects invalid federation transaction limits", "[co
             THEN("validation fails")
             {
                 REQUIRE_FALSE(findings.empty());
+                REQUIRE_FALSE(valid);
+            }
+        }
+    }
+}
+
+SCENARIO("Config validation rejects an invalid media acceptance policy string", "[config][validation][security]")
+{
+    GIVEN("security config with unrecognised local_upload_policy and remote_fetch_media_policy values")
+    {
+        auto security = merovingian::config::SecurityConfig{};
+        security.media.local_upload_policy = "sometimes";
+        security.media.remote_fetch_media_policy = "occasionally";
+
+        WHEN("the config is constructed and validated")
+        {
+            auto const config = merovingian::config::Config{
+                merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
+                merovingian::config::DatabaseConfig{},         security,
+                merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+            };
+            auto const findings = merovingian::config::validate(config);
+            auto const valid = merovingian::config::is_valid(config);
+
+            THEN("both invalid policy strings are reported")
+            {
+                REQUIRE(findings.size() == 2U);
+                REQUIRE(std::ranges::any_of(findings, [](auto const& finding) {
+                    return finding.field == "security.media.local_upload_policy";
+                }));
+                REQUIRE(std::ranges::any_of(findings, [](auto const& finding) {
+                    return finding.field == "security.media.remote_fetch_media_policy";
+                }));
                 REQUIRE_FALSE(valid);
             }
         }

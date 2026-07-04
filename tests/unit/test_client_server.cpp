@@ -6835,6 +6835,58 @@ SCENARIO("Trusted-proxy X-Forwarded-For is used for rate-limit keying", "[homese
     }
 }
 
+// Security audit finding: a trusted proxy is only trusted to forward its own
+// view of the client address correctly, not to hand the server an arbitrary
+// string. Before the fix, any non-empty leftmost X-Forwarded-For value was
+// used verbatim as the rate-limit key -- an attacker rotating through
+// malformed pseudo-IP strings (or a misconfigured proxy that appends
+// whatever a client sent) could mint a fresh bucket per request and defeat
+// per-IP rate limiting entirely. The fix validates the value as a real IPv4
+// or IPv6 literal before trusting it, falling back to the direct peer
+// address when it is missing or malformed.
+SCENARIO("Malformed X-Forwarded-For values fall back to the direct peer address for rate-limit keying",
+         "[homeserver][client-server][rate-limit][security]")
+{
+    GIVEN("a runtime with one trusted proxy and a 1-request-per-60s cap")
+    {
+        auto cfg = registration_enabled_config();
+        cfg.server().trusted_proxies = {"10.0.0.1"};
+        auto started = merovingian::homeserver::start_client_server(cfg);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::install_test_rate_limit_engine(runtime);
+
+        WHEN("two requests arrive from the trusted proxy with distinct non-IP X-Forwarded-For values")
+        {
+            auto req1 = merovingian::homeserver::LocalHttpRequest{
+                "POST", "/_matrix/client/v3/register", {}, R"({"username":"xffbad1","password":"P@ssw0rd1!"})"};
+            req1.remote_addr = "10.0.0.1";
+            req1.headers = {
+                {"X-Forwarded-For", "not-an-ip-1"}
+            };
+
+            auto req2 = merovingian::homeserver::LocalHttpRequest{
+                "POST", "/_matrix/client/v3/register", {}, R"({"username":"xffbad2","password":"P@ssw0rd1!"})"};
+            req2.remote_addr = "10.0.0.1";
+            req2.headers = {
+                {"X-Forwarded-For", "not-an-ip-2"}
+            };
+
+            auto const r1 = merovingian::homeserver::handle_client_server_request(runtime, req1);
+            auto const r2 = merovingian::homeserver::handle_client_server_request(runtime, req2);
+
+            THEN("both requests share the direct peer's bucket instead of minting a fresh bucket each time")
+            {
+                REQUIRE(r1.response.status != 429U);
+                // If the malformed value were trusted verbatim, this would be a
+                // brand new bucket (not rate-limited); falling back to the
+                // shared direct-peer bucket means it hits the same 1/60s cap.
+                REQUIRE(r2.response.status == 429U);
+            }
+        }
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // CORS on non-OPTIONS responses
 //

@@ -189,6 +189,12 @@ SCENARIO("Remote media fetch stores fetched bytes only after policy and processi
     {
         auto repository = test_repository();
         repository.config.remote_fetch_enabled = true;
+        // This scenario is about the scanner/decoder boundary, not the
+        // acceptance-policy feature (see the dedicated
+        // "Remote fetch acceptance policy" scenario below) — opt into
+        // allow_after_scan explicitly rather than relying on the
+        // fail-closed quarantine default for remote-fetched media.
+        repository.config.remote_fetch_media_policy = merovingian::media::MediaAcceptancePolicy::allow_after_scan;
 
         WHEN("safe remote content and unsafe decoder work are requested")
         {
@@ -231,6 +237,65 @@ SCENARIO("Remote media fetch stores fetched bytes only after policy and processi
                 REQUIRE_FALSE(unsafe_decoder.ok);
                 REQUIRE(unsafe_decoder.reason == "decoder is not allowed");
                 REQUIRE(repository.metrics.processing_rejections == 1U);
+            }
+        }
+    }
+}
+
+// Security audit finding: fetch_remote_media_live() fabricated
+// scanner_clean=true for every federated fetch, so remote-fetched bytes were
+// always treated as scanner-clean regardless of RuntimeMediaConfig's
+// acceptance policy. RuntimeMediaConfig::remote_fetch_media_policy defaults
+// to quarantine (unlike local_upload_policy's allow-after-scan default)
+// specifically because remote media has no accountable local uploader and no
+// real scanner verdict is ever produced for it today.
+SCENARIO("Remote-fetched media is quarantined by the default acceptance policy even when reported scanner-clean",
+         "[media][repository][remote][security]")
+{
+    GIVEN("a repository using RuntimeMediaConfig's default acceptance policies")
+    {
+        auto repository = test_repository();
+        repository.config.remote_fetch_enabled = true;
+        REQUIRE(repository.config.remote_fetch_media_policy == merovingian::media::MediaAcceptancePolicy::quarantine);
+        REQUIRE(repository.config.local_upload_policy == merovingian::media::MediaAcceptancePolicy::allow_after_scan);
+
+        WHEN("a remote fetch reports scanner_clean=true, exactly as fetch_remote_media_live() would if it "
+             "fabricated the verdict")
+        {
+            auto const fetched = merovingian::media::fetch_remote_media(repository, {"remote.example.org",
+                                                                                     "media999",
+                                                                                     "remote.example.org",
+                                                                                     {"203.0.113.20"},
+                                                                                     "image/png",
+                                                                                     "png-bytes",
+                                                                                     true,
+                                                                                     16U,
+                                                                                     64U,
+                                                                                     1U,
+                                                                                     true});
+
+            THEN("the bytes are still quarantined rather than served, because the acceptance policy overrides it")
+            {
+                REQUIRE(fetched.ok);
+                REQUIRE(fetched.quarantined);
+                REQUIRE(repository.records.front().state == merovingian::media::LocalMediaState::quarantined);
+            }
+        }
+
+        WHEN("a local upload with an identical scanner-clean verdict is made")
+        {
+            auto request = merovingian::media::LocalMediaUploadRequest{};
+            request.owner_user_id = "@alice:example.org";
+            request.declared_mime_type = "text/plain";
+            request.sniffed_mime_type = "text/plain";
+            request.bytes = "hello";
+            request.scanner_clean = true;
+            auto const uploaded = merovingian::media::upload_local_media(repository, "example.org", request);
+
+            THEN("it is accepted, since local_upload_policy defaults to allow-after-scan, not quarantine")
+            {
+                REQUIRE(uploaded.ok);
+                REQUIRE_FALSE(uploaded.quarantined);
             }
         }
     }

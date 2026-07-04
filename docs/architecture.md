@@ -427,4 +427,4 @@ The full attacker model, surface inventory, and per-threat mitigations live in
 - Rate limiting with configurable bucket/window.
 - Audit logging across auth, federation, and media boundaries.
 - Trust & safety policy engine for moderation rules.
-- Media security: MIME sniffing, quarantine, AV scanner flag, sandboxed decoding flag, private IP fetch blocking.
+- Media security: MIME sniffing, quarantine, AV scanner flag, sandboxed decoding flag, private IP fetch blocking. The AV scanner flag can never apply to encrypted-room attachments — see "Encrypted media is never scannable" in `docs/media-repository.md`.

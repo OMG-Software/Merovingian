@@ -12,11 +12,14 @@ current in-process runtime path.
 - Downloads serve local media owned by the configured server name.
 - Remote media fetches are live: the homeserver resolves the origin server via
   federation server discovery (`.well-known`, SRV, direct), performs an HTTPS
-  `GET /_matrix/media/v3/download/{server}/{mediaId}` against the resolved
-  host, and ingests the response bytes through the local blob store. Remote
-  host/IP policy is checked before bytes enter the store; rejected fetches are
-  counted and audited. The private/loopback filter reuses the single source of
-  truth `federation::ip_address_is_private_or_loopback` (the `inet_pton`-based
+  `GET /_matrix/media/v3/download/{serverName}/{mediaId}` against the resolved
+  host (`remote_media_download_url()`, percent-encoding both segments so a
+  reserved character in either cannot be misread as an extra path segment or a
+  different route on the resolved host), and ingests the response bytes
+  through the local blob store. Remote host/IP policy is checked before bytes
+  enter the store; rejected fetches are counted and audited. The
+  private/loopback filter reuses the single source of truth
+  `federation::ip_address_is_private_or_loopback` (the `inet_pton`-based
   numeric path, which handles `172.16/12` correctly) rather than a divergent
   string-prefix check, so media SSRF blocking and federation SSRF blocking
   cannot drift apart. `security.media.remote_fetch_timeout` is parsed today,
@@ -26,7 +29,15 @@ current in-process runtime path.
   decoder safety, decompression expansion limits, and thumbnail metadata
   generation. Merovingian currently does not launch or configure an AV engine
   itself; `security.media.enable_av_scanner` only controls whether the policy
-  honors the supplied scanner verdict.
+  honors the supplied scanner verdict — and, as the "Encrypted media is never
+  scannable" section below explains, that verdict can only ever exist for
+  plaintext media in unencrypted rooms. Because no real scanner verdict is ever
+  produced for federated media, `fetch_remote_media_live()` reports
+  `scanner_clean=false` (never a fabricated `true`) for every remote fetch —
+  the final disposition is then decided by `MediaAcceptancePolicy` (see
+  `security.media.local_upload_policy` / `remote_fetch_media_policy` in
+  `docs/configuration.md`), which defaults remote-fetched media to
+  `quarantine` rather than blindly trusting it.
 - Admin quarantine, release, and remove actions update repository state, persistent metadata, admin actions, and audit events.
 - Media metrics expose accepted uploads, rejected uploads, quarantines,
   releases, removals, remote fetch accept/reject counts, processing rejections,
@@ -39,6 +50,27 @@ current in-process runtime path.
   resampled image rather than the stored placeholder.
 - The media repository is runtime-wired; multipart upload handling remains the
   main outstanding Matrix v1.18 gap.
+
+## Encrypted media is never scannable
+
+**AV scanning cannot inspect the content of media in encrypted rooms, under
+any configuration, present or future.** Matrix E2EE attachments are encrypted
+client-side (AES-CTR) before upload; the homeserver only ever receives and
+stores an opaque ciphertext blob — accepted via the `application/octet-stream`
+entry in the default MIME allow-list — and never holds the decryption key,
+IV, or hashes needed to read it. Those live only inside the `m.room.encrypted`
+event content, itself encrypted end-to-end, which the server also cannot
+read. There is no scanner integration, proxy placement, or protocol change
+that closes this gap without breaking E2EE's confidentiality guarantee: a
+server that could inspect encrypted attachment content could also read
+encrypted messages.
+
+Every "scanner verdict" mentioned in this document and in
+`security.media.enable_av_scanner` / `local_upload_policy` /
+`remote_fetch_media_policy` (`docs/configuration.md`) therefore applies only
+to plaintext media uploaded to unencrypted rooms. For encrypted attachments,
+`allow-after-scan` behaves identically to `allow` today, since no scanner —
+real or hypothetical — is ever given a verdict to render.
 
 ## Thumbnailing
 
