@@ -562,6 +562,11 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
     {
         findings.push_back({"federation.worker.threads", "federation.worker.threads must be greater than zero"});
     }
+    if (config.federation_worker().relay_threads == 0U)
+    {
+        findings.push_back(
+            {"federation.worker.relay_threads", "federation.worker.relay_threads must be greater than zero"});
+    }
     if (config.federation_worker().request_timeout_seconds == 0U)
     {
         findings.push_back({"federation.worker.request_timeout_seconds",

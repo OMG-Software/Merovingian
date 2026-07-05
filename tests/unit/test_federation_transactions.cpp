@@ -4,6 +4,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
+#include <array>
 #include <string>
 
 SCENARIO("Federation route scaffold covers transactions, joins, leaves, invites, backfill, and EDUs",
@@ -68,6 +70,53 @@ SCENARIO("Federation route scaffold covers transactions, joins, leaves, invites,
                 REQUIRE_FALSE(make_join.route.requires_event_signatures);
                 REQUIRE_FALSE(backfill.route.requires_event_signatures);
                 REQUIRE(send_knock.route.requires_event_signatures);
+            }
+        }
+    }
+}
+
+// The federation worker uses federation_endpoint_requires_main_relay() to route
+// an incoming request to one of two differently-sized thread pools (see
+// worker_event_loop.cpp and docs/architecture.md, "Federation worker relay
+// pool separation") — a burst of slow, main-relay-requiring requests must
+// never be able to starve fast, local-only ones of a thread. Getting this
+// classification wrong in either direction is a real regression: misclassify
+// a relay endpoint as local and a slow main round-trip can still exhaust the
+// small local pool; misclassify a local endpoint as relay and it loses no
+// correctness but the split stops doing its job for it.
+SCENARIO("federation_endpoint_requires_main_relay classifies every registered endpoint correctly",
+         "[federation][transactions][worker-pool]")
+{
+    GIVEN("every endpoint currently registered in federation_routes()")
+    {
+        // Endpoints whose handling can call pdu_sink, edu_sink,
+        // membership_acceptor, invite_handler, or one of the query-provider
+        // relays — see worker_event_loop.cpp's overrides of each.
+        auto const requires_relay = std::array{
+            merovingian::federation::FederationEndpoint::transaction,
+            merovingian::federation::FederationEndpoint::send_join,
+            merovingian::federation::FederationEndpoint::send_leave,
+            merovingian::federation::FederationEndpoint::send_knock,
+            merovingian::federation::FederationEndpoint::invite,
+            merovingian::federation::FederationEndpoint::query_profile,
+            merovingian::federation::FederationEndpoint::query_keys,
+            merovingian::federation::FederationEndpoint::claim_keys,
+            merovingian::federation::FederationEndpoint::query_user_devices,
+            merovingian::federation::FederationEndpoint::query_event,
+        };
+
+        WHEN("each registered route's endpoint is classified")
+        {
+            THEN("every route matches the expected relay/local bucket, with no endpoint left unclassified")
+            {
+                for (auto const& candidate_route : merovingian::federation::federation_routes())
+                {
+                    auto const expected =
+                        std::ranges::find(requires_relay, candidate_route.endpoint) != requires_relay.end();
+                    INFO("endpoint: " << merovingian::federation::federation_endpoint_name(candidate_route.endpoint));
+                    REQUIRE(merovingian::federation::federation_endpoint_requires_main_relay(
+                                candidate_route.endpoint) == expected);
+                }
             }
         }
     }

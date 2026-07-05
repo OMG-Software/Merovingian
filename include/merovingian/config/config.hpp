@@ -235,8 +235,23 @@ struct FederationWorkerConfig final
 {
     // Maximum seconds to wait for the worker to respond.
     std::uint32_t request_timeout_seconds{120U};
-    // Number of processing threads in the worker process.
+    // Number of processing threads in the worker process reserved for
+    // endpoints answerable entirely from the worker's own local, room-scoped
+    // snapshot: make_join/make_leave/make_knock, backfill, query/directory,
+    // state, state_ids, get_missing_events, hierarchy. These never block on
+    // main and should always complete quickly.
     std::uint32_t threads{4U};
+    // Number of processing threads reserved for endpoints that can block on a
+    // synchronous IPC round-trip back to main (transaction PDUs/EDUs,
+    // send_join/send_leave/send_knock, invite, and the query-provider relays:
+    // profile, keys, claim_keys, user_devices, event) or on outbound HTTP to a
+    // remote server. Deliberately a separate pool from `threads`: these
+    // threads spend nearly all their time blocked on I/O rather than
+    // consuming CPU, so sizing generously is cheap, whereas sharing a single
+    // small pool between the two classes lets a burst of slow relay calls
+    // starve the fast local endpoints above of any thread to run on — see
+    // docs/architecture.md, "Federation worker relay pool separation".
+    std::uint32_t relay_threads{32U};
     // Number of independent federation worker processes. shard=1 is the
     // Phase 1/2 single-worker behaviour. Requests are routed by
     // fnv1a_32(room_id) % shards; non-room endpoints go to shard 0. shards=0

@@ -27,6 +27,7 @@
 #include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/crypto/signing_service.hpp"
 #include "merovingian/events/event_signer.hpp"
+#include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/room_service.hpp"
@@ -38,6 +39,7 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <filesystem>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -376,9 +378,7 @@ SCENARIO("Homeserver publishes superseded signing keys in old_verify_keys", "[in
         // sentinel) - the implementation must cap expired_ts at now so it is never future-dated.
         auto const legacy_public_key = std::string{"bGVnYWN5cHVibGlja2V5"}; // base64("legacypublickey")
         runtime.database.persistent_store.server_signing_keys.push_back({
-            "example.org",
-            "ed25519:auto",
-            legacy_public_key,
+            "example.org", "ed25519:auto", legacy_public_key,
             32503680000000ULL, // year-2999 sentinel - must be capped when published
             "",                // no secret; old keys are verification-only
         });
@@ -483,6 +483,103 @@ SCENARIO("Homeserver routes signed inbound federation transactions through runti
                 // Spec SHOULD: all federation activity MUST be auditable for security review.
                 // Do NOT remove/change - an unsafe audit log indicates a policy bypass has occurred.
                 REQUIRE(merovingian::federation::federation_audit_is_safe(runtime.federation));
+            }
+        }
+    }
+}
+
+SCENARIO("Homeserver routes an inbound m.direct_to_device EDU with a realistic Olm-encrypted payload through the "
+         "full transaction body parser",
+         "[integration][federation][edu][to-device][e2ee]")
+{
+    // Every other m.direct_to_device test in this codebase drives
+    // handle_edu_ingest_request() or parse_inbound_edu_envelope() directly
+    // with an already-parsed envelope, bypassing the outer transaction body
+    // parser that extracts the "edus" array from a real PUT
+    // /_matrix/federation/v1/send/{txnId} request body, and uses a flat,
+    // small, plaintext-shaped content object rather than what a real client
+    // actually sends: an Olm-encrypted "m.room.encrypted"-typed EDU with a
+    // nested ciphertext object keyed by a curve25519 identity key and a body
+    // long enough to be a real ciphertext, not a short token.
+    //
+    // This scenario drives that realistic shape through
+    // handle_federation_http_request() — the same entry point a real worker
+    // process calls for a relayed transaction (worker_pool.cpp's fed_request
+    // dispatch). handle_local_http_request()'s own /_matrix/federation/
+    // branch looks similar but is a test-harness-only shortcut (see its
+    // comment: "never wired by main.cpp") that calls
+    // handle_inbound_federation_request() directly without ever calling
+    // wire_federation_callbacks_impl() — pdu_sink/edu_sink stay unset there,
+    // so anything routed through it cannot actually reach the database.
+    // handle_federation_http_request() wires the callbacks itself and is
+    // what production traffic actually goes through.
+    GIVEN("a started runtime with a known remote server and a real, migrated on-disk SQLite database")
+    {
+        // federation_config()'s default DatabaseConfig{} uses
+        // DatabaseBackend::postgresql with no connection details, and there
+        // is no live Postgres server in this test environment. Force a real,
+        // migrated SQLite file so this scenario exercises the actual write
+        // path instead of silently no-opping.
+        auto config = federation_config();
+        auto const tmp_dir = std::filesystem::temp_directory_path() /
+                             ("merovingian-edu-inbound-flow-" +
+                              std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        std::filesystem::create_directories(tmp_dir);
+        config.database().backend = merovingian::config::DatabaseBackend::sqlite;
+        config.database().sqlite_path = (tmp_dir / "edu-inbound-flow-test.sqlite3").string();
+
+        auto started = merovingian::homeserver::start_runtime(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const origin = std::string{"matrix.ping.me.uk"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const token = std::string{"verify-token"};
+        merovingian::federation::upsert_remote(runtime.federation, remote_for(origin, key_id, token));
+
+        auto const sender = std::string{"@james:matrix.ping.me.uk"};
+        auto const target_user = std::string{"@james:pong.ping.me.uk"};
+        auto const target_device = std::string{"DEVICE1"};
+        auto const identity_key = std::string{"Ca5s7Jdb83Eak12tAADQBgE0QJRyF4EC3rcWZwhaNwQ"};
+        // ~2KB placeholder ciphertext body, matching the size of a real Olm
+        // payload rather than a short test token.
+        auto const ciphertext_body = std::string(2048U, 'A');
+        auto const edu_content =
+            std::string{"{\"sender\":\""} + sender +
+            "\",\"type\":\"m.room.encrypted\",\"message_id\":\"m1\",\"messages\":{\"" + target_user + "\":{\"" +
+            target_device + "\":{\"algorithm\":\"m.olm.v1.curve25519-aes-sha2\",\"ciphertext\":{\"" + identity_key +
+            "\":{\"body\":\"" + ciphertext_body + "\",\"type\":1}},\"sender_key\":\"" + identity_key + "\"}}}}";
+        auto const target = std::string{"/_matrix/federation/v1/send/txn-edu-1"};
+        auto const body = std::string{"{\"origin\":\""} + origin +
+                          R"(","origin_server_ts":1000,"pdus":[],"edus":[{"edu_type":"m.direct_to_device","content":)" +
+                          edu_content + "}]}";
+
+        WHEN("the transaction reaches handle_federation_http_request")
+        {
+            auto worker_request = merovingian::homeserver::LocalHttpRequest{};
+            worker_request.method = "PUT";
+            worker_request.target = target;
+            worker_request.body = body;
+            worker_request.sig_verified = true;
+            worker_request.verified_origin = origin;
+            worker_request.verified_key_id = key_id;
+
+            auto const response = merovingian::homeserver::handle_federation_http_request(runtime, worker_request);
+
+            THEN("the transaction is accepted")
+            {
+                REQUIRE(response.status == 200U);
+            }
+
+            AND_THEN("the key share reaches the local to-device queue for the target device")
+            {
+                auto const has_key_share =
+                    std::ranges::any_of(runtime.database.persistent_store.to_device_messages,
+                                        [&](merovingian::database::PersistentToDeviceMessage const& m) {
+                                            return m.sender_user_id == sender && m.target_user_id == target_user &&
+                                                   m.target_device_id == target_device &&
+                                                   m.content_json.find(ciphertext_body) != std::string::npos;
+                                        });
+                REQUIRE(has_key_share);
             }
         }
     }

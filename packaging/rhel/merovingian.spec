@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.10.25
+Version:        0.10.26
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -97,6 +97,8 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Sun Jul 05 2026 James Chapman <claude@ping.me.uk> - 0.10.26-1
+- fix(federation-worker): a federation worker shard could go fully unresponsive for ~30s at a time with no crash logged, because a single fixed-size thread pool handled both new incoming requests and synchronous IPC callbacks back to main; a burst of the latter could occupy every thread and starve the former. Splits into a local_pool (endpoints answered from the worker's own snapshot) and a new relay_pool (federation.worker.relay_threads, default 32, for endpoints that can block on main or on outbound HTTP)
 * Sat Jul 04 2026 James Chapman <claude@ping.me.uk> - 0.10.25-1
 - diag(federation): WorkerPool::handle() now logs the status, body length, and a short body prefix of every reply a federation worker sends back, to determine whether handle_inbound_federation_request's own logging has a real gap or the reply is coming from somewhere else entirely
 * Sat Jul 04 2026 James Chapman <claude@ping.me.uk> - 0.10.24-1

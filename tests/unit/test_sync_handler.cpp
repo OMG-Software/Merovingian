@@ -28,6 +28,8 @@
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/homeserver/dispatch_result.hpp"
+#include "merovingian/homeserver/local_http_router.hpp"
+#include "merovingian/homeserver/worker_pool.hpp"
 #include "merovingian/sync/stream_token.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -51,6 +53,43 @@ namespace
         merovingian::config::DatabaseConfig{},         security,
         merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
     };
+}
+
+// Same as sync_config(), plus federation enabled — needed to exercise
+// handle_edu_ingest_request(), which wire_federation_callbacks_impl only
+// installs an edu_sink for when security().federation.enabled is true.
+[[nodiscard]] auto sync_config_with_federation() -> merovingian::config::Config
+{
+    auto security = merovingian::config::SecurityConfig{};
+    merovingian::tests::enable_token_registration(security);
+    security.federation.enabled = true;
+    security.federation.default_policy = "allow";
+    security.federation.max_transaction_size = "1MiB";
+    security.federation.remote_timeout = "30s";
+    return {
+        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
+        merovingian::config::DatabaseConfig{},         security,
+        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+    };
+}
+
+// Mirrors ipc_escape_json_string in test_federation_worker_flow.cpp — escapes
+// a JSON string for embedding as a content_json value inside a hand-built
+// edu_ingest wire frame, the same shape worker_pool.cpp's
+// deserialize_edu_ingest expects.
+[[nodiscard]] auto ipc_escape_json_string(std::string_view raw) -> std::string
+{
+    auto escaped = std::string{'"'};
+    for (auto const ch : raw)
+    {
+        if (ch == '"' || ch == '\\')
+        {
+            escaped += '\\';
+        }
+        escaped += ch;
+    }
+    escaped += '"';
+    return escaped;
 }
 
 [[nodiscard]] auto extract(std::string const& body, std::string_view key) -> std::string
@@ -437,6 +476,85 @@ SCENARIO("Sync long-poll wakes when push_to_device_message publishes through the
                 // Do NOT remove/change - a non-advancing stream id breaks incremental sync ordering.
                 REQUIRE(rt.sync_notifier->current_sync_stream_id() > before_id);
                 REQUIRE(elapsed < std::chrono::seconds{1});
+            }
+        }
+    }
+}
+
+// The scenario above proves the LOCAL to-device path (push_to_device_message,
+// used for same-server client-to-client sends) wakes a blocked long-poll.
+// A federation-received to-device message (e.g. an Olm-encrypted m.room_key
+// share relayed from a remote homeserver) takes a completely different route
+// to the same to_device_messages table: worker_pool.cpp's
+// handle_edu_ingest_request(), the function main's request handler calls
+// when a federation worker relays an "edu_ingest" frame over IPC (see
+// worker_event_loop.cpp's edu_sink override). If that path ever stopped
+// publishing through the same SyncNotifier — for example if a future change
+// wired main's own edu_sink differently for the worker-enabled case, or the
+// runtime handed to the worker's request handler were not the exact instance
+// whose sync_notifier field client_server.cpp wires at startup — a client
+// already parked in a long-poll would silently miss the room key until some
+// unrelated event happened to wake it, which looks exactly like "some
+// messages never decrypt" rather than an outright failure.
+SCENARIO("Sync long-poll wakes when a federation-relayed EDU reaches to_device_messages",
+         "[sync][handler][long-poll][federation-worker]")
+{
+    GIVEN("a registered Alice, a notifier attached, and federation callbacks wired the way main.cpp wires them")
+    {
+        auto started = merovingian::homeserver::start_client_server(sync_config_with_federation());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const [alice_id, token] = register_and_login(rt);
+        std::ignore = merovingian::homeserver::ensure_sync_notifier(rt);
+        // Mirrors main.cpp's startup sequence: wire_federation_callbacks() is
+        // called once on the same HomeserverRuntime that owns sync_notifier,
+        // installing the default edu_sink used both when main handles
+        // federation directly and when a worker relays an edu_ingest request
+        // to it (worker_pool.cpp's handle_edu_ingest_request runs against
+        // this exact runtime either way).
+        merovingian::homeserver::wire_federation_callbacks(rt.homeserver);
+        REQUIRE(rt.homeserver.federation.edu_sink);
+
+        WHEN("a worker relays an Olm-encrypted m.direct_to_device EDU mid-wait, the same way "
+             "WorkerSupervisor::set_request_handler's \"edu_ingest\" branch does")
+        {
+            auto const before_id = rt.sync_notifier->current_sync_stream_id();
+            auto const device_id = first_device_id_for(rt, alice_id);
+            auto const content_json = std::string{R"({"sender":"@bob:matrix.example.org",)"} +
+                                      R"("type":"m.room.encrypted","message_id":"m1","messages":{")" + alice_id +
+                                      R"(":{")" + device_id +
+                                      R"(":{"algorithm":"m.olm.v1.curve25519-aes-sha2","ciphertext":{},)"
+                                      R"("sender_key":"identkey"}}}})";
+            auto const request_json = std::string{R"({"type":"edu_ingest","edu_type":"m.direct_to_device",)"} +
+                                      R"("origin":"matrix.example.org","content_json":)" +
+                                      ipc_escape_json_string(content_json) + "}";
+
+            auto producer = std::thread{[&] {
+                std::this_thread::sleep_for(std::chrono::milliseconds{40});
+                auto const response = merovingian::homeserver::handle_edu_ingest_request(rt.homeserver, request_json);
+                INFO("edu_ingest response: " << response);
+            }};
+            auto const before = std::chrono::steady_clock::now();
+            auto const woke = rt.sync_notifier->wait_for_change(0U, before_id, std::chrono::milliseconds{2000});
+            producer.join();
+            auto const elapsed = std::chrono::steady_clock::now() - before;
+
+            THEN("wait returns true well before the timeout, exactly as it does for a local to-device send")
+            {
+                REQUIRE(woke);
+                REQUIRE(rt.sync_notifier->current_sync_stream_id() > before_id);
+                REQUIRE(elapsed < std::chrono::seconds{1});
+            }
+
+            AND_THEN("the key share is actually queued for Alice's device")
+            {
+                auto const has_key_share =
+                    std::ranges::any_of(rt.homeserver.database.persistent_store.to_device_messages,
+                                        [&](merovingian::database::PersistentToDeviceMessage const& m) {
+                                            return m.target_user_id == alice_id && m.target_device_id == device_id &&
+                                                   m.message_type == "m.room.encrypted";
+                                        });
+                REQUIRE(has_key_share);
             }
         }
     }
