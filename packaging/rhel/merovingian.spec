@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.10.24
+Version:        0.10.25
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -97,6 +97,8 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Sat Jul 04 2026 James Chapman <claude@ping.me.uk> - 0.10.25-1
+- diag(federation): WorkerPool::handle() now logs the status, body length, and a short body prefix of every reply a federation worker sends back, to determine whether handle_inbound_federation_request's own logging has a real gap or the reply is coming from somewhere else entirely
 * Sat Jul 04 2026 James Chapman <claude@ping.me.uk> - 0.10.24-1
 - fix(federation,security): the federation worker's user_devices_provider, device_keys_query_provider, and profile_query_provider decided their answers from a per-process in-memory snapshot hydrated once at worker startup with no refresh mechanism, so a remote server querying a real local user's devices to share an E2EE room key could get a spurious 404 forever; all three are now relayed to main over IPC the same way one_time_keys_claim_provider is
 * Sat Jul 04 2026 James Chapman <claude@ping.me.uk> - 0.10.23-1
