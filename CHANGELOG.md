@@ -8,7 +8,7 @@
 - **docs(federation-worker): documented the EDU-only `/send` main-process bypass and narrowed relay-pool wording to PDU-bearing transactions.**
 
 ### Testing
-- **test(federation,e2ee): wire the remote-join device-list fanout unit test's dispatch worker to the persistent store it asserts against, matching the existing outbound transaction test setup.**
+- **test(federation,e2ee): wire the remote-join device-list fanout unit test's dispatch worker to the persistent store it asserts against and cover the guard that skips login-only devices without uploaded device keys.**
 
 ## 0.10.27
 
