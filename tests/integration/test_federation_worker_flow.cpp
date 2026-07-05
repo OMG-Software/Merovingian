@@ -11,6 +11,8 @@
 #include "../support/master_key.hpp"
 #include "../support/temp_directory.hpp"
 #include "merovingian/config/config.hpp"
+#include "merovingian/core/file_descriptor.hpp"
+#include "merovingian/crypto/ipc_auth_key.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/federation/transactions.hpp"
@@ -20,19 +22,25 @@
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/homeserver/worker_pool.hpp"
 #include "merovingian/http/outbound_client.hpp"
+#include "merovingian/ipc/channel.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <random>
+#include <span>
 #include <string>
+#include <string_view>
 #include <thread>
 
 #include <sodium.h>
+#include <sys/socket.h>
 
 namespace
 {
@@ -182,6 +190,81 @@ auto write_worker_config(std::filesystem::path const& path, Config const& config
     }
     escaped += '"';
     return escaped;
+}
+
+// The scenarios above all call handle_edu_ingest_request()/handle_*_ingest_request()
+// directly, in-process — none of them actually send bytes over the encrypted
+// AF_UNIX channel a real worker uses. That leaves one layer of the production
+// path completely untested: whether a large, deeply nested EDU payload
+// survives serialize -> AEAD-encrypt -> frame -> decrypt -> deserialize on a
+// *real* ipc::IpcChannel pair, the same transport worker_event_loop.cpp's
+// edu_sink override and worker_pool.cpp's request handler actually use. This
+// mirrors test_ipc_framing.cpp's socketpair/channel-pair fixture (not shared
+// via tests/support/ per its own rule that I/O helpers don't belong there).
+struct IpcTestSocketPair final
+{
+    merovingian::core::FileDescriptor server_fd{};
+    merovingian::core::FileDescriptor client_fd{};
+};
+
+[[nodiscard]] auto make_ipc_test_socketpair() -> IpcTestSocketPair
+{
+    auto fds = std::array<int, 2>{-1, -1};
+    REQUIRE(::socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, fds.data()) == 0);
+    return {merovingian::core::FileDescriptor{fds[0]}, merovingian::core::FileDescriptor{fds[1]}};
+}
+
+struct IpcTestChannelPair final
+{
+    std::unique_ptr<merovingian::ipc::IpcChannel> server{};
+    std::unique_ptr<merovingian::ipc::IpcChannel> client{};
+};
+
+// Constructs a server and client IpcChannel concurrently — required because
+// the constructor performs a blocking key-exchange handshake that deadlocks
+// if built sequentially on one thread.
+[[nodiscard]] auto make_ipc_test_channel_pair() -> IpcTestChannelPair
+{
+    auto [server_fd, client_fd] = make_ipc_test_socketpair();
+    auto const seed = std::string_view{"fed-worker-flow-ipc-test-key"};
+    auto const auth_key = merovingian::crypto::derive_ipc_auth_key(
+        std::span<std::uint8_t const>{reinterpret_cast<std::uint8_t const*>(seed.data()), seed.size()});
+    REQUIRE(auth_key.has_value());
+
+    auto pair = IpcTestChannelPair{};
+    auto server_ex = std::exception_ptr{};
+    auto client_ex = std::exception_ptr{};
+
+    auto t1 = std::thread{[&]() {
+        try
+        {
+            pair.server = std::make_unique<merovingian::ipc::IpcChannel>(
+                std::move(server_fd), merovingian::ipc::IpcChannel::Role::server, *auth_key);
+        }
+        catch (...)
+        {
+            server_ex = std::current_exception();
+        }
+    }};
+    auto t2 = std::thread{[&]() {
+        try
+        {
+            pair.client = std::make_unique<merovingian::ipc::IpcChannel>(
+                std::move(client_fd), merovingian::ipc::IpcChannel::Role::client, *auth_key);
+        }
+        catch (...)
+        {
+            client_ex = std::current_exception();
+        }
+    }};
+    t1.join();
+    t2.join();
+
+    REQUIRE(server_ex == nullptr);
+    REQUIRE(client_ex == nullptr);
+    REQUIRE(pair.server != nullptr);
+    REQUIRE(pair.client != nullptr);
+    return pair;
 }
 
 } // namespace
@@ -767,6 +850,181 @@ SCENARIO("handle_edu_ingest_request delivers a worker-relayed m.direct_to_device
                 REQUIRE(has_key_share);
             }
         }
+    }
+}
+
+SCENARIO("handle_edu_ingest_request delivers a realistically-shaped Olm-encrypted m.direct_to_device EDU",
+         "[integration][federation-worker][edu][to-device][e2ee]")
+{
+    // The scenario above uses a flat, small, plaintext-shaped content object
+    // ({"algorithm":...,"room_id":...,"session_id":...,"session_key":...}) —
+    // that is NOT what a real m.room_key share looks like on the wire. Real
+    // clients always send the room key Olm-encrypted, which means the actual
+    // EDU content is one level deeper and shaped like:
+    //   {"algorithm":"m.olm.v1.curve25519-aes-sha2",
+    //    "ciphertext":{"<curve25519 identity key>":{"body":"<b64 ciphertext>","type":1}},
+    //    "sender_key":"<curve25519 identity key>"}
+    // with the EDU's own "type" field being "m.room.encrypted" (not
+    // "m.room_key" — the recipient only learns that after decrypting the
+    // Olm ciphertext locally). This exercises that real shape end to end:
+    // a nested object keyed by a dynamic base64 string, and a "body" value
+    // long enough to be a real Olm ciphertext rather than a short token.
+    GIVEN("a runtime with the default federation callbacks wired")
+    {
+        REQUIRE(sodium_init() >= 0);
+
+        auto const tmp_dir = unique_temp_dir("merovingian-fed-worker-edu-realistic");
+        auto config = make_federation_worker_config(tmp_dir);
+        config.database().sqlite_path = (tmp_dir / "edu-realistic-test.sqlite3").string();
+
+        auto started = start_runtime(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+        REQUIRE(runtime.federation.edu_sink);
+
+        WHEN("an edu_ingest request carrying an Olm-encrypted m.room.encrypted-wrapped room key is handled")
+        {
+            auto const sender = std::string{"@james:matrix.ping.me.uk"};
+            auto const target_user = std::string{"@james:pong.ping.me.uk"};
+            auto const target_device = std::string{"DEVICE1"};
+            auto const identity_key = std::string{"Ca5s7Jdb83Eak12tAADQBgE0QJRyF4EC3rcWZwhaNwQ"};
+            // ~2KB placeholder ciphertext body — long enough to match a real
+            // Olm-encrypted payload's size, not just its alphabet.
+            auto const ciphertext_body = std::string(2048U, 'A');
+
+            auto const content_json =
+                std::string{"{\"sender\":\""} + sender +
+                "\",\"type\":\"m.room.encrypted\",\"message_id\":\"m1\",\"messages\":{\"" + target_user + "\":{\"" +
+                target_device + "\":{\"algorithm\":\"m.olm.v1.curve25519-aes-sha2\",\"ciphertext\":{\"" + identity_key +
+                "\":{\"body\":\"" + ciphertext_body + "\",\"type\":1}},\"sender_key\":\"" + identity_key + "\"}}}}";
+
+            auto const request_json = std::string{R"({"type":"edu_ingest","edu_type":"m.direct_to_device",)"} +
+                                      R"("origin":"matrix.ping.me.uk","content_json":)" +
+                                      ipc_escape_json_string(content_json) + "}";
+
+            auto const response_json = merovingian::homeserver::handle_edu_ingest_request(runtime, request_json);
+
+            THEN("the response reports the EDU as accepted")
+            {
+                INFO("response: " << response_json);
+                REQUIRE(response_json.find(R"("status":"accepted")") != std::string::npos);
+            }
+
+            AND_THEN("the key share reaches main's own to-device queue for the target device")
+            {
+                auto const has_key_share =
+                    std::ranges::any_of(runtime.database.persistent_store.to_device_messages,
+                                        [&](merovingian::database::PersistentToDeviceMessage const& m) {
+                                            return m.sender_user_id == sender && m.target_user_id == target_user &&
+                                                   m.target_device_id == target_device &&
+                                                   m.message_type == "m.room.encrypted" &&
+                                                   m.content_json.find(ciphertext_body) != std::string::npos;
+                                        });
+                REQUIRE(has_key_share);
+            }
+        }
+    }
+}
+
+SCENARIO("A realistically-shaped Olm-encrypted m.direct_to_device EDU survives a real encrypted IPC round trip",
+         "[integration][federation-worker][edu][to-device][e2ee][ipc]")
+{
+    // Every scenario above calls handle_edu_ingest_request() (or the local
+    // transaction-body-parser path in test_federation_inbound_flow.cpp)
+    // in-process, as a plain function call. None of them send a single byte
+    // over the real transport a worker actually uses: worker_event_loop.cpp's
+    // edu_sink override serializes the envelope and calls
+    // IpcChannel::send_request(), which AEAD-encrypts and frames it before it
+    // ever reaches main's request handler. If a large, deeply nested payload
+    // were mis-sized against the frame cap, truncated by the AEAD framing, or
+    // mangled by the JSON string-escaping serialize_edu_ingest applies before
+    // handing it to the channel, none of the in-process scenarios above would
+    // ever catch it — they never touch that code. This scenario wires a real
+    // ipc::IpcChannel pair over a real AF_UNIX socketpair (the same encrypted,
+    // authenticated transport, just without a second process) and drives the
+    // exact "edu_ingest" wire frame a worker would send through it end to end.
+    GIVEN("a runtime with the default federation callbacks wired and a real IpcChannel pair standing in for the "
+          "worker/main link")
+    {
+        REQUIRE(sodium_init() >= 0);
+
+        auto const tmp_dir = unique_temp_dir("merovingian-fed-worker-edu-ipc");
+        auto config = make_federation_worker_config(tmp_dir);
+        config.database().sqlite_path = (tmp_dir / "edu-ipc-test.sqlite3").string();
+
+        auto started = start_runtime(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+        REQUIRE(runtime.federation.edu_sink);
+
+        auto channels = make_ipc_test_channel_pair();
+        // Mirrors worker_pool.cpp's WorkerSupervisor::set_request_handler's
+        // "edu_ingest" branch: dispatch the request body to
+        // handle_edu_ingest_request() against main's own runtime and send the
+        // result back over the same channel.
+        channels.server->set_request_handler(
+            [&runtime, srv = channels.server.get()](std::uint64_t id, std::string json) {
+                auto const response = merovingian::homeserver::handle_edu_ingest_request(runtime, json);
+                srv->send_response(id, response);
+            });
+        channels.server->start();
+        // The client also needs its reader thread running: send_request()
+        // blocks on a condition variable that only the reader thread signals
+        // when it reads a matching reply_to frame back from the server.
+        // Without this, every send_request() call times out even though the
+        // server processes the request and writes to the database correctly
+        // — exactly the trap this scenario exists to avoid falling into.
+        channels.client->start();
+
+        WHEN("the worker side sends a real edu_ingest wire frame carrying an Olm-encrypted room-key share over the "
+             "encrypted channel")
+        {
+            auto const sender = std::string{"@james:matrix.ping.me.uk"};
+            auto const target_user = std::string{"@james:pong.ping.me.uk"};
+            auto const target_device = std::string{"DEVICE1"};
+            auto const identity_key = std::string{"Ca5s7Jdb83Eak12tAADQBgE0QJRyF4EC3rcWZwhaNwQ"};
+            // ~2KB placeholder ciphertext body — long enough to match a real
+            // Olm-encrypted payload's size, not just its alphabet.
+            auto const ciphertext_body = std::string(2048U, 'A');
+
+            auto const content_json =
+                std::string{"{\"sender\":\""} + sender +
+                "\",\"type\":\"m.room.encrypted\",\"message_id\":\"m1\",\"messages\":{\"" + target_user + "\":{\"" +
+                target_device + "\":{\"algorithm\":\"m.olm.v1.curve25519-aes-sha2\",\"ciphertext\":{\"" + identity_key +
+                "\":{\"body\":\"" + ciphertext_body + "\",\"type\":1}},\"sender_key\":\"" + identity_key + "\"}}}}";
+
+            auto const request_json = std::string{R"({"type":"edu_ingest","edu_type":"m.direct_to_device",)"} +
+                                      R"("origin":"matrix.ping.me.uk","content_json":)" +
+                                      ipc_escape_json_string(content_json) + "}";
+
+            auto const reply = channels.client->send_request(request_json, std::chrono::seconds{10});
+
+            THEN("a reply arrives reporting the EDU as accepted")
+            {
+                REQUIRE(reply.has_value());
+                INFO("reply: " << *reply);
+                REQUIRE(reply->find(R"("status":"accepted")") != std::string::npos);
+            }
+
+            AND_THEN("the key share reaches main's own to-device queue for the target device, unmodified by the "
+                     "encrypted transport")
+            {
+                auto const has_key_share =
+                    std::ranges::any_of(runtime.database.persistent_store.to_device_messages,
+                                        [&](merovingian::database::PersistentToDeviceMessage const& m) {
+                                            return m.sender_user_id == sender && m.target_user_id == target_user &&
+                                                   m.target_device_id == target_device &&
+                                                   m.message_type == "m.room.encrypted" &&
+                                                   m.content_json.find(ciphertext_body) != std::string::npos;
+                                        });
+                REQUIRE(has_key_share);
+            }
+        }
+
+        channels.server->stop();
+        channels.client->stop();
     }
 }
 
