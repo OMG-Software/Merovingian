@@ -270,7 +270,7 @@ SCENARIO("send_event enqueues outbound transactions for remote room members",
         REQUIRE(room.response.status == 200U);
         auto const id = room_id(room.response.body);
 
-        // Add a remote member to the room
+        // Add a remote member to the room.
         auto local_room = std::ranges::find_if(homeserver.database.rooms, [&id](auto const& r) {
             return r.room_id == id;
         });
@@ -581,6 +581,14 @@ SCENARIO("Inbound send_join records remote membership for outbound delivery",
              R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
         REQUIRE(login.response.status == 200U);
         auto const token = login_token(login.response.body);
+        auto const device_keys_body =
+            std::string{R"({"device_keys":{"user_id":"@alice:example.org","device_id":"DEVICE1",)"} +
+            R"("algorithms":["m.olm.v1.curve25519-aes-sha2"],)" +
+            R"("keys":{"curve25519:DEVICE1":"YWxpY2VDdXJ2ZQ","ed25519:DEVICE1":"YWxpY2VFZDI1NTE5"},)" +
+            R"("signatures":{"@alice:example.org":{"ed25519:DEVICE1":"c2ln"}}}})";
+        auto const upload = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/keys/upload", token, device_keys_body});
+        REQUIRE(upload.response.status == 200U);
 
         auto client = merovingian::http::OutboundClient{};
         auto worker = make_dispatch_worker(client);
@@ -611,6 +619,8 @@ SCENARIO("Inbound send_join records remote membership for outbound delivery",
                 id + "\",\"sender\":\"" + remote_user + "\",\"state_key\":\"" + remote_user +
                 "\",\"type\":\"m.room.member\"}";
 
+            auto const txns_before =
+                device_list_update_transactions(homeserver.database.persistent_store, "remote.example.org").size();
             auto const accepted = homeserver.federation.membership_acceptor(
                 merovingian::federation::FederationEndpoint::send_join, id, envelope.event_id, envelope);
 
@@ -619,6 +629,18 @@ SCENARIO("Inbound send_join records remote membership for outbound delivery",
                 REQUIRE(accepted.accepted);
                 REQUIRE(has_membership(homeserver.database.persistent_store, id, remote_user, "join"));
                 REQUIRE(has_local_member(homeserver.database, id, remote_user));
+            }
+
+            THEN("the joining remote server is told about existing local devices in the shared room")
+            {
+                REQUIRE(accepted.accepted);
+                auto const txns =
+                    device_list_update_transactions(homeserver.database.persistent_store, "remote.example.org");
+                REQUIRE(txns.size() > txns_before);
+                auto const any_for_alice = std::ranges::any_of(txns, [](auto const* tx) {
+                    return device_list_update_user_id(tx->body) == "@alice:example.org";
+                });
+                REQUIRE(any_for_alice);
             }
 
             THEN("later local messages are queued for that remote homeserver")

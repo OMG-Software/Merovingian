@@ -10,6 +10,7 @@
 namespace
 {
 
+using merovingian::homeserver::federation_request_should_bypass_worker;
 using merovingian::homeserver::federation_worker_room_id_from_request;
 using merovingian::homeserver::LocalHttpRequest;
 
@@ -24,6 +25,42 @@ using merovingian::homeserver::LocalHttpRequest;
 }
 
 } // namespace
+
+SCENARIO("EDU-only federation send transactions bypass the worker pool", "[federation][routing][worker-bypass]")
+{
+    GIVEN("a PUT /send transaction carrying only a direct-to-device EDU")
+    {
+        auto request = make_request(
+            "/_matrix/federation/v1/send/txn-to-device",
+            R"({"origin":"remote.example.org","origin_server_ts":1,"pdus":[],"edus":[{"edu_type":"m.direct_to_device","content":{"sender":"@bob:remote.example.org","type":"m.room.encrypted","message_id":"m1","messages":{}}}]})");
+        request.method = "PUT";
+
+        WHEN("the worker bypass decision is made")
+        {
+            THEN("the request stays in main instead of being routed to shard 0")
+            {
+                REQUIRE(federation_worker_room_id_from_request(request).empty());
+                REQUIRE(federation_request_should_bypass_worker(request));
+            }
+        }
+    }
+
+    GIVEN("a PUT /send transaction carrying a room PDU")
+    {
+        auto request = make_request("/_matrix/federation/v1/send/txn-pdu",
+                                    R"({"pdus":[{"room_id":"!room:example.org","event_id":"$event"}]})");
+        request.method = "PUT";
+
+        WHEN("the worker bypass decision is made")
+        {
+            THEN("the request still goes to the worker shard for that room")
+            {
+                REQUIRE(federation_worker_room_id_from_request(request) == "!room:example.org");
+                REQUIRE_FALSE(federation_request_should_bypass_worker(request));
+            }
+        }
+    }
+}
 
 SCENARIO("Room ID is extracted from room-scoped federation path endpoints", "[federation][routing][room-id]")
 {

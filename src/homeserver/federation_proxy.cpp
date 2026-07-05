@@ -95,6 +95,16 @@ auto FederationProxy::handle(LocalHttpRequest const& request) -> LocalHttpRespon
     verified_request.verified_key_id = verification.identity.key_id;
     verified_request.sig_verified = true;
 
+    if (federation_request_should_bypass_worker(verified_request))
+    {
+        log_diagnostic("federation_proxy.bypass_worker",
+                       {
+                           {"target", observability::sanitized_http_target(request.target), false},
+                           {"reason", "edu_only_send",                                      false}
+        });
+        return handle_federation_http_request(runtime_, verified_request);
+    }
+
     auto const room_id = federation_worker_room_id_from_request(request);
     return pool_->handle(verified_request, room_id);
 }

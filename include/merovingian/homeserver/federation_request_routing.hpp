@@ -19,4 +19,8 @@ namespace merovingian::homeserver
 // string, which the caller routes to shard 0.
 [[nodiscard]] auto federation_worker_room_id_from_request(LocalHttpRequest const& request) -> std::string;
 
+// Returns true when a verified inbound federation request should stay in the
+// main process even while the worker pool is active.
+[[nodiscard]] auto federation_request_should_bypass_worker(LocalHttpRequest const& request) -> bool;
+
 } // namespace merovingian::homeserver
