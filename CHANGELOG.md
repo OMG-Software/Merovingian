@@ -1,3 +1,8 @@
+## 0.10.25
+
+### Diagnostics
+- **diag(federation): `handle_inbound_federation_request()`'s own logging (`request.received`, `transaction.accepted`) has never been observed in production despite clear downstream evidence that it executes — `event_state.persisted` (logged on main's side when a worker relays a PDU via `pdu_ingest`) fires reliably for real transactions, which is only reachable by that function calling `pdu_sink` partway through its body, yet neither its first line nor its final log line ever appears, with no exception (`thread_pool: event=worker.exception` never fires on either process's thread pool), no worker crash/restart, and no seccomp syscall denial (`write`/`writev`/`futex`/`clone` are all allowed in the worker hardening profile) found to explain it:** since `handle_inbound_federation_request` runs entirely inside the federation worker's own process when a room-scoped request is relayed there, and its logging is the one piece of visibility this investigation could not otherwise obtain, `WorkerPool::handle()` — which runs on main, whose own logging has been reliable throughout every incident investigated so far — now logs the raw status, body length, and a short body prefix of every reply a worker sends back, immediately after deserializing it and before returning it to the caller. This does not fix a known bug; it exists to determine, from a call site proven trustworthy, whether the worker's reply actually originated from `handle_inbound_federation_request`'s normal success path (in which case the worker's own logging has a real, separate gap worth fixing next) or from somewhere else entirely.
+
 ## 0.10.24
 
 ### Fixed

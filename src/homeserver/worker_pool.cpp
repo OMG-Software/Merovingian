@@ -875,7 +875,20 @@ auto WorkerPool::handle(LocalHttpRequest const& request, std::string_view room_i
         return {503U, R"({"errcode":"M_UNAVAILABLE","error":"Federation worker shard unavailable"})"};
     }
 
-    return ipc::deserialize_fed_response(*reply);
+    auto response = ipc::deserialize_fed_response(*reply);
+    // Diagnostic visibility into what the worker actually answered: main's own
+    // logging is reliable (this call site), but handle_inbound_federation_request
+    // — which runs entirely inside the worker process — has been observed to
+    // leave no trace of its own request.received/transaction.accepted log lines
+    // even for transactions that plainly succeeded (event_state.persisted fires
+    // from the relayed pdu_ingest handler on main's side). Logging the shape of
+    // the raw reply here, from a call site proven to reach the journal, lets us
+    // tell whether the worker's response body actually came from that function
+    // without guessing at where its own logging goes missing.
+    LOG_DEBUG("WorkerPool: shard " + std::to_string(index) + " replied for " + request.target +
+              " status=" + std::to_string(response.status) + " body_bytes=" + std::to_string(response.body.size()) +
+              " body_prefix=" + response.body.substr(0U, 96U));
+    return response;
 }
 
 auto WorkerPool::notify_room_changed(std::string_view room_id) -> void
