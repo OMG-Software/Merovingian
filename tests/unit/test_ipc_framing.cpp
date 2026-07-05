@@ -22,11 +22,13 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <vector>
 
 #include <sodium.h>
 #include <sys/socket.h>
@@ -496,6 +498,116 @@ SCENARIO("IpcChannel handles multiple concurrent requests with matching replies"
                 CHECK(reply_b->find("\"type\":\"echo\"") != std::string::npos);
                 CHECK(reply_a->find("\"type\":\"a\"") != std::string::npos);
                 CHECK(reply_b->find("\"type\":\"b\"") != std::string::npos);
+            }
+        }
+
+        pair.server->stop();
+        pair.client->stop();
+    }
+}
+
+SCENARIO("IpcChannel routes responses while a request handler is blocked on a caller-held lock",
+         "[ipc][channel][dispatch]")
+{
+    GIVEN("a server whose request handler needs a mutex held by a thread that is waiting on send_request")
+    {
+        // Models the federation-worker drip-feed deadlock: a worker relay
+        // thread holds runtime.mutex across a pdu_ingest send_request to
+        // main, and main sends a room_sync notification — whose handler
+        // needs that same mutex — immediately before the pdu_ingest
+        // response. If the channel invokes request handlers inline on its
+        // reader thread, the reader blocks on the mutex and never routes
+        // the response sitting right behind the notification; the
+        // send_request can only time out.
+        auto pair = make_channel_pair();
+
+        auto shared_mutex = std::mutex{};
+        auto poke_handled = std::atomic<bool>{false};
+
+        // Server side ("worker"): handling a poke requires shared_mutex.
+        pair.server->set_request_handler([&shared_mutex, &poke_handled](std::uint64_t /*id*/, std::string /*json*/) {
+            auto const guard = std::lock_guard{shared_mutex};
+            poke_handled.store(true);
+        });
+        // Client side ("main"): answering a query first pokes the server,
+        // then replies — the poke frame precedes the response frame on the
+        // wire, exactly as notify_room_changed precedes send_response.
+        pair.client->set_request_handler([client = pair.client.get()](std::uint64_t id, std::string /*json*/) {
+            client->send_notification(R"({"type":"poke"})");
+            client->send_response(id, R"({"type":"query_result"})");
+        });
+        pair.server->start();
+        pair.client->start();
+
+        WHEN("the server sends a request while holding the mutex its own request handler needs")
+        {
+            auto reply = std::optional<std::string>{};
+            {
+                auto const guard = std::lock_guard{shared_mutex};
+                reply = pair.server->send_request(R"({"type":"query"})", std::chrono::seconds{5});
+            }
+
+            THEN("the response is delivered instead of timing out, and the poke completes once the lock is free")
+            {
+                REQUIRE(reply.has_value());
+                CHECK(reply->find("query_result") != std::string::npos);
+
+                // The mutex is released now, so the queued poke handler must
+                // be able to run to completion before the channels stop.
+                auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+                while (!poke_handled.load() && std::chrono::steady_clock::now() < deadline)
+                {
+                    std::this_thread::sleep_for(std::chrono::milliseconds{5});
+                }
+                CHECK(poke_handled.load());
+            }
+        }
+
+        pair.server->stop();
+        pair.client->stop();
+    }
+}
+
+SCENARIO("IpcChannel dispatches request frames in arrival order", "[ipc][channel][dispatch]")
+{
+    GIVEN("a server that records the type of every notification it handles")
+    {
+        auto pair = make_channel_pair();
+
+        auto seen_mutex = std::mutex{};
+        auto seen = std::vector<std::string>{};
+
+        pair.server->set_request_handler([&seen_mutex, &seen](std::uint64_t /*id*/, std::string json) {
+            auto const guard = std::lock_guard{seen_mutex};
+            seen.push_back(json_get_str(json, "type"));
+        });
+        pair.server->start();
+        pair.client->start();
+
+        WHEN("the client sends several notifications from one thread")
+        {
+            auto const sent = std::vector<std::string>{"n0", "n1", "n2", "n3", "n4", "n5", "n6", "n7"};
+            for (auto const& type : sent)
+            {
+                pair.client->send_notification(std::string{R"({"type":")"} + type + R"("})");
+            }
+
+            THEN("the server handles every notification in the order it was sent")
+            {
+                auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+                while (std::chrono::steady_clock::now() < deadline)
+                {
+                    {
+                        auto const guard = std::lock_guard{seen_mutex};
+                        if (seen.size() == sent.size())
+                        {
+                            break;
+                        }
+                    }
+                    std::this_thread::sleep_for(std::chrono::milliseconds{5});
+                }
+                auto const guard = std::lock_guard{seen_mutex};
+                REQUIRE(seen == sent);
             }
         }
 

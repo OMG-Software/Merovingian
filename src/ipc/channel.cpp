@@ -14,6 +14,7 @@
 #include <new>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -185,6 +186,9 @@ auto IpcChannel::start() -> void
     reader_thread_ = std::thread{[this] {
         reader_loop();
     }};
+    dispatch_thread_ = std::thread{[this] {
+        dispatcher_loop();
+    }};
 }
 
 auto IpcChannel::stop() noexcept -> void
@@ -216,6 +220,15 @@ auto IpcChannel::stop() noexcept -> void
     if (reader_thread_.joinable())
     {
         reader_thread_.join();
+    }
+
+    // Wake the dispatch thread so it drains any queued request frames and
+    // exits (running_ is already false). Joined after the reader so no new
+    // frames can be queued behind the drain.
+    dispatch_cv_.notify_all();
+    if (dispatch_thread_.joinable())
+    {
+        dispatch_thread_.join();
     }
 
     // No writer can hold write_mu_ once shutdown() has caused the blocked
@@ -493,7 +506,15 @@ auto IpcChannel::reader_loop() -> void
         }
         else if (id != 0U && request_handler_)
         {
-            request_handler_(id, std::move(*frame));
+            // Queue for the dispatch thread rather than invoking the handler
+            // here: a handler that blocks (e.g. on a lock held by a thread
+            // that is itself waiting inside send_request) must never prevent
+            // this loop from routing the responses queued behind it.
+            {
+                auto const lk = std::lock_guard{dispatch_mu_};
+                dispatch_queue_.emplace_back(id, std::move(*frame));
+            }
+            dispatch_cv_.notify_one();
         }
     }
 
@@ -503,6 +524,30 @@ auto IpcChannel::reader_loop() -> void
     {
         e->ready = true;
         e->cv.notify_one();
+    }
+}
+
+auto IpcChannel::dispatcher_loop() -> void
+{
+    while (true)
+    {
+        auto item = std::pair<std::uint64_t, std::string>{};
+        {
+            auto lk = std::unique_lock{dispatch_mu_};
+            dispatch_cv_.wait(lk, [this] {
+                return !dispatch_queue_.empty() || !running_.load();
+            });
+            if (dispatch_queue_.empty())
+            {
+                // running_ is false and the queue is drained — exit.
+                break;
+            }
+            item = std::move(dispatch_queue_.front());
+            dispatch_queue_.pop_front();
+        }
+        // Invoked outside dispatch_mu_ so a long-running handler never blocks
+        // the reader thread from queuing further request frames.
+        request_handler_(item.first, std::move(item.second));
     }
 }
 
