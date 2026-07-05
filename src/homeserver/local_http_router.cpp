@@ -258,20 +258,22 @@ namespace
             {
                 continue;
             }
-            auto content_obj = canonicaljson::Object{};
-            content_obj.push_back(canonicaljson::make_member("device_id", canonicaljson::Value{device.device_id}));
             auto const keys_it =
                 std::ranges::find_if(store.device_keys, [&device, user_id](database::PersistentDeviceKey const& keys) {
                     return keys.user_id == user_id && keys.device_id == device.device_id;
                 });
-            if (keys_it != store.device_keys.end())
+            if (keys_it == store.device_keys.end())
             {
-                auto const parsed_keys = canonicaljson::parse_lossless(keys_it->json);
-                if (parsed_keys.error == canonicaljson::ParseError::none)
-                {
-                    content_obj.push_back(canonicaljson::make_member("keys", parsed_keys.value));
-                }
+                continue;
             }
+            auto const parsed_keys = canonicaljson::parse_lossless(keys_it->json);
+            if (parsed_keys.error != canonicaljson::ParseError::none)
+            {
+                continue;
+            }
+            auto content_obj = canonicaljson::Object{};
+            content_obj.push_back(canonicaljson::make_member("device_id", canonicaljson::Value{device.device_id}));
+            content_obj.push_back(canonicaljson::make_member("keys", parsed_keys.value));
             content_obj.push_back(canonicaljson::make_member("prev_id", canonicaljson::Value{canonicaljson::Array{}}));
             content_obj.push_back(
                 canonicaljson::make_member("stream_id", canonicaljson::Value{static_cast<std::int64_t>(stream_id)}));
