@@ -410,6 +410,90 @@ namespace
         return ipc::ipc_json_get_str(json, "response_body");
     }
 
+    // Serialize a user_id for the user_devices_ingest IPC call to main.
+    auto serialize_user_devices_ingest(std::string_view user_id) -> std::string
+    {
+        auto result = std::string{R"({"type":"user_devices_ingest","user_id":)"};
+        result.reserve(64U + user_id.size());
+        result += ipc::ipc_json_str(user_id);
+        result += '}';
+        return result;
+    }
+
+    // Deserialize a `user_devices_ingest_result` JSON frame from main.
+    auto deserialize_user_devices_ingest_result(std::string_view json) -> std::string
+    {
+        return ipc::ipc_json_get_str(json, "response_body");
+    }
+
+    // Serialize a raw device-keys-query request body for the
+    // device_keys_query_ingest IPC call to main. The body is the untouched
+    // federation request payload (embedded as an escaped JSON string, same
+    // technique as serialize_otk_claim_ingest above), so main's own
+    // device_keys_query_provider parses it exactly as if it had received the
+    // federation request directly.
+    auto serialize_device_keys_query_ingest(std::string_view request_body) -> std::string
+    {
+        auto result = std::string{R"({"type":"device_keys_query_ingest","request_body":)"};
+        result.reserve(128U + request_body.size());
+        result += ipc::ipc_json_str(request_body);
+        result += '}';
+        return result;
+    }
+
+    // Deserialize a `device_keys_query_ingest_result` JSON frame from main.
+    auto deserialize_device_keys_query_ingest_result(std::string_view json) -> std::string
+    {
+        return ipc::ipc_json_get_str(json, "response_body");
+    }
+
+    // Serialize a user_id for the profile_query_ingest IPC call to main.
+    auto serialize_profile_query_ingest(std::string_view user_id) -> std::string
+    {
+        auto result = std::string{R"({"type":"profile_query_ingest","user_id":)"};
+        result.reserve(64U + user_id.size());
+        result += ipc::ipc_json_str(user_id);
+        result += '}';
+        return result;
+    }
+
+    // Deserialize a `profile_query_ingest_result` JSON frame from main. Uses
+    // the same full-JSON-parse approach as deserialize_membership_ingest_result
+    // above rather than ipc::ipc_json_get_str, since "found" is a raw bool
+    // field that a quote-terminated string extractor cannot parse.
+    auto deserialize_profile_query_ingest_result(std::string_view json) -> federation::FederationProfile
+    {
+        auto result = federation::FederationProfile{};
+        auto const parsed = canonicaljson::parse_lossless(json);
+        auto const* obj = parsed.error == canonicaljson::ParseError::none
+                              ? std::get_if<canonicaljson::Object>(&parsed.value.storage())
+                              : nullptr;
+        if (obj == nullptr)
+        {
+            return result;
+        }
+        result.found = field_bool(*obj, "found");
+        result.displayname = field_string(*obj, "displayname");
+        result.avatar_url = field_string(*obj, "avatar_url");
+        return result;
+    }
+
+    // Serialize an event_id for the event_query_ingest IPC call to main.
+    auto serialize_event_query_ingest(std::string_view event_id) -> std::string
+    {
+        auto result = std::string{R"({"type":"event_query_ingest","event_id":)"};
+        result.reserve(64U + event_id.size());
+        result += ipc::ipc_json_str(event_id);
+        result += '}';
+        return result;
+    }
+
+    // Deserialize an `event_query_ingest_result` JSON frame from main.
+    auto deserialize_event_query_ingest_result(std::string_view json) -> std::string
+    {
+        return ipc::ipc_json_get_str(json, "response_body");
+    }
+
 } // namespace
 
 WorkerEventLoop::WorkerEventLoop(core::FileDescriptor ipc_fd, config::Config config, std::uint32_t threads,
@@ -587,6 +671,80 @@ auto WorkerEventLoop::run() -> void
             return {};
         }
         return deserialize_otk_claim_ingest_result(*reply);
+    };
+
+    // Override user_devices_provider, device_keys_query_provider, and
+    // profile_query_provider the same way as one_time_keys_claim_provider
+    // above: relay to main via IPC instead of deciding against this
+    // process's own PersistentStore. Unlike the write-relay hooks
+    // (pdu_sink/membership_acceptor/edu_sink/invite_handler), these three are
+    // pure reads with no DB write to make visible — the bug is that
+    // PersistentStore::device_keys and PersistentStore::profiles are
+    // per-process snapshots hydrated once at worker startup, and none of the
+    // three backing routes (GET /user/devices/{userId}, POST
+    // /user/keys/query, GET /query/profile) are room-scoped, so unlike
+    // room_sync there is no per-room notification that could ever refresh
+    // them — a device or profile change made through main's client-server
+    // API after this worker started is permanently invisible to it. A remote
+    // server querying one of these routes for a real local user/device can
+    // therefore get a spurious 404 indefinitely, which for
+    // GET /user/devices/{userId} specifically means a sender can never learn
+    // which device to target an m.room_key to-device share at, leaving the
+    // recipient permanently unable to decrypt the corresponding megolm
+    // session with no error surfaced anywhere (the transaction that carried
+    // the encrypted message is still delivered and accepted normally). See
+    // docs/architecture.md, "Federation worker user/device/profile/event query
+    // relay".
+    runtime.federation.user_devices_provider = [channel_ptr](std::string_view user_id) -> std::string {
+        auto const json_body = serialize_user_devices_ingest(user_id);
+        auto const reply = channel_ptr->send_request(json_body, std::chrono::seconds{60});
+        if (!reply.has_value())
+        {
+            return {};
+        }
+        return deserialize_user_devices_ingest_result(*reply);
+    };
+
+    runtime.federation.device_keys_query_provider = [channel_ptr](std::string_view request_body) -> std::string {
+        auto const json_body = serialize_device_keys_query_ingest(request_body);
+        auto const reply = channel_ptr->send_request(json_body, std::chrono::seconds{60});
+        if (!reply.has_value())
+        {
+            return {};
+        }
+        return deserialize_device_keys_query_ingest_result(*reply);
+    };
+
+    runtime.federation.profile_query_provider =
+        [channel_ptr](std::string_view user_id) -> federation::FederationProfile {
+        auto const json_body = serialize_profile_query_ingest(user_id);
+        auto const reply = channel_ptr->send_request(json_body, std::chrono::seconds{60});
+        if (!reply.has_value())
+        {
+            return {};
+        }
+        return deserialize_profile_query_ingest_result(*reply);
+    };
+
+    // Override event_query_provider the same way as the three providers
+    // above, but for a different reason: GET /_matrix/federation/v1/event/
+    // {eventId} carries no room ID, so unlike state/state_ids/backfill/
+    // get_missing_events (which are room-scoped and stay correct via
+    // notify_room_changed()/reload_room()) it always routes to shard 0
+    // regardless of which shard actually owns the event's room. Relaying
+    // through main — which receives every event via pdu_sink from every
+    // shard — answers correctly no matter which shard the request happened
+    // to land on, rather than trying to fix shard selection for an ID space
+    // with no room ID to key off. See docs/architecture.md, "Federation
+    // worker user/device/profile/event query relay".
+    runtime.federation.event_query_provider = [channel_ptr](std::string_view event_id) -> std::string {
+        auto const json_body = serialize_event_query_ingest(event_id);
+        auto const reply = channel_ptr->send_request(json_body, std::chrono::seconds{60});
+        if (!reply.has_value())
+        {
+            return {};
+        }
+        return deserialize_event_query_ingest_result(*reply);
     };
 
     // Thread pool for handling concurrent fed_request messages.

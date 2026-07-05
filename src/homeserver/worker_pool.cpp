@@ -460,6 +460,42 @@ namespace
         return body;
     }
 
+    auto serialize_user_devices_ingest_result(std::string_view response_body) -> std::string
+    {
+        auto body = std::string{R"({"type":"user_devices_ingest_result","response_body":)"};
+        body += json_str(response_body);
+        body += '}';
+        return body;
+    }
+
+    auto serialize_device_keys_query_ingest_result(std::string_view response_body) -> std::string
+    {
+        auto body = std::string{R"({"type":"device_keys_query_ingest_result","response_body":)"};
+        body += json_str(response_body);
+        body += '}';
+        return body;
+    }
+
+    auto serialize_profile_query_ingest_result(federation::FederationProfile const& profile) -> std::string
+    {
+        auto body = std::string{R"({"type":"profile_query_ingest_result","found":)"};
+        body += profile.found ? "true" : "false";
+        body += R"(,"displayname":)";
+        body += json_str(profile.displayname);
+        body += R"(,"avatar_url":)";
+        body += json_str(profile.avatar_url);
+        body += '}';
+        return body;
+    }
+
+    auto serialize_event_query_ingest_result(std::string_view response_body) -> std::string
+    {
+        auto body = std::string{R"({"type":"event_query_ingest_result","response_body":)"};
+        body += json_str(response_body);
+        body += '}';
+        return body;
+    }
+
 } // namespace
 
 auto federation_worker_shard_for(std::string_view room_id, std::uint32_t shards) noexcept -> std::size_t
@@ -589,6 +625,90 @@ auto handle_otk_claim_ingest_request(HomeserverRuntime& runtime, std::string_vie
     return serialize_otk_claim_ingest_result(response_body);
 }
 
+auto handle_user_devices_ingest_request(HomeserverRuntime& runtime, std::string_view request_json) -> std::string
+{
+    // A federated device-list query decided by a worker must read main's own
+    // store, not a worker's — see docs/architecture.md, "Federation worker
+    // user/device/profile/event query relay". Unlike pdu_ingest/membership_ingest/
+    // edu_ingest/invite_ingest above, there is no write to make visible here;
+    // the bug is that PersistentStore::device_keys is a per-process snapshot
+    // hydrated once at worker startup, so a device whose keys were uploaded
+    // through main afterward is invisible to a worker's copy, and this
+    // non-room-scoped route always lands on shard 0 with no mechanism (unlike
+    // room_sync) to ever refresh it.
+    auto const user_id = json_get_str(request_json, "user_id");
+    auto response_body = std::string{};
+    {
+        auto guard = std::unique_lock{runtime.mutex};
+        if (runtime.federation.user_devices_provider)
+        {
+            response_body = runtime.federation.user_devices_provider(user_id);
+        }
+    }
+    return serialize_user_devices_ingest_result(response_body);
+}
+
+auto handle_device_keys_query_ingest_request(HomeserverRuntime& runtime, std::string_view request_json) -> std::string
+{
+    // Same stale-snapshot failure mode as handle_user_devices_ingest_request
+    // above, for POST /_matrix/federation/v1/user/keys/query instead of
+    // GET /user/devices/{userId}. See docs/architecture.md, "Federation
+    // worker user/device/profile/event query relay".
+    auto const request_body = json_get_str(request_json, "request_body");
+    auto response_body = std::string{};
+    {
+        auto guard = std::unique_lock{runtime.mutex};
+        if (runtime.federation.device_keys_query_provider)
+        {
+            response_body = runtime.federation.device_keys_query_provider(request_body);
+        }
+    }
+    return serialize_device_keys_query_ingest_result(response_body);
+}
+
+auto handle_profile_query_ingest_request(HomeserverRuntime& runtime, std::string_view request_json) -> std::string
+{
+    // Same stale-snapshot failure mode as handle_user_devices_ingest_request
+    // above, for GET /_matrix/federation/v1/query/profile: PersistentStore::
+    // profiles is likewise a worker-startup snapshot never refreshed by a
+    // later client-server profile update on main. See docs/architecture.md,
+    // "Federation worker user/device/profile/event query relay".
+    auto const user_id = json_get_str(request_json, "user_id");
+    auto profile = federation::FederationProfile{};
+    {
+        auto guard = std::unique_lock{runtime.mutex};
+        if (runtime.federation.profile_query_provider)
+        {
+            profile = runtime.federation.profile_query_provider(user_id);
+        }
+    }
+    return serialize_profile_query_ingest_result(profile);
+}
+
+auto handle_event_query_ingest_request(HomeserverRuntime& runtime, std::string_view request_json) -> std::string
+{
+    // GET /_matrix/federation/v1/event/{eventId} carries no room ID, so it
+    // cannot be routed to the shard that actually owns the event's room the
+    // way state/state_ids/backfill/get_missing_events are — it always lands
+    // on shard 0 regardless of ownership. Relaying through main (which
+    // receives every event via pdu_sink on every shard's behalf) answers
+    // correctly regardless of which shard the request happened to land on,
+    // sidestepping the routing-alignment problem rather than trying to fix
+    // shard selection for an ID space with no room ID to key off. See
+    // docs/architecture.md, "Federation worker user/device/profile/event query
+    // relay".
+    auto const event_id = json_get_str(request_json, "event_id");
+    auto response_body = std::string{};
+    {
+        auto guard = std::unique_lock{runtime.mutex};
+        if (runtime.federation.event_query_provider)
+        {
+            response_body = runtime.federation.event_query_provider(event_id);
+        }
+    }
+    return serialize_event_query_ingest_result(response_body);
+}
+
 WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRuntime& runtime, std::string worker_path,
                        std::string config_path)
     : cfg_{cfg}
@@ -676,6 +796,22 @@ WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRunt
             else if (type == "otk_claim_ingest")
             {
                 ptr->channel().send_response(id, handle_otk_claim_ingest_request(runtime_, json));
+            }
+            else if (type == "user_devices_ingest")
+            {
+                ptr->channel().send_response(id, handle_user_devices_ingest_request(runtime_, json));
+            }
+            else if (type == "device_keys_query_ingest")
+            {
+                ptr->channel().send_response(id, handle_device_keys_query_ingest_request(runtime_, json));
+            }
+            else if (type == "profile_query_ingest")
+            {
+                ptr->channel().send_response(id, handle_profile_query_ingest_request(runtime_, json));
+            }
+            else if (type == "event_query_ingest")
+            {
+                ptr->channel().send_response(id, handle_event_query_ingest_request(runtime_, json));
             }
             else if (type == "sign_request")
             {
