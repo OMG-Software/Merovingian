@@ -1,3 +1,8 @@
+## 0.10.27
+
+### Documentation
+- **docs(architecture): align the architecture overview with the current implementation and Matrix v1.18 references:** refreshed the module list, runtime model, federation-worker consistency model, implemented API summaries, and spec citations in `docs/architecture.md`.
+
 ## 0.10.26
 
 ### Fixed
