@@ -208,15 +208,29 @@ namespace
         return {};
     }
 
+    [[nodiscard]] auto is_federation_send_target(std::string_view target) noexcept -> bool
+    {
+        return target.find("/_matrix/federation/v1/send/") != std::string_view::npos;
+    }
+
 } // namespace
 
 auto federation_worker_room_id_from_request(LocalHttpRequest const& request) -> std::string
 {
-    if (request.target.find("/_matrix/federation/v1/send/") != std::string::npos)
+    if (is_federation_send_target(request.target))
     {
         return room_id_from_send_body(request.body);
     }
     return room_id_from_path_target(request.target);
+}
+
+auto federation_request_should_bypass_worker(LocalHttpRequest const& request) -> bool
+{
+    // EDU-only /send transactions have no room_id to shard by and ultimately
+    // relay back to main's edu_sink anyway. Handling them in main avoids shard
+    // 0 becoming a choke point for to-device key shares.
+    return request.method == "PUT" && is_federation_send_target(request.target) &&
+           room_id_from_send_body(request.body).empty();
 }
 
 } // namespace merovingian::homeserver

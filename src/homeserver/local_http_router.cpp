@@ -15,6 +15,7 @@
 #include "merovingian/federation/event_query.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/federation/key_query.hpp"
+#include "merovingian/federation/outbound_transaction.hpp"
 #include "merovingian/federation/remote_key_cache.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/media_service.hpp"
@@ -220,6 +221,101 @@ namespace
         return std::ranges::any_of(database.users, [&](LocalUser const& user) {
             return user.user_id == user_id;
         });
+    }
+
+    [[nodiscard]] auto joined_local_members(LocalDatabase const& database, std::string_view room_id,
+                                            std::string_view local_server) -> std::vector<std::string>
+    {
+        auto members = std::vector<std::string>{};
+        auto const room_it = std::ranges::find_if(database.rooms, [room_id](LocalRoom const& room) {
+            return room.room_id == room_id;
+        });
+        if (room_it == database.rooms.end())
+        {
+            return members;
+        }
+        for (auto const& member : room_it->members)
+        {
+            if (server_name_from_user_id(member) == local_server && local_user_exists(database, member))
+            {
+                members.push_back(member);
+            }
+        }
+        return members;
+    }
+
+    auto dispatch_device_list_update(HomeserverRuntime& runtime, std::string_view destination, std::string_view user_id,
+                                     std::uint64_t stream_id) -> void
+    {
+        if (runtime.dispatch_worker == nullptr)
+        {
+            return;
+        }
+        auto const& store = runtime.database.persistent_store;
+        for (auto const& device : store.devices)
+        {
+            if (device.user_id != user_id)
+            {
+                continue;
+            }
+            auto const keys_it =
+                std::ranges::find_if(store.device_keys, [&device, user_id](database::PersistentDeviceKey const& keys) {
+                    return keys.user_id == user_id && keys.device_id == device.device_id;
+                });
+            if (keys_it == store.device_keys.end())
+            {
+                continue;
+            }
+            auto const parsed_keys = canonicaljson::parse_lossless(keys_it->json);
+            if (parsed_keys.error != canonicaljson::ParseError::none)
+            {
+                continue;
+            }
+            auto content_obj = canonicaljson::Object{};
+            content_obj.push_back(canonicaljson::make_member("device_id", canonicaljson::Value{device.device_id}));
+            content_obj.push_back(canonicaljson::make_member("keys", parsed_keys.value));
+            content_obj.push_back(canonicaljson::make_member("prev_id", canonicaljson::Value{canonicaljson::Array{}}));
+            content_obj.push_back(
+                canonicaljson::make_member("stream_id", canonicaljson::Value{static_cast<std::int64_t>(stream_id)}));
+            content_obj.push_back(canonicaljson::make_member("user_id", canonicaljson::Value{std::string{user_id}}));
+            auto const content = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(content_obj)});
+            if (content.error != canonicaljson::CanonicalJsonError::none)
+            {
+                continue;
+            }
+            auto const tx_body = federation::build_edu_transaction_body(runtime.config.server().server_name,
+                                                                        "m.device_list_update", content.output);
+            if (!tx_body.has_value())
+            {
+                continue;
+            }
+            auto const tx_id = federation::make_federation_transaction_id();
+            auto target = "/_matrix/federation/v1/send/" + tx_id;
+            auto transaction = federation::make_outbound_transaction(std::string{destination}, "PUT", target,
+                                                                     runtime.config.server().server_name, *tx_body);
+            transaction.transaction_id = tx_id;
+            std::ignore = runtime.dispatch_worker->enqueue(std::move(transaction));
+        }
+    }
+
+    auto broadcast_local_device_lists_to_remote_joiner(HomeserverRuntime& runtime, std::string_view room_id,
+                                                       std::string_view joining_user_id) -> void
+    {
+        if (runtime.dispatch_worker == nullptr)
+        {
+            return;
+        }
+        auto const destination = server_name_from_user_id(joining_user_id);
+        if (destination.empty() || destination == runtime.config.server().server_name)
+        {
+            return;
+        }
+        auto const stream_id = runtime.database.persistent_store.next_sync_stream_id;
+        for (auto const& local_member :
+             joined_local_members(runtime.database, room_id, runtime.config.server().server_name))
+        {
+            dispatch_device_list_update(runtime, destination, local_member, stream_id);
+        }
     }
 
     // Returns the room_version string from the room's m.room.create state event,
@@ -787,6 +883,7 @@ namespace
                             {
                                 members.push_back(*envelope.state_key);
                             }
+                            broadcast_local_device_lists_to_remote_joiner(*rt, envelope.room_id, *envelope.state_key);
                         }
                         else
                         {
@@ -1252,6 +1349,10 @@ namespace
                         return {false, 500U, "invite metadata cleanup failed", {}, {}};
                     }
                     apply_runtime_membership(rt->database, room_id, *envelope.state_key, membership);
+                    if (membership == "join")
+                    {
+                        broadcast_local_device_lists_to_remote_joiner(*rt, room_id, *envelope.state_key);
+                    }
                     membership_changed = true;
                 }
             }

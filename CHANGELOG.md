@@ -1,3 +1,15 @@
+## 0.10.28
+
+### Fixed
+- **fix(federation,e2ee): remote users joining a Merovingian-hosted encrypted room now receive local device-list updates immediately:** the `send_join` membership acceptor now broadcasts `m.device_list_update` EDUs for existing local members in the room to the joining user's server, so the remote client can query/use current Merovingian device keys before sending its first encrypted reply.
+- **fix(federation-worker,e2ee): EDU-only `/send` transactions no longer queue behind shard-0 worker traffic:** after X-Matrix verification in main, transactions with no PDU room ID are handled in main directly instead of being routed to worker shard 0 and relayed back to main's `edu_sink`, reducing delayed or timed-out `m.direct_to_device` key-share delivery.
+
+### Documentation
+- **docs(federation-worker): documented the EDU-only `/send` main-process bypass and narrowed relay-pool wording to PDU-bearing transactions.**
+
+### Testing
+- **test(federation,e2ee): wire the remote-join device-list fanout unit test's dispatch worker to the persistent store it asserts against and cover the guard that skips login-only devices without uploaded device keys.**
+
 ## 0.10.27
 
 ### Documentation
