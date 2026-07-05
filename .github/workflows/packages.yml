@@ -143,7 +143,34 @@ jobs:
           restore-keys: ccache-rpm-
       - name: Build .rpm
         run: sh scripts/build-rpm.sh
+      # actions/attest-build-provenance occasionally fails with "InternalError:
+      # error fetching tlog entry - (404) Not Found": Sigstore's Rekor
+      # transparency log has not finished replicating the entry the action
+      # itself just wrote by the time it tries to read it back. Retrying after
+      # a short delay lets replication catch up — the same class of external
+      # flake the netbsd-pkg-retry job and the zypper retry loop below handle
+      # for their own dependencies.
       - name: Attest RPM package
+        id: attest_rpm_1
+        uses: actions/attest-build-provenance@v2
+        continue-on-error: true
+        with:
+          subject-path: merovingian-*.rpm
+      - name: Wait before retrying attestation
+        if: steps.attest_rpm_1.outcome == 'failure'
+        run: sleep 15
+      - name: Attest RPM package (retry 1)
+        id: attest_rpm_2
+        if: steps.attest_rpm_1.outcome == 'failure'
+        uses: actions/attest-build-provenance@v2
+        continue-on-error: true
+        with:
+          subject-path: merovingian-*.rpm
+      - name: Wait before retrying attestation again
+        if: steps.attest_rpm_2.outcome == 'failure'
+        run: sleep 30
+      - name: Attest RPM package (retry 2)
+        if: steps.attest_rpm_2.outcome == 'failure'
         uses: actions/attest-build-provenance@v2
         with:
           subject-path: merovingian-*.rpm
@@ -363,7 +390,31 @@ jobs:
           restore-keys: ccache-rhel-rpm-
       - name: Build RHEL .rpm
         run: sh scripts/build-rhel-rpm.sh
+      # See the Fedora RPM job above for why this retries: Sigstore's Rekor
+      # transparency log occasionally hasn't replicated an entry by the time
+      # the same action tries to read it back ("error fetching tlog entry -
+      # (404) Not Found").
       - name: Attest RHEL RPM
+        id: attest_rhel_rpm_1
+        uses: actions/attest-build-provenance@v2
+        continue-on-error: true
+        with:
+          subject-path: merovingian-*.rpm
+      - name: Wait before retrying attestation
+        if: steps.attest_rhel_rpm_1.outcome == 'failure'
+        run: sleep 15
+      - name: Attest RHEL RPM (retry 1)
+        id: attest_rhel_rpm_2
+        if: steps.attest_rhel_rpm_1.outcome == 'failure'
+        uses: actions/attest-build-provenance@v2
+        continue-on-error: true
+        with:
+          subject-path: merovingian-*.rpm
+      - name: Wait before retrying attestation again
+        if: steps.attest_rhel_rpm_2.outcome == 'failure'
+        run: sleep 30
+      - name: Attest RHEL RPM (retry 2)
+        if: steps.attest_rhel_rpm_2.outcome == 'failure'
         uses: actions/attest-build-provenance@v2
         with:
           subject-path: merovingian-*.rpm
@@ -431,7 +482,31 @@ jobs:
           echo "CXX=ccache clang++" >> "$GITHUB_ENV"
       - name: Build OpenSUSE .rpm
         run: sh scripts/build-opensuse-rpm.sh
+      # See the Fedora RPM job above for why this retries: Sigstore's Rekor
+      # transparency log occasionally hasn't replicated an entry by the time
+      # the same action tries to read it back ("error fetching tlog entry -
+      # (404) Not Found").
       - name: Attest OpenSUSE RPM
+        id: attest_opensuse_rpm_1
+        uses: actions/attest-build-provenance@v2
+        continue-on-error: true
+        with:
+          subject-path: merovingian-*.rpm
+      - name: Wait before retrying attestation
+        if: steps.attest_opensuse_rpm_1.outcome == 'failure'
+        run: sleep 15
+      - name: Attest OpenSUSE RPM (retry 1)
+        id: attest_opensuse_rpm_2
+        if: steps.attest_opensuse_rpm_1.outcome == 'failure'
+        uses: actions/attest-build-provenance@v2
+        continue-on-error: true
+        with:
+          subject-path: merovingian-*.rpm
+      - name: Wait before retrying attestation again
+        if: steps.attest_opensuse_rpm_2.outcome == 'failure'
+        run: sleep 30
+      - name: Attest OpenSUSE RPM (retry 2)
+        if: steps.attest_opensuse_rpm_2.outcome == 'failure'
         uses: actions/attest-build-provenance@v2
         with:
           subject-path: merovingian-*.rpm
