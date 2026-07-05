@@ -591,7 +591,7 @@ SCENARIO("Inbound send_join records remote membership for outbound delivery",
         REQUIRE(upload.response.status == 200U);
 
         auto client = merovingian::http::OutboundClient{};
-        auto worker = make_dispatch_worker(client);
+        auto worker = make_dispatch_worker(client, &homeserver.database.persistent_store);
         homeserver.dispatch_worker.reset(worker.get());
         std::ignore = worker.release();
 
