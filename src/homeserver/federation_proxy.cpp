@@ -97,10 +97,10 @@ auto FederationProxy::handle(LocalHttpRequest const& request) -> LocalHttpRespon
 
     if (federation_request_should_bypass_worker(verified_request))
     {
-        log_diagnostic("federation_proxy.bypass_worker",
-                       {
-                           {"target", observability::sanitized_http_target(request.target), false},
-                           {"reason", "edu_only_send",                                      false}
+        observability::log_diagnostic("federation_proxy", "federation_proxy.bypass_worker",
+                                      {
+                                          {"target", observability::sanitized_http_target(request.target), false},
+                                          {"reason", "edu_only_send",                                      false}
         });
         return handle_federation_http_request(runtime_, verified_request);
     }
