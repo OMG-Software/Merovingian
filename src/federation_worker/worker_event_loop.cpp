@@ -747,8 +747,18 @@ auto WorkerEventLoop::run() -> void
         return deserialize_event_query_ingest_result(*reply);
     };
 
-    // Thread pool for handling concurrent fed_request messages.
-    auto pool = net::ThreadPool{threads_};
+    // Two pools, deliberately separate (see FederationWorkerConfig::relay_threads
+    // and federation::federation_endpoint_requires_main_relay): local_pool handles
+    // fed_requests answerable entirely from this worker's own local snapshot and
+    // always completes quickly; relay_pool handles fed_requests that call back to
+    // main over IPC (pdu_sink/edu_sink/membership_acceptor/invite_handler, the
+    // query-provider relays) plus outbound_http_request, both of which spend most
+    // of their time blocked on I/O rather than CPU. Sharing one small pool between
+    // these two classes let a burst of slow relay calls exhaust every thread and
+    // starve the fast local endpoints of anywhere to run — the federation worker
+    // shard hang this splits the pool to fix.
+    auto local_pool = net::ThreadPool{threads_};
+    auto relay_pool = net::ThreadPool{config_.federation_worker().relay_threads};
 
     auto shutdown = std::atomic<bool>{false};
     auto shutdown_mu = std::mutex{};
@@ -764,22 +774,31 @@ auto WorkerEventLoop::run() -> void
         shutdown_cv.notify_all();
     };
 
-    channel->set_request_handler([&runtime, channel_ptr, &pool, signal_shutdown](std::uint64_t id, std::string json) {
+    channel->set_request_handler([&runtime, channel_ptr, &local_pool, &relay_pool, signal_shutdown](std::uint64_t id,
+                                                                                                    std::string json) {
         auto const type = ipc::ipc_json_get_str(json, "type");
         if (type == "fed_request")
         {
-            // Dispatch to pool; do not block the reader thread.
-            std::ignore = pool.submit([&runtime, channel_ptr, id, json = std::move(json)]() mutable {
-                auto const request = ipc::deserialize_fed_request(json);
+            // Deserializing here (cheap JSON parsing, no I/O) rather than inside
+            // the submitted task lets us classify the endpoint and pick a pool
+            // before committing a thread — the whole point of the split.
+            auto request = ipc::deserialize_fed_request(json);
+            auto const route_match = federation::match_federation_route(request.method, request.target);
+            auto const needs_relay =
+                route_match.matched && federation::federation_endpoint_requires_main_relay(route_match.route.endpoint);
+            auto& target_pool = needs_relay ? relay_pool : local_pool;
+            std::ignore = target_pool.submit([&runtime, channel_ptr, id, request = std::move(request)]() mutable {
                 auto const response = homeserver::handle_federation_http_request(runtime, request);
                 channel_ptr->send_response(id, ipc::serialize_fed_response(response));
             });
         }
         else if (type == "outbound_http_request")
         {
-            // Execute outbound HTTP in the thread pool so the IPC reader thread
-            // is never blocked waiting for a remote server to respond.
-            std::ignore = pool.submit([&runtime, channel_ptr, id, json = std::move(json)]() mutable {
+            // Outbound HTTP blocks on a remote server's response, same as a
+            // main-relay round-trip — route it to the generously-sized relay
+            // pool so it can never be starved by (or itself starve) the fast
+            // local endpoints, and the IPC reader thread is never blocked.
+            std::ignore = relay_pool.submit([&runtime, channel_ptr, id, json = std::move(json)]() mutable {
                 auto const request = ipc::deserialize_outbound_http_request(json);
                 auto outcome = http::OutboundResult{};
                 if (runtime.outbound_client)
@@ -828,8 +847,8 @@ auto WorkerEventLoop::run() -> void
 
     channel->start();
 
-    LOG_INFO("[fed-worker/" + std::to_string(shard_index_) +
-             "] Federation worker ready: threads=" + std::to_string(threads_));
+    LOG_INFO("[fed-worker/" + std::to_string(shard_index_) + "] Federation worker ready: threads=" +
+             std::to_string(threads_) + " relay_threads=" + std::to_string(config_.federation_worker().relay_threads));
 
     // Block until shutdown is signalled.  A watcher thread also wakes us if
     // the main process closes the IPC fd without sending a notification.
@@ -857,7 +876,8 @@ auto WorkerEventLoop::run() -> void
     // is a no-op; otherwise it joins the reader thread now.
     channel->stop();
 
-    pool.request_stop();
+    local_pool.request_stop();
+    relay_pool.request_stop();
 
     LOG_INFO("Federation worker stopped");
 }

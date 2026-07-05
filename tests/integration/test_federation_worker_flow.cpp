@@ -142,6 +142,7 @@ auto write_worker_config(std::filesystem::path const& path, Config const& config
     content += "security.secrets.master_key_file=" + config.security().secrets.master_key_file + "\n";
     content += "federation.worker.shards=" + std::to_string(config.federation_worker().shards) + "\n";
     content += "federation.worker.threads=" + std::to_string(config.federation_worker().threads) + "\n";
+    content += "federation.worker.relay_threads=" + std::to_string(config.federation_worker().relay_threads) + "\n";
     content += "federation.worker.request_timeout_seconds=" +
                std::to_string(config.federation_worker().request_timeout_seconds) + "\n";
     // Emit the apply_hardening flag so scenarios that opt into the worker

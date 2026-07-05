@@ -156,7 +156,16 @@ security.federation.join_response_max_size=64MiB
 # apply_hardening applies PR_SET_NO_NEW_PRIVS, a capability-bounding drop, and
 # a seccomp-bpf filter denying execve/execveat at worker startup; keep this
 # true in production.
+# threads serves endpoints answered from the worker's own local snapshot
+# (make_join/make_leave/make_knock, backfill, query/directory, state,
+# state_ids, get_missing_events, hierarchy) and never blocks on main, so it
+# can stay small. relay_threads is a separate, deliberately larger pool for
+# endpoints that can block on a round-trip back to main (send, send_join/
+# send_leave/send_knock, invite, the key/profile/device/event query relays)
+# or on outbound HTTP to a remote server — see docs/architecture.md,
+# "Federation worker relay pool separation".
 federation.worker.threads=4
+federation.worker.relay_threads=32
 federation.worker.request_timeout_seconds=30
 federation.worker.shards=2
 federation.worker.apply_hardening=true

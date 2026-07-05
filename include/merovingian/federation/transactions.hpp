@@ -72,6 +72,16 @@ struct FederationEdu final
 };
 
 [[nodiscard]] auto federation_endpoint_name(FederationEndpoint endpoint) noexcept -> char const*;
+// True when handling this endpoint can block a federation worker thread on a
+// synchronous IPC round-trip back to main — pdu_sink/edu_sink (transaction),
+// membership_acceptor (send_join/send_leave/send_knock), invite_handler
+// (invite), or one of the query-provider relays (query_profile, query_keys,
+// claim_keys, query_user_devices, query_event). False for endpoints a worker
+// answers entirely from its own local, room-scoped snapshot with no relay.
+// Used to route worker requests to a differently-sized thread pool so a
+// burst of slow relay calls cannot starve fast local ones of a thread to run
+// on — see docs/architecture.md, "Federation worker relay pool separation".
+[[nodiscard]] auto federation_endpoint_requires_main_relay(FederationEndpoint endpoint) noexcept -> bool;
 [[nodiscard]] auto federation_routes() -> std::vector<FederationRoute>;
 [[nodiscard]] auto match_federation_route(std::string_view method, std::string_view target) -> FederationRouteMatch;
 [[nodiscard]] auto validate_federation_transaction(FederationTransaction const& transaction,

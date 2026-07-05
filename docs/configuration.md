@@ -1103,6 +1103,7 @@ is restarting.
 
 ```text
 federation.worker.threads=4
+federation.worker.relay_threads=32
 federation.worker.shards=2
 federation.worker.binary=/usr/libexec/merovingian/merovingian-fed-worker
 federation.worker.request_timeout_seconds=120
@@ -1110,7 +1111,8 @@ federation.worker.request_timeout_seconds=120
 
 | Key | Type | Default | Notes |
 |-----|------|---------|-------|
-| `federation.worker.threads` | unsigned int | `4` | Thread pool size inside each `merovingian-fed-worker` process. Increase for deployments that federate with many rooms simultaneously. |
+| `federation.worker.threads` | unsigned int | `4` | Thread pool size inside each `merovingian-fed-worker` process for endpoints answered entirely from the worker's own local snapshot (`make_join`/`make_leave`/`make_knock`, `backfill`, `query/directory`, `state`, `state_ids`, `get_missing_events`, `hierarchy`) — these never block on main, so this can stay small. |
+| `federation.worker.relay_threads` | unsigned int | `32` | Thread pool size for endpoints that can block on a synchronous IPC round-trip back to main (`send`, `send_join`/`send_leave`/`send_knock`, `invite`, `query/profile`, `user/keys/query`, `user/keys/claim`, `user/devices/{userId}`, `event/{eventId}`) or on outbound HTTP to a remote server. Deliberately separate and generously sized from `threads`: these threads spend nearly all their time blocked on I/O rather than CPU, and sharing one small pool between both classes let a burst of slow relay calls exhaust every thread and starve the fast local endpoints of anywhere to run — see `docs/architecture.md`, "Federation worker relay pool separation". |
 | `federation.worker.shards` | unsigned int | `1` | Number of independent federation worker processes. Requests are routed by `fnv1a_32(room_id) % shards`; non-room endpoints (key queries, profile queries, etc.) go to shard 0. Must be greater than 0. |
 | `federation.worker.binary` | string | compile-time default | Absolute path to the `merovingian-fed-worker` binary. Empty means `$libexecdir/merovingian/merovingian-fed-worker` (baked in as `MEROVINGIAN_LIBEXECDIR` at build time). |
 | `federation.worker.request_timeout_seconds` | unsigned int | `120` | Per-request IPC timeout in seconds. A federation request that takes longer than this returns a 504 to the remote server. |

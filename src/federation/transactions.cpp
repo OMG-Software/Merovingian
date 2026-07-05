@@ -111,6 +111,36 @@ auto federation_endpoint_name(FederationEndpoint endpoint) noexcept -> char cons
     return "unknown";
 }
 
+auto federation_endpoint_requires_main_relay(FederationEndpoint endpoint) noexcept -> bool
+{
+    switch (endpoint)
+    {
+    case FederationEndpoint::transaction:
+    case FederationEndpoint::send_join:
+    case FederationEndpoint::send_leave:
+    case FederationEndpoint::send_knock:
+    case FederationEndpoint::invite:
+    case FederationEndpoint::query_profile:
+    case FederationEndpoint::query_keys:
+    case FederationEndpoint::claim_keys:
+    case FederationEndpoint::query_user_devices:
+    case FederationEndpoint::query_event:
+        return true;
+    case FederationEndpoint::make_join:
+    case FederationEndpoint::make_leave:
+    case FederationEndpoint::make_knock:
+    case FederationEndpoint::backfill:
+    case FederationEndpoint::edu:
+    case FederationEndpoint::query_directory:
+    case FederationEndpoint::query_state:
+    case FederationEndpoint::query_state_ids:
+    case FederationEndpoint::get_missing_events:
+    case FederationEndpoint::space_hierarchy:
+        return false;
+    }
+    return false;
+}
+
 auto federation_routes() -> std::vector<FederationRoute>
 {
     return {
