@@ -54,6 +54,10 @@ jobs:
       # at the project suppressions file so benign reports from uninstrumented
       # third-party dependencies do not mask races in our own code.
       TSAN_OPTIONS: suppressions=${{ github.workspace }}/tests/sanitizer/tsan.supp history_size=7 second_deadlock_stack=1
+      # TSan-instrumented binaries run slower than ASan, and the seccomp/SQLite
+      # fork-heavy integration scenario can exceed Meson's default 600 s timeout.
+      # Use the same multiplier the asan-ubsan job already applies.
+      MESON_TEST_TIMEOUT_MULTIPLIER: 3
 
     steps:
       - uses: actions/checkout@v4
