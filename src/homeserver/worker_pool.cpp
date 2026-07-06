@@ -951,6 +951,14 @@ auto WorkerPool::healthy() const noexcept -> bool
 
 auto WorkerPool::stop() noexcept -> void
 {
+    // Stop the handler pool first: any in-flight main-side IPC handler holds a
+    // channel snapshot and may call back into the pool (notify_room_changed) or
+    // send a response on a channel we are about to close. Draining the pool
+    // before stopping workers prevents those callbacks from racing shutdown
+    // and keeps TSan-instrumented teardown paths from deadlocking around a
+    // channel whose dispatch thread has already been joined.
+    handler_pool_.request_stop();
+
     for (auto& worker : workers_)
     {
         if (worker)
