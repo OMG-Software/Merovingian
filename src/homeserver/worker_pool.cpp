@@ -11,6 +11,7 @@
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/ipc/channel.hpp"
 #include "merovingian/ipc/federation_ipc_frames.hpp"
+#include "merovingian/net/thread_pool.hpp"
 #include "merovingian/observability/logger.hpp"
 
 #include <charconv>
@@ -21,6 +22,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -713,6 +715,7 @@ WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRunt
                        std::string config_path)
     : cfg_{cfg}
     , runtime_{runtime}
+    , handler_pool_{cfg_.relay_threads}
     , worker_path_{std::move(worker_path)}
     , config_path_{std::move(config_path)}
 {
@@ -732,104 +735,132 @@ WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRunt
             std::make_unique<WorkerSupervisor>(worker_path_, config_path_, cfg_.request_timeout_seconds, i,
                                                runtime_.config.security().secrets.master_key_file, max_frame_bytes);
 
-        // Per-worker request handler: the lambda must respond on the channel
-        // that received the request, so capture the supervisor reference.
+        // Per-worker request handler: the IPC dispatch thread only classifies
+        // the frame and enqueues the real work on handler_pool_. Each task
+        // holds its own ref-counted channel snapshot and sends the response
+        // from the pool, so a slow handler can never stall later queued frames.
         supervisor->set_request_handler([this, ptr = supervisor.get()](std::uint64_t id, std::string json) {
             auto const type = json_get_str(json, "type");
+            // Keep a ref-counted handle to the channel that received this
+            // request. The submitted task may outlive a concurrent worker
+            // restart, so it must hold its own reference rather than
+            // dereferencing the supervisor pointer.
+            auto const ch = ptr->channel_snapshot();
             if (type == "pdu_ingest")
             {
                 auto const env = deserialize_pdu_ingest(json);
-                auto result = federation::PduIngestionResult{};
-                auto stream_ordering = std::uint64_t{0U};
-                {
-                    auto guard = std::unique_lock{runtime_.mutex};
-                    // Capture ordering before pdu_sink so the sync notification
-                    // uses the event's own position (not next_stream_ordering
-                    // after pdu_sink has incremented it, which would publish
-                    // one past the stored event and cause spurious sync wakeups).
-                    stream_ordering = runtime_.database.next_stream_ordering;
-                    if (runtime_.federation.pdu_sink)
+                std::ignore = handler_pool_.submit([this, ch, id, env]() {
+                    auto result = federation::PduIngestionResult{};
+                    auto stream_ordering = std::uint64_t{0U};
                     {
-                        result = runtime_.federation.pdu_sink(env);
+                        auto guard = std::unique_lock{runtime_.mutex};
+                        // Capture ordering before pdu_sink so the sync notification
+                        // uses the event's own position (not next_stream_ordering
+                        // after pdu_sink has incremented it, which would publish
+                        // one past the stored event and cause spurious sync wakeups).
+                        stream_ordering = runtime_.database.next_stream_ordering;
+                        if (runtime_.federation.pdu_sink)
+                        {
+                            result = runtime_.federation.pdu_sink(env);
+                        }
+                        else
+                        {
+                            result.status = federation::PduIngestionStatus::internal_error;
+                            result.reason = "pdu_sink not wired";
+                        }
+                        if (result.status == federation::PduIngestionStatus::accepted &&
+                            runtime_.sync_notifier != nullptr)
+                        {
+                            runtime_.sync_notifier->publish(stream_ordering, 0U);
+                        }
                     }
-                    else
+                    if (result.status == federation::PduIngestionStatus::accepted)
                     {
-                        result.status = federation::PduIngestionStatus::internal_error;
-                        result.reason = "pdu_sink not wired";
+                        // Push the just-committed event back down to whichever
+                        // shard owns this room — in practice the same worker that
+                        // made this exact pdu_ingest call, since shard_for() is a
+                        // pure function of room_id. Without this, a message
+                        // relayed from a worker is only ever visible in main's own
+                        // store: pdu_sink deliberately does not write to the
+                        // worker's own PersistentStore ("does NOT write events",
+                        // see worker_event_loop.cpp), and nothing else refreshes a
+                        // worker's room snapshot for ordinary (non-membership)
+                        // traffic. A later backfill/event/state query for this
+                        // room landing back on that shard would otherwise omit
+                        // this event. See docs/architecture.md, "Federation
+                        // worker room staleness".
+                        notify_room_changed(env.room_id);
                     }
-                    if (result.status == federation::PduIngestionStatus::accepted && runtime_.sync_notifier != nullptr)
-                    {
-                        runtime_.sync_notifier->publish(stream_ordering, 0U);
-                    }
-                }
-                if (result.status == federation::PduIngestionStatus::accepted)
-                {
-                    // Push the just-committed event back down to whichever
-                    // shard owns this room — in practice the same worker that
-                    // made this exact pdu_ingest call, since shard_for() is a
-                    // pure function of room_id. Without this, a message
-                    // relayed from a worker is only ever visible in main's own
-                    // store: pdu_sink deliberately does not write to the
-                    // worker's own PersistentStore ("does NOT write events",
-                    // see worker_event_loop.cpp), and nothing else refreshes a
-                    // worker's room snapshot for ordinary (non-membership)
-                    // traffic. A later backfill/event/state query for this
-                    // room landing back on that shard would otherwise omit
-                    // this event. See docs/architecture.md, "Federation
-                    // worker room staleness".
-                    notify_room_changed(env.room_id);
-                }
-                ptr->channel().send_response(id, serialize_pdu_ingest_result(result));
+                    ch->send_response(id, serialize_pdu_ingest_result(result));
+                });
             }
             else if (type == "membership_ingest")
             {
-                ptr->channel().send_response(id, handle_membership_ingest_request(runtime_, json));
+                std::ignore = handler_pool_.submit([this, ch, id, json = std::move(json)]() mutable {
+                    ch->send_response(id, handle_membership_ingest_request(runtime_, json));
+                });
             }
             else if (type == "edu_ingest")
             {
-                ptr->channel().send_response(id, handle_edu_ingest_request(runtime_, json));
+                std::ignore = handler_pool_.submit([this, ch, id, json = std::move(json)]() mutable {
+                    ch->send_response(id, handle_edu_ingest_request(runtime_, json));
+                });
             }
             else if (type == "invite_ingest")
             {
-                ptr->channel().send_response(id, handle_invite_ingest_request(runtime_, json));
+                std::ignore = handler_pool_.submit([this, ch, id, json = std::move(json)]() mutable {
+                    ch->send_response(id, handle_invite_ingest_request(runtime_, json));
+                });
             }
             else if (type == "otk_claim_ingest")
             {
-                ptr->channel().send_response(id, handle_otk_claim_ingest_request(runtime_, json));
+                std::ignore = handler_pool_.submit([this, ch, id, json = std::move(json)]() mutable {
+                    ch->send_response(id, handle_otk_claim_ingest_request(runtime_, json));
+                });
             }
             else if (type == "user_devices_ingest")
             {
-                ptr->channel().send_response(id, handle_user_devices_ingest_request(runtime_, json));
+                std::ignore = handler_pool_.submit([this, ch, id, json = std::move(json)]() mutable {
+                    ch->send_response(id, handle_user_devices_ingest_request(runtime_, json));
+                });
             }
             else if (type == "device_keys_query_ingest")
             {
-                ptr->channel().send_response(id, handle_device_keys_query_ingest_request(runtime_, json));
+                std::ignore = handler_pool_.submit([this, ch, id, json = std::move(json)]() mutable {
+                    ch->send_response(id, handle_device_keys_query_ingest_request(runtime_, json));
+                });
             }
             else if (type == "profile_query_ingest")
             {
-                ptr->channel().send_response(id, handle_profile_query_ingest_request(runtime_, json));
+                std::ignore = handler_pool_.submit([this, ch, id, json = std::move(json)]() mutable {
+                    ch->send_response(id, handle_profile_query_ingest_request(runtime_, json));
+                });
             }
             else if (type == "event_query_ingest")
             {
-                ptr->channel().send_response(id, handle_event_query_ingest_request(runtime_, json));
+                std::ignore = handler_pool_.submit([this, ch, id, json = std::move(json)]() mutable {
+                    ch->send_response(id, handle_event_query_ingest_request(runtime_, json));
+                });
             }
             else if (type == "sign_request")
             {
                 auto const key_id = json_get_str(json, "key_id");
                 auto const canonical = json_get_str(json, "canonical_json");
-                auto result = crypto::SignatureResult{};
-                {
-                    auto guard = std::unique_lock{runtime_.mutex};
-                    if (runtime_.crypto_provider != nullptr)
+                std::ignore = handler_pool_.submit([this, ch, id, key_id, canonical]() {
+                    auto result = crypto::SignatureResult{};
                     {
-                        result = runtime_.crypto_provider->sign(crypto::Ed25519SecretKeyHandle{key_id}, canonical);
+                        auto guard = std::unique_lock{runtime_.mutex};
+                        if (runtime_.crypto_provider != nullptr)
+                        {
+                            result = runtime_.crypto_provider->sign(crypto::Ed25519SecretKeyHandle{key_id}, canonical);
+                        }
+                        else
+                        {
+                            result.error = "crypto provider not available";
+                        }
                     }
-                    else
-                    {
-                        result.error = "crypto provider not available";
-                    }
-                }
-                ptr->channel().send_response(id, serialize_sign_response(result));
+                    ch->send_response(id, serialize_sign_response(result));
+                });
             }
             else
             {
@@ -920,6 +951,14 @@ auto WorkerPool::healthy() const noexcept -> bool
 
 auto WorkerPool::stop() noexcept -> void
 {
+    // Stop the handler pool first: any in-flight main-side IPC handler holds a
+    // channel snapshot and may call back into the pool (notify_room_changed) or
+    // send a response on a channel we are about to close. Draining the pool
+    // before stopping workers prevents those callbacks from racing shutdown
+    // and keeps TSan-instrumented teardown paths from deadlocking around a
+    // channel whose dispatch thread has already been joined.
+    handler_pool_.request_stop();
+
     for (auto& worker : workers_)
     {
         if (worker)

@@ -12,6 +12,7 @@
 #include <array>
 #include <cerrno>
 #include <chrono>
+#include <csignal>
 #include <cstring>
 #include <stdexcept>
 #include <string>
@@ -79,31 +80,104 @@ auto WorkerSupervisor::stop() noexcept -> void
     {
         return;
     }
+
+    // Take ownership of channel_ under the lock and release the lock before
+    // calling stop() on it. channel_->stop() joins the dispatch thread, which
+    // may be running the pdu_ingest handler; that handler's notify_room_changed()
+    // calls channel_snapshot() on this same supervisor when the ingested room
+    // hashes to this shard (the common case — see worker_pool.cpp). Holding
+    // channel_mu_ across the join would deadlock: this thread waits for the
+    // dispatch thread to finish while the dispatch thread waits for this
+    // thread to release channel_mu_.
+    auto channel = std::shared_ptr<ipc::IpcChannel>{}; // SHARED_PTR: reviewed — ref-counted snapshot keeps IpcChannel
+                                                       // alive across concurrent supervisor restarts
     {
         auto lock = std::lock_guard{channel_mu_};
-        if (channel_ && channel_->healthy())
+        channel = std::move(channel_);
+    }
+    if (channel)
+    {
+        if (channel->healthy())
         {
             try
             {
-                channel_->send_notification(R"({"type":"shutdown"})");
+                channel->send_notification(R"({"type":"shutdown"})");
             }
             catch (...)
             {
             }
         }
-        if (channel_)
-        {
-            channel_->stop();
-            channel_.reset();
-        }
+        channel->stop();
     }
     if (supervisor_thread_.joinable())
     {
         supervisor_thread_.join();
     }
+
+    // The supervisor thread has already reaped the worker in the common case.
+    // If it exited without waiting (e.g. waitpid failure or a restart loop race),
+    // reap it here with a bounded wait so a stuck child cannot hang process
+    // shutdown or test teardown. TSan-instrumented workers can be very slow to
+    // exit, so allow a generous grace period before escalating to SIGTERM and
+    // then SIGKILL.
     if (worker_pid_ > 0)
     {
-        ::waitpid(worker_pid_, nullptr, 0);
+        auto const deadline =
+            std::chrono::steady_clock::now() + std::chrono::seconds{static_cast<long>(request_timeout_seconds_)};
+        auto const wait_step = std::chrono::milliseconds{10};
+        auto reaped = false;
+        while (std::chrono::steady_clock::now() < deadline)
+        {
+            auto status = int{0};
+            auto const rc = ::waitpid(worker_pid_, &status, WNOHANG);
+            if (rc == worker_pid_)
+            {
+                reaped = true;
+                break;
+            }
+            if (rc < 0)
+            {
+                if (errno != EINTR)
+                {
+                    LOG_WARNING("Federation worker waitpid failed during stop: " + std::string{::strerror(errno)});
+                    break;
+                }
+            }
+            std::this_thread::sleep_for(wait_step);
+        }
+
+        if (!reaped)
+        {
+            LOG_WARNING("Federation worker did not exit within " + std::to_string(request_timeout_seconds_) +
+                        "s; sending SIGTERM");
+            std::ignore = ::kill(worker_pid_, SIGTERM);
+
+            auto const term_deadline =
+                std::chrono::steady_clock::now() + std::chrono::seconds{static_cast<long>(request_timeout_seconds_)};
+            while (std::chrono::steady_clock::now() < term_deadline)
+            {
+                auto status = int{0};
+                auto const rc = ::waitpid(worker_pid_, &status, WNOHANG);
+                if (rc == worker_pid_)
+                {
+                    reaped = true;
+                    break;
+                }
+                if (rc < 0 && errno != EINTR)
+                {
+                    break;
+                }
+                std::this_thread::sleep_for(wait_step);
+            }
+        }
+
+        if (!reaped)
+        {
+            LOG_WARNING("Federation worker ignored SIGTERM; sending SIGKILL");
+            std::ignore = ::kill(worker_pid_, SIGKILL);
+            std::ignore = ::waitpid(worker_pid_, nullptr, 0);
+        }
+
         worker_pid_ = -1;
     }
 }
@@ -242,16 +316,23 @@ auto WorkerSupervisor::supervisor_loop() -> void
         LOG_WARNING("Federation worker exited: pid=" + std::to_string(worker_pid_) +
                     " exit_code=" + std::to_string(exit_code) + " restart_in_ms=" + std::to_string(backoff_ms));
 
-        // Mark unhealthy and reset channel_ under the mutex so WorkerPool::handle()
-        // can never dereference a channel_ that is being destroyed concurrently.
+        // Mark unhealthy and take ownership of channel_ under the mutex so
+        // WorkerPool::handle() can never dereference a channel_ that is being
+        // destroyed concurrently. As in stop(), channel_->stop() must run
+        // without channel_mu_ held: it joins the dispatch thread, and a
+        // pdu_ingest handler running there can call back into this same
+        // supervisor's channel_snapshot() (via notify_room_changed()) and
+        // deadlock against this thread holding the lock.
         healthy_.store(false);
+        auto old_channel = std::shared_ptr<ipc::IpcChannel>{}; // SHARED_PTR: reviewed — ref-counted snapshot keeps
+                                                               // IpcChannel alive across concurrent supervisor restarts
         {
             auto lock = std::lock_guard{channel_mu_};
-            if (channel_)
-            {
-                channel_->stop();
-                channel_.reset();
-            }
+            old_channel = std::move(channel_);
+        }
+        if (old_channel)
+        {
+            old_channel->stop();
         }
         worker_pid_ = -1;
 
