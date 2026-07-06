@@ -5,6 +5,7 @@
 
 ### Testing
 - **test(federation): new `tests/unit/test_federation_pdu_ingest_concurrency.cpp` exercises concurrent `ingest_pdu_event()` calls across distinct rooms and asserts the resulting events/membership/stream-ordering state is correct.**
+- **test(federation): `tests/unit/test_federation_pdu_ingest_concurrency.cpp` no longer calls `REQUIRE` from worker threads, which caused ThreadSanitizer to report races on Catch2's internal assertion counters; all envelopes and all post-join state checks are now built/verified on the main thread while workers only update an atomic accepted counter.**
 
 ## 0.10.30
 

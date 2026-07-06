@@ -52,8 +52,8 @@ namespace merovingian::homeserver
 
 // Forward declaration — the definition lives outside the anonymous namespace so
 // it can be exported in the header, but it is called from lambdas inside it.
-[[nodiscard]] auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope const& envelope,
-                                    std::uint64_t stream_ordering) -> federation::PduIngestionResult;
+[[nodiscard]] auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope const& envelope)
+    -> federation::PduIngestionResult;
 
 namespace
 {
@@ -816,21 +816,13 @@ namespace
 
         runtime.federation.pdu_sink =
             [rt](federation::InboundPduEnvelope const& envelope) -> federation::PduIngestionResult {
-            // Reserve the global stream-ordering token under the runtime mutex,
-            // then hand the event to the per-room-serialized ingestion path. The
-            // heavy persistence work runs without the global lock so independent
-            // rooms can commit in parallel.
-            auto stream_ordering = std::uint64_t{0U};
-            auto sync_stream_id = std::uint64_t{0U};
-            {
-                auto guard = std::unique_lock{rt->mutex};
-                stream_ordering = rt->database.next_stream_ordering++;
-                sync_stream_id = rt->database.persistent_store.next_sync_stream_id;
-            }
-            auto result = ingest_pdu_event(*rt, envelope, stream_ordering);
+            // ingest_pdu_event reserves the global stream-ordering/sync ids,
+            // serializes on the room stripe, and releases only the global mutex
+            // for the backend commit so independent rooms can persist in parallel.
+            auto result = ingest_pdu_event(*rt, envelope);
             if (result.status == federation::PduIngestionStatus::accepted && rt->sync_notifier != nullptr)
             {
-                rt->sync_notifier->publish(stream_ordering, sync_stream_id);
+                rt->sync_notifier->publish(result.accepted_stream_ordering, result.accepted_sync_stream_id);
             }
             return result;
         };
@@ -1644,8 +1636,8 @@ namespace
 
 } // namespace
 
-auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope const& envelope,
-                      std::uint64_t stream_ordering) -> federation::PduIngestionResult
+auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope const& envelope)
+    -> federation::PduIngestionResult
 {
     auto const room_id = envelope.room_id;
     if (room_id.empty())
@@ -1668,6 +1660,16 @@ auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope
 
     auto const stripe = std::hash<std::string>{}(room_id) % room_mutex_stripe_count;
     auto stripe_guard = std::unique_lock{runtime.room_stripe_mutexes[stripe]};
+
+    // Lock order: room stripe first, then global runtime mutex. The stripe
+    // serializes events for this room across the whole prepare/commit/apply
+    // sequence so per-room ordering is preserved. The global mutex protects all
+    // in-memory PersistentStore / LocalDatabase vectors; it is released only
+    // for the backend commit so independent rooms can commit in parallel.
+    auto global_guard = std::unique_lock<std::recursive_mutex>{runtime.mutex};
+
+    auto stream_ordering = runtime.database.next_stream_ordering++;
+    auto sync_stream_id = runtime.database.persistent_store.next_sync_stream_id;
 
     auto const auth_map = build_pdu_auth_event_map(runtime.database.persistent_store, room_id, envelope.sender,
                                                    envelope.state_key.value_or(std::string{}), envelope.event_type);
@@ -1707,21 +1709,22 @@ auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope
         return {federation::PduIngestionStatus::internal_error, "event persistence pre-check failed"};
     }
 
-    // Commit without holding the global runtime mutex. The room stripe lock is
-    // released for the backend commit so independent rooms can overlap; the
-    // same room remains serialized by its stripe, preserving event order.
-    stripe_guard.unlock();
+    // Release only the global mutex for the backend commit. Independent rooms
+    // can now commit concurrently (each still holds its own stripe), while the
+    // in-memory store stays protected against concurrent reads/writes.
+    global_guard.unlock();
     if (!database::commit_persistent_transaction(runtime.database.persistent_store, prepared->statements))
     {
         return {federation::PduIngestionStatus::internal_error, "event persistence backend rejected transaction"};
     }
-    stripe_guard.lock();
+    global_guard.lock();
 
     database::apply_store_event_with_state(runtime.database.persistent_store, *prepared);
 
     auto result = federation::PduIngestionResult{};
     result.status = federation::PduIngestionStatus::accepted;
     result.accepted_stream_ordering = stream_ordering;
+    result.accepted_sync_stream_id = sync_stream_id;
 
     if (envelope.event_type == "m.room.member" && envelope.state_key.has_value())
     {

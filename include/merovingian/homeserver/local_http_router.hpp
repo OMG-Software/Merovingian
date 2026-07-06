@@ -61,10 +61,12 @@ struct LocalHttpResponse final
     -> LocalHttpResponse;
 auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void;
 
-// Production inbound PDU ingestion path. Reserves a global stream_ordering,
-// serializes only on the event's room stripe, and releases the global runtime
-// mutex for the backend commit so independent rooms can persist in parallel.
-[[nodiscard]] auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope const& envelope,
-                                    std::uint64_t stream_ordering) -> federation::PduIngestionResult;
+// Production inbound PDU ingestion path. Reserves a global stream_ordering and
+// sync_stream_id, serializes on the event's room stripe, and releases the
+// global runtime mutex for the backend commit so independent rooms can persist in
+// parallel. The global mutex is re-acquired only to apply the committed rows to
+// the in-memory store and update membership.
+[[nodiscard]] auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope const& envelope)
+    -> federation::PduIngestionResult;
 
 } // namespace merovingian::homeserver

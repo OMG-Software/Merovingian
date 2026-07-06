@@ -198,32 +198,38 @@ SCENARIO("Concurrent inbound PDU ingestion across distinct rooms persists all ev
             seed_room(runtime, "!room" + std::to_string(i) + ":local.example.org");
         }
 
-        WHEN("each room ingests several messages concurrently")
+        WHEN("each room ingests several pre-built messages concurrently")
         {
+            // Build all envelopes on the main thread so that Catch2 assertions
+            // (used by make_message_pdu) stay single-threaded. Workers only
+            // mutate the atomic accepted counter.
+            auto room_envelopes = std::vector<std::vector<merovingian::federation::InboundPduEnvelope>>{};
+            room_envelopes.reserve(room_count);
+            for (std::size_t room_index = 0U; room_index < room_count; ++room_index)
+            {
+                auto room_id = std::string{"!room"} + std::to_string(room_index) + ":local.example.org";
+                auto envelopes = std::vector<merovingian::federation::InboundPduEnvelope>{};
+                envelopes.reserve(events_per_room);
+                for (std::size_t seq = 0U; seq < events_per_room; ++seq)
+                {
+                    envelopes.push_back(make_message_pdu(room_id, seq));
+                }
+                room_envelopes.push_back(std::move(envelopes));
+            }
+
             auto accepted = std::atomic<std::size_t>{0U};
             auto threads = std::vector<std::thread>{};
             threads.reserve(room_count);
 
             for (std::size_t room_index = 0U; room_index < room_count; ++room_index)
             {
-                threads.emplace_back([&runtime, room_index, &accepted]() {
-                    for (std::size_t seq = 0U; seq < events_per_room; ++seq)
+                threads.emplace_back([&runtime, &room_envelopes, room_index, &accepted]() {
+                    for (auto const& env : room_envelopes[room_index])
                     {
-                        auto const room_id = std::string{"!room"} + std::to_string(room_index) + ":local.example.org";
-                        auto const env = make_message_pdu(room_id, seq);
-
-                        // Reserve a global stream-ordering token under the runtime mutex,
-                        // matching how the production pdu_sink calls ingest_pdu_event.
-                        auto stream_ordering = std::uint64_t{0U};
-                        {
-                            auto guard = std::unique_lock{runtime.mutex};
-                            stream_ordering = runtime.database.next_stream_ordering++;
-                        }
-
-                        auto const result = merovingian::homeserver::ingest_pdu_event(runtime, env, stream_ordering);
+                        auto const result = merovingian::homeserver::ingest_pdu_event(runtime, env);
                         if (result.status == merovingian::federation::PduIngestionStatus::accepted)
                         {
-                            accepted.fetch_add(1U);
+                            accepted.fetch_add(1U, std::memory_order_relaxed);
                         }
                     }
                 });

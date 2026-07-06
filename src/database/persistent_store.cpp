@@ -13,6 +13,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cstdlib>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <tuple>
@@ -365,7 +366,10 @@ namespace
     {
         return false;
     }
-    store.prepared_statements.insert(store.prepared_statements.end(), statements.begin(), statements.end());
+    {
+        auto const lk = std::lock_guard{*store.prepared_statements_mutex};
+        store.prepared_statements.insert(store.prepared_statements.end(), statements.begin(), statements.end());
+    }
     return true;
 }
 
@@ -2540,6 +2544,7 @@ auto restore_sync_stream_id(PersistentStore& store) -> void
 
 [[nodiscard]] auto sensitive_values_are_redacted(PersistentStore const& store) noexcept -> bool
 {
+    auto const lk = std::lock_guard{*store.prepared_statements_mutex};
     for (auto const& statement : store.prepared_statements)
     {
         for (auto const& value : statement.parameters)

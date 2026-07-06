@@ -9,6 +9,8 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -360,6 +362,109 @@ struct PersistentClientTxnRecord final
 
 struct PersistentStore final
 {
+    PersistentStore() = default;
+    PersistentStore(PersistentStore const& other)
+        : open{other.open}
+        , backend{other.backend}
+        , postgresql_conninfo{other.postgresql_conninfo}
+        , sqlite_path{other.sqlite_path}
+        , schema{other.schema}
+        , users{other.users}
+        , devices{other.devices}
+        , access_tokens{other.access_tokens}
+        , refresh_tokens{other.refresh_tokens}
+        , server_signing_keys{other.server_signing_keys}
+        , federation_destinations{other.federation_destinations}
+        , federation_transactions{other.federation_transactions}
+        , rooms{other.rooms}
+        , memberships{other.memberships}
+        , invites{other.invites}
+        , events{other.events}
+        , state{other.state}
+        , event_edges{other.event_edges}
+        , event_auth{other.event_auth}
+        , event_signatures{other.event_signatures}
+        , device_keys{other.device_keys}
+        , one_time_keys{other.one_time_keys}
+        , fallback_keys{other.fallback_keys}
+        , cross_signing_keys{other.cross_signing_keys}
+        , key_signatures{other.key_signatures}
+        , key_backup_versions{other.key_backup_versions}
+        , key_backup_sessions{other.key_backup_sessions}
+        , local_media{other.local_media}
+        , remote_media{other.remote_media}
+        , media_blobs{other.media_blobs}
+        , audit_log{other.audit_log}
+        , admin_actions{other.admin_actions}
+        , policy_rules{other.policy_rules}
+        , account_data{other.account_data}
+        , to_device_messages{other.to_device_messages}
+        , device_list_changes{other.device_list_changes}
+        , presence_states{other.presence_states}
+        , filters{other.filters}
+        , profiles{other.profiles}
+        , room_aliases{other.room_aliases}
+        , client_txn_ids{other.client_txn_ids}
+        , prepared_statements{other.prepared_statements}
+        , prepared_statements_mutex{std::make_unique<std::mutex>()}
+        , next_sync_stream_id{other.next_sync_stream_id}
+    {
+    }
+    PersistentStore(PersistentStore&& other) noexcept = default;
+    auto operator=(PersistentStore const& other) -> PersistentStore&
+    {
+        if (this == &other)
+        {
+            return *this;
+        }
+        open = other.open;
+        backend = other.backend;
+        postgresql_conninfo = other.postgresql_conninfo;
+        sqlite_path = other.sqlite_path;
+        schema = other.schema;
+        users = other.users;
+        devices = other.devices;
+        access_tokens = other.access_tokens;
+        refresh_tokens = other.refresh_tokens;
+        server_signing_keys = other.server_signing_keys;
+        federation_destinations = other.federation_destinations;
+        federation_transactions = other.federation_transactions;
+        rooms = other.rooms;
+        memberships = other.memberships;
+        invites = other.invites;
+        events = other.events;
+        state = other.state;
+        event_edges = other.event_edges;
+        event_auth = other.event_auth;
+        event_signatures = other.event_signatures;
+        device_keys = other.device_keys;
+        one_time_keys = other.one_time_keys;
+        fallback_keys = other.fallback_keys;
+        cross_signing_keys = other.cross_signing_keys;
+        key_signatures = other.key_signatures;
+        key_backup_versions = other.key_backup_versions;
+        key_backup_sessions = other.key_backup_sessions;
+        local_media = other.local_media;
+        remote_media = other.remote_media;
+        media_blobs = other.media_blobs;
+        audit_log = other.audit_log;
+        admin_actions = other.admin_actions;
+        policy_rules = other.policy_rules;
+        account_data = other.account_data;
+        to_device_messages = other.to_device_messages;
+        device_list_changes = other.device_list_changes;
+        presence_states = other.presence_states;
+        filters = other.filters;
+        profiles = other.profiles;
+        room_aliases = other.room_aliases;
+        client_txn_ids = other.client_txn_ids;
+        prepared_statements = other.prepared_statements;
+        prepared_statements_mutex = std::make_unique<std::mutex>();
+        next_sync_stream_id = other.next_sync_stream_id;
+        return *this;
+    }
+    auto operator=(PersistentStore&& other) noexcept -> PersistentStore& = default;
+
     bool open{false};
     PersistentStoreBackend backend{PersistentStoreBackend::memory};
     std::string postgresql_conninfo{};
@@ -402,6 +507,12 @@ struct PersistentStore final
     std::vector<PersistentRoomAlias> room_aliases{};
     std::vector<PersistentClientTxnRecord> client_txn_ids{};
     std::vector<PreparedStatement> prepared_statements{};
+    // Guards prepared_statements, which is appended to by
+    // commit_persistent_transaction from multiple concurrent room-stripe paths
+    // and read by sensitive_values_are_redacted. Kept separate from the room
+    // stripe locks because audit-vector access is independent of any room.
+    // Wrapped in unique_ptr so PersistentStore remains moveable.
+    mutable std::unique_ptr<std::mutex> prepared_statements_mutex{std::make_unique<std::mutex>()};
     // Monotonic stream id used by /sync surfaces (to_device, device_list
     // changes, presence). Incremented before each new row is persisted so
     // the row's stream_id strictly exceeds every previous one and clients
