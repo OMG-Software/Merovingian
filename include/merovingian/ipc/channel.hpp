@@ -9,6 +9,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <map>
 #include <memory>
@@ -17,6 +18,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 
 #include <sodium.h>
 
@@ -71,6 +73,14 @@ inline constexpr std::uint32_t kIpcMaxFrameBytes{24U * 1024U * 1024U};
 //
 // Thread safety:
 //   - One reader thread (started by start()) owns all decryption/read state.
+//     It only routes frames: responses wake their pending send_request waiter,
+//     and request frames are queued for the dispatch thread. The reader never
+//     runs caller code, so a blocked request handler can never stall response
+//     delivery (the federation-worker drip-feed deadlock: a handler waiting on
+//     a lock held by a thread that is itself blocked in send_request would
+//     otherwise wedge the channel until the send_request timeout).
+//   - One dispatch thread (also started by start()) invokes the request
+//     handler for queued request frames, one at a time, in arrival order.
 //   - Any number of threads may call send_request/send_response/send_notification;
 //     a write mutex serialises their encryption/write operations.
 class IpcChannel final
@@ -82,9 +92,14 @@ public:
         client, // crypto_kx client role; receives secretstream header first
     };
 
-    // Invoked from the reader thread for every inbound frame with no "reply_to".
+    // Invoked from the channel's dispatch thread for every inbound frame with
+    // no "reply_to", one frame at a time, in arrival order.
     // id: the frame's "id". json: the full JSON frame string.
-    // Must not block — dispatch expensive work to a thread pool.
+    // A handler that blocks does not stall response routing (the reader thread
+    // keeps delivering send_request replies), but it does delay every later
+    // request frame on this channel — still dispatch expensive work to a
+    // thread pool. Handlers must never call stop() on their own channel: stop()
+    // joins the dispatch thread, and a thread cannot join itself.
     using RequestHandler = std::function<void(std::uint64_t id, std::string json)>;
 
     // Performs the ephemeral key exchange synchronously and authenticates the
@@ -103,10 +118,13 @@ public:
     // Must be set before start().
     auto set_request_handler(RequestHandler handler) -> void;
 
-    // Starts the reader thread. May only be called once.
+    // Starts the reader and dispatch threads. May only be called once.
     auto start() -> void;
 
-    // Closes the fd (unblocking any blocked read) and joins the reader thread.
+    // Closes the fd (unblocking any blocked read) and joins the reader and
+    // dispatch threads. Request frames already queued for dispatch are still
+    // handled before the dispatch thread exits. Must not be called from a
+    // request handler (see RequestHandler).
     auto stop() noexcept -> void;
 
     // Sends a request and blocks until a matching reply_to frame arrives.
@@ -136,6 +154,7 @@ private:
     // oversize frame is never silently dropped (issue #325).
     auto report_oversize_drop(std::string_view json_body, char const* kind) const noexcept -> void;
     auto reader_loop() -> void;
+    auto dispatcher_loop() -> void;
 
     core::FileDescriptor fd_;
     Role role_;
@@ -163,6 +182,14 @@ private:
     std::thread reader_thread_{};
     std::atomic<bool> running_{false};
     std::atomic<bool> healthy_{true};
+
+    // Request frames queued by the reader thread for the dispatch thread.
+    // Keeping the reader out of handler code is what guarantees responses are
+    // always routed promptly (see the thread-safety notes above).
+    std::mutex dispatch_mu_{};
+    std::condition_variable dispatch_cv_{};
+    std::deque<std::pair<std::uint64_t, std::string>> dispatch_queue_{};
+    std::thread dispatch_thread_{};
 };
 
 } // namespace merovingian::ipc

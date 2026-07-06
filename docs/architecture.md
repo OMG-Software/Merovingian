@@ -146,8 +146,10 @@ merovingian-server
 
 merovingian-fed-worker x N  [spawned when federation.worker.enabled=true]
   Each worker owns a subset of room IDs by FNV-1a hash of the room ID.
-  - IPC reader thread: receives `fed_request` and ingest-result frames
-  - local_pool (threads = federation.worker.threads): local room-scoped reads
+  - IPC reader thread: routes frames only — responses wake pending waiters,
+    request frames are queued for the IPC dispatch thread
+  - IPC dispatch thread: invokes the request handler for queued frames in order
+  - local_pool (threads = federation.worker.threads): local room-scoped reads and `room_sync` reloads
   - relay_pool (threads = federation.worker.relay_threads): main-process relays and outbound HTTP
 ```
 
@@ -313,6 +315,10 @@ Shard selection must use the same decoded room ID string on both sides. Writer-s
 Workers relay operations that must observe main's current global state or must commit to main exactly once. Relayed hooks include `pdu_sink`, `edu_sink`, `membership_acceptor`, `invite_handler`, `one_time_keys_claim_provider`, `user_devices_provider`, `device_keys_query_provider`, `profile_query_provider`, and `event_query_provider`. This keeps inbound PDUs/EDUs, federated joins/leaves/knocks, invites, one-time-key claims, device/profile reads, and event-by-ID reads consistent with the store that client `/sync` uses.
 
 Worker request execution uses two pools. `local_pool` (`federation.worker.threads`) handles endpoints answered from the worker room snapshot: `make_join`, `make_leave`, `make_knock`, `backfill`, `query/directory`, `state`, `state_ids`, `get_missing_events`, `hierarchy`, and the no-op EDU route. `relay_pool` (`federation.worker.relay_threads`) handles endpoints that can block on main or outbound HTTP: PDU-bearing transactions, `send_join`, `send_leave`, `send_knock`, invites, key/profile/device relays, event-by-ID, and `outbound_http_request`. The split is driven by `federation::federation_endpoint_requires_main_relay(FederationEndpoint)` so slow relays cannot starve local room reads of worker threads.
+
+### IPC reader/dispatch split
+
+`ipc::IpcChannel` runs two threads per channel end. The reader thread only routes frames: a `reply_to` frame wakes its pending `send_request` waiter, and request frames are queued for the dispatch thread, which invokes the registered request handler one frame at a time in arrival order. The reader must never run handler code: a handler that blocks on a lock held by a thread that is itself waiting inside `send_request` on the same channel would otherwise wedge frame routing until the `send_request` timeout. That exact cycle occurred on every relayed PDU: the worker's relay thread held the worker `runtime.mutex` across its `pdu_ingest` round trip to main, main's `pdu_ingest` handler sent a `room_sync` notification (whose handler needs that same worker mutex) immediately before the `pdu_ingest` response, and the worker's reader thread blocked on the notification before it could route the response — a 60-second stall per PDU that remote origins turned into retry-with-backoff drip feed. The mirror case existed on main: a client-server handler holding main's `runtime.mutex` across a proxied outbound call (e.g. remote `/keys/query`) starved main's reader from routing the worker's `outbound_http_response` whenever a `pdu_ingest` arrived first and blocked inline on the same mutex. For the same reason, the worker handles `room_sync` on `local_pool` rather than on the dispatch thread: `reload_room` needs `runtime.mutex`, which an in-flight relayed transaction can hold for its full duration, and blocking the dispatch thread on it would delay every later queued request frame.
 
 ## Federation
 

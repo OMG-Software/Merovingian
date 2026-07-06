@@ -818,25 +818,34 @@ auto WorkerEventLoop::run() -> void
             // the database into our own PersistentStore snapshot, which is
             // otherwise frozen as of this worker's own startup (see
             // database::reload_room and docs/architecture.md, "Federation
-            // worker room staleness"). Runs inline on the reader thread
-            // rather than the pool: it's a bounded, single-room DB read, and
-            // serializing these against each other (rather than letting them
-            // race a concurrent fed_request touching the same room) is the
-            // simpler correctness story.
+            // worker room staleness"). Runs on the local pool, NOT inline on
+            // this handler: reload_room needs runtime.mutex, which a
+            // relay-pool transaction holds across its pdu_ingest round trips
+            // to main — and main sends this very notification (from its
+            // pdu_ingest handler's notify_room_changed) moments before the
+            // pdu_ingest response. Blocking the channel's dispatch thread on
+            // that mutex would park every later queued request behind a lock
+            // the in-flight transaction won't release for its whole duration.
+            // Concurrent reloads still serialize on runtime.mutex inside the
+            // task, and reload_room is a full fresh re-read, so pool
+            // scheduling order between two reloads of the same room is
+            // immaterial.
             auto const room_id = ipc::ipc_json_get_str(json, "room_id");
-            auto guard = std::unique_lock{runtime.mutex};
-            if (!database::reload_room(runtime.database.persistent_store, room_id))
-            {
-                LOG_WARNING("Federation worker: room_sync reload failed for room_id=" + room_id);
-            }
+            std::ignore = local_pool.submit([&runtime, room_id]() {
+                auto guard = std::unique_lock{runtime.mutex};
+                if (!database::reload_room(runtime.database.persistent_store, room_id))
+                {
+                    LOG_WARNING("Federation worker: room_sync reload failed for room_id=" + room_id);
+                }
+            });
         }
         else if (type == "shutdown")
         {
             // Do NOT call channel->stop() here: this handler runs on the IPC
-            // reader thread, and IpcChannel::stop() joins that thread.  A thread
-            // cannot join itself; doing so throws std::system_error(EDEADLK).
-            // Signal shutdown so the main worker thread wakes and stops the
-            // channel from a different thread.
+            // dispatch thread, and IpcChannel::stop() joins that thread.  A
+            // thread cannot join itself; doing so throws
+            // std::system_error(EDEADLK). Signal shutdown so the main worker
+            // thread wakes and stops the channel from a different thread.
             signal_shutdown();
         }
         else
@@ -873,7 +882,7 @@ auto WorkerEventLoop::run() -> void
     watcher.join();
 
     // Idempotent: if the shutdown handler already stopped the channel this
-    // is a no-op; otherwise it joins the reader thread now.
+    // is a no-op; otherwise it joins the reader and dispatch threads now.
     channel->stop();
 
     local_pool.request_stop();

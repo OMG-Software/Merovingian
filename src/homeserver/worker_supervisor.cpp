@@ -110,8 +110,9 @@ auto WorkerSupervisor::stop() noexcept -> void
 
 auto WorkerSupervisor::channel() noexcept -> ipc::IpcChannel&
 {
-    // Only safe from within the IPC reader thread (request handler), where the
-    // channel is guaranteed to outlive the call — no lock needed there.
+    // Only safe from within the IPC dispatch thread (request handler), where
+    // the channel is guaranteed to outlive the call — IpcChannel::stop() joins
+    // that thread before the channel is destroyed — so no lock is needed there.
     return *channel_;
 }
 

@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.10.28
+Version:        0.10.29
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -97,6 +97,8 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Mon Jul 06 2026 James Chapman <claude@ping.me.uk> - 0.10.29-1
+- fix(ipc,federation-worker): IpcChannel now routes frames on the reader thread and runs request handlers on a per-channel dispatch thread, fixing two deadlock-until-timeout cycles (worker room_sync vs pdu_ingest response; main pdu_ingest vs proxied outbound reply) that made federated messages stall ~60s each and drip-feed in via origin-server retry backoff
 * Sun Jul 05 2026 James Chapman <claude@ping.me.uk> - 0.10.28-1
 - fix(federation,e2ee): broadcast local device-list updates to remote joiners and keep EDU-only /send transactions in main after X-Matrix verification
 * Sun Jul 05 2026 James Chapman <claude@ping.me.uk> - 0.10.26-1
