@@ -11,6 +11,7 @@
 #include "merovingian/crypto/signing_service.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/events/authorization.hpp"
+#include "merovingian/events/event_id.hpp"
 #include "merovingian/events/event_signer.hpp"
 #include "merovingian/federation/event_query.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
@@ -32,6 +33,7 @@
 #include <chrono>
 #include <cstdint>
 #include <limits>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -47,6 +49,12 @@
 
 namespace merovingian::homeserver
 {
+
+// Forward declaration — the definition lives outside the anonymous namespace so
+// it can be exported in the header, but it is called from lambdas inside it.
+[[nodiscard]] auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope const& envelope,
+                                    std::uint64_t stream_ordering) -> federation::PduIngestionResult;
+
 namespace
 {
 
@@ -808,97 +816,23 @@ namespace
 
         runtime.federation.pdu_sink =
             [rt](federation::InboundPduEnvelope const& envelope) -> federation::PduIngestionResult {
-            // Spec: SS API §authorization-rules — MUST check event-auth before persisting.
-            // Build the auth-event map from the room's current resolved state and run
-            // authorize_event_against_auth_events. Rejection returns rejected_auth so the
-            // federation handler audits the event without issuing a non-200 HTTP status
-            // (a non-200 causes the remote to back off all federation to this server).
+            // Reserve the global stream-ordering token under the runtime mutex,
+            // then hand the event to the per-room-serialized ingestion path. The
+            // heavy persistence work runs without the global lock so independent
+            // rooms can commit in parallel.
+            auto stream_ordering = std::uint64_t{0U};
+            auto sync_stream_id = std::uint64_t{0U};
             {
-                auto const* room_policy =
-                    rooms::find_room_version_policy(envelope.room_version.empty() ? "12" : envelope.room_version);
-                if (room_policy != nullptr)
-                {
-                    auto const pdu_parsed = canonicaljson::parse_lossless(envelope.json);
-                    if (pdu_parsed.error == canonicaljson::ParseError::none)
-                    {
-                        auto const auth_map =
-                            build_pdu_auth_event_map(rt->database.persistent_store, envelope.room_id, envelope.sender,
-                                                     envelope.state_key.value_or(std::string{}), envelope.event_type);
-                        auto const auth_decision =
-                            events::authorize_event_against_auth_events(pdu_parsed.value, *room_policy, auth_map);
-                        if (!auth_decision.allowed)
-                        {
-                            return {federation::PduIngestionStatus::rejected_auth,
-                                    "event auth denied: " + auth_decision.reason};
-                        }
-                    }
-                }
+                auto guard = std::unique_lock{rt->mutex};
+                stream_ordering = rt->database.next_stream_ordering++;
+                sync_stream_id = rt->database.persistent_store.next_sync_stream_id;
             }
-            auto event = database::PersistentEvent{};
-            event.event_id = envelope.event_id;
-            event.room_id = envelope.room_id;
-            event.sender_user_id = envelope.sender;
-            event.json = envelope.json;
-            event.depth = envelope.depth;
-            event.stream_ordering = rt->database.next_stream_ordering++;
-            event.prev_event_ids = envelope.prev_event_ids;
-            event.auth_event_ids = envelope.auth_event_ids;
-            event.signatures = envelope.signatures;
-            auto state = std::optional<database::PersistentStateEvent>{};
-            if (envelope.state_key.has_value())
+            auto result = ingest_pdu_event(*rt, envelope, stream_ordering);
+            if (result.status == federation::PduIngestionStatus::accepted && rt->sync_notifier != nullptr)
             {
-                state = database::PersistentStateEvent{envelope.room_id, envelope.event_type, *envelope.state_key,
-                                                       envelope.event_id};
+                rt->sync_notifier->publish(stream_ordering, sync_stream_id);
             }
-            if (!database::store_event_with_state(rt->database.persistent_store, std::move(event), state))
-            {
-                return {federation::PduIngestionStatus::internal_error, "event persistence failed"};
-            }
-            // Track remote membership changes so LocalRoom.members and persistent_store.memberships
-            // stay consistent. Without this, remote users who joined via federation are lost from
-            // LocalRoom.members on restart (hydrate_local_database only reads memberships, not state).
-            if (envelope.event_type == "m.room.member" && envelope.state_key.has_value())
-            {
-                auto const mem_parsed = canonicaljson::parse_lossless(envelope.json);
-                auto const* mem_obj = mem_parsed.error == canonicaljson::ParseError::none
-                                          ? std::get_if<canonicaljson::Object>(&mem_parsed.value.storage())
-                                          : nullptr;
-                auto const* membership_str = mem_obj != nullptr ? content_membership(*mem_obj) : nullptr;
-                if (membership_str != nullptr)
-                {
-                    auto const stream = rt->database.next_stream_ordering - 1U;
-                    std::ignore = upsert_membership(rt->database.persistent_store, envelope.room_id,
-                                                    *envelope.state_key, *membership_str, stream);
-                    auto const room_it = std::ranges::find_if(rt->database.rooms, [&](LocalRoom const& r) {
-                        return r.room_id == envelope.room_id;
-                    });
-                    if (room_it != rt->database.rooms.end())
-                    {
-                        auto& members = room_it->members;
-                        if (*membership_str == "join")
-                        {
-                            if (!std::ranges::any_of(members, [&](std::string const& m) {
-                                    return m == *envelope.state_key;
-                                }))
-                            {
-                                members.push_back(*envelope.state_key);
-                            }
-                            broadcast_local_device_lists_to_remote_joiner(*rt, envelope.room_id, *envelope.state_key);
-                        }
-                        else
-                        {
-                            auto const to_erase = std::ranges::remove(members, *envelope.state_key);
-                            members.erase(to_erase.begin(), to_erase.end());
-                        }
-                    }
-                }
-            }
-            if (rt->sync_notifier != nullptr)
-            {
-                rt->sync_notifier->publish(rt->database.next_stream_ordering - 1U,
-                                           rt->database.persistent_store.next_sync_stream_id);
-            }
-            return {federation::PduIngestionStatus::accepted, {}};
+            return result;
         };
 
         runtime.federation.edu_sink =
@@ -1709,6 +1643,126 @@ namespace
     }
 
 } // namespace
+
+auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope const& envelope,
+                      std::uint64_t stream_ordering) -> federation::PduIngestionResult
+{
+    auto const room_id = envelope.room_id;
+    if (room_id.empty())
+    {
+        return {federation::PduIngestionStatus::rejected_invalid, "missing room_id"};
+    }
+
+    auto const* room_policy =
+        rooms::find_room_version_policy(envelope.room_version.empty() ? "12" : envelope.room_version);
+    if (room_policy == nullptr)
+    {
+        return {federation::PduIngestionStatus::rejected_invalid, "unknown room version"};
+    }
+
+    auto const pdu_parsed = canonicaljson::parse_lossless(envelope.json);
+    if (pdu_parsed.error != canonicaljson::ParseError::none)
+    {
+        return {federation::PduIngestionStatus::rejected_invalid, "invalid PDU JSON"};
+    }
+
+    auto const stripe = std::hash<std::string>{}(room_id) % room_mutex_stripe_count;
+    auto stripe_guard = std::unique_lock{runtime.room_stripe_mutexes[stripe]};
+
+    auto const auth_map = build_pdu_auth_event_map(runtime.database.persistent_store, room_id, envelope.sender,
+                                                   envelope.state_key.value_or(std::string{}), envelope.event_type);
+    auto const auth_decision = events::authorize_event_against_auth_events(pdu_parsed.value, *room_policy, auth_map);
+    if (!auth_decision.allowed)
+    {
+        return {federation::PduIngestionStatus::rejected_auth,
+                std::string{"event auth denied: "} + auth_decision.reason};
+    }
+
+    if (!events::verify_pdu_content_hash(pdu_parsed.value))
+    {
+        return {federation::PduIngestionStatus::rejected_invalid, "bad content hash"};
+    }
+
+    auto state = std::optional<database::PersistentStateEvent>{};
+    if (envelope.state_key.has_value())
+    {
+        state = database::PersistentStateEvent{room_id, envelope.event_type, *envelope.state_key, envelope.event_id};
+    }
+
+    auto event = database::PersistentEvent{};
+    event.event_id = envelope.event_id;
+    event.room_id = room_id;
+    event.sender_user_id = envelope.sender;
+    event.json = envelope.json;
+    event.depth = envelope.depth;
+    event.stream_ordering = stream_ordering;
+    event.prev_event_ids = envelope.prev_event_ids;
+    event.auth_event_ids = envelope.auth_event_ids;
+    event.signatures = envelope.signatures;
+
+    auto prepared =
+        database::prepare_store_event_with_state(runtime.database.persistent_store, std::move(event), state);
+    if (!prepared.has_value())
+    {
+        return {federation::PduIngestionStatus::internal_error, "event persistence pre-check failed"};
+    }
+
+    // Commit without holding the global runtime mutex. The room stripe lock is
+    // released for the backend commit so independent rooms can overlap; the
+    // same room remains serialized by its stripe, preserving event order.
+    stripe_guard.unlock();
+    if (!database::commit_persistent_transaction(runtime.database.persistent_store, prepared->statements))
+    {
+        return {federation::PduIngestionStatus::internal_error, "event persistence backend rejected transaction"};
+    }
+    stripe_guard.lock();
+
+    database::apply_store_event_with_state(runtime.database.persistent_store, *prepared);
+
+    auto result = federation::PduIngestionResult{};
+    result.status = federation::PduIngestionStatus::accepted;
+    result.accepted_stream_ordering = stream_ordering;
+
+    if (envelope.event_type == "m.room.member" && envelope.state_key.has_value())
+    {
+        auto const* mem_obj = std::get_if<canonicaljson::Object>(&pdu_parsed.value.storage());
+        auto const* membership_str = mem_obj != nullptr ? content_membership(*mem_obj) : nullptr;
+        if (membership_str != nullptr)
+        {
+            auto const store_ok = upsert_membership(runtime.database.persistent_store, room_id, *envelope.state_key,
+                                                    *membership_str, stream_ordering);
+            if (!store_ok)
+            {
+                return {federation::PduIngestionStatus::internal_error, "membership persistence failed"};
+            }
+
+            auto const room_it = std::ranges::find_if(runtime.database.rooms, [&](LocalRoom const& r) {
+                return r.room_id == room_id;
+            });
+            if (room_it != runtime.database.rooms.end())
+            {
+                auto& members = room_it->members;
+                if (*membership_str == "join")
+                {
+                    if (!std::ranges::any_of(members, [&](std::string const& m) {
+                            return m == *envelope.state_key;
+                        }))
+                    {
+                        members.push_back(*envelope.state_key);
+                    }
+                    broadcast_local_device_lists_to_remote_joiner(runtime, room_id, *envelope.state_key);
+                }
+                else
+                {
+                    auto const to_erase = std::ranges::remove(members, *envelope.state_key);
+                    members.erase(to_erase.begin(), to_erase.end());
+                }
+            }
+        }
+    }
+
+    return result;
+}
 
 auto apply_runtime_membership(LocalDatabase& database, std::string_view room_id, std::string_view user_id,
                               std::string_view membership) -> void

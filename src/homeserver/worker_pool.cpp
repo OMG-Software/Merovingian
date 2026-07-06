@@ -294,6 +294,8 @@ namespace
         body += json_str(status_str);
         body += R"(,"reason":)";
         body += json_str(result.reason);
+        body += R"(,"stream_ordering":)";
+        body += std::to_string(result.accepted_stream_ordering);
         body += '}';
         return body;
     }
@@ -751,28 +753,18 @@ WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRunt
                 auto const env = deserialize_pdu_ingest(json);
                 std::ignore = handler_pool_.submit([this, ch, id, env]() {
                     auto result = federation::PduIngestionResult{};
-                    auto stream_ordering = std::uint64_t{0U};
+                    if (runtime_.federation.pdu_sink)
                     {
-                        auto guard = std::unique_lock{runtime_.mutex};
-                        // Capture ordering before pdu_sink so the sync notification
-                        // uses the event's own position (not next_stream_ordering
-                        // after pdu_sink has incremented it, which would publish
-                        // one past the stored event and cause spurious sync wakeups).
-                        stream_ordering = runtime_.database.next_stream_ordering;
-                        if (runtime_.federation.pdu_sink)
-                        {
-                            result = runtime_.federation.pdu_sink(env);
-                        }
-                        else
-                        {
-                            result.status = federation::PduIngestionStatus::internal_error;
-                            result.reason = "pdu_sink not wired";
-                        }
-                        if (result.status == federation::PduIngestionStatus::accepted &&
-                            runtime_.sync_notifier != nullptr)
-                        {
-                            runtime_.sync_notifier->publish(stream_ordering, 0U);
-                        }
+                        // The default sink reserves stream_ordering internally and
+                        // returns it in accepted_stream_ordering. It also publishes
+                        // the sync notification, so the worker path only forwards
+                        // the result back to the shard that owns this room.
+                        result = runtime_.federation.pdu_sink(env);
+                    }
+                    else
+                    {
+                        result.status = federation::PduIngestionStatus::internal_error;
+                        result.reason = "pdu_sink not wired";
                     }
                     if (result.status == federation::PduIngestionStatus::accepted)
                     {

@@ -3,7 +3,10 @@
 #include "../support/registration_token.hpp"
 #include "federation_signing_test_support.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/serializer.hpp"
+#include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/database/persistent_store.hpp"
+#include "merovingian/events/event_id.hpp"
 #include "merovingian/federation/dispatch_worker.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/federation/membership_endpoints.hpp"
@@ -39,6 +42,66 @@ namespace
         merovingian::config::DatabaseConfig{},         security,
         merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
     };
+}
+
+[[nodiscard]] auto make_seed_event_json(std::string_view event_type, std::string_view state_key,
+                                        std::string_view sender, std::string_view room_id,
+                                        merovingian::canonicaljson::Object content, std::int64_t depth,
+                                        std::int64_t origin_server_ts) -> std::string
+{
+    using namespace merovingian;
+
+    auto hashes = canonicaljson::Object{};
+    hashes.push_back(canonicaljson::make_member("sha256", canonicaljson::Value{std::string{"hash"}}));
+
+    auto event_obj = canonicaljson::Object{};
+    event_obj.push_back(canonicaljson::make_member("auth_events", canonicaljson::Value{canonicaljson::Array{}}));
+    event_obj.push_back(canonicaljson::make_member("content", canonicaljson::Value{std::move(content)}));
+    event_obj.push_back(canonicaljson::make_member("depth", canonicaljson::Value{depth}));
+    event_obj.push_back(canonicaljson::make_member("hashes", canonicaljson::Value{std::move(hashes)}));
+    event_obj.push_back(canonicaljson::make_member("origin_server_ts", canonicaljson::Value{origin_server_ts}));
+    event_obj.push_back(canonicaljson::make_member("prev_events", canonicaljson::Value{canonicaljson::Array{}}));
+    event_obj.push_back(canonicaljson::make_member("room_id", canonicaljson::Value{std::string{room_id}}));
+    event_obj.push_back(canonicaljson::make_member("sender", canonicaljson::Value{std::string{sender}}));
+    event_obj.push_back(canonicaljson::make_member("state_key", canonicaljson::Value{std::string{state_key}}));
+    event_obj.push_back(canonicaljson::make_member("type", canonicaljson::Value{std::string{event_type}}));
+
+    auto value = canonicaljson::Value{std::move(event_obj)};
+    auto const serialized = canonicaljson::serialize_canonical(value);
+    REQUIRE(serialized.error == canonicaljson::CanonicalJsonError::none);
+    return serialized.output;
+}
+
+[[nodiscard]] auto make_message_pdu_json(std::string_view room_id, std::string_view sender) -> std::string
+{
+    using namespace merovingian;
+
+    auto content = canonicaljson::Object{};
+    content.push_back(canonicaljson::make_member("body", canonicaljson::Value{std::string{"hello"}}));
+    content.push_back(canonicaljson::make_member("msgtype", canonicaljson::Value{std::string{"m.text"}}));
+
+    auto event_obj = canonicaljson::Object{};
+    event_obj.push_back(canonicaljson::make_member("type", canonicaljson::Value{std::string{"m.room.message"}}));
+    event_obj.push_back(canonicaljson::make_member("room_id", canonicaljson::Value{std::string{room_id}}));
+    event_obj.push_back(canonicaljson::make_member("sender", canonicaljson::Value{std::string{sender}}));
+    event_obj.push_back(canonicaljson::make_member("content", canonicaljson::Value{std::move(content)}));
+    event_obj.push_back(
+        canonicaljson::make_member("origin_server_ts", canonicaljson::Value{static_cast<std::int64_t>(1000)}));
+    event_obj.push_back(canonicaljson::make_member("depth", canonicaljson::Value{static_cast<std::int64_t>(2)}));
+    event_obj.push_back(canonicaljson::make_member("prev_events", canonicaljson::Value{canonicaljson::Array{}}));
+    event_obj.push_back(canonicaljson::make_member("auth_events", canonicaljson::Value{canonicaljson::Array{}}));
+
+    auto const hash = events::make_content_hash(canonicaljson::Value{event_obj});
+    REQUIRE(hash.error.empty());
+
+    auto hashes = canonicaljson::Object{};
+    hashes.push_back(canonicaljson::make_member("sha256", canonicaljson::Value{hash.sha256}));
+    event_obj.push_back(canonicaljson::make_member("hashes", canonicaljson::Value{std::move(hashes)}));
+
+    auto value = canonicaljson::Value{std::move(event_obj)};
+    auto const serialized = canonicaljson::serialize_canonical(value);
+    REQUIRE(serialized.error == canonicaljson::CanonicalJsonError::none);
+    return serialized.output;
 }
 
 [[nodiscard]] auto make_dispatch_worker(merovingian::http::OutboundClient& client,
@@ -326,21 +389,31 @@ SCENARIO("Inbound PDU sink assigns stream ordering and notifies sync", "[homeser
         // and the auth map is built from the same source — both must agree.
         auto const room_id_str = std::string{"!inbound_test:remote.example.org"};
         auto const bob_sender = std::string{"@bob:remote.example.org"};
-        homeserver.database.persistent_store.events.push_back(
-            {.event_id = "$inbound_create",
-             .room_id = room_id_str,
-             .sender_user_id = bob_sender,
-             .json = R"({"type":"m.room.create","sender":"@bob:remote.example.org",)"
-                     R"("content":{"room_version":"12","creator":"@bob:remote.example.org"}})",
-             .depth = 0U});
-        homeserver.database.persistent_store.events.push_back(
-            {.event_id = "$inbound_bob_member",
-             .room_id = room_id_str,
-             .sender_user_id = bob_sender,
-             .json = R"({"type":"m.room.member","sender":"@bob:remote.example.org",)"
-                     R"("state_key":"@bob:remote.example.org",)"
-                     R"("content":{"membership":"join"}})",
-             .depth = 1U});
+
+        auto create_content = merovingian::canonicaljson::Object{};
+        create_content.push_back(merovingian::canonicaljson::make_member(
+            "creator", merovingian::canonicaljson::Value{std::string{bob_sender}}));
+        create_content.push_back(merovingian::canonicaljson::make_member(
+            "room_version", merovingian::canonicaljson::Value{std::string{"12"}}));
+        auto const create_json =
+            make_seed_event_json("m.room.create", "", bob_sender, room_id_str, std::move(create_content), 0, 1);
+
+        auto member_content = merovingian::canonicaljson::Object{};
+        member_content.push_back(merovingian::canonicaljson::make_member(
+            "membership", merovingian::canonicaljson::Value{std::string{"join"}}));
+        auto const member_json =
+            make_seed_event_json("m.room.member", bob_sender, bob_sender, room_id_str, std::move(member_content), 1, 2);
+
+        homeserver.database.persistent_store.events.push_back({.event_id = "$inbound_create",
+                                                               .room_id = room_id_str,
+                                                               .sender_user_id = bob_sender,
+                                                               .json = create_json,
+                                                               .depth = 0U});
+        homeserver.database.persistent_store.events.push_back({.event_id = "$inbound_bob_member",
+                                                               .room_id = room_id_str,
+                                                               .sender_user_id = bob_sender,
+                                                               .json = member_json,
+                                                               .depth = 1U});
         homeserver.database.persistent_store.state.push_back(
             {.room_id = room_id_str, .event_type = "m.room.create", .state_key = "", .event_id = "$inbound_create"});
         homeserver.database.persistent_store.state.push_back({.room_id = room_id_str,
@@ -356,12 +429,11 @@ SCENARIO("Inbound PDU sink assigns stream ordering and notifies sync", "[homeser
             envelope.sender = bob_sender;
             envelope.event_type = "m.room.message";
             envelope.depth = 2U;
+            envelope.origin_server_ts = static_cast<std::int64_t>(1000);
             // The auth check parses this JSON to read the event's sender/type,
-            // so it must carry the same fields the envelope advertises.
-            envelope.json = R"({"type":"m.room.message",)"
-                            R"("sender":"@bob:remote.example.org",)"
-                            R"("room_id":"!inbound_test:remote.example.org",)"
-                            R"("content":{"body":"hello","msgtype":"m.text"}})";
+            // so it must carry the same fields the envelope advertises, and the
+            // ingest path now verifies the content hash.
+            envelope.json = make_message_pdu_json(room_id_str, bob_sender);
 
             auto const result = homeserver.federation.pdu_sink(envelope);
 

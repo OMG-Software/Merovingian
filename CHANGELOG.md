@@ -1,3 +1,11 @@
+## 0.10.31
+
+### Fixed
+- **fix(federation): inbound PDU ingestion no longer serializes all federation traffic behind a single `runtime.mutex` — per-room striped locks now protect room-local ordering while independent rooms commit concurrently:** the default `pdu_sink` previously held the global runtime mutex for the entire auth, persistence, membership-update, and sync-notification path. Under a burst of 30–40 inbound federation events this forced every PDU to wait for the previous one's database commit, turning quick succession into a drip-feed even though SQLite/PostgreSQL backends open a fresh connection per transaction and could otherwise overlap. Fix: `HomeserverRuntime` now owns 256 room-stripe mutexes; `ingest_pdu_event()` reserves a global stream-ordering token, then acquires only the stripe for the event's `room_id` while building the auth map, preparing the prepared-state update, applying in-memory rows, and updating membership, releasing that stripe for the actual database commit so commits for different rooms run in parallel. `database::store_event_with_state()` is refactored into `prepare_store_event_with_state()`, `commit_persistent_transaction()`, and `apply_store_event_with_state()` to make the lock-free commit boundary explicit.
+
+### Testing
+- **test(federation): new `tests/unit/test_federation_pdu_ingest_concurrency.cpp` exercises concurrent `ingest_pdu_event()` calls across distinct rooms and asserts the resulting events/membership/stream-ordering state is correct.**
+
 ## 0.10.30
 
 ### Fixed

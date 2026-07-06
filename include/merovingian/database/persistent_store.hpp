@@ -528,6 +528,25 @@ auto reconstruct_event_relations(PersistentStore& store) -> void;
 [[nodiscard]] auto store_state(PersistentStore& store, PersistentStateEvent state) -> bool;
 [[nodiscard]] auto store_event_with_state(PersistentStore& store, PersistentEvent event,
                                           std::optional<PersistentStateEvent> state) -> bool;
+
+// Split version of store_event_with_state for callers that need to release locks
+// around the backend commit. `prepare` validates in-memory pre-conditions and
+// builds the prepared statements. `commit` writes them to the backend. `apply`
+// mirrors the committed rows into the in-memory vectors. The three phases must be
+// called in order on the same PreparedStateUpdate; prepare/apply are typically run
+// under a per-room lock while commit runs without it so independent rooms can overlap.
+struct PreparedStateUpdate final
+{
+    PersistentEvent event{};
+    std::optional<PersistentStateEvent> state{};
+    std::vector<PreparedStatement> statements{};
+    bool state_already_existed{false};
+};
+
+[[nodiscard]] auto prepare_store_event_with_state(PersistentStore& store, PersistentEvent event,
+                                                  std::optional<PersistentStateEvent> state)
+    -> std::optional<PreparedStateUpdate>;
+auto apply_store_event_with_state(PersistentStore& store, PreparedStateUpdate const& update) -> void;
 // Startup repair: finds events in store.events that are state events (JSON has a
 // "state_key" field) but have no corresponding entry in store.state, and creates
 // those missing entries. Returns the number of state entries created.

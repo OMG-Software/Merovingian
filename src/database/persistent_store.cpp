@@ -1430,8 +1430,9 @@ auto reconstruct_event_relations(PersistentStore& store) -> void
     return true;
 }
 
-[[nodiscard]] auto store_event_with_state(PersistentStore& store, PersistentEvent event,
-                                          std::optional<PersistentStateEvent> state) -> bool
+[[nodiscard]] auto prepare_store_event_with_state(PersistentStore& store, PersistentEvent event,
+                                                  std::optional<PersistentStateEvent> state)
+    -> std::optional<PreparedStateUpdate>
 {
     if (event_exists(store, event.event_id) || (state.has_value() && !state_matches_event(event, *state)))
     {
@@ -1442,84 +1443,116 @@ auto reconstruct_event_relations(PersistentStore& store) -> void
                                                    {"has_state", state.has_value() ? "true" : "false",            false},
                                                    {"reason",    "duplicate event or state does not match event", false}
         });
-        return false;
+        return std::nullopt;
     }
-    auto const event_statement = record_statement("insert_event", "INSERT INTO events VALUES ($1, $2, $3, $4, $5, $6)",
-                                                  {
-                                                      {event.event_id,                        false},
-                                                      {event.room_id,                         false},
-                                                      {event.sender_user_id,                  false},
-                                                      {event.json,                            true },
-                                                      {std::to_string(event.depth),           false},
-                                                      {std::to_string(event.stream_ordering), false}
-    });
-    auto statements = std::vector<PreparedStatement>{event_statement};
-    append_event_graph_statements(statements, event);
-    auto const existing_state = state.has_value()
-                                    ? std::ranges::find_if(store.state,
-                                                           [&state](PersistentStateEvent const& current) {
-                                                               return current.room_id == state->room_id &&
-                                                                      current.event_type == state->event_type &&
-                                                                      current.state_key == state->state_key;
-                                                           })
-                                    : store.state.end();
-    if (state.has_value())
+
+    auto update = PreparedStateUpdate{};
+    update.event = std::move(event);
+    update.state = std::move(state);
+    update.statements.push_back(record_statement("insert_event", "INSERT INTO events VALUES ($1, $2, $3, $4, $5, $6)",
+                                                 {
+                                                     {update.event.event_id,                        false},
+                                                     {update.event.room_id,                         false},
+                                                     {update.event.sender_user_id,                  false},
+                                                     {update.event.json,                            true },
+                                                     {std::to_string(update.event.depth),           false},
+                                                     {std::to_string(update.event.stream_ordering), false}
+    }));
+    append_event_graph_statements(update.statements, update.event);
+
+    if (update.state.has_value())
     {
-        if (existing_state != store.state.end())
+        auto const existing = std::ranges::find_if(store.state, [&update](PersistentStateEvent const& current) {
+            return current.room_id == update.state->room_id && current.event_type == update.state->event_type &&
+                   current.state_key == update.state->state_key;
+        });
+        update.state_already_existed = existing != store.state.end();
+        if (update.state_already_existed)
         {
-            statements.push_back(record_statement(
+            update.statements.push_back(record_statement(
                 "upsert_state",
                 "UPDATE current_state SET event_id = $4 WHERE room_id = $1 AND event_type = $2 AND state_key = $3",
                 {
-                    {state->room_id,    false},
-                    {state->event_type, false},
-                    {state->state_key,  false},
-                    {state->event_id,   false}
+                    {update.state->room_id,    false},
+                    {update.state->event_type, false},
+                    {update.state->state_key,  false},
+                    {update.state->event_id,   false}
             }));
         }
         else
         {
-            statements.push_back(record_statement("insert_state", "INSERT INTO current_state VALUES ($1, $2, $3, $4)",
-                                                  {
-                                                      {state->room_id,    false},
-                                                      {state->event_type, false},
-                                                      {state->state_key,  false},
-                                                      {state->event_id,   false}
+            update.statements.push_back(record_statement("insert_state",
+                                                         "INSERT INTO current_state VALUES ($1, $2, $3, $4)",
+                                                         {
+                                                             {update.state->room_id,    false},
+                                                             {update.state->event_type, false},
+                                                             {update.state->state_key,  false},
+                                                             {update.state->event_id,   false}
             }));
         }
     }
-    if (!commit_persistent_transaction(store, statements))
+
+    return update;
+}
+
+auto apply_store_event_with_state(PersistentStore& store, PreparedStateUpdate const& update) -> void
+{
+    // Idempotent duplicate guard: a concurrent prepare/commit for the same event
+    // may have raced us to the backend. If the event is already mirrored in memory,
+    // drop this application so stream_ordering and vector order stay consistent.
+    if (event_exists(store, update.event.event_id))
+    {
+        return;
+    }
+
+    log_diagnostic("event_state.persisted",
+                   {
+                       {"event_id",        update.event.event_id,                        false},
+                       {"room_id",         update.event.room_id,                         false},
+                       {"sender",          update.event.sender_user_id,                  false},
+                       {"depth",           std::to_string(update.event.depth),           false},
+                       {"stream_ordering", std::to_string(update.event.stream_ordering), false},
+                       {"has_state",       update.state.has_value() ? "true" : "false",  false}
+    });
+    append_event_graph_rows(store, update.event);
+    store.events.push_back(update.event);
+    if (update.state.has_value())
+    {
+        auto const existing = std::ranges::find_if(store.state, [&update](PersistentStateEvent const& current) {
+            return current.room_id == update.state->room_id && current.event_type == update.state->event_type &&
+                   current.state_key == update.state->state_key;
+        });
+        if (existing != store.state.end())
+        {
+            existing->event_id = update.state->event_id;
+        }
+        else
+        {
+            store.state.push_back(*update.state);
+        }
+    }
+}
+
+[[nodiscard]] auto store_event_with_state(PersistentStore& store, PersistentEvent event,
+                                          std::optional<PersistentStateEvent> state) -> bool
+{
+    auto prepared = prepare_store_event_with_state(store, event, state);
+    if (!prepared.has_value())
+    {
+        return false;
+    }
+    if (!commit_persistent_transaction(store, prepared->statements))
     {
         log_diagnostic("event_state.rejected", {
-                                                   {"event_id",  event.event_id,                             false},
-                                                   {"room_id",   event.room_id,                              false},
-                                                   {"sender",    event.sender_user_id,                       false},
-                                                   {"has_state", state.has_value() ? "true" : "false",       false},
-                                                   {"reason",    "persistence backend rejected transaction", false}
+                                                   {"event_id",  prepared->event.event_id,                       false},
+                                                   {"room_id",   prepared->event.room_id,                        false},
+                                                   {"sender",    prepared->event.sender_user_id,                 false},
+                                                   {"has_state", prepared->state.has_value() ? "true" : "false", false},
+                                                   {"reason",    "persistence backend rejected transaction",     false}
         });
         return false;
     }
-    log_diagnostic("event_state.persisted", {
-                                                {"event_id",        event.event_id,                        false},
-                                                {"room_id",         event.room_id,                         false},
-                                                {"sender",          event.sender_user_id,                  false},
-                                                {"depth",           std::to_string(event.depth),           false},
-                                                {"stream_ordering", std::to_string(event.stream_ordering), false},
-                                                {"has_state",       state.has_value() ? "true" : "false",  false}
-    });
-    append_event_graph_rows(store, event);
-    store.events.push_back(std::move(event));
-    if (state.has_value())
-    {
-        if (existing_state != store.state.end())
-        {
-            existing_state->event_id = state->event_id;
-        }
-        else
-        {
-            store.state.push_back(std::move(*state));
-        }
-    }
+    apply_store_event_with_state(store, *prepared);
     return true;
 }
 

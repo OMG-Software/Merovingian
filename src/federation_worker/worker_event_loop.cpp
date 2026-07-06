@@ -186,6 +186,7 @@ namespace
             result.status = federation::PduIngestionStatus::internal_error;
         }
         result.reason = ipc::ipc_json_get_str(json, "reason");
+        result.accepted_stream_ordering = ipc::ipc_json_get_u64(json, "stream_ordering");
         return result;
     }
 

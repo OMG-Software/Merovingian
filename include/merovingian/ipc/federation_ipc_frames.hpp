@@ -5,6 +5,7 @@
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/http/outbound_client.hpp"
 
+#include <cstdint>
 #include <string>
 #include <string_view>
 
@@ -17,6 +18,10 @@ namespace merovingian::ipc
 // JSON string extractor used by both sides of the federation worker IPC channel.
 // Assumes the value is a simple string with common JSON escapes.
 [[nodiscard]] auto ipc_json_get_str(std::string_view json, std::string_view key) -> std::string;
+
+// JSON integer extractor used by both sides of the federation worker IPC channel.
+// Returns 0 when the key is missing or not a JSON number.
+[[nodiscard]] auto ipc_json_get_u64(std::string_view json, std::string_view key) -> std::uint64_t;
 
 // Serializes a LocalHttpRequest into the JSON body of a fed_request IPC frame.
 [[nodiscard]] auto serialize_fed_request(homeserver::LocalHttpRequest const& request) -> std::string;

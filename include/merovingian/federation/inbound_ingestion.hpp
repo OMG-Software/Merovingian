@@ -67,6 +67,9 @@ struct PduIngestionResult final
     // could build a resolution context. Empty otherwise, including for
     // accepted PDUs or non-conflict rejections.
     std::optional<PduStateConflictContext> state_conflict{};
+    // Set by production sinks that allocate a stream_ordering for the event.
+    // Zero when the result is not accepted or the sink does not assign one.
+    std::uint64_t accepted_stream_ordering{0U};
 };
 
 // Production sink: appends the PDU to the persistent store after running

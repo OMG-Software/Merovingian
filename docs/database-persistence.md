@@ -143,6 +143,17 @@ remaining work before PostgreSQL-backed production operation.
   left them silently empty. Called at the end of both
   `open_sqlite_persistent_store`/`open_postgresql_persistent_store` and as
   part of `reload_room`'s snapshot merge. Idempotent.
+- `database::store_event_with_state()` is split into
+  `prepare_store_event_with_state()`, `commit_persistent_transaction()`, and
+  `apply_store_event_with_state()`. The `PreparedStateUpdate` struct holds the
+  event, optional state event, and the prepared statements. `prepare` validates
+  in-memory pre-conditions (room existence, duplicate event id) and builds the
+  statements. `commit` executes them on the backend without holding any room
+  lock, so different rooms can commit concurrently. `apply` mirrors the committed
+  rows into the in-memory vectors with an idempotent duplicate guard. Used by
+  the per-room inbound PDU path so the global runtime lock is released before
+  the database commit. The combined helper remains for callers that do not need
+  the split.
 
 ## Security posture
 

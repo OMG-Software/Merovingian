@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/http/request.hpp"
 
@@ -59,5 +60,11 @@ struct LocalHttpResponse final
 [[nodiscard]] auto handle_federation_http_request(HomeserverRuntime& runtime, LocalHttpRequest const& request)
     -> LocalHttpResponse;
 auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void;
+
+// Production inbound PDU ingestion path. Reserves a global stream_ordering,
+// serializes only on the event's room stripe, and releases the global runtime
+// mutex for the backend commit so independent rooms can persist in parallel.
+[[nodiscard]] auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope const& envelope,
+                                    std::uint64_t stream_ordering) -> federation::PduIngestionResult;
 
 } // namespace merovingian::homeserver

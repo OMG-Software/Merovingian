@@ -19,6 +19,7 @@
 #include "merovingian/sync/sync_notifier.hpp"
 #include "merovingian/trust_safety/policy_engine.hpp"
 
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <functional>
@@ -34,6 +35,8 @@
 
 namespace merovingian::homeserver
 {
+
+constexpr std::size_t room_mutex_stripe_count = 256U;
 
 // Forward declaration — full type in federation_proxy.hpp, included by runtime.cpp.
 class FederationProxy;
@@ -263,6 +266,11 @@ struct HomeserverRuntime final
     // Handlers must release it before outbound network I/O so unrelated
     // requests can continue while a federation round-trip is in flight.
     mutable std::recursive_mutex mutex{};
+    // Per-room striped mutexes used by inbound PDU ingestion. Each room's events
+    // are serialized on their own stripe so per-room ordering is preserved, while
+    // events in different rooms can prepare/commit/apply in parallel. The global
+    // runtime.mutex is no longer held across database commits.
+    std::array<std::mutex, room_mutex_stripe_count> room_stripe_mutexes{};
     // Loser futures from the parallel make_join race (see race_make_join_candidates
     // in room_service.cpp). When the race finds a winner it returns immediately;
     // the still-running loser tasks (in-flight outbound make_join calls that
