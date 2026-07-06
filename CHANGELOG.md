@@ -1,3 +1,12 @@
+## 0.10.30
+
+### Fixed
+- **fix(federation-worker,ipc): WorkerPool now runs every worker-to-main ingest handler on a dedicated handler thread pool instead of inline on the `IpcChannel` dispatch thread:** the 0.10.29 reader/dispatch split stopped the reader thread from freezing, but the single per-channel dispatch thread still serialized every `pdu_ingest`, `membership_ingest`, `edu_ingest`, `invite_ingest`, `otk_claim_ingest`, `user_devices_ingest`, `device_keys_query_ingest`, `profile_query_ingest`, `event_query_ingest`, and `sign_request`. A slow `pdu_ingest` (e.g. persisting an event under `runtime.mutex` and waking sync notifiers) therefore parked the dispatch thread and delayed every later frame on that channel, including responses to unrelated outbound requests — the residual drip-feed on high-rate federation. Fix: `WorkerPool` constructs a `net::ThreadPool` (`handler_pool_`, sized from `federation.worker.relay_threads`) and submits each ingest handler to it, so the dispatch thread only classifies and enqueues frames. Slow ingestion now runs concurrently with later frames.
+- **fix(federation-worker): `WorkerSupervisor::stop()` and the supervisor restart path no longer deadlock with the IPC dispatch thread:** both paths previously held `channel_mu_` while calling `channel_->stop()`, which joins the dispatch thread; a `pdu_ingest` handler running on that thread can call back into the same supervisor's `channel_snapshot()` (via `notify_room_changed()`) and block on the same mutex. The stop/restart code now takes ownership of the channel under the lock and releases the lock before calling `stop()`, keeping the channel alive through a `std::shared_ptr` snapshot so callers can finish safely.
+
+### Testing
+- **test(ipc): new `IpcChannel` scenario in `tests/unit/test_ipc_framing.cpp` models the main-side handler-pool fix:** a deliberately slow request handler is offloaded to a `net::ThreadPool` while a fast second request is also offloaded, proving the fast request replies before the slow one completes and that the dispatch thread is not serialized by slow work.
+
 ## 0.10.29
 
 ### Fixed

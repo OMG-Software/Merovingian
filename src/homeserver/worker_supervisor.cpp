@@ -79,23 +79,34 @@ auto WorkerSupervisor::stop() noexcept -> void
     {
         return;
     }
+
+    // Take ownership of channel_ under the lock and release the lock before
+    // calling stop() on it. channel_->stop() joins the dispatch thread, which
+    // may be running the pdu_ingest handler; that handler's notify_room_changed()
+    // calls channel_snapshot() on this same supervisor when the ingested room
+    // hashes to this shard (the common case — see worker_pool.cpp). Holding
+    // channel_mu_ across the join would deadlock: this thread waits for the
+    // dispatch thread to finish while the dispatch thread waits for this
+    // thread to release channel_mu_.
+    auto channel = std::shared_ptr<ipc::IpcChannel>{}; // SHARED_PTR: reviewed — ref-counted snapshot keeps IpcChannel
+                                                       // alive across concurrent supervisor restarts
     {
         auto lock = std::lock_guard{channel_mu_};
-        if (channel_ && channel_->healthy())
+        channel = std::move(channel_);
+    }
+    if (channel)
+    {
+        if (channel->healthy())
         {
             try
             {
-                channel_->send_notification(R"({"type":"shutdown"})");
+                channel->send_notification(R"({"type":"shutdown"})");
             }
             catch (...)
             {
             }
         }
-        if (channel_)
-        {
-            channel_->stop();
-            channel_.reset();
-        }
+        channel->stop();
     }
     if (supervisor_thread_.joinable())
     {
@@ -242,16 +253,23 @@ auto WorkerSupervisor::supervisor_loop() -> void
         LOG_WARNING("Federation worker exited: pid=" + std::to_string(worker_pid_) +
                     " exit_code=" + std::to_string(exit_code) + " restart_in_ms=" + std::to_string(backoff_ms));
 
-        // Mark unhealthy and reset channel_ under the mutex so WorkerPool::handle()
-        // can never dereference a channel_ that is being destroyed concurrently.
+        // Mark unhealthy and take ownership of channel_ under the mutex so
+        // WorkerPool::handle() can never dereference a channel_ that is being
+        // destroyed concurrently. As in stop(), channel_->stop() must run
+        // without channel_mu_ held: it joins the dispatch thread, and a
+        // pdu_ingest handler running there can call back into this same
+        // supervisor's channel_snapshot() (via notify_room_changed()) and
+        // deadlock against this thread holding the lock.
         healthy_.store(false);
+        auto old_channel = std::shared_ptr<ipc::IpcChannel>{}; // SHARED_PTR: reviewed — ref-counted snapshot keeps
+                                                               // IpcChannel alive across concurrent supervisor restarts
         {
             auto lock = std::lock_guard{channel_mu_};
-            if (channel_)
-            {
-                channel_->stop();
-                channel_.reset();
-            }
+            old_channel = std::move(channel_);
+        }
+        if (old_channel)
+        {
+            old_channel->stop();
         }
         worker_pid_ = -1;
 

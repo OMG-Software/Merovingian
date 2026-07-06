@@ -6,6 +6,7 @@
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/worker_supervisor.hpp"
 #include "merovingian/http/outbound_client.hpp"
+#include "merovingian/net/thread_pool.hpp"
 
 #include <cstdint>
 #include <memory>
@@ -175,6 +176,12 @@ public:
 private:
     config::FederationWorkerConfig cfg_{};
     HomeserverRuntime& runtime_;
+    // Thread pool that runs the IPC request handlers from each worker
+    // (pdu_ingest, membership_ingest, edu_ingest, invite_ingest, query
+    // relays, sign_request). The per-channel IPC dispatch thread only classifies
+    // and enqueues; running the handlers here keeps a slow handler from
+    // stalling every later queued frame on the same channel.
+    net::ThreadPool handler_pool_;
     std::string worker_path_;
     std::string config_path_;
     std::vector<std::unique_ptr<WorkerSupervisor>> workers_{};

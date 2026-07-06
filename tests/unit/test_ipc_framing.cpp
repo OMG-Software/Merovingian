@@ -14,6 +14,7 @@
 #include "merovingian/events/event_signer.hpp"
 #include "merovingian/ipc/channel.hpp"
 #include "merovingian/ipc/ipc_ed25519_provider.hpp"
+#include "merovingian/net/thread_pool.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -611,6 +612,105 @@ SCENARIO("IpcChannel dispatches request frames in arrival order", "[ipc][channel
             }
         }
 
+        pair.server->stop();
+        pair.client->stop();
+    }
+}
+
+SCENARIO("IpcChannel request handlers can offload slow work to a thread pool without stalling later requests",
+         "[ipc][channel][dispatch][thread_pool]")
+{
+    GIVEN("a connected channel pair whose server delegates every request to a thread pool")
+    {
+        auto pair = make_channel_pair();
+
+        // Two workers are enough: one runs the slow request while the other
+        // handles the fast request concurrently.
+        auto handler_pool = merovingian::net::ThreadPool{2U};
+
+        auto results_mutex = std::mutex{};
+        auto results = std::vector<std::pair<std::string, std::chrono::steady_clock::time_point>>{};
+
+        pair.server->set_request_handler([server = pair.server.get(), &handler_pool, &results_mutex,
+                                          &results](std::uint64_t id, std::string json) {
+            auto const type = json_get_str(json, "type");
+            // Offload the real work so the dispatch thread returns immediately
+            // and can route the next frame. This mirrors WorkerPool behaviour.
+            std::ignore = handler_pool.submit([server, id, type, json = std::move(json), &results_mutex, &results]() {
+                if (type == "slow")
+                {
+                    std::this_thread::sleep_for(std::chrono::milliseconds{400});
+                }
+
+                server->send_response(id, std::string{"{\"type\":\"reply\",\"req_type\":\""} + type + "\"}");
+
+                {
+                    auto const guard = std::lock_guard{results_mutex};
+                    results.emplace_back(type, std::chrono::steady_clock::now());
+                }
+            });
+        });
+        pair.server->start();
+        pair.client->start();
+
+        WHEN("a slow request and a fast request are sent concurrently")
+        {
+            auto slow_reply = std::optional<std::string>{};
+            auto fast_reply = std::optional<std::string>{};
+            auto reply_times_mutex = std::mutex{};
+            auto slow_reply_time = std::chrono::steady_clock::time_point{};
+            auto fast_reply_time = std::chrono::steady_clock::time_point{};
+
+            auto slow_thread = std::thread{[&pair, &slow_reply, &reply_times_mutex, &slow_reply_time]() {
+                slow_reply = pair.client->send_request(R"({"type":"slow"})", std::chrono::seconds{5});
+                auto const guard = std::lock_guard{reply_times_mutex};
+                slow_reply_time = std::chrono::steady_clock::now();
+            }};
+            auto fast_thread = std::thread{[&pair, &fast_reply, &reply_times_mutex, &fast_reply_time]() {
+                fast_reply = pair.client->send_request(R"({"type":"fast"})", std::chrono::seconds{5});
+                auto const guard = std::lock_guard{reply_times_mutex};
+                fast_reply_time = std::chrono::steady_clock::now();
+            }};
+
+            slow_thread.join();
+            fast_thread.join();
+
+            THEN("both requests receive replies")
+            {
+                REQUIRE(slow_reply.has_value());
+                REQUIRE(fast_reply.has_value());
+            }
+
+            AND_THEN("the fast request is replied to before the slow request finishes")
+            {
+                {
+                    auto const guard = std::lock_guard{reply_times_mutex};
+                    REQUIRE(fast_reply_time < slow_reply_time);
+                }
+
+                auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+                while (std::chrono::steady_clock::now() < deadline)
+                {
+                    {
+                        auto const guard = std::lock_guard{results_mutex};
+                        if (results.size() == 2U)
+                        {
+                            break;
+                        }
+                    }
+                    std::this_thread::sleep_for(std::chrono::milliseconds{5});
+                }
+
+                auto const guard = std::lock_guard{results_mutex};
+                REQUIRE(results.size() == 2U);
+                REQUIRE(results[0].first == "fast");
+                REQUIRE(results[1].first == "slow");
+            }
+        }
+
+        // Stop the pool before the channels so no in-flight worker tries to
+        // send_response after the channel has been destroyed.
+        handler_pool.request_stop();
         pair.server->stop();
         pair.client->stop();
     }
