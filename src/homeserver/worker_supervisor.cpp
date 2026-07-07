@@ -312,16 +312,37 @@ auto WorkerSupervisor::supervisor_loop() -> void
     while (running_.load())
     {
         auto status = int{0};
-        auto const waited = ::waitpid(worker_pid_, &status, 0);
+        auto const waited = ::waitpid(worker_pid_, &status, WNOHANG);
 
-        if (!running_.load())
+        if (waited == 0)
         {
-            break;
+            // Child is still running; poll again so a concurrent stop() can
+            // exit this loop promptly instead of blocking forever in waitpid().
+            std::this_thread::sleep_for(std::chrono::milliseconds{100});
+            continue;
         }
+
         if (waited < 0)
         {
+            if (errno == EINTR)
+            {
+                continue;
+            }
+            if (errno == ECHILD)
+            {
+                // The child has already been reaped (e.g. by stop()); nothing
+                // more for this supervisor to do.
+                worker_pid_ = -1;
+                break;
+            }
             healthy_.store(false);
             LOG_WARNING("Federation worker waitpid failed: " + std::string{::strerror(errno)});
+            break;
+        }
+
+        // waited == worker_pid_: the child exited.
+        if (!running_.load())
+        {
             break;
         }
 
