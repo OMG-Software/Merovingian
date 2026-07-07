@@ -35,6 +35,11 @@ namespace
         return false;
     }
 
+    [[nodiscard]] auto rate_limit_policy_string(http::RateLimitPolicy const& policy) -> std::string
+    {
+        return std::to_string(policy.max_requests) + "/" + std::to_string(policy.window_seconds) + "s";
+    }
+
 } // namespace
 
 auto make_runtime_federation_config(config::Config const& config) -> RuntimeFederationConfig
@@ -79,9 +84,9 @@ auto federation_summary(RuntimeFederationConfig const& config) -> std::string
            " max_transaction_bytes=" + std::to_string(config.max_transaction_bytes) +
            " max_transaction_pdus=" + std::to_string(config.max_transaction_pdus) +
            " max_transaction_edus=" + std::to_string(config.max_transaction_edus) +
-           " per_origin_transaction_rate=" + http::rate_limit_summary(config.per_origin_transaction_rate) +
-           " per_origin_pdu_rate=" + http::rate_limit_summary(config.per_origin_pdu_rate) +
-           " per_origin_edu_rate=" + http::rate_limit_summary(config.per_origin_edu_rate) +
+           " per_origin_transaction_rate=" + rate_limit_policy_string(config.per_origin_transaction_rate) +
+           " per_origin_pdu_rate=" + rate_limit_policy_string(config.per_origin_pdu_rate) +
+           " per_origin_edu_rate=" + rate_limit_policy_string(config.per_origin_edu_rate) +
            " remote_timeout_seconds=" + std::to_string(config.remote_timeout_seconds) +
            " join_timeout_seconds=" + std::to_string(config.join_timeout_seconds) +
            " join_parallelism=" + std::to_string(config.join_parallelism) +

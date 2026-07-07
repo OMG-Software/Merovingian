@@ -10,6 +10,8 @@
 - **fix(federation): `FederationRuntimeState` now protects its own mutable bookkeeping while federation requests run concurrently:** remote records are copied out for request processing, remote signing-key/trust updates are persisted through narrow guarded helpers, and accepted transaction/audit vectors are updated under a federation-local mutex instead of relying on the homeserver global mutex.
 - **fix(federation): valid but excessive `/send` traffic now returns `429 M_LIMIT_EXCEEDED` at the origin policy boundary while individual invalid PDUs still report per-PDU errors in a `200` transaction response, preserving Matrix federation retry semantics.**
 - **fix(federation): `handle_inbound_federation_request()` no longer passes a const remote record to `check_inbound_request_signature()` and no longer dereferences a non-optional remote when choosing the PDU signing key, restoring compilation after the burst-delivery refactor.**
+- **fix(federation): `federation_summary()` now formats per-origin transaction/PDU/EDU rates as `N/Ws` (e.g. `120/60s`) so the runtime summary matches the policy syntax and the bounded-operational-values test passes.**
+- **fix(fuzz): `fuzz-config-parser` now links `http_lib`, `observability_lib`, `core_lib`, and `platform_lib` because config validation calls `http::rate_limit_policy_is_valid`, and `rate_limit.cpp` pulls in observability symbols.**
 
 ### Testing
 - **test(federation): `tests/unit/test_federation_runtime_callbacks.cpp` now blocks a federation transaction sink and asserts unrelated runtime work can still acquire `HomeserverRuntime::mutex`, preventing the wide-lock drip-feed regression from returning.**

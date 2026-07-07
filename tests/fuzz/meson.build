@@ -41,7 +41,7 @@ fuzz_targets = [
     include_directories: inc,
     cpp_args: fuzz_sanitizer_args,
     link_args: fuzz_sanitizer_args,
-    link_with: [config_lib],
+    link_with: [config_lib, http_lib, observability_lib, core_lib, platform_lib],
   ),
   executable(
     'fuzz-stream-token',
