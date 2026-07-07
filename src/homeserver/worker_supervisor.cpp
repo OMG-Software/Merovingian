@@ -139,7 +139,16 @@ auto WorkerSupervisor::stop() noexcept -> void
             {
                 if (errno != EINTR)
                 {
-                    LOG_WARNING("Federation worker waitpid failed during stop: " + std::string{::strerror(errno)});
+                    if (errno == ECHILD)
+                    {
+                        // The supervisor thread already reaped the child; no
+                        // further escalation is needed.
+                        reaped = true;
+                    }
+                    else
+                    {
+                        LOG_WARNING("Federation worker waitpid failed during stop: " + std::string{::strerror(errno)});
+                    }
                     break;
                 }
             }
@@ -165,6 +174,10 @@ auto WorkerSupervisor::stop() noexcept -> void
                 }
                 if (rc < 0 && errno != EINTR)
                 {
+                    if (errno == ECHILD)
+                    {
+                        reaped = true;
+                    }
                     break;
                 }
                 std::this_thread::sleep_for(wait_step);
