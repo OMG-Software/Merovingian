@@ -1658,6 +1658,18 @@ auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope
         return {federation::PduIngestionStatus::rejected_invalid, "invalid PDU JSON"};
     }
 
+    // Reserve the global stream-ordering and sync-surface IDs up front under
+    // the global mutex. Allocating sync_stream_id writes to the backend, so it
+    // must not happen while a room stripe is also held — that would pin the
+    // stripe for the whole database write and prevent concurrent progress on
+    // unrelated rooms.
+    auto const [stream_ordering, sync_stream_id] = [&]() {
+        auto global_guard = std::unique_lock<std::recursive_mutex>{runtime.mutex};
+        auto const ordering = runtime.database.next_stream_ordering++;
+        auto const sync_id = database::allocate_sync_stream_id(runtime.database.persistent_store);
+        return std::make_pair(ordering, sync_id);
+    }();
+
     auto const stripe = std::hash<std::string>{}(room_id) % room_mutex_stripe_count;
     auto stripe_guard = std::unique_lock{runtime.room_stripe_mutexes[stripe]};
 
@@ -1667,9 +1679,6 @@ auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope
     // in-memory PersistentStore / LocalDatabase vectors; it is released only
     // for the backend commit so independent rooms can commit in parallel.
     auto global_guard = std::unique_lock<std::recursive_mutex>{runtime.mutex};
-
-    auto stream_ordering = runtime.database.next_stream_ordering++;
-    auto sync_stream_id = database::allocate_sync_stream_id(runtime.database.persistent_store);
 
     auto const auth_map = build_pdu_auth_event_map(runtime.database.persistent_store, room_id, envelope.sender,
                                                    envelope.state_key.value_or(std::string{}), envelope.event_type);
