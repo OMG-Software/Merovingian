@@ -65,15 +65,32 @@ auto remove_sqlite_files(std::string const& path) -> void
 // before any signal can be delivered.
 volatile sig_atomic_t g_blocked_pipe_wr = -1;
 
+// Cap the number of SIGSYS reports written from the handler. A blocked syscall
+// that is called in a tight retry loop (e.g. SQLite's robustFchown() when the
+// privilege drop to a non-root uid failed) would otherwise keep trapping
+// forever, leaving the parent waitpid() blocked for the entire Meson timeout.
+// Writing a few reports is enough to name the missing syscall in the failure
+// output; after that we terminate the child immediately with exit_group so the
+// parent can reap it and the test fails fast instead of hanging CI.
+constexpr auto k_max_sigsys_reports = std::size_t{32};
+
 // SIGSYS handler installed under a SECCOMP_RET_TRAP variant of the production
 // allowlist. When a syscall is not on the allowlist the kernel traps here with
 // si_syscall set to the blocked syscall number; the handler writes that number
-// (as decimal, newline-terminated) to the pipe and returns. Returning (rather
-// than terminating) lets every missing syscall in the open path be reported in
-// a single run. The trapped syscall itself fails with -1, so the caller sees
-// an error and the run eventually ends via exit_group.
+// (as decimal, newline-terminated) to the pipe. The trapped syscall itself
+// fails with -1, and if the caller retries it we would trap repeatedly. After
+// a bounded number of reports the child is terminated so the parent is never
+// left waiting indefinitely.
 extern "C" auto on_seccomp_sigsys(int /*signum*/, siginfo_t* info, void* /*ucontext*/) -> void
 {
+    static std::size_t report_count = 0;
+    if (report_count >= k_max_sigsys_reports)
+    {
+        ::syscall(__NR_exit_group, 1);
+        __builtin_unreachable();
+    }
+    ++report_count;
+
     auto nr = (info != nullptr) ? static_cast<int>(info->si_syscall) : -1;
     auto negative = nr < 0;
     if (negative)
@@ -108,6 +125,12 @@ extern "C" auto on_seccomp_sigsys(int /*signum*/, siginfo_t* info, void* /*ucont
     {
         auto const written = ::write(wr, msg, static_cast<std::size_t>(msg_len));
         (void)written;
+    }
+
+    if (report_count >= k_max_sigsys_reports)
+    {
+        ::syscall(__NR_exit_group, 1);
+        __builtin_unreachable();
     }
 }
 
