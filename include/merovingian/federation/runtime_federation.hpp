@@ -3,6 +3,7 @@
 #pragma once
 
 #include "merovingian/config/config.hpp"
+#include "merovingian/http/rate_limit.hpp"
 
 #include <cstdint>
 #include <string>
@@ -22,6 +23,11 @@ struct RuntimeFederationConfig final
     bool verify_json_signatures{true};
     std::vector<std::string> deny_ip_ranges{};
     std::uint64_t max_transaction_bytes{0U};
+    std::uint32_t max_transaction_pdus{50U};
+    std::uint32_t max_transaction_edus{100U};
+    http::RateLimitPolicy per_origin_transaction_rate{120U, 60U};
+    http::RateLimitPolicy per_origin_pdu_rate{600U, 60U};
+    http::RateLimitPolicy per_origin_edu_rate{1200U, 60U};
     std::uint32_t remote_timeout_seconds{0U};
     // Separate budget for make_join/send_join/make_leave/send_leave (default 180s).
     std::uint32_t join_timeout_seconds{0U};

@@ -22,7 +22,9 @@
 #include <chrono>
 #include <cstdint>
 #include <future>
+#include <limits>
 #include <map>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <string>
@@ -150,6 +152,39 @@ namespace
         return iterator == runtime.remotes.end() ? nullptr : &(*iterator);
     }
 
+    [[nodiscard]] auto federation_guard(FederationRuntimeState const& runtime) -> std::unique_lock<std::recursive_mutex>
+    {
+        return std::unique_lock<std::recursive_mutex>{*runtime.mutex};
+    }
+
+    [[nodiscard]] auto remote_snapshot(FederationRuntimeState const& runtime, std::string_view server_name)
+        -> std::optional<FederationRemoteRuntime>
+    {
+        auto guard = federation_guard(runtime);
+        auto const* remote = find_remote(runtime, server_name);
+        return remote == nullptr ? std::nullopt : std::optional<FederationRemoteRuntime>{*remote};
+    }
+
+    auto persist_remote_trust(FederationRuntimeState& runtime, FederationRemoteRuntime const& remote) -> void
+    {
+        auto guard = federation_guard(runtime);
+        auto* existing = find_remote(runtime, remote.server_name);
+        if (existing != nullptr)
+        {
+            existing->trust = remote.trust;
+        }
+    }
+
+    auto persist_remote_signing_key(FederationRuntimeState& runtime, FederationRemoteRuntime const& remote) -> void
+    {
+        auto guard = federation_guard(runtime);
+        auto* existing = find_remote(runtime, remote.server_name);
+        if (existing != nullptr)
+        {
+            existing->signing_key = remote.signing_key;
+        }
+    }
+
     [[nodiscard]] auto make_decision(bool accepted, std::uint16_t status, std::string reason) -> FederationDecision
     {
         return {accepted, status, std::move(reason)};
@@ -177,17 +212,158 @@ namespace
     }
 
     [[nodiscard]] auto transaction_already_accepted(FederationRuntimeState const& runtime, std::string_view origin,
-                                                    std::string_view transaction_id) noexcept -> bool
+                                                    std::string_view transaction_id) -> bool
     {
+        auto guard = federation_guard(runtime);
         return std::ranges::any_of(runtime.accepted_transactions,
                                    [origin, transaction_id](FederationAcceptedTransaction const& accepted) {
                                        return accepted.origin == origin && accepted.transaction_id == transaction_id;
                                    });
     }
 
+    struct FederationRateLimitDecision final
+    {
+        bool allowed{true};
+        std::string reason{};
+        std::uint32_t max_requests{0U};
+        std::uint32_t window_seconds{0U};
+        std::uint32_t requests_seen{0U};
+        std::uint32_t weight{0U};
+    };
+
+    [[nodiscard]] auto rate_limit_bucket(FederationRuntimeState& runtime, std::string_view origin)
+        -> FederationRateLimitBucket&
+    {
+        auto iterator = std::ranges::find_if(runtime.rate_limit_buckets, [origin](FederationRateLimitBucket const& b) {
+            return b.origin == origin;
+        });
+        if (iterator == runtime.rate_limit_buckets.end())
+        {
+            runtime.rate_limit_buckets.push_back(FederationRateLimitBucket{.origin = std::string{origin}});
+            return runtime.rate_limit_buckets.back();
+        }
+        return *iterator;
+    }
+
+    [[nodiscard]] auto prepare_weighted_bucket(std::uint32_t count, std::chrono::steady_clock::time_point window_start,
+                                               http::RateLimitPolicy policy, std::uint32_t weight,
+                                               std::chrono::steady_clock::time_point now, std::string reason)
+        -> FederationRateLimitDecision
+    {
+        if (weight == 0U)
+        {
+            return FederationRateLimitDecision{.allowed = true};
+        }
+        if (!http::rate_limit_policy_is_valid(policy))
+        {
+            return FederationRateLimitDecision{.allowed = false, .reason = "invalid federation rate-limit policy"};
+        }
+        if (window_start == std::chrono::steady_clock::time_point{} ||
+            now - window_start >= std::chrono::seconds{policy.window_seconds})
+        {
+            count = 0U;
+        }
+        if (weight > policy.max_requests || count > policy.max_requests - weight)
+        {
+            return FederationRateLimitDecision{
+                .allowed = false,
+                .reason = std::move(reason),
+                .max_requests = policy.max_requests,
+                .window_seconds = policy.window_seconds,
+                .requests_seen = count,
+                .weight = weight,
+            };
+        }
+        return FederationRateLimitDecision{
+            .allowed = true,
+            .reason = {},
+            .max_requests = policy.max_requests,
+            .window_seconds = policy.window_seconds,
+            .requests_seen = count + weight,
+            .weight = weight,
+        };
+    }
+
+    [[nodiscard]] auto check_federation_origin_rate_limit(FederationRuntimeState& runtime, std::string_view origin,
+                                                          std::size_t pdu_count, std::size_t edu_count)
+        -> FederationRateLimitDecision
+    {
+        auto guard = federation_guard(runtime);
+        auto& bucket = rate_limit_bucket(runtime, origin);
+        auto const now = std::chrono::steady_clock::now();
+        auto transaction_count = bucket.transactions_seen;
+        auto pdu_seen = bucket.pdus_seen;
+        auto edu_seen = bucket.edus_seen;
+        auto transaction_window_start = bucket.transaction_window_start;
+        auto pdu_window_start = bucket.pdu_window_start;
+        auto edu_window_start = bucket.edu_window_start;
+
+        if (transaction_window_start == std::chrono::steady_clock::time_point{} ||
+            now - transaction_window_start >=
+                std::chrono::seconds{runtime.config.per_origin_transaction_rate.window_seconds})
+        {
+            transaction_count = 0U;
+            transaction_window_start = now;
+        }
+        if (pdu_window_start == std::chrono::steady_clock::time_point{} ||
+            now - pdu_window_start >= std::chrono::seconds{runtime.config.per_origin_pdu_rate.window_seconds})
+        {
+            pdu_seen = 0U;
+            pdu_window_start = now;
+        }
+        if (edu_window_start == std::chrono::steady_clock::time_point{} ||
+            now - edu_window_start >= std::chrono::seconds{runtime.config.per_origin_edu_rate.window_seconds})
+        {
+            edu_seen = 0U;
+            edu_window_start = now;
+        }
+
+        auto const transaction_decision = prepare_weighted_bucket(transaction_count, transaction_window_start,
+                                                                  runtime.config.per_origin_transaction_rate, 1U, now,
+                                                                  "remote transaction rate limit exceeded");
+        if (!transaction_decision.allowed)
+        {
+            return transaction_decision;
+        }
+        auto const pdu_weight =
+            static_cast<std::uint32_t>(std::min<std::size_t>(pdu_count, std::numeric_limits<std::uint32_t>::max()));
+        auto const pdu_decision =
+            prepare_weighted_bucket(pdu_seen, pdu_window_start, runtime.config.per_origin_pdu_rate, pdu_weight, now,
+                                    "remote PDU rate limit exceeded");
+        if (!pdu_decision.allowed)
+        {
+            return pdu_decision;
+        }
+        auto const edu_weight =
+            static_cast<std::uint32_t>(std::min<std::size_t>(edu_count, std::numeric_limits<std::uint32_t>::max()));
+        auto const edu_decision =
+            prepare_weighted_bucket(edu_seen, edu_window_start, runtime.config.per_origin_edu_rate, edu_weight, now,
+                                    "remote EDU rate limit exceeded");
+        if (!edu_decision.allowed)
+        {
+            return edu_decision;
+        }
+
+        bucket.transactions_seen = transaction_decision.requests_seen;
+        bucket.pdus_seen = pdu_decision.requests_seen;
+        bucket.edus_seen = edu_decision.requests_seen;
+        bucket.transaction_window_start = transaction_window_start;
+        bucket.pdu_window_start = pdu_window_start;
+        bucket.edu_window_start = edu_window_start;
+        return FederationRateLimitDecision{
+            .allowed = true,
+            .reason = {},
+            .max_requests = runtime.config.per_origin_transaction_rate.max_requests,
+            .window_seconds = runtime.config.per_origin_transaction_rate.window_seconds,
+            .requests_seen = transaction_decision.requests_seen,
+            .weight = 1U,
+        };
+    }
+
     auto audit_federation(FederationRuntimeState& runtime, std::string_view event_type, std::string_view origin,
                           std::string_view target, std::string_view reason) -> void
     {
+        auto guard = federation_guard(runtime);
         runtime.audit_events.push_back(observability::make_audit_event(observability::AuditCategory::policy, event_type,
                                                                        origin, target, reason, "federation"));
     }
@@ -1235,11 +1411,14 @@ auto verify_signed_federation_request(SignedFederationRequest const& request, Fe
 
 auto make_federation_runtime_state(RuntimeFederationConfig config) -> FederationRuntimeState
 {
-    return {std::move(config), {}, {}, {}};
+    auto runtime = FederationRuntimeState{};
+    runtime.config = std::move(config);
+    return runtime;
 }
 
 auto upsert_remote(FederationRuntimeState& runtime, FederationRemoteRuntime remote) -> void
 {
+    auto guard = federation_guard(runtime);
     auto* existing = find_remote(runtime, remote.server_name);
     if (existing != nullptr)
     {
@@ -1249,8 +1428,9 @@ auto upsert_remote(FederationRuntimeState& runtime, FederationRemoteRuntime remo
     runtime.remotes.push_back(std::move(remote));
 }
 
-auto federation_remote_is_known(FederationRuntimeState const& runtime, std::string_view server_name) noexcept -> bool
+auto federation_remote_is_known(FederationRuntimeState const& runtime, std::string_view server_name) -> bool
 {
+    auto guard = federation_guard(runtime);
     return find_remote(runtime, server_name) != nullptr;
 }
 
@@ -1378,7 +1558,7 @@ namespace
     {
         bool accepted{false};
         FederationRouteMatch route_match{};
-        FederationRemoteRuntime* remote{nullptr};
+        FederationRemoteRuntime remote{};
         FederationResponse error{};
     };
 
@@ -1429,8 +1609,8 @@ namespace
                 .accepted = false, .error = {403U, server_policy.reason}
             };
         }
-        auto* remote = find_remote(runtime, request.origin);
-        if (remote == nullptr && runtime.remote_key_resolver)
+        auto remote = remote_snapshot(runtime, request.origin);
+        if (!remote.has_value() && runtime.remote_key_resolver)
         {
             // Unknown remote: try the injected resolver to discover, fetch, and
             // verify the remote's published signing keys, then upsert a full
@@ -1450,10 +1630,10 @@ namespace
                     resolved->trust.reputation_score = 100U;
                 }
                 upsert_remote(runtime, std::move(*resolved));
-                remote = find_remote(runtime, request.origin);
+                remote = remote_snapshot(runtime, request.origin);
             }
         }
-        if (remote == nullptr)
+        if (!remote.has_value())
         {
             log_diagnostic("request.rejected",
                            {
@@ -1481,6 +1661,7 @@ namespace
             if (refreshed.has_value() && !refreshed->signing_key.public_key_bytes.empty())
             {
                 remote->signing_key = std::move(refreshed->signing_key);
+                persist_remote_signing_key(runtime, *remote);
             }
         }
         auto const discovery = federation_discovery_policy(remote->discovery);
@@ -1514,7 +1695,7 @@ namespace
                 .accepted = false, .error = {status, trust.reason}
             };
         }
-        return {.accepted = true, .route_match = route_match, .remote = remote, .error = FederationResponse{}};
+        return {.accepted = true, .route_match = route_match, .remote = *remote, .error = FederationResponse{}};
     }
 
     // Block B: the X-Matrix request signature verify. Returns nullopt when the
@@ -1530,6 +1711,7 @@ namespace
         if (!request_signature.accepted)
         {
             ++remote.trust.consecutive_failures;
+            persist_remote_trust(runtime, remote);
             log_diagnostic("request.rejected",
                            {
                                {"origin",               request.origin,                                       false},
@@ -1556,7 +1738,7 @@ auto verify_inbound_federation_signature(FederationRuntimeState& runtime, Signed
     }
     if (!request.signature_verified)
     {
-        auto const rejection = check_inbound_request_signature(runtime, request, *resolution.remote);
+        auto const rejection = check_inbound_request_signature(runtime, request, resolution.remote);
         if (rejection.has_value())
         {
             return {.accepted = false, .identity = VerifiedFederationIdentity{}, .error = std::move(*rejection)};
@@ -1584,6 +1766,8 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
     {
         return inbound_resolution.error;
     }
+    auto const& route_match = inbound_resolution.route_match;
+    auto remote = inbound_resolution.remote;
     // The main process verifies the X-Matrix signature before forwarding the
     // request to the worker over the authenticated IPC channel (#323). When
     // signature_verified is set we trust that result and skip the crypto check
@@ -1591,21 +1775,20 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
     // own remote record (PDU verification needs the peer's published key).
     if (!request.signature_verified)
     {
-        auto const rejection = check_inbound_request_signature(runtime, request, *inbound_resolution.remote);
+        auto const rejection = check_inbound_request_signature(runtime, request, remote);
         if (rejection.has_value())
         {
             return *rejection;
         }
     }
-    auto const& route_match = inbound_resolution.route_match;
-    auto* remote = inbound_resolution.remote;
     if (route_match.route.endpoint != FederationEndpoint::transaction)
     {
         auto const non_transaction_response =
-            dispatch_non_transaction_endpoint(runtime, request, route_match.route, *remote);
+            dispatch_non_transaction_endpoint(runtime, request, route_match.route, remote);
         if (non_transaction_response.status >= 200U && non_transaction_response.status < 300U)
         {
-            remote->trust.consecutive_failures = 0U;
+            remote.trust.consecutive_failures = 0U;
+            persist_remote_trust(runtime, remote);
             log_diagnostic("request.accepted",
                            {
                                {"origin", request.origin,                                       false},
@@ -1634,7 +1817,8 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
     auto const transaction_id = transaction_id_from_send_target(request.target);
     if (!parsed_body.valid)
     {
-        ++remote->trust.consecutive_failures;
+        ++remote.trust.consecutive_failures;
+        persist_remote_trust(runtime, remote);
         log_diagnostic("transaction.rejected", {
                                                    {"origin",         request.origin,    false},
                                                    {"transaction_id", transaction_id,    false},
@@ -1647,7 +1831,8 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
     if (parsed_body.origin != request.origin)
     {
         auto constexpr reason = "transaction origin does not match request origin";
-        ++remote->trust.consecutive_failures;
+        ++remote.trust.consecutive_failures;
+        persist_remote_trust(runtime, remote);
         log_diagnostic("transaction.rejected", {
                                                    {"origin",         request.origin, false},
                                                    {"transaction_id", transaction_id, false},
@@ -1667,10 +1852,12 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
         transaction.edus.push_back(edu_type);
     }
     auto const transaction_decision =
-        validate_federation_transaction(transaction, runtime.config.max_transaction_bytes);
+        validate_federation_transaction(transaction, runtime.config.max_transaction_bytes,
+                                        runtime.config.max_transaction_pdus, runtime.config.max_transaction_edus);
     if (!transaction_decision.accepted)
     {
-        ++remote->trust.consecutive_failures;
+        ++remote.trust.consecutive_failures;
+        persist_remote_trust(runtime, remote);
         log_diagnostic("transaction.rejected", {
                                                    {"origin",         request.origin,                          false},
                                                    {"transaction_id", transaction.transaction_id,              false},
@@ -1682,9 +1869,31 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
         audit_federation(runtime, "federation.rejected", request.origin, request.target, transaction_decision.reason);
         return {400U, homeserver::matrix_error("M_BAD_JSON", transaction_decision.reason)};
     }
+    auto const rate_limit =
+        check_federation_origin_rate_limit(runtime, request.origin, transaction.pdus.size(), transaction.edus.size());
+    if (!rate_limit.allowed)
+    {
+        log_diagnostic("transaction.rate_limited",
+                       {
+                           {"origin",         request.origin,                            false},
+                           {"transaction_id", transaction.transaction_id,                false},
+                           {"status",         "429",                                     false},
+                           {"reason",         rate_limit.reason,                         false},
+                           {"pdu_count",      std::to_string(transaction.pdus.size()),   false},
+                           {"edu_count",      std::to_string(transaction.edus.size()),   false},
+                           {"max_requests",   std::to_string(rate_limit.max_requests),   false},
+                           {"window_seconds", std::to_string(rate_limit.window_seconds), false},
+                           {"requests_seen",  std::to_string(rate_limit.requests_seen),  false},
+                           {"weight",         std::to_string(rate_limit.weight),         false}
+        },
+                       observability::LogEventSeverity::warning);
+        audit_federation(runtime, "federation.rate_limited", request.origin, request.target, rate_limit.reason);
+        return {429U, homeserver::matrix_error("M_LIMIT_EXCEEDED", rate_limit.reason)};
+    }
     if (transaction_already_accepted(runtime, request.origin, transaction.transaction_id))
     {
-        remote->trust.consecutive_failures = 0U;
+        remote.trust.consecutive_failures = 0U;
+        persist_remote_trust(runtime, remote);
         audit_federation(runtime, "federation.duplicate", request.origin, request.target,
                          "transaction already accepted");
         return {200U, serialize_response_object(canonicaljson::Object{
@@ -1789,7 +1998,7 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
         // Ed25519 verification. Fail-closed: if the resolver is wired but returns
         // no key, the PDU is rejected rather than persisted without verification.
         auto const pdu_sender_dom = sender_domain(pdu.sender);
-        auto key_for_pdu = std::optional<FederationKeyRecord>{remote->signing_key};
+        auto key_for_pdu = std::optional<FederationKeyRecord>{remote.signing_key};
         if (!pdu_sender_dom.empty() && pdu_sender_dom != request.origin && runtime.remote_key_resolver)
         {
             auto sender_key_id = std::string{};
@@ -1826,7 +2035,7 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
                 }
                 else
                 {
-                    ++remote->trust.consecutive_failures;
+                    ++remote.trust.consecutive_failures;
                     auto const reason = std::string{"relayed PDU: could not resolve sender domain signing key"};
                     log_diagnostic("pdu.rejected", {
                                                        {"origin",     request.origin,              false},
@@ -1844,7 +2053,7 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
         auto const pdu_decision = authorize_federation_pdu(pdu, request.origin, key_for_pdu);
         if (!pdu_decision.accepted)
         {
-            ++remote->trust.consecutive_failures;
+            ++remote.trust.consecutive_failures;
             log_diagnostic("pdu.rejected", {
                                                {"origin",         request.origin,                      false},
                                                {"transaction_id", transaction.transaction_id,          false},
@@ -1970,9 +2179,13 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
         }
     }
 
-    remote->trust.consecutive_failures = 0U;
-    runtime.accepted_transactions.push_back(
-        {request.origin, transaction.transaction_id, transaction.pdus.size(), transaction.edus.size()});
+    remote.trust.consecutive_failures = 0U;
+    persist_remote_trust(runtime, remote);
+    {
+        auto guard = federation_guard(runtime);
+        runtime.accepted_transactions.push_back(
+            {request.origin, transaction.transaction_id, transaction.pdus.size(), transaction.edus.size()});
+    }
     log_diagnostic("transaction.accepted", {
                                                {"origin",              request.origin,                          false},
                                                {"transaction_id",      transaction.transaction_id,              false},
@@ -1999,13 +2212,15 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
 
 auto federation_runtime_summary(FederationRuntimeState const& runtime) -> std::string
 {
+    auto guard = federation_guard(runtime);
     return "Federation runtime remotes=" + std::to_string(runtime.remotes.size()) +
            " accepted_transactions=" + std::to_string(runtime.accepted_transactions.size()) +
            " audit_events=" + std::to_string(runtime.audit_events.size());
 }
 
-auto federation_audit_is_safe(FederationRuntimeState const& runtime) noexcept -> bool
+auto federation_audit_is_safe(FederationRuntimeState const& runtime) -> bool
 {
+    auto guard = federation_guard(runtime);
     return std::ranges::all_of(runtime.audit_events, [](observability::AuditLogEvent const& event) {
         return event.reason_code.find("sig:v1:") == std::string::npos &&
                event.reason_code.find("verify_token") == std::string::npos;

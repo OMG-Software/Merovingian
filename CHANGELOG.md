@@ -1,3 +1,22 @@
+## 0.10.32
+
+### Added
+- **feat(federation): inbound `/send` now applies authenticated per-origin abuse controls:** Matrix v1.18 transaction caps are enforced explicitly (`50` PDUs, `100` EDUs by default), and each verified remote origin has configurable transaction, PDU, and EDU rate buckets so a burst from one server is throttled by actual federation pressure rather than by spoofable event sender IDs.
+- **feat(config): operators can tune federation abuse limits with `security.federation.max_transaction_pdus`, `security.federation.max_transaction_edus`, `security.federation.per_origin_transaction_rate`, `security.federation.per_origin_pdu_rate`, and `security.federation.per_origin_edu_rate`.**
+- **docs(federation): configuration and architecture docs now explicitly distinguish inbound `/send` abuse controls from outbound destination queue/backoff controls.**
+
+### Fixed
+- **fix(federation-worker): inbound federation dispatch no longer holds `HomeserverRuntime::mutex` across whole `/send` transactions:** the previous wrapper lock survived the earlier PDU-stripe and IPC handler-pool fixes, so a worker shard still serialized relayed transactions while each request waited on worker-to-main sink IPC. `handle_federation_http_request()` now holds the global runtime mutex only for startup checks, callback wiring, key publication, request identity construction, and trust-safety policy lookup, then releases it before `handle_inbound_federation_request()` runs.
+- **fix(federation): `FederationRuntimeState` now protects its own mutable bookkeeping while federation requests run concurrently:** remote records are copied out for request processing, remote signing-key/trust updates are persisted through narrow guarded helpers, and accepted transaction/audit vectors are updated under a federation-local mutex instead of relying on the homeserver global mutex.
+- **fix(federation): valid but excessive `/send` traffic now returns `429 M_LIMIT_EXCEEDED` at the origin policy boundary while individual invalid PDUs still report per-PDU errors in a `200` transaction response, preserving Matrix federation retry semantics.**
+- **fix(federation): `handle_inbound_federation_request()` no longer passes a const remote record to `check_inbound_request_signature()` and no longer dereferences a non-optional remote when choosing the PDU signing key, restoring compilation after the burst-delivery refactor.**
+- **fix(federation): `federation_summary()` now formats per-origin transaction/PDU/EDU rates as `N/Ws` (e.g. `120/60s`) so the runtime summary matches the policy syntax and the bounded-operational-values test passes.**
+- **fix(fuzz): `fuzz-config-parser` now links `http_lib`, `observability_lib`, `core_lib`, and `platform_lib` because config validation calls `http::rate_limit_policy_is_valid`, and `rate_limit.cpp` pulls in observability symbols.**
+
+### Testing
+- **test(federation): `tests/unit/test_federation_runtime_callbacks.cpp` now blocks a federation transaction sink and asserts unrelated runtime work can still acquire `HomeserverRuntime::mutex`, preventing the wide-lock drip-feed regression from returning.**
+- **test(federation): transaction validation and inbound federation tests now cover Matrix PDU/EDU count caps plus per-origin transaction/PDU/EDU throttling without incrementing remote trust failures.**
+
 ## 0.10.31
 
 ### Fixed

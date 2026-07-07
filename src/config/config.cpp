@@ -665,6 +665,33 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
         findings.push_back({"security.federation.max_transaction_size",
                             "federation transaction size must be a positive bounded byte size"});
     }
+    if (config.security().federation.max_transaction_pdus == 0U ||
+        config.security().federation.max_transaction_pdus > 50U)
+    {
+        findings.push_back(
+            {"security.federation.max_transaction_pdus", "federation transaction PDU limit must be between 1 and 50"});
+    }
+    if (config.security().federation.max_transaction_edus == 0U ||
+        config.security().federation.max_transaction_edus > 100U)
+    {
+        findings.push_back(
+            {"security.federation.max_transaction_edus", "federation transaction EDU limit must be between 1 and 100"});
+    }
+    if (!http::rate_limit_policy_is_valid(config.security().federation.per_origin_transaction_rate))
+    {
+        findings.push_back({"security.federation.per_origin_transaction_rate",
+                            "federation per-origin transaction rate must be N>0 per Ws>0"});
+    }
+    if (!http::rate_limit_policy_is_valid(config.security().federation.per_origin_pdu_rate))
+    {
+        findings.push_back(
+            {"security.federation.per_origin_pdu_rate", "federation per-origin PDU rate must be N>0 per Ws>0"});
+    }
+    if (!http::rate_limit_policy_is_valid(config.security().federation.per_origin_edu_rate))
+    {
+        findings.push_back(
+            {"security.federation.per_origin_edu_rate", "federation per-origin EDU rate must be N>0 per Ws>0"});
+    }
 
     auto const federation_remote_timeout = parse_duration_seconds(config.security().federation.remote_timeout);
     if (!federation_remote_timeout.valid)

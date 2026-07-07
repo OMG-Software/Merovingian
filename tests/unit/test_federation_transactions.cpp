@@ -140,6 +140,10 @@ SCENARIO("Federation transaction validation accepts bounded transactions and rej
         empty.edus.clear();
         auto anonymous = valid;
         anonymous.origin.clear();
+        auto too_many_pdus = valid;
+        too_many_pdus.pdus.assign(51U, "$event");
+        auto too_many_edus = valid;
+        too_many_edus.edus.assign(101U, "m.typing");
 
         WHEN("transactions are validated")
         {
@@ -147,8 +151,12 @@ SCENARIO("Federation transaction validation accepts bounded transactions and rej
             auto const rejected_oversized = merovingian::federation::validate_federation_transaction(oversized, 1024U);
             auto const rejected_empty = merovingian::federation::validate_federation_transaction(empty, 1024U);
             auto const rejected_anonymous = merovingian::federation::validate_federation_transaction(anonymous, 1024U);
+            auto const rejected_pdu_count =
+                merovingian::federation::validate_federation_transaction(too_many_pdus, 1024U);
+            auto const rejected_edu_count =
+                merovingian::federation::validate_federation_transaction(too_many_edus, 1024U);
 
-            THEN("only bounded, identified transactions are accepted")
+            THEN("only bounded, spec-sized identified transactions are accepted")
             {
                 REQUIRE(accepted.accepted);
                 REQUIRE_FALSE(rejected_oversized.accepted);
@@ -157,6 +165,10 @@ SCENARIO("Federation transaction validation accepts bounded transactions and rej
                 REQUIRE(rejected_empty.reason.empty());
                 REQUIRE_FALSE(rejected_anonymous.accepted);
                 REQUIRE(rejected_anonymous.reason == "invalid transaction origin");
+                REQUIRE_FALSE(rejected_pdu_count.accepted);
+                REQUIRE(rejected_pdu_count.reason == "transaction exceeds configured PDU count limit");
+                REQUIRE_FALSE(rejected_edu_count.accepted);
+                REQUIRE(rejected_edu_count.reason == "transaction exceeds configured EDU count limit");
             }
         }
     }
