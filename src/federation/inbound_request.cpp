@@ -1766,6 +1766,8 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
     {
         return inbound_resolution.error;
     }
+    auto const& route_match = inbound_resolution.route_match;
+    auto remote = inbound_resolution.remote;
     // The main process verifies the X-Matrix signature before forwarding the
     // request to the worker over the authenticated IPC channel (#323). When
     // signature_verified is set we trust that result and skip the crypto check
@@ -1773,14 +1775,12 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
     // own remote record (PDU verification needs the peer's published key).
     if (!request.signature_verified)
     {
-        auto const rejection = check_inbound_request_signature(runtime, request, inbound_resolution.remote);
+        auto const rejection = check_inbound_request_signature(runtime, request, remote);
         if (rejection.has_value())
         {
             return *rejection;
         }
     }
-    auto const& route_match = inbound_resolution.route_match;
-    auto remote = inbound_resolution.remote;
     if (route_match.route.endpoint != FederationEndpoint::transaction)
     {
         auto const non_transaction_response =
@@ -1998,7 +1998,7 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
         // Ed25519 verification. Fail-closed: if the resolver is wired but returns
         // no key, the PDU is rejected rather than persisted without verification.
         auto const pdu_sender_dom = sender_domain(pdu.sender);
-        auto key_for_pdu = std::optional<FederationKeyRecord>{remote->signing_key};
+        auto key_for_pdu = std::optional<FederationKeyRecord>{remote.signing_key};
         if (!pdu_sender_dom.empty() && pdu_sender_dom != request.origin && runtime.remote_key_resolver)
         {
             auto sender_key_id = std::string{};
