@@ -1741,33 +1741,41 @@ auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope
         auto const* membership_str = mem_obj != nullptr ? content_membership(*mem_obj) : nullptr;
         if (membership_str != nullptr)
         {
+            // The PDU has already been committed and applied above. Returning a
+            // failure here would tell the upstream server the event was rejected,
+            // which is incorrect and can cause retries even though the event is
+            // already in our store. Log the error but keep the accepted result.
             auto const store_ok = upsert_membership(runtime.database.persistent_store, room_id, *envelope.state_key,
                                                     *membership_str, stream_ordering);
             if (!store_ok)
             {
-                return {federation::PduIngestionStatus::internal_error, "membership persistence failed"};
+                LOG_WARNING("Membership persistence failed after PDU was accepted; event_id=" + envelope.event_id +
+                            " room_id=" + room_id + " user_id=" + *envelope.state_key +
+                            " membership=" + std::string{*membership_str});
             }
-
-            auto const room_it = std::ranges::find_if(runtime.database.rooms, [&](LocalRoom const& r) {
-                return r.room_id == room_id;
-            });
-            if (room_it != runtime.database.rooms.end())
+            else
             {
-                auto& members = room_it->members;
-                if (*membership_str == "join")
+                auto const room_it = std::ranges::find_if(runtime.database.rooms, [&](LocalRoom const& r) {
+                    return r.room_id == room_id;
+                });
+                if (room_it != runtime.database.rooms.end())
                 {
-                    if (!std::ranges::any_of(members, [&](std::string const& m) {
-                            return m == *envelope.state_key;
-                        }))
+                    auto& members = room_it->members;
+                    if (*membership_str == "join")
                     {
-                        members.push_back(*envelope.state_key);
+                        if (!std::ranges::any_of(members, [&](std::string const& m) {
+                                return m == *envelope.state_key;
+                            }))
+                        {
+                            members.push_back(*envelope.state_key);
+                        }
+                        broadcast_local_device_lists_to_remote_joiner(runtime, room_id, *envelope.state_key);
                     }
-                    broadcast_local_device_lists_to_remote_joiner(runtime, room_id, *envelope.state_key);
-                }
-                else
-                {
-                    auto const to_erase = std::ranges::remove(members, *envelope.state_key);
-                    members.erase(to_erase.begin(), to_erase.end());
+                    else
+                    {
+                        auto const to_erase = std::ranges::remove(members, *envelope.state_key);
+                        members.erase(to_erase.begin(), to_erase.end());
+                    }
                 }
             }
         }
