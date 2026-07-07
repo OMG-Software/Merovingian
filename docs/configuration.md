@@ -995,6 +995,62 @@ Deny-by-default federation requires a non-empty `allowed_servers` list while fed
 
 `security.federation.deny_ip_ranges` remains separate from server-name policy and is used for private or loopback network-range blocking.
 
+## Federation inbound abuse controls
+
+Inbound `/send/{txnId}` transactions are authenticated by `X-Matrix` request
+signatures before Merovingian charges rate buckets. Buckets are keyed by the
+verified remote origin, not by the event sender ID: a remote server can relay
+events for many users, and an abusive remote can rotate sender IDs. Matrix
+Server-Server API v1.18 limits each transaction to at most 50 PDUs and 100
+EDUs; the defaults match those spec caps, and operators may lower them.
+
+```text
+security.federation.max_transaction_pdus=50
+security.federation.max_transaction_edus=100
+security.federation.per_origin_transaction_rate=120/60s
+security.federation.per_origin_pdu_rate=600/60s
+security.federation.per_origin_edu_rate=1200/60s
+```
+
+| Key | Type | Default | Reload | Notes |
+|-----|------|---------|--------|-------|
+| `security.federation.max_transaction_pdus` | unsigned int | `50` | reloadable (`requires_restart=false`) | Hard cap on PDUs in one inbound `/send` transaction. Must be `1..50`; values above 50 are rejected because they would violate Matrix v1.18. |
+| `security.federation.max_transaction_edus` | unsigned int | `100` | reloadable (`requires_restart=false`) | Hard cap on EDUs in one inbound `/send` transaction. Must be `1..100`; values above 100 are rejected because they would violate Matrix v1.18. |
+| `security.federation.per_origin_transaction_rate` | rate | `120/60s` | reloadable (`requires_restart=false`) | Maximum accepted `/send` transactions per verified remote origin per window. |
+| `security.federation.per_origin_pdu_rate` | rate | `600/60s` | reloadable (`requires_restart=false`) | Weighted PDU budget per verified remote origin per window. A transaction with 40 PDUs consumes 40 units. |
+| `security.federation.per_origin_edu_rate` | rate | `1200/60s` | reloadable (`requires_restart=false`) | Weighted EDU budget per verified remote origin per window. A transaction with 40 EDUs consumes 40 units. |
+
+Rate values use `N/Ws` or `N/Wm` syntax, for example `300/60s` or `1200/1m`.
+If an authenticated origin exceeds one of these buckets, Merovingian returns
+`429 M_LIMIT_EXCEEDED` for the transaction and records a `federation.rate_limited`
+audit event. Invalid individual PDUs inside an otherwise valid transaction are
+still reported as per-PDU errors in the `200` transaction response, matching
+the Matrix retry model and avoiding destination-wide remote backoff for one
+bad event.
+
+## Federation outbound delivery controls
+
+Outbound federation is controlled separately from the inbound abuse controls
+above. The `security.federation.per_origin_*` keys apply only when a remote
+server sends `/send/{txnId}` traffic to Merovingian; they do not throttle
+Merovingian's own delivery to other homeservers.
+
+For outbound traffic, Merovingian queues `OutboundTransaction` records per
+destination and `DispatchWorker` drains that queue with destination retry
+state, a circuit breaker, and exponential backoff. A remote destination that
+returns failures or times out is delayed before the next delivery attempt, so
+one failing homeserver does not spin the sender or block unrelated
+destinations. Outbound HTTP also uses federation discovery protections,
+including private/loopback address rejection and pinned resolved addresses.
+
+The relevant operator knobs are:
+
+| Key | Type | Default | Reload | Notes |
+|-----|------|---------|--------|-------|
+| `security.federation.remote_timeout` | duration | `60s` | reloadable (`requires_restart=false`) | General outbound federation HTTP timeout for calls other than the join/leave dance. |
+| `security.federation.deny_ip_ranges` | string list | private/loopback ranges | reloadable (`requires_restart=false`) | Blocks discovered outbound federation targets in private or loopback address space. |
+| `federation.worker.relay_threads` | unsigned int | `32` | requires restart | Thread pool for worker paths that can block on outbound HTTP or synchronous main-process relays. |
+
 ## Federation join timeout and parallelism
 
 Joining a remote room runs the `make_join`/`send_join` dance against the resident

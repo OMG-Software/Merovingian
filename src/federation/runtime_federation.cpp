@@ -54,6 +54,11 @@ auto make_runtime_federation_config(config::Config const& config) -> RuntimeFede
         config.security().federation.verify_json_signatures,
         config.security().federation.deny_ip_ranges,
         max_transaction_size.valid ? max_transaction_size.bytes : 0U,
+        config.security().federation.max_transaction_pdus,
+        config.security().federation.max_transaction_edus,
+        config.security().federation.per_origin_transaction_rate,
+        config.security().federation.per_origin_pdu_rate,
+        config.security().federation.per_origin_edu_rate,
         remote_timeout.valid ? remote_timeout.seconds : 0U,
         join_timeout.valid ? join_timeout.seconds : 0U,
         config.security().federation.join_parallelism,
@@ -72,6 +77,11 @@ auto federation_summary(RuntimeFederationConfig const& config) -> std::string
            " allowed_servers=" + std::to_string(config.allowed_servers.size()) +
            " denied_servers=" + std::to_string(config.denied_servers.size()) +
            " max_transaction_bytes=" + std::to_string(config.max_transaction_bytes) +
+           " max_transaction_pdus=" + std::to_string(config.max_transaction_pdus) +
+           " max_transaction_edus=" + std::to_string(config.max_transaction_edus) +
+           " per_origin_transaction_rate=" + http::rate_limit_summary(config.per_origin_transaction_rate) +
+           " per_origin_pdu_rate=" + http::rate_limit_summary(config.per_origin_pdu_rate) +
+           " per_origin_edu_rate=" + http::rate_limit_summary(config.per_origin_edu_rate) +
            " remote_timeout_seconds=" + std::to_string(config.remote_timeout_seconds) +
            " join_timeout_seconds=" + std::to_string(config.join_timeout_seconds) +
            " join_parallelism=" + std::to_string(config.join_parallelism) +

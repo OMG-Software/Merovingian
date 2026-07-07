@@ -198,6 +198,35 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "security.federation.max_transaction_size");
     }
+    if (current.security().federation.max_transaction_pdus != next.security().federation.max_transaction_pdus)
+    {
+        add_change(plan, "security.federation.max_transaction_pdus");
+    }
+    if (current.security().federation.max_transaction_edus != next.security().federation.max_transaction_edus)
+    {
+        add_change(plan, "security.federation.max_transaction_edus");
+    }
+    if (current.security().federation.per_origin_transaction_rate.max_requests !=
+            next.security().federation.per_origin_transaction_rate.max_requests ||
+        current.security().federation.per_origin_transaction_rate.window_seconds !=
+            next.security().federation.per_origin_transaction_rate.window_seconds)
+    {
+        add_change(plan, "security.federation.per_origin_transaction_rate");
+    }
+    if (current.security().federation.per_origin_pdu_rate.max_requests !=
+            next.security().federation.per_origin_pdu_rate.max_requests ||
+        current.security().federation.per_origin_pdu_rate.window_seconds !=
+            next.security().federation.per_origin_pdu_rate.window_seconds)
+    {
+        add_change(plan, "security.federation.per_origin_pdu_rate");
+    }
+    if (current.security().federation.per_origin_edu_rate.max_requests !=
+            next.security().federation.per_origin_edu_rate.max_requests ||
+        current.security().federation.per_origin_edu_rate.window_seconds !=
+            next.security().federation.per_origin_edu_rate.window_seconds)
+    {
+        add_change(plan, "security.federation.per_origin_edu_rate");
+    }
     if (current.security().federation.remote_timeout != next.security().federation.remote_timeout)
     {
         add_change(plan, "security.federation.remote_timeout");

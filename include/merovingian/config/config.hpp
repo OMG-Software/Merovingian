@@ -112,6 +112,16 @@ struct FederationSecurityConfig final
         "127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "::1/128", "fc00::/7",
     };
     std::string max_transaction_size{"10MiB"};
+    // Matrix Server-Server API v1.18 caps /send transactions at 50 PDUs
+    // and 100 EDUs. Operators may lower these caps but validation rejects
+    // values above the spec maximum.
+    std::uint32_t max_transaction_pdus{50U};
+    std::uint32_t max_transaction_edus{100U};
+    // Authenticated inbound federation pressure caps. These are keyed by the
+    // verified remote origin, not by client IP or claimed event sender.
+    http::RateLimitPolicy per_origin_transaction_rate{120U, 60U};
+    http::RateLimitPolicy per_origin_pdu_rate{600U, 60U};
+    http::RateLimitPolicy per_origin_edu_rate{1200U, 60U};
     std::string remote_timeout{"60s"};
     // Separate, extendable budget for the make_join/send_join/make_leave/send_leave
     // membership dance. A large remote room's make_join can take longer than the

@@ -16,6 +16,11 @@ SCENARIO("Runtime federation config parses validated transaction limits", "[fede
         security.federation.allowed_servers = {"matrix.org"};
         security.federation.denied_servers = {"bad.example"};
         security.federation.max_transaction_size = "8MiB";
+        security.federation.max_transaction_pdus = 25U;
+        security.federation.max_transaction_edus = 75U;
+        security.federation.per_origin_transaction_rate = {60U, 60U};
+        security.federation.per_origin_pdu_rate = {300U, 60U};
+        security.federation.per_origin_edu_rate = {900U, 60U};
         security.federation.remote_timeout = "45s";
         security.federation.join_timeout = "200s";
         security.federation.join_parallelism = 12U;
@@ -42,6 +47,11 @@ SCENARIO("Runtime federation config parses validated transaction limits", "[fede
                 REQUIRE(runtime_federation.require_valid_tls);
                 REQUIRE(runtime_federation.verify_json_signatures);
                 REQUIRE(runtime_federation.max_transaction_bytes == 8388608U);
+                REQUIRE(runtime_federation.max_transaction_pdus == 25U);
+                REQUIRE(runtime_federation.max_transaction_edus == 75U);
+                REQUIRE(runtime_federation.per_origin_transaction_rate.max_requests == 60U);
+                REQUIRE(runtime_federation.per_origin_pdu_rate.max_requests == 300U);
+                REQUIRE(runtime_federation.per_origin_edu_rate.max_requests == 900U);
                 REQUIRE(runtime_federation.remote_timeout_seconds == 45U);
                 REQUIRE(runtime_federation.join_timeout_seconds == 200U);
                 REQUIRE(runtime_federation.join_parallelism == 12U);
@@ -65,6 +75,11 @@ SCENARIO("Runtime federation summary exposes bounded operational values", "[fede
         runtime_federation.allowed_servers = {"matrix.org"};
         runtime_federation.denied_servers = {"bad.example"};
         runtime_federation.max_transaction_bytes = 10485760U;
+        runtime_federation.max_transaction_pdus = 50U;
+        runtime_federation.max_transaction_edus = 100U;
+        runtime_federation.per_origin_transaction_rate = {120U, 60U};
+        runtime_federation.per_origin_pdu_rate = {600U, 60U};
+        runtime_federation.per_origin_edu_rate = {1200U, 60U};
         runtime_federation.remote_timeout_seconds = 30U;
         runtime_federation.join_timeout_seconds = 180U;
         runtime_federation.join_parallelism = 8U;
@@ -84,6 +99,11 @@ SCENARIO("Runtime federation summary exposes bounded operational values", "[fede
                 REQUIRE(summary.find("allowed_servers=1") != std::string::npos);
                 REQUIRE(summary.find("denied_servers=1") != std::string::npos);
                 REQUIRE(summary.find("max_transaction_bytes=10485760") != std::string::npos);
+                REQUIRE(summary.find("max_transaction_pdus=50") != std::string::npos);
+                REQUIRE(summary.find("max_transaction_edus=100") != std::string::npos);
+                REQUIRE(summary.find("per_origin_transaction_rate=120/60s") != std::string::npos);
+                REQUIRE(summary.find("per_origin_pdu_rate=600/60s") != std::string::npos);
+                REQUIRE(summary.find("per_origin_edu_rate=1200/60s") != std::string::npos);
                 REQUIRE(summary.find("remote_timeout_seconds=30") != std::string::npos);
                 REQUIRE(summary.find("join_timeout_seconds=180") != std::string::npos);
                 REQUIRE(summary.find("join_parallelism=8") != std::string::npos);

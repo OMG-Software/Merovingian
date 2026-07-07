@@ -2164,19 +2164,24 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
 [[nodiscard]] auto handle_federation_http_request(HomeserverRuntime& runtime, LocalHttpRequest const& request)
     -> LocalHttpResponse
 {
-    auto guard = std::unique_lock<std::recursive_mutex>{runtime.mutex};
-    if (!runtime.started)
+    auto signed_request_opt = std::optional<federation::SignedFederationRequest>{};
+
     {
-        return response(503U, "runtime not started");
-    }
-    wire_federation_callbacks_impl(runtime);
-    if (request.method == "GET" && request.target == "/_matrix/key/v2/server")
-    {
-        return response_from_operation(publish_server_signing_keys(runtime));
-    }
-    if (starts_with(request.target, "/_matrix/federation/"))
-    {
-        auto signed_request_opt = std::optional<federation::SignedFederationRequest>{};
+        auto guard = std::unique_lock<std::recursive_mutex>{runtime.mutex};
+        if (!runtime.started)
+        {
+            return response(503U, "runtime not started");
+        }
+        wire_federation_callbacks_impl(runtime);
+        if (request.method == "GET" && request.target == "/_matrix/key/v2/server")
+        {
+            return response_from_operation(publish_server_signing_keys(runtime));
+        }
+        if (!starts_with(request.target, "/_matrix/federation/"))
+        {
+            return response(404U, "route not found");
+        }
+
         if (request.sig_verified)
         {
             // #323: the main process already verified the X-Matrix signature and
@@ -2233,25 +2238,28 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
             // 502 signals a server-side failure instead.
             return response(502U, "malformed federation authorization");
         }
-        auto const federation_response = [&]() -> federation::FederationResponse {
-            auto const local_rule = find_policy_rule(runtime, "federation", signed_request_opt->origin);
-            auto const held_for_review = local_rule.has_value() && local_rule->action == "quarantine";
-            auto const blocked_by_local_policy =
-                local_rule.has_value() && local_rule->action != "allow" && local_rule->action != "quarantine";
-            auto const decision = trust_safety::evaluate_federation_policy(
-                {signed_request_opt->origin, held_for_review, blocked_by_local_policy,
-                 resolve_policy_server_hook(runtime, trust_safety::PolicySurface::federation,
-                                            signed_request_opt->origin)});
-            if (!decision.allowed)
-            {
-                return {403U,
-                        decision.reason.public_summary.empty() ? decision.reason.code : decision.reason.public_summary};
-            }
-            return federation::handle_inbound_federation_request(runtime.federation, *signed_request_opt);
-        }();
-        return response(federation_response.status, federation_response.body);
+
+        auto const local_rule = find_policy_rule(runtime, "federation", signed_request_opt->origin);
+        auto const held_for_review = local_rule.has_value() && local_rule->action == "quarantine";
+        auto const blocked_by_local_policy =
+            local_rule.has_value() && local_rule->action != "allow" && local_rule->action != "quarantine";
+        auto const decision = trust_safety::evaluate_federation_policy(
+            {signed_request_opt->origin, held_for_review, blocked_by_local_policy,
+             resolve_policy_server_hook(runtime, trust_safety::PolicySurface::federation, signed_request_opt->origin)});
+        if (!decision.allowed)
+        {
+            auto const body =
+                decision.reason.public_summary.empty() ? decision.reason.code : decision.reason.public_summary;
+            return response(403U, body);
+        }
     }
-    return response(404U, "route not found");
+
+    // The federation core protects its own bookkeeping, and production
+    // callbacks re-enter HomeserverRuntime with narrower locks. Holding the
+    // global runtime mutex here would serialize whole /send transactions.
+    auto const federation_response =
+        federation::handle_inbound_federation_request(runtime.federation, *signed_request_opt);
+    return response(federation_response.status, federation_response.body);
 }
 
 } // namespace merovingian::homeserver

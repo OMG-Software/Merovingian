@@ -104,6 +104,21 @@ namespace
     return std::string{"{\"origin\":\""} + origin + R"(","origin_server_ts":1000,"pdus":[)" + joined + "]}";
 }
 
+[[nodiscard]] auto transaction_body_edus(std::string const& origin, std::size_t count) -> std::string
+{
+    auto edus = std::string{};
+    for (auto i = std::size_t{0U}; i < count; ++i)
+    {
+        if (i != 0U)
+        {
+            edus += ",";
+        }
+        edus +=
+            R"({"edu_type":"m.typing","content":{"room_id":"!room:example.org","user_id":"@alice:matrix.example.org","typing":true}})";
+    }
+    return std::string{"{\"origin\":\""} + origin + R"(","origin_server_ts":1000,"pdus":[],"edus":[)" + edus + "]}";
+}
+
 // Shared state for a counting fake RemoteKeyResolver. Tracks how many times
 // the resolver was invoked, the peak number of concurrent invocations, and
 // optionally stalls each call for `delay` so a parallel fan-out is
@@ -680,6 +695,66 @@ SCENARIO("Inbound federation applies backoff and increments failure count", "[fe
                 REQUIRE(runtime.remotes.front().trust.consecutive_failures == 3U);
                 REQUIRE(backoff.status == 429U);
                 REQUIRE(backoff.body == "remote backoff required");
+            }
+        }
+    }
+}
+
+SCENARIO("Inbound federation rate limits authenticated origins by transaction PDU and EDU pressure",
+         "[federation][inbound][rate-limit]")
+{
+    GIVEN("a known remote and strict per-origin federation limits")
+    {
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const token = std::string{"verify-token"};
+        auto const json_pdu = signed_json_pdu(origin, key_id, token);
+
+        auto transaction_limited_config = runtime_config();
+        transaction_limited_config.per_origin_transaction_rate = {1U, 60U};
+        auto transaction_runtime = merovingian::federation::make_federation_runtime_state(transaction_limited_config);
+        merovingian::federation::upsert_remote(transaction_runtime, remote_for(origin, key_id, token));
+        auto const first_request = signed_request(origin, key_id, token, transaction_body(origin, json_pdu));
+        auto second_request = first_request;
+        second_request.target = "/_matrix/federation/v1/send/txn124";
+        second_request.signature = merovingian::federation::make_federation_signature(
+            origin, second_request.destination, second_request.method, second_request.target, second_request.body,
+            merovingian::federation::test::keypair_from_seed(token).secret_key);
+
+        auto pdu_limited_config = runtime_config();
+        pdu_limited_config.per_origin_pdu_rate = {1U, 60U};
+        auto pdu_runtime = merovingian::federation::make_federation_runtime_state(pdu_limited_config);
+        merovingian::federation::upsert_remote(pdu_runtime, remote_for(origin, key_id, token));
+        auto const pdu_burst =
+            signed_request(origin, key_id, token, transaction_body_pdus(origin, {json_pdu, json_pdu}));
+
+        auto edu_limited_config = runtime_config();
+        edu_limited_config.per_origin_edu_rate = {1U, 60U};
+        auto edu_runtime = merovingian::federation::make_federation_runtime_state(edu_limited_config);
+        merovingian::federation::upsert_remote(edu_runtime, remote_for(origin, key_id, token));
+        auto const edu_burst = signed_request(origin, key_id, token, transaction_body_edus(origin, 2U));
+
+        WHEN("traffic exceeds the configured origin buckets")
+        {
+            auto const first =
+                merovingian::federation::handle_inbound_federation_request(transaction_runtime, first_request);
+            auto const second =
+                merovingian::federation::handle_inbound_federation_request(transaction_runtime, second_request);
+            auto const pdu_throttled =
+                merovingian::federation::handle_inbound_federation_request(pdu_runtime, pdu_burst);
+            auto const edu_throttled =
+                merovingian::federation::handle_inbound_federation_request(edu_runtime, edu_burst);
+
+            THEN("only origin-level pressure is rejected with 429 M_LIMIT_EXCEEDED")
+            {
+                REQUIRE(first.status == 200U);
+                REQUIRE(second.status == 429U);
+                REQUIRE(second.body.find("M_LIMIT_EXCEEDED") != std::string::npos);
+                REQUIRE(pdu_throttled.status == 429U);
+                REQUIRE(pdu_throttled.body.find("remote PDU rate limit exceeded") != std::string::npos);
+                REQUIRE(edu_throttled.status == 429U);
+                REQUIRE(edu_throttled.body.find("remote EDU rate limit exceeded") != std::string::npos);
+                REQUIRE(transaction_runtime.remotes.front().trust.consecutive_failures == 0U);
             }
         }
     }

@@ -10,8 +10,11 @@
 #include "merovingian/federation/transactions.hpp"
 #include "merovingian/observability/observability.hpp"
 
+#include <chrono>
 #include <cstdint>
 #include <functional>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <string>
@@ -108,6 +111,17 @@ struct FederationRemoteRuntime final
     RemoteServerRecord discovery{};
 };
 
+struct FederationRateLimitBucket final
+{
+    std::string origin{};
+    std::uint32_t transactions_seen{0U};
+    std::uint32_t pdus_seen{0U};
+    std::uint32_t edus_seen{0U};
+    std::chrono::steady_clock::time_point transaction_window_start{};
+    std::chrono::steady_clock::time_point pdu_window_start{};
+    std::chrono::steady_clock::time_point edu_window_start{};
+};
+
 // On-demand resolver for remote federation peers. The resolver is responsible
 // for any discovery, network fetch, self-signature verification, and caching
 // — the federation core only consumes the returned record. The returned
@@ -176,12 +190,17 @@ using SpaceHierarchyProvider = std::function<std::string(std::string_view room_i
 // is unknown the resolver should return the current default ("12").
 // Optional: when unset PDU parsing falls back to "12".
 using RoomVersionResolver = std::function<std::string(std::string_view room_id)>;
+using FederationRuntimeMutex = std::shared_ptr<std::recursive_mutex>; // SHARED_PTR: reviewed
 
 struct FederationRuntimeState final
 {
     RuntimeFederationConfig config{};
+    // Protects federation-local mutable bookkeeping while homeserver-level
+    // federation dispatch runs without HomeserverRuntime::mutex.
+    FederationRuntimeMutex mutex{std::make_shared<std::recursive_mutex>()};
     std::vector<FederationRemoteRuntime> remotes{};
     std::vector<FederationAcceptedTransaction> accepted_transactions{};
+    std::vector<FederationRateLimitBucket> rate_limit_buckets{};
     std::vector<observability::AuditLogEvent> audit_events{};
     RemoteKeyResolver remote_key_resolver{};
     // Optional ingestion hooks. When set, accepted PDUs are appended to the
@@ -287,8 +306,8 @@ struct FederationResponse final
                                                     FederationKeyRecord const& key) -> FederationDecision;
 [[nodiscard]] auto make_federation_runtime_state(RuntimeFederationConfig config) -> FederationRuntimeState;
 auto upsert_remote(FederationRuntimeState& runtime, FederationRemoteRuntime remote) -> void;
-[[nodiscard]] auto federation_remote_is_known(FederationRuntimeState const& runtime,
-                                              std::string_view server_name) noexcept -> bool;
+[[nodiscard]] auto federation_remote_is_known(FederationRuntimeState const& runtime, std::string_view server_name)
+    -> bool;
 [[nodiscard]] auto authorize_federation_pdu(FederationPdu const& pdu, std::string_view expected_origin)
     -> FederationDecision;
 [[nodiscard]] auto authorize_federation_pdu(FederationPdu const& pdu, std::string_view expected_origin,
@@ -333,6 +352,6 @@ struct InboundSignatureVerification final
                                                        SignedFederationRequest const& request)
     -> InboundSignatureVerification;
 [[nodiscard]] auto federation_runtime_summary(FederationRuntimeState const& runtime) -> std::string;
-[[nodiscard]] auto federation_audit_is_safe(FederationRuntimeState const& runtime) noexcept -> bool;
+[[nodiscard]] auto federation_audit_is_safe(FederationRuntimeState const& runtime) -> bool;
 
 } // namespace merovingian::federation

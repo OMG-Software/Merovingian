@@ -11,16 +11,21 @@
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/membership_endpoints.hpp"
 #include "merovingian/federation/runtime_federation.hpp"
+#include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
 #include <array>
+#include <chrono>
+#include <condition_variable>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #include <sodium.h>
@@ -1058,6 +1063,101 @@ SCENARIO("A transaction with a bad-signature PDU returns 200 with a per-PDU erro
             THEN("the response body contains a per-PDU error for the rejected PDU")
             {
                 REQUIRE(response.body.find("\"error\"") != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("Federation dispatch does not hold the global runtime mutex while transaction sinks run",
+         "[homeserver][federation][concurrency]")
+{
+    GIVEN("a homeserver runtime with a blocking federation EDU sink")
+    {
+        auto runtime = merovingian::homeserver::HomeserverRuntime{};
+        runtime.started = true;
+        runtime.federation = merovingian::federation::make_federation_runtime_state(runtime_config());
+
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        merovingian::federation::upsert_remote(runtime.federation, remote_for(origin, key_id, "dispatch-lock-seed"));
+
+        // Prevent production callback auto-wiring; the test needs a controlled
+        // sink that blocks inside the federation transaction path.
+        runtime.federation.pdu_sink =
+            [](merovingian::federation::InboundPduEnvelope const&) -> merovingian::federation::PduIngestionResult {
+            return {merovingian::federation::PduIngestionStatus::accepted, {}};
+        };
+
+        auto sink_entered = false;
+        auto release_sink = false;
+        auto gate_mutex = std::mutex{};
+        auto gate_cv = std::condition_variable{};
+        runtime.federation.edu_sink =
+            [&](merovingian::federation::InboundEduEnvelope const&) -> merovingian::federation::EduDispositionResult {
+            {
+                auto const lock = std::lock_guard{gate_mutex};
+                sink_entered = true;
+            }
+            gate_cv.notify_all();
+            auto lock = std::unique_lock{gate_mutex};
+            gate_cv.wait(lock, [&release_sink] {
+                return release_sink;
+            });
+            return {merovingian::federation::EduDispositionStatus::accepted, {}};
+        };
+
+        auto request = merovingian::homeserver::LocalHttpRequest{};
+        request.method = "PUT";
+        request.target = "/_matrix/federation/v1/send/txn-dispatch-lock";
+        request.sig_verified = true;
+        request.verified_origin = origin;
+        request.verified_key_id = key_id;
+        request.body =
+            R"({"origin":"matrix.example.org","origin_server_ts":1000,"pdus":[],"edus":[{"edu_type":"m.direct_to_device","content":{"sender":"@bob:matrix.example.org","type":"m.room_key","messages":{}}}]})";
+
+        auto response = merovingian::homeserver::LocalHttpResponse{};
+
+        WHEN("a federation transaction is blocked inside the sink")
+        {
+            auto worker = std::thread{[&] {
+                response = merovingian::homeserver::handle_federation_http_request(runtime, request);
+            }};
+
+            auto sink_started = false;
+            {
+                auto lock = std::unique_lock{gate_mutex};
+                sink_started = gate_cv.wait_for(lock, std::chrono::seconds{2}, [&sink_entered] {
+                    return sink_entered;
+                });
+            }
+            if (!sink_started)
+            {
+                {
+                    auto const lock = std::lock_guard{gate_mutex};
+                    release_sink = true;
+                }
+                gate_cv.notify_all();
+                worker.join();
+            }
+            REQUIRE(sink_started);
+
+            auto const runtime_mutex_available = runtime.mutex.try_lock();
+            if (runtime_mutex_available)
+            {
+                runtime.mutex.unlock();
+            }
+
+            {
+                auto const lock = std::lock_guard{gate_mutex};
+                release_sink = true;
+            }
+            gate_cv.notify_all();
+            worker.join();
+
+            THEN("other runtime work can still acquire the global mutex")
+            {
+                REQUIRE(runtime_mutex_available);
+                REQUIRE(response.status == 200U);
             }
         }
     }

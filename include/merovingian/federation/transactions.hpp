@@ -2,12 +2,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <vector>
 
 namespace merovingian::federation
 {
+
+inline constexpr auto max_federation_transaction_pdus_v1_18 = std::uint32_t{50U};
+inline constexpr auto max_federation_transaction_edus_v1_18 = std::uint32_t{100U};
 
 enum class FederationEndpoint
 {
@@ -84,8 +88,10 @@ struct FederationEdu final
 [[nodiscard]] auto federation_endpoint_requires_main_relay(FederationEndpoint endpoint) noexcept -> bool;
 [[nodiscard]] auto federation_routes() -> std::vector<FederationRoute>;
 [[nodiscard]] auto match_federation_route(std::string_view method, std::string_view target) -> FederationRouteMatch;
-[[nodiscard]] auto validate_federation_transaction(FederationTransaction const& transaction,
-                                                   std::size_t max_transaction_bytes) -> FederationTransactionDecision;
+[[nodiscard]] auto validate_federation_transaction(
+    FederationTransaction const& transaction, std::size_t max_transaction_bytes,
+    std::uint32_t max_transaction_pdus = max_federation_transaction_pdus_v1_18,
+    std::uint32_t max_transaction_edus = max_federation_transaction_edus_v1_18) -> FederationTransactionDecision;
 [[nodiscard]] auto edu_is_allowed(FederationEdu const& edu) -> FederationTransactionDecision;
 [[nodiscard]] auto federation_route_audit_event(FederationRoute const& route, std::string_view origin) -> std::string;
 

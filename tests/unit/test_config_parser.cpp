@@ -37,6 +37,11 @@ SCENARIO("Key-value config parser applies known scalar values", "[config][parser
                                        "security.federation.default_policy=deny\n"
                                        "security.federation.allowed_servers=matrix.org\n"
                                        "security.federation.max_transaction_size=8MiB\n"
+                                       "security.federation.max_transaction_pdus=25\n"
+                                       "security.federation.max_transaction_edus=75\n"
+                                       "security.federation.per_origin_transaction_rate=60/60s\n"
+                                       "security.federation.per_origin_pdu_rate=300/60s\n"
+                                       "security.federation.per_origin_edu_rate=900/60s\n"
                                        "security.federation.remote_timeout=45s\n"
                                        "security.registration.token_file=/etc/merovingian/registration-token\n"
                                        "security.secrets.master_key_file=/etc/merovingian/master.key\n"
@@ -56,6 +61,11 @@ SCENARIO("Key-value config parser applies known scalar values", "[config][parser
                 REQUIRE(result.config.security().federation.allowed_servers.size() == 1U);
                 REQUIRE(result.config.security().federation.allowed_servers.front() == "matrix.org");
                 REQUIRE(result.config.security().federation.max_transaction_size == "8MiB");
+                REQUIRE(result.config.security().federation.max_transaction_pdus == 25U);
+                REQUIRE(result.config.security().federation.max_transaction_edus == 75U);
+                REQUIRE(result.config.security().federation.per_origin_transaction_rate.max_requests == 60U);
+                REQUIRE(result.config.security().federation.per_origin_pdu_rate.max_requests == 300U);
+                REQUIRE(result.config.security().federation.per_origin_edu_rate.max_requests == 900U);
                 REQUIRE(result.config.security().federation.remote_timeout == "45s");
                 REQUIRE(result.config.security().registration.token_file == "/etc/merovingian/registration-token");
                 REQUIRE(result.config.security().secrets.master_key_file == "/etc/merovingian/master.key");
@@ -198,6 +208,33 @@ SCENARIO("Key-value config parser rejects invalid federation server list entries
                 REQUIRE(allowed_result.findings.front().field == "security.federation.allowed_servers");
                 REQUIRE_FALSE(denied_result.findings.empty());
                 REQUIRE(denied_result.findings.front().field == "security.federation.denied_servers");
+            }
+        }
+    }
+}
+
+SCENARIO("Key-value config parser rejects invalid federation transaction caps and origin rates", "[config][parser]")
+{
+    GIVEN("config input with abuse-control values outside allowed bounds")
+    {
+        auto const pdu_input = std::string{"security.federation.max_transaction_pdus=51\n"};
+        auto const edu_input = std::string{"security.federation.max_transaction_edus=101\n"};
+        auto const rate_input = std::string{"security.federation.per_origin_transaction_rate=0/60s\n"};
+
+        WHEN("the configs are parsed")
+        {
+            auto const pdu_result = merovingian::config::parse_key_value_config(pdu_input);
+            auto const edu_result = merovingian::config::parse_key_value_config(edu_input);
+            auto const rate_result = merovingian::config::parse_key_value_config(rate_input);
+
+            THEN("Matrix count caps and rate-policy syntax are enforced")
+            {
+                REQUIRE_FALSE(pdu_result.findings.empty());
+                REQUIRE(pdu_result.findings.front().field == "security.federation.max_transaction_pdus");
+                REQUIRE_FALSE(edu_result.findings.empty());
+                REQUIRE(edu_result.findings.front().field == "security.federation.max_transaction_edus");
+                REQUIRE_FALSE(rate_result.findings.empty());
+                REQUIRE(rate_result.findings.front().field == "security.federation.per_origin_transaction_rate");
             }
         }
     }

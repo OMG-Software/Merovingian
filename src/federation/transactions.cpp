@@ -291,7 +291,8 @@ auto match_federation_route(std::string_view method, std::string_view target) ->
     return {false, {}, "federation route not found"};
 }
 
-auto validate_federation_transaction(FederationTransaction const& transaction, std::size_t max_transaction_bytes)
+auto validate_federation_transaction(FederationTransaction const& transaction, std::size_t max_transaction_bytes,
+                                     std::uint32_t max_transaction_pdus, std::uint32_t max_transaction_edus)
     -> FederationTransactionDecision
 {
     auto result = [&]() -> FederationTransactionDecision {
@@ -306,6 +307,14 @@ auto validate_federation_transaction(FederationTransaction const& transaction, s
         if (transaction.byte_size > max_transaction_bytes)
         {
             return {false, "transaction exceeds configured byte limit"};
+        }
+        if (transaction.pdus.size() > max_transaction_pdus)
+        {
+            return {false, "transaction exceeds configured PDU count limit"};
+        }
+        if (transaction.edus.size() > max_transaction_edus)
+        {
+            return {false, "transaction exceeds configured EDU count limit"};
         }
         return {true, {}};
     }();

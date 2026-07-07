@@ -343,6 +343,59 @@ namespace
         {
             security.federation.max_transaction_size = std::string{value};
         }
+        else if (key == "security.federation.max_transaction_pdus")
+        {
+            if (!parse_u32_value(value, security.federation.max_transaction_pdus))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer value");
+            }
+        }
+        else if (key == "security.federation.max_transaction_edus")
+        {
+            if (!parse_u32_value(value, security.federation.max_transaction_edus))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer value");
+            }
+        }
+        else if (key == "security.federation.per_origin_transaction_rate")
+        {
+            auto const policy = parse_rate_limit_policy(value);
+            if (!policy.has_value())
+            {
+                add_parse_finding(findings, std::string{key},
+                                  "expected rate-limit policy of the form N/Ns (e.g. 120/60s)");
+            }
+            else
+            {
+                security.federation.per_origin_transaction_rate = *policy;
+            }
+        }
+        else if (key == "security.federation.per_origin_pdu_rate")
+        {
+            auto const policy = parse_rate_limit_policy(value);
+            if (!policy.has_value())
+            {
+                add_parse_finding(findings, std::string{key},
+                                  "expected rate-limit policy of the form N/Ns (e.g. 600/60s)");
+            }
+            else
+            {
+                security.federation.per_origin_pdu_rate = *policy;
+            }
+        }
+        else if (key == "security.federation.per_origin_edu_rate")
+        {
+            auto const policy = parse_rate_limit_policy(value);
+            if (!policy.has_value())
+            {
+                add_parse_finding(findings, std::string{key},
+                                  "expected rate-limit policy of the form N/Ns (e.g. 1200/60s)");
+            }
+            else
+            {
+                security.federation.per_origin_edu_rate = *policy;
+            }
+        }
         else if (key == "security.federation.remote_timeout")
         {
             security.federation.remote_timeout = std::string{value};
