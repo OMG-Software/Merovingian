@@ -1669,7 +1669,7 @@ auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope
     auto global_guard = std::unique_lock<std::recursive_mutex>{runtime.mutex};
 
     auto stream_ordering = runtime.database.next_stream_ordering++;
-    auto sync_stream_id = runtime.database.persistent_store.next_sync_stream_id;
+    auto sync_stream_id = database::allocate_sync_stream_id(runtime.database.persistent_store);
 
     auto const auth_map = build_pdu_auth_event_map(runtime.database.persistent_store, room_id, envelope.sender,
                                                    envelope.state_key.value_or(std::string{}), envelope.event_type);

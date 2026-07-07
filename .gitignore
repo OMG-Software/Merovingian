@@ -7,6 +7,7 @@ __pycache__/
 *.py[cod]
 native.ini
 *.log
+tsan-ci-log*.txt
 
 # Local scratch / scan files
 .goosehints
