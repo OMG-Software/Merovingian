@@ -273,6 +273,22 @@ auto ipc_json_get_str(std::string_view json, std::string_view key) -> std::strin
     return get_str(*obj, key);
 }
 
+auto ipc_json_get_u64(std::string_view json, std::string_view key) -> std::uint64_t
+{
+    auto const parsed = canonicaljson::parse_json(json);
+    if (parsed.error != canonicaljson::ParseError::none)
+    {
+        return 0U;
+    }
+    auto const* obj = object_of(parsed.value);
+    if (obj == nullptr)
+    {
+        return 0U;
+    }
+    auto const value = get_int(*obj, key);
+    return value > 0 ? static_cast<std::uint64_t>(value) : 0U;
+}
+
 auto serialize_fed_request(homeserver::LocalHttpRequest const& request) -> std::string
 {
     auto body = std::string{};

@@ -87,4 +87,15 @@ jobs:
           python -m pip install --upgrade meson ninja
 
       - name: Build and test with ThreadSanitizer
-        run: sh scripts/build-linux.sh --builddir build-tsan --buildtype debug --sanitize thread
+        run: sh scripts/build-linux.sh --builddir build-tsan --buildtype debug --sanitize thread 2>&1 | tee tsan-ci-log.txt
+
+      - name: Upload TSan logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tsan-logs
+          path: |
+            tsan-ci-log.txt
+            build-tsan/meson-logs/testlog.txt
+            build-tsan/meson-logs/testlog.json
+          retention-days: 7
