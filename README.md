@@ -42,6 +42,7 @@ Open work items, capability gaps, and milestone blockers live in [docs/todos/](C
 
 If you want to evaluate or stand up Merovingian locally, start here:
 
+- [docs/user-manual.md](C:/dev/Merovingian/docs/user-manual.md) for the comprehensive operator guide to installation, configuration, running, and maintenance
 - [docs/getting-started.md](C:/dev/Merovingian/docs/getting-started.md) for the end-to-end first run, admin bootstrap, and client connection flow
 - [docs/configuration.md](C:/dev/Merovingian/docs/configuration.md) for listener, reverse-proxy, registration, federation, and runtime configuration details
 - [config/merovingian.conf.example](C:/dev/Merovingian/config/merovingian.conf.example) for the annotated example config
@@ -82,4 +83,4 @@ python build.py wsl --builddir build-tsan --buildtype debug --sanitize thread
 
 ## Project Status
 
-Merovingian has reached **beta** (v0.9.1). Federation, persistence, packaging, and runtime security controls are implemented and covered by CI. The project is suitable for evaluation and testing; it should not be treated as production-ready until the blocking items in [docs/todos/production-milestone.md](docs/todos/production-milestone.md) are closed.
+Merovingian has reached **beta** (v0.10.33). Federation, persistence, packaging, and runtime security controls are implemented and covered by CI. The project is suitable for evaluation and testing; it should not be treated as production-ready until the blocking items in [docs/todos/production-milestone.md](docs/todos/production-milestone.md) are closed.
