@@ -293,28 +293,47 @@ jobs:
     steps:
       - name: Install build dependencies
         run: |
-          zypper --non-interactive refresh
-          zypper --non-interactive install -y \
-            bison \
-            ccache \
-            clang \
-            findutils \
-            flex \
-            gcc-c++ \
-            git \
-            m4 \
-            meson \
-            ninja \
-            pkg-config \
-            libopenssl-devel \
-            libsodium-devel \
-            postgresql-devel \
-            libpng16-devel \
-            libjpeg8-devel \
-            libcurl-devel \
-            sqlite3-devel \
-            perl \
-            python3
+          set -e
+          # `zypper dup` first syncs every package already on the image
+          # (including runtime libs like libpsl5) to the current repo
+          # snapshot before installing anything new. Tumbleweed is a rolling
+          # release built independently of the opensuse/tumbleweed Docker
+          # image, so the image's baked-in package set can briefly outpace
+          # (or lag) the live repo; without this, `zypper install` can hit a
+          # solver conflict (e.g. libcurl-devel needing a pkgconfig(libpsl)
+          # version older than the image's preinstalled libpsl5) that retrying
+          # the same install does not resolve, since it isn't a transient
+          # failure. See the OpenSUSE Tumbleweed RPM job in packages.yml for
+          # the same fix with a retry loop around transient CDN timeouts.
+          for attempt in 1 2 3; do
+            if zypper --non-interactive --gpg-auto-import-keys refresh && \
+               zypper --non-interactive dup && \
+               zypper --non-interactive install -y \
+                 bison \
+                 ccache \
+                 clang \
+                 findutils \
+                 flex \
+                 gcc-c++ \
+                 git \
+                 m4 \
+                 meson \
+                 ninja \
+                 pkg-config \
+                 libopenssl-devel \
+                 libsodium-devel \
+                 postgresql-devel \
+                 libpng16-devel \
+                 libjpeg8-devel \
+                 libcurl-devel \
+                 sqlite3-devel \
+                 perl \
+                 python3; then
+              break
+            fi
+            echo "zypper attempt ${attempt} failed; retrying in 15s"
+            sleep 15
+          done
 
       - uses: actions/checkout@v4
 
