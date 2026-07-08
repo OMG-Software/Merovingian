@@ -44,7 +44,7 @@ The packaged tarballs include:
 - `bin/merovingian-server`
 - `bin/merovingian-db-migrate`
 - `config/merovingian.conf.example`
-- `docs/configuration.md`
+- `docs/user-manual.md`
 - `docs/release-process.md`
 - `docs/security-review-checklist.md`
 - Linux and BSD packaging scaffolds, including Debian control metadata, RPM

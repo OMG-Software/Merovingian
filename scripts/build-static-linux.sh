@@ -40,7 +40,7 @@ install -m 0755 "${STAGING}/usr/libexec/merovingian/merovingian-fed-worker" \
     "${PACKAGE_ROOT}/libexec/merovingian/"
 install -m 0644 config/merovingian.conf.example "${PACKAGE_ROOT}/config/merovingian.conf.example"
 install -m 0644 README.md LICENSE "${PACKAGE_ROOT}/"
-install -m 0644 docs/configuration.md docs/release-process.md \
+install -m 0644 docs/user-manual.md docs/release-process.md \
     docs/security-review-checklist.md "${PACKAGE_ROOT}/docs/"
 
 tar -czf "$TARBALL" "$PACKAGE_ROOT"

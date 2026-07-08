@@ -110,7 +110,7 @@ federation on `443` via
 CORS preflight is now handled by Merovingian itself (since 0.4.60). The proxy
 only needs to forward `Origin` and `Authorization` headers unmodified; it does
 **not** need to synthesise `Access-Control-Allow-*` headers. See
-[Reverse proxy examples](configuration.md#reverse-proxy-examples) for nginx,
+[Reverse proxy](user-manual.md#reverse-proxy) in the user manual for nginx,
 Apache, Caddy, Traefik, HAProxy, and Cloudflare configs.
 
 Confirm it is reachable:

@@ -186,7 +186,7 @@ separate process on the same host:
   24 MiB constant is only the floor used when that config value is at its
   16 MiB-equivalent minimum; raising `join_response_max_size` raises the
   frame cap in lockstep, and both processes must restart to pick up a change
-  (see `docs/configuration.md`).
+  (see `docs/user-manual.md`).
 * **Worker-specific seccomp + runtime hardening** (#319): the worker applies
   `PR_SET_NO_NEW_PRIVS`, drops capabilities, sets resource limits, and installs
   a stricter seccomp-bpf filter (on top of the inherited server filter) that

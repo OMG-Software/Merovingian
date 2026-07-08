@@ -280,6 +280,55 @@ merovingian-server --plan-config-reload current.conf next.conf
 | `78` | Config parse failure |
 | `79` | Config validation failure |
 
+### Fail-closed startup
+
+Startup rejects configuration before doing any runtime work — binding
+listeners, scaffolding the database, or launching federation workers — when
+parser or validation findings are present. `--check-config <path>` runs the
+same file metadata, parser, validation, and secret-file permission checks,
+but exits before the startup runtime summary.
+
+Rejected cases include:
+
+- unreadable or missing config path
+- unsafe config file permissions, or unsafe existing secret file permissions
+- oversized config file or config line
+- duplicate, unknown, or malformed config keys
+- invalid boolean or unsigned-integer values
+- empty required server/listener/database values
+- non-HTTPS public base URL
+- malformed listener bind address
+- a cleartext listener on a non-loopback interface
+- a TLS listener without certificate/private-key paths, or a missing/unsafe
+  configured certificate or private-key file
+- open registration without a token requirement, or token-protected
+  registration without a registration token file
+- disabled default encryption for new rooms, or disabled direct-message
+  encryption requirement
+- invalid federation default policy, or deny-by-default federation without
+  allowed servers
+- malformed federation allowed/denied server entries
+- disabled federation TLS validation or JSON signature verification
+- missing private/loopback federation deny ranges
+- invalid federation transaction size or remote timeout
+- invalid media upload size
+- disabled private-IP blocking for remote media fetches, or invalid media
+  remote-fetch timeout
+- trust-safety transport enabled without a policy server URL, a non-HTTPS
+  policy server URL, or an invalid policy server timeout
+- disabled sandboxed media decoding
+- disabled token or event-content log redaction
+
+### Size and duration value formats
+
+Byte-size values accept a positive bounded size with one of these suffixes:
+`B`, `KiB`, `MiB`, `GiB` (e.g. `security.media.max_upload_size=50MiB`).
+Values such as `0MiB`, `50MB`, `-1MiB`, `50 MiB`, and `unbounded` are rejected.
+
+Duration values accept a positive bounded duration with one of these
+suffixes: `s`, `m` (e.g. `security.federation.remote_timeout=60s`). Values
+such as `0s`, `30`, `30ms`, and `forever` are rejected.
+
 ### Configuration parameter reference
 
 The complete, authoritative accepted-key list lives in
@@ -309,6 +358,12 @@ change them.
 > `/_matrix/` traffic. Merovingian emits them itself; duplicate values cause
 > browser clients to fail with CORS errors.
 
+Wildcard `*` is the safe default for Matrix because clients authenticate with
+`Authorization: Bearer` tokens, not browser cookies. The parser rejects
+`allow_credentials=true` combined with a wildcard origin, since the CORS spec
+forbids that combination. CORS is **not** hot-reloadable — a change to any
+`server.cors.*` key requires a restart.
+
 #### Listeners — `listeners.client.*` and `listeners.federation.*`
 
 | Key | Default | When to change |
@@ -323,7 +378,26 @@ change them.
 | `listeners.federation.tls_private_key_file` | (empty) | Required when federation TLS is enabled. |
 
 A listener with `tls=false` must bind to a loopback address (`127.0.0.1`,
-`localhost`, `::1`, or `[::1]`). A non-loopback listener must use TLS.
+`localhost`, `::1`, or `[::1]`). A non-loopback listener must use TLS, and
+when `tls=true` both `tls_certificate_file` and `tls_private_key_file` must
+be set:
+
+```ini
+listeners.client.tls=true
+listeners.client.tls_certificate_file=/etc/merovingian/client.pem
+listeners.client.tls_private_key_file=/etc/merovingian/client.key
+listeners.federation.tls=true
+listeners.federation.tls_certificate_file=/etc/merovingian/federation.pem
+listeners.federation.tls_private_key_file=/etc/merovingian/federation.key
+```
+
+Configured certificate files must be regular, non-executable, and not
+group/other-writable. Configured private-key files must additionally be
+owner-only. Startup loads the certificate chain and private key, verifies
+the key matches the certificate, and fails closed if OpenSSL rejects either
+file. The client listener defaults to `127.0.0.1:8008`; the federation
+listener defaults to `127.0.0.1:8009` so a reverse proxy can own the public
+federation port `8448`.
 
 #### Database — `database.*`
 
@@ -343,6 +417,43 @@ A listener with `tls=false` must bind to a loopback address (`127.0.0.1`,
 | `security.registration.require_token` | `true` | Set `false` only on private test servers; open public registration without a token is rejected by the parser unless explicitly allowed. |
 | `security.registration.token_file` | `/etc/merovingian/registration-token` | Owner-only file containing the registration token. |
 
+The token file is read on startup and should contain the registration token
+on its first line. Treat it as a secret — owner-only, non-executable, outside
+web roots, and rotated whenever it may have been shared too broadly. The
+token is hashed with Argon2id at load time; only the hash is retained in
+process memory and the plaintext is zeroised after hashing. Changing the
+token-file path requires a restart. Successful public registration always
+creates a normal user; admin accounts can only be created through
+`--bootstrap-admin`.
+
+#### At-rest secret protection — `security.secrets.*`
+
+| Key | Default | When to change |
+|---|---|---|
+| `security.secrets.master_key_file` | `/etc/merovingian/master-key` | Path to the 32-byte master key file. |
+
+When a master key is configured, the Ed25519 server signing secret is
+encrypted at rest with `secret_box` (`secretbox:v1:...`) before being stored
+in the database. If no master key is configured, the secret is stored as a
+legacy plaintext base64 value for backward compatibility and a one-time
+diagnostic warns the operator. Rotating the signing key after enabling the
+master key re-encrypts the active secret under the new at-rest format.
+
+#### Token lifetimes — `security.*_token_lifetime_ms`
+
+| Key | Default | When to change |
+|---|---|---|
+| `security.access_token_lifetime_ms` | `3600000` (1 hour) | Milliseconds; `0` disables expiry. |
+| `security.refresh_token_lifetime_ms` | `2592000000` (30 days) | Milliseconds; `0` disables expiry. |
+
+`/login` and `/refresh` advertise `expires_in_ms` from
+`security.access_token_lifetime_ms`, so the advertised TTL always matches the
+enforced one. A token past its TTL is rejected even when its session is not
+revoked — the request returns `401 M_UNKNOWN_TOKEN` and the audit log records
+`access_token.rejected` with reason `token expired`. Existing rows written
+without an expiry remain valid, so upgrading does not invalidate legacy
+sessions.
+
 #### Encryption policy — `security.encryption.*`
 
 These keys enforce the room encryption policy. The defaults require encryption
@@ -356,13 +467,6 @@ rooms.
 | `security.encryption.require_for_private_rooms` | `true` | Should stay `true` in production. |
 | `security.encryption.allow_unencrypted_public_rooms` | `true` | Set `false` to require encryption even for public rooms. |
 | `security.encryption.block_unencrypted_federated_private_rooms` | `true` | Keep `true` to prevent E2EE bypass across federation. |
-
-#### Token lifetimes — `security.*_token_lifetime_ms`
-
-| Key | Default | When to change |
-|---|---|---|
-| `security.access_token_lifetime_ms` | `3600000` | Access-token expiry in milliseconds (`0` disables expiry). |
-| `security.refresh_token_lifetime_ms` | `2592000000` | Refresh-token expiry in milliseconds (`0` disables expiry). |
 
 #### Federation policy — `security.federation.*`
 
@@ -389,28 +493,109 @@ rooms.
 | `security.federation.join_state_key_parallelism` | `100` | Concurrent remote signing-key resolutions while verifying `send_join` state. |
 | `security.federation.join_response_max_size` | `64MiB` | Response body cap specifically for `make_join`/`send_join`. **Requires restart.** |
 
+`join_parallelism` bounds *concurrency*, not *total elapsed time*. A room
+with a large `via` candidate list races in batches of `join_parallelism`,
+and with no overall bound the whole race could take
+`ceil(candidate_count / join_parallelism) * join_timeout` — many minutes for
+a large `via` list. `join_race_deadline` closes that gap: it is the overall
+wall-clock budget for the *entire* race, independent of the per-candidate
+`join_timeout`. When it elapses without a winner, `join_room` returns `502`
+immediately; candidates still in flight are parked in a background queue and
+drained on shutdown. It cannot be disabled via config, only extended.
+`join_max_candidates` caps how many `via`-derived candidates are actually
+raced — every candidate is spawned as an OS thread immediately, throttled to
+*run* by `join_parallelism` but not to *spawn*, so an unbounded `via` list
+otherwise means unbounded upfront thread creation.
+
+A `send_join` response's `state` array carries one `m.room.member` event per
+room member, each signed by that member's home server; `join_room` verifies
+every signature before the event enters the graph rather than trusting the
+resident server's response wholesale. `join_state_key_parallelism` caps
+concurrent remote signing-key resolutions for that verification pass —
+distinct `(sender_domain, key_id)` pairs are deduplicated first, so it bounds
+concurrent *distinct home servers* contacted, not concurrent events. Fast
+join persists the room's own critical state (create, power levels, join
+rules, history visibility, our own membership) and the auth chain
+synchronously before `join_room` returns; the bulk of `state` — every other
+member's `m.room.member` event — is verified and persisted by a background
+task afterward, governed by the same parallelism cap. See
+[`docs/threat-model.md`](threat-model.md) for the partial-state trade-off
+this implies.
+
+`join_response_max_size` exists because a `send_join` response embeds the
+room's full current state as a single HTTP response body, which for a large
+room routinely exceeds the general 16 MiB response cap every other
+federation call uses. It also sizes the federation-worker IPC channel's
+frame budget, which is fixed for the worker process's lifetime — raising
+this value takes effect only after both the main process and the worker
+restart.
+
 #### Federation inbound abuse controls — `security.federation.*`
+
+Inbound `/send/{txnId}` transactions are authenticated by `X-Matrix` request
+signatures before buckets are charged. Buckets are keyed by the verified
+remote origin, not the event sender ID, because a remote server can relay
+events for many users and an abusive remote can rotate sender IDs.
 
 | Key | Default | When to change |
 |---|---|---|
-| `security.federation.max_transaction_pdus` | `50` | Hard cap on PDUs per inbound `/send` transaction. Maximum `50` per Matrix v1.18. |
-| `security.federation.max_transaction_edus` | `100` | Hard cap on EDUs per inbound `/send` transaction. Maximum `100` per Matrix v1.18. |
-| `security.federation.per_origin_transaction_rate` | `120/60s` | Per-origin `/send` transaction rate. |
-| `security.federation.per_origin_pdu_rate` | `600/60s` | Per-origin weighted PDU budget. |
-| `security.federation.per_origin_edu_rate` | `1200/60s` | Per-origin weighted EDU budget. |
+| `security.federation.max_transaction_pdus` | `50` | Hard cap on PDUs per inbound `/send` transaction. Matrix v1.18 caps this at `50`; higher values are rejected. |
+| `security.federation.max_transaction_edus` | `100` | Hard cap on EDUs per inbound `/send` transaction. Matrix v1.18 caps this at `100`; higher values are rejected. |
+| `security.federation.per_origin_transaction_rate` | `120/60s` | Maximum accepted `/send` transactions per verified remote origin per window. |
+| `security.federation.per_origin_pdu_rate` | `600/60s` | Weighted PDU budget per verified remote origin per window — a transaction with 40 PDUs consumes 40 units. |
+| `security.federation.per_origin_edu_rate` | `1200/60s` | Weighted EDU budget per verified remote origin per window. |
+
+Rate values use `N/Ws` or `N/Wm` syntax (e.g. `300/60s`). All five keys are
+reloadable. An origin that exceeds a bucket gets `429 M_LIMIT_EXCEEDED` for
+the transaction and a `federation.rate_limited` audit event; invalid
+individual PDUs inside an otherwise-valid transaction still report per-PDU
+errors in the `200` transaction response, matching Matrix retry semantics
+and avoiding destination-wide backoff for one bad event.
+
+#### Federation outbound delivery controls
+
+The `per_origin_*` keys above apply only to inbound `/send` traffic; they do
+not throttle Merovingian's own delivery to other homeservers. Outbound
+federation queues an `OutboundTransaction` record per destination, and a
+dispatch worker drains that queue with destination retry state, a circuit
+breaker, and exponential backoff — a failing or slow destination is delayed
+before the next attempt so it does not spin the sender or block unrelated
+destinations. Outbound HTTP also applies the same private/loopback address
+rejection and pinned resolved addresses used during federation discovery.
+
+| Key | Default | Reload | Notes |
+|---|---|---|---|
+| `security.federation.remote_timeout` | `60s` | reloadable | General outbound federation HTTP timeout for calls other than the join/leave dance. |
+| `security.federation.deny_ip_ranges` | private/loopback ranges | reloadable | Blocks discovered outbound federation targets in private/loopback address space. |
+| `federation.worker.relay_threads` | `32` | requires restart | Thread pool for worker paths that can block on outbound HTTP or synchronous main-process relays. |
 
 #### Federation worker — `federation.worker.*`
 
-The federation worker is mandatory when federation is enabled.
+When a user joins a large federated room, inbound PDU verification, state
+resolution, and the membership state machine can saturate the main thread
+pool and make all connected clients unresponsive. The federation worker
+moves that work into one or more dedicated child processes, each with its
+own thread pool. It is **mandatory** when federation is enabled; startup
+fails fatally if the worker binary cannot be launched, and there is no
+in-process fallback — requests return `503` while a crashed worker restarts.
 
 | Key | Default | When to change |
 |---|---|---|
-| `federation.worker.threads` | `4` | Thread pool for endpoints answered from the worker's own snapshot. |
-| `federation.worker.relay_threads` | `32` | Thread pool for endpoints that block on main or outbound HTTP. |
-| `federation.worker.request_timeout_seconds` | `30` | Per-request IPC timeout. |
-| `federation.worker.shards` | `2` | Number of independent worker processes. Room-scoped requests are sharded by `room_id`. |
+| `federation.worker.threads` | `4` | Thread pool for endpoints answered entirely from the worker's own local snapshot (`make_join`/`make_leave`/`make_knock`, `backfill`, directory/state queries, `get_missing_events`, `hierarchy`) — these never block on main, so this can stay small. |
+| `federation.worker.relay_threads` | `32` | Thread pool for endpoints that can block on a synchronous IPC round-trip to main (PDU-bearing `send`, `send_join`/`send_leave`/`send_knock`, `invite`, profile/key queries, `event/{eventId}`) or on outbound HTTP. Deliberately separate and generously sized from `threads`, since sharing one pool would let a burst of slow relay calls starve the fast local endpoints — see [`docs/architecture.md`](architecture.md), "Federation worker relay pool separation". |
+| `federation.worker.shards` | `2` | Number of independent worker processes. Requests are routed by `fnv1a_32(room_id) % shards`; non-room endpoints go to shard 0. Must be `>= 1`. |
+| `federation.worker.request_timeout_seconds` | `30` | Per-request IPC timeout in seconds. A request slower than this returns `504` to the remote server. |
 | `federation.worker.apply_hardening` | `true` | Apply seccomp/capability sandboxing to workers. Keep `true` in production. |
-| `federation.worker.binary` | (empty) | Absolute path to `merovingian-fed-worker`; empty uses the compile-time libexec path. |
+| `federation.worker.binary` | (empty) | Absolute path to `merovingian-fed-worker`; empty uses the compile-time libexec path (`$libexecdir/merovingian/merovingian-fed-worker`). |
+
+The worker communicates with the main process over an `AF_UNIX SOCK_STREAM`
+socket pair inherited at spawn. Every frame is encrypted with an ephemeral
+`crypto_kx` key exchange and `crypto_secretstream_xchacha20poly1305` AEAD —
+no sensitive material crosses the channel in plaintext. The server signing
+key is never forwarded; the worker reads it from the same database, and
+client access tokens are stripped from every request before forwarding. If
+the worker crashes, the supervisor restarts it with exponential back-off
+(1s, 2s, 4s, 8s, capped at 30s).
 
 #### Media repository — `security.media.*`
 
@@ -426,11 +611,47 @@ The federation worker is mandatory when federation is enabled.
 | `security.media.local_upload_policy` | `allow-after-scan` | `allow`/`allow-after-scan`/`quarantine`/`deny`. |
 | `security.media.remote_fetch_media_policy` | `quarantine` | Same values; defaults to `quarantine` because federated origins are unaccountable. |
 
-> **Encrypted-room media can never be scanned.** Matrix E2EE attachments are
-> encrypted client-side before upload. The server only stores opaque
-> `application/octet-stream` ciphertext and never holds the decryption key.
+> **Encrypted-room media can never be scanned, under any configuration, by
+> design.** Matrix E2EE attachments are encrypted client-side before upload;
+> the homeserver only ever receives and stores an opaque
+> `application/octet-stream` ciphertext blob and never holds the decryption
+> key — that key travels only inside the (also encrypted) room event, which
+> the server cannot read either. No setting below, no proxy placement, and no
+> future scanner integration changes this without breaking E2EE's
+> confidentiality guarantee. Anything below that mentions a "scanner
+> verdict" applies only to plaintext media in unencrypted rooms.
+
+Two `security.media.*` keys are not fully wired end to end yet:
+`security.media.enable_av_scanner` is parsed, but does not configure or
+launch an antivirus engine — it only changes how the media policy treats a
+scanner verdict supplied by an upstream caller. `security.media.remote_fetch_timeout`
+is parsed and validated, but the live remote-fetch path still uses
+hard-coded discovery and outbound HTTP timeouts.
+
+`local_upload_policy` and `remote_fetch_media_policy` select the acceptance
+disposition for authenticated local uploads and for bytes fetched from a
+federated origin, independently. Each accepts:
+
+- `allow` — accept unconditionally; the scanner verdict is ignored.
+- `allow-after-scan` — accept only when the scanner verdict is clean;
+  quarantine or reject otherwise. This is the only behaviour that existed
+  before these keys were introduced.
+- `quarantine` — always hold for manual admin review via the
+  `/_merovingian/admin/media/{quarantine,release,remove}` routes.
+- `deny` — reject unconditionally.
+
+`remote_fetch_media_policy` defaults to `quarantine` rather than mirroring
+`local_upload_policy`'s `allow-after-scan` default: unlike a local upload, a
+federated origin has no accountable local identity behind it, and Merovingian
+does not run a real AV scanner for *any* media source today, so there is
+never a genuine "clean" verdict to trust for remote-fetched bytes. Operators
+who accept that risk, or who front the server with a real scanning proxy
+that populates the scanner verdict, can set this to `allow-after-scan` or
+`allow` explicitly.
 
 #### Trust and safety — `security.trust_safety.*`
+
+The trust-safety transport is opt-in and fail-closed by default.
 
 | Key | Default | When to change |
 |---|---|---|
@@ -439,6 +660,19 @@ The federation worker is mandatory when federation is enabled.
 | `security.trust_safety.policy_server_timeout` | `5s` | Policy request timeout. |
 | `security.trust_safety.policy_server_allow_without_result` | `false` | Set `true` to allow the guarded workflow when the policy service is unreachable. Defaults fail-closed. |
 
+When enabled, Merovingian POSTs a small JSON decision request — `surface`,
+`entity`, `server_name` — to the configured HTTPS endpoint. The response
+body is expected to be JSON with at least:
+
+- `action` — one of `allow`, `deny`, `quarantine`, `lock_account`,
+  `suspend_account`.
+- `rule_id` — optional, recommended for audit correlation.
+- `summary` / `reason` — optional operator-facing text.
+
+If the policy server is unreachable, returns a non-2xx status, omits a
+usable decision, or sends malformed JSON, the guarded workflow is rejected
+unless `security.trust_safety.policy_server_allow_without_result=true`.
+
 #### Logging redaction — `security.logging.*`
 
 | Key | Default | When to change |
@@ -446,12 +680,6 @@ The federation worker is mandatory when federation is enabled.
 | `security.logging.redact_tokens` | `true` | Keep `true` so tokens do not leak into logs. |
 | `security.logging.redact_event_content` | `true` | Keep `true` so message content does not leak into logs. |
 | `security.logging.structured` | `true` | Structured log format. |
-
-#### At-rest secret protection — `security.secrets.*`
-
-| Key | Default | When to change |
-|---|---|---|
-| `security.secrets.master_key_file` | `/etc/merovingian/master-key` | Path to the 32-byte master key file. |
 
 #### Client rate limits — `client_rate_limits.*`
 
@@ -468,7 +696,10 @@ client_rate_limits.per_ip./_matrix/client/v3/login=30/60s
 client_rate_limits.per_user./_matrix/client/v3/login=20/60s
 ```
 
-Rate-limit changes require a server restart.
+The longest matching `<target>` prefix wins; every entry rejects a
+zero-window or zero-cap policy at startup. Rate-limit changes require a
+server restart — the limiter is built once at server start and stored in the
+runtime.
 
 #### Per-module log levels — `log_modules.*`
 
@@ -484,23 +715,103 @@ for the module list.
 ### Reloadability policy
 
 Configuration keys are classified as **reloadable** or **restart-required**.
-The runtime config snapshot can apply reloadable changes without a full server
-restart, but the live reload control path (SIGHUP/admin socket) is not yet
-wired. Changing any of these currently requires a restart:
+Restart-required keys affect stable process identity or secret-source
+selection; reloadable keys are runtime policy or limit values intended to be
+applied through a future reload path without a full homeserver restart.
+Configuration parsing and validation are restart-safe today, but the live
+reload control path (SIGHUP/admin socket) is not yet wired — `--plan-config-reload`
+only reports what *would* happen.
 
-- `server.name`
-- `database.uri_file`
-- `database.role`
-- `listeners.*.tls_certificate_file`
-- `listeners.*.tls_private_key_file`
-- `security.federation.join_response_max_size`
-- `federation.worker.*`
-- `server.cors.*`
-- `client_rate_limits.*`
-- `log_modules.*`
+| Key or key group | Policy |
+|---|---|
+| `server.name` | Restart required |
+| `database.uri_file` | Restart required |
+| `database.role` | Restart required |
+| `listeners.*.tls_certificate_file` | Restart required |
+| `listeners.*.tls_private_key_file` | Restart required |
+| `security.federation.join_response_max_size` | Restart required |
+| `federation.worker.*` | Restart required |
+| `server.cors.*` | Restart required |
+| `client_rate_limits.*` | Restart required |
+| `log_modules.*` | Restart required |
+| `database.pool_size` | Reloadable |
+| Other `listeners.*` keys | Reloadable |
+| `security.registration.*` | Reloadable |
+| `security.encryption.*` | Reloadable |
+| `security.federation.*` (except `join_response_max_size`) | Reloadable |
+| `security.media.*` | Reloadable |
+| `security.logging.*` | Reloadable |
 
-Everything else listed above is reloadable in principle; the future reload path
-will apply them without restart.
+`--plan-config-reload <current> <next>` compares two validated configs and
+reports the reload action:
+
+```text
+Reload plan: changes=1 reloadable=1 restart_required=0
+Reload action: reloadable
+security.federation.remote_timeout=reloadable
+```
+
+```text
+Reload plan: changes=1 reloadable=0 restart_required=1
+Reload action: restart required
+server.name=restart_required
+```
+
+```text
+Reload plan: changes=0 reloadable=0 restart_required=0
+Reload action: no changes
+```
+
+A successful plan always exits with status `0`, even when the action says a
+restart is required, because the planning operation itself succeeded.
+
+### Runtime config snapshot
+
+The runtime config snapshot owns the currently validated in-memory config and
+can apply a candidate config only when the reload plan has no
+restart-required changes:
+
+| Outcome | Meaning |
+|---|---|
+| `unchanged` | Candidate config matches the current runtime config. |
+| `applied` | Candidate config changed only reloadable keys and replaced the in-memory snapshot. |
+| `restart_required` | Candidate config changed at least one restart-required key and was not applied. |
+
+The snapshot is an internal foundation for future live reload — it is not yet
+connected to SIGHUP, an admin socket, or any external control API.
+
+### Startup hardening self-check
+
+Startup logs a fixed checklist of hardening signals. Several checks currently
+report `unknown` because the runtime probe is not yet implemented for that
+platform; `unknown` is not a success claim, it marks work that still needs a
+platform-specific probe or sandbox setup.
+
+| Check | Current signal source |
+|---|---|
+| `compiler hardening` | Placeholder, currently `unknown` |
+| `linker hardening` | Placeholder, currently `unknown` |
+| `PIE` | Compile-time macro when available, otherwise `unknown` |
+| `RELRO` | Placeholder, currently `unknown` |
+| `stack protector` | Compile-time macro when available, otherwise `unknown` |
+| `FORTIFY_SOURCE` | Compile-time macro when available, otherwise `unknown` |
+| `seccomp` | Placeholder, currently `unknown` |
+| `pledge/unveil` | Placeholder, currently `unknown` |
+| `capsicum` | Placeholder, currently `unknown` |
+| `privilege drop` | Placeholder, currently `unknown` |
+| `filesystem restrictions` | Placeholder, currently `unknown` |
+| `core dump policy` | Placeholder, currently `unknown` |
+| `secret redaction policy` | Enabled by validated logging defaults |
+
+### Production packaging
+
+Production package assets are intentionally separated from the bootstrap
+config: `packaging/systemd/merovingian.service`, `packaging/openrc/merovingian`,
+`packaging/rc.d/merovingian`, and `Dockerfile`. These assets are deployment
+scaffolds until the production gates in
+[`docs/todos/production-milestone.md`](todos/production-milestone.md) pass —
+do not publish them as a production release while runtime listeners, durable
+storage, federation verification, or hardening checks remain incomplete.
 
 ## Database backends
 
@@ -620,10 +931,624 @@ Merovingian is designed to sit behind a reverse proxy. The proxy should:
 - Route `/_matrix/federation/` and `/_matrix/key/` to `127.0.0.1:8009`.
 - Serve `/.well-known/matrix/client` and `/.well-known/matrix/server` directly
   (or forward them, but keep their own CORS headers).
+- Overwrite `X-Forwarded-For` with the direct TCP peer IP (never append to a
+  client-supplied value) so `server.trusted_proxies` can enforce per-client
+  rate limits correctly.
 
-Complete copy-paste configs for nginx, Apache httpd, Caddy, Traefik, HAProxy,
-and Cloudflare are in
-[`docs/configuration.md#reverse-proxy-examples`](configuration.md#reverse-proxy-examples).
+Set Merovingian's listeners to loopback cleartext behind the proxy:
+
+```ini
+listeners.client.bind=127.0.0.1:8008
+listeners.client.tls=false
+listeners.federation.bind=127.0.0.1:8009
+listeners.federation.tls=false
+server.trusted_proxies=127.0.0.1
+```
+
+### nginx example
+
+Terminates TLS in nginx, serves the `.well-known` discovery JSON inline, and
+routes client/media traffic to `8008` and federation/key traffic to `8009` by
+path. Replace `matrix.example.org` with your `server.public_baseurl` host.
+
+```nginx
+server {
+    listen 80;
+    server_name matrix.example.org;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name matrix.example.org;
+
+    ssl_certificate     /etc/letsencrypt/live/matrix.example.org/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/matrix.example.org/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "DENY" always;
+    # Do NOT add Access-Control-Allow-* here — Merovingian emits CORS headers
+    # on all /_matrix/ responses; duplicate values break browser clients.
+
+    location = /.well-known/matrix/client {
+        default_type application/json;
+        add_header Access-Control-Allow-Origin "*" always;
+        return 200 '{"m.homeserver":{"base_url":"https://matrix.example.org"}}';
+    }
+
+    location = /.well-known/matrix/server {
+        default_type application/json;
+        add_header Access-Control-Allow-Origin "*" always;
+        return 200 '{"m.server":"matrix.example.org:443"}';
+    }
+
+    location /_matrix/federation/ {
+        proxy_pass http://127.0.0.1:8009;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        # $remote_addr, not $proxy_add_x_forwarded_for — the latter lets a
+        # client forge another user's rate-limit bucket.
+        proxy_set_header X-Forwarded-For $remote_addr;
+    }
+
+    location /_matrix/key/ {
+        proxy_pass http://127.0.0.1:8009;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $remote_addr;
+    }
+
+    location /_matrix/client/ {
+        proxy_pass http://127.0.0.1:8008;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $remote_addr;
+    }
+
+    # Media needs its own block: falling through to the catch-all below
+    # breaks upload/download CORS preflight, and nginx's default
+    # client_max_body_size (1 MiB) silently 413s uploads before Merovingian
+    # ever sees them. Match security.media.max_upload_size (default 50 MiB).
+    location /_matrix/media/ {
+        proxy_pass http://127.0.0.1:8008;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        client_max_body_size 50m;
+    }
+
+    location / {
+        return 403;
+    }
+}
+
+# Native federation listener for servers that skip .well-known delegation.
+# Optional if every remote server follows .well-known/matrix/server, but
+# harmless to keep.
+server {
+    listen 8448 ssl http2;
+    server_name matrix.example.org;
+
+    ssl_certificate     /etc/letsencrypt/live/matrix.example.org/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/matrix.example.org/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+
+    location /_matrix/federation/ {
+        proxy_pass http://127.0.0.1:8009;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $remote_addr;
+    }
+
+    location /_matrix/key/ {
+        proxy_pass http://127.0.0.1:8009;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $remote_addr;
+    }
+
+    location / {
+        return 403;
+    }
+}
+```
+
+**Apache** serves the discovery files from static files — create them once
+before reloading:
+
+```sh
+mkdir -p /var/www/merovingian/.well-known/matrix
+printf '{"m.homeserver":{"base_url":"https://matrix.example.org"}}' \
+    > /var/www/merovingian/.well-known/matrix/client
+printf '{"m.server":"matrix.example.org:443"}' \
+    > /var/www/merovingian/.well-known/matrix/server
+```
+
+### Apache httpd example
+
+This example assumes `mod_ssl`, `mod_headers`, `mod_proxy`,
+`mod_proxy_http`, and `mod_rewrite` are enabled. Apache owns public ports `443`
+and `8448`; Merovingian listens only on loopback ports `8008` and `8009`. The
+`443` vhost handles both client and delegated federation traffic by path.
+
+```apache
+# Port 8448 must be declared before the VirtualHost blocks that use it.
+Listen 8448
+
+# ── HTTP → HTTPS redirect ─────────────────────────────────────────────────────
+# Redirect all plain-HTTP requests to HTTPS so no Matrix credentials or tokens
+# are ever sent in the clear.
+<VirtualHost *:80>
+    ServerName matrix.example.org
+    RewriteEngine On
+    RewriteRule ^ https://%{SERVER_NAME}%{REQUEST_URI} [END,NE,R=permanent]
+</VirtualHost>
+
+# ── Primary HTTPS block (client-server API + delegated federation) ────────────
+# Handles: Matrix clients (/_matrix/client/), media (/_matrix/media/), and
+# federation delegated from port 443 via /.well-known/matrix/server.
+<VirtualHost *:443>
+    ServerName matrix.example.org
+
+    # ── TLS ───────────────────────────────────────────────────────────────────
+    # Terminate TLS here; Merovingian binds to cleartext loopback only.
+    SSLEngine on
+    SSLCertificateFile    /etc/letsencrypt/live/matrix.example.org/fullchain.pem
+    SSLCertificateKeyFile /etc/letsencrypt/live/matrix.example.org/privkey.pem
+    # Disable TLS 1.0 and 1.1 — both have known practical attacks.
+    # Matrix spec requires TLS; older versions are non-compliant.
+    SSLProtocol           -all +TLSv1.2 +TLSv1.3
+
+    # ── Security response headers ──────────────────────────────────────────────
+    # HSTS: instructs browsers to enforce HTTPS for one year and opts the domain
+    # into browser-bundled preload lists for first-visit protection.
+    Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+    # Prevent MIME-type sniffing that could cause a browser to execute an
+    # uploaded file served with a safe content-type.
+    Header always set X-Content-Type-Options "nosniff"
+    # Block this domain from being embedded in a frame on another origin,
+    # protecting the login page against clickjacking.
+    Header always set X-Frame-Options "DENY"
+    # Do NOT add Access-Control-Allow-* here — Merovingian emits CORS headers on
+    # all /_matrix/ responses. Adding them at the proxy level creates duplicate
+    # values (e.g. "*, *") that browsers reject; clients show "Failed to connect"
+    # even though the server returns HTTP 200.
+
+    # ── Forwarding headers ────────────────────────────────────────────────────
+    # Pass the original Host: header to Merovingian so it knows the server name
+    # when constructing federation responses and verifying X-Matrix signatures.
+    ProxyPreserveHost On
+    # Tell Merovingian the downstream connection arrived over HTTPS.  Without
+    # this, code that inspects the forwarded protocol sees cleartext.
+    RequestHeader set X-Forwarded-Proto "https"
+    # Overwrite X-Forwarded-For with the IP Apache received the TCP connection
+    # from.  The unset+set pair prevents a client from injecting a fake IP to
+    # steal another client's rate-limit budget (IP-bucket forgery).
+    # Requires server.trusted_proxies=127.0.0.1 in merovingian.conf so
+    # Merovingian reads this header for per-client rate limiting instead of
+    # using the raw peer address (127.0.0.1 for all proxied traffic).
+    RequestHeader unset X-Forwarded-For
+    RequestHeader set X-Forwarded-For "expr=%{REMOTE_ADDR}"
+
+    # ── Proxy routing ─────────────────────────────────────────────────────────
+    # Exclude /.well-known/ from proxying so the Alias directives below are
+    # reached.  Without the "!" exclusion, Apache forwards well-known requests
+    # to Merovingian, which returns 404 because it does not own those paths.
+    ProxyPass        "/.well-known/" "!"
+    # /_matrix/federation/ and /_matrix/key/ go to the federation listener (8009)
+    # so X-Matrix signature auth is applied, not the client access-token gate.
+    ProxyPass        "/_matrix/federation/" "http://127.0.0.1:8009/_matrix/federation/"
+    ProxyPassReverse "/_matrix/federation/" "http://127.0.0.1:8009/_matrix/federation/"
+    # /_matrix/key/ exposes Merovingian's signing keys for remote servers to
+    # verify federation request signatures and PDU event signatures.
+    ProxyPass        "/_matrix/key/" "http://127.0.0.1:8009/_matrix/key/"
+    ProxyPassReverse "/_matrix/key/" "http://127.0.0.1:8009/_matrix/key/"
+    # Client-server API and media go to the client listener (8008).
+    # Apache does not impose a default body-size limit, so no special handling
+    # is needed for media uploads; if you add LimitRequestBody, set it to at
+    # least the value of security.media.max_upload_size in merovingian.conf.
+    ProxyPass        "/_matrix/client/" "http://127.0.0.1:8008/_matrix/client/"
+    ProxyPassReverse "/_matrix/client/" "http://127.0.0.1:8008/_matrix/client/"
+
+    # ── Static discovery files ────────────────────────────────────────────────
+    # Served by Apache directly (see the shell snippet above) so they are
+    # available even when Merovingian is restarting.  The ProxyPass "!" above
+    # ensures requests for these paths are never forwarded to Merovingian.
+    Alias "/.well-known/matrix/client" "/var/www/merovingian/.well-known/matrix/client"
+    Alias "/.well-known/matrix/server" "/var/www/merovingian/.well-known/matrix/server"
+
+    <Directory "/var/www/merovingian/.well-known/matrix">
+        Require all granted
+    </Directory>
+
+    # ── Access control ────────────────────────────────────────────────────────
+    # Default-deny: block every path so a misconfiguration never accidentally
+    # exposes internal services.  Apache Location directives merge in document
+    # order with later entries winning, so these specific allows must come AFTER
+    # the "Require all denied" catch-all below.
+    <Location "/">
+        Require all denied
+    </Location>
+
+    <Location "/_matrix/client/">
+        Require all granted
+    </Location>
+
+    <Location "/_matrix/federation/">
+        Require all granted
+    </Location>
+
+    <Location "/_matrix/key/">
+        Require all granted
+    </Location>
+
+    # /.well-known discovery — CORS is required here because browser clients
+    # fetch these from a different origin (e.g. element.io or localhost).  This
+    # is NOT a duplicate of Merovingian's CORS: Apache serves these files
+    # directly from disk and never proxies them to Merovingian.
+    <Location "/.well-known/matrix/client">
+        Require all granted
+        ForceType application/json
+        Header always set Access-Control-Allow-Origin "*"
+    </Location>
+
+    <Location "/.well-known/matrix/server">
+        Require all granted
+        ForceType application/json
+        Header always set Access-Control-Allow-Origin "*"
+    </Location>
+</VirtualHost>
+
+# ── Native federation listener (port 8448) ────────────────────────────────────
+# Handles direct federation connections from servers that do not follow the
+# .well-known/matrix/server delegation to port 443.  Optional if all remote
+# servers support .well-known discovery, but harmless to keep.
+<VirtualHost *:8448>
+    ServerName matrix.example.org
+
+    # Same certificate as port 443.
+    SSLEngine on
+    SSLCertificateFile    /etc/letsencrypt/live/matrix.example.org/fullchain.pem
+    SSLCertificateKeyFile /etc/letsencrypt/live/matrix.example.org/privkey.pem
+    SSLProtocol           -all +TLSv1.2 +TLSv1.3
+
+    # HSTS on the federation port prevents protocol-downgrade during server
+    # discovery even when the remote server connects directly to port 8448.
+    Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+
+    ProxyPreserveHost On
+    RequestHeader set X-Forwarded-Proto "https"
+    RequestHeader unset X-Forwarded-For
+    RequestHeader set X-Forwarded-For "expr=%{REMOTE_ADDR}"
+
+    # Only federation and key endpoints are reachable on port 8448.
+    # The client-server API is never exposed here.
+    ProxyPass        "/_matrix/federation/" "http://127.0.0.1:8009/_matrix/federation/"
+    ProxyPassReverse "/_matrix/federation/" "http://127.0.0.1:8009/_matrix/federation/"
+    ProxyPass        "/_matrix/key/" "http://127.0.0.1:8009/_matrix/key/"
+    ProxyPassReverse "/_matrix/key/" "http://127.0.0.1:8009/_matrix/key/"
+
+    # Default-deny: block everything not explicitly allowed above.
+    <Location "/">
+        Require all denied
+    </Location>
+
+    <Location "/_matrix/federation/">
+        Require all granted
+    </Location>
+
+    <Location "/_matrix/key/">
+        Require all granted
+    </Location>
+</VirtualHost>
+```
+
+### Caddy example
+
+Caddy terminates TLS automatically with Let's Encrypt. Use a single
+`matrix.example.org` site block that serves the well-known discovery
+files inline and routes `/_matrix/` traffic to the loopback listeners.
+Federation is reached either via the same `:443` block (with `/.well-known/
+matrix/server` pointing at `:443`) or a separate `:8448` site.
+
+```caddyfile
+# ── Client-server API + delegated federation (port 443) ──────────────────────
+# Caddy automatically obtains and renews a Let's Encrypt certificate for this
+# site — no ssl_certificate directives are needed.  Caddy also adds HSTS,
+# enforces modern TLS, and enables OCSP stapling by default.
+matrix.example.org {
+
+    # ── Matrix homeserver discovery (served inline, not proxied) ─────────────
+    # These two well-known endpoints are required by the Matrix spec and are
+    # served inline by Caddy so they remain available while Merovingian restarts.
+    #
+    # /.well-known/matrix/client: tells Matrix clients the base URL of the
+    # homeserver.  Clients request this before logging in.  CORS is required
+    # here because browser clients fetch it from a different origin
+    # (e.g. element.io).  This is NOT a duplicate of Merovingian's CORS —
+    # Caddy serves this path directly and never proxies it.
+    @clientDiscovery path /.well-known/matrix/client
+    handle_response @clientDiscovery {
+        header Content-Type application/json
+        header Access-Control-Allow-Origin "*"
+        respond `{"m.homeserver":{"base_url":"https://matrix.example.org"}}` 200
+    }
+
+    # /.well-known/matrix/server: tells remote homeservers where to send
+    # federation traffic.  "m.server":"matrix.example.org:443" delegates
+    # federation to this site block so no separate port 8448 DNS entry is
+    # required.  Remote servers fetch this during server discovery.
+    @serverDiscovery path /.well-known/matrix/server
+    handle_response @serverDiscovery {
+        header Content-Type application/json
+        header Access-Control-Allow-Origin "*"
+        respond `{"m.server":"matrix.example.org:443"}` 200
+    }
+
+    # ── Federation and key-server API ─────────────────────────────────────────
+    # Routes /_matrix/federation/ and /_matrix/key/ to the federation listener
+    # (8009).  The split from port 8008 (client) is intentional: federation uses
+    # X-Matrix signature auth, not Bearer tokens, and must not be routed through
+    # the client-server access-token gate.
+    @federation path /_matrix/federation/* /_matrix/key/*
+    reverse_proxy @federation 127.0.0.1:8009
+
+    # ── Client-server API and media ───────────────────────────────────────────
+    # /_matrix/client/ handles login, registration, sync, messages, etc.
+    # /_matrix/media/ must be listed alongside — without it media requests fall
+    # through to the `respond 403` catch-all below, failing the browser CORS
+    # preflight and breaking uploads, downloads, and user avatars.
+    @client path /_matrix/client/* /_matrix/media/*
+    reverse_proxy @client 127.0.0.1:8008
+
+    # ── Catch-all: deny everything else ───────────────────────────────────────
+    # Block any path not matched above so a misconfiguration never accidentally
+    # exposes an internal service on this hostname.
+    respond 403
+}
+
+# ── Native federation listener (port 8448) ────────────────────────────────────
+# Handles direct federation connections from servers that do not follow the
+# .well-known/matrix/server delegation to port 443.  Optional if all remote
+# servers support .well-known discovery, but harmless to keep.  Only federation
+# and key endpoints are forwarded; all other paths return 403.
+matrix.example.org:8448 {
+    @federation path /_matrix/federation/* /_matrix/key/*
+    reverse_proxy @federation 127.0.0.1:8009
+    respond 403
+}
+```
+
+Caddy ships sane defaults for HSTS, modern TLS, and OCSP stapling, so no
+extra `header` directives are required for those. CORS preflight is still
+emitted by Merovingian; the `Access-Control-Allow-Origin` lines above are
+only for the discovery JSON, which Caddy serves directly.
+
+### Traefik example
+
+Traefik v3 with the file provider. Use routers + services split by path
+prefix; the static discovery files are served by a dedicated `file`
+provider or a tiny HTTP backend.
+
+```yaml
+# traefik.yml (excerpt)
+entryPoints:
+  # Redirect all plain-HTTP traffic to HTTPS so no Matrix credentials are
+  # sent in the clear.
+  web:
+    address: ":80"
+    http:
+      redirections:
+        entryPoint:
+          to: websecure
+  # Main TLS entry point for client-server API and delegated federation.
+  websecure:
+    address: ":443"
+  # Native Matrix federation port.  Required for servers that do not follow
+  # .well-known/matrix/server delegation; optional but harmless otherwise.
+  federation:
+    address: ":8448"
+
+# dynamic.yml
+http:
+  routers:
+    # ── Client-server API + media ──────────────────────────────────────────────
+    # Routes /_matrix/client/ and /_matrix/media/ to the client listener (8008).
+    # Media must be included here: omitting it causes media requests to match no
+    # router, return a CORS error, and break uploads, downloads, and avatars.
+    client-server:
+      rule: "Host(`matrix.example.org`) && (PathPrefix(`/_matrix/client/`) || PathPrefix(`/_matrix/media/`))"
+      service: merovingian-client
+      entryPoints: [websecure]
+      tls: { certResolver: letsencrypt }
+
+    # ── Federation + key API on port 443 (delegated) ──────────────────────────
+    # Routes /_matrix/federation/ and /_matrix/key/ to the federation listener
+    # (8009) so X-Matrix signature auth is applied, not the client access-token
+    # gate on 8008.
+    federation-443:
+      rule: "Host(`matrix.example.org`) && (PathPrefix(`/_matrix/federation/`) || PathPrefix(`/_matrix/key/`))"
+      service: merovingian-federation
+      entryPoints: [websecure]
+      tls: { certResolver: letsencrypt }
+
+    # ── Native federation listener on port 8448 ───────────────────────────────
+    # Accepts connections from servers that do not follow .well-known delegation.
+    # The wildcard Host rule is safe here because only the federation entryPoint
+    # binds port 8448 — no other services are reachable on this port.
+    federation-8448:
+      rule: "Host(`matrix.example.org`)"
+      service: merovingian-federation
+      entryPoints: [federation]
+      tls: { certResolver: letsencrypt }
+
+  services:
+    # Client listener (8008): login, registration, sync, messages, media, keys.
+    merovingian-client:
+      loadBalancer:
+        servers: [{ url: "http://127.0.0.1:8008" }]
+    # Federation listener (8009): server-to-server PDU exchange, key fetching,
+    # and X-Matrix signature authentication.
+    merovingian-federation:
+      loadBalancer:
+        servers: [{ url: "http://127.0.0.1:8009" }]
+```
+
+`/.well-known/matrix/client` and `/server` are served by Merovingian
+itself; with the wildcard CORS default no Traefik middleware is needed.
+Do **not** add a `headers` middleware that sets `Access-Control-Allow-Origin` —
+this would create duplicate header values that browsers reject.
+
+### HAProxy example
+
+HAProxy is the cheapest option for high-traffic deployments because it
+does not buffer requests. The frontend terminates TLS; the backends
+forward to the loopback listeners. ACLs route by path prefix so client
+and federation traffic land on the correct backend.
+
+```haproxy
+# ── HTTPS frontend (port 443) ─────────────────────────────────────────────────
+# Terminates TLS and routes to backends by path-prefix ACL.  ACLs are evaluated
+# in order; the first matching use_backend rule wins.
+frontend ft_https
+    bind *:443 ssl crt /etc/haproxy/certs/matrix.example.org.pem alpn h2,http/1.1
+    # Redirect any plain-HTTP request to HTTPS so no Matrix credentials are
+    # sent in the clear (applies when the client connects on port 80 to the
+    # same listener, e.g. if bind *:80 is also present).
+    http-request redirect scheme https code 301 if !{ ssl_fc }
+
+    # Path-prefix ACLs — determines which backend handles each request.
+    acl is_client        path_beg /_matrix/client/
+    acl is_media         path_beg /_matrix/media/
+    acl is_federation    path_beg /_matrix/federation/
+    acl is_key           path_beg /_matrix/key/
+
+    # Client-server API and media both target the client listener (8008).
+    use_backend bk_merovingian_client     if is_client || is_media
+    # Federation and key-server API target the federation listener (8009) so
+    # X-Matrix signature auth is applied, not the client access-token gate.
+    use_backend bk_merovingian_federation if is_federation || is_key
+    # /.well-known/matrix/{client,server} falls through to the client backend;
+    # Merovingian does not own those paths but the client listener returns 404,
+    # which is sufficient — serve them from a separate static backend if needed.
+    use_backend bk_merovingian_client
+    default_backend bk_merovingian_client
+
+# ── Client-server backend ─────────────────────────────────────────────────────
+# Serves the client-server API and media repository on port 8008.
+backend bk_merovingian_client
+    # Append the real client IP to X-Forwarded-For so Merovingian can use it
+    # for per-client rate limiting.  Requires server.trusted_proxies=127.0.0.1
+    # in merovingian.conf; without that, all clients share one rate-limit bucket.
+    option forwardfor header X-Forwarded-For
+    # Tell Merovingian the downstream connection arrived over HTTPS.
+    http-request set-header X-Forwarded-Proto https
+    server merovingian 127.0.0.1:8008 check
+
+# ── Federation backend ────────────────────────────────────────────────────────
+# Serves the server-to-server API and signing-key endpoints on port 8009.
+backend bk_merovingian_federation
+    option forwardfor header X-Forwarded-For
+    http-request set-header X-Forwarded-Proto https
+    server merovingian 127.0.0.1:8009 check
+
+# ── Native federation listener (port 8448) ────────────────────────────────────
+# Accepts direct federation connections from servers that do not follow the
+# .well-known/matrix/server delegation to port 443.  Optional if all remote
+# servers support .well-known discovery, but harmless to keep.  All traffic on
+# this port is forwarded to the federation backend; the backend's Merovingian
+# router returns 403 for any path that is not /_matrix/federation/ or
+# /_matrix/key/.
+frontend ft_federation_native
+    bind *:8448 ssl crt /etc/haproxy/certs/matrix.example.org.pem alpn h2,http/1.1
+    default_backend bk_merovingian_federation
+```
+
+HAProxy does not edit response headers unless told to; CORS preflight
+therefore reaches the client as Merovingian emits it. Do **not** add
+`http-response set-header Access-Control-Allow-Origin` to the backends —
+this would create duplicate header values that browsers reject.
+
+### Cloudflare example
+
+Cloudflare's CDN terminates TLS and can route to an origin over HTTPS
+or HTTP. The two gotchas are (a) Cloudflare adds its own
+`Cf-Connecting-IP` and may strip `Authorization` if caching is on for
+the route, and (b) `Origin` request headers are passed through, so
+Merovingian's preflight handling still works.
+
+```yaml
+# Cloudflare dashboard or Terraform equivalent
+record:
+  - name: matrix
+    type: A
+    value: 203.0.113.10   # origin server public IP
+    proxied: true
+
+origin_rules:
+  - name: "Matrix client + delegated federation (port 443)"
+    condition: { hostname: "matrix.example.org" }
+    destination: { port: 8008 }   # client traffic; the origin server's nginx then splits by path
+
+  - name: "Federation native (port 8448)"
+    condition: { hostname: "matrix.example.org", port: 8448 }
+    destination: { port: 8009 }
+
+ssl: full
+```
+
+For a Cloudflare-fronted deployment the cleanest split is to put nginx
+in front of Merovingian on the origin box (the nginx example above
+already handles that). Cloudflare then connects to nginx's `:443` over
+HTTPS and forwards `Origin`, `Authorization`, and `Cf-Connecting-IP`
+unmodified. Make sure the Cloudflare cache is **off** for `/_matrix/`
+routes (set cache level to "Bypass" on the page rule) and that
+"Authenticated Origin Pulls" is enabled so the origin only accepts
+connections from Cloudflare.
+
+### Smoke test for every proxy
+
+After deploying, run this from the host that resolves
+`matrix.example.org`. The 200 response MUST include the
+`Access-Control-Allow-Origin` line; if it does not, the browser will
+block the preflight and Element will fail to join a room.
+
+```sh
+curl -X OPTIONS \
+    -H "Origin: vector://vector" \
+    -H "Access-Control-Request-Method: GET" \
+    -i https://matrix.example.org/_matrix/client/v3/versions
+```
+
+Expected response (200 + the CORS headers Merovingian emits):
+
+```text
+HTTP/1.1 200 OK
+Access-Control-Allow-Origin: *
+Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS
+Access-Control-Allow-Headers: authorization, content-type
+Access-Control-Max-Age: 86400
+Vary: Origin
+```
+
+Run the same preflight against a media endpoint. This is the check that catches a
+missing `/_matrix/media/` proxy route — uploads, downloads, and avatars break
+even when client traffic works:
+
+```sh
+curl -X OPTIONS \
+    -H "Origin: vector://vector" \
+    -H "Access-Control-Request-Method: GET" \
+    -i https://matrix.example.org/_matrix/media/v3/config
+```
+
+A non-2xx here (typically `403` from a catch-all `location /`) is the classic
+symptom: the browser reports "Response to preflight request doesn't pass access
+control check: It does not have HTTP ok status" and the request fails with
+`net::ERR_FAILED`. Merovingian itself answers this OPTIONS with `200` + CORS on
+the client-server listener, so a failure is always a proxy routing gap.
 
 ## User management
 
