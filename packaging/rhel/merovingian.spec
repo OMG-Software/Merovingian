@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.10.32
+Version:        0.10.33
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -97,6 +97,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Wed Jul 08 2026 James Chapman <claude@ping.me.uk> - 0.10.33-1
+- docs: add the Merovingian user manual (docs/user-manual.md) covering installation, configuration, running, and day-to-day operation.
+
 * Tue Jul 07 2026 James Chapman <claude@ping.me.uk> - 0.10.32-1
 - fix(federation): release the homeserver global lock around inbound federation dispatch and add authenticated per-origin /send abuse controls.
 * Mon Jul 06 2026 James Chapman <claude@ping.me.uk> - 0.10.31-1
