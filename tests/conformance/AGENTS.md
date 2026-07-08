@@ -26,6 +26,7 @@ Every test in this directory directly encodes a **MUST** or **SHOULD** from the 
 | `test_event_relationships_conformance.cpp` | [CS API § Event Relationships](../../docs/matrix-v1.18-spec/client-server-api.md#forming-relationships-between-events) |
 | `test_events.cpp` | [SS API § Event Signing](../../docs/matrix-v1.18-spec/server-server-api.md#signing-events) · [§ Content Hash](../../docs/matrix-v1.18-spec/server-server-api.md#calculating-the-content-hash-for-an-event) |
 | `test_federation_conformance.cpp` | [Server-Server API](../../docs/matrix-v1.18-spec/server-server-api.md) |
+| `test_federation_media_conformance.cpp` | [SS API § Content Repository — GET /_matrix/federation/v1/media/download/{mediaId}](../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixfederationv1mediadownloadmediaid) |
 | `test_federation_transaction_conformance.cpp` | [SS API § PUT /send/{txnId}](../../docs/matrix-v1.18-spec/server-server-api.md#put_matrixfederationv1sendtxnid) |
 | `test_identifier_grammar.cpp` | [Appendices § Identifier Grammar](../../docs/matrix-v1.18-spec/appendices.md#identifier-grammar) |
 | `test_key_publication_conformance.cpp` | [SS API § Key publication](../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixkeyv2server) |

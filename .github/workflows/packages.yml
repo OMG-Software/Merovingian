@@ -443,8 +443,20 @@ jobs:
           # most common cause of OpenSUSE CI failures.  Retry refresh + install
           # a few times before giving up; --gpg-auto-import-keys tolerates key
           # rotation on the download mirrors.
+          #
+          # `zypper dup` first syncs every package already on the image
+          # (including runtime libs like libpsl5) to the current repo
+          # snapshot before we ask for anything new. Tumbleweed is a rolling
+          # release built independently of the opensuse/tumbleweed Docker
+          # image, so the image's baked-in package set can briefly outpace
+          # (or lag) the live repo; without this, `zypper install` can hit a
+          # solver conflict (e.g. libcurl-devel needing a pkgconfig(libpsl)
+          # version older than the image's preinstalled libpsl5) that no
+          # amount of retrying the same install resolves, since it isn't a
+          # transient failure.
           for attempt in 1 2 3; do
             if zypper --non-interactive --gpg-auto-import-keys refresh && \
+               zypper --non-interactive dup && \
                zypper --non-interactive install -y \
                  ccache clang gcc-c++ meson ninja pkg-config git \
                  libopenssl-devel \

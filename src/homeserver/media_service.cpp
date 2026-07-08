@@ -5,9 +5,11 @@
 
 #include "merovingian/core/query_params.hpp"
 #include "merovingian/database/persistent_store.hpp"
+#include "merovingian/federation/outbound_transaction.hpp"
 #include "merovingian/federation/server_discovery.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/local_services.hpp"
+#include "merovingian/homeserver/room_service.hpp"
 #include "merovingian/http/outbound_client.hpp"
 #include "merovingian/media/repository.hpp"
 #include "merovingian/observability/logger.hpp"
@@ -17,10 +19,14 @@
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <tuple>
+#include <utility>
 #include <vector>
+
+#include <sodium.h>
 
 namespace merovingian::homeserver
 {
@@ -68,110 +74,223 @@ namespace
              resolve_policy_server_hook(runtime, trust_safety::PolicySurface::media, media_id)});
     }
 
-    // Fetch remote media via server discovery + HTTPS GET to /_matrix/media/v3/download/.
-    // On success the media is stored locally and the result contains the bytes. Falls back
-    // to remote_media_fetch_disabled() when federation infrastructure is unavailable.
-    [[nodiscard]] auto fetch_remote_media_live(HomeserverRuntime& runtime, std::string_view origin_server,
-                                               std::string_view media_id) -> OperationResult
+    [[nodiscard]] auto equal_ci(std::string_view a, std::string_view b) noexcept -> bool
     {
-        auto* const outbound_client = runtime.outbound_client.get();
-        auto* const discovery_network = runtime.discovery_network.get();
-        if (outbound_client == nullptr || discovery_network == nullptr)
+        if (a.size() != b.size())
         {
-            log_diagnostic("remote_fetch.no_federation", {
-                                                             {"origin_server", std::string{origin_server}, false},
-                                                             {"media_id",      std::string{media_id},      false}
-            });
-            return remote_media_fetch_disabled(runtime, origin_server, media_id);
+            return false;
         }
-
-        auto constexpr discovery_timeout = std::uint32_t{30U};
-        auto const resolution = federation::discover_server(origin_server, *discovery_network, discovery_timeout);
-        if (!resolution.discovery_allowed)
+        for (std::size_t i = 0U; i < a.size(); ++i)
         {
-            log_diagnostic("remote_fetch.discovery_failed", {
-                                                                {"origin_server", std::string{origin_server}, false},
-                                                                {"reason",        resolution.reason,          false}
-            });
-            ++runtime.media_repository.metrics.remote_fetch_rejections;
-            append_local_audit(runtime.database, observability::AuditCategory::moderation,
-                               "media.remote_fetch_rejected", "server",
-                               std::string{origin_server} + '/' + std::string{media_id}, resolution.reason);
-            return make_operation_result(false, {}, "server discovery failed", 502U);
-        }
-
-        auto url =
-            remote_media_download_url(resolution.resolved_host, resolution.resolved_port, origin_server, media_id);
-        auto const max_bytes = runtime.media_repository.config.max_upload_bytes > 0U
-                                   ? runtime.media_repository.config.max_upload_bytes
-                                   : std::uint64_t{16U * 1024U * 1024U};
-
-        auto out_req = http::OutboundRequest{};
-        out_req.method = "GET";
-        out_req.url = std::move(url);
-        out_req.pinned_addresses = resolution.pinned_addresses;
-        out_req.connect_timeout_seconds = 30U;
-        out_req.total_timeout_seconds = 120U;
-        out_req.max_response_body_bytes = static_cast<std::size_t>(max_bytes);
-
-        auto const out_result = outbound_client->perform(out_req);
-        if (!out_result.ok || out_result.response.status < 200U || out_result.response.status >= 300U)
-        {
-            auto const reason = out_result.error_detail.empty()
-                                    ? "remote returned " + std::to_string(out_result.response.status)
-                                    : out_result.error_detail;
-            log_diagnostic("remote_fetch.http_failed",
-                           {
-                               {"origin_server", std::string{origin_server}, false},
-                               {"reason",        reason,                     false}
-            });
-            ++runtime.media_repository.metrics.remote_fetch_rejections;
-            append_local_audit(runtime.database, observability::AuditCategory::moderation,
-                               "media.remote_fetch_rejected", "server",
-                               std::string{origin_server} + '/' + std::string{media_id}, reason);
-            return make_operation_result(false, {}, reason, 502U);
-        }
-
-        // Extract Content-Type from response headers. HTTP header names are case-insensitive;
-        // check the two most common capitalisation variants sent by real homeservers.
-        auto content_type = std::string{"application/octet-stream"};
-        for (auto const& header : out_result.response.headers)
-        {
-            auto equal_ci = [](std::string const& a, std::string_view b) noexcept -> bool {
-                if (a.size() != b.size())
-                    return false;
-                for (std::size_t i = 0U; i < a.size(); ++i)
-                {
-                    if (std::tolower(static_cast<unsigned char>(a[i])) !=
-                        std::tolower(static_cast<unsigned char>(b[i])))
-                        return false;
-                }
-                return true;
-            };
-            if (equal_ci(header.name, "content-type"))
+            if (std::tolower(static_cast<unsigned char>(a[i])) != std::tolower(static_cast<unsigned char>(b[i])))
             {
-                content_type = header.value;
-                // Strip MIME parameters (e.g. "image/jpeg; charset=utf-8" → "image/jpeg").
-                auto const semicolon = content_type.find(';');
-                if (semicolon != std::string::npos)
-                {
-                    content_type.resize(semicolon);
-                }
-                while (!content_type.empty() && content_type.back() == ' ')
-                {
-                    content_type.pop_back();
-                }
-                break;
+                return false;
             }
         }
+        return true;
+    }
 
+    [[nodiscard]] auto trim(std::string_view value) noexcept -> std::string_view
+    {
+        while (!value.empty() && (value.front() == ' ' || value.front() == '\t'))
+        {
+            value.remove_prefix(1U);
+        }
+        while (!value.empty() && (value.back() == ' ' || value.back() == '\t' || value.back() == '\r'))
+        {
+            value.remove_suffix(1U);
+        }
+        return value;
+    }
+
+    // HTTP header names are case-insensitive; scans linearly since responses
+    // carry a small, bounded number of headers.
+    [[nodiscard]] auto find_header_ci(std::vector<http::OutboundHeader> const& headers, std::string_view name)
+        -> std::optional<std::string>
+    {
+        for (auto const& header : headers)
+        {
+            if (equal_ci(header.name, name))
+            {
+                return header.value;
+            }
+        }
+        return std::nullopt;
+    }
+
+    // Strips MIME parameters (e.g. "image/jpeg; charset=utf-8" -> "image/jpeg").
+    [[nodiscard]] auto strip_mime_parameters(std::string value) -> std::string
+    {
+        auto const semicolon = value.find(';');
+        if (semicolon != std::string::npos)
+        {
+            value.resize(semicolon);
+        }
+        while (!value.empty() && value.back() == ' ')
+        {
+            value.pop_back();
+        }
+        return value;
+    }
+
+    [[nodiscard]] auto extract_multipart_boundary(std::string_view content_type) -> std::string
+    {
+        auto constexpr marker = std::string_view{"boundary="};
+        auto const pos = content_type.find(marker);
+        if (pos == std::string_view::npos)
+        {
+            return {};
+        }
+        auto value = trim(content_type.substr(pos + marker.size()));
+        if (!value.empty() && value.front() == '"')
+        {
+            value.remove_prefix(1U);
+            auto const end = value.find('"');
+            if (end == std::string_view::npos)
+            {
+                return {};
+            }
+            value = value.substr(0U, end);
+        }
+        else
+        {
+            auto const end = value.find_first_of("; \t\r\n");
+            if (end != std::string_view::npos)
+            {
+                value = value.substr(0U, end);
+            }
+        }
+        return std::string{value};
+    }
+
+    struct RawMultipartPart final
+    {
+        std::vector<std::pair<std::string, std::string>> headers{};
+        std::string_view body{};
+    };
+
+    [[nodiscard]] auto find_raw_header_ci(RawMultipartPart const& part, std::string_view name)
+        -> std::optional<std::string>
+    {
+        for (auto const& [key, value] : part.headers)
+        {
+            if (equal_ci(key, name))
+            {
+                return value;
+            }
+        }
+        return std::nullopt;
+    }
+
+    // Splits a raw part (the bytes between two boundary delimiters, still
+    // carrying the delimiter's own trailing CRLF) into its header block and
+    // body per RFC 2046 §5.1: headers, a blank line, then the body. The
+    // trailing CRLF is stripped from the body specifically, after the
+    // header/body separator is located — not from the raw part as a whole —
+    // because for a header-only part with an empty body (e.g. a `Location`
+    // redirect) the blank line's own CRLF and the delimiter's CRLF are the
+    // same bytes, and stripping them up front would destroy the blank-line
+    // separator the header/body split depends on.
+    [[nodiscard]] auto parse_multipart_part(std::string_view raw) -> RawMultipartPart
+    {
+        auto part = RawMultipartPart{};
+        auto separator = raw.find("\r\n\r\n");
+        auto separator_len = std::size_t{4U};
+        if (separator == std::string_view::npos)
+        {
+            separator = raw.find("\n\n");
+            separator_len = 2U;
+        }
+        auto header_block = separator == std::string_view::npos ? std::string_view{} : raw.substr(0U, separator);
+        auto body = separator == std::string_view::npos ? raw : raw.substr(separator + separator_len);
+        if (body.size() >= 2U && body.substr(body.size() - 2U) == "\r\n")
+        {
+            body.remove_suffix(2U);
+        }
+        else if (!body.empty() && body.back() == '\n')
+        {
+            body.remove_suffix(1U);
+        }
+        part.body = body;
+        while (!header_block.empty())
+        {
+            auto const line_end = header_block.find('\n');
+            auto line = line_end == std::string_view::npos ? header_block : header_block.substr(0U, line_end);
+            if (!line.empty() && line.back() == '\r')
+            {
+                line.remove_suffix(1U);
+            }
+            if (auto const colon = line.find(':'); colon != std::string_view::npos)
+            {
+                part.headers.emplace_back(std::string{trim(line.substr(0U, colon))},
+                                          std::string{trim(line.substr(colon + 1U))});
+            }
+            if (line_end == std::string_view::npos)
+            {
+                break;
+            }
+            header_block = header_block.substr(line_end + 1U);
+        }
+        return part;
+    }
+
+    // Splits a multipart/mixed body on "--{boundary}" delimiters per RFC 2046.
+    [[nodiscard]] auto split_multipart_body(std::string_view body, std::string_view boundary)
+        -> std::vector<RawMultipartPart>
+    {
+        auto parts = std::vector<RawMultipartPart>{};
+        if (boundary.empty())
+        {
+            return parts;
+        }
+        auto const delimiter = "--" + std::string{boundary};
+        auto pos = body.find(delimiter);
+        if (pos == std::string_view::npos)
+        {
+            return parts;
+        }
+        pos += delimiter.size();
+        while (pos <= body.size())
+        {
+            if (body.compare(pos, 2U, "--") == 0)
+            {
+                break; // closing delimiter — no further parts
+            }
+            if (body.compare(pos, 2U, "\r\n") == 0)
+            {
+                pos += 2U;
+            }
+            else if (pos < body.size() && body[pos] == '\n')
+            {
+                pos += 1U;
+            }
+            auto const next = body.find(delimiter, pos);
+            if (next == std::string_view::npos)
+            {
+                break;
+            }
+            auto const raw_part = body.substr(pos, next - pos);
+            parts.push_back(parse_multipart_part(raw_part));
+            pos = next + delimiter.size();
+        }
+        return parts;
+    }
+
+    // Shared tail for both the authenticated and the deprecated fetch paths:
+    // stores the fetched bytes through the media policy pipeline and records
+    // the outcome in diagnostics/audit.
+    [[nodiscard]] auto finalize_remote_media_fetch(HomeserverRuntime& runtime, std::string_view origin_server,
+                                                   std::string_view media_id,
+                                                   federation::ServerDiscoveryResult const& resolution,
+                                                   std::string content_type, std::string bytes) -> OperationResult
+    {
         auto remote_req = media::RemoteMediaDownloadRequest{};
         remote_req.origin_server = std::string{origin_server};
         remote_req.media_id = std::string{media_id};
         remote_req.resolved_host = resolution.resolved_host;
         remote_req.resolved_addresses = resolution.pinned_addresses;
-        remote_req.content_type = content_type;
-        remote_req.bytes = out_result.response.body;
+        remote_req.content_type = std::move(content_type);
+        remote_req.bytes = std::move(bytes);
         // Bytes fetched from a federated origin are never actually scanned here — there is
         // no AV engine wired into this codebase for any media source yet (see
         // docs/media-repository.md). Reporting scanner_clean=true would be a fabricated
@@ -208,6 +327,221 @@ namespace
                                      fetch_result.status);
     }
 
+    // Attempts the mandatory, authenticated federation media endpoint
+    // (server-server-api.md#get_matrixfederationv1mediadownloadmediaid, added
+    // in v1.11). Returns std::nullopt when the caller should fall back to the
+    // deprecated /_matrix/media/v3/download endpoint per spec: a 404 response,
+    // or a 200 response this server cannot use yet (an unparseable multipart
+    // body, or a Location redirect — see the comment below). Any other
+    // outcome — success, or a definitive failure such as 429/502/504 — is
+    // returned directly, since the spec only mandates falling back on 404.
+    [[nodiscard]] auto fetch_remote_media_via_federation_endpoint(HomeserverRuntime& runtime,
+                                                                  federation::ServerDiscoveryResult const& resolution,
+                                                                  std::string_view origin_server,
+                                                                  std::string_view media_id, std::uint64_t max_bytes)
+        -> std::optional<OperationResult>
+    {
+        auto const signing_key = ensure_runtime_server_signing_key(runtime);
+        if (!signing_key.has_value() ||
+            runtime.database.signing_secret_key.bytes().size() != crypto_sign_SECRETKEYBYTES)
+        {
+            log_diagnostic("remote_fetch.federation_endpoint.no_signing_key",
+                           {
+                               {"origin_server", std::string{origin_server}, false}
+            },
+                           observability::LogEventSeverity::warning);
+            return std::nullopt;
+        }
+
+        auto transaction = federation::OutboundTransaction{};
+        transaction.method = "GET";
+        transaction.target = "/_matrix/federation/v1/media/download/" + core::percent_encode_path_component(media_id);
+        transaction.origin = runtime.config.server().server_name;
+        transaction.destination = std::string{origin_server};
+
+        auto call = federation::OutboundCall{};
+        call.transaction = transaction;
+        call.resolved_host = resolution.resolved_host;
+        call.resolved_port = resolution.resolved_port;
+        call.pinned_addresses = resolution.pinned_addresses;
+        call.key_id = signing_key->key_id;
+        call.secret_key = runtime.database.signing_secret_key.bytes();
+        call.connect_timeout_seconds = 30U;
+        call.total_timeout_seconds = 120U;
+        // A small fixed allowance over the raw media cap covers the
+        // multipart/mixed envelope (boundary markers, part headers, and the
+        // empty JSON metadata part) wrapping the media bytes on this endpoint.
+        auto constexpr multipart_envelope_overhead = std::size_t{4096U};
+        call.max_response_body_bytes = static_cast<std::size_t>(max_bytes) + multipart_envelope_overhead;
+
+        auto const request = federation::build_outbound_request(call);
+        auto const out_result = runtime.outbound_client->perform(request);
+
+        if (!out_result.ok)
+        {
+            log_diagnostic(
+                "remote_fetch.federation_endpoint.network_failed",
+                {
+                    {"origin_server", std::string{origin_server}, false},
+                    {"reason",        out_result.error_detail,    false}
+            },
+                observability::LogEventSeverity::warning);
+            return std::nullopt;
+        }
+
+        if (out_result.response.status == 404U)
+        {
+            log_diagnostic("remote_fetch.federation_endpoint.unrecognized",
+                           {
+                               {"origin_server", std::string{origin_server}, false}
+            });
+            return std::nullopt;
+        }
+
+        if (out_result.response.status < 200U || out_result.response.status >= 300U)
+        {
+            // 429 (rate limited), 502 (too large), 504 (not yet uploaded), or
+            // anything else: the spec only mandates falling back to the legacy
+            // endpoint on 404, so surface this as the final result.
+            auto const reason = "remote returned " + std::to_string(out_result.response.status);
+            log_diagnostic("remote_fetch.federation_endpoint.http_failed",
+                           {
+                               {"origin_server", std::string{origin_server},                 false},
+                               {"http_status",   std::to_string(out_result.response.status), false}
+            },
+                           observability::LogEventSeverity::warning);
+            ++runtime.media_repository.metrics.remote_fetch_rejections;
+            append_local_audit(runtime.database, observability::AuditCategory::moderation,
+                               "media.remote_fetch_rejected", "server",
+                               std::string{origin_server} + '/' + std::string{media_id}, reason);
+            return make_operation_result(false, {}, reason, 502U);
+        }
+
+        auto const content_type_header =
+            find_header_ci(out_result.response.headers, "content-type").value_or(std::string{});
+        auto const parsed = parse_federation_media_multipart(content_type_header, out_result.response.body);
+        if (!parsed.ok)
+        {
+            log_diagnostic("remote_fetch.federation_endpoint.unparseable",
+                           {
+                               {"origin_server", std::string{origin_server}, false}
+            },
+                           observability::LogEventSeverity::warning);
+            return std::nullopt;
+        }
+        if (parsed.is_redirect)
+        {
+            // Location-redirect responses point at an arbitrary, non-federation
+            // CDN URL. Fetching it would need its own SSRF-safe DNS resolution
+            // and address pinning, which nothing in this codebase provides yet
+            // for arbitrary hosts (see docs/todos/capability-gaps.md). Fall back
+            // to the legacy endpoint rather than failing the whole request.
+            log_diagnostic(
+                "remote_fetch.federation_endpoint.location_unsupported",
+                {
+                    {"origin_server", std::string{origin_server}, false},
+                    {"location",      parsed.location,            false}
+            },
+                observability::LogEventSeverity::warning);
+            return std::nullopt;
+        }
+
+        return finalize_remote_media_fetch(runtime, origin_server, media_id, resolution, parsed.content_type,
+                                           parsed.bytes);
+    }
+
+    // Fetch remote media via server discovery, trying the authenticated
+    // federation endpoint first and falling back to the deprecated,
+    // unauthenticated /_matrix/media/v3/download endpoint per spec. On success
+    // the media is stored locally and the result contains the bytes. Falls
+    // back to remote_media_fetch_disabled() when federation infrastructure is
+    // unavailable.
+    [[nodiscard]] auto fetch_remote_media_live(HomeserverRuntime& runtime, std::string_view origin_server,
+                                               std::string_view media_id) -> OperationResult
+    {
+        auto* const outbound_client = runtime.outbound_client.get();
+        auto* const discovery_network = runtime.discovery_network.get();
+        if (outbound_client == nullptr || discovery_network == nullptr)
+        {
+            log_diagnostic("remote_fetch.no_federation", {
+                                                             {"origin_server", std::string{origin_server}, false},
+                                                             {"media_id",      std::string{media_id},      false}
+            });
+            return remote_media_fetch_disabled(runtime, origin_server, media_id);
+        }
+
+        auto constexpr discovery_timeout = std::uint32_t{30U};
+        auto const resolution = federation::discover_server(origin_server, *discovery_network, discovery_timeout);
+        if (!resolution.discovery_allowed)
+        {
+            log_diagnostic("remote_fetch.discovery_failed", {
+                                                                {"origin_server", std::string{origin_server}, false},
+                                                                {"reason",        resolution.reason,          false}
+            });
+            ++runtime.media_repository.metrics.remote_fetch_rejections;
+            append_local_audit(runtime.database, observability::AuditCategory::moderation,
+                               "media.remote_fetch_rejected", "server",
+                               std::string{origin_server} + '/' + std::string{media_id}, resolution.reason);
+            return make_operation_result(false, {}, "server discovery failed", 502U);
+        }
+
+        auto const max_bytes = runtime.media_repository.config.max_upload_bytes > 0U
+                                   ? runtime.media_repository.config.max_upload_bytes
+                                   : std::uint64_t{16U * 1024U * 1024U};
+
+        // Spec (server-server-api.md#content-repository, changed in v1.11): servers
+        // MUST try the authenticated endpoint first and only fall back to the
+        // deprecated one on a 404. Calling the deprecated endpoint
+        // unconditionally — as this code previously did — makes every remote
+        // fetch 404 against servers that have disabled it, which is the default
+        // on current Synapse and Merovingian deployments.
+        if (auto federated =
+                fetch_remote_media_via_federation_endpoint(runtime, resolution, origin_server, media_id, max_bytes);
+            federated.has_value())
+        {
+            return std::move(*federated);
+        }
+
+        auto url =
+            remote_media_download_url(resolution.resolved_host, resolution.resolved_port, origin_server, media_id);
+        // Mandatory per spec when falling back to the deprecated endpoint: tells
+        // the remote server not to itself recurse into fetching the media from
+        // yet another remote, since we are already the fallback path.
+        url += "?allow_remote=false";
+
+        auto out_req = http::OutboundRequest{};
+        out_req.method = "GET";
+        out_req.url = std::move(url);
+        out_req.pinned_addresses = resolution.pinned_addresses;
+        out_req.connect_timeout_seconds = 30U;
+        out_req.total_timeout_seconds = 120U;
+        out_req.max_response_body_bytes = static_cast<std::size_t>(max_bytes);
+
+        auto const out_result = outbound_client->perform(out_req);
+        if (!out_result.ok || out_result.response.status < 200U || out_result.response.status >= 300U)
+        {
+            auto const reason = out_result.error_detail.empty()
+                                    ? "remote returned " + std::to_string(out_result.response.status)
+                                    : out_result.error_detail;
+            log_diagnostic("remote_fetch.http_failed",
+                           {
+                               {"origin_server", std::string{origin_server}, false},
+                               {"reason",        reason,                     false}
+            });
+            ++runtime.media_repository.metrics.remote_fetch_rejections;
+            append_local_audit(runtime.database, observability::AuditCategory::moderation,
+                               "media.remote_fetch_rejected", "server",
+                               std::string{origin_server} + '/' + std::string{media_id}, reason);
+            return make_operation_result(false, {}, reason, 502U);
+        }
+
+        auto content_type = strip_mime_parameters(find_header_ci(out_result.response.headers, "content-type")
+                                                      .value_or(std::string{"application/octet-stream"}));
+
+        return finalize_remote_media_fetch(runtime, origin_server, media_id, resolution, std::move(content_type),
+                                           out_result.response.body);
+    }
+
 } // namespace
 
 [[nodiscard]] auto remote_media_download_url(std::string_view resolved_host, std::uint16_t resolved_port,
@@ -216,6 +550,41 @@ namespace
     return "https://" + std::string{resolved_host} + ':' + std::to_string(resolved_port) +
            "/_matrix/media/v3/download/" + core::percent_encode_path_component(origin_server) + '/' +
            core::percent_encode_path_component(media_id);
+}
+
+[[nodiscard]] auto remote_federation_media_download_url(std::string_view resolved_host, std::uint16_t resolved_port,
+                                                        std::string_view media_id) -> std::string
+{
+    return "https://" + std::string{resolved_host} + ':' + std::to_string(resolved_port) +
+           "/_matrix/federation/v1/media/download/" + core::percent_encode_path_component(media_id);
+}
+
+[[nodiscard]] auto parse_federation_media_multipart(std::string_view content_type_header, std::string_view body)
+    -> FederationMediaPart
+{
+    auto const boundary = extract_multipart_boundary(content_type_header);
+    auto const parts = split_multipart_body(body, boundary);
+    if (parts.size() < 2U)
+    {
+        return {};
+    }
+
+    auto const& media_part = parts[1];
+    auto result = FederationMediaPart{};
+    if (auto const location = find_raw_header_ci(media_part, "location"); location.has_value())
+    {
+        result.ok = true;
+        result.is_redirect = true;
+        result.location = *location;
+        return result;
+    }
+
+    result.ok = true;
+    result.is_redirect = false;
+    result.content_type = strip_mime_parameters(
+        find_raw_header_ci(media_part, "content-type").value_or(std::string{"application/octet-stream"}));
+    result.bytes = std::string{media_part.body};
+    return result;
 }
 
 [[nodiscard]] auto upload_local_media(HomeserverRuntime& runtime, std::string_view access_token,
