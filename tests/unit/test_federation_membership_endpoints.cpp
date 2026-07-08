@@ -34,8 +34,8 @@ namespace
     return config;
 }
 
-[[nodiscard]] auto remote_for(std::string const& origin, std::string const& key_id, std::string const& key_seed)
-    -> merovingian::federation::FederationRemoteRuntime
+[[nodiscard]] auto remote_for(std::string const& origin, std::string const& key_id,
+                              std::string const& key_seed) -> merovingian::federation::FederationRemoteRuntime
 {
     auto remote = merovingian::federation::FederationRemoteRuntime{};
     remote.server_name = origin;
@@ -49,10 +49,9 @@ namespace
     return remote;
 }
 
-[[nodiscard]] auto signed_make_request(std::string const& origin, std::string const& key_id,
-                                       std::string const& key_seed, std::string const& target,
-                                       std::string const& method = "GET")
-    -> merovingian::federation::SignedFederationRequest
+[[nodiscard]] auto signed_make_request(
+    std::string const& origin, std::string const& key_id, std::string const& key_seed, std::string const& target,
+    std::string const& method = "GET") -> merovingian::federation::SignedFederationRequest
 {
     auto request = merovingian::federation::SignedFederationRequest{};
     request.method = method;
@@ -70,8 +69,8 @@ namespace
 }
 
 [[nodiscard]] auto signed_put_request(std::string const& origin, std::string const& key_id, std::string const& key_seed,
-                                      std::string const& target, std::string const& body)
-    -> merovingian::federation::SignedFederationRequest
+                                      std::string const& target,
+                                      std::string const& body) -> merovingian::federation::SignedFederationRequest
 {
     auto request = merovingian::federation::SignedFederationRequest{};
     request.method = "PUT";
@@ -88,8 +87,8 @@ namespace
     return request;
 }
 
-[[nodiscard]] auto json_member(merovingian::canonicaljson::Object const& object, std::string_view key)
-    -> merovingian::canonicaljson::Value const*
+[[nodiscard]] auto json_member(merovingian::canonicaljson::Object const& object,
+                               std::string_view key) -> merovingian::canonicaljson::Value const*
 {
     for (auto const& member : object)
     {
@@ -226,6 +225,9 @@ SCENARIO("Outbound make/send helpers build properly framed OutboundTransactions"
             auto const mj = merovingian::federation::make_outbound_make_membership(
                 merovingian::federation::FederationEndpoint::make_join, "remote.example.org", "local.example.org",
                 "!room:example.org", "@alice:local.example.org", {"12", "11"});
+            auto const ml = merovingian::federation::make_outbound_make_membership(
+                merovingian::federation::FederationEndpoint::make_leave, "remote.example.org", "local.example.org",
+                "!room:example.org", "@alice:local.example.org", {"12", "11"});
             auto const sj = merovingian::federation::make_outbound_send_membership(
                 merovingian::federation::FederationEndpoint::send_join, "remote.example.org", "local.example.org",
                 "!room:example.org", "$event:local.example.org", "{\"signed\":\"event\"}");
@@ -246,6 +248,11 @@ SCENARIO("Outbound make/send helpers build properly framed OutboundTransactions"
                         0U);
                 REQUIRE(mj.target.find("ver=12") != std::string::npos);
                 REQUIRE(mj.target.find("ver=11") != std::string::npos);
+                REQUIRE(ml.method == "GET");
+                REQUIRE(ml.target.find(
+                            "/_matrix/federation/v1/make_leave/%21room%3Aexample.org/%40alice%3Alocal.example.org") ==
+                        0U);
+                REQUIRE(ml.target.find("ver=") == std::string::npos);
                 REQUIRE(sj.method == "PUT");
                 REQUIRE(sj.target.find(
                             "/_matrix/federation/v2/send_join/%21room%3Aexample.org/%24event%3Alocal.example.org") ==

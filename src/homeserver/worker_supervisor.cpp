@@ -81,6 +81,10 @@ auto WorkerSupervisor::stop() noexcept -> void
         return;
     }
 
+    // A deliberate shutdown is not a failure, but the supervisor is no longer
+    // available to route work, so report unhealthy until it is started again.
+    healthy_.store(false);
+
     // Take ownership of channel_ under the lock and release the lock before
     // calling stop() on it. channel_->stop() joins the dispatch thread, which
     // may be running the pdu_ingest handler; that handler's notify_room_changed()
@@ -120,7 +124,7 @@ auto WorkerSupervisor::stop() noexcept -> void
     // shutdown or test teardown. TSan-instrumented workers can be very slow to
     // exit, so allow a generous grace period before escalating to SIGTERM and
     // then SIGKILL.
-    if (worker_pid_ > 0)
+    if (worker_pid_.load() > 0)
     {
         auto const deadline =
             std::chrono::steady_clock::now() + std::chrono::seconds{static_cast<long>(request_timeout_seconds_)};
@@ -129,8 +133,8 @@ auto WorkerSupervisor::stop() noexcept -> void
         while (std::chrono::steady_clock::now() < deadline)
         {
             auto status = int{0};
-            auto const rc = ::waitpid(worker_pid_, &status, WNOHANG);
-            if (rc == worker_pid_)
+            auto const rc = ::waitpid(worker_pid_.load(), &status, WNOHANG);
+            if (rc == worker_pid_.load())
             {
                 reaped = true;
                 break;
@@ -159,15 +163,15 @@ auto WorkerSupervisor::stop() noexcept -> void
         {
             LOG_WARNING("Federation worker did not exit within " + std::to_string(request_timeout_seconds_) +
                         "s; sending SIGTERM");
-            std::ignore = ::kill(worker_pid_, SIGTERM);
+            std::ignore = ::kill(worker_pid_.load(), SIGTERM);
 
             auto const term_deadline =
                 std::chrono::steady_clock::now() + std::chrono::seconds{static_cast<long>(request_timeout_seconds_)};
             while (std::chrono::steady_clock::now() < term_deadline)
             {
                 auto status = int{0};
-                auto const rc = ::waitpid(worker_pid_, &status, WNOHANG);
-                if (rc == worker_pid_)
+                auto const rc = ::waitpid(worker_pid_.load(), &status, WNOHANG);
+                if (rc == worker_pid_.load())
                 {
                     reaped = true;
                     break;
@@ -187,11 +191,11 @@ auto WorkerSupervisor::stop() noexcept -> void
         if (!reaped)
         {
             LOG_WARNING("Federation worker ignored SIGTERM; sending SIGKILL");
-            std::ignore = ::kill(worker_pid_, SIGKILL);
-            std::ignore = ::waitpid(worker_pid_, nullptr, 0);
+            std::ignore = ::kill(worker_pid_.load(), SIGKILL);
+            std::ignore = ::waitpid(worker_pid_.load(), nullptr, 0);
         }
 
-        worker_pid_ = -1;
+        worker_pid_.store(-1);
     }
 }
 
@@ -228,6 +232,11 @@ auto WorkerSupervisor::request_timeout() const noexcept -> std::uint32_t
 auto WorkerSupervisor::shard_index() const noexcept -> std::uint32_t
 {
     return shard_index_;
+}
+
+auto WorkerSupervisor::worker_pid() const noexcept -> pid_t
+{
+    return worker_pid_.load();
 }
 
 auto WorkerSupervisor::spawn_and_connect() -> void
@@ -268,7 +277,7 @@ auto WorkerSupervisor::spawn_and_connect() -> void
     }
 
     client_fd.reset();
-    worker_pid_ = pid;
+    worker_pid_.store(pid);
 
     // Derive the IPC auth key from the operator master-key file. Both this
     // process and the worker read the same file and derive the same key, so
@@ -312,7 +321,7 @@ auto WorkerSupervisor::supervisor_loop() -> void
     while (running_.load())
     {
         auto status = int{0};
-        auto const waited = ::waitpid(worker_pid_, &status, WNOHANG);
+        auto const waited = ::waitpid(worker_pid_.load(), &status, WNOHANG);
 
         if (waited == 0)
         {
@@ -332,7 +341,7 @@ auto WorkerSupervisor::supervisor_loop() -> void
             {
                 // The child has already been reaped (e.g. by stop()); nothing
                 // more for this supervisor to do.
-                worker_pid_ = -1;
+                worker_pid_.store(-1);
                 break;
             }
             healthy_.store(false);
@@ -347,7 +356,7 @@ auto WorkerSupervisor::supervisor_loop() -> void
         }
 
         auto const exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
-        LOG_WARNING("Federation worker exited: pid=" + std::to_string(worker_pid_) +
+        LOG_WARNING("Federation worker exited: pid=" + std::to_string(worker_pid_.load()) +
                     " exit_code=" + std::to_string(exit_code) + " restart_in_ms=" + std::to_string(backoff_ms));
 
         // Mark unhealthy and take ownership of channel_ under the mutex so
@@ -368,7 +377,7 @@ auto WorkerSupervisor::supervisor_loop() -> void
         {
             old_channel->stop();
         }
-        worker_pid_ = -1;
+        worker_pid_.store(-1);
 
         std::this_thread::sleep_for(std::chrono::milliseconds{backoff_ms});
         backoff_ms = std::min(backoff_ms * 2U, kMaxBackoffMs);

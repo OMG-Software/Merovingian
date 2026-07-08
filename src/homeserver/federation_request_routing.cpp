@@ -233,4 +233,17 @@ auto federation_request_should_bypass_worker(LocalHttpRequest const& request) ->
            room_id_from_send_body(request.body).empty();
 }
 
+auto is_federation_key_server_endpoint(std::string_view target) noexcept -> bool
+{
+    // The key server endpoint is the only inbound federation route that main
+    // processes without worker involvement or X-Matrix signature verification.
+    // It must match the full path exactly; anything else (including a longer
+    // path that merely contains the same substring) must follow the normal
+    // worker/verify path so that authorization checks run and routing is not
+    // accidentally bypassed.
+    auto const query_pos = target.find('?');
+    auto const path = target.substr(0U, query_pos);
+    return path == "/_matrix/key/v2/server";
+}
+
 } // namespace merovingian::homeserver

@@ -44,12 +44,16 @@ public:
     // Sends a pre-signed OutboundRequest to the worker shard for room_id to
     // execute. The HTTP call runs in the worker's thread pool; the signing key
     // never crosses the IPC boundary.
-    [[nodiscard]] auto send_outbound_request(http::OutboundRequest const& request, std::string_view room_id)
-        -> http::OutboundResult;
+    [[nodiscard]] auto send_outbound_request(http::OutboundRequest const& request,
+                                             std::string_view room_id) -> http::OutboundResult;
 
     // Tells the worker shard that owns room_id to refresh its otherwise-stale
     // copy of that room from the database. See WorkerPool::notify_room_changed.
     auto notify_room_changed(std::string_view room_id) -> void;
+
+    // True when the underlying worker pool is up and all shards are healthy.
+    // Exposed for tests that need to poll readiness instead of sleeping.
+    [[nodiscard]] auto healthy() const noexcept -> bool;
 
 private:
     HomeserverRuntime& runtime_;

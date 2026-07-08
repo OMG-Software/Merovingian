@@ -12,6 +12,7 @@ namespace
 
 using merovingian::homeserver::federation_request_should_bypass_worker;
 using merovingian::homeserver::federation_worker_room_id_from_request;
+using merovingian::homeserver::is_federation_key_server_endpoint;
 using merovingian::homeserver::LocalHttpRequest;
 
 [[nodiscard]] auto make_request(std::string target, std::string body = {}) -> LocalHttpRequest
@@ -511,6 +512,60 @@ SCENARIO("Non-room federation endpoints return an empty room ID", "[federation][
             THEN("no room ID is extracted")
             {
                 REQUIRE(federation_worker_room_id_from_request(request).empty());
+            }
+        }
+    }
+}
+
+SCENARIO("Federation key server endpoint is matched exactly", "[federation][routing][key-server]")
+{
+    GIVEN("the exact key server path")
+    {
+        WHEN("the target has no query string")
+        {
+            THEN("it is recognized as the key server endpoint")
+            {
+                REQUIRE(is_federation_key_server_endpoint("/_matrix/key/v2/server"));
+            }
+        }
+
+        WHEN("the target has a query string")
+        {
+            THEN("it is still recognized as the key server endpoint")
+            {
+                REQUIRE(is_federation_key_server_endpoint("/_matrix/key/v2/server?key=ed25519:a"));
+            }
+        }
+    }
+
+    GIVEN("targets that contain the key server path as a substring")
+    {
+        WHEN("the substring appears as a path prefix segment")
+        {
+            THEN("it is rejected so the request is not handled locally")
+            {
+                REQUIRE_FALSE(is_federation_key_server_endpoint("/evil/_matrix/key/v2/server"));
+                REQUIRE_FALSE(is_federation_key_server_endpoint("/_matrix/key/v2/server/extra"));
+            }
+        }
+
+        WHEN("the substring appears at the end of a longer last segment")
+        {
+            THEN("it is rejected")
+            {
+                REQUIRE_FALSE(is_federation_key_server_endpoint("/_matrix/key/v2/server2"));
+            }
+        }
+    }
+
+    GIVEN("unrelated federation targets")
+    {
+        WHEN("they are room-scoped or profile endpoints")
+        {
+            THEN("they are not recognized as the key server endpoint")
+            {
+                REQUIRE_FALSE(is_federation_key_server_endpoint("/_matrix/federation/v1/state/!room:example.com"));
+                REQUIRE_FALSE(is_federation_key_server_endpoint("/_matrix/federation/v1/query/profile"));
             }
         }
     }

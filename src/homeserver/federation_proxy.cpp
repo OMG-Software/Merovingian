@@ -38,8 +38,10 @@ FederationProxy::~FederationProxy()
 
 auto FederationProxy::handle(LocalHttpRequest const& request) -> LocalHttpResponse
 {
-    // GET /_matrix/key/v2/server is always served locally.
-    if (request.target.find("/_matrix/key/v2/server") != std::string::npos)
+    // GET /_matrix/key/v2/server is always served locally. Match the path
+    // exactly so unrelated targets that merely contain this substring still go
+    // through the worker and federation authorization path.
+    if (is_federation_key_server_endpoint(request.target))
     {
         return handle_federation_http_request(runtime_, request);
     }
@@ -109,8 +111,8 @@ auto FederationProxy::handle(LocalHttpRequest const& request) -> LocalHttpRespon
     return pool_->handle(verified_request, room_id);
 }
 
-auto FederationProxy::send_outbound_request(http::OutboundRequest const& request, std::string_view room_id)
-    -> http::OutboundResult
+auto FederationProxy::send_outbound_request(http::OutboundRequest const& request,
+                                            std::string_view room_id) -> http::OutboundResult
 {
     if (!pool_)
     {
@@ -125,6 +127,11 @@ auto FederationProxy::notify_room_changed(std::string_view room_id) -> void
     {
         pool_->notify_room_changed(room_id);
     }
+}
+
+auto FederationProxy::healthy() const noexcept -> bool
+{
+    return pool_ != nullptr && pool_->healthy();
 }
 
 } // namespace merovingian::homeserver

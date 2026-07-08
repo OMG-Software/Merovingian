@@ -148,8 +148,8 @@ namespace
     // pdu_sink already does, or a join/leave/knock accepted by a worker is
     // invisible to main's own store (and therefore to every subsequent /send
     // message from that member, which main authorizes against its own state).
-    auto serialize_membership_ingest(federation::FederationEndpoint endpoint, federation::InboundPduEnvelope const& env)
-        -> std::string
+    auto serialize_membership_ingest(federation::FederationEndpoint endpoint,
+                                     federation::InboundPduEnvelope const& env) -> std::string
     {
         auto result = std::string{R"({"type":"membership_ingest","endpoint":)"};
         result.reserve(512U + env.json.size());
@@ -283,8 +283,8 @@ namespace
         return 0;
     }
 
-    [[nodiscard]] auto field_string_array(canonicaljson::Object const& obj, std::string_view key)
-        -> std::vector<std::string>
+    [[nodiscard]] auto field_string_array(canonicaljson::Object const& obj,
+                                          std::string_view key) -> std::vector<std::string>
     {
         auto out = std::vector<std::string>{};
         for (auto const& member : obj)
@@ -788,10 +788,17 @@ auto WorkerEventLoop::run() -> void
             auto const needs_relay =
                 route_match.matched && federation::federation_endpoint_requires_main_relay(route_match.route.endpoint);
             auto& target_pool = needs_relay ? relay_pool : local_pool;
-            std::ignore = target_pool.submit([&runtime, channel_ptr, id, request = std::move(request)]() mutable {
-                auto const response = homeserver::handle_federation_http_request(runtime, request);
+            auto const enqueued =
+                target_pool.submit([&runtime, channel_ptr, id, request = std::move(request)]() mutable {
+                    auto const response = homeserver::handle_federation_http_request(runtime, request);
+                    channel_ptr->send_response(id, ipc::serialize_fed_response(response));
+                });
+            if (!enqueued)
+            {
+                auto const response = homeserver::LocalHttpResponse{
+                    503U, R"({"errcode":"M_UNAVAILABLE","error":"Federation worker thread pool unavailable"})"};
                 channel_ptr->send_response(id, ipc::serialize_fed_response(response));
-            });
+            }
         }
         else if (type == "outbound_http_request")
         {
@@ -799,19 +806,26 @@ auto WorkerEventLoop::run() -> void
             // main-relay round-trip — route it to the generously-sized relay
             // pool so it can never be starved by (or itself starve) the fast
             // local endpoints, and the IPC reader thread is never blocked.
-            std::ignore = relay_pool.submit([&runtime, channel_ptr, id, json = std::move(json)]() mutable {
-                auto const request = ipc::deserialize_outbound_http_request(json);
-                auto outcome = http::OutboundResult{};
-                if (runtime.outbound_client)
-                {
-                    outcome = runtime.outbound_client->perform(request);
-                }
-                else
-                {
-                    outcome = {false, {}, http::OutboundError::network_error, "outbound client not available"};
-                }
+            auto const outbound_enqueued =
+                relay_pool.submit([&runtime, channel_ptr, id, json = std::move(json)]() mutable {
+                    auto const request = ipc::deserialize_outbound_http_request(json);
+                    auto outcome = http::OutboundResult{};
+                    if (runtime.outbound_client)
+                    {
+                        outcome = runtime.outbound_client->perform(request);
+                    }
+                    else
+                    {
+                        outcome = {false, {}, http::OutboundError::network_error, "outbound client not available"};
+                    }
+                    channel_ptr->send_response(id, ipc::serialize_outbound_http_response(outcome));
+                });
+            if (!outbound_enqueued)
+            {
+                auto const outcome = http::OutboundResult{
+                    false, {}, http::OutboundError::network_error, "federation worker relay thread pool unavailable"};
                 channel_ptr->send_response(id, ipc::serialize_outbound_http_response(outcome));
-            });
+            }
         }
         else if (type == "room_sync")
         {
@@ -832,13 +846,17 @@ auto WorkerEventLoop::run() -> void
             // scheduling order between two reloads of the same room is
             // immaterial.
             auto const room_id = ipc::ipc_json_get_str(json, "room_id");
-            std::ignore = local_pool.submit([&runtime, room_id]() {
+            auto const sync_enqueued = local_pool.submit([&runtime, room_id]() {
                 auto guard = std::unique_lock{runtime.mutex};
                 if (!database::reload_room(runtime.database.persistent_store, room_id))
                 {
                     LOG_WARNING("Federation worker: room_sync reload failed for room_id=" + room_id);
                 }
             });
+            if (!sync_enqueued)
+            {
+                LOG_WARNING("Federation worker: room_sync dropped because local thread pool is stopped");
+            }
         }
         else if (type == "shutdown")
         {
@@ -882,12 +900,16 @@ auto WorkerEventLoop::run() -> void
 
     watcher.join();
 
+    // Drain the thread pools first: any in-flight handler still needs to send
+    // its IPC response through the channel. Closing the channel before the
+    // pools empty would make send_response fail and drop responses on the
+    // floor (issue #327). request_stop() blocks until all workers exit.
+    local_pool.request_stop();
+    relay_pool.request_stop();
+
     // Idempotent: if the shutdown handler already stopped the channel this
     // is a no-op; otherwise it joins the reader and dispatch threads now.
     channel->stop();
-
-    local_pool.request_stop();
-    relay_pool.request_stop();
 
     LOG_INFO("Federation worker stopped");
 }

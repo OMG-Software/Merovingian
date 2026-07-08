@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.10.34
+Version:        0.10.35
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -97,6 +97,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Wed Jul 08 2026 James Chapman <claude@ping.me.uk> - 0.10.35-1
+- fix(federation-worker,ipc): federation-worker/IPC fixes: exact key-endpoint matching, pool-submit failure responses, outbound-error round-tripping, bounded supervisor shutdown tests, IpcChannel handler-exception safety, make_leave query compliance, pool drain before IPC close, and IPC timeout covering remote HTTP timeout. Replace hard sleeps in integration tests with health-based waits.
+
 * Wed Jul 08 2026 James Chapman <claude@ping.me.uk> - 0.10.34-1
 - fix(media): try the mandatory authenticated federation media download endpoint before falling back to the deprecated one, fixing federated attachment downloads that 404'd against servers which disable the deprecated endpoint.
 

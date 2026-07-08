@@ -115,10 +115,10 @@ The rolling `latest` GitHub prerelease is rebuilt on every push to `main`.
 
 ```sh
 # Debian/Ubuntu example
-dpkg -i merovingian_0.10.33_amd64.deb
+dpkg -i merovingian_0.10.35_amd64.deb
 
 # Fedora/RHEL example
-dnf install merovingian-0.10.33-1.fc40.x86_64.rpm
+dnf install merovingian-0.10.35-1.fc40.x86_64.rpm
 ```
 
 Packages create the `merovingian` system user and group, install the systemd
@@ -131,10 +131,10 @@ For older Linux distributions, use the musl-linked tarball. It has no glibc or
 runtime package dependencies.
 
 ```sh
-tar xzf merovingian-0.10.33-linux-static-x86_64.tar.gz
-cp merovingian-0.10.33-linux-static-x86_64/bin/merovingian-server /usr/local/bin/
-cp merovingian-0.10.33-linux-static-x86_64/bin/merovingian-db-migrate /usr/local/bin/
-cp merovingian-0.10.33-linux-static-x86_64/libexec/merovingian/merovingian-fed-worker \
+tar xzf merovingian-0.10.35-linux-static-x86_64.tar.gz
+cp merovingian-0.10.35-linux-static-x86_64/bin/merovingian-server /usr/local/bin/
+cp merovingian-0.10.35-linux-static-x86_64/bin/merovingian-db-migrate /usr/local/bin/
+cp merovingian-0.10.35-linux-static-x86_64/libexec/merovingian/merovingian-fed-worker \
    /usr/local/libexec/merovingian/
 ```
 
@@ -584,7 +584,7 @@ in-process fallback — requests return `503` while a crashed worker restarts.
 | `federation.worker.threads` | `4` | Thread pool for endpoints answered entirely from the worker's own local snapshot (`make_join`/`make_leave`/`make_knock`, `backfill`, directory/state queries, `get_missing_events`, `hierarchy`) — these never block on main, so this can stay small. |
 | `federation.worker.relay_threads` | `32` | Thread pool for endpoints that can block on a synchronous IPC round-trip to main (PDU-bearing `send`, `send_join`/`send_leave`/`send_knock`, `invite`, profile/key queries, `event/{eventId}`) or on outbound HTTP. Deliberately separate and generously sized from `threads`, since sharing one pool would let a burst of slow relay calls starve the fast local endpoints — see [`docs/architecture.md`](architecture.md), "Federation worker relay pool separation". |
 | `federation.worker.shards` | `2` | Number of independent worker processes. Requests are routed by `fnv1a_32(room_id) % shards`; non-room endpoints go to shard 0. Must be `>= 1`. |
-| `federation.worker.request_timeout_seconds` | `30` | Per-request IPC timeout in seconds. A request slower than this returns `504` to the remote server. |
+| `federation.worker.request_timeout_seconds` | `30` | Base per-request IPC timeout in seconds. The actual IPC timeout for inbound federation requests is `max(request_timeout_seconds, security.federation.remote_timeout) + 10 s`, so a worker-side outbound HTTP call can complete before main gives up. A request slower than the effective timeout returns `504` to the remote server. |
 | `federation.worker.apply_hardening` | `true` | Apply seccomp/capability sandboxing to workers. Keep `true` in production. |
 | `federation.worker.binary` | (empty) | Absolute path to `merovingian-fed-worker`; empty uses the compile-time libexec path (`$libexecdir/merovingian/merovingian-fed-worker`). |
 

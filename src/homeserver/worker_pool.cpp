@@ -889,7 +889,15 @@ auto WorkerPool::handle(LocalHttpRequest const& request, std::string_view room_i
         return {503U, R"({"errcode":"M_UNAVAILABLE","error":"Federation worker shard unavailable"})"};
     }
 
-    auto const timeout = std::chrono::seconds{cfg_.request_timeout_seconds};
+    // Inbound federation requests can trigger outbound HTTP calls inside the
+    // worker. The IPC timeout must cover the longest remote timeout the worker
+    // may wait for, plus a small margin, or main will declare an IPC timeout
+    // before the worker's own remote call has had a chance to complete (issue
+    // #326).
+    auto const remote_timeout = config::parse_duration_seconds(runtime_.config.security().federation.remote_timeout);
+    auto const remote_seconds = remote_timeout.valid ? remote_timeout.seconds : cfg_.request_timeout_seconds;
+    auto const ipc_timeout_seconds = std::max(cfg_.request_timeout_seconds, remote_seconds) + 10U;
+    auto const timeout = std::chrono::seconds{ipc_timeout_seconds};
     auto const reply = ch->send_request(ipc::serialize_fed_request(request), timeout);
     if (!reply.has_value())
     {
@@ -966,8 +974,8 @@ auto WorkerPool::shard_for(std::string_view room_id) const noexcept -> std::size
     return federation_worker_shard_for(room_id, cfg_.shards);
 }
 
-auto WorkerPool::send_outbound_request(http::OutboundRequest const& request, std::string_view room_id)
-    -> http::OutboundResult
+auto WorkerPool::send_outbound_request(http::OutboundRequest const& request,
+                                       std::string_view room_id) -> http::OutboundResult
 {
     auto const index = shard_for(room_id);
     if (index >= workers_.size())

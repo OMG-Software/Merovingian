@@ -86,10 +86,15 @@ auto make_outbound_make_membership(FederationEndpoint endpoint, std::string_view
     target.append(core::percent_encode_path_component(room_id));
     target.push_back('/');
     target.append(core::percent_encode_path_component(user_id));
-    auto first_query = true;
-    for (auto const& version : supported_room_versions)
+    // Matrix v1.18 only advertises supported room versions on make_join and
+    // make_knock; make_leave carries no ver= query parameters.
+    if (endpoint != FederationEndpoint::make_leave)
     {
-        append_query_arg(target, "ver", version, first_query);
+        auto first_query = true;
+        for (auto const& version : supported_room_versions)
+        {
+            append_query_arg(target, "ver", version, first_query);
+        }
     }
     auto transaction = make_outbound_transaction(destination, "GET", target, origin, "");
     log_diagnostic("outbound.membership.make",

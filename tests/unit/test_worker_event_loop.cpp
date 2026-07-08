@@ -2,14 +2,20 @@
 
 #include "../../src/federation_worker/worker_event_loop.hpp"
 #include "../support/master_key.hpp"
+#include "merovingian/net/thread_pool.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+
+#include <atomic>
+#include <chrono>
+#include <thread>
 
 namespace
 {
 
 using merovingian::core::FileDescriptor;
 using merovingian::federation_worker::WorkerEventLoop;
+using merovingian::net::ThreadPool;
 
 // Build a config carrying a real master-key file so WorkerEventLoop::run()
 // can derive the IPC auth key (issue #318) and proceed to the IpcChannel
@@ -67,6 +73,31 @@ SCENARIO("WorkerEventLoop run exits when the IPC fd is invalid", "[federation-wo
             THEN("the constructor-time key exchange fails and run propagates the exception")
             {
                 REQUIRE_THROWS_AS(loop.run(), std::runtime_error);
+            }
+        }
+    }
+}
+
+SCENARIO("ThreadPool submission failure is visible to WorkerEventLoop dispatch",
+         "[federation-worker][event-loop][thread-pool]")
+{
+    GIVEN("a thread pool that has been stopped")
+    {
+        auto pool = ThreadPool{1U};
+        auto ran = std::atomic<bool>{false};
+        REQUIRE(pool.submit([&] {
+            ran.store(true);
+        }));
+        std::this_thread::sleep_for(std::chrono::milliseconds{50});
+        pool.request_stop();
+
+        WHEN("another work item is submitted")
+        {
+            THEN("submit returns false so the caller can send an error response instead of dropping the request")
+            {
+                REQUIRE_FALSE(pool.submit([&] {
+                    ran.store(true);
+                }));
             }
         }
     }

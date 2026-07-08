@@ -137,6 +137,22 @@ SCENARIO("WorkerSupervisor exposes timeout and shard getters", "[federation][wor
     }
 }
 
+SCENARIO("WorkerSupervisor reports no worker pid before start", "[federation][worker-supervisor][lifecycle]")
+{
+    GIVEN("a freshly constructed supervisor")
+    {
+        WHEN("the worker pid is queried before start()")
+        {
+            auto supervisor = WorkerSupervisor{"/nonexistent/worker", "/nonexistent/config", 30U, 2U};
+
+            THEN("it reports -1 because no child has been spawned")
+            {
+                REQUIRE(supervisor.worker_pid() == -1);
+            }
+        }
+    }
+}
+
 SCENARIO("The worker child environment is allowlisted to PATH only", "[federation][worker-supervisor][security]")
 {
     GIVEN("a parent environment containing a secret sentinel and a custom PATH")
