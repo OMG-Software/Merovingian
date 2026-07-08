@@ -3,6 +3,7 @@
 ### Added
 - **docs: new `docs/user-manual.md` — a comprehensive operator manual covering installation (packages and source), initial setup, configuration parameters, database backends, running the server, reverse-proxy pointers, user management, federation policy, media repository, logging/diagnostics, maintenance, troubleshooting, and a security checklist.**
 - **docs(readme): `README.md` now links to `docs/user-manual.md` and reports the current beta version (v0.10.33).**
+- **docs(user-manual): the Reverse proxy section now includes a complete, copy-paste nginx example (TLS termination, `.well-known` discovery, client/media/federation/key routing, `X-Forwarded-For` rate-limit hardening) alongside the existing pointer to the full multi-proxy reference in `docs/configuration.md#reverse-proxy-examples`.**
 
 ### Changed
 - **chore(release): bump version to 0.10.33 across `meson.build`, `src/main.cpp`, `src/db_migrate.cpp`, packaging metadata, and build scripts.**

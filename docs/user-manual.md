@@ -620,10 +620,134 @@ Merovingian is designed to sit behind a reverse proxy. The proxy should:
 - Route `/_matrix/federation/` and `/_matrix/key/` to `127.0.0.1:8009`.
 - Serve `/.well-known/matrix/client` and `/.well-known/matrix/server` directly
   (or forward them, but keep their own CORS headers).
+- Overwrite `X-Forwarded-For` with the direct TCP peer IP (never append to a
+  client-supplied value) so `server.trusted_proxies` can enforce per-client
+  rate limits correctly.
+
+Set Merovingian's listeners to loopback cleartext behind the proxy:
+
+```ini
+listeners.client.bind=127.0.0.1:8008
+listeners.client.tls=false
+listeners.federation.bind=127.0.0.1:8009
+listeners.federation.tls=false
+server.trusted_proxies=127.0.0.1
+```
+
+### nginx example
+
+Terminates TLS in nginx, serves the `.well-known` discovery JSON inline, and
+routes client/media traffic to `8008` and federation/key traffic to `8009` by
+path. Replace `matrix.example.org` with your `server.public_baseurl` host.
+
+```nginx
+server {
+    listen 80;
+    server_name matrix.example.org;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name matrix.example.org;
+
+    ssl_certificate     /etc/letsencrypt/live/matrix.example.org/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/matrix.example.org/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "DENY" always;
+    # Do NOT add Access-Control-Allow-* here — Merovingian emits CORS headers
+    # on all /_matrix/ responses; duplicate values break browser clients.
+
+    location = /.well-known/matrix/client {
+        default_type application/json;
+        add_header Access-Control-Allow-Origin "*" always;
+        return 200 '{"m.homeserver":{"base_url":"https://matrix.example.org"}}';
+    }
+
+    location = /.well-known/matrix/server {
+        default_type application/json;
+        add_header Access-Control-Allow-Origin "*" always;
+        return 200 '{"m.server":"matrix.example.org:443"}';
+    }
+
+    location /_matrix/federation/ {
+        proxy_pass http://127.0.0.1:8009;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        # $remote_addr, not $proxy_add_x_forwarded_for — the latter lets a
+        # client forge another user's rate-limit bucket.
+        proxy_set_header X-Forwarded-For $remote_addr;
+    }
+
+    location /_matrix/key/ {
+        proxy_pass http://127.0.0.1:8009;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $remote_addr;
+    }
+
+    location /_matrix/client/ {
+        proxy_pass http://127.0.0.1:8008;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $remote_addr;
+    }
+
+    # Media needs its own block: falling through to the catch-all below
+    # breaks upload/download CORS preflight, and nginx's default
+    # client_max_body_size (1 MiB) silently 413s uploads before Merovingian
+    # ever sees them. Match security.media.max_upload_size (default 50 MiB).
+    location /_matrix/media/ {
+        proxy_pass http://127.0.0.1:8008;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        client_max_body_size 50m;
+    }
+
+    location / {
+        return 403;
+    }
+}
+
+# Native federation listener for servers that skip .well-known delegation.
+# Optional if every remote server follows .well-known/matrix/server, but
+# harmless to keep.
+server {
+    listen 8448 ssl http2;
+    server_name matrix.example.org;
+
+    ssl_certificate     /etc/letsencrypt/live/matrix.example.org/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/matrix.example.org/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+
+    location /_matrix/federation/ {
+        proxy_pass http://127.0.0.1:8009;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $remote_addr;
+    }
+
+    location /_matrix/key/ {
+        proxy_pass http://127.0.0.1:8009;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $remote_addr;
+    }
+
+    location / {
+        return 403;
+    }
+}
+```
 
 Complete copy-paste configs for nginx, Apache httpd, Caddy, Traefik, HAProxy,
-and Cloudflare are in
+and Cloudflare (with full inline rationale for every directive) are in
 [`docs/configuration.md#reverse-proxy-examples`](configuration.md#reverse-proxy-examples).
+Run the smoke test in that section after applying any of them.
 
 ## User management
 
