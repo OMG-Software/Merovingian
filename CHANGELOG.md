@@ -3,10 +3,11 @@
 ### Added
 - **docs: new `docs/user-manual.md` — a comprehensive operator manual covering installation (packages and source), initial setup, configuration parameters, database backends, running the server, reverse-proxy pointers, user management, federation policy, media repository, logging/diagnostics, maintenance, troubleshooting, and a security checklist.**
 - **docs(readme): `README.md` now links to `docs/user-manual.md` and reports the current beta version (v0.10.33).**
-- **docs(user-manual): the Reverse proxy section now includes a complete, copy-paste nginx example (TLS termination, `.well-known` discovery, client/media/federation/key routing, `X-Forwarded-For` rate-limit hardening) alongside the existing pointer to the full multi-proxy reference in `docs/configuration.md#reverse-proxy-examples`.**
+- **docs(user-manual): the Reverse proxy section now includes complete, copy-paste configs for nginx, Apache httpd, Caddy, Traefik, HAProxy, and Cloudflare (TLS termination, `.well-known` discovery, client/media/federation/key routing, `X-Forwarded-For` rate-limit hardening) plus the per-proxy CORS smoke test, folded in from the retired `docs/configuration.md`.**
 
 ### Changed
 - **chore(release): bump version to 0.10.33 across `meson.build`, `src/main.cpp`, `src/db_migrate.cpp`, packaging metadata, and build scripts.**
+- **docs: `docs/configuration.md` is retired — every section (fail-closed startup, listener/TLS policy, secrets at rest, registration/token lifetimes, federation inbound/outbound/join/worker controls, size and duration formats, trust-safety transport, reloadability policy, runtime config snapshot, startup hardening self-check, production packaging, CORS, client rate limits, log-module overrides) is now part of `docs/user-manual.md`'s Configuration, Federation, and Media repository sections. `AGENTS.md`, `README.md`, `docs/getting-started.md`, `docs/hardening.md`, `docs/http-transport.md`, `docs/media-repository.md`, `docs/release-process.md`, `src/config/AGENTS.md`, packaging spec/PLIST files, `scripts/build-static-linux.sh`, and two source comments now point at `docs/user-manual.md` instead.**
 
 ## 0.10.32
 

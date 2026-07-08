@@ -22,7 +22,7 @@ Parses, validates, and hot-reloads the server configuration.
 - **Log the effective config at startup** (INFO level) excluding secrets. Never log TLS private
   key paths or secret values.
 - **Hot-reload** is handled by `reload_plan.cpp`; changes that require restart must be documented
-  in `docs/configuration.md` with the `requires_restart` flag.
+  in `docs/user-manual.md` (Reloadability policy) with the `requires_restart` flag.
 
 ## Size limit parsing
 
@@ -31,4 +31,4 @@ Use this helper everywhere a config value represents a byte limit — do not par
 
 ## Key doc
 
-- `docs/configuration.md` — all config keys, types, defaults, and restart requirements
+- `docs/user-manual.md` — all config keys, types, defaults, and restart requirements

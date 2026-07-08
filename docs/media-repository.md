@@ -36,7 +36,7 @@ current in-process runtime path.
   `scanner_clean=false` (never a fabricated `true`) for every remote fetch —
   the final disposition is then decided by `MediaAcceptancePolicy` (see
   `security.media.local_upload_policy` / `remote_fetch_media_policy` in
-  `docs/configuration.md`), which defaults remote-fetched media to
+  `docs/user-manual.md`), which defaults remote-fetched media to
   `quarantine` rather than blindly trusting it.
 - Admin quarantine, release, and remove actions update repository state, persistent metadata, admin actions, and audit events.
 - Media metrics expose accepted uploads, rejected uploads, quarantines,
@@ -67,7 +67,7 @@ encrypted messages.
 
 Every "scanner verdict" mentioned in this document and in
 `security.media.enable_av_scanner` / `local_upload_policy` /
-`remote_fetch_media_policy` (`docs/configuration.md`) therefore applies only
+`remote_fetch_media_policy` (`docs/user-manual.md`) therefore applies only
 to plaintext media uploaded to unencrypted rooms. For encrypted attachments,
 `allow-after-scan` behaves identically to `allow` today, since no scanner —
 real or hypothetical — is ever given a verdict to render.

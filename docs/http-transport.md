@@ -40,7 +40,7 @@ Implemented now:
   config (0.4.60 preflight; 0.5.30 extended to all non-OPTIONS
   responses via a single `handle_client_server_request` boundary).
   Reverse proxies must not add their own CORS headers; see
-  `docs/configuration.md` Reverse proxy examples.
+  `docs/user-manual.md` Reverse proxy section.
 - response-header validation at both the client-server header assembler and
   final wire formatter, dropping invalid header names/values instead of
   emitting them on the wire

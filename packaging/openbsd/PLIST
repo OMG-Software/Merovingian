@@ -10,6 +10,6 @@
 @bin libexec/merovingian/merovingian-thumbnail-worker
 @bin libexec/merovingian/merovingian-fed-worker
 share/doc/merovingian/README.md
-share/doc/merovingian/configuration.md
+share/doc/merovingian/user-manual.md
 share/doc/merovingian/release-process.md
 @rcscript ${RCDIR}/merovingian

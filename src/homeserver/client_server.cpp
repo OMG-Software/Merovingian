@@ -6619,7 +6619,7 @@ auto start_client_server(config::Config const& config) -> ClientServerStartResul
     auto rt = ClientServerRuntime{};
     rt.homeserver = std::move(started.runtime);
     // Snapshot the CORS policy at startup. CORS is HTTP-behaviour
-    // configuration (per docs/configuration.md) and so requires a restart to
+    // configuration (per docs/user-manual.md) and so requires a restart to
     // take effect, matching every other HTTP-behaviour key.
     rt.cors = config.server().cors;
     // Build the wall-clock rate-limit engine from the parsed

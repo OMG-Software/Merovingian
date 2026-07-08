@@ -90,7 +90,7 @@ fi
 
 %files
 %license LICENSE
-%doc README.md docs/configuration.md docs/release-process.md
+%doc README.md docs/user-manual.md docs/release-process.md
 %{_bindir}/merovingian-server
 %{_bindir}/merovingian-db-migrate
 %dir %{_libexecdir}/merovingian

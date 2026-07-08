@@ -1916,7 +1916,7 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
     // thread-safe — PersistentStore reads are guarded, OutboundClient uses a
     // thread_local CURL handle, and CachedServerDiscovery is mutex-guarded.
     // Fan-out is capped by `join_parallelism` (the federation-wide concurrency
-    // cap; see docs/configuration.md). A configured value of 0 is clamped to 1
+    // cap; see docs/user-manual.md). A configured value of 0 is clamped to 1
     // (sequential) — config validation already rejects 0, this is defensive.
     auto sender_key_map = std::map<std::pair<std::string, std::string>, std::optional<FederationKeyRecord>>{};
     if (runtime.remote_key_resolver && !transaction.pdus.empty())
