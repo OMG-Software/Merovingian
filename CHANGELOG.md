@@ -1,3 +1,12 @@
+## 0.10.34
+
+### Fixed
+- **fix(media): federated attachments could be sent but never received.** `fetch_remote_media_live()` called only the deprecated, unauthenticated `GET /_matrix/media/v3/download/{serverName}/{mediaId}` endpoint, which current Synapse and Merovingian deployments disable by default per the Matrix v1.11 spec change — every remote media fetch 404'd. The fetch path now tries the mandatory authenticated `GET /_matrix/federation/v1/media/download/{mediaId}` endpoint first (signed with an X-Matrix Authorization header, same as outbound transactions), decodes its `multipart/mixed` response (`parse_federation_media_multipart()`), and falls back to the deprecated endpoint with `allow_remote=false` only on a `404`, per spec. A `Location`-redirect response from the authenticated endpoint is not yet followed (see `docs/todos/capability-gaps.md`) and falls back the same way.
+- **fix(media): serving locally-uploaded media to other homeservers over federation is still unimplemented** — flagged as a follow-up capability gap in `docs/todos/capability-gaps.md` (this server has no inbound route for either the authenticated or deprecated federation media download endpoint).
+
+### Added
+- **tests(homeserver): new `remote_federation_media_download_url()` and `parse_federation_media_multipart()` pure functions, covered by unit tests (`tests/unit/test_homeserver_media_service.cpp`) and a new conformance suite (`tests/conformance/test_federation_media_conformance.cpp`) citing SS API §Content Repository.**
+
 ## 0.10.33
 
 ### Added

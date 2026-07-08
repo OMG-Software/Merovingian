@@ -11,12 +11,26 @@ current in-process runtime path.
   enforced by the repository.
 - Downloads serve local media owned by the configured server name.
 - Remote media fetches are live: the homeserver resolves the origin server via
-  federation server discovery (`.well-known`, SRV, direct), performs an HTTPS
-  `GET /_matrix/media/v3/download/{serverName}/{mediaId}` against the resolved
-  host (`remote_media_download_url()`, percent-encoding both segments so a
-  reserved character in either cannot be misread as an extra path segment or a
-  different route on the resolved host), and ingests the response bytes
-  through the local blob store. Remote host/IP policy is checked before bytes
+  federation server discovery (`.well-known`, SRV, direct), then tries the
+  mandatory authenticated endpoint first per spec (changed in v1.11):
+  `GET /_matrix/federation/v1/media/download/{mediaId}`
+  (`remote_federation_media_download_url()`), signed with an X-Matrix
+  Authorization header the same way outbound transactions are signed. The
+  response is `multipart/mixed` with exactly two parts — an empty JSON
+  metadata part and either the media bytes or a `Location` redirect
+  (`parse_federation_media_multipart()`). A `Location` redirect is not yet
+  followed (no SSRF-safe resolver exists for arbitrary CDN hosts; see
+  `docs/todos/capability-gaps.md`), so that case falls back like a 404 would.
+  Only on a `404` (or an unusable `200`) does the homeserver fall back to the
+  deprecated, unauthenticated `GET /_matrix/media/v3/download/{serverName}/{mediaId}`
+  endpoint with `allow_remote=false` (`remote_media_download_url()`,
+  percent-encoding both segments so a reserved character in either cannot be
+  misread as an extra path segment or a different route on the resolved
+  host). Calling only the deprecated endpoint — the prior behavior — made
+  every remote fetch 404 against servers that disable it by default (current
+  Synapse and Merovingian deployments), which is why federated attachments
+  could be sent but never received. Bytes from either path are ingested
+  through the local blob store; remote host/IP policy is checked before bytes
   enter the store; rejected fetches are counted and audited. The
   private/loopback filter reuses the single source of truth
   `federation::ip_address_is_private_or_loopback` (the `inet_pton`-based
