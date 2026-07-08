@@ -80,6 +80,11 @@ public:
     [[nodiscard]] auto healthy() const noexcept -> bool;
     [[nodiscard]] auto request_timeout() const noexcept -> std::uint32_t;
     [[nodiscard]] auto shard_index() const noexcept -> std::uint32_t;
+    // The PID of the currently supervised worker process, or -1 if no child
+    // is running. Exposed primarily for integration tests that need to signal the
+    // worker (e.g. to verify restart/backoff behaviour), but also useful for
+    // external diagnostics.
+    [[nodiscard]] auto worker_pid() const noexcept -> pid_t;
 
 private:
     auto spawn_and_connect() -> void;
@@ -98,7 +103,7 @@ private:
     mutable std::mutex channel_mu_{};
     std::shared_ptr<ipc::IpcChannel> channel_{}; // SHARED_PTR: reviewed — shared ownership with channel_snapshot()
                                                  // callers prevents use-after-free on restart
-    pid_t worker_pid_{-1};
+    std::atomic<pid_t> worker_pid_{-1};
 
     std::thread supervisor_thread_{};
     std::atomic<bool> running_{false};

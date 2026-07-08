@@ -543,8 +543,10 @@ auto deserialize_outbound_http_response(std::string_view json) -> http::Outbound
     result.response.status = static_cast<std::uint16_t>(clamp_to_u32(get_int(*obj, "http_status")));
     result.response.body = base64_decode_body(get_str(*obj, "body"));
     result.error_detail = get_str(*obj, "error_detail");
-    // error code is informational; callers inspect ok + http_status.
-    result.error = result.ok ? http::OutboundError::none : http::OutboundError::network_error;
+    // Preserve the specific OutboundError variant across IPC rather than
+    // collapsing every failure to network_error. Callers still treat ok as the
+    // primary signal; the error code is retained for logging and diagnostics.
+    result.error = result.ok ? http::OutboundError::none : http::outbound_error_from_name(get_str(*obj, "error"));
     return result;
 }
 

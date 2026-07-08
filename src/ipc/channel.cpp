@@ -31,8 +31,8 @@ namespace
     // canonicaljson DOM stores integers as int64; values are monotonic frame
     // ids/reply_tos starting at 0, so the int64 range is sufficient. Returns
     // nullopt for a missing key or a non-integer value.
-    [[nodiscard]] auto extract_uint64(canonicaljson::Object const& obj, std::string_view key) noexcept
-        -> std::optional<std::uint64_t>
+    [[nodiscard]] auto extract_uint64(canonicaljson::Object const& obj,
+                                      std::string_view key) noexcept -> std::optional<std::uint64_t>
     {
         for (auto const& member : obj)
         {
@@ -354,8 +354,8 @@ auto IpcChannel::read_frame() noexcept -> std::optional<std::string>
     return pt;
 }
 
-auto IpcChannel::build_frame(std::uint64_t id, std::optional<std::uint64_t> reply_to, std::string_view body)
-    -> std::string
+auto IpcChannel::build_frame(std::uint64_t id, std::optional<std::uint64_t> reply_to,
+                             std::string_view body) -> std::string
 {
     auto frame = std::string{"{\"id\":"};
     frame += std::to_string(id);
@@ -547,7 +547,28 @@ auto IpcChannel::dispatcher_loop() -> void
         }
         // Invoked outside dispatch_mu_ so a long-running handler never blocks
         // the reader thread from queuing further request frames.
-        request_handler_(item.first, std::move(item.second));
+        try
+        {
+            request_handler_(item.first, std::move(item.second));
+        }
+        catch (...)
+        {
+            // A request handler must not be allowed to crash the channel's
+            // dispatch thread and call std::terminate(). Mark the channel
+            // unhealthy and wake every pending send_request waiter so callers
+            // return nullopt instead of hanging.
+            healthy_.store(false);
+            LOG_WARNING("ipc: unhandled exception in request handler; marking channel unhealthy");
+            {
+                auto const lk = std::lock_guard{pending_mu_};
+                for (auto& [_, e] : pending_)
+                {
+                    e->ready = true;
+                    e->cv.notify_one();
+                }
+            }
+            break;
+        }
     }
 }
 

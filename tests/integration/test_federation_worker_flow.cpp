@@ -21,6 +21,7 @@
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/homeserver/worker_pool.hpp"
+#include "merovingian/homeserver/worker_supervisor.hpp"
 #include "merovingian/http/outbound_client.hpp"
 #include "merovingian/ipc/channel.hpp"
 
@@ -29,6 +30,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <csignal>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -62,6 +64,7 @@ using merovingian::homeserver::LocalHttpRequest;
 using merovingian::homeserver::LocalHttpResponse;
 using merovingian::homeserver::start_runtime;
 using merovingian::homeserver::WorkerPool;
+using merovingian::homeserver::WorkerSupervisor;
 using merovingian::http::OutboundRequest;
 
 #ifndef MEROVINGIAN_TEST_FEDERATION_WORKER
@@ -172,6 +175,16 @@ auto write_worker_config(std::filesystem::path const& path, Config const& config
         std::this_thread::sleep_for(std::chrono::milliseconds{50});
     }
     return pool.healthy();
+}
+
+[[nodiscard]] auto wait_for_healthy(FederationProxy& proxy, std::chrono::seconds timeout) -> bool
+{
+    auto const deadline = std::chrono::steady_clock::now() + timeout;
+    while (!proxy.healthy() && std::chrono::steady_clock::now() < deadline)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds{50});
+    }
+    return proxy.healthy();
 }
 
 // Mirrors ipc::ipc_json_str's escaping for a JSON string embedded inside one
@@ -1827,9 +1840,7 @@ SCENARIO("FederationProxy delegates outbound HTTP requests to the worker pool vi
 
         auto proxy = FederationProxy{config.federation_worker(), runtime, std::string{worker_binary_path()},
                                      config_path.string()};
-
-        // Give workers a moment to complete key exchange before sending.
-        std::this_thread::sleep_for(std::chrono::seconds{2});
+        REQUIRE(wait_for_healthy(proxy, std::chrono::seconds{15}));
 
         WHEN("an outbound HTTP request is dispatched through the proxy to an unreachable address")
         {
@@ -1905,6 +1916,176 @@ SCENARIO("The federation worker starts and serves a request under the worker sec
                 {
                     REQUIRE(response.status != 503U);
                 }
+            }
+        }
+    }
+}
+
+SCENARIO("WorkerSupervisor::stop() returns promptly when the worker is healthy",
+         "[integration][federation-worker][supervisor][lifecycle]")
+{
+    GIVEN("a running real worker supervised directly")
+    {
+        if (worker_binary_path().empty())
+        {
+            SKIP("MEROVINGIAN_TEST_FEDERATION_WORKER is not defined");
+        }
+
+        REQUIRE(sodium_init() >= 0);
+
+        auto const tmp_dir = unique_temp_dir("merovingian-fed-worker-stop");
+        auto config = make_federation_worker_config(tmp_dir);
+        config.federation_worker().request_timeout_seconds = 2U;
+        auto const config_path = tmp_dir / "merovingian.conf";
+        write_worker_config(config_path, config);
+
+        auto started = start_runtime(config);
+        REQUIRE(started.started);
+
+        auto supervisor = WorkerSupervisor{std::string{worker_binary_path()}, config_path.string(),
+                                           config.federation_worker().request_timeout_seconds, 0U,
+                                           config.security().secrets.master_key_file};
+        supervisor.start();
+
+        auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds{15};
+        while (!supervisor.healthy() && std::chrono::steady_clock::now() < deadline)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds{50});
+        }
+        REQUIRE(supervisor.healthy());
+        REQUIRE(supervisor.worker_pid() > 0);
+
+        WHEN("stop() is called on a healthy worker")
+        {
+            auto const stop_start = std::chrono::steady_clock::now();
+            supervisor.stop();
+            auto const stop_elapsed = std::chrono::steady_clock::now() - stop_start;
+
+            THEN("stop() returns within a bounded time and the supervisor is no longer healthy")
+            {
+                // Two timeout windows: graceful wait + SIGTERM escalation. Anything
+                // orders of magnitude beyond that means the old infinite-waitpid bug
+                // has regressed.
+                REQUIRE(stop_elapsed < std::chrono::seconds{10});
+                REQUIRE_FALSE(supervisor.healthy());
+                REQUIRE(supervisor.worker_pid() == -1);
+            }
+        }
+    }
+}
+
+SCENARIO("WorkerSupervisor restarts an unexpectedly exited worker with exponential backoff",
+         "[integration][federation-worker][supervisor][lifecycle]")
+{
+    GIVEN("a running real worker supervised directly")
+    {
+        if (worker_binary_path().empty())
+        {
+            SKIP("MEROVINGIAN_TEST_FEDERATION_WORKER is not defined");
+        }
+
+        REQUIRE(sodium_init() >= 0);
+
+        auto const tmp_dir = unique_temp_dir("merovingian-fed-worker-restart");
+        auto config = make_federation_worker_config(tmp_dir);
+        config.federation_worker().request_timeout_seconds = 2U;
+        auto const config_path = tmp_dir / "merovingian.conf";
+        write_worker_config(config_path, config);
+
+        auto started = start_runtime(config);
+        REQUIRE(started.started);
+
+        auto supervisor = WorkerSupervisor{std::string{worker_binary_path()}, config_path.string(),
+                                           config.federation_worker().request_timeout_seconds, 0U,
+                                           config.security().secrets.master_key_file};
+        supervisor.start();
+
+        auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds{15};
+        while (!supervisor.healthy() && std::chrono::steady_clock::now() < deadline)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds{50});
+        }
+        REQUIRE(supervisor.healthy());
+
+        auto const original_pid = supervisor.worker_pid();
+        REQUIRE(original_pid > 0);
+
+        WHEN("the worker process is killed unexpectedly")
+        {
+            std::ignore = ::kill(original_pid, SIGKILL);
+
+            THEN("the supervisor eventually reaps the old process, restarts the worker, and becomes healthy again")
+            {
+                auto const restart_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{20};
+                while (supervisor.worker_pid() == original_pid && std::chrono::steady_clock::now() < restart_deadline)
+                {
+                    std::this_thread::sleep_for(std::chrono::milliseconds{50});
+                }
+                REQUIRE(supervisor.worker_pid() != original_pid);
+
+                while (!supervisor.healthy() && std::chrono::steady_clock::now() < restart_deadline)
+                {
+                    std::this_thread::sleep_for(std::chrono::milliseconds{50});
+                }
+                REQUIRE(supervisor.healthy());
+
+                supervisor.stop();
+                REQUIRE_FALSE(supervisor.healthy());
+                REQUIRE(supervisor.worker_pid() == -1);
+            }
+        }
+    }
+}
+
+SCENARIO("WorkerSupervisor::stop() escalates to SIGKILL when the worker ignores shutdown",
+         "[integration][federation-worker][supervisor][lifecycle]")
+{
+    GIVEN("a running real worker supervised directly")
+    {
+        if (worker_binary_path().empty())
+        {
+            SKIP("MEROVINGIAN_TEST_FEDERATION_WORKER is not defined");
+        }
+
+        REQUIRE(sodium_init() >= 0);
+
+        auto const tmp_dir = unique_temp_dir("merovingian-fed-worker-stop-kill");
+        auto config = make_federation_worker_config(tmp_dir);
+        config.federation_worker().request_timeout_seconds = 2U;
+        auto const config_path = tmp_dir / "merovingian.conf";
+        write_worker_config(config_path, config);
+
+        auto started = start_runtime(config);
+        REQUIRE(started.started);
+
+        auto supervisor = WorkerSupervisor{std::string{worker_binary_path()}, config_path.string(),
+                                           config.federation_worker().request_timeout_seconds, 0U,
+                                           config.security().secrets.master_key_file};
+        supervisor.start();
+
+        auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds{15};
+        while (!supervisor.healthy() && std::chrono::steady_clock::now() < deadline)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds{50});
+        }
+        REQUIRE(supervisor.healthy());
+
+        auto const pid = supervisor.worker_pid();
+        REQUIRE(pid > 0);
+
+        WHEN("the worker is frozen with SIGSTOP so it cannot respond to the graceful shutdown notification")
+        {
+            std::ignore = ::kill(pid, SIGSTOP);
+
+            THEN("stop() still returns within a bounded time after escalating to SIGKILL")
+            {
+                auto const stop_start = std::chrono::steady_clock::now();
+                supervisor.stop();
+                auto const stop_elapsed = std::chrono::steady_clock::now() - stop_start;
+
+                REQUIRE(stop_elapsed < std::chrono::seconds{10});
+                REQUIRE_FALSE(supervisor.healthy());
+                REQUIRE(supervisor.worker_pid() == -1);
             }
         }
     }

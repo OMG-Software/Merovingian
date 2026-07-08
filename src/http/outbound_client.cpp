@@ -399,6 +399,58 @@ auto outbound_error_name(OutboundError error) noexcept -> std::string_view
     return "unknown"sv;
 }
 
+auto outbound_error_from_name(std::string_view name) noexcept -> OutboundError
+{
+    // Keep this mapping in lock-step with outbound_error_name. Any name not
+    // produced by the serializer (including "unknown") falls back to
+    // network_error so deserialization is fail-closed.
+    if (name == "none"sv)
+    {
+        return OutboundError::none;
+    }
+    if (name == "invalid_url"sv)
+    {
+        return OutboundError::invalid_url;
+    }
+    if (name == "invalid_method"sv)
+    {
+        return OutboundError::invalid_method;
+    }
+    if (name == "https_required"sv)
+    {
+        return OutboundError::https_required;
+    }
+    if (name == "unresolved_host"sv)
+    {
+        return OutboundError::unresolved_host;
+    }
+    if (name == "tls_verification_failed"sv)
+    {
+        return OutboundError::tls_verification_failed;
+    }
+    if (name == "connection_failed"sv)
+    {
+        return OutboundError::connection_failed;
+    }
+    if (name == "redirect_rejected"sv)
+    {
+        return OutboundError::redirect_rejected;
+    }
+    if (name == "response_too_large"sv)
+    {
+        return OutboundError::response_too_large;
+    }
+    if (name == "timeout"sv)
+    {
+        return OutboundError::timeout;
+    }
+    if (name == "network_error"sv)
+    {
+        return OutboundError::network_error;
+    }
+    return OutboundError::network_error;
+}
+
 auto detect_system_ca_trust() -> SystemCaTrust
 {
     // Concatenated PEM bundles, in rough order of prevalence across the
@@ -416,8 +468,7 @@ auto detect_system_ca_trust() -> SystemCaTrust
     };
     // OpenSSL hashed certificate directories.
     constexpr std::array<std::string_view, 4U> bundle_dirs{
-        "/etc/ssl/certs",
-        "/etc/pki/tls/certs",
+        "/etc/ssl/certs", "/etc/pki/tls/certs",
         "/etc/openssl/certs",         // NetBSD
         "/usr/pkg/etc/openssl/certs", // NetBSD pkgsrc prefix
     };

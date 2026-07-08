@@ -1,3 +1,26 @@
+## 0.10.35
+
+### Fixed
+- **fix(federation-proxy): `FederationProxy::handle()` now matches `GET /_matrix/key/v2/server` exactly rather than by substring**, so a malformed target such as `/_matrix/federation/v1/state/!room:example.com/_matrix/key/v2/server` is no longer mis-routed to the local key endpoint.
+- **fix(federation-worker): `WorkerEventLoop` request handlers now check `pool.submit()` return value** and immediately send a `503 M_UNAVAILABLE` IPC response if the pool is stopping, instead of silently dropping the request and letting the main process time out.
+- **fix(ipc): `deserialize_outbound_http_response()` now preserves the specific `http::OutboundError` code** (`timeout`, `connection_failed`, `invalid_url`, etc.) instead of always collapsing failures to `network_error`.
+- **fix(ipc): `IpcChannel::dispatcher_loop()` now catches unhandled exceptions thrown by request handlers**, marks the channel unhealthy, wakes every pending `send_request` waiter, and exits cleanly instead of calling `std::terminate`.
+- **fix(federation): `make_outbound_make_membership()` no longer appends `ver=` query parameters to `make_leave`** per Matrix v1.18 (only `make_join` and `make_knock` carry supported-room-version hints).
+- **fix(federation-worker): `WorkerEventLoop::run()` drains `local_pool` and `relay_pool` before calling `channel->stop()`**, so in-flight tasks can still send their IPC responses before the fd is closed.
+- **fix(federation-worker): `WorkerPool::handle()` now computes the IPC timeout as `max(federation.worker.request_timeout_seconds, security.federation.remote_timeout) + 10 s`**, so a worker-side outbound HTTP call that legitimately runs longer than the worker request timeout can complete before main declares an IPC timeout.
+- **fix(federation-worker): `WorkerSupervisor::stop()` now marks the supervisor unhealthy** and uses an atomic `worker_pid_` so TSan-clean health checks and shutdown are observable from any thread.
+
+### Testing
+- **test(federation-worker): `tests/integration/test_federation_worker_flow.cpp` now covers `WorkerSupervisor` bounded stop, unexpected-exit restart/backoff, and SIGKILL escalation when the worker ignores shutdown; `tests/unit/test_worker_supervisor.cpp` covers the pre-start `worker_pid()` getter.**
+- **test(federation-worker): `tests/unit/test_worker_event_loop.cpp` now covers shutdown sequencing and pool-submit-failure response paths.**
+- **test(federation-worker): `tests/integration/test_federation_worker_flow.cpp` exposes `FederationProxy::healthy()` and replaces the hard-coded 2-second sleep before the outbound proxy test with a `wait_for_healthy(proxy)` helper that polls pool health.**
+- **test(federation): `tests/unit/test_federation_membership_endpoints.cpp` pins that `make_leave` targets carry no `ver=` query parameters while `make_join` still advertises supported versions.**
+- **test(ipc): `tests/unit/test_ipc_framing.cpp` pins that an unhandled exception in a request handler does not call `std::terminate` and instead makes `send_request` return `nullopt`.**
+- **test(ipc): `tests/unit/test_ipc_federation_frames.cpp` pins that `OutboundError` round-trips through `serialize_outbound_http_response` / `deserialize_outbound_http_response`.**
+
+### Changed
+- **chore(release): bump version to 0.10.35 across `meson.build`, `src/main.cpp`, `src/db_migrate.cpp`, packaging metadata, build scripts, `README.md`, and `docs/user-manual.md`.
+
 ## 0.10.34
 
 ### Fixed

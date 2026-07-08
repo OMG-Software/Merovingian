@@ -896,3 +896,43 @@ SCENARIO("IpcEd25519Provider rejects malformed sign_response payloads", "[ipc][e
         pair.client->stop();
     }
 }
+
+SCENARIO("IpcChannel dispatch thread survives an unhandled request-handler exception",
+         "[ipc][channel][dispatch][error-paths]")
+{
+    GIVEN("a connected channel pair with a request handler that always throws")
+    {
+        REQUIRE(sodium_init() >= 0);
+
+        auto pair = make_channel_pair();
+
+        auto handler_ran = std::atomic<bool>{false};
+        pair.server->set_request_handler([&handler_ran](std::uint64_t /*id*/, std::string /*json*/) {
+            handler_ran.store(true);
+            throw std::runtime_error{"boom"};
+        });
+        pair.server->start();
+        pair.client->start();
+
+        WHEN("the client sends a request and the server handler throws")
+        {
+            auto const reply = pair.client->send_request(R"({"type":"test"})", std::chrono::seconds{10});
+
+            THEN("the client sees no reply because the channel became unhealthy")
+            {
+                REQUIRE_FALSE(reply.has_value());
+            }
+            AND_THEN("the throwing handler actually ran")
+            {
+                REQUIRE(handler_ran.load());
+            }
+            AND_THEN("the server channel reports unhealthy")
+            {
+                REQUIRE_FALSE(pair.server->healthy());
+            }
+        }
+
+        pair.server->stop();
+        pair.client->stop();
+    }
+}

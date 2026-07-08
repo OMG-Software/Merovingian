@@ -23,4 +23,11 @@ namespace merovingian::homeserver
 // main process even while the worker pool is active.
 [[nodiscard]] auto federation_request_should_bypass_worker(LocalHttpRequest const& request) -> bool;
 
+// Returns true when the request target is exactly `/_matrix/key/v2/server`
+// (optionally followed by a query string). The key server endpoint must be
+// matched precisely: a substring match would let unrelated paths such as
+// `/evil/_matrix/key/v2/server` or `/_matrix/key/v2/server/extra` bypass
+// worker routing and federation authorization verification.
+[[nodiscard]] auto is_federation_key_server_endpoint(std::string_view target) noexcept -> bool;
+
 } // namespace merovingian::homeserver

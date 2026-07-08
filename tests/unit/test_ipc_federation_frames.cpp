@@ -705,13 +705,11 @@ SCENARIO("outbound_http_response round-trips a network failure with error detail
         {
             auto const rt = deserialize_outbound_http_response(serialize_outbound_http_response(original));
 
-            THEN("ok is false, error_detail is preserved, and error code is network_error")
+            THEN("ok is false, error_detail is preserved, and the specific error code survives")
             {
                 REQUIRE_FALSE(rt.ok);
                 REQUIRE(rt.error_detail == original.error_detail);
-                // The specific error variant is normalised to network_error on deserialization;
-                // callers use ok + http_status as the primary signal.
-                REQUIRE(rt.error == OutboundError::network_error);
+                REQUIRE(rt.error == OutboundError::connection_failed);
             }
         }
     }
@@ -743,7 +741,7 @@ SCENARIO("outbound_http_response round-trips a non-2xx response that was receive
     }
 }
 
-SCENARIO("outbound_http_response normalises any failure error code to network_error after deserialization",
+SCENARIO("outbound_http_response preserves distinct OutboundError variants after deserialization",
          "[ipc][federation][outbound]")
 {
     GIVEN("failed results with different specific error codes")
@@ -762,10 +760,10 @@ SCENARIO("outbound_http_response normalises any failure error code to network_er
         {
             auto const rt = deserialize_outbound_http_response(serialize_outbound_http_response(timeout_result));
 
-            THEN("the error code is network_error and error_detail is preserved")
+            THEN("the error code stays timeout and error_detail is preserved")
             {
                 REQUIRE_FALSE(rt.ok);
-                REQUIRE(rt.error == OutboundError::network_error);
+                REQUIRE(rt.error == OutboundError::timeout);
                 REQUIRE(rt.error_detail == timeout_result.error_detail);
             }
         }
@@ -774,10 +772,10 @@ SCENARIO("outbound_http_response normalises any failure error code to network_er
         {
             auto const rt = deserialize_outbound_http_response(serialize_outbound_http_response(tls_result));
 
-            THEN("the error code is also normalised to network_error")
+            THEN("the error code stays tls_verification_failed")
             {
                 REQUIRE_FALSE(rt.ok);
-                REQUIRE(rt.error == OutboundError::network_error);
+                REQUIRE(rt.error == OutboundError::tls_verification_failed);
                 REQUIRE(rt.error_detail == tls_result.error_detail);
             }
         }

@@ -338,7 +338,8 @@ namespace
     [[nodiscard]] auto fetch_remote_media_via_federation_endpoint(HomeserverRuntime& runtime,
                                                                   federation::ServerDiscoveryResult const& resolution,
                                                                   std::string_view origin_server,
-                                                                  std::string_view media_id, std::uint64_t max_bytes)
+                                                                  std::string_view media_id, std::uint64_t max_bytes,
+                                                                  std::string_view trusted_ca_pem)
         -> std::optional<OperationResult>
     {
         auto const signing_key = ensure_runtime_server_signing_key(runtime);
@@ -366,6 +367,7 @@ namespace
         call.pinned_addresses = resolution.pinned_addresses;
         call.key_id = signing_key->key_id;
         call.secret_key = runtime.database.signing_secret_key.bytes();
+        call.trusted_ca_pem = std::string{trusted_ca_pem};
         call.connect_timeout_seconds = 30U;
         call.total_timeout_seconds = 120U;
         // A small fixed allowance over the raw media cap covers the
@@ -470,8 +472,28 @@ namespace
             return remote_media_fetch_disabled(runtime, origin_server, media_id);
         }
 
-        auto constexpr discovery_timeout = std::uint32_t{30U};
-        auto const resolution = federation::discover_server(origin_server, *discovery_network, discovery_timeout);
+        // Test-only: bypass discover_server() entirely when the destination has a
+        // forced resolution wired (see TestOnlyForcedOutboundResolution in
+        // runtime.hpp). Always empty in production, so this branch never executes
+        // outside integration tests — mirrors perform_sync_outbound_call in
+        // room_service.cpp, which relies on the same seam for make_join et al.
+        auto const forced_it = runtime.test_forced_outbound_resolution.find(std::string{origin_server});
+        auto const forced = forced_it != runtime.test_forced_outbound_resolution.end();
+        auto resolution = federation::ServerDiscoveryResult{};
+        auto trusted_ca_pem = std::string{};
+        if (forced)
+        {
+            resolution.discovery_allowed = true;
+            resolution.resolved_host = forced_it->second.resolved_host;
+            resolution.resolved_port = forced_it->second.resolved_port;
+            resolution.pinned_addresses = forced_it->second.pinned_addresses;
+            trusted_ca_pem = forced_it->second.trusted_ca_pem;
+        }
+        else
+        {
+            auto constexpr discovery_timeout = std::uint32_t{30U};
+            resolution = federation::discover_server(origin_server, *discovery_network, discovery_timeout);
+        }
         if (!resolution.discovery_allowed)
         {
             log_diagnostic("remote_fetch.discovery_failed", {
@@ -495,8 +517,8 @@ namespace
         // unconditionally — as this code previously did — makes every remote
         // fetch 404 against servers that have disabled it, which is the default
         // on current Synapse and Merovingian deployments.
-        if (auto federated =
-                fetch_remote_media_via_federation_endpoint(runtime, resolution, origin_server, media_id, max_bytes);
+        if (auto federated = fetch_remote_media_via_federation_endpoint(runtime, resolution, origin_server, media_id,
+                                                                        max_bytes, trusted_ca_pem);
             federated.has_value())
         {
             return std::move(*federated);
@@ -513,6 +535,7 @@ namespace
         out_req.method = "GET";
         out_req.url = std::move(url);
         out_req.pinned_addresses = resolution.pinned_addresses;
+        out_req.trusted_ca_pem = trusted_ca_pem;
         out_req.connect_timeout_seconds = 30U;
         out_req.total_timeout_seconds = 120U;
         out_req.max_response_body_bytes = static_cast<std::size_t>(max_bytes);

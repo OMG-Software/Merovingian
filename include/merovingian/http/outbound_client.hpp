@@ -88,6 +88,11 @@ struct OutboundResult final
 // it is not part of any Matrix wire protocol.
 [[nodiscard]] auto outbound_error_name(OutboundError error) noexcept -> std::string_view;
 
+// Parses the stable name produced by outbound_error_name back into an
+// OutboundError. Returns OutboundError::network_error for unknown or empty
+// names so failures deserialize fail-closed.
+[[nodiscard]] auto outbound_error_from_name(std::string_view name) noexcept -> OutboundError;
+
 // Resolved host CA trust store locations. Either field may be empty when the
 // corresponding location is absent from the host.
 struct SystemCaTrust final
