@@ -53,6 +53,7 @@ struct ListenerConfig final
 {
     std::string bind{};
     bool tls{false};
+    bool reverse_proxy{true};
     std::string tls_certificate_file{};
     std::string tls_private_key_file{};
 };
@@ -359,6 +360,7 @@ struct DurationParseResult final
 [[nodiscard]] auto listener_host(std::string_view bind) noexcept -> std::string_view;
 [[nodiscard]] auto is_loopback_host(std::string_view host) noexcept -> bool;
 [[nodiscard]] auto is_valid_listener_bind(std::string_view bind) noexcept -> bool;
+[[nodiscard]] auto is_public_listener(ListenerConfig const& listener) noexcept -> bool;
 [[nodiscard]] auto is_safe_cleartext_listener(ListenerConfig const& listener) noexcept -> bool;
 [[nodiscard]] auto is_valid_public_baseurl(std::string_view public_baseurl) noexcept -> bool;
 [[nodiscard]] auto is_valid_federation_policy(std::string_view policy) noexcept -> bool;

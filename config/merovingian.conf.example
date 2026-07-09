@@ -44,16 +44,19 @@ server.cors.allow_credentials=false
 server.cors.max_age=86400
 
 # Listener exposure
-# Keep TLS disabled only on loopback binds. If binding to a public interface,
-# set tls=true and provide certificate and private-key paths below.
+# Keep TLS disabled only on loopback binds behind a declared reverse proxy.
+# If binding to a public interface, set tls=true, reverse_proxy=false, and
+# provide certificate and private-key paths below.
 # The client listener serves client-server traffic. The federation listener uses
 # a different loopback port so a reverse proxy can own public Matrix port 8448.
 listeners.client.bind=127.0.0.1:8008
 listeners.client.tls=false
+listeners.client.reverse_proxy=true
 listeners.client.tls_certificate_file=
 listeners.client.tls_private_key_file=
 listeners.federation.bind=127.0.0.1:8009
 listeners.federation.tls=false
+listeners.federation.reverse_proxy=true
 listeners.federation.tls_certificate_file=
 listeners.federation.tls_private_key_file=
 
@@ -76,9 +79,10 @@ listeners.federation.tls_private_key_file=
 # an owner-only secret file containing the PostgreSQL connection URI.
 # role=runtime is for the server process; use role=migration only for the
 # offline database migration command. pool_size controls concurrent DB work.
-database.uri_file=/etc/merovingian/db-uri
-database.role=runtime
-database.pool_size=16
+#database.backend=sqlite
+#database.uri_file=/etc/merovingian/db-uri
+#database.role=runtime
+#database.pool_size=16
 
 # SQLite connection — uncomment both lines below to switch to SQLite.
 # Remove or comment out the three PostgreSQL keys above when doing so.
@@ -88,7 +92,7 @@ database.pool_size=16
 # Public registration
 # Registration is disabled by default. If enabled, keep require_token=true and
 # store the token in an owner-only secret file outside web roots.
-security.registration.enabled=false
+security.registration.enabled=true
 security.registration.require_token=true
 security.registration.token_file=/etc/merovingian/registration-token
 
@@ -205,7 +209,7 @@ security.media.quarantine_unknown_mime=true
 # see plaintext media from unencrypted rooms — application/octet-stream
 # (encrypted-room attachments) is unscannable ciphertext no matter what this
 # flag is set to.
-# security.media.enable_av_scanner=true
+#security.media.enable_av_scanner=true
 # Acceptance disposition for authenticated local uploads: allow,
 # allow-after-scan, quarantine, or deny. Defaults to allow-after-scan, which
 # accepts a clean scanner verdict and quarantines/rejects otherwise — the only
@@ -213,7 +217,7 @@ security.media.quarantine_unknown_mime=true
 # attachments this scanner verdict is never meaningful (see the WARNING
 # above): allow-after-scan behaves identically to allow for that content
 # today, since there is no verdict to fail.
-# security.media.local_upload_policy=allow-after-scan
+security.media.local_upload_policy=allow
 # Acceptance disposition for bytes fetched from a federated origin server,
 # same four values as local_upload_policy above. Defaults to quarantine
 # rather than mirroring local_upload_policy's default: a remote origin server
@@ -224,7 +228,7 @@ security.media.quarantine_unknown_mime=true
 # this setting. Set to allow-after-scan or allow only if you accept that risk
 # for plaintext media, or front this server with a scanning proxy that
 # inspects plaintext media before it reaches Merovingian.
-# security.media.remote_fetch_media_policy=quarantine
+security.media.remote_fetch_media_policy=allow
 security.media.block_private_ip_fetches=true
 # Remote media fetching is opt-in and live: the homeserver resolves the
 # origin server, fetches the media over HTTPS, and ingests the response

@@ -27,10 +27,12 @@ SCENARIO("Config provides secure server and listener defaults", "[config]")
                 REQUIRE(server.trusted_proxies.empty());
                 REQUIRE(listeners.client.bind == "127.0.0.1:8008");
                 REQUIRE_FALSE(listeners.client.tls);
+                REQUIRE(listeners.client.reverse_proxy);
                 REQUIRE(listeners.client.tls_certificate_file.empty());
                 REQUIRE(listeners.client.tls_private_key_file.empty());
                 REQUIRE(listeners.federation.bind == "127.0.0.1:8009");
                 REQUIRE_FALSE(listeners.federation.tls);
+                REQUIRE(listeners.federation.reverse_proxy);
                 REQUIRE(listeners.federation.tls_certificate_file.empty());
                 REQUIRE(listeners.federation.tls_private_key_file.empty());
                 REQUIRE(database.uri_file == "/etc/merovingian/db-uri");
@@ -357,12 +359,12 @@ SCENARIO("Config validation helpers reject unsafe address-shaped values", "[conf
     }
 }
 
-SCENARIO("Config validation accepts cleartext listeners only on loopback", "[config][validation]")
+SCENARIO("Config validation accepts loopback cleartext only behind a declared reverse proxy", "[config][validation]")
 {
     GIVEN("loopback cleartext and public TLS listeners")
     {
-        auto const loopback_listener = merovingian::config::ListenerConfig{"127.0.0.1:8008", false};
-        auto const tls_public_listener = merovingian::config::ListenerConfig{"0.0.0.0:8448", true};
+        auto const loopback_listener = merovingian::config::ListenerConfig{"127.0.0.1:8008", false, true};
+        auto const tls_public_listener = merovingian::config::ListenerConfig{"0.0.0.0:8448", true, false};
 
         WHEN("cleartext listener safety is evaluated")
         {
@@ -382,11 +384,30 @@ SCENARIO("Config validation rejects cleartext listeners on public interfaces", "
 {
     GIVEN("a public cleartext listener")
     {
-        auto const public_cleartext_listener = merovingian::config::ListenerConfig{"0.0.0.0:8008", false};
+        auto const public_cleartext_listener = merovingian::config::ListenerConfig{"0.0.0.0:8008", false, false};
 
         WHEN("cleartext listener safety is evaluated")
         {
             auto const listener_safe = merovingian::config::is_safe_cleartext_listener(public_cleartext_listener);
+
+            THEN("the listener is rejected")
+            {
+                REQUIRE_FALSE(listener_safe);
+            }
+        }
+    }
+}
+
+SCENARIO("Config validation rejects loopback cleartext without a declared reverse proxy",
+         "[config][validation][security]")
+{
+    GIVEN("a loopback cleartext listener with reverse_proxy=false")
+    {
+        auto const loopback_no_proxy = merovingian::config::ListenerConfig{"127.0.0.1:8008", false, false};
+
+        WHEN("cleartext listener safety is evaluated")
+        {
+            auto const listener_safe = merovingian::config::is_safe_cleartext_listener(loopback_no_proxy);
 
             THEN("the listener is rejected")
             {
@@ -622,6 +643,7 @@ SCENARIO("Config validation rejects public cleartext listeners", "[config][valid
         auto security = merovingian::config::SecurityConfig{};
         listeners.client.bind = "0.0.0.0:8008";
         listeners.client.tls = false;
+        listeners.client.reverse_proxy = false;
 
         WHEN("the config is constructed and validated")
         {
@@ -632,6 +654,66 @@ SCENARIO("Config validation rejects public cleartext listeners", "[config][valid
             THEN("the public cleartext listener is rejected")
             {
                 REQUIRE(findings.size() == 1U);
+                REQUIRE(findings.front().field == "listeners.client.tls");
+                REQUIRE_FALSE(valid);
+            }
+        }
+    }
+}
+
+SCENARIO("Config validation rejects public listeners with reverse_proxy=true", "[config][validation][security]")
+{
+    GIVEN("config sections with a public TLS listener still declaring a reverse proxy")
+    {
+        auto server = merovingian::config::ServerConfig{};
+        auto listeners = merovingian::config::ListenersConfig{};
+        auto database = merovingian::config::DatabaseConfig{};
+        auto security = merovingian::config::SecurityConfig{};
+        listeners.client.bind = "0.0.0.0:8443";
+        listeners.client.tls = true;
+        listeners.client.tls_certificate_file = "/etc/merovingian/client.pem";
+        listeners.client.tls_private_key_file = "/etc/merovingian/client.key";
+        listeners.client.reverse_proxy = true;
+
+        WHEN("the config is constructed and validated")
+        {
+            auto const config = merovingian::config::Config{server, listeners, database, security, {}, {}};
+            auto const findings = merovingian::config::validate(config);
+            auto const valid = merovingian::config::is_valid(config);
+
+            THEN("the conflicting reverse_proxy declaration is rejected")
+            {
+                REQUIRE(findings.size() == 1U);
+                REQUIRE(findings.front().field == "listeners.client.reverse_proxy");
+                REQUIRE_FALSE(valid);
+            }
+        }
+    }
+}
+
+SCENARIO("Config validation rejects loopback cleartext without reverse proxy declaration",
+         "[config][validation][security]")
+{
+    GIVEN("config sections with a loopback cleartext listener and reverse_proxy=false")
+    {
+        auto server = merovingian::config::ServerConfig{};
+        auto listeners = merovingian::config::ListenersConfig{};
+        auto database = merovingian::config::DatabaseConfig{};
+        auto security = merovingian::config::SecurityConfig{};
+        listeners.client.bind = "127.0.0.1:8008";
+        listeners.client.tls = false;
+        listeners.client.reverse_proxy = false;
+
+        WHEN("the config is constructed and validated")
+        {
+            auto const config = merovingian::config::Config{server, listeners, database, security, {}, {}};
+            auto const findings = merovingian::config::validate(config);
+            auto const valid = merovingian::config::is_valid(config);
+
+            THEN("the missing reverse proxy declaration is rejected")
+            {
+                REQUIRE(findings.size() == 1U);
+                REQUIRE(findings.front().field == "listeners.client.reverse_proxy");
                 REQUIRE_FALSE(valid);
             }
         }

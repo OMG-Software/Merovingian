@@ -135,6 +135,11 @@ listener accepts TCP, upgrades the accepted socket through
 `merovingian::homeserver::TlsServerContext`, then passes a stream abstraction to
 the same bounded HTTP/1.1 request path used by cleartext loopback listeners.
 
+Configuration enforces TLS on any public (non-loopback) listener. A loopback
+listener may only run in cleartext when the operator explicitly declares it is
+behind a local reverse proxy (`reverse_proxy=true`). Public listeners must set
+`reverse_proxy=false`.
+
 TLS startup fails closed when OpenSSL cannot initialise, load the certificate
 chain, load the private key, or verify that the private key matches the
 certificate. Handshakes use a bounded timeout aligned with the current

@@ -6,9 +6,9 @@ be published as production releases while any blocking gate remains open.
 
 - Keep real listener coverage in CI and prove the server serves requests until
   stopped by the service manager.
-- Require configured TLS with validated certificate and private-key files for
+- ~~Require configured TLS with validated certificate and private-key files for
   public listeners; keep loopback cleartext available for reverse-proxy
-  deployments.
+  deployments.~~ Implemented with explicit `reverse_proxy` declaration.
 - Complete full Matrix v1.18 conformance, persistence, endpoint coverage, and
   production-grade rate limiting for client-server routes.
 - Store access tokens only as versioned cryptographic hashes generated from

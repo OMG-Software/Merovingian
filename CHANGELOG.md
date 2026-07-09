@@ -1,3 +1,11 @@
+## 0.10.36
+
+### Added
+- **feat(config): explicit `listeners.*.reverse_proxy` declaration for listener security.** Public (non-loopback) client and federation listeners must now use TLS with `reverse_proxy=false`. Loopback cleartext listeners are only permitted when `reverse_proxy=true` is explicitly declared, matching the reverse-proxy-first deployment model. Configuration validation rejects ambiguous or unsafe combinations before startup.
+
+### Changed
+- **docs(user-manual, http-transport, threat-model): document the explicit reverse-proxy listener model and public TLS requirement.**
+
 ## 0.10.35
 
 ### Fixed

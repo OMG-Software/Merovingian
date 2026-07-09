@@ -24,11 +24,13 @@ SCENARIO("Runtime listener planning includes client and federation listeners by 
                 REQUIRE(listeners.plans()[0].role == merovingian::net::ListenerRole::client);
                 REQUIRE(listeners.plans()[0].bind == "127.0.0.1:8008");
                 REQUIRE_FALSE(listeners.plans()[0].tls);
+                REQUIRE(listeners.plans()[0].reverse_proxy);
                 REQUIRE(listeners.plans()[0].tls_certificate_file.empty());
                 REQUIRE(listeners.plans()[0].tls_private_key_file.empty());
                 REQUIRE(listeners.plans()[1].role == merovingian::net::ListenerRole::federation);
                 REQUIRE(listeners.plans()[1].bind == "127.0.0.1:8009");
                 REQUIRE_FALSE(listeners.plans()[1].tls);
+                REQUIRE(listeners.plans()[1].reverse_proxy);
             }
         }
     }
@@ -85,9 +87,11 @@ SCENARIO("Runtime listener planning carries TLS certificate paths", "[net][liste
             {
                 REQUIRE(listeners.count() == 2U);
                 REQUIRE(listeners.plans()[0].tls);
+                REQUIRE(listeners.plans()[0].reverse_proxy);
                 REQUIRE(listeners.plans()[0].tls_certificate_file == "/etc/merovingian/client.pem");
                 REQUIRE(listeners.plans()[0].tls_private_key_file == "/etc/merovingian/client.key");
                 REQUIRE(listeners.plans()[1].tls);
+                REQUIRE(listeners.plans()[1].reverse_proxy);
                 REQUIRE(listeners.plans()[1].tls_certificate_file == "/etc/merovingian/federation.pem");
                 REQUIRE(listeners.plans()[1].tls_private_key_file == "/etc/merovingian/federation.key");
             }

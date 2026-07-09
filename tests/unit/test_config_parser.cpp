@@ -104,6 +104,7 @@ SCENARIO("Key-value config parser applies booleans and lists", "[config][parser]
                 REQUIRE(result.findings.empty());
                 REQUIRE(result.config.server().trusted_proxies.size() == 2U);
                 REQUIRE(result.config.listeners().client.tls);
+                REQUIRE(result.config.listeners().client.reverse_proxy);
                 REQUIRE(result.config.listeners().client.tls_certificate_file == "/etc/merovingian/client.crt");
                 REQUIRE(result.config.listeners().client.tls_private_key_file == "/etc/merovingian/client.key");
                 REQUIRE_FALSE(result.config.security().media.enable_av_scanner);
@@ -146,6 +147,38 @@ SCENARIO("Key-value config parser applies TLS certificate paths", "[config][pars
                 REQUIRE(result.config.listeners().federation.tls);
                 REQUIRE(result.config.listeners().federation.tls_certificate_file == "/etc/merovingian/federation.pem");
                 REQUIRE(result.config.listeners().federation.tls_private_key_file == "/etc/merovingian/federation.key");
+            }
+        }
+    }
+}
+
+SCENARIO("Key-value config parser applies public listener reverse_proxy declarations", "[config][parser][tls]")
+{
+    GIVEN("config input with public listeners and reverse_proxy=false")
+    {
+        auto const input = std::string{"server.name=example.org\n"
+                                       "server.public_baseurl=https://matrix.example.org\n"
+                                       "listeners.client.bind=0.0.0.0:8443\n"
+                                       "listeners.client.tls=true\n"
+                                       "listeners.client.reverse_proxy=false\n"
+                                       "listeners.client.tls_certificate_file=/etc/merovingian/client.pem\n"
+                                       "listeners.client.tls_private_key_file=/etc/merovingian/client.key\n"
+                                       "listeners.federation.bind=0.0.0.0:8448\n"
+                                       "listeners.federation.tls=true\n"
+                                       "listeners.federation.reverse_proxy=false\n"
+                                       "listeners.federation.tls_certificate_file=/etc/merovingian/federation.pem\n"
+                                       "listeners.federation.tls_private_key_file=/etc/merovingian/federation.key\n"};
+
+        WHEN("the config is parsed and validated")
+        {
+            auto const result = merovingian::config::parse_key_value_config(input);
+
+            THEN("the reverse_proxy flags are preserved and the config is valid")
+            {
+                REQUIRE(result.findings.empty());
+                REQUIRE_FALSE(result.config.listeners().client.reverse_proxy);
+                REQUIRE_FALSE(result.config.listeners().federation.reverse_proxy);
+                REQUIRE(merovingian::config::is_valid(result.config));
             }
         }
     }

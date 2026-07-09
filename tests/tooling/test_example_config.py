@@ -30,7 +30,7 @@ class ExampleConfigTests(unittest.TestCase):
             self.assertIn(expected_comment, config)
 
         self.assertIn("# Keep database credentials out of this file.", config)
-        self.assertIn("# Keep TLS disabled only on loopback binds.", config)
+        self.assertIn("# Keep TLS disabled only on loopback binds behind a declared reverse proxy.", config)
 
 
 if __name__ == "__main__":

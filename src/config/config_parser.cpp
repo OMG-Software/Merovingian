@@ -177,6 +177,13 @@ namespace
         {
             listeners.client.tls_private_key_file = std::string{value};
         }
+        else if (key == "listeners.client.reverse_proxy")
+        {
+            if (!parse_bool_value(value, listeners.client.reverse_proxy))
+            {
+                add_parse_finding(findings, std::string{key}, "expected boolean value");
+            }
+        }
         else if (key == "listeners.federation.bind")
         {
             listeners.federation.bind = std::string{value};
@@ -195,6 +202,13 @@ namespace
         else if (key == "listeners.federation.tls_private_key_file")
         {
             listeners.federation.tls_private_key_file = std::string{value};
+        }
+        else if (key == "listeners.federation.reverse_proxy")
+        {
+            if (!parse_bool_value(value, listeners.federation.reverse_proxy))
+            {
+                add_parse_finding(findings, std::string{key}, "expected boolean value");
+            }
         }
         else if (key == "database.backend")
         {

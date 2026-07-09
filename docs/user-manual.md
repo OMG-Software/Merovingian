@@ -43,8 +43,11 @@ later hardening passes.
 Key design choices that affect operators:
 
 - **Reverse-proxy-first deployment.** Client and federation listeners default to
-  loopback (`127.0.0.1:8008` and `127.0.0.1:8009`) with TLS disabled. A reverse
-  proxy owns public TLS and routes traffic to the loopback listeners.
+  loopback (`127.0.0.1:8008` and `127.0.0.1:8009`) with TLS disabled and
+  `reverse_proxy=true`. A reverse proxy owns public TLS and routes traffic to
+  the loopback listeners. Public listeners must use TLS and set
+  `reverse_proxy=false`; loopback cleartext without an explicit reverse-proxy
+  declaration is rejected at startup.
 - **Fail-closed configuration.** Startup rejects unsafe or ambiguous settings
   before binding listeners, scaffolding the database, or launching federation
   workers.
@@ -370,23 +373,33 @@ forbids that combination. CORS is **not** hot-reloadable — a change to any
 |---|---|---|
 | `listeners.client.bind` | `127.0.0.1:8008` | Client-server API and media. |
 | `listeners.client.tls` | `false` | Set `true` only if binding to a public interface without a reverse proxy. |
+| `listeners.client.reverse_proxy` | `true` | Set `false` for a direct public TLS listener; must be `true` for loopback cleartext. |
 | `listeners.client.tls_certificate_file` | (empty) | Required when `tls=true`. |
 | `listeners.client.tls_private_key_file` | (empty) | Required when `tls=true`. |
 | `listeners.federation.bind` | `127.0.0.1:8009` | Federation and key API. Must be separate from the client listener. |
 | `listeners.federation.tls` | `false` | Set `true` only for direct public federation without a proxy. |
+| `listeners.federation.reverse_proxy` | `true` | Set `false` for a direct public TLS listener; must be `true` for loopback cleartext. |
 | `listeners.federation.tls_certificate_file` | (empty) | Required when federation TLS is enabled. |
 | `listeners.federation.tls_private_key_file` | (empty) | Required when federation TLS is enabled. |
 
 A listener with `tls=false` must bind to a loopback address (`127.0.0.1`,
-`localhost`, `::1`, or `[::1]`). A non-loopback listener must use TLS, and
-when `tls=true` both `tls_certificate_file` and `tls_private_key_file` must
-be set:
+`localhost`, `::1`, or `[::1]`) **and** declare `reverse_proxy=true`, which is
+Merovingian's default and matches a reverse-proxy deployment. A non-loopback
+(public) listener must use TLS with `reverse_proxy=false`. When `tls=true`
+both `tls_certificate_file` and `tls_private_key_file` must be set:
 
 ```ini
+# Direct public client listener (no reverse proxy)
+listeners.client.bind=0.0.0.0:8443
 listeners.client.tls=true
+listeners.client.reverse_proxy=false
 listeners.client.tls_certificate_file=/etc/merovingian/client.pem
 listeners.client.tls_private_key_file=/etc/merovingian/client.key
+
+# Direct public federation listener (no reverse proxy)
+listeners.federation.bind=0.0.0.0:8448
 listeners.federation.tls=true
+listeners.federation.reverse_proxy=false
 listeners.federation.tls_certificate_file=/etc/merovingian/federation.pem
 listeners.federation.tls_private_key_file=/etc/merovingian/federation.key
 ```

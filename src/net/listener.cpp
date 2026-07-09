@@ -34,12 +34,14 @@ auto make_runtime_listeners(config::Config const& config) -> RuntimeListeners
     plans.reserve(2U);
 
     plans.push_back({ListenerRole::client, config.listeners().client.bind, config.listeners().client.tls,
-                     config.listeners().client.tls_certificate_file, config.listeners().client.tls_private_key_file});
+                     config.listeners().client.reverse_proxy, config.listeners().client.tls_certificate_file,
+                     config.listeners().client.tls_private_key_file});
 
     if (config.security().federation.enabled)
     {
         plans.push_back({ListenerRole::federation, config.listeners().federation.bind,
-                         config.listeners().federation.tls, config.listeners().federation.tls_certificate_file,
+                         config.listeners().federation.tls, config.listeners().federation.reverse_proxy,
+                         config.listeners().federation.tls_certificate_file,
                          config.listeners().federation.tls_private_key_file});
     }
 
