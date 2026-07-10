@@ -1,3 +1,11 @@
+## 0.10.39
+
+### Fixed
+- **fix(ci): actually run GPG signing and rolling-latest publishing after skipped optional jobs.** The previous attempt used bare `needs.<job>.result == 'success'` conditions, but GitHub Actions still implicitly applies a default `success()` check to any job-level `if` that does not contain a status function. Because optional jobs such as `netbsd-pkg-retry` are skipped, that default `success()` returned false and kept skipping `sign-package-assets`, `publish-latest`, `sign-release-assets`, and `publish-alpha-release`. All four jobs now use `!failure() && !cancelled()` together with the explicit result check so they run whenever their direct dependency succeeds, regardless of skipped upstream jobs.
+
+### Changed
+- **chore(release): bump version to 0.10.39 across `meson.build`, `src/main.cpp`, `src/db_migrate.cpp`, packaging metadata, build scripts, and `CHANGELOG.md`.**
+
 ## 0.10.38
 
 ### Added

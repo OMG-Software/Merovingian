@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.10.38
+Version:        0.10.39
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -112,6 +112,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Fri Jul 10 2026 Release Engineering <releases@merovingian.io> - 0.10.39-1
+- Fix workflow signing/publish job scheduling after skipped optional jobs.
+
 * Thu Jul 09 2026 James Chapman <claude@ping.me.uk> - 0.10.38-1
 - feat(rate-limit,voip,federation): production-grade client-server rate limiting with route-aware defaults and Retry-After, static TURN credentials via server.turn.*, and inbound federation media download endpoint serving local media to remote homeservers.
 

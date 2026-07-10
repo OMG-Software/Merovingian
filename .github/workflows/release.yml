@@ -202,9 +202,14 @@ jobs:
   sign-release-assets:
     name: GPG-sign release assets
     needs: stage-release-assets
-    # Explicit success check so this job is never skipped due to skipped jobs in
-    # the broader workflow graph (e.g. optional retry jobs).
-    if: needs.stage-release-assets.result == 'success'
+    # GitHub implicitly ANDs a bare expression with success(), and that default
+    # success() returns false when any job in the broader dependency graph was
+    # skipped (e.g. optional retry jobs). Using !failure() && !cancelled() plus an
+    # explicit result check makes signing depend only on the staging job outcome.
+    if: |
+      !failure() &&
+      !cancelled() &&
+      needs.stage-release-assets.result == 'success'
     uses: ./.github/workflows/sign-artifacts.yml
     with:
       source_artifact_name: unsigned-release-assets
@@ -215,7 +220,10 @@ jobs:
 
   publish-alpha-release:
     needs: sign-release-assets
-    if: needs.sign-release-assets.result == 'success'
+    if: |
+      !failure() &&
+      !cancelled() &&
+      needs.sign-release-assets.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: write

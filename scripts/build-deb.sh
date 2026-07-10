@@ -3,7 +3,7 @@
 # Build a Debian binary package (.deb) for merovingian 0.10.38.
 set -e
 
-VERSION="0.10.38"
+VERSION="0.10.39"
 PKG_NAME="merovingian"
 STAGING="staging-deb"
 
