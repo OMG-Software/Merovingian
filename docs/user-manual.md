@@ -20,6 +20,7 @@ other docs linked from [`README.md`](../README.md).
 - [What Merovingian is](#what-merovingian-is)
 - [System requirements](#system-requirements)
 - [Installation](#installation)
+- [Verifying release artifacts](#verifying-release-artifacts)
 - [Initial setup](#initial-setup)
 - [Configuration](#configuration)
 - [Database backends](#database-backends)
@@ -143,6 +144,29 @@ cp merovingian-0.10.38-linux-static-x86_64/libexec/merovingian/merovingian-fed-w
 
 The static tarball does **not** receive automatic dependency security updates;
 redeploy a new tarball to pick up OpenSSL/LibSodium/libcurl fixes.
+
+#### Verifying release artifacts
+
+Every release artifact is accompanied by a detached GPG signature (`.asc`) and a
+SHA-256 checksum. Verification uses the maintainer signing key fingerprint
+published in [`docs/release-process.md`](release-process.md):
+
+```sh
+# Import the release signing key.
+gpg --recv-keys 66DFCC50187C8E46B5ED85FD92A3A264F0A7BE20
+
+# Download the tarball, signature, and checksum for your platform, then verify
+the signature.
+gpg --verify merovingian-0.10.38-linux-static-x86_64.tar.gz.asc \
+             merovingian-0.10.38-linux-static-x86_64.tar.gz
+
+# Verify the checksum.
+sha256sum -c merovingian-0.10.38-linux-static-x86_64.tar.gz.sha256
+```
+
+A valid signature reports a "Good signature" from `The Merovingian Release
+Signing Key`. An invalid or missing signature, or a mismatched checksum, is a
+distribution failure: do not install the artifact.
 
 ### Build from source
 
