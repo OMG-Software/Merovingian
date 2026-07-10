@@ -32,6 +32,12 @@ forced to a static library so sanitizer jobs link the sanitizer runtime through
 Merovingian's test executables instead of producing a standalone SQLite shared
 object with unresolved sanitizer symbols.
 
+## License
+
+SQLite is dedicated to the public domain through the SQLite blessing (`SPDX:
+blessing`). It is compatible with Merovingian's GPL-3.0-or-later distribution
+and is built from the pinned Meson wrap.
+
 ## Current limitations
 
 - SQLite is not the target backend for large production deployments.

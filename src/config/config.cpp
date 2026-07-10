@@ -527,6 +527,27 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
         }
     }
 
+    // TURN configuration: if a server is supplied the operator must also
+    // provide credentials so the endpoint can issue usable credentials.
+    // A partially populated turn block (e.g. only a username) is rejected
+    // because it would advertise a broken relay to clients.
+    auto const& turn = config.server().turn;
+    if (!turn.server.empty())
+    {
+        if (turn.username.empty())
+        {
+            findings.push_back({"server.turn.username", "TURN server configured but username is missing"});
+        }
+        if (turn.password.empty())
+        {
+            findings.push_back({"server.turn.password", "TURN server configured but password is missing"});
+        }
+    }
+    else if (!turn.username.empty() || !turn.password.empty())
+    {
+        findings.push_back({"server.turn.server", "TURN credentials supplied but no server URI is configured"});
+    }
+
     if (!is_valid_listener_bind(config.listeners().client.bind))
     {
         findings.push_back({"listeners.client.bind", "client listener bind address must be host:port"});

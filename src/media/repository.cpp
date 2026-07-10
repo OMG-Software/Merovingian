@@ -565,6 +565,35 @@ auto download_local_media(LocalMediaRepository& repository, std::string_view ser
     return {true, 200U, record->content_type, blob->bytes, {}};
 }
 
+[[nodiscard]] auto make_multipart_boundary() -> std::string
+{
+    auto bytes = std::array<unsigned char, 16U>{};
+    randombytes_buf(bytes.data(), bytes.size());
+    return "mrv_" + to_hex(bytes.data(), bytes.size());
+}
+
+auto build_federation_media_download_body(std::string_view media_content_type, std::string_view bytes)
+    -> FederationMediaDownloadBody
+{
+    auto const canonical_type =
+        media_content_type.empty() ? std::string_view{"application/octet-stream"} : media_content_type;
+    auto const boundary = make_multipart_boundary();
+    // Spec (SS API § Content Repository): 200 response MUST be multipart/mixed
+    // with exactly two parts. The first part is application/json metadata
+    // (currently always an empty object). The second part carries the media
+    // bytes with Content-Type and Content-Disposition headers.
+    auto body = std::string{};
+    body.reserve(256U + bytes.size());
+    body += "--" + boundary + "\r\n";
+    body += "Content-Type: application/json\r\n\r\n{}\r\n";
+    body += "--" + boundary + "\r\n";
+    body += std::string{"Content-Type: "} + std::string{canonical_type} + "\r\n";
+    body += "Content-Disposition: inline\r\n\r\n";
+    body += std::string{bytes} + "\r\n";
+    body += "--" + boundary + "--\r\n";
+    return {std::move(body), "multipart/mixed; boundary=" + boundary};
+}
+
 auto quarantine_local_media(LocalMediaRepository& repository, std::string_view media_id, std::string_view reason)
     -> LocalMediaAdminResult
 {

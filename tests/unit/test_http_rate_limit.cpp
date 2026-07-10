@@ -68,17 +68,53 @@ SCENARIO("HTTP endpoint defaults protect sensitive Matrix endpoints", "[http][ra
             auto const login = merovingian::http::endpoint_default_rate_limit(post, "/_matrix/client/v3/login");
             auto const keys = merovingian::http::endpoint_default_rate_limit(post, "/_matrix/client/v3/keys/upload");
             auto const media = merovingian::http::endpoint_default_rate_limit(get, "/_matrix/media/v3/download/a/b");
+            auto const media_v1 =
+                merovingian::http::endpoint_default_rate_limit(get, "/_matrix/client/v1/media/download/a/b");
             auto const federation =
                 merovingian::http::endpoint_default_rate_limit(put, "/_matrix/federation/v1/send/1");
             auto const generic = merovingian::http::endpoint_default_rate_limit(get, "/_matrix/client/v3/sync");
 
             THEN("sensitive endpoints receive stricter limits")
             {
-                REQUIRE(login.max_requests == 5U);
+                REQUIRE(login.max_requests == 20U);
                 REQUIRE(keys.max_requests == 30U);
                 REQUIRE(media.max_requests == 20U);
+                REQUIRE(media_v1.max_requests == 20U);
                 REQUIRE(federation.max_requests == 120U);
                 REQUIRE(generic.max_requests == 90U);
+            }
+        }
+    }
+}
+
+SCENARIO("HTTP default client rate limit config seeds the engine with design-doc defaults", "[http][rate-limit]")
+{
+    GIVEN("the default client rate limit configuration")
+    {
+        auto const cfg = merovingian::http::default_client_rate_limit_config();
+
+        WHEN("sensitive endpoint policies are resolved")
+        {
+            auto const login = cfg.per_ip.at("/_matrix/client/v3/login");
+            auto const reg = cfg.per_ip.at("/_matrix/client/v3/register");
+            auto const keys = cfg.per_ip.at("/_matrix/client/v3/keys/");
+            auto const devices = cfg.per_ip.at("/_matrix/client/v3/devices");
+            auto const media = cfg.per_ip.at("/_matrix/media/");
+            auto const media_v1 = cfg.per_ip.at("/_matrix/client/v1/media/");
+            auto const federation = cfg.per_ip.at("/_matrix/federation/");
+            auto const user_login = cfg.per_user.at("/_matrix/client/v3/login");
+
+            THEN("the design-doc caps are present")
+            {
+                REQUIRE(login.max_requests == 20U);
+                REQUIRE(reg.max_requests == 20U);
+                REQUIRE(keys.max_requests == 30U);
+                REQUIRE(devices.max_requests == 30U);
+                REQUIRE(media.max_requests == 20U);
+                REQUIRE(media_v1.max_requests == 20U);
+                REQUIRE(federation.max_requests == 120U);
+                REQUIRE(cfg.default_per_ip.max_requests == 90U);
+                REQUIRE(user_login.max_requests == 5U);
             }
         }
     }

@@ -48,6 +48,12 @@ Debian-family hosts use `libpq-dev`, Fedora-family hosts use `libpq-devel`,
 FreeBSD uses `postgresql17-client`, OpenBSD uses `postgresql-client`, and
 NetBSD/pkgsrc uses `postgresql17-client`.
 
+## License
+
+PostgreSQL libpq is released under the PostgreSQL license (`SPDX: PostgreSQL`).
+It is compatible with Merovingian's GPL-3.0-or-later distribution and is
+resolved from the operating-system PostgreSQL client package.
+
 ## Current limitations
 
 - Live integration tests against a temporary PostgreSQL server are gated by

@@ -38,6 +38,9 @@ require_file docs/dependencies/openssl.md
 require_file docs/dependencies/postgresql-libpq.md
 require_file docs/dependencies/sqlite.md
 require_file docs/dependencies/yyjson.md
+require_file docs/dependencies/licenses.md
+require_file scripts/generate-license-summary.py
+require_file scripts/verify-wrap-pins.sh
 require_file scripts/build-linux.sh
 require_file scripts/build-static-linux.sh
 require_file scripts/build-bsd.sh
@@ -92,6 +95,30 @@ fi
 
 if ! grep -qF "sha256 -q" .github/workflows/release.yml; then
     fail "release.yml does not generate sha256 checksums for FreeBSD release artifacts"
+fi
+
+# GPG release signatures: the alpha release and rolling package workflows
+# must both call the reusable signing workflow.
+if ! grep -qF "./.github/workflows/sign-artifacts.yml" .github/workflows/release.yml; then
+    fail "release.yml does not call the GPG signing reusable workflow"
+fi
+if ! grep -qF "./.github/workflows/sign-artifacts.yml" .github/workflows/packages.yml; then
+    fail "packages.yml does not call the GPG signing reusable workflow"
+fi
+
+# Dependency pinning: every wrap must be an immutable [wrap-file] with a
+# SHA-256 source_hash.
+if ! sh scripts/verify-wrap-pins.sh; then
+    fail "dependency wraps are not pinned as immutable [wrap-file] entries"
+fi
+
+# License review: the human-readable and machine-readable summaries must be
+# derivable from the same source of truth and must not be empty.
+if ! python3 scripts/generate-license-summary.py /tmp/merovingian.licenses.json; then
+    fail "license summary could not be generated from docs/dependencies/licenses.md"
+fi
+if ! [ -s /tmp/merovingian.licenses.json ]; then
+    fail "generated license summary is empty"
 fi
 
 exit "$status"

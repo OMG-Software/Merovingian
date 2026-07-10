@@ -118,10 +118,10 @@ The rolling `latest` GitHub prerelease is rebuilt on every push to `main`.
 
 ```sh
 # Debian/Ubuntu example
-dpkg -i merovingian_0.10.35_amd64.deb
+dpkg -i merovingian_0.10.38_amd64.deb
 
 # Fedora/RHEL example
-dnf install merovingian-0.10.35-1.fc40.x86_64.rpm
+dnf install merovingian-0.10.38-1.fc40.x86_64.rpm
 ```
 
 Packages create the `merovingian` system user and group, install the systemd
@@ -134,10 +134,10 @@ For older Linux distributions, use the musl-linked tarball. It has no glibc or
 runtime package dependencies.
 
 ```sh
-tar xzf merovingian-0.10.35-linux-static-x86_64.tar.gz
-cp merovingian-0.10.35-linux-static-x86_64/bin/merovingian-server /usr/local/bin/
-cp merovingian-0.10.35-linux-static-x86_64/bin/merovingian-db-migrate /usr/local/bin/
-cp merovingian-0.10.35-linux-static-x86_64/libexec/merovingian/merovingian-fed-worker \
+tar xzf merovingian-0.10.38-linux-static-x86_64.tar.gz
+cp merovingian-0.10.38-linux-static-x86_64/bin/merovingian-server /usr/local/bin/
+cp merovingian-0.10.38-linux-static-x86_64/bin/merovingian-db-migrate /usr/local/bin/
+cp merovingian-0.10.38-linux-static-x86_64/libexec/merovingian/merovingian-fed-worker \
    /usr/local/libexec/merovingian/
 ```
 
@@ -366,6 +366,26 @@ Wildcard `*` is the safe default for Matrix because clients authenticate with
 `allow_credentials=true` combined with a wildcard origin, since the CORS spec
 forbids that combination. CORS is **not** hot-reloadable — a change to any
 `server.cors.*` key requires a restart.
+
+#### TURN server — `server.turn.*`
+
+VoIP clients request TURN relay credentials through
+`GET /_matrix/client/v3/voip/turnServer`. When no TURN server is configured the
+endpoint returns an empty JSON object so clients gracefully disable relay
+support.
+
+| Key | Default | When to change |
+|---|---|---|
+| `server.turn.server` | (empty) | TURN server URI advertised to clients, e.g. `turn:turn.example.org:3478?transport=udp`. Leave empty to keep the endpoint returning `{}`. |
+| `server.turn.username` | (empty) | Static username issued to authenticated clients. Required when `server.turn.server` is set. |
+| `server.turn.password` | (empty) | Static password issued alongside the username. Required when `server.turn.server` is set. |
+| `server.turn.ttl_seconds` | `86400` | Credential lifetime advertised in the response. |
+
+> **Security note.** Shared-secret, time-limited TURN usernames are not yet
+> implemented; the current implementation issues the configured static
+> credentials to every authenticated client. Only supply credentials that are
+> acceptable for all users of this homeserver, or run a TURN server that does not
+> require authentication.
 
 #### Listeners — `listeners.client.*` and `listeners.federation.*`
 
@@ -696,23 +716,40 @@ unless `security.trust_safety.policy_server_allow_without_result=true`.
 
 #### Client rate limits — `client_rate_limits.*`
 
+Two independent wall-clock token-bucket tiers are enforced on every
+client-server request:
+
+- **Per-IP**, keyed by `(effective_client_ip, normalized_route)`.
+- **Per-user**, keyed by the authenticated `user_id` plus the normalized
+  route for requests that present a valid access token.
+
+The longest matching `<target>` prefix wins; path parameters such as
+`roomId`, `deviceId`, and `mediaId` are coalesced into placeholders so a
+single cap covers all rooms/devices/media. Every entry rejects a zero-window
+or zero-cap policy at startup. Changes require a server restart.
+
 | Key | Default | When to change |
 |---|---|---|
-| `client_rate_limits.per_ip.<target>` | unset | Per-IP cap for requests matching `<target>` prefix. |
-| `client_rate_limits.per_user.<target>` | unset | Per-user cap keyed by access token. |
+| `client_rate_limits.per_ip.<target>` | see defaults below | Per-IP cap for requests matching `<target>` prefix. |
+| `client_rate_limits.per_user.<target>` | see defaults below | Per-user cap keyed by authenticated `user_id`. |
 | `client_rate_limits.default_per_ip` | `90/60s` | Fallback cap for unmatched targets. |
 
-The target keys contain literal forward slashes, e.g.:
+Default route-aware policies applied when no override is configured:
+
+| Endpoint class | Default policy |
+|---|---|
+| Login / registration | 20/60s per IP; 5/60s per user on `/login` |
+| Device and key APIs | 30/60s per IP |
+| Media APIs | 20/60s per IP |
+| Generic client APIs | 90/60s per IP fallback |
+
+Example overrides:
 
 ```ini
-client_rate_limits.per_ip./_matrix/client/v3/login=30/60s
-client_rate_limits.per_user./_matrix/client/v3/login=20/60s
+client_rate_limits.per_ip./_matrix/client/v3/login=20/60s
+client_rate_limits.per_user./_matrix/client/v3/login=5/60s
+client_rate_limits.default_per_ip=90/60s
 ```
-
-The longest matching `<target>` prefix wins; every entry rejects a
-zero-window or zero-cap policy at startup. Rate-limit changes require a
-server restart — the limiter is built once at server start and stored in the
-runtime.
 
 #### Per-module log levels — `log_modules.*`
 
@@ -1672,6 +1709,16 @@ security.media.remote_fetch_enabled=true
 
 Fetched bytes default to `quarantine` because federated origins are unaccountable
 and no AV engine is integrated today.
+
+### Inbound federation media serving
+
+Locally uploaded media that is not quarantined or removed is automatically
+available to remote homeservers through
+`GET /_matrix/federation/v1/media/download/{mediaId}`. The endpoint is
+authenticated with `X-Matrix` request signatures, bypasses the federation worker
+because the worker has no access to the local media store, and returns a
+`multipart/mixed` response per Matrix v1.18 (an empty JSON metadata part
+followed by the media bytes). No extra configuration is required.
 
 ### Sandbox
 

@@ -10,6 +10,8 @@
 #include "merovingian/events/event_signer.hpp"
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/runtime_federation.hpp"
+#include "merovingian/homeserver/media_service.hpp"
+#include "merovingian/media/repository.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -1856,6 +1858,78 @@ SCENARIO("Parallel inbound /send with join_parallelism=0 clamps to 1 and resolve
                 REQUIRE(response.status == 200U);
                 REQUIRE(sink_count.load() == 2U);
                 REQUIRE(state->calls.load() == 2U);
+            }
+        }
+    }
+}
+
+SCENARIO("Inbound federation media download serves local media as multipart/mixed and fails closed on missing media",
+         "[federation][inbound][media]")
+{
+    GIVEN("a runtime with a known remote and a media download provider")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const token = std::string{"verify-token"};
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
+        runtime.media_download_provider =
+            [](std::string_view media_id) -> merovingian::media::LocalMediaDownloadResult {
+            if (media_id == "abc123")
+            {
+                return {true, 200U, "image/png", "png-bytes", {}};
+            }
+            return {false, 404U, {}, {}, "media not found"};
+        };
+
+        WHEN("a signed GET request arrives for an existing media ID")
+        {
+            auto request = merovingian::federation::SignedFederationRequest{};
+            request.method = "GET";
+            request.target = "/_matrix/federation/v1/media/download/abc123";
+            request.origin = origin;
+            request.destination = "local.example.org";
+            request.key_id = key_id;
+            request.now_ts = 1000U;
+            request.canonical_json_verified = true;
+            request.signature = merovingian::federation::make_federation_signature(
+                request.origin, request.destination, request.method, request.target, request.body,
+                merovingian::federation::test::keypair_from_seed(token).secret_key);
+
+            auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
+
+            THEN("the response is 200 multipart/mixed with two parseable parts")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(response.content_type.starts_with("multipart/mixed"));
+                auto const parsed =
+                    merovingian::homeserver::parse_federation_media_multipart(response.content_type, response.body);
+                REQUIRE(parsed.ok);
+                REQUIRE(parsed.content_type == "image/png");
+                REQUIRE(parsed.bytes == "png-bytes");
+            }
+        }
+
+        WHEN("a signed GET request arrives for a missing media ID")
+        {
+            auto request = merovingian::federation::SignedFederationRequest{};
+            request.method = "GET";
+            request.target = "/_matrix/federation/v1/media/download/notfound";
+            request.origin = origin;
+            request.destination = "local.example.org";
+            request.key_id = key_id;
+            request.now_ts = 1000U;
+            request.canonical_json_verified = true;
+            request.signature = merovingian::federation::make_federation_signature(
+                request.origin, request.destination, request.method, request.target, request.body,
+                merovingian::federation::test::keypair_from_seed(token).secret_key);
+
+            auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
+
+            THEN("the response is 404 M_NOT_FOUND")
+            {
+                REQUIRE(response.status == 404U);
+                REQUIRE(response.body.find("M_NOT_FOUND") != std::string::npos);
             }
         }
     }

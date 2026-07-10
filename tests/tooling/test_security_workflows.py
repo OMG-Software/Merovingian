@@ -56,15 +56,17 @@ class SecurityWorkflowTests(unittest.TestCase):
         self.assertIn("github/codeql-action/upload-sarif@v4", workflow)
         self.assertIn("output-format: sarif", workflow)
 
-    def test_dependency_review_configuration_is_repository_local(self) -> None:
+    def test_dependency_review_configuration_enables_license_checks(self) -> None:
         # GIVEN the dependency-review action configuration.
         self.assertTrue(DEPENDENCY_REVIEW_CONFIG.is_file(), "dependency review config is missing")
         config = DEPENDENCY_REVIEW_CONFIG.read_text(encoding="utf-8")
 
-        # WHEN pull requests add vulnerable dependencies.
-        # THEN the repository fails on high-severity introductions and reports patched versions.
+        # WHEN pull requests add vulnerable or incompatible dependencies.
+        # THEN the repository fails on high-severity vulnerability introductions,
+        # reports patched versions, and checks license compatibility.
         self.assertIn("fail-on-severity: high", config)
-        self.assertIn("license-check: false", config)
+        self.assertIn("vulnerability-check: true", config)
+        self.assertIn("license-check: true", config)
         self.assertIn("show-patched-versions: true", config)
 
     def test_sbom_workflow_generates_spdx_and_cyclonedx_outputs(self) -> None:

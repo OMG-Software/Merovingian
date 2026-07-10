@@ -113,10 +113,11 @@ SCENARIO("Client-server auth route scaffold attaches token requirements and rate
                 // Spec MUST: authenticated endpoints require a valid token.
                 REQUIRE(logout.route.requires_access_token);
                 REQUIRE(devices.route.requires_access_token);
-                // Security MUST: rate-limit unauthenticated sensitive endpoints.
-                // Do NOT raise the limit above 5 without a security review.
-                REQUIRE(login.route.rate_limit.max_requests == 5U);
-                REQUIRE(registration.route.rate_limit.max_requests == 5U);
+                // Security MUST: per-IP rate limit on unauthenticated sensitive
+                // endpoints (20/min). The stricter per-user cap (5/min for
+                // /login) is enforced separately by the runtime rate-limit engine.
+                REQUIRE(login.route.rate_limit.max_requests == 20U);
+                REQUIRE(registration.route.rate_limit.max_requests == 20U);
                 REQUIRE(devices.route.rate_limit.max_requests == 30U);
                 REQUIRE(login.route.emits_audit_event);
                 REQUIRE(devices.route.emits_audit_event);

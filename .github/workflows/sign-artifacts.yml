@@ -1,0 +1,62 @@
+name: Sign artifacts with GPG
+
+on:
+  workflow_call:
+    inputs:
+      source_artifact_name:
+        description: 'Name of the uploaded artifact containing the files to sign'
+        required: true
+        type: string
+      output_artifact_name:
+        description: 'Name of the artifact to upload after signing'
+        required: true
+        type: string
+    secrets:
+      gpg_private_key:
+        description: 'ASCII-armored GPG private key for the maintainer signing key'
+        required: true
+      gpg_passphrase:
+        description: 'Passphrase for the GPG private key'
+        required: true
+
+jobs:
+  sign:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Import maintainer GPG key
+        uses: crazy-max/ghaction-import-gpg@v6
+        with:
+          gpg_private_key: ${{ secrets.gpg_private_key }}
+          passphrase: ${{ secrets.gpg_passphrase }}
+
+      - name: Download unsigned artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.source_artifact_name }}
+          path: signed-assets/
+
+      - name: Create detached GPG signatures
+        env:
+          GPG_PASSPHRASE: ${{ secrets.gpg_passphrase }}
+        run: |
+          for f in signed-assets/*; do
+            [ -f "$f" ] || continue
+            case "$f" in
+              *.asc) continue ;;
+            esac
+            printf 'Signing %s\n' "$f"
+            gpg --batch --yes --pinentry-mode loopback \
+              --passphrase "$GPG_PASSPHRASE" \
+              --detach-sign --armor \
+              -o "${f}.asc" "$f"
+          done
+
+      - name: Upload signed artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.output_artifact_name }}
+          path: signed-assets/
+          if-no-files-found: error
+          retention-days: 30

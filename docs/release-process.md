@@ -53,16 +53,36 @@ The packaged tarballs include:
 - `README.md`
 - `LICENSE`
 
-## Production work that remains open
+## Verifying release signatures
 
-Alpha prerelease publication is not the same as a production release.
-The current workflow does not yet provide:
+Every release tarball and package is accompanied by a detached GPG signature
+(`.asc`). The signing key is an offline, long-lived maintainer key stored as a
+GitHub Actions secret. Operators can verify artifacts without the GitHub CLI.
 
-- GPG or Sigstore signatures on release tarballs (offline verification
-  without the GitHub CLI)
-- a release-attached dependency or license report
+Import the maintainer public key by fingerprint (replace `FINGERPRINT` with the
+published key fingerprint once the key pair is generated and distributed):
 
-Those remain tracked production gaps in `docs/todos/production-milestone.md`.
+```sh
+gpg --recv-keys FINGERPRINT
+```
+
+Verify a release artifact:
+
+```sh
+gpg --verify merovingian-<version>-linux-x86_64.tar.gz.asc \
+  merovingian-<version>-linux-x86_64.tar.gz
+```
+
+If the signature is valid, GPG reports a good signature from the maintainer
+identity. A missing or invalid signature must be treated as a build or
+distribution failure.
+
+Release assets also include:
+
+- `SHA256SUMS` for every package (in rolling `latest` releases)
+- per-tarball `.sha256` files for alpha releases
+- `merovingian.spdx.json` and `merovingian.cdx.json` SBOMs
+- `merovingian.licenses.json` machine-readable license summary
 
 ## Operator sequence
 
@@ -113,6 +133,14 @@ Each package is individually attested with
 ```sh
 gh attestation verify <package-file> --repo OMG-Software/Merovingian
 ```
+
+The publish step also creates a detached GPG `.asc` signature for every
+package (including `SHA256SUMS`) using the maintainer key. Verify with:
+
+```sh
+gpg --verify <package-file>.asc <package-file>
+```
+
 The publish step resolves and deletes the existing `latest` release with an
 explicit `--repo "${{ github.repository }}"` scope before recreating it so the
 artifact-only job does not depend on checkout state.

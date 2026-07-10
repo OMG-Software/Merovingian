@@ -3,16 +3,28 @@
 # Build a portable Linux fallback tarball with musl-linked static PIE binaries.
 set -eu
 
-VERSION="${MEROVINGIAN_VERSION:-0.10.35}"
+VERSION="${MEROVINGIAN_VERSION:-0.10.38}"
 BUILD_DIR="${BUILD_DIR:-build-static-linux}"
 STAGING="staging-static-linux"
 PACKAGE_ROOT="merovingian-${VERSION}-linux-static-x86_64"
 TARBALL="${PACKAGE_ROOT}.tar.gz"
 
+# Use the commit author date as the deterministic build timestamp when the caller
+# has not already set SOURCE_DATE_EPOCH.
+if [ -z "${SOURCE_DATE_EPOCH:-}" ]; then
+    SOURCE_DATE_EPOCH="$(git log -1 --format=%at 2>/dev/null || printf '0')"
+    if ! [ "$SOURCE_DATE_EPOCH" -gt 0 ] 2>/dev/null; then
+        SOURCE_DATE_EPOCH="$(date +%s)"
+    fi
+fi
+export SOURCE_DATE_EPOCH
+
 rm -rf "$BUILD_DIR" "$STAGING" "$PACKAGE_ROOT" "$TARBALL" "${TARBALL}.sha256"
 
 CC="${CC:-clang}" CXX="${CXX:-clang++}" meson setup "$BUILD_DIR" \
     --prefix=/usr \
+    --buildtype=release \
+    --strip \
     --wrap-mode=forcefallback \
     --prefer-static \
     -Dhardening=true \
@@ -43,7 +55,22 @@ install -m 0644 README.md LICENSE "${PACKAGE_ROOT}/"
 install -m 0644 docs/user-manual.md docs/release-process.md \
     docs/security-review-checklist.md "${PACKAGE_ROOT}/docs/"
 
-tar -czf "$TARBALL" "$PACKAGE_ROOT"
+# Create a deterministic tarball when GNU tar is available and SOURCE_DATE_EPOCH
+# is set. BusyBox tar does not support the required options, so local
+# non-Alpine builds may be non-reproducible; the reproducible-build CI job
+# uses Alpine's GNU tar package for verification.
+if tar --version 2>&1 | grep -q 'GNU tar'; then
+    tar --sort=name \
+        --mtime="@${SOURCE_DATE_EPOCH}" \
+        --owner=0 \
+        --group=0 \
+        --numeric-owner \
+        -czf "$TARBALL" "$PACKAGE_ROOT"
+else
+    printf 'warning: GNU tar not found; tarball metadata will not be deterministic\n' >&2
+    tar -czf "$TARBALL" "$PACKAGE_ROOT"
+fi
+
 sha256sum "$TARBALL" > "${TARBALL}.sha256"
 
 echo "Built static Linux fallback: $TARBALL"

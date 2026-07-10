@@ -115,3 +115,38 @@ SCENARIO("The config parser rejects a zero-window rate-limit policy at parse tim
         }
     }
 }
+
+SCENARIO("Empty client_rate_limits target keys are rejected", "[config][rate-limit]")
+{
+    GIVEN("a config with an empty per-IP rate-limit target")
+    {
+        auto const input = std::string{"client_rate_limits.per_ip.=5/60s\n"};
+
+        WHEN("the config is parsed and validated")
+        {
+            auto const result = parse_key_value_config(input);
+
+            THEN("the validator emits a finding on the empty target")
+            {
+                REQUIRE_FALSE(result.findings.empty());
+                REQUIRE(result.findings.front().field == "client_rate_limits.per_ip");
+            }
+        }
+    }
+
+    GIVEN("a config with an empty per-user rate-limit target")
+    {
+        auto const input = std::string{"client_rate_limits.per_user.=5/60s\n"};
+
+        WHEN("the config is parsed and validated")
+        {
+            auto const result = parse_key_value_config(input);
+
+            THEN("the validator emits a finding on the empty target")
+            {
+                REQUIRE_FALSE(result.findings.empty());
+                REQUIRE(result.findings.front().field == "client_rate_limits.per_user");
+            }
+        }
+    }
+}

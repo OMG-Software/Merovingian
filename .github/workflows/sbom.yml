@@ -38,7 +38,10 @@ jobs:
           output-file: merovingian.cdx.json
           artifact-name: merovingian-sbom-cyclonedx
 
-      - name: Attach SBOMs to release
+      - name: Generate license summary
+        run: python scripts/generate-license-summary.py merovingian.licenses.json
+
+      - name: Attach SBOMs and license summary to release
         if: github.event_name == 'release'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -46,4 +49,5 @@ jobs:
           gh release upload "${{ github.event.release.tag_name }}" \
             merovingian.spdx.json \
             merovingian.cdx.json \
+            merovingian.licenses.json \
             --repo "${{ github.repository }}"

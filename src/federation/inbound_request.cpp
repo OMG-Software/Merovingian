@@ -13,6 +13,7 @@
 #include "merovingian/events/event_signer.hpp"
 #include "merovingian/federation/membership_endpoints.hpp"
 #include "merovingian/homeserver/client_server.hpp"
+#include "merovingian/media/repository.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
@@ -1120,6 +1121,47 @@ namespace
         return {200U, std::move(body)};
     }
 
+    // Spec: Matrix Server-Server API v1.18 — GET /_matrix/federation/v1/media/download/{mediaId}
+    // URL: ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixfederationv1mediadownloadmediaid
+    //
+    // Returns local media to an authenticated remote homeserver as a
+    // multipart/mixed response. The first part is empty application/json metadata;
+    // the second part carries the media bytes.
+    [[nodiscard]] auto handle_media_download(FederationRuntimeState& runtime, SignedFederationRequest const& request)
+        -> FederationResponse
+    {
+        if (!runtime.media_download_provider)
+        {
+            return {501U, "media download not implemented"};
+        }
+        auto const media_id = extract_path_segment(request.target, "/_matrix/federation/v1/media/download/");
+        if (media_id.empty())
+        {
+            return {400U, homeserver::matrix_error("M_INVALID_PARAM", "mediaId is required")};
+        }
+        auto const result = runtime.media_download_provider(media_id);
+        if (!result.ok)
+        {
+            if (result.status == 404U)
+            {
+                return {404U, homeserver::matrix_error("M_NOT_FOUND", result.reason)};
+            }
+            if (result.status == 451U)
+            {
+                return {451U, homeserver::matrix_error("M_NOT_FOUND", result.reason)};
+            }
+            return {result.status, homeserver::matrix_error("M_UNKNOWN", result.reason)};
+        }
+        auto envelope = media::build_federation_media_download_body(result.content_type, result.bytes);
+        if (envelope.body.empty())
+        {
+            return {500U, "failed to build media response"};
+        }
+        auto response = FederationResponse{200U, std::move(envelope.body)};
+        response.content_type = std::move(envelope.content_type);
+        return response;
+    }
+
     [[nodiscard]] auto dispatch_non_transaction_endpoint(FederationRuntimeState& runtime,
                                                          SignedFederationRequest const& request,
                                                          FederationRoute const& route, FederationRemoteRuntime& remote)
@@ -1160,6 +1202,8 @@ namespace
             return handle_get_missing_events(runtime, request);
         case FederationEndpoint::space_hierarchy:
             return handle_space_hierarchy(runtime, request);
+        case FederationEndpoint::media_download:
+            return handle_media_download(runtime, request);
         case FederationEndpoint::edu:
             // Plain send_edu requests have always been a 200 stub; ingestion
             // happens through the transaction path which carries EDUs.

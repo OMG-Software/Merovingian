@@ -23,6 +23,7 @@
 #include "merovingian/homeserver/room_service.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/homeserver/space_hierarchy.hpp"
+#include "merovingian/media/repository.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
@@ -1537,6 +1538,15 @@ namespace
             return build_federation_space_hierarchy_response(*rt, room_id, suggested_only);
         };
 
+        // Federation media download needs the local media repository, which is
+        // only available in the main process. The federation worker does not
+        // carry media blobs, so this route is bypassed to main in
+        // federation_request_routing.cpp.
+        runtime.federation.media_download_provider =
+            [rt](std::string_view media_id) -> media::LocalMediaDownloadResult {
+            return media::download_local_media(rt->media_repository, rt->config.server().server_name, media_id);
+        };
+
         // Resolve the room version from the stored m.room.create state event so
         // that authorize_federation_pdu uses the correct redaction rules when
         // verifying inbound PDU signatures.  Rooms created before v11 include
@@ -1949,7 +1959,12 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
                            {"origin", signed_request->origin,                               false},
                            {"status", std::to_string(federation_response.status),           false}
         });
-        return response(federation_response.status, federation_response.body);
+        auto response_headers = std::vector<std::pair<std::string, std::string>>{};
+        if (!federation_response.content_type.empty())
+        {
+            response_headers.emplace_back("Content-Type", federation_response.content_type);
+        }
+        return response(federation_response.status, federation_response.body, std::move(response_headers));
     }
     if (request.method == "POST" && request.target == "/_matrix/client/v3/register")
     {
@@ -2259,7 +2274,12 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
     // global runtime mutex here would serialize whole /send transactions.
     auto const federation_response =
         federation::handle_inbound_federation_request(runtime.federation, *signed_request_opt);
-    return response(federation_response.status, federation_response.body);
+    auto response_headers = std::vector<std::pair<std::string, std::string>>{};
+    if (!federation_response.content_type.empty())
+    {
+        response_headers.emplace_back("Content-Type", federation_response.content_type);
+    }
+    return response(federation_response.status, federation_response.body, std::move(response_headers));
 }
 
 } // namespace merovingian::homeserver
