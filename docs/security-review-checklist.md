@@ -53,4 +53,5 @@ Use this checklist for every release candidate.
   candidate commit.
 - Dependency vulnerability triage artifacts were reviewed before tagging.
 - SBOM and package checksums are attached.
-- Release artifacts are signed.
+- Release artifacts are signed with a detached GPG `.asc` signature by the
+  maintainer key (verify with `gpg --verify <file>.asc <file>`).

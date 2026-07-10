@@ -22,6 +22,7 @@ struct ListenerPlan final
     ListenerRole role{ListenerRole::client};
     std::string bind{};
     bool tls{false};
+    bool reverse_proxy{true};
     std::string tls_certificate_file{};
     std::string tls_private_key_file{};
 };

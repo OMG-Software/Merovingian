@@ -36,6 +36,22 @@ struct CorsConfig final
     std::string allow_headers{"authorization, content-type"};
 };
 
+struct TurnServerConfig final
+{
+    // TURN server URI advertised to clients, e.g. "turn:turn.example.org:3478?transport=udp".
+    // When empty the TURN endpoint returns an empty object so VoIP clients
+    // gracefully disable relay support.
+    std::string server{};
+    // Static credentials issued to authenticated clients. Shared-secret
+    // time-limited usernames are not yet implemented; until then the operator
+    // supplies a service account or uses a TURN server that does not require
+    // authentication.
+    std::string username{};
+    std::string password{};
+    // Lifetime in seconds advertised in the response. Defaults to 24 hours.
+    std::uint32_t ttl_seconds{86400U};
+};
+
 struct ServerConfig final
 {
     std::string server_name{"example.org"};
@@ -47,12 +63,16 @@ struct ServerConfig final
     // combined with `allow_credentials=true` is rejected at config-parse
     // time per the CORS spec.
     CorsConfig cors{};
+    // TURN relay configuration for GET /_matrix/client/v3/voip/turnServer.
+    // Empty by default; when populated the endpoint returns real credentials.
+    TurnServerConfig turn{};
 };
 
 struct ListenerConfig final
 {
     std::string bind{};
     bool tls{false};
+    bool reverse_proxy{true};
     std::string tls_certificate_file{};
     std::string tls_private_key_file{};
 };
@@ -359,6 +379,7 @@ struct DurationParseResult final
 [[nodiscard]] auto listener_host(std::string_view bind) noexcept -> std::string_view;
 [[nodiscard]] auto is_loopback_host(std::string_view host) noexcept -> bool;
 [[nodiscard]] auto is_valid_listener_bind(std::string_view bind) noexcept -> bool;
+[[nodiscard]] auto is_public_listener(ListenerConfig const& listener) noexcept -> bool;
 [[nodiscard]] auto is_safe_cleartext_listener(ListenerConfig const& listener) noexcept -> bool;
 [[nodiscard]] auto is_valid_public_baseurl(std::string_view public_baseurl) noexcept -> bool;
 [[nodiscard]] auto is_valid_federation_policy(std::string_view policy) noexcept -> bool;

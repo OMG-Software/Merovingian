@@ -66,7 +66,7 @@ auto endpoint_default_rate_limit(std::string_view method, std::string_view targe
     if (method == "POST" &&
         (starts_with(target, "/_matrix/client/v3/login") || starts_with(target, "/_matrix/client/v3/register")))
     {
-        return {5U, 60U};
+        return {20U, 60U};
     }
 
     if (starts_with(target, "/_matrix/client/v3/keys/") || starts_with(target, "/_matrix/client/v3/devices"))
@@ -74,7 +74,7 @@ auto endpoint_default_rate_limit(std::string_view method, std::string_view targe
         return {30U, 60U};
     }
 
-    if (starts_with(target, "/_matrix/media/"))
+    if (starts_with(target, "/_matrix/media/") || starts_with(target, "/_matrix/client/v1/media/"))
     {
         return {20U, 60U};
     }
@@ -85,6 +85,30 @@ auto endpoint_default_rate_limit(std::string_view method, std::string_view targe
     }
 
     return {90U, 60U};
+}
+
+auto default_client_rate_limit_config() noexcept -> RateLimitConfig
+{
+    // Design-doc defaults (0.5.0): 20/min per IP for login/register,
+    // 5/min per user for login, 30/min for keys/devices, 20/min for media,
+    // 120/min for federation, 90/min for everything else.
+    return RateLimitConfig{
+        .per_ip =
+            {
+                     {"/_matrix/client/v3/login", {20U, 60U}},
+                     {"/_matrix/client/v3/register", {20U, 60U}},
+                     {"/_matrix/client/v3/keys/", {30U, 60U}},
+                     {"/_matrix/client/v3/devices", {30U, 60U}},
+                     {"/_matrix/media/", {20U, 60U}},
+                     {"/_matrix/client/v1/media/", {20U, 60U}},
+                     {"/_matrix/federation/", {120U, 60U}},
+                     },
+        .per_user =
+            {
+                     {"/_matrix/client/v3/login", {5U, 60U}},
+                     },
+        .default_per_ip = {90U, 60U},
+    };
 }
 
 auto rate_limit_summary(RateLimitPolicy const& policy) -> std::string

@@ -37,6 +37,12 @@ Debian-family hosts use `libsodium-dev`, Fedora-family hosts use
 `libsodium-devel`, FreeBSD uses `libsodium`, OpenBSD uses `libsodium`, and
 NetBSD/pkgsrc uses `libsodium`.
 
+## License
+
+LibSodium is released under the ISC license (`SPDX: ISC`). It is compatible with
+Merovingian's GPL-3.0-or-later distribution and is resolved from the
+operating-system package.
+
 ## Current limitations
 
 - Runtime local signing-key materialization is deterministic scaffolding and

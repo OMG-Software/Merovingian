@@ -31,4 +31,7 @@ or tooling boundary so upstream APIs do not leak across the homeserver.
   and the **Catch2** test framework build from source-pinned wraps when no
   system copy is present. See [platform-support.md](../platform-support.md) for
   per-platform package names.
+- Direct dependencies must be pinned immutably. Source-pinned dependencies use
+  Meson `[wrap-file]` entries with SHA-256 hashes. See the per-dependency review
+  notes and [licenses.md](licenses.md) for the license compatibility matrix.
 - Test-only dependencies must not be linked into production targets.

@@ -231,9 +231,17 @@ auto is_valid_listener_bind(std::string_view bind) noexcept -> bool
     return !host.empty() && port > 0U;
 }
 
+auto is_public_listener(ListenerConfig const& listener) noexcept -> bool
+{
+    return !is_loopback_host(listener_host(listener.bind));
+}
+
 auto is_safe_cleartext_listener(ListenerConfig const& listener) noexcept -> bool
 {
-    return listener.tls || is_loopback_host(listener_host(listener.bind));
+    // Public listeners must terminate TLS. Loopback cleartext is only
+    // permitted when the operator explicitly declares a local reverse
+    // proxy owns TLS termination.
+    return listener.tls || (is_loopback_host(listener_host(listener.bind)) && listener.reverse_proxy);
 }
 
 auto is_valid_public_baseurl(std::string_view public_baseurl) noexcept -> bool
@@ -519,13 +527,51 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
         }
     }
 
+    // TURN configuration: if a server is supplied the operator must also
+    // provide credentials so the endpoint can issue usable credentials.
+    // A partially populated turn block (e.g. only a username) is rejected
+    // because it would advertise a broken relay to clients.
+    auto const& turn = config.server().turn;
+    if (!turn.server.empty())
+    {
+        if (turn.username.empty())
+        {
+            findings.push_back({"server.turn.username", "TURN server configured but username is missing"});
+        }
+        if (turn.password.empty())
+        {
+            findings.push_back({"server.turn.password", "TURN server configured but password is missing"});
+        }
+    }
+    else if (!turn.username.empty() || !turn.password.empty())
+    {
+        findings.push_back({"server.turn.server", "TURN credentials supplied but no server URI is configured"});
+    }
+
     if (!is_valid_listener_bind(config.listeners().client.bind))
     {
         findings.push_back({"listeners.client.bind", "client listener bind address must be host:port"});
     }
-    else if (!is_safe_cleartext_listener(config.listeners().client))
+    else
     {
-        findings.push_back({"listeners.client.tls", "cleartext client listener must bind only to loopback"});
+        if (!is_safe_cleartext_listener(config.listeners().client))
+        {
+            if (is_public_listener(config.listeners().client))
+            {
+                findings.push_back({"listeners.client.tls", "public client listener must use TLS"});
+            }
+            else
+            {
+                findings.push_back({"listeners.client.reverse_proxy",
+                                    "loopback cleartext client listener must declare reverse_proxy=true"});
+            }
+        }
+        if (is_public_listener(config.listeners().client) && config.listeners().client.reverse_proxy)
+        {
+            findings.push_back(
+                {"listeners.client.reverse_proxy",
+                 "public client listener cannot be behind a local reverse proxy; set reverse_proxy=false"});
+        }
     }
     validate_listener_tls_files(findings, config.listeners().client, "listeners.client");
 
@@ -533,9 +579,26 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
     {
         findings.push_back({"listeners.federation.bind", "federation listener bind address must be host:port"});
     }
-    else if (!is_safe_cleartext_listener(config.listeners().federation))
+    else
     {
-        findings.push_back({"listeners.federation.tls", "cleartext federation listener must bind only to loopback"});
+        if (!is_safe_cleartext_listener(config.listeners().federation))
+        {
+            if (is_public_listener(config.listeners().federation))
+            {
+                findings.push_back({"listeners.federation.tls", "public federation listener must use TLS"});
+            }
+            else
+            {
+                findings.push_back({"listeners.federation.reverse_proxy",
+                                    "loopback cleartext federation listener must declare reverse_proxy=true"});
+            }
+        }
+        if (is_public_listener(config.listeners().federation) && config.listeners().federation.reverse_proxy)
+        {
+            findings.push_back(
+                {"listeners.federation.reverse_proxy",
+                 "public federation listener cannot be behind a local reverse proxy; set reverse_proxy=false"});
+        }
     }
     validate_listener_tls_files(findings, config.listeners().federation, "listeners.federation");
 

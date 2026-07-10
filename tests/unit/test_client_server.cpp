@@ -54,6 +54,21 @@ namespace
     };
 }
 
+[[nodiscard]] auto turn_enabled_config() -> merovingian::config::Config
+{
+    auto security = merovingian::config::SecurityConfig{};
+    merovingian::tests::enable_token_registration(security);
+    auto server = merovingian::config::ServerConfig{};
+    server.turn.server = "turn:turn.example.org:3478?transport=udp";
+    server.turn.username = "testuser";
+    server.turn.password = "testpass";
+    server.turn.ttl_seconds = 3600U;
+    return {
+        std::move(server),   merovingian::config::ListenersConfig{},        merovingian::config::DatabaseConfig{},
+        std::move(security), merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+    };
+}
+
 [[nodiscard]] auto login_token(std::string const& body) -> std::string
 {
     auto const key = std::string{"\"access_token\":\""};
@@ -2752,9 +2767,10 @@ SCENARIO("Client-server enforces per-endpoint rate limits with 429 M_LIMIT_EXCEE
 
         WHEN("registration is invoked more times than the endpoint policy allows in the window")
         {
-            // endpoint_default_rate_limit returns {max_requests=5, window_seconds=60}
-            // for POST /_matrix/client/v3/register, so the sixth request inside
-            // the wall-clock window must fail closed.
+            // The production default for POST /_matrix/client/v3/register is
+            // {max_requests=20, window_seconds=60}, but this test installs a
+            // tight engine with default_per_ip={1,60}, so the second request
+            // inside the wall-clock window is denied.
             auto last_status = std::uint16_t{0U};
             auto last_body = std::string{};
             for (auto index = 0; index < 6; ++index)
@@ -3418,6 +3434,124 @@ namespace
 }
 } // namespace
 
+SCENARIO("429 rate-limit responses include Retry-After and retry_after_ms per Matrix v1.18",
+         "[homeserver][client-server][rate-limit]")
+{
+    GIVEN("a started runtime with a tight per-IP rate-limit engine")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::install_test_rate_limit_engine(runtime);
+
+        WHEN("a second request exhausts the per-IP bucket")
+        {
+            static_cast<void>(merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST", "/_matrix/client/v3/register", {}, R"({"username":"first","password":"CorrectHorse7!"})"}));
+            auto const denied = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST", "/_matrix/client/v3/register", {}, R"({"username":"second","password":"CorrectHorse7!"})"});
+
+            THEN("the 429 carries M_LIMIT_EXCEEDED, retry_after_ms, and Retry-After in seconds")
+            {
+                REQUIRE(denied.response.status == 429U);
+                REQUIRE(denied.response.body.find("M_LIMIT_EXCEEDED") != std::string::npos);
+                REQUIRE(denied.response.body.find("\"retry_after_ms\"") != std::string::npos);
+                auto const retry_after = response_header(denied.response, "Retry-After");
+                REQUIRE_FALSE(retry_after.empty());
+                REQUIRE(std::stoul(retry_after) > 0U);
+            }
+        }
+    }
+
+    GIVEN("a started runtime with the default rate-limit engine")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        WHEN("too many outstanding validation sessions are requested from one address")
+        {
+            auto denied = merovingian::homeserver::DispatchResult{};
+            for (auto index = 0; index < 5; ++index)
+            {
+                auto body = std::string{R"({"client_secret":"secret-)"};
+                body += std::to_string(index);
+                body += R"(","email":"user)";
+                body += std::to_string(index);
+                body += R"(@example.org","send_attempt":1})";
+                denied = merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST", "/_matrix/client/v3/register/email/requestToken", {}, body, {}, "203.0.113.10"});
+            }
+
+            THEN("the 429 carries the hard-coded retry_after_ms=60000 and Retry-After: 60")
+            {
+                REQUIRE(denied.response.status == 429U);
+                REQUIRE(denied.response.body.find("M_LIMIT_EXCEEDED") != std::string::npos);
+                REQUIRE(denied.response.body.find("\"retry_after_ms\":60000") != std::string::npos);
+                REQUIRE(response_header(denied.response, "Retry-After") == "60");
+            }
+        }
+    }
+}
+
+SCENARIO("Route normalization coalesces v1 room and media path parameters into stable rate-limit buckets",
+         "[homeserver][client-server][rate-limit][normalization]")
+{
+    GIVEN("a started runtime with a tight per-IP rate-limit engine")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::install_test_rate_limit_engine(runtime);
+
+        WHEN("two v1 room hierarchy requests with different room IDs arrive from the same IP")
+        {
+            static_cast<void>(merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v1/rooms/!A:example.org/hierarchy", {}, {}, {}, "203.0.113.20"}));
+            auto const denied = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v1/rooms/!B:example.org/hierarchy", {}, {}, {}, "203.0.113.20"});
+
+            THEN("the second request is rate-limited because the room id was normalized away")
+            {
+                REQUIRE(denied.response.status == 429U);
+                REQUIRE(denied.response.body.find("M_LIMIT_EXCEEDED") != std::string::npos);
+            }
+        }
+
+        WHEN("two v1 media downloads for different remote media IDs arrive from the same IP")
+        {
+            static_cast<void>(merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v1/media/download/example.org/mediaA", {}, {}, {}, "203.0.113.20"}));
+            auto const denied = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v1/media/download/matrix.org/mediaB", {}, {}, {}, "203.0.113.20"});
+
+            THEN("the second request is rate-limited because the media path was normalized away")
+            {
+                REQUIRE(denied.response.status == 429U);
+                REQUIRE(denied.response.body.find("M_LIMIT_EXCEEDED") != std::string::npos);
+            }
+        }
+
+        WHEN("two v1 room relations requests with different room and event IDs arrive from the same IP")
+        {
+            static_cast<void>(merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"GET", "/_matrix/client/v1/rooms/!A:example.org/relations/$event-a", {}, {}, {}, "203.0.113.20"}));
+            auto const denied = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"GET", "/_matrix/client/v1/rooms/!B:example.org/relations/$event-b", {}, {}, {}, "203.0.113.20"});
+
+            THEN("the second request is rate-limited because room and event ids were normalized away")
+            {
+                REQUIRE(denied.response.status == 429U);
+                REQUIRE(denied.response.body.find("M_LIMIT_EXCEEDED") != std::string::npos);
+            }
+        }
+    }
+}
+
 SCENARIO("OPTIONS preflight attaches Access-Control-Allow-Origin wildcard by default",
          "[homeserver][client-server][cors][preflight]")
 {
@@ -4080,6 +4214,50 @@ SCENARIO("VoIP turn server endpoint returns an empty object for authenticated cl
             {
                 REQUIRE(response.response.status == 200U);
                 REQUIRE(response.response.body == "{}");
+            }
+        }
+    }
+}
+
+SCENARIO("VoIP turn server endpoint returns configured credentials when a TURN server is configured",
+         "[homeserver][client-server][voip]")
+{
+    GIVEN("a started runtime with a registered user and a TURN server configured")
+    {
+        auto started = merovingian::homeserver::start_client_server(turn_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const reg = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST",
+                      "/_matrix/client/v3/register",
+                      {},
+                      merovingian::tests::registration_json("alice", "CorrectHorse7!")});
+        REQUIRE(reg.response.status == 200U);
+
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+
+        WHEN("GET /_matrix/client/v3/voip/turnServer is called with a valid token")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/voip/turnServer", token, {}});
+
+            THEN("the response is 200 and contains username, password, ttl, and uris")
+            {
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(response.response.body.find("\"username\"") != std::string::npos);
+                REQUIRE(response.response.body.find("\"password\"") != std::string::npos);
+                REQUIRE(response.response.body.find("\"ttl\"") != std::string::npos);
+                REQUIRE(response.response.body.find("\"uris\"") != std::string::npos);
+                REQUIRE(response.response.body.find("testuser") != std::string::npos);
+                REQUIRE(response.response.body.find("turn:turn.example.org:3478?transport=udp") != std::string::npos);
             }
         }
     }

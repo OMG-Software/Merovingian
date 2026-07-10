@@ -221,9 +221,21 @@ namespace
     }
 
     [[nodiscard]] auto dispatch_err(LocalHttpRequest const& req, ClientServerRuntime const& rt, std::uint16_t status,
-                                    std::string_view errcode, std::string_view error) -> DispatchResult
+                                    std::string_view errcode, std::string_view error, std::uint32_t retry_after_ms = 0U)
+        -> DispatchResult
     {
-        auto response = LocalHttpResponse{status, matrix_error(errcode, error), {}};
+        auto response = LocalHttpResponse{status,
+                                          retry_after_ms > 0U ? matrix_error(errcode, error, retry_after_ms)
+                                                              : matrix_error(errcode, error),
+                                          {}};
+        if (retry_after_ms > 0U)
+        {
+            // Matrix v1.18: 429 responses SHOULD include a Retry-After header.
+            // The deprecated retry_after_ms body field is also included for
+            // older clients. Both values are in milliseconds / seconds respectively.
+            auto const retry_after_seconds = (retry_after_ms + 999U) / 1000U;
+            response.headers.emplace_back("Retry-After", std::to_string(retry_after_seconds));
+        }
         apply_cors_headers(req, response, rt.cors);
         return DispatchResult{DispatchResult::Status::complete, std::move(response), {}};
     }
@@ -2376,10 +2388,55 @@ namespace
         {
             out = "/_matrix/client/v3/knock/{roomIdOrAlias}";
         }
+
+        // v1 room endpoints carry the room id (and, for relations, the event id)
+        // in the path. Coalesce those parameters so rate-limit accounting is
+        // stable across rooms and events.
+        auto constexpr rooms_v1_prefix = std::string_view{"/_matrix/client/v1/rooms/"};
+        if (starts_with(out, rooms_v1_prefix))
+        {
+            auto rest = std::string_view{out}.substr(rooms_v1_prefix.size());
+            auto const slash = rest.find('/');
+            if (slash != std::string_view::npos)
+            {
+                auto suffix = rest.substr(slash);
+                auto normalized = std::string{rooms_v1_prefix} + "{roomId}";
+                auto constexpr relations_prefix = std::string_view{"/relations/"};
+                if (starts_with(suffix, relations_prefix))
+                {
+                    auto after_relations = suffix.substr(relations_prefix.size());
+                    auto const event_slash = after_relations.find('/');
+                    auto const after_event = event_slash == std::string_view::npos
+                                                 ? std::string_view{}
+                                                 : after_relations.substr(event_slash);
+                    out = normalized + "/relations/{eventId}" + std::string{after_event};
+                }
+                else
+                {
+                    out = normalized + std::string{suffix};
+                }
+            }
+        }
+
+        // Authenticated media v1 endpoints place the remote server name and
+        // media id in the path. Replace the parameter tail with a placeholder
+        // so every download/thumbnail for different media shares one bucket.
+        auto constexpr media_v1_prefix = std::string_view{"/_matrix/client/v1/media/"};
+        if (starts_with(out, media_v1_prefix))
+        {
+            auto rest = std::string_view{out}.substr(media_v1_prefix.size());
+            auto const slash = rest.find('/');
+            if (slash != std::string_view::npos)
+            {
+                auto action = rest.substr(0U, slash);
+                out = std::string{media_v1_prefix} + std::string{action} + "/{mediaPath}";
+            }
+        }
+
         return out;
     }
 
-    [[nodiscard]] auto allow(ClientServerRuntime& rt, LocalHttpRequest const& req) -> bool
+    [[nodiscard]] auto allow(ClientServerRuntime& rt, LocalHttpRequest const& req) -> http::RateLimitDecision
     {
         if (rt.rate_limit_engine == nullptr)
         {
@@ -2388,7 +2445,7 @@ namespace
             // start_client_server). Permitting the request is the safe
             // default for a fully-validated, body-sized request; the
             // production path always has an engine.
-            return true;
+            return http::RateLimitDecision{.allowed = true};
         }
         // Resolve the effective client IP for rate-limit keying.
         // When remote_addr is empty (test-only paths that skip the
@@ -2466,9 +2523,17 @@ namespace
         std::string user_key;
         if (!req.access_token.empty())
         {
-            user_key = req.access_token;
-            user_key.push_back('|');
-            user_key.append(norm);
+            // Matrix v1.18 rate-limiting: per-user buckets MUST be keyed by the
+            // authenticated user_id, not by the access_token. A bearer token can
+            // be rotated; the user_id is the stable identity. Unauthenticated or
+            // unknown-token requests skip the per-user tier and fall back to the
+            // per-IP enforcement.
+            if (auto const user_id = authenticated_user(rt.homeserver, req.access_token); user_id.has_value())
+            {
+                user_key = *user_id;
+                user_key.push_back('|');
+                user_key.append(norm);
+            }
         }
         auto const decision =
             rt.rate_limit_engine->check(std::string_view{ip_key}, req.target, std::string_view{user_key});
@@ -2495,7 +2560,7 @@ namespace
                                  "max=" + std::to_string(decision.max_requests) + " per " +
                                      std::to_string(decision.window_seconds) + "s");
         }
-        return decision.allowed;
+        return decision;
     }
 
     [[nodiscard]] auto find_device(ClientServerRuntime& rt, std::string_view user, std::string_view device)
@@ -6535,22 +6600,21 @@ namespace
 } // namespace
 
 // Translate the operator-facing `config::ClientRateLimitsConfig` into the
-// engine's `http::RateLimitConfig`. The operator writes one map per tier
-// keyed by URL prefix; the engine needs the same shape so the only work
-// here is to copy the maps and the per-IP default. The conversion is a
-// pure function so it is easy to unit test independently of the engine.
+// engine's `http::RateLimitConfig`. Start from the design-doc defaults so
+// every client-server route has a sensible cap even when the operator leaves
+// `client_rate_limits:*` empty; operator entries override specific defaults.
+// The conversion is a pure function so it is easy to unit test independently
+// of the engine.
 [[nodiscard]] static auto to_http_rate_limit_config(config::ClientRateLimitsConfig const& in) -> http::RateLimitConfig
 {
-    auto out = http::RateLimitConfig{};
-    out.per_ip.reserve(in.per_ip.size());
+    auto out = http::default_client_rate_limit_config();
     for (auto const& [k, v] : in.per_ip)
     {
-        out.per_ip.emplace(k, v);
+        out.per_ip[k] = v;
     }
-    out.per_user.reserve(in.per_user.size());
     for (auto const& [k, v] : in.per_user)
     {
-        out.per_user.emplace(k, v);
+        out.per_user[k] = v;
     }
     out.default_per_ip = in.default_per_ip;
     return out;
@@ -6666,6 +6730,15 @@ auto matrix_error(std::string_view errcode, std::string_view message) -> std::st
     return json_serialize(json_obj({
         json_member("errcode", json_str(errcode)),
         json_member("error", json_str(message)),
+    }));
+}
+
+auto matrix_error(std::string_view errcode, std::string_view message, std::uint32_t retry_after_ms) -> std::string
+{
+    return json_serialize(json_obj({
+        json_member("errcode", json_str(errcode)),
+        json_member("error", json_str(message)),
+        json_member("retry_after_ms", json_int(static_cast<std::int64_t>(retry_after_ms))),
     }));
 }
 
@@ -6799,7 +6872,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     }
 
     auto guard = std::unique_lock<std::recursive_mutex>{rt.homeserver.mutex};
-    if (!allow(rt, req))
+    auto const rate_limit_decision = allow(rt, req);
+    if (!rate_limit_decision.allowed)
     {
         log_diagnostic_audit(rt.homeserver.database, "client_server", "request.rejected",
                              {
@@ -6810,7 +6884,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         },
                              observability::LogEventSeverity::warning, observability::AuditCategory::policy,
                              "request.rejected", req.access_token, req.target, "429:rate limit exceeded");
-        return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", "rate limit exceeded");
+        return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", "rate limit exceeded",
+                            rate_limit_decision.retry_after_ms);
     }
     auto call_local = [&](LocalHttpRequest const& inner) {
         guard.unlock();
@@ -7082,7 +7157,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             req.remote_addr, body->send_attempt, body->next_link);
         if (session == nullptr)
         {
-            return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", "too many outstanding validation sessions");
+            // Validation-session back-pressure: limit the number of concurrent
+            // uncompleted sessions per transport endpoint. Advise the client to
+            // retry after one session TTL window (60 seconds) per Matrix v1.18.
+            return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", "too many outstanding validation sessions", 60000U);
         }
         return dispatch_resp(req, rt, 200U, json_serialize(json_obj({json_member("sid", json_str(session->sid))})));
     }
@@ -7113,7 +7191,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             req.remote_addr, body->send_attempt, body->next_link, body->country);
         if (session == nullptr)
         {
-            return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", "too many outstanding validation sessions");
+            // Validation-session back-pressure: limit the number of concurrent
+            // uncompleted sessions per transport endpoint. Advise the client to
+            // retry after one session TTL window (60 seconds) per Matrix v1.18.
+            return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", "too many outstanding validation sessions", 60000U);
         }
         return dispatch_resp(req, rt, 200U, json_serialize(json_obj({json_member("sid", json_str(session->sid))})));
     }
@@ -7399,7 +7480,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                                    req.remote_addr, body->send_attempt, body->next_link);
         if (session == nullptr)
         {
-            return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", "too many outstanding validation sessions");
+            // Validation-session back-pressure: limit the number of concurrent
+            // uncompleted sessions per transport endpoint. Advise the client to
+            // retry after one session TTL window (60 seconds) per Matrix v1.18.
+            return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", "too many outstanding validation sessions", 60000U);
         }
         return dispatch_resp(req, rt, 200U, json_serialize(json_obj({json_member("sid", json_str(session->sid))})));
     }
@@ -7436,7 +7520,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                                                body->next_link, body->country);
         if (session == nullptr)
         {
-            return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", "too many outstanding validation sessions");
+            // Validation-session back-pressure: limit the number of concurrent
+            // uncompleted sessions per transport endpoint. Advise the client to
+            // retry after one session TTL window (60 seconds) per Matrix v1.18.
+            return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", "too many outstanding validation sessions", 60000U);
         }
         return dispatch_resp(req, rt, 200U, json_serialize(json_obj({json_member("sid", json_str(session->sid))})));
     }
@@ -8024,11 +8111,25 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     }
 
     // GET /_matrix/client/v3/voip/turnServer
-    // No TURN server is configured.  Return an empty object so clients disable
-    // VoIP gracefully rather than treating a 404 as an error.
+    // Spec v1.18 §10.5: returns TURN server credentials. When no TURN server
+    // is configured we return an empty object so clients disable relay support
+    // gracefully rather than treating a 404 as an error.
     if (req.method == "GET" && req.target == "/_matrix/client/v3/voip/turnServer")
     {
-        return dispatch_resp(req, rt, 200U, "{}");
+        auto const& turn = rt.homeserver.config.server().turn;
+        if (turn.server.empty())
+        {
+            return dispatch_resp(req, rt, 200U, "{}");
+        }
+        auto uris = canonicaljson::Array{};
+        uris.push_back(json_str(turn.server));
+        auto const body = json_serialize(json_obj({
+            json_member("username", json_str(turn.username)),
+            json_member("password", json_str(turn.password)),
+            json_member("ttl", json_int(static_cast<std::int64_t>(turn.ttl_seconds))),
+            json_member("uris", json_arr(std::move(uris))),
+        }));
+        return dispatch_resp(req, rt, 200U, body);
     }
 
     auto const key_route = auth::match_key_api_route(req.method, req.target);

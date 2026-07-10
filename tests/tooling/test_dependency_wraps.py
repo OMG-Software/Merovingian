@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import sys
 import unittest
 from pathlib import Path
 
@@ -34,22 +35,100 @@ WRAPS = {
     "catch2": REPO_ROOT / "subprojects" / "catch2.wrap",
 }
 
+DOC_REVIEWS = {
+    "libcurl": REPO_ROOT / "docs" / "dependencies" / "libcurl.md",
+    "sqlite3": REPO_ROOT / "docs" / "dependencies" / "sqlite.md",
+    "yyjson": REPO_ROOT / "docs" / "dependencies" / "yyjson.md",
+    "catch2": REPO_ROOT / "docs" / "dependencies" / "catch2.md",
+}
+
 
 class DependencyWrapTests(unittest.TestCase):
-    def test_runtime_dependencies_are_pinned_with_wraps(self) -> None:
+    def test_runtime_dependencies_are_pinned_with_immutable_file_wraps(self) -> None:
         # GIVEN the runtime dependency inventory.
         for dependency_name, wrap_path in WRAPS.items():
             # WHEN reproducible source pinning is required.
-            # THEN every runtime dependency has a committed Meson wrap file.
+            # THEN every dependency uses a [wrap-file] entry with a SHA-256 hash.
+            # [wrap-git] entries are forbidden because tag revisions are mutable
+            # and shallow clones are non-deterministic.
             self.assertTrue(wrap_path.is_file(), f"{dependency_name} wrap is missing")
             wrap_text = wrap_path.read_text(encoding="utf-8")
-            self.assertRegex(wrap_text, r"\[wrap-(file|git)\]")
+            self.assertIn("[wrap-file]", wrap_text, f"{dependency_name} must use a [wrap-file] wrap")
+            self.assertRegex(
+                wrap_text,
+                r"source_hash\s*=\s*[0-9a-f]{64}",
+                f"{dependency_name} wrap must pin a 64-character SHA-256 source_hash",
+            )
+            self.assertNotIn("[wrap-git]", wrap_text, f"{dependency_name} must not use a [wrap-git] wrap")
+
+    def test_dependency_wraps_have_review_documents(self) -> None:
+        # GIVEN each pinned dependency.
+        for dependency_name, doc_path in DOC_REVIEWS.items():
+            # WHEN the dependency inventory is audited.
+            # THEN every dependency has a committed review document.
             self.assertTrue(
-                "source_hash =" in wrap_text
-                or "source_hash=" in wrap_text
-                or "revision =" in wrap_text
-                or "revision=" in wrap_text,
-                f"{dependency_name} wrap must pin a source hash or git revision",
+                doc_path.is_file(),
+                f"{dependency_name} is missing dependency review document {doc_path}",
+            )
+            review_text = doc_path.read_text(encoding="utf-8")
+            self.assertIn(
+                "License",
+                review_text,
+                f"{dependency_name} review document must note the upstream license",
+            )
+
+    def test_license_summary_script_produces_valid_json(self) -> None:
+        # GIVEN the license review document and the generator script.
+        summary_script = REPO_ROOT / "scripts" / "generate-license-summary.py"
+        licenses_md = REPO_ROOT / "docs" / "dependencies" / "licenses.md"
+        self.assertTrue(summary_script.is_file(), "license summary script is missing")
+        self.assertTrue(licenses_md.is_file(), "license review document is missing")
+
+        # WHEN the script is executed against the committed markdown table.
+        import json
+        import subprocess
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as tmp:
+            tmp_path = tmp.name
+
+        self.addCleanup(lambda: Path(tmp_path).unlink(missing_ok=True))
+
+        result = subprocess.run(
+            [sys.executable, str(summary_script), tmp_path],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(
+            result.returncode,
+            0,
+            f"license summary script failed: {result.stderr}",
+        )
+
+        # THEN the JSON contains every direct dependency with a license and SPDX id.
+        summary = json.loads(Path(tmp_path).read_text(encoding="utf-8"))
+        self.assertGreater(len(summary), 0)
+        for entry in summary:
+            self.assertIn("dependency", entry)
+            self.assertIn("license", entry)
+            self.assertIn("spdx", entry)
+            self.assertIn("compatible", entry)
+
+        license_table_names = {
+            "libcurl": "libcurl",
+            "sqlite3": "SQLite",
+            "yyjson": "yyjson",
+            "catch2": "Catch2",
+        }
+        direct_dependencies = [
+            entry["dependency"] for entry in summary if entry.get("category") == "Direct dependencies"
+        ]
+        for dependency_name in DOC_REVIEWS:
+            expected_name = license_table_names.get(dependency_name, dependency_name)
+            self.assertIn(
+                expected_name,
+                direct_dependencies,
+                f"{dependency_name} must appear in the direct dependencies license table as {expected_name}",
             )
 
     def test_meson_build_prefers_wrap_backed_dependencies(self) -> None:
@@ -87,7 +166,10 @@ class DependencyWrapTests(unittest.TestCase):
         # WHEN warnings are fatal in debug builds.
         # THEN the FORTIFY flag is added only after Meson reports an optimized build.
         self.assertIn("if get_option('optimization') != '0'", meson_build)
-        self.assertIn("hardening_compile_flags += ['-D_FORTIFY_SOURCE=3']", meson_build)
+        self.assertIn(
+            "hardening_compile_flags += ['-U_FORTIFY_SOURCE', '-D_FORTIFY_SOURCE=3']",
+            meson_build,
+        )
 
     def test_os_supplied_security_and_database_libraries_disallow_fallbacks(self) -> None:
         # GIVEN security-sensitive shared libraries receive distro security updates

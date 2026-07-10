@@ -44,22 +44,7 @@ using merovingian::http::RateLimitPolicy;
 
 [[nodiscard]] auto default_config() -> RateLimitConfig
 {
-    return RateLimitConfig{
-        .per_ip =
-            {
-                     {"/_matrix/client/v3/login", {20U, 60U}},
-                     {"/_matrix/client/v3/register", {20U, 60U}},
-                     {"/_matrix/client/v3/keys/", {30U, 60U}},
-                     {"/_matrix/client/v3/devices", {30U, 60U}},
-                     {"/_matrix/media/", {20U, 60U}},
-                     {"/_matrix/federation/", {120U, 60U}},
-                     },
-        .per_user =
-            {
-                     {"/_matrix/client/v3/login", {5U, 60U}},
-                     },
-        .default_per_ip = {60U, 60U},
-    };
+    return merovingian::http::default_client_rate_limit_config();
 }
 
 } // namespace

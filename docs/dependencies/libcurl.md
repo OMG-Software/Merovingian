@@ -55,6 +55,12 @@ The portable static (musl) build links Alpine's static libcurl
 (the dependency is `allow_fallback: false`); `<curl/curl.h>` resolves from the
 system include root the same way on Linux and BSD.
 
+## License
+
+libcurl is released under the curl license, an MIT-style license (`SPDX:
+curl`). It is compatible with Merovingian's GPL-3.0-or-later distribution
+and is resolved from the operating-system package.
+
 ## Current limitations
 
 - The libcurl-backed `perform()` is synchronous. Async/multi-handle support

@@ -158,6 +158,37 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected non-negative integer");
             }
         }
+        else if (key == "server.turn.server")
+        {
+            server.turn.server = std::string{value};
+        }
+        else if (key == "server.turn.username")
+        {
+            server.turn.username = std::string{value};
+        }
+        else if (key == "server.turn.password")
+        {
+            server.turn.password = std::string{value};
+        }
+        else if (key == "server.turn.ttl_seconds")
+        {
+            try
+            {
+                auto const parsed = std::stoul(std::string{value});
+                if (parsed == 0U || parsed > std::numeric_limits<std::uint32_t>::max())
+                {
+                    add_parse_finding(findings, std::string{key}, "expected positive integer");
+                }
+                else
+                {
+                    server.turn.ttl_seconds = static_cast<std::uint32_t>(parsed);
+                }
+            }
+            catch (...)
+            {
+                add_parse_finding(findings, std::string{key}, "expected positive integer");
+            }
+        }
         else if (key == "listeners.client.bind")
         {
             listeners.client.bind = std::string{value};
@@ -177,6 +208,13 @@ namespace
         {
             listeners.client.tls_private_key_file = std::string{value};
         }
+        else if (key == "listeners.client.reverse_proxy")
+        {
+            if (!parse_bool_value(value, listeners.client.reverse_proxy))
+            {
+                add_parse_finding(findings, std::string{key}, "expected boolean value");
+            }
+        }
         else if (key == "listeners.federation.bind")
         {
             listeners.federation.bind = std::string{value};
@@ -195,6 +233,13 @@ namespace
         else if (key == "listeners.federation.tls_private_key_file")
         {
             listeners.federation.tls_private_key_file = std::string{value};
+        }
+        else if (key == "listeners.federation.reverse_proxy")
+        {
+            if (!parse_bool_value(value, listeners.federation.reverse_proxy))
+            {
+                add_parse_finding(findings, std::string{key}, "expected boolean value");
+            }
         }
         else if (key == "database.backend")
         {

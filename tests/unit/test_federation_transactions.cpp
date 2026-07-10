@@ -39,8 +39,10 @@ SCENARIO("Federation route scaffold covers transactions, joins, leaves, invites,
                 "PUT", "/_matrix/federation/v1/send_join/!room:event/$event");
             auto const backfill_with_query = merovingian::federation::match_federation_route(
                 "GET", "/_matrix/federation/v1/backfill/!room:event?v=$evt&limit=10");
+            auto const media_download =
+                merovingian::federation::match_federation_route("GET", "/_matrix/federation/v1/media/download/abc123");
 
-            THEN("all Milestone 12 federation endpoints are represented including make/send and knock")
+            THEN("all Milestone 12 federation endpoints are represented including make/send, knock, and media download")
             {
                 REQUIRE(transaction.matched);
                 REQUIRE(send_join.matched);
@@ -62,6 +64,8 @@ SCENARIO("Federation route scaffold covers transactions, joins, leaves, invites,
                 REQUIRE(make_knock.route.endpoint == merovingian::federation::FederationEndpoint::make_knock);
                 REQUIRE(send_knock.route.endpoint == merovingian::federation::FederationEndpoint::send_knock);
                 REQUIRE(edu.route.endpoint == merovingian::federation::FederationEndpoint::edu);
+                REQUIRE(media_download.matched);
+                REQUIRE(media_download.route.endpoint == merovingian::federation::FederationEndpoint::media_download);
                 REQUIRE(transaction.route.requires_request_signature);
                 REQUIRE(send_join.route.requires_event_signatures);
                 REQUIRE_FALSE(edu.route.requires_event_signatures);
@@ -69,6 +73,7 @@ SCENARIO("Federation route scaffold covers transactions, joins, leaves, invites,
                 // send_* and invite do.
                 REQUIRE_FALSE(make_join.route.requires_event_signatures);
                 REQUIRE_FALSE(backfill.route.requires_event_signatures);
+                REQUIRE_FALSE(media_download.route.requires_event_signatures);
                 REQUIRE(send_knock.route.requires_event_signatures);
             }
         }

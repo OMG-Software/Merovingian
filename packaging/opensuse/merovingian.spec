@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.10.35
+Version:        0.10.38
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -112,7 +112,10 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
-* Wed Jul 08 2026 James Chapman <claude@ping.me.uk> - 0.10.35-1
+* Thu Jul 09 2026 James Chapman <claude@ping.me.uk> - 0.10.38-1
+- feat(rate-limit,voip,federation): production-grade client-server rate limiting with route-aware defaults and Retry-After, static TURN credentials via server.turn.*, and inbound federation media download endpoint serving local media to remote homeservers.
+
+* Wed Jul 08 2026 James Chapman <claude@ping.me.uk> - 0.10.36-1
 - fix(federation-worker,ipc): federation-worker/IPC fixes: exact key-endpoint matching, pool-submit failure responses, outbound-error round-tripping, bounded supervisor shutdown tests, IpcChannel handler-exception safety, make_leave query compliance, pool drain before IPC close, and IPC timeout covering remote HTTP timeout. Replace hard sleeps in integration tests with health-based waits.
 
 * Wed Jul 08 2026 James Chapman <claude@ping.me.uk> - 0.10.34-1

@@ -43,17 +43,30 @@ server.cors.allow_headers=authorization, content-type
 server.cors.allow_credentials=false
 server.cors.max_age=86400
 
+# TURN server for VoIP relay (optional)
+# When server.turn.server is empty, GET /_matrix/client/v3/voip/turnServer
+# returns an empty object so clients gracefully disable relay support.
+# Shared-secret, time-limited usernames are not yet implemented; only supply
+# credentials that are acceptable for all users of this homeserver.
+# server.turn.server=turn:turn.example.org:3478?transport=udp
+# server.turn.username=merovingian
+# server.turn.password=set-in-owner-only-secret-file
+# server.turn.ttl_seconds=86400
+
 # Listener exposure
-# Keep TLS disabled only on loopback binds. If binding to a public interface,
-# set tls=true and provide certificate and private-key paths below.
+# Keep TLS disabled only on loopback binds behind a declared reverse proxy.
+# If binding to a public interface, set tls=true, reverse_proxy=false, and
+# provide certificate and private-key paths below.
 # The client listener serves client-server traffic. The federation listener uses
 # a different loopback port so a reverse proxy can own public Matrix port 8448.
 listeners.client.bind=127.0.0.1:8008
 listeners.client.tls=false
+listeners.client.reverse_proxy=true
 listeners.client.tls_certificate_file=
 listeners.client.tls_private_key_file=
 listeners.federation.bind=127.0.0.1:8009
 listeners.federation.tls=false
+listeners.federation.reverse_proxy=true
 listeners.federation.tls_certificate_file=
 listeners.federation.tls_private_key_file=
 
@@ -76,9 +89,10 @@ listeners.federation.tls_private_key_file=
 # an owner-only secret file containing the PostgreSQL connection URI.
 # role=runtime is for the server process; use role=migration only for the
 # offline database migration command. pool_size controls concurrent DB work.
-database.uri_file=/etc/merovingian/db-uri
-database.role=runtime
-database.pool_size=16
+#database.backend=sqlite
+#database.uri_file=/etc/merovingian/db-uri
+#database.role=runtime
+#database.pool_size=16
 
 # SQLite connection — uncomment both lines below to switch to SQLite.
 # Remove or comment out the three PostgreSQL keys above when doing so.
@@ -205,7 +219,7 @@ security.media.quarantine_unknown_mime=true
 # see plaintext media from unencrypted rooms — application/octet-stream
 # (encrypted-room attachments) is unscannable ciphertext no matter what this
 # flag is set to.
-# security.media.enable_av_scanner=true
+#security.media.enable_av_scanner=true
 # Acceptance disposition for authenticated local uploads: allow,
 # allow-after-scan, quarantine, or deny. Defaults to allow-after-scan, which
 # accepts a clean scanner verdict and quarantines/rejects otherwise — the only
@@ -213,7 +227,7 @@ security.media.quarantine_unknown_mime=true
 # attachments this scanner verdict is never meaningful (see the WARNING
 # above): allow-after-scan behaves identically to allow for that content
 # today, since there is no verdict to fail.
-# security.media.local_upload_policy=allow-after-scan
+security.media.local_upload_policy=allow
 # Acceptance disposition for bytes fetched from a federated origin server,
 # same four values as local_upload_policy above. Defaults to quarantine
 # rather than mirroring local_upload_policy's default: a remote origin server
@@ -224,7 +238,7 @@ security.media.quarantine_unknown_mime=true
 # this setting. Set to allow-after-scan or allow only if you accept that risk
 # for plaintext media, or front this server with a scanning proxy that
 # inspects plaintext media before it reaches Merovingian.
-# security.media.remote_fetch_media_policy=quarantine
+security.media.remote_fetch_media_policy=allow
 security.media.block_private_ip_fetches=true
 # Remote media fetching is opt-in and live: the homeserver resolves the
 # origin server, fetches the media over HTTPS, and ingests the response
@@ -259,14 +273,17 @@ security.logging.structured=true
 security.secrets.master_key_file=/etc/merovingian/master-key
 
 # Client-server rate limits
-# Wall-clock per-IP and per-user caps keyed by request target prefix. The
-# default_per_ip fallback applies to every target not matched by per_ip.*
-# below. Format is "<max_requests>/<window_seconds>s". Changes take effect
-# on the next server restart — see docs/configuration.md#client-rate-limits.
-client_rate_limits.per_ip./_matrix/client/v3/login=30/60s
-client_rate_limits.per_ip./_matrix/client/v3/register=30/60s
-client_rate_limits.per_user./_matrix/client/v3/login=20/60s
-client_rate_limits.default_per_ip=300/60s
+# Wall-clock per-IP and per-user caps keyed by normalized request target prefix.
+# The per-user tier is keyed by the authenticated user_id, not by access token.
+# Path parameters (roomId, deviceId, mediaId, etc.) are coalesced into
+# placeholders so one cap covers all rooms/devices/media. The default_per_ip
+# fallback applies to every target not matched by per_ip.* below. Format is
+# "<max_requests>/<window_seconds>s". Changes take effect on the next server
+# restart — see docs/user-manual.md#client-rate-limits.
+client_rate_limits.per_ip./_matrix/client/v3/login=20/60s
+client_rate_limits.per_ip./_matrix/client/v3/register=20/60s
+client_rate_limits.per_user./_matrix/client/v3/login=5/60s
+client_rate_limits.default_per_ip=90/60s
 
 # Per-module log level overrides
 # Each entry maps a logger name to a level (trace|debug|info|notice|

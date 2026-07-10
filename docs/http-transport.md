@@ -135,6 +135,11 @@ listener accepts TCP, upgrades the accepted socket through
 `merovingian::homeserver::TlsServerContext`, then passes a stream abstraction to
 the same bounded HTTP/1.1 request path used by cleartext loopback listeners.
 
+Configuration enforces TLS on any public (non-loopback) listener. A loopback
+listener may only run in cleartext when the operator explicitly declares it is
+behind a local reverse proxy (`reverse_proxy=true`). Public listeners must set
+`reverse_proxy=false`.
+
 TLS startup fails closed when OpenSSL cannot initialise, load the certificate
 chain, load the private key, or verify that the private key matches the
 certificate. Handshakes use a bounded timeout aligned with the current
@@ -176,17 +181,34 @@ This is currently a pure policy primitive. Runtime socket code must apply it whe
 
 ## Rate-limit policy
 
-Endpoint default policies are intentionally simple and conservative:
+Runtime rate limiting is enforced on every client-server and inbound federation
+request before dispatch. Two independent wall-clock token-bucket tiers are
+maintained:
 
-| Endpoint class | Default |
+- **Per-IP**, keyed by `(effective_client_ip, normalized_route)`.
+- **Per-user**, keyed by `(authenticated_user_id, normalized_route)` for
+  requests that present a valid access token.
+
+A quiet server does not freeze a bucket because the window rolls over on elapsed
+real time, not on request count. When a cap is exceeded the server returns
+`429 M_LIMIT_EXCEEDED` with a `Retry-After` header (seconds). The deprecated
+`retry_after_ms` body field is also included for older clients.
+
+Default route-aware policies use longest-prefix matching. Path parameters such as
+`roomId`, `deviceId`, and `mediaId` are coalesced into placeholders so the same
+cap applies regardless of which room, device, or media ID appears in the URL:
+
+| Endpoint class | Default policy |
 | --- | --- |
-| Login / registration | 5 requests / 60 seconds |
-| Device and key APIs | 30 requests / 60 seconds |
-| Media APIs | 20 requests / 60 seconds |
-| Federation APIs | 120 requests / 60 seconds |
-| Generic APIs | 60 requests / 60 seconds |
+| Login / registration | 20/60s per IP; 5/60s per user on `/login` |
+| Device and key APIs | 30/60s per IP |
+| Media APIs | 20/60s per IP |
+| Federation APIs | 120/60s per IP |
+| Generic client APIs | 90/60s per IP fallback |
 
-This is a policy primitive only. Runtime accounting and persistence are future work.
+Operators override any class via `client_rate_limits.per_ip.<target>` and
+`client_rate_limits.per_user.<target>`; `client_rate_limits.default_per_ip` is
+the fallback for unmatched targets. All policy changes require a server restart.
 
 ### Trusted-proxy client IP resolution
 

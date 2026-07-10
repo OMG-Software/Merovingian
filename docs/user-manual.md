@@ -20,6 +20,7 @@ other docs linked from [`README.md`](../README.md).
 - [What Merovingian is](#what-merovingian-is)
 - [System requirements](#system-requirements)
 - [Installation](#installation)
+- [Verifying release artifacts](#verifying-release-artifacts)
 - [Initial setup](#initial-setup)
 - [Configuration](#configuration)
 - [Database backends](#database-backends)
@@ -43,8 +44,11 @@ later hardening passes.
 Key design choices that affect operators:
 
 - **Reverse-proxy-first deployment.** Client and federation listeners default to
-  loopback (`127.0.0.1:8008` and `127.0.0.1:8009`) with TLS disabled. A reverse
-  proxy owns public TLS and routes traffic to the loopback listeners.
+  loopback (`127.0.0.1:8008` and `127.0.0.1:8009`) with TLS disabled and
+  `reverse_proxy=true`. A reverse proxy owns public TLS and routes traffic to
+  the loopback listeners. Public listeners must use TLS and set
+  `reverse_proxy=false`; loopback cleartext without an explicit reverse-proxy
+  declaration is rejected at startup.
 - **Fail-closed configuration.** Startup rejects unsafe or ambiguous settings
   before binding listeners, scaffolding the database, or launching federation
   workers.
@@ -115,10 +119,10 @@ The rolling `latest` GitHub prerelease is rebuilt on every push to `main`.
 
 ```sh
 # Debian/Ubuntu example
-dpkg -i merovingian_0.10.35_amd64.deb
+dpkg -i merovingian_0.10.38_amd64.deb
 
 # Fedora/RHEL example
-dnf install merovingian-0.10.35-1.fc40.x86_64.rpm
+dnf install merovingian-0.10.38-1.fc40.x86_64.rpm
 ```
 
 Packages create the `merovingian` system user and group, install the systemd
@@ -131,15 +135,38 @@ For older Linux distributions, use the musl-linked tarball. It has no glibc or
 runtime package dependencies.
 
 ```sh
-tar xzf merovingian-0.10.35-linux-static-x86_64.tar.gz
-cp merovingian-0.10.35-linux-static-x86_64/bin/merovingian-server /usr/local/bin/
-cp merovingian-0.10.35-linux-static-x86_64/bin/merovingian-db-migrate /usr/local/bin/
-cp merovingian-0.10.35-linux-static-x86_64/libexec/merovingian/merovingian-fed-worker \
+tar xzf merovingian-0.10.38-linux-static-x86_64.tar.gz
+cp merovingian-0.10.38-linux-static-x86_64/bin/merovingian-server /usr/local/bin/
+cp merovingian-0.10.38-linux-static-x86_64/bin/merovingian-db-migrate /usr/local/bin/
+cp merovingian-0.10.38-linux-static-x86_64/libexec/merovingian/merovingian-fed-worker \
    /usr/local/libexec/merovingian/
 ```
 
 The static tarball does **not** receive automatic dependency security updates;
 redeploy a new tarball to pick up OpenSSL/LibSodium/libcurl fixes.
+
+#### Verifying release artifacts
+
+Every release artifact is accompanied by a detached GPG signature (`.asc`) and a
+SHA-256 checksum. Verification uses the maintainer signing key fingerprint
+published in [`docs/release-process.md`](release-process.md):
+
+```sh
+# Import the release signing key.
+gpg --recv-keys 66DFCC50187C8E46B5ED85FD92A3A264F0A7BE20
+
+# Download the tarball, signature, and checksum for your platform, then verify
+the signature.
+gpg --verify merovingian-0.10.38-linux-static-x86_64.tar.gz.asc \
+             merovingian-0.10.38-linux-static-x86_64.tar.gz
+
+# Verify the checksum.
+sha256sum -c merovingian-0.10.38-linux-static-x86_64.tar.gz.sha256
+```
+
+A valid signature reports a "Good signature" from `The Merovingian Release
+Signing Key`. An invalid or missing signature, or a mismatched checksum, is a
+distribution failure: do not install the artifact.
 
 ### Build from source
 
@@ -364,29 +391,59 @@ Wildcard `*` is the safe default for Matrix because clients authenticate with
 forbids that combination. CORS is **not** hot-reloadable — a change to any
 `server.cors.*` key requires a restart.
 
+#### TURN server — `server.turn.*`
+
+VoIP clients request TURN relay credentials through
+`GET /_matrix/client/v3/voip/turnServer`. When no TURN server is configured the
+endpoint returns an empty JSON object so clients gracefully disable relay
+support.
+
+| Key | Default | When to change |
+|---|---|---|
+| `server.turn.server` | (empty) | TURN server URI advertised to clients, e.g. `turn:turn.example.org:3478?transport=udp`. Leave empty to keep the endpoint returning `{}`. |
+| `server.turn.username` | (empty) | Static username issued to authenticated clients. Required when `server.turn.server` is set. |
+| `server.turn.password` | (empty) | Static password issued alongside the username. Required when `server.turn.server` is set. |
+| `server.turn.ttl_seconds` | `86400` | Credential lifetime advertised in the response. |
+
+> **Security note.** Shared-secret, time-limited TURN usernames are not yet
+> implemented; the current implementation issues the configured static
+> credentials to every authenticated client. Only supply credentials that are
+> acceptable for all users of this homeserver, or run a TURN server that does not
+> require authentication.
+
 #### Listeners — `listeners.client.*` and `listeners.federation.*`
 
 | Key | Default | When to change |
 |---|---|---|
 | `listeners.client.bind` | `127.0.0.1:8008` | Client-server API and media. |
 | `listeners.client.tls` | `false` | Set `true` only if binding to a public interface without a reverse proxy. |
+| `listeners.client.reverse_proxy` | `true` | Set `false` for a direct public TLS listener; must be `true` for loopback cleartext. |
 | `listeners.client.tls_certificate_file` | (empty) | Required when `tls=true`. |
 | `listeners.client.tls_private_key_file` | (empty) | Required when `tls=true`. |
 | `listeners.federation.bind` | `127.0.0.1:8009` | Federation and key API. Must be separate from the client listener. |
 | `listeners.federation.tls` | `false` | Set `true` only for direct public federation without a proxy. |
+| `listeners.federation.reverse_proxy` | `true` | Set `false` for a direct public TLS listener; must be `true` for loopback cleartext. |
 | `listeners.federation.tls_certificate_file` | (empty) | Required when federation TLS is enabled. |
 | `listeners.federation.tls_private_key_file` | (empty) | Required when federation TLS is enabled. |
 
 A listener with `tls=false` must bind to a loopback address (`127.0.0.1`,
-`localhost`, `::1`, or `[::1]`). A non-loopback listener must use TLS, and
-when `tls=true` both `tls_certificate_file` and `tls_private_key_file` must
-be set:
+`localhost`, `::1`, or `[::1]`) **and** declare `reverse_proxy=true`, which is
+Merovingian's default and matches a reverse-proxy deployment. A non-loopback
+(public) listener must use TLS with `reverse_proxy=false`. When `tls=true`
+both `tls_certificate_file` and `tls_private_key_file` must be set:
 
 ```ini
+# Direct public client listener (no reverse proxy)
+listeners.client.bind=0.0.0.0:8443
 listeners.client.tls=true
+listeners.client.reverse_proxy=false
 listeners.client.tls_certificate_file=/etc/merovingian/client.pem
 listeners.client.tls_private_key_file=/etc/merovingian/client.key
+
+# Direct public federation listener (no reverse proxy)
+listeners.federation.bind=0.0.0.0:8448
 listeners.federation.tls=true
+listeners.federation.reverse_proxy=false
 listeners.federation.tls_certificate_file=/etc/merovingian/federation.pem
 listeners.federation.tls_private_key_file=/etc/merovingian/federation.key
 ```
@@ -683,23 +740,40 @@ unless `security.trust_safety.policy_server_allow_without_result=true`.
 
 #### Client rate limits — `client_rate_limits.*`
 
+Two independent wall-clock token-bucket tiers are enforced on every
+client-server request:
+
+- **Per-IP**, keyed by `(effective_client_ip, normalized_route)`.
+- **Per-user**, keyed by the authenticated `user_id` plus the normalized
+  route for requests that present a valid access token.
+
+The longest matching `<target>` prefix wins; path parameters such as
+`roomId`, `deviceId`, and `mediaId` are coalesced into placeholders so a
+single cap covers all rooms/devices/media. Every entry rejects a zero-window
+or zero-cap policy at startup. Changes require a server restart.
+
 | Key | Default | When to change |
 |---|---|---|
-| `client_rate_limits.per_ip.<target>` | unset | Per-IP cap for requests matching `<target>` prefix. |
-| `client_rate_limits.per_user.<target>` | unset | Per-user cap keyed by access token. |
+| `client_rate_limits.per_ip.<target>` | see defaults below | Per-IP cap for requests matching `<target>` prefix. |
+| `client_rate_limits.per_user.<target>` | see defaults below | Per-user cap keyed by authenticated `user_id`. |
 | `client_rate_limits.default_per_ip` | `90/60s` | Fallback cap for unmatched targets. |
 
-The target keys contain literal forward slashes, e.g.:
+Default route-aware policies applied when no override is configured:
+
+| Endpoint class | Default policy |
+|---|---|
+| Login / registration | 20/60s per IP; 5/60s per user on `/login` |
+| Device and key APIs | 30/60s per IP |
+| Media APIs | 20/60s per IP |
+| Generic client APIs | 90/60s per IP fallback |
+
+Example overrides:
 
 ```ini
-client_rate_limits.per_ip./_matrix/client/v3/login=30/60s
-client_rate_limits.per_user./_matrix/client/v3/login=20/60s
+client_rate_limits.per_ip./_matrix/client/v3/login=20/60s
+client_rate_limits.per_user./_matrix/client/v3/login=5/60s
+client_rate_limits.default_per_ip=90/60s
 ```
-
-The longest matching `<target>` prefix wins; every entry rejects a
-zero-window or zero-cap policy at startup. Rate-limit changes require a
-server restart — the limiter is built once at server start and stored in the
-runtime.
 
 #### Per-module log levels — `log_modules.*`
 
@@ -1659,6 +1733,16 @@ security.media.remote_fetch_enabled=true
 
 Fetched bytes default to `quarantine` because federated origins are unaccountable
 and no AV engine is integrated today.
+
+### Inbound federation media serving
+
+Locally uploaded media that is not quarantined or removed is automatically
+available to remote homeservers through
+`GET /_matrix/federation/v1/media/download/{mediaId}`. The endpoint is
+authenticated with `X-Matrix` request signatures, bypasses the federation worker
+because the worker has no access to the local media store, and returns a
+`multipart/mixed` response per Matrix v1.18 (an empty JSON metadata part
+followed by the media bytes). No extra configuration is required.
 
 ### Sandbox
 

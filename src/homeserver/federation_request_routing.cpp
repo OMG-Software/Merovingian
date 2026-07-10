@@ -229,8 +229,19 @@ auto federation_request_should_bypass_worker(LocalHttpRequest const& request) ->
     // EDU-only /send transactions have no room_id to shard by and ultimately
     // relay back to main's edu_sink anyway. Handling them in main avoids shard
     // 0 becoming a choke point for to-device key shares.
-    return request.method == "PUT" && is_federation_send_target(request.target) &&
-           room_id_from_send_body(request.body).empty();
+    if (request.method == "PUT" && is_federation_send_target(request.target) &&
+        room_id_from_send_body(request.body).empty())
+    {
+        return true;
+    }
+    // Media download needs the local media repository, which lives only in the
+    // main process. The worker has no access to local blobs, so keep this route
+    // on main even when the federation worker pool is active.
+    if (request.method == "GET" && request.target.find("/_matrix/federation/v1/media/download/") == 0U)
+    {
+        return true;
+    }
+    return false;
 }
 
 auto is_federation_key_server_endpoint(std::string_view target) noexcept -> bool

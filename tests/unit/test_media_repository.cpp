@@ -325,3 +325,33 @@ SCENARIO("Local media processing rejects decompression bombs before blob storage
         }
     }
 }
+
+SCENARIO("Federation media download body is a valid multipart/mixed envelope", "[media][repository][federation]")
+{
+    GIVEN("a media content type and raw bytes")
+    {
+        auto const content_type = std::string{"image/png"};
+        auto const bytes = std::string{"png-bytes"};
+
+        WHEN("the v1.18 federation download body is built")
+        {
+            auto const envelope = merovingian::media::build_federation_media_download_body(content_type, bytes);
+
+            THEN("the outer Content-Type is multipart/mixed with a boundary and the body has two parseable parts")
+            {
+                REQUIRE_FALSE(envelope.body.empty());
+                REQUIRE(envelope.content_type.starts_with("multipart/mixed; boundary="));
+                auto const boundary_pos = envelope.content_type.find("boundary=");
+                REQUIRE(boundary_pos != std::string::npos);
+                auto const boundary = envelope.content_type.substr(boundary_pos + 9U);
+                REQUIRE_FALSE(boundary.empty());
+
+                auto const expected = std::string{"--"} + boundary + "\r\n" +
+                                      "Content-Type: application/json\r\n\r\n{}\r\n" + "--" + boundary +
+                                      "\r\nContent-Type: image/png\r\nContent-Disposition: inline\r\n\r\n" + bytes +
+                                      "\r\n--" + boundary + "--\r\n";
+                REQUIRE(envelope.body == expected);
+            }
+        }
+    }
+}

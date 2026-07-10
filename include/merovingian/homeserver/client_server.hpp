@@ -152,6 +152,8 @@ struct ClientServerStartResult final
 
 [[nodiscard]] auto start_client_server(config::Config const& config) -> ClientServerStartResult;
 [[nodiscard]] auto matrix_error(std::string_view errcode, std::string_view message) -> std::string;
+[[nodiscard]] auto matrix_error(std::string_view errcode, std::string_view message, std::uint32_t retry_after_ms)
+    -> std::string;
 [[nodiscard]] auto is_matrix_error_response(LocalHttpResponse const& response) noexcept -> bool;
 [[nodiscard]] auto handle_client_server_request(ClientServerRuntime& runtime, LocalHttpRequest const& request,
                                                 bool can_wait = true) -> DispatchResult;

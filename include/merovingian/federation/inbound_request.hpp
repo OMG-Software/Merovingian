@@ -8,6 +8,7 @@
 #include "merovingian/federation/runtime_federation.hpp"
 #include "merovingian/federation/security.hpp"
 #include "merovingian/federation/transactions.hpp"
+#include "merovingian/media/repository.hpp"
 #include "merovingian/observability/observability.hpp"
 
 #include <chrono>
@@ -184,6 +185,12 @@ using MissingEventsQueryProvider = std::function<std::string(std::string_view ro
 // 404 M_NOT_FOUND. Optional: when unset the route responds 501 Not Implemented.
 using SpaceHierarchyProvider = std::function<std::string(std::string_view room_id, bool suggested_only)>;
 
+// Serves a local media file for an inbound `GET /_matrix/federation/v1/media/download/{mediaId}`
+// request. The `media_id` path component is already percent-decoded. The handler maps a failed
+// result to the appropriate Matrix error response (404 M_NOT_FOUND for missing media, 451 for
+// quarantined media, etc.). Optional: when unset the route responds 501 Not Implemented.
+using MediaDownloadProvider = std::function<media::LocalMediaDownloadResult(std::string_view media_id)>;
+
 // Resolves the room version for a given room ID by consulting the local
 // persistent state (typically the m.room.create event's content.room_version
 // field). Returns a version string such as "10", "11", "12". When the room
@@ -246,6 +253,9 @@ struct FederationRuntimeState final
     // Optional resolver for inbound space hierarchy. When unset the handler
     // responds 501 Not Implemented.
     SpaceHierarchyProvider space_hierarchy_provider{};
+    // Optional provider for inbound federation media downloads. When unset the
+    // handler responds 501 Not Implemented.
+    MediaDownloadProvider media_download_provider{};
     // Optional resolver for room version. When set, parse_federation_pdu
     // calls it with the room_id from the PDU JSON and uses the returned
     // version string for event-ID computation and signature verification.
@@ -264,6 +274,10 @@ struct FederationResponse final
 {
     std::uint16_t status{500U};
     std::string body{};
+    // Non-empty overrides the default application/json Content-Type header on
+    // the HTTP response. Used by the federation media download endpoint to emit
+    // multipart/mixed.
+    std::string content_type{};
 };
 
 // Parses an Authorization header value that begins with "X-Matrix ". Returns

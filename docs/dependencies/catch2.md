@@ -28,6 +28,12 @@ builds disable Catch2's own upstream self-test executable so CI builds only the
 Merovingian test targets and does not inherit upstream compiler compatibility
 noise.
 
+## License
+
+Catch2 is released under the Boost Software License 1.0 (`SPDX: BSL-1.0`). It
+is compatible with Merovingian's GPL-3.0-or-later distribution. Catch2 is a
+test-only dependency and must never be linked into production targets.
+
 ## Current limitations
 
 - Conformance and fuzz coverage still need to expand before production gating.

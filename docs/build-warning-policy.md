@@ -21,6 +21,11 @@ local development, WSL, BSD, and CI jobs.
   - `hardened`
 - CI jobs call the reusable wrappers so local developers can reproduce the same
   build entrypoints.
+- Release artifacts carry detached GPG signatures, SLSA provenance attestations,
+  SHA-256 checksums, SPDX/CycloneDX SBOMs, and a machine-readable license
+  summary.
+- The static Linux fallback tarball is verified for byte-for-byte reproducibility
+  by `scripts/reproducible-build.sh` and a dedicated CI job.
 
 ## Security posture
 
@@ -51,8 +56,9 @@ treats warnings as errors.
 
 ## Deliberately not included
 
-- Reproducible release artifact generation.
-- Signed release archives and provenance.
 - Mandatory fuzz execution in every CI run.
 - Platform-specific production hardening enforcement beyond current compiler and
   linker flags.
+- Byte-for-byte reproducibility for distro packages (`.deb`, `.rpm`, BSD
+  packages) — reproducible build verification currently covers only the
+  static Linux fallback tarball.

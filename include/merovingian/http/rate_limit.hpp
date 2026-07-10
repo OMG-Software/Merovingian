@@ -35,17 +35,21 @@ struct RateLimitState final
 struct RateLimitConfig final
 {
     // Per-IP cap, keyed by request target prefix (e.g. "/_matrix/client/v3/register").
-    // Operators override any entry via the `client_rate_limits:` config block.
+    // `default_client_rate_limit_config()` pre-populates this with design-doc
+    // defaults; operators override any entry via the `client_rate_limits:`
+    // config block.
     std::unordered_map<std::string, RateLimitPolicy> per_ip{};
-    // Per-user cap, currently only populated for /login. Empty map
+    // Per-user cap, currently populated for /login by default. Empty map
     // disables the per-user tier entirely. The cap is enforced on
-    // every authenticated login attempt; on the unauthenticated path
-    // (no user_id available yet) the per-user tier is skipped and the
+    // every authenticated request for which a user_id is known; on
+    // unauthenticated paths the per-user tier is skipped and the
     // per-IP cap is the only limit.
     std::unordered_map<std::string, RateLimitPolicy> per_user{};
     // Fallback for target prefixes not in the per_ip map.
     RateLimitPolicy default_per_ip{90U, 60U};
 };
+
+[[nodiscard]] auto default_client_rate_limit_config() noexcept -> RateLimitConfig;
 
 // The decision returned by RateLimitEngine::check. When allowed is true,
 // the request may proceed. When allowed is false, the caller must
@@ -61,6 +65,7 @@ struct RateLimitDecision final
     std::uint32_t per_ip_count{0U};
     std::uint32_t per_user_count{0U};
     std::uint32_t per_user_max{0U};
+    std::uint32_t retry_after_ms{0U};
     // One of "", "per_ip_cap", "per_user_cap", "invalid_policy".
     std::string_view deny_reason{};
 };
@@ -127,9 +132,9 @@ public:
             return RateLimitDecision{.allowed = true, .deny_reason = "invalid_policy"};
         }
 
-        auto const ip_decision = ip_bucket.empty() ? RateLimitDecision{true, 0U, 0U, 0U, 0U, 0U, 0U, ""}
+        auto const ip_decision = ip_bucket.empty() ? RateLimitDecision{true, 0U, 0U, 0U, 0U, 0U, 0U, 0U, ""}
                                                    : check_bucket(m_ip_buckets, ip_bucket, per_ip, now);
-        auto const user_decision = user_bucket.empty() ? RateLimitDecision{true, 0U, 0U, 0U, 0U, 0U, 0U, ""}
+        auto const user_decision = user_bucket.empty() ? RateLimitDecision{true, 0U, 0U, 0U, 0U, 0U, 0U, 0U, ""}
                                                        : check_bucket(m_user_buckets, user_bucket, per_user, now);
 
         if (!user_decision.allowed)
@@ -196,12 +201,21 @@ private:
         return best;
     }
 
+    [[nodiscard]] auto remaining_window_ms(TimePoint window_start, RateLimitPolicy const& policy, TimePoint now) const
+        -> std::uint32_t
+    {
+        auto const elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - window_start).count();
+        auto const window_ms = static_cast<std::int64_t>(policy.window_seconds) * 1000LL;
+        auto const remaining_ms = std::max(0LL, window_ms - elapsed_ms);
+        return static_cast<std::uint32_t>(remaining_ms);
+    }
+
     [[nodiscard]] auto check_bucket(std::vector<Bucket>& table, std::string_view bucket_key,
                                     std::optional<RateLimitPolicy> const& policy, TimePoint now) -> RateLimitDecision
     {
         if (!policy.has_value() || bucket_key.empty())
         {
-            return RateLimitDecision{true, 0U, 0U, 0U, 0U, 0U, 0U, ""};
+            return RateLimitDecision{true, 0U, 0U, 0U, 0U, 0U, 0U, 0U, ""};
         }
         auto it = std::ranges::find_if(table, [bucket_key](Bucket const& b) {
             return b.key == bucket_key;
@@ -209,7 +223,7 @@ private:
         if (it == table.end())
         {
             table.push_back({std::string{bucket_key}, 1U, now});
-            return RateLimitDecision{true, policy->max_requests, policy->window_seconds, 1U, 1U, 0U, 0U, ""};
+            return RateLimitDecision{true, policy->max_requests, policy->window_seconds, 1U, 1U, 0U, 0U, 0U, ""};
         }
         if (now - it->window_start >= std::chrono::seconds{policy->window_seconds})
         {
@@ -218,11 +232,14 @@ private:
         }
         if (it->count >= policy->max_requests)
         {
-            return RateLimitDecision{false, policy->max_requests, policy->window_seconds, it->count, it->count, 0U,
-                                     0U,    "per_ip_cap"};
+            auto const retry_after_ms = remaining_window_ms(it->window_start, *policy, now);
+            return RateLimitDecision{
+                false,          policy->max_requests, policy->window_seconds, it->count, it->count, 0U, 0U,
+                retry_after_ms, "per_ip_cap"};
         }
         ++it->count;
-        return RateLimitDecision{true, policy->max_requests, policy->window_seconds, it->count, it->count, 0U, 0U, ""};
+        return RateLimitDecision{true, policy->max_requests, policy->window_seconds, it->count, it->count, 0U, 0U, 0U,
+                                 ""};
     }
 
     RateLimitConfig m_config{};

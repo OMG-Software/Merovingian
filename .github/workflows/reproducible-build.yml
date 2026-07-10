@@ -1,0 +1,60 @@
+name: reproducible-build
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    paths:
+      - 'scripts/build-static-linux.sh'
+      - 'scripts/reproducible-build.sh'
+      - 'meson.build'
+      - 'subprojects/**'
+  workflow_dispatch:
+
+jobs:
+  verify:
+    name: Verify static Linux tarball reproducibility
+    runs-on: ubuntu-latest
+    container: alpine:latest
+    env:
+      CC: clang
+      CXX: clang++
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history is not required; only the HEAD commit date is needed.
+          fetch-depth: 1
+
+      - name: Install build dependencies
+        run: |
+          apk add --no-cache \
+            bison \
+            binutils \
+            clang \
+            flex \
+            g++ \
+            git \
+            curl-dev \
+            curl-static \
+            nghttp2-static \
+            brotli-static \
+            zstd-static \
+            libsodium-dev \
+            libsodium-static \
+            linux-headers \
+            make \
+            meson \
+            m4 \
+            musl-dev \
+            ninja \
+            openssl-dev \
+            openssl-libs-static \
+            perl \
+            libpq-dev \
+            pkgconf \
+            tar \
+            zlib-static
+
+      - name: Verify reproducible build
+        run: sh scripts/reproducible-build.sh

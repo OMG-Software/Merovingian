@@ -1,3 +1,38 @@
+## 0.10.38
+
+### Added
+- **feat(rate-limit): production-grade client-server rate limiting.** Per-IP and per-user wall-clock token-bucket tiers are enforced before dispatch. Per-user buckets are keyed by the authenticated `user_id`; per-IP buckets use the effective client IP plus a normalized route. Path parameters (`roomId`, `deviceId`, `mediaId`, etc.) are coalesced into placeholders so a single cap covers all rooms/devices/media. Exceeded caps return `429 M_LIMIT_EXCEEDED` with a `Retry-After` header (and the deprecated `retry_after_ms` body field). Operators configure overrides via `client_rate_limits.per_ip.<target>`, `client_rate_limits.per_user.<target>`, and `client_rate_limits.default_per_ip`.
+- **feat(voip): static TURN credentials for `GET /_matrix/client/v3/voip/turnServer`.** New `server.turn.server`, `server.turn.username`, `server.turn.password`, and `server.turn.ttl_seconds` config keys supply static credentials to authenticated VoIP clients. When no TURN server is configured the endpoint returns an empty JSON object so clients gracefully disable relay support.
+- **feat(federation): inbound `GET /_matrix/federation/v1/media/download/{mediaId}` endpoint.** Remote homeservers can download locally-uploaded media using `X-Matrix`-authenticated requests. The route bypasses the federation worker (which has no access to the local media repository) and returns a `multipart/mixed` response per Matrix v1.18.
+
+- **feat(supply-chain): immutable dependency pinning for `catch2` and `yyjson`.** Both wraps are now `[wrap-file]` entries pointing at release tarballs with SHA-256 `source_hash` values. `scripts/verify-wrap-pins.sh` and an updated `tests/tooling/test_dependency_wraps.py` enforce that every committed wrap is a file wrap with a 64-character hash.
+- **feat(license): release-attached license review.** `docs/dependencies/licenses.md` records the license and GPL-3.0-or-later compatibility of every direct and transitive image-codec dependency. The `dependency-review-action` license check is enabled, `scripts/generate-license-summary.py` emits a machine-readable `merovingian.licenses.json`, and the JSON is attached to alpha and rolling-latest releases.
+- **feat(release): GPG-signed release artifacts.** A reusable `.github/workflows/sign-artifacts.yml` workflow imports an offline maintainer GPG key and produces detached `.asc` signatures for every tarball (alpha releases) and every package plus `SHA256SUMS` (rolling `latest` releases). Verification instructions are documented in `docs/release-process.md` and the release checklist.
+- **feat(reproducible-builds): verify static Linux tarball reproducibility.** `scripts/reproducible-build.sh` builds the static Linux fallback tarball twice with the same `SOURCE_DATE_EPOCH` and compares SHA-256 hashes. `scripts/build-static-linux.sh` now defaults to release builds with `--strip`, sets `SOURCE_DATE_EPOCH` from the commit author date, and uses deterministic GNU tar options when available. A dedicated CI job runs the verification on every push to `main` and on PRs touching the build.
+
+### Changed
+- **docs(http-transport, user-manual, capability-gaps, build-warning-policy, release-process, security-review-checklist, dependencies): document the implemented rate limiter, TURN configuration, inbound federation media serving, dependency pinning policy, license review, GPG signatures, and reproducible build verification; update `config/merovingian.conf.example`.**
+- **chore(release): bump version to 0.10.38 across `meson.build`, `src/main.cpp`, `src/db_migrate.cpp`, packaging metadata, build scripts, `README.md`, and `docs/user-manual.md`.**
+
+### Fixed
+- **fix(build): avoid `_FORTIFY_SOURCE` macro redefinition on musl/Alpine builds.** Hardening flags now emit `-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3` so the project's level-3 fortification overrides any toolchain-default level-2 definition without triggering `-Werror`.
+- **fix(config): keep public registration disabled in `config/merovingian.conf.example`.** The example config now defaults to `security.registration.enabled=false`, so `--check-config` and `--dry-run` smoke tests that copy the example file no longer require a real `/etc/merovingian/registration-token`.
+- **fix(ci): make `scripts/reproducible-build.sh` work when `actions/checkout` does not materialize a `.git` directory.** The script no longer relies on `git rev-parse --show-toplevel`; it derives `SOURCE_DATE_EPOCH` from git when available and falls back to `0` otherwise.
+
+### Testing
+- **test(rate-limit): new and updated unit tests cover route normalization, per-user keying by `user_id`, `Retry-After` semantics, and config validation.**
+- **test(federation, media): route coverage, federation-worker bypass, multipart/mixed envelope construction, and end-to-end handler tests cover the inbound federation media download endpoint.**
+- **test(tooling): `tests/tooling/test_dependency_wraps.py` now asserts `[wrap-file]` pinning with SHA-256 hashes, the absence of `[wrap-git]` entries, per-dependency review documents with license notes, and a valid machine-readable license summary JSON. `tests/tooling/test_packages_workflow.py` confirms the version bump is consistent across packaging metadata.**
+- **test(release): `scripts/check-release-readiness.sh` now gates the presence of the license review document, the wrap-pin verification script, and the GPG signing workflow references in `release.yml` and `packages.yml`.**
+
+## 0.10.36
+
+### Added
+- **feat(config): explicit `listeners.*.reverse_proxy` declaration for listener security.** Public (non-loopback) client and federation listeners must now use TLS with `reverse_proxy=false`. Loopback cleartext listeners are only permitted when `reverse_proxy=true` is explicitly declared, matching the reverse-proxy-first deployment model. Configuration validation rejects ambiguous or unsafe combinations before startup.
+
+### Changed
+- **docs(user-manual, http-transport, threat-model): document the explicit reverse-proxy listener model and public TLS requirement.**
+
 ## 0.10.35
 
 ### Fixed

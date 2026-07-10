@@ -35,6 +35,13 @@ The same OS-supplied dynamic-link policy now applies to LibSodium and
 PostgreSQL libpq. Linux and Fedora CI install `libssl-dev` or `openssl-devel`;
 FreeBSD CI installs the `openssl` package.
 
+## License
+
+OpenSSL is dual-licensed under the Apache-2.0 license and the OpenSSL-3.0
+license (`SPDX: Apache-2.0`). The Apache-2.0 license is compatible with
+Merovingian's GPL-3.0-or-later distribution. OpenSSL is resolved from the
+operating-system package.
+
 ## Current limitations
 
 - Certificate reload remains restart-bound.
