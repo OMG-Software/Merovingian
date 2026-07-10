@@ -18,6 +18,7 @@
 - **fix(build): avoid `_FORTIFY_SOURCE` macro redefinition on musl/Alpine builds.** Hardening flags now emit `-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3` so the project's level-3 fortification overrides any toolchain-default level-2 definition without triggering `-Werror`.
 - **fix(config): keep public registration disabled in `config/merovingian.conf.example`.** The example config now defaults to `security.registration.enabled=false`, so `--check-config` and `--dry-run` smoke tests that copy the example file no longer require a real `/etc/merovingian/registration-token`.
 - **fix(ci): make `scripts/reproducible-build.sh` work when `actions/checkout` does not materialize a `.git` directory.** The script no longer relies on `git rev-parse --show-toplevel`; it derives `SOURCE_DATE_EPOCH` from git when available and falls back to `0` otherwise.
+- **fix(ci): ensure GPG signing and rolling-latest publishing run after package staging.** Added explicit `needs.<job>.result == 'success'` conditions to `sign-package-assets`, `publish-latest`, `sign-release-assets`, and `publish-alpha-release` so the default `success()` graph (which can be false when optional retry jobs are skipped) no longer skips the signing and publishing jobs.
 
 ### Testing
 - **test(rate-limit): new and updated unit tests cover route normalization, per-user keying by `user_id`, `Retry-After` semantics, and config validation.**
