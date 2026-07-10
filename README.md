@@ -42,8 +42,7 @@ Open work items, capability gaps, and milestone blockers live in [docs/todos/](C
 
 If you want to evaluate or stand up Merovingian locally, start here:
 
-- [docs/user-manual.md](C:/dev/Merovingian/docs/user-manual.md) for the comprehensive operator guide to installation, listener/reverse-proxy/registration/federation configuration, running, and maintenance
-- [docs/getting-started.md](C:/dev/Merovingian/docs/getting-started.md) for the end-to-end first run, admin bootstrap, and client connection flow
+- [docs/user-manual.md](C:/dev/Merovingian/docs/user-manual.md) for the comprehensive operator guide to installation, initial setup, listener/reverse-proxy/registration/federation configuration, running, client connection, and maintenance
 - [config/merovingian.conf.example](C:/dev/Merovingian/config/merovingian.conf.example) for the annotated example config
 - [docs/database-persistence.md](C:/dev/Merovingian/docs/database-persistence.md) for SQLite/PostgreSQL persistence behavior and schema notes
 

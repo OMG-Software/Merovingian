@@ -109,7 +109,7 @@ Source headers (`include/merovingian/`) and implementations (`src/`) mirror each
 - `include/merovingian/homeserver/runtime.hpp` — Runtime state manager
 
 ### Key docs
-`architecture.md` · `coding-rules.md` · `testing-standards.md` · `versioning.md` · `threat-model.md` · `security-review-checklist.md` · `crypto-boundary.md` · `database-persistence.md` · `user-manual.md` · `auth-identity.md` · `event-engine.md` · `http-transport.md` · `media-repository.md` · `getting-started.md` · `dev-environment.md` · `platform-support.md` · `build-warning-policy.md` · `hardening.md` · `release-process.md` · `canonical-json.md` · `trust-safety.md` · `observability-audit.md` · `matrix-v1.18-client-server-api.md` · `todos/production-milestone.md` · `todos/capability-gaps.md`
+`architecture.md` · `coding-rules.md` · `testing-standards.md` · `versioning.md` · `threat-model.md` · `security-review-checklist.md` · `crypto-boundary.md` · `database-persistence.md` · `user-manual.md` · `auth-identity.md` · `event-engine.md` · `http-transport.md` · `media-repository.md` · `dev-environment.md` · `platform-support.md` · `build-warning-policy.md` · `hardening.md` · `release-process.md` · `canonical-json.md` · `trust-safety.md` · `observability-audit.md` · `matrix-v1.18-client-server-api.md` · `todos/production-milestone.md` · `todos/capability-gaps.md`
 
 ## Subdirectory AGENTS.md Files
 

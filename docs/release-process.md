@@ -59,11 +59,8 @@ Every release tarball and package is accompanied by a detached GPG signature
 (`.asc`). The signing key is an offline, long-lived maintainer key stored as a
 GitHub Actions secret. Operators can verify artifacts without the GitHub CLI.
 
-Import the maintainer public key by fingerprint (replace `FINGERPRINT` with the
-published key fingerprint once the key pair is generated and distributed):
-
 ```sh
-gpg --recv-keys FINGERPRINT
+gpg --recv-keys 66DFCC50187C8E46B5ED85FD92A3A264F0A7BE20
 ```
 
 Verify a release artifact:
