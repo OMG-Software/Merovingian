@@ -106,7 +106,10 @@ add_project_arguments(cpp.get_supported_arguments(warning_flags), language: 'cpp
 
 if get_option('hardening')
   if get_option('optimization') != '0'
-    hardening_compile_flags += ['-D_FORTIFY_SOURCE=3']
+    # Undefine any toolchain-default _FORTIFY_SOURCE before setting our own
+    # value. Musl-based toolchains (e.g. Alpine) may predefine it as 2, and
+    # -Werror treats the resulting macro redefinition as a hard error.
+    hardening_compile_flags += ['-U_FORTIFY_SOURCE', '-D_FORTIFY_SOURCE=3']
   endif
   add_project_arguments(cpp.get_supported_arguments(hardening_compile_flags), language: 'cpp')
   add_project_link_arguments(cpp.get_supported_link_arguments(hardening_link_flags), language: 'cpp')

@@ -102,7 +102,7 @@ listeners.federation.tls_private_key_file=
 # Public registration
 # Registration is disabled by default. If enabled, keep require_token=true and
 # store the token in an owner-only secret file outside web roots.
-security.registration.enabled=true
+security.registration.enabled=false
 security.registration.require_token=true
 security.registration.token_file=/etc/merovingian/registration-token
 

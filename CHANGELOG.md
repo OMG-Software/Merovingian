@@ -14,6 +14,11 @@
 - **docs(http-transport, user-manual, capability-gaps, build-warning-policy, release-process, security-review-checklist, dependencies): document the implemented rate limiter, TURN configuration, inbound federation media serving, dependency pinning policy, license review, GPG signatures, and reproducible build verification; update `config/merovingian.conf.example`.**
 - **chore(release): bump version to 0.10.38 across `meson.build`, `src/main.cpp`, `src/db_migrate.cpp`, packaging metadata, build scripts, `README.md`, and `docs/user-manual.md`.**
 
+### Fixed
+- **fix(build): avoid `_FORTIFY_SOURCE` macro redefinition on musl/Alpine builds.** Hardening flags now emit `-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3` so the project's level-3 fortification overrides any toolchain-default level-2 definition without triggering `-Werror`.
+- **fix(config): keep public registration disabled in `config/merovingian.conf.example`.** The example config now defaults to `security.registration.enabled=false`, so `--check-config` and `--dry-run` smoke tests that copy the example file no longer require a real `/etc/merovingian/registration-token`.
+- **fix(ci): make `scripts/reproducible-build.sh` work when `actions/checkout` does not materialize a `.git` directory.** The script no longer relies on `git rev-parse --show-toplevel`; it derives `SOURCE_DATE_EPOCH` from git when available and falls back to `0` otherwise.
+
 ### Testing
 - **test(rate-limit): new and updated unit tests cover route normalization, per-user keying by `user_id`, `Retry-After` semantics, and config validation.**
 - **test(federation, media): route coverage, federation-worker bypass, multipart/mixed envelope construction, and end-to-end handler tests cover the inbound federation media download endpoint.**

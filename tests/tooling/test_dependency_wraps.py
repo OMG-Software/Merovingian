@@ -166,7 +166,10 @@ class DependencyWrapTests(unittest.TestCase):
         # WHEN warnings are fatal in debug builds.
         # THEN the FORTIFY flag is added only after Meson reports an optimized build.
         self.assertIn("if get_option('optimization') != '0'", meson_build)
-        self.assertIn("hardening_compile_flags += ['-D_FORTIFY_SOURCE=3']", meson_build)
+        self.assertIn(
+            "hardening_compile_flags += ['-U_FORTIFY_SOURCE', '-D_FORTIFY_SOURCE=3']",
+            meson_build,
+        )
 
     def test_os_supplied_security_and_database_libraries_disallow_fallbacks(self) -> None:
         # GIVEN security-sensitive shared libraries receive distro security updates

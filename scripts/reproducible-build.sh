@@ -5,18 +5,24 @@
 # comparing the resulting SHA-256 hashes.
 set -eu
 
-REPO_ROOT="$(git rev-parse --show-toplevel)"
-cd "$REPO_ROOT"
+# Operate from the repository root regardless of where the script is invoked.
+cd "$(dirname "$0")/.."
 
 if ! tar --version 2>&1 | grep -q 'GNU tar'; then
     printf 'error: GNU tar is required for reproducible build verification\n' >&2
     exit 1
 fi
 
-# Use the commit author date as the deterministic SOURCE_DATE_EPOCH. The same
-# value is used for both builds so compiler/linker-visible timestamps and tar
-# metadata are identical.
-SOURCE_DATE_EPOCH="$(git log -1 --format=%at)"
+# Use the commit author date as the deterministic SOURCE_DATE_EPOCH when running
+# inside a git checkout. Outside a git repo (e.g. some CI container fallbacks) use
+# a fixed value. The same value is used for both builds so compiler/linker-
+# visible timestamps and tar metadata are identical.
+if [ -z "${SOURCE_DATE_EPOCH:-}" ]; then
+    SOURCE_DATE_EPOCH="$(git log -1 --format=%at 2>/dev/null || printf '0')"
+    if ! [ "$SOURCE_DATE_EPOCH" -gt 0 ] 2>/dev/null; then
+        SOURCE_DATE_EPOCH=0
+    fi
+fi
 export SOURCE_DATE_EPOCH
 printf 'SOURCE_DATE_EPOCH=%s\n' "$SOURCE_DATE_EPOCH"
 
