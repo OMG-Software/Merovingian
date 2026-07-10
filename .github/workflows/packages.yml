@@ -607,11 +607,15 @@ jobs:
   sign-package-assets:
     name: GPG-sign package assets
     needs: stage-package-assets
-    # Explicitly depend on the staging outcome rather than the default success()
-    # graph, because stage-package-assets uses always() and has transitive needs
-    # (netbsd-pkg-retry) that may be skipped, which would otherwise cause the
-    # default success() check in this job to return false and skip signing.
-    if: needs.stage-package-assets.result == 'success'
+    # GitHub implicitly ANDs a bare expression with success(), and that default
+    # success() returns false when any job in the broader dependency graph was
+    # skipped (e.g. the optional netbsd-pkg-retry). Using !failure() && !cancelled()
+    # plus an explicit result check makes signing depend only on the staging job
+    # outcome, not on the whole graph.
+    if: |
+      !failure() &&
+      !cancelled() &&
+      needs.stage-package-assets.result == 'success'
     uses: ./.github/workflows/sign-artifacts.yml
     with:
       source_artifact_name: unsigned-packages
@@ -623,7 +627,12 @@ jobs:
   publish-latest:
     name: Publish rolling latest
     needs: sign-package-assets
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.sign-package-assets.result == 'success'
+    if: |
+      !failure() &&
+      !cancelled() &&
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      needs.sign-package-assets.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: write
