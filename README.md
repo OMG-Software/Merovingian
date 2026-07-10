@@ -79,6 +79,30 @@ python build.py linux --builddir build-asan --buildtype debug --sanitize address
 python build.py wsl --builddir build-tsan --buildtype debug --sanitize thread
 ```
 
+## Release artifact verification
+
+Every release artifact (tarball, package, and `SHA256SUMS`) is signed with a
+detached GPG `.asc` signature by the maintainer key. The public key fingerprint
+is:
+
+```text
+66DFCC50187C8E46B5ED85FD92A3A264F0A7BE20
+```
+
+Verify a downloaded artifact before installing:
+
+```sh
+gpg --recv-keys 66DFCC50187C8E46B5ED85FD92A3A264F0A7BE20
+gpg --verify merovingian-0.10.38-linux-static-x86_64.tar.gz.asc \
+             merovingian-0.10.38-linux-static-x86_64.tar.gz
+sha256sum -c merovingian-0.10.38-linux-static-x86_64.tar.gz.sha256
+```
+
+Releases also carry SLSA provenance attestations (`gh attestation verify`),
+SPDX/CycloneDX SBOMs, and a machine-readable license summary. See
+[`docs/release-process.md`](docs/release-process.md) and
+[`docs/user-manual.md`](docs/user-manual.md) for full details.
+
 ## Project Status
 
 Merovingian has reached **beta** (v0.10.38). Federation, persistence, packaging, and runtime security controls are implemented and covered by CI. The project is suitable for evaluation and testing; it should not be treated as production-ready until the blocking items in [docs/todos/production-milestone.md](docs/todos/production-milestone.md) are closed.
