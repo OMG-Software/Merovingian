@@ -60,7 +60,7 @@ Every release tarball and package is accompanied by a detached GPG signature
 GitHub Actions secret. Operators can verify artifacts without the GitHub CLI.
 
 ```sh
-gpg --recv-keys 66DFCC50187C8E46B5ED85FD92A3A264F0A7BE20
+gpg --keyserver keys.openpgp.org --recv-keys 66DFCC50187C8E46B5ED85FD92A3A264F0A7BE20
 ```
 
 Verify a release artifact:

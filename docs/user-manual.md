@@ -153,7 +153,7 @@ published in [`docs/release-process.md`](release-process.md):
 
 ```sh
 # Import the release signing key.
-gpg --recv-keys 66DFCC50187C8E46B5ED85FD92A3A264F0A7BE20
+gpg --keyserver keys.openpgp.org --recv-keys 66DFCC50187C8E46B5ED85FD92A3A264F0A7BE20
 
 # Download the tarball, signature, and checksum for your platform, then verify
 the signature.
