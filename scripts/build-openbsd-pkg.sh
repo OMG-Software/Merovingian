@@ -8,7 +8,7 @@
 # produce and validate an installable package on every run.
 set -e
 
-VERSION="0.10.42"
+VERSION="0.10.43"
 STAGE="staging-openbsd"
 PREFIX=/usr/local
 
