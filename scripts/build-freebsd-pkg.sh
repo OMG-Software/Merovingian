@@ -3,7 +3,7 @@
 # Build a FreeBSD pkg(8) package for merovingian 0.10.38.
 set -e
 
-VERSION="0.10.43"
+VERSION="0.10.44"
 STAGING="staging-fbsd"
 
 # Clean any state (staged files, build dir) from cached FreeBSD VM runs.

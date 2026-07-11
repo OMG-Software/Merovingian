@@ -1,3 +1,14 @@
+## 0.10.44
+
+### Fixed
+- **fix(sync): treat initial Sliding Sync rooms on a fresh connection as full snapshots, not as deltas from a reused pos.** Element X sometimes creates a new `conn_id` and supplies a `pos` from another connection or device. The server was using that position as a per-room since floor, so initial rooms reported zero unread notifications for events at or before the borrowed position and could appear stale. Room-level deltas now use `0` for initial rooms and only apply the request `pos` to rooms this connection has already seen.
+
+### Testing
+- **test(sync): cover fresh Sliding Sync connections that reuse a pos from another conn_id.** A regression scenario creates three joined rooms, sends a message in one, obtains a `pos` on a seed connection, then syncs with a new `conn_id` reusing that `pos`. It asserts that all three rooms are returned with `initial=true` and that the room containing the message reports a non-zero unread notification count.
+
+### Changed
+- **chore(release): bump version to 0.10.44 across meson.build, src/main.cpp, src/db_migrate.cpp, packaging metadata, build scripts, and CHANGELOG.md.**
+
 ## 0.10.43
 
 ### Fixed
@@ -9,11 +20,8 @@
 - **test(sync): cover a client position ahead of the reconstructed Sliding Sync watermark.** A regression scenario asserts that the returned position never moves backwards.
 
 ### Changed
-- **chore(release): bump version to 0.10.43 across meson.build, src/main.cpp, src/db_migrate.cpp, packaging metadata, build scripts, and CHANGELOG.md.**
-
-### Changed
 - **fix(ci): make NetBSD package installation resilient to mirror outages.** NetBSD CI now retries both official binary-package endpoints and checks dependency installation before invoking the build, avoiding a misleading missing-compiler failure when a mirror refuses a transient connection.
-- **chore(release): bump version to 0.10.42 across meson.build, src/main.cpp, src/db_migrate.cpp, packaging metadata, build scripts, and CHANGELOG.md.**
+- **chore(release): bump version to 0.10.43 across meson.build, src/main.cpp, src/db_migrate.cpp, packaging metadata, build scripts, and CHANGELOG.md.**
 
 ## 0.10.41
 
