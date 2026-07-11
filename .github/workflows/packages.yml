@@ -655,5 +655,5 @@ jobs:
             --repo "${{ github.repository }}" \
             --prerelease \
             --title "Latest ($(date -u '+%Y-%m-%d %H:%M UTC'))" \
-            --notes "Rolling release from \`main\` — commit \`${{ github.sha }}\`. Built with hardened profile. Replaced on every push to main. Each package is accompanied by a detached GPG signature (\`.asc\`). For versioned releases see the tagged alpha releases." \
+            --notes "Rolling release from \`main\` — commit \`${{ github.sha }}\`. Built with hardened profile. Replaced on every push to main. Each package is accompanied by a detached GPG signature (\`.asc\`)." \
             packages/*
