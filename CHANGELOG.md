@@ -2,9 +2,11 @@
 
 ### Fixed
 - **fix(sync): preserve an unacknowledged Sliding Sync snapshot for request retries.** The server previously committed list windows and room inclusion immediately after writing a response. If Element X cancelled or retried an initial request with the same prior `pos`, the retry received an empty list and no rooms despite never acknowledging the original response. Connection state now commits only after the client supplies the returned position; retries are rebuilt from the last acknowledged snapshot.
+- **fix(sync): never regress a Sliding Sync position after watermark reconstruction.** Responses now retain each component of a client position when the server's reconstructed stream watermark is behind it, preventing Element X from rejecting the lower cursor and retrying the same room-list request in a tight loop.
 
 ### Testing
 - **test(sync): cover retries before Sliding Sync position acknowledgement.** A regression scenario asserts that retrying a fresh connection with the same `pos` retains the original `SYNC` list operation and room payload.
+- **test(sync): cover a client position ahead of the reconstructed Sliding Sync watermark.** A regression scenario asserts that the returned position never moves backwards.
 
 ### Changed
 - **fix(ci): make NetBSD package installation resilient to mirror outages.** NetBSD CI now retries both official binary-package endpoints and checks dependency installation before invoking the build, avoiding a misleading missing-compiler failure when a mirror refuses a transient connection.

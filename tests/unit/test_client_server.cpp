@@ -8106,6 +8106,37 @@ SCENARIO("Sliding sync replays an unacknowledged response for a repeated positio
     }
 }
 
+SCENARIO("Sliding sync never regresses a client stream position", "[sync][sliding-sync][msc4186]")
+{
+    // Spec: MSC4186 §Response body — clients use pos as an opaque cursor for
+    // their next request. A server restart or restored watermark must not send
+    // a lower cursor and make the client retry the same request indefinitely.
+    GIVEN("a client position ahead of the server's reconstructed watermark")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+
+        auto const registration = merovingian::homeserver::handle_client_server_request(
+            started.runtime, {"POST", "/_matrix/client/v3/register", {}, registration_json("alice", "CorrectHorse7!")});
+        REQUIRE(registration.response.status == 200U);
+        auto const token = login_token(registration.response.body);
+
+        WHEN("the client requests Sliding Sync from that position")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/unstable/org.matrix.msc4186/sync?pos=2710_2710_2710&timeout=0", token,
+                 R"({"conn_id":"position-floor"})"});
+
+            THEN("the returned position does not move backwards")
+            {
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(extract_pos(response.response.body) == "2710_2710_2710");
+            }
+        }
+    }
+}
+
 SCENARIO("Sliding sync no-pos poll returns delta on second call when nothing changed", "[sync][sliding-sync][msc4186]")
 {
     // Spec: MSC4186 — the server is expected to return the current snapshot on
