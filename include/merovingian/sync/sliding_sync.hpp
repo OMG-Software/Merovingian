@@ -246,9 +246,11 @@ struct SlidingSyncResponse final
 // ──────────────────────────────────────────────────────────────────────────────
 
 // State produced for a response but not yet acknowledged by a later request.
-// The client acknowledges this snapshot by supplying response_pos as its pos.
+// A retry can carry the same position as both this response and its request,
+// so request_pos distinguishes that retry from a genuine acknowledgement.
 struct SlidingSyncPendingResponse final
 {
+    std::string request_pos{};
     std::string response_pos{};
     std::map<std::string, std::vector<std::string>> list_prev_windows{};
     std::unordered_map<std::string, std::uint64_t> rooms_seen{};

@@ -3781,7 +3781,13 @@ namespace
         if (conn.pending_response.has_value())
         {
             auto const requested_pos = pos.has_value() ? sync::encode_stream_token(*pos) : std::string{};
-            if (!pos.has_value() || requested_pos == conn.pending_response->response_pos)
+            // A response may have the same pos as the request that produced it
+            // when no stream advanced. In that case the next request is
+            // indistinguishable from a transport retry, so keep replaying the
+            // pending snapshot rather than dropping its initial room window.
+            auto const acknowledges_pending = requested_pos == conn.pending_response->response_pos &&
+                                              requested_pos != conn.pending_response->request_pos;
+            if (!pos.has_value() || acknowledges_pending)
             {
                 conn.list_prev_windows = std::move(conn.pending_response->list_prev_windows);
                 conn.rooms_seen = std::move(conn.pending_response->rooms_seen);
@@ -4070,6 +4076,7 @@ namespace
         // ── Update connection state ──────────────────────────────────────────
 
         auto next_state = sync::SlidingSyncPendingResponse{};
+        next_state.request_pos = pos.has_value() ? sync::encode_stream_token(*pos) : std::string{};
         next_state.response_pos = new_pos;
         next_state.list_prev_windows = conn.list_prev_windows;
         next_state.rooms_seen = conn.rooms_seen;
