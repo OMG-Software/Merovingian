@@ -253,12 +253,22 @@ jobs:
           prepare: |
             # NetBSD's pkg_add needs PKG_PATH pointing at a binary-package
             # repository (the vmaction image exports none); without it every
-            # stem fails with "no pkg found". Use the pkgsrc origin —
-            # cdn.netbsd.org's Fastly backend has been returning 503. pkgin is
-            # not used: its bootstrap fails on this snapshot
-            # (pkg_install>=20200701 unavailable) and is unneeded with PKG_PATH.
-            export PKG_PATH="https://ftp.netbsd.org/pub/pkgsrc/packages/NetBSD/$(uname -m)/$(uname -r | sed 's/_.*//')/All/"
-            /usr/sbin/pkg_add -U clang meson ninja-build pkgconf git bison flex gmake openssl libsodium postgresql17-client curl png libjpeg-turbo || true
+            # stem fails with "no pkg found". Retry the official CDN and origin
+            # because either endpoint can intermittently reject the CI VM.
+            package_path="pub/pkgsrc/packages/NetBSD/$(uname -m)/$(uname -r | sed 's/_.*//')/All/"
+            install_packages() {
+              for mirror in cdn.netbsd.org ftp.netbsd.org; do
+                export PKG_PATH="https://${mirror}/${package_path}"
+                for attempt in 1 2 3; do
+                  if /usr/sbin/pkg_add -U "$@"; then
+                    return 0
+                  fi
+                  sleep $((attempt * 5))
+                done
+              done
+              return 1
+            }
+            install_packages clang meson ninja-build pkgconf git bison flex gmake openssl libsodium postgresql17-client curl png libjpeg-turbo
           run: sh scripts/build-netbsd-pkg.sh
       - name: Attest NetBSD package
         uses: actions/attest-build-provenance@v2
@@ -291,12 +301,22 @@ jobs:
           prepare: |
             # NetBSD's pkg_add needs PKG_PATH pointing at a binary-package
             # repository (the vmaction image exports none); without it every
-            # stem fails with "no pkg found". Use the pkgsrc origin —
-            # cdn.netbsd.org's Fastly backend has been returning 503. pkgin is
-            # not used: its bootstrap fails on this snapshot
-            # (pkg_install>=20200701 unavailable) and is unneeded with PKG_PATH.
-            export PKG_PATH="https://ftp.netbsd.org/pub/pkgsrc/packages/NetBSD/$(uname -m)/$(uname -r | sed 's/_.*//')/All/"
-            /usr/sbin/pkg_add -U clang meson ninja-build pkgconf git bison flex gmake openssl libsodium postgresql17-client curl png libjpeg-turbo || true
+            # stem fails with "no pkg found". Retry the official CDN and origin
+            # because either endpoint can intermittently reject the CI VM.
+            package_path="pub/pkgsrc/packages/NetBSD/$(uname -m)/$(uname -r | sed 's/_.*//')/All/"
+            install_packages() {
+              for mirror in cdn.netbsd.org ftp.netbsd.org; do
+                export PKG_PATH="https://${mirror}/${package_path}"
+                for attempt in 1 2 3; do
+                  if /usr/sbin/pkg_add -U "$@"; then
+                    return 0
+                  fi
+                  sleep $((attempt * 5))
+                done
+              done
+              return 1
+            }
+            install_packages clang meson ninja-build pkgconf git bison flex gmake openssl libsodium postgresql17-client curl png libjpeg-turbo
           run: sh scripts/build-netbsd-pkg.sh
       - name: Attest NetBSD package
         uses: actions/attest-build-provenance@v2

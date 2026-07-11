@@ -8053,6 +8053,59 @@ SCENARIO("Sliding Sync diagnostic fields require explicit debug startup enableme
     }
 }
 
+SCENARIO("Sliding sync replays an unacknowledged response for a repeated position", "[sync][sliding-sync][msc4186]")
+{
+    // Spec: MSC4186 §Connections — the server cannot assume a response reached
+    // the client until it observes the response position on a later request.
+    // A retry with the prior position must therefore receive the same snapshot.
+    GIVEN("alice has a room and a fresh connection starts from an existing position")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const alice_reg = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/register", {}, registration_json("alice", "CorrectHorse7!")});
+        REQUIRE(alice_reg.response.status == 200U);
+        auto const alice_token = login_token(alice_reg.response.body);
+
+        auto const create_resp = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", alice_token, R"({"preset":"public_chat"})"});
+        REQUIRE(create_resp.response.status == 200U);
+        auto const rid = room_id(create_resp.response.body);
+
+        auto const seed_resp = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST", "/_matrix/client/unstable/org.matrix.msc4186/sync?timeout=0", alice_token,
+             R"({"conn_id":"retry-seed","lists":{"0":{"ranges":[[0,19]],"required_state":[],"timeline_limit":1}}})"});
+        REQUIRE(seed_resp.response.status == 200U);
+        auto const requested_pos = extract_pos(seed_resp.response.body);
+        REQUIRE_FALSE(requested_pos.empty());
+
+        auto const retry_url = "/_matrix/client/unstable/org.matrix.msc4186/sync?pos=" + requested_pos + "&timeout=0";
+        auto const request_body =
+            R"({"conn_id":"retry-connection","lists":{"0":{"ranges":[[0,19]],"required_state":[],"timeline_limit":1}}})";
+
+        auto const first_resp = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", retry_url, alice_token, request_body});
+        REQUIRE(first_resp.response.status == 200U);
+        REQUIRE(first_resp.response.body.find("\"op\":\"SYNC\"") != std::string::npos);
+        REQUIRE(first_resp.response.body.find(rid) != std::string::npos);
+
+        WHEN("the client retries before acknowledging the returned position")
+        {
+            auto const retry_resp = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", retry_url, alice_token, request_body});
+
+            THEN("the retry receives the original room window and room payload")
+            {
+                REQUIRE(retry_resp.response.status == 200U);
+                REQUIRE(retry_resp.response.body == first_resp.response.body);
+            }
+        }
+    }
+}
+
 SCENARIO("Sliding sync no-pos poll returns delta on second call when nothing changed", "[sync][sliding-sync][msc4186]")
 {
     // Spec: MSC4186 — the server is expected to return the current snapshot on

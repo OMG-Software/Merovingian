@@ -1,3 +1,15 @@
+## 0.10.42
+
+### Fixed
+- **fix(sync): preserve an unacknowledged Sliding Sync snapshot for request retries.** The server previously committed list windows and room inclusion immediately after writing a response. If Element X cancelled or retried an initial request with the same prior `pos`, the retry received an empty list and no rooms despite never acknowledging the original response. Connection state now commits only after the client supplies the returned position; retries are rebuilt from the last acknowledged snapshot.
+
+### Testing
+- **test(sync): cover retries before Sliding Sync position acknowledgement.** A regression scenario asserts that retrying a fresh connection with the same `pos` retains the original `SYNC` list operation and room payload.
+
+### Changed
+- **fix(ci): make NetBSD package installation resilient to mirror outages.** NetBSD CI now retries both official binary-package endpoints and checks dependency installation before invoking the build, avoiding a misleading missing-compiler failure when a mirror refuses a transient connection.
+- **chore(release): bump version to 0.10.42 across meson.build, src/main.cpp, src/db_migrate.cpp, packaging metadata, build scripts, and CHANGELOG.md.**
+
 ## 0.10.41
 
 ### Testing

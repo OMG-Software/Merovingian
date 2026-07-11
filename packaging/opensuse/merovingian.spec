@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.10.41
+Version:        0.10.42
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -112,6 +112,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Sat Jul 11 2026 James Chapman <claude@ping.me.uk> - 0.10.42-1
+- fix(sync): preserve a Sliding Sync snapshot until a later request acknowledges its position, so a cancelled or retried Element X request cannot lose its room window.
+
 * Sat Jul 11 2026 James Chapman <claude@ping.me.uk> - 0.10.41-1
 - test(sync): add opt-in authenticated live Sliding Sync long-poll probe.
 
