@@ -450,9 +450,14 @@ auto compute_room_list(homeserver::HomeserverRuntime const& rt, std::string_view
                        std::vector<std::string> const& prev_window, database::PersistentStore const& store)
     -> RoomListResult
 {
+    std::ignore = rt; // rt reserved for future extensions (e.g. runtime-only state)
+
     // Step 1 — enumerate rooms where the user is joined.
+    // Use the persistent store as the source of truth rather than the runtime
+    // cache so sliding sync reports the same rooms as the database of record
+    // even when the in-memory cache is stale or was never hydrated.
     auto joined_room_ids = std::vector<std::string>{};
-    for (auto const& room : rt.database.rooms)
+    for (auto const& room : store.rooms)
     {
         auto const joined = std::ranges::any_of(store.memberships, [&](database::PersistentMembership const& m) {
             return m.room_id == room.room_id && m.user_id == user && m.membership == "join";
