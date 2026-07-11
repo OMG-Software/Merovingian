@@ -459,8 +459,9 @@ jobs:
             }
             install_packages clang meson ninja-build pkgconf git bison flex gmake openssl libsodium postgresql17-client curl png libjpeg-turbo mozilla-rootcerts
             # NetBSD base ships no CA trust store; populate /etc/openssl/certs so
-            # the system-CA-trust detection test (and real TLS) has a store.
-            /usr/pkg/sbin/mozilla-rootcerts install
+            # the system-CA-trust detection test (and real TLS) has a store. The
+            # helper reports an existing store as an error, despite being safe.
+            /usr/pkg/sbin/mozilla-rootcerts install || true
           run: |
             # Capture core dumps so the roaming NetBSD SIGABRT in the unit tests
             # can be backtraced instead of guessed at. NetBSD writes per-process
