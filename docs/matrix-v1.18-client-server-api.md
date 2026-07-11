@@ -445,3 +445,8 @@ a later request supplies a distinct returned `pos`; when the returned position
 equals the request position, it is conservatively replayed because a retry is
 otherwise indistinguishable from an acknowledgement. This preserves the room
 window after an interrupted initial response.
+
+If a client position is ahead of a reconstructed server watermark (for example,
+immediately after restart), each component of the returned position is floored
+at the corresponding requested component. This prevents clients from rejecting
+a regressing opaque cursor and retrying the request in a tight loop.

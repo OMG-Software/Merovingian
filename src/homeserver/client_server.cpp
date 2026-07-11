@@ -3966,7 +3966,16 @@ namespace
 
         auto const cur_event = rt.homeserver.database.next_stream_ordering - 1U;
         auto const cur_sync = store.next_sync_stream_id;
-        auto const new_pos = sync::encode_stream_token(sync::StreamToken{cur_event, cur_event, cur_sync});
+        // A client can retain a position from before a server restart while the
+        // reconstructed in-memory stream watermark temporarily lags it. Never
+        // regress any token component: clients reject a lower opaque cursor and
+        // retry the same request indefinitely.
+        auto const returned_event = std::max(cur_event, pos.has_value() ? pos->event_ordering : std::uint64_t{0U});
+        auto const returned_membership =
+            std::max(cur_event, pos.has_value() ? pos->membership_ordering : std::uint64_t{0U});
+        auto const returned_sync = std::max(cur_sync, pos.has_value() ? pos->sync_stream_id : std::uint64_t{0U});
+        auto const new_pos =
+            sync::encode_stream_token(sync::StreamToken{returned_event, returned_membership, returned_sync});
 
         auto lists_obj = canonicaljson::Object{};
         for (auto& [lname, result] : list_results)
