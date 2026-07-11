@@ -81,6 +81,12 @@ Runtime metrics and audit summaries are bounded operational summaries. They
 report counts, event types, actors, targets, and reason codes, but do not expose
 plaintext passwords, bearer tokens, key payloads, media bytes, or event content.
 
+The opt-in client_server event=sliding_sync.debug_response diagnostic is
+available only when the process starts with --debug; it is not an audit event
+and is never persisted. Its connection identifier data is limited to presence
+and byte length, and it contains no request bodies, tokens, event content, or
+encryption material.
+
 ## Scrape/export contract
 
 `GET /_merovingian/admin/metrics` is the stable scrape endpoint for operators.

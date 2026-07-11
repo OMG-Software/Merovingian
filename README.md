@@ -92,7 +92,7 @@ is:
 Verify a downloaded artifact before installing:
 
 ```sh
-gpg --recv-keys 66DFCC50187C8E46B5ED85FD92A3A264F0A7BE20
+gpg --keyserver keys.openpgp.org --recv-keys 66DFCC50187C8E46B5ED85FD92A3A264F0A7BE20
 gpg --verify merovingian-0.10.38-linux-static-x86_64.tar.gz.asc \
              merovingian-0.10.38-linux-static-x86_64.tar.gz
 sha256sum -c merovingian-0.10.38-linux-static-x86_64.tar.gz.sha256

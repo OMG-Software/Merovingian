@@ -3973,6 +3973,71 @@ namespace
         }
         auto const body = json_serialize(json_obj(std::move(response_obj)));
 
+        if (rt.sliding_sync_debug_diagnostics_enabled)
+        {
+            auto extension_names = std::vector<std::string>{};
+            if (ssreq.extensions.has_value())
+            {
+                if (ssreq.extensions->to_device.has_value() && ssreq.extensions->to_device->enabled)
+                {
+                    extension_names.emplace_back("to_device");
+                }
+                if (ssreq.extensions->e2ee.has_value() && ssreq.extensions->e2ee->enabled)
+                {
+                    extension_names.emplace_back("e2ee");
+                }
+                if (ssreq.extensions->account_data.has_value() && ssreq.extensions->account_data->enabled)
+                {
+                    extension_names.emplace_back("account_data");
+                }
+                if (ssreq.extensions->receipts.has_value() && ssreq.extensions->receipts->enabled)
+                {
+                    extension_names.emplace_back("receipts");
+                }
+                if (ssreq.extensions->typing.has_value() && ssreq.extensions->typing->enabled)
+                {
+                    extension_names.emplace_back("typing");
+                }
+            }
+
+            auto requested_extensions = std::string{};
+            for (auto const& name : extension_names)
+            {
+                if (!requested_extensions.empty())
+                {
+                    requested_extensions += ",";
+                }
+                requested_extensions += name;
+            }
+
+            auto list_operations = std::size_t{0U};
+            for (auto const& [list_name, result] : list_results)
+            {
+                std::ignore = list_name;
+                list_operations += result.ops.size();
+            }
+
+            log_diagnostic("sliding_sync.debug_response",
+                           {
+                               {"actor",                 std::string{user},                                      false},
+                               {"device_id",             std::string{device_id},                                 false},
+                               {"connection_scope",      ssreq.conn_id.has_value() ? "client" : "default",       false},
+                               {"conn_id_bytes",         std::to_string(ssreq.conn_id.value_or("").size()),      false},
+                               {"requested_pos",         pos.has_value() ? sync::encode_stream_token(*pos) : "", false},
+                               {"returned_pos",          new_pos,                                                false},
+                               {"connection_event_pos",  std::to_string(conn.last_event_ordering),               false},
+                               {"connection_sync_pos",   std::to_string(conn.last_sync_stream_id),               false},
+                               {"connection_rooms_seen", std::to_string(conn.rooms_seen.size()),                 false},
+                               {"request_lists",         std::to_string(ssreq.lists.size()),                     false},
+                               {"request_subscriptions", std::to_string(ssreq.room_subscriptions.size()),        false},
+                               {"list_operations",       std::to_string(list_operations),                        false},
+                               {"requested_extensions",  requested_extensions,                                   false},
+                               {"rooms_in_response",     std::to_string(rooms_in_response),                      false},
+                               {"rooms_skipped",         std::to_string(rooms_skipped),                          false},
+                               {"response_bytes",        std::to_string(body.size()),                            false}
+            });
+        }
+
         log_diagnostic("sliding_sync.response", {
                                                     {"actor",             std::string{user},                        false},
                                                     {"device_id",         std::string{device_id},                   false},
@@ -6673,7 +6738,7 @@ auto install_test_per_user_rate_limit_engine(ClientServerRuntime& runtime) -> vo
     runtime.rate_limit_engine = std::make_unique<http::RateLimitEngine<ClientServerClock>>(cfg, runtime.clock);
 }
 
-auto start_client_server(config::Config const& config) -> ClientServerStartResult
+auto start_client_server(config::Config const& config, ClientServerStartOptions options) -> ClientServerStartResult
 {
     auto started = start_runtime(config);
     if (!started.started)
@@ -6682,6 +6747,7 @@ auto start_client_server(config::Config const& config) -> ClientServerStartResul
     }
     auto rt = ClientServerRuntime{};
     rt.homeserver = std::move(started.runtime);
+    rt.sliding_sync_debug_diagnostics_enabled = options.debug_startup_enabled;
     // Snapshot the CORS policy at startup. CORS is HTTP-behaviour
     // configuration (per docs/user-manual.md) and so requires a restart to
     // take effect, matching every other HTTP-behaviour key.

@@ -115,6 +115,10 @@ struct ClientServerRuntime final
     // instance the first time something sync-relevant happens, so legacy
     // callers that never touch /sync are unaffected.
     std::unique_ptr<sync::SyncNotifier> sync_notifier{};
+    // Enabled only by the server's --debug startup argument. When enabled,
+    // Sliding Sync emits request-shape diagnostics without request bodies,
+    // connection IDs, tokens, or event content.
+    bool sliding_sync_debug_diagnostics_enabled{false};
 };
 
 // Convenience accessor that lazily attaches a SyncNotifier to the runtime
@@ -150,7 +154,15 @@ struct ClientServerStartResult final
     ClientServerRuntime runtime{};
 };
 
-[[nodiscard]] auto start_client_server(config::Config const& config) -> ClientServerStartResult;
+// Startup-only options supplied by the process entry point. They are not
+// configuration-file settings and cannot change after the runtime starts.
+struct ClientServerStartOptions final
+{
+    bool debug_startup_enabled{false};
+};
+
+[[nodiscard]] auto start_client_server(config::Config const& config, ClientServerStartOptions options = {})
+    -> ClientServerStartResult;
 [[nodiscard]] auto matrix_error(std::string_view errcode, std::string_view message) -> std::string;
 [[nodiscard]] auto matrix_error(std::string_view errcode, std::string_view message, std::uint32_t retry_after_ms)
     -> std::string;

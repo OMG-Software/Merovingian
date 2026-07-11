@@ -20,9 +20,12 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include <arpa/inet.h>
@@ -182,6 +185,36 @@ constexpr auto https_port = std::uint16_t{443U};
     request.pinned_addresses = addresses;
     request.connect_timeout_seconds = 15U;
     request.total_timeout_seconds = 60U;
+    return request;
+}
+
+// Live client-server tests receive a short-lived access token through the
+// environment so credentials are neither committed nor emitted by Catch2.
+[[nodiscard]] auto environment_value(char const* name) -> std::optional<std::string>
+{
+    auto const* value = std::getenv(name);
+    if (value == nullptr || *value == '\0')
+    {
+        return std::nullopt;
+    }
+    return std::string{value};
+}
+
+[[nodiscard]] auto make_sliding_sync_request(std::string_view target, std::string_view access_token,
+                                             std::string_view body, std::vector<std::string> const& addresses)
+    -> merovingian::http::OutboundRequest
+{
+    auto request = merovingian::http::OutboundRequest{};
+    request.method = "POST";
+    request.url = "https://pong.ping.me.uk" + std::string{target};
+    request.headers = {
+        {"Authorization", "Bearer " + std::string{access_token}},
+        {"Content-Type",  "application/json"                   }
+    };
+    request.body = std::string{body};
+    request.pinned_addresses = addresses;
+    request.connect_timeout_seconds = 15U;
+    request.total_timeout_seconds = 20U;
     return request;
 }
 
@@ -515,6 +548,81 @@ SCENARIO("Discover Merovingian via well-known", "[live][federation]")
                 auto const* server_name = string_member(*mhs, "base_url");
                 REQUIRE(server_name != nullptr);
                 REQUIRE_FALSE(server_name->empty());
+            }
+        }
+    }
+}
+
+SCENARIO("Deployed Merovingian keeps a current Sliding Sync position long-polling",
+         "[live][client-server][sliding-sync]")
+{
+    // This regression probe targets the repeated timeout=0 / timeout=30000
+    // requests reported by Element X. It creates a unique connection so it
+    // observes, but never changes, the phone's Sliding Sync state.
+    GIVEN("network access and a short-lived access token supplied through MEROVINGIAN_LIVE_ACCESS_TOKEN")
+    {
+        if (!is_reachable(merovingian_server, https_port))
+        {
+            SKIP("pong.ping.me.uk is not reachable from this environment");
+        }
+        auto const access_token = environment_value("MEROVINGIAN_LIVE_ACCESS_TOKEN");
+        if (!access_token.has_value())
+        {
+            SKIP("MEROVINGIAN_LIVE_ACCESS_TOKEN is not set");
+        }
+        auto const addresses = resolve_host(merovingian_server, https_port);
+        REQUIRE_FALSE(addresses.empty());
+
+        auto const nonce =
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
+                .count();
+        auto const body = std::string{R"({"conn_id":"live-sliding-sync-)"} + std::to_string(nonce) +
+                          R"(","lists":{"rooms":{"ranges":[[0,19]],"required_state":[],"timeline_limit":1}}})";
+
+        WHEN("an initial timeout=0 sync is followed by a 1.2-second incremental long-poll at its returned pos")
+        {
+            auto client = merovingian::http::OutboundClient{};
+            auto const initial_request =
+                make_sliding_sync_request("/_matrix/client/unstable/org.matrix.simplified_msc3575/sync?timeout=0",
+                                          *access_token, body, addresses);
+            auto const initial = client.perform(initial_request);
+
+            THEN("the initial response has a valid pos")
+            {
+                INFO("transport=" << merovingian::http::outbound_error_name(initial.error)
+                                  << " status=" << initial.response.status);
+                REQUIRE(initial.ok);
+                REQUIRE(initial.response.status == 200U);
+                auto const parsed = merovingian::canonicaljson::parse_lossless(initial.response.body);
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+                auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                REQUIRE(root != nullptr);
+                auto const* pos = string_member(*root, "pos");
+                REQUIRE(pos != nullptr);
+                REQUIRE_FALSE(pos->empty());
+
+                auto const target =
+                    "/_matrix/client/unstable/org.matrix.simplified_msc3575/sync?pos=" + *pos + "&timeout=1200";
+                auto const started_at = std::chrono::steady_clock::now();
+                auto const incremental =
+                    client.perform(make_sliding_sync_request(target, *access_token, body, addresses));
+                auto const elapsed = std::chrono::steady_clock::now() - started_at;
+
+                AND_THEN("the current position is held until the long-poll timeout, not immediately reissued")
+                {
+                    INFO("transport=" << merovingian::http::outbound_error_name(incremental.error)
+                                      << " status=" << incremental.response.status);
+                    REQUIRE(incremental.ok);
+                    REQUIRE(incremental.response.status == 200U);
+                    REQUIRE(elapsed >= std::chrono::milliseconds{900U});
+                    auto const next = merovingian::canonicaljson::parse_lossless(incremental.response.body);
+                    REQUIRE(next.error == merovingian::canonicaljson::ParseError::none);
+                    auto const* next_root = std::get_if<merovingian::canonicaljson::Object>(&next.value.storage());
+                    REQUIRE(next_root != nullptr);
+                    auto const* next_pos = string_member(*next_root, "pos");
+                    REQUIRE(next_pos != nullptr);
+                    REQUIRE_FALSE(next_pos->empty());
+                }
             }
         }
     }
