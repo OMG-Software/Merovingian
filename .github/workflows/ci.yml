@@ -441,20 +441,26 @@ jobs:
             # ships a default repo). The vmaction image exports none, so bare
             # `pkg_add clang` fails with "no pkg found for 'clang'" and the
             # build step then aborts with "missing command: clang". Point pkg_add
-            # at the pkgsrc repo for this OS release/arch. ftp.netbsd.org (the
-            # origin) is used because cdn.netbsd.org's Fastly backend has been
-            # returning 503 "Backend is unhealthy". pkgin is not used: its
-            # bootstrap (pkg_add -U pkgin) fails on this snapshot because the
-            # pkg_install>=20200701 dependency is unavailable, and it is not
-            # needed once PKG_PATH is set.
-            export PKG_PATH="https://ftp.netbsd.org/pub/pkgsrc/packages/NetBSD/$(uname -m)/$(uname -r | sed 's/_.*//')/All/"
-            # `|| true` tolerates a single missing/already-installed package so
-            # one repo hiccup does not abort the run; the build step below will
-            # fail with a clear "tool: not found" if any critical dep is absent.
-            /usr/sbin/pkg_add -U clang meson ninja-build pkgconf git bison flex gmake openssl libsodium postgresql17-client curl png libjpeg-turbo mozilla-rootcerts || true
+            # Use the CDN first and retry the origin if it is unavailable. Both
+            # endpoints are official NetBSD package mirrors; the VM occasionally
+            # sees a transient connection refusal from either one.
+            package_path="pub/pkgsrc/packages/NetBSD/$(uname -m)/$(uname -r | sed 's/_.*//')/All/"
+            install_packages() {
+              for mirror in cdn.netbsd.org ftp.netbsd.org; do
+                export PKG_PATH="https://${mirror}/${package_path}"
+                for attempt in 1 2 3; do
+                  if /usr/sbin/pkg_add -U "$@"; then
+                    return 0
+                  fi
+                  sleep $((attempt * 5))
+                done
+              done
+              return 1
+            }
+            install_packages clang meson ninja-build pkgconf git bison flex gmake openssl libsodium postgresql17-client curl png libjpeg-turbo mozilla-rootcerts
             # NetBSD base ships no CA trust store; populate /etc/openssl/certs so
             # the system-CA-trust detection test (and real TLS) has a store.
-            /usr/pkg/sbin/mozilla-rootcerts install || true
+            /usr/pkg/sbin/mozilla-rootcerts install
           run: |
             # Capture core dumps so the roaming NetBSD SIGABRT in the unit tests
             # can be backtraced instead of guessed at. NetBSD writes per-process
@@ -462,9 +468,12 @@ jobs:
             ulimit -c unlimited || true
             sysctl -w kern.defcorename=%n.core >/dev/null 2>&1 || true
             # gdb for core backtraces (best-effort). The run step is a separate
-            # shell from prepare, so PKG_PATH must be re-exported here.
-            export PKG_PATH="https://ftp.netbsd.org/pub/pkgsrc/packages/NetBSD/$(uname -m)/$(uname -r | sed 's/_.*//')/All/"
-            /usr/sbin/pkg_add -U gdb || true
+            # shell from prepare, so select an official mirror again.
+            package_path="pub/pkgsrc/packages/NetBSD/$(uname -m)/$(uname -r | sed 's/_.*//')/All/"
+            for mirror in cdn.netbsd.org ftp.netbsd.org; do
+              export PKG_PATH="https://${mirror}/${package_path}"
+              /usr/sbin/pkg_add -U gdb && break
+            done
             if ! sh scripts/build-bsd.sh --builddir build; then
                 echo "::group::NetBSD Catch2 failure report (runtime logs filtered out)"
                 if [ -f build/meson-logs/testlog.txt ]; then
