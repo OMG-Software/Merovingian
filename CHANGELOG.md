@@ -1,3 +1,13 @@
+## 0.10.41
+
+### Testing
+- **test(sync): add an opt-in live Sliding Sync long-poll probe for pong.ping.me.uk.** The test authenticates only when MEROVINGIAN_LIVE_ACCESS_TOKEN supplies a short-lived token, creates an isolated conn_id, and verifies that a current pos is held for the requested long-poll interval rather than immediately reissued. It skips without network access or a token and never logs credential or response content.
+
+### Changed
+- **docs(testing): document safe authenticated live client-server probes.**
+- **debug(sync): add startup-gated Sliding Sync response diagnostics.** Starting the server with --debug emits a request-shape summary with safe connection metadata, positions, counts, enabled extension names, and response size. It never logs connection IDs, request bodies, tokens, event content, or encryption material, and cannot be enabled through per-module log configuration.
+- **chore(release): bump version to 0.10.41 across meson.build, src/main.cpp, src/db_migrate.cpp, packaging metadata, build scripts, and CHANGELOG.md.**
+
 ## 0.10.40
 
 ### Fixed

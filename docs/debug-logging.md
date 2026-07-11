@@ -16,6 +16,20 @@ file for join-failure triage. Low-severity log batches now flush every 1 second
 or every 100 messages, whichever comes first, so a quiet debug session does not
 wait indefinitely for a severity bump or a large burst of traffic.
 
+## Sliding Sync response diagnostics (0.10.41)
+
+Starting the server with --debug additionally enables the
+client_server event=sliding_sync.debug_response record. This record is
+unavailable on a normal startup, even if configuration raises the
+client_server module's log level.
+
+It records only diagnostic metadata: whether the client used a connection ID
+(and its byte length), the requested and returned positions, request list and
+subscription counts, per-connection cursors, list-operation count, enabled
+extension names, room counts, and response byte count. It never records the
+connection ID itself, request bodies, access tokens, event content, or
+encryption material.
+
 ## Per-module level overrides (0.5.0)
 
 `--debug` lowers the **default** level to `debug` for every module that

@@ -24,6 +24,15 @@ This rule applies to:
 - Prefer one behavioral assertion group per test.
 - Security-sensitive code requires negative-path tests.
 
+## Live client-server probes
+
+Tests that exercise an authenticated endpoint on a deployed Merovingian server
+must be guarded by the build_live_tests option and read a short-lived access
+token from an environment variable. They must skip when the token is absent,
+never log the token or response content, and use a unique client-controlled
+identifier when the endpoint supports one. The Sliding Sync live probe uses
+MEROVINGIAN_LIVE_ACCESS_TOKEN.
+
 ## Conformance tests
 
 - Matrix conformance and spec-facing tests must cite the exact spec version they

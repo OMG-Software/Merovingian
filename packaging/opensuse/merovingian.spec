@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.10.40
+Version:        0.10.41
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -112,6 +112,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Sat Jul 11 2026 James Chapman <claude@ping.me.uk> - 0.10.41-1
+- test(sync): add opt-in authenticated live Sliding Sync long-poll probe.
+
 * Sat Jul 11 2026 James Chapman <claude@ping.me.uk> - 0.10.40-1
 - fix(sync): sliding sync room list now uses the persistent store as the source of truth, so rooms created on one device are visible on another device via MSC4186 sliding sync.
 

@@ -8022,6 +8022,37 @@ SCENARIO("PUT /presence/{userId}/status persists Matrix presence and rejects inv
 // already has state use conn.last_event_ordering as the baseline, returning an
 // empty rooms{} when nothing has changed.
 
+SCENARIO("Sliding Sync diagnostic fields require explicit debug startup enablement",
+         "[homeserver][sync][sliding-sync][observability]")
+{
+    GIVEN("a registration-enabled server configuration")
+    {
+        auto const config = registration_enabled_config();
+
+        WHEN("the server starts without --debug")
+        {
+            auto const started = merovingian::homeserver::start_client_server(config);
+
+            THEN("the sensitive request-shape diagnostics are disabled")
+            {
+                REQUIRE(started.started);
+                REQUIRE_FALSE(started.runtime.sliding_sync_debug_diagnostics_enabled);
+            }
+        }
+
+        WHEN("the server is started with the --debug diagnostic mode")
+        {
+            auto const started = merovingian::homeserver::start_client_server(config, {.debug_startup_enabled = true});
+
+            THEN("the runtime permits Sliding Sync diagnostic fields")
+            {
+                REQUIRE(started.started);
+                REQUIRE(started.runtime.sliding_sync_debug_diagnostics_enabled);
+            }
+        }
+    }
+}
+
 SCENARIO("Sliding sync no-pos poll returns delta on second call when nothing changed", "[sync][sliding-sync][msc4186]")
 {
     // Spec: MSC4186 — the server is expected to return the current snapshot on

@@ -48,7 +48,7 @@
 namespace
 {
 
-constexpr auto version = std::string_view{"0.10.40"};
+constexpr auto version = std::string_view{"0.10.41"};
 
 struct BootstrapConfigResult final
 {
@@ -793,7 +793,8 @@ struct ListenerBinding final
         }
     }
 
-    auto runtime_result = merovingian::homeserver::start_client_server(result.parsed.config);
+    auto runtime_result = merovingian::homeserver::start_client_server(result.parsed.config,
+                                                                       {.debug_startup_enabled = args.debug_logging});
     if (!runtime_result.started)
     {
         LOG_CRITICAL("Runtime failed to start: " + runtime_result.reason);
