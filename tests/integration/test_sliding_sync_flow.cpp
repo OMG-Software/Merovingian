@@ -31,6 +31,10 @@ using namespace merovingian::tests;
     };
 }
 
+// Log in an already-registered user; returns the access token for subsequent requests.
+[[nodiscard]] auto login(merovingian::homeserver::ClientServerRuntime& rt, std::string_view localpart,
+                         std::string_view password, std::string_view device_id) -> std::string;
+
 // Register and log in; returns the access token for subsequent requests.
 [[nodiscard]] auto register_and_login(merovingian::homeserver::ClientServerRuntime& rt, std::string_view localpart,
                                       std::string_view password, std::string_view device_id) -> std::string
@@ -38,7 +42,13 @@ using namespace merovingian::tests;
     auto const reg = merovingian::homeserver::handle_client_server_request(
         rt, {"POST", "/_matrix/client/v3/register", {}, merovingian::tests::registration_json(localpart, password)});
     REQUIRE(reg.response.status == 200U);
+    return login(rt, localpart, password, device_id);
+}
 
+// Log in an already-registered user; returns the access token for subsequent requests.
+[[nodiscard]] auto login(merovingian::homeserver::ClientServerRuntime& rt, std::string_view localpart,
+                         std::string_view password, std::string_view device_id) -> std::string
+{
     auto const login_body = std::string{R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@)"} +
                             std::string{localpart} + ":example.org\"},\"password\":\"" + std::string{password} +
                             "\",\"device_id\":\"" + std::string{device_id} + "\"}";
@@ -852,6 +862,64 @@ SCENARIO("simplified_msc3575 sync rejects overlapping list ranges with 400", "[h
                 auto const* errcode = string_member(obj, "errcode");
                 REQUIRE(errcode != nullptr);
                 REQUIRE(*errcode == "M_BAD_JSON");
+            }
+        }
+    }
+}
+
+SCENARIO("MSC4186 sliding sync shows rooms created on another device of the same user",
+         "[homeserver][sliding-sync][integration][cross-device]")
+{
+    GIVEN("a user who created a room on a desktop device")
+    {
+        auto const config = sliding_sync_config();
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+
+        auto constexpr password = "CorrectHorse7!";
+        auto const desktop_token = register_and_login(rt, "alice", password, "DESKTOP");
+        auto const room_id = create_room(rt, desktop_token);
+
+        WHEN("the same user logs in on a mobile device and issues sliding sync")
+        {
+            auto const mobile_token = login(rt, "alice", password, "MOBILE");
+            auto const result = sliding_sync(rt, mobile_token, R"({"lists":{"rooms":{"ranges":[[0,9]]}}})");
+
+            THEN("the response is 200 and the list contains the room created on the desktop")
+            {
+                REQUIRE(result.response.status == 200U);
+                auto const ops = list_ops(result.response.body, "rooms");
+                REQUIRE(ops.has_value());
+                REQUIRE(!ops->empty());
+
+                auto const found = std::ranges::any_of(*ops, [&](auto const& val) {
+                    auto const* op_obj = std::get_if<merovingian::canonicaljson::Object>(&val.storage());
+                    if (op_obj == nullptr)
+                        return false;
+                    auto const* op_name = string_member(*op_obj, "op");
+                    if (op_name == nullptr || *op_name != "SYNC")
+                        return false;
+                    auto const* ids = object_member_as_array(*op_obj, "room_ids");
+                    if (ids == nullptr)
+                        return false;
+                    return std::ranges::any_of(*ids, [&](auto const& id_val) {
+                        auto const* s = std::get_if<std::string>(&id_val.storage());
+                        return s != nullptr && *s == room_id;
+                    });
+                });
+                REQUIRE(found);
+            }
+
+            THEN("the rooms object contains the room with initial = true")
+            {
+                REQUIRE(result.response.status == 200U);
+                auto const rooms = rooms_object(result.response.body);
+                auto const* rm = object_member_as_object(rooms, room_id);
+                REQUIRE(rm != nullptr);
+                auto const* initial = bool_member(*rm, "initial");
+                REQUIRE(initial != nullptr);
+                REQUIRE(*initial == true);
             }
         }
     }

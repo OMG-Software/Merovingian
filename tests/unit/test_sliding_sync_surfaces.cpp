@@ -102,6 +102,11 @@ SCENARIO("Sliding sync room lists apply DM and room metadata filters before sort
         };
 
         auto store = merovingian::database::PersistentStore{};
+        store.rooms = {
+            {"!alpha:example.org", "@alice:example.org"},
+            {"!beta:example.org",  "@alice:example.org"},
+            {"!gamma:example.org", "@alice:example.org"},
+        };
         store.memberships = {
             {"!alpha:example.org", "@alice:example.org", "join", 1U},
             {"!beta:example.org",  "@alice:example.org", "join", 2U},
@@ -183,6 +188,11 @@ SCENARIO("Sliding sync room lists emit incremental sync ops when notification an
         };
 
         auto store = merovingian::database::PersistentStore{};
+        store.rooms = {
+            {"!alpha:example.org", "@alice:example.org"},
+            {"!beta:example.org",  "@alice:example.org"},
+            {"!gamma:example.org", "@alice:example.org"},
+        };
         store.memberships = {
             {"!alpha:example.org", "@alice:example.org", "join", 1U},
             {"!beta:example.org",  "@alice:example.org", "join", 2U},
@@ -236,6 +246,48 @@ SCENARIO("Sliding sync room lists emit incremental sync ops when notification an
                                                            "!beta:example.org",
                                                            "!gamma:example.org",
                                                        });
+            }
+        }
+    }
+}
+
+SCENARIO("Sliding sync room list uses the persistent store as the source of truth, not the runtime cache",
+         "[sync][sliding-sync][room-list]")
+{
+    GIVEN("a joined room that exists only in the persistent store, not the runtime cache")
+    {
+        auto runtime = merovingian::homeserver::HomeserverRuntime{};
+        // runtime.database.rooms is intentionally left empty to simulate a
+        // stale or unhydrated runtime cache.
+
+        auto store = merovingian::database::PersistentStore{};
+        store.rooms = {
+            {"!alpha:example.org", "@alice:example.org"},
+        };
+        store.memberships = {
+            {"!alpha:example.org", "@alice:example.org", "join", 1U},
+        };
+        append_event(store, "$alpha-name", "!alpha:example.org", R"({"type":"m.room.name","content":{"name":"Alpha"}})",
+                     1U);
+        append_state(store, "!alpha:example.org", "m.room.name", "", "$alpha-name");
+
+        auto list = merovingian::sync::SlidingSyncList{};
+        list.ranges = {
+            {0U, 9U}
+        };
+        list.sort = {"by_name"};
+
+        WHEN("the room list is computed for Alice")
+        {
+            auto const result = merovingian::sync::compute_room_list(runtime, "@alice:example.org", list, {}, store);
+
+            THEN("the room is still visible because the persistent store is authoritative")
+            {
+                REQUIRE(result.count == 1U);
+                REQUIRE(result.windowed_room_ids == std::vector<std::string>{"!alpha:example.org"});
+                REQUIRE(result.ops.size() == 1U);
+                REQUIRE(result.ops.front().op == "SYNC");
+                REQUIRE(result.ops.front().room_ids == std::vector<std::string>{"!alpha:example.org"});
             }
         }
     }

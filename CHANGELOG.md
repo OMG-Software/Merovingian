@@ -1,3 +1,14 @@
+## 0.10.40
+
+### Fixed
+- **fix(sync): sliding sync room list now uses the persistent store as the source of truth.** `compute_room_list` previously enumerated joined rooms from the runtime cache (`rt.database.rooms`) while reading membership and metadata from the persistent store. This caused rooms to disappear from sliding sync when the runtime cache was stale or unhydrated, notably making rooms created on one device invisible to a second device using MSC4186 sliding sync. The room list is now built directly from `store.rooms` and `store.memberships`, matching the database of record.
+
+### Testing
+- **test(sync): unit and integration coverage for cross-device sliding sync visibility.** A new unit test proves `compute_room_list` still reports a room that exists only in the persistent store, and a new integration test verifies that a room created on a desktop device appears in the sliding sync response for the same user on a mobile device.
+
+### Changed
+- **chore(release): bump version to 0.10.40 across `meson.build`, `src/main.cpp`, `src/db_migrate.cpp`, packaging metadata, build scripts, and `CHANGELOG.md`.**
+
 ## 0.10.39
 
 ### Fixed
