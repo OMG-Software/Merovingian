@@ -3,7 +3,7 @@
 # Build an RPM package for merovingian 0.10.38 using rpmbuild.
 set -e
 
-VERSION="0.10.41"
+VERSION="0.10.42"
 
 # 1. Create rpmbuild directory tree
 mkdir -p "${HOME}/rpmbuild/BUILD"

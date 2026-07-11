@@ -245,6 +245,17 @@ struct SlidingSyncResponse final
 // Connection state (stored in HomeserverRuntime)
 // ──────────────────────────────────────────────────────────────────────────────
 
+// State produced for a response but not yet acknowledged by a later request.
+// The client acknowledges this snapshot by supplying response_pos as its pos.
+struct SlidingSyncPendingResponse final
+{
+    std::string response_pos{};
+    std::map<std::string, std::vector<std::string>> list_prev_windows{};
+    std::unordered_map<std::string, std::uint64_t> rooms_seen{};
+    std::uint64_t last_event_ordering{0U};
+    std::uint64_t last_sync_stream_id{0U};
+};
+
 // Per-connection state required to compute incremental ops and the initial flag.
 // Key in HomeserverRuntime::sliding_sync_connections:
 //   user_id + "/" + device_id + "/" + (conn_id ?? "__default__")
@@ -258,9 +269,12 @@ struct SlidingSyncConnectionState final
     // the server compute per-room deltas and avoid re-sending unchanged rooms
     // when the global pos lags behind a room's last inclusion.
     std::unordered_map<std::string, std::uint64_t> rooms_seen{};
-    // Stream position at the end of the last response (used for delta queries).
+    // Stream position at the end of the last acknowledged response.
     std::uint64_t last_event_ordering{0U};
     std::uint64_t last_sync_stream_id{0U};
+    // A response is not committed until the client acknowledges its position.
+    // This preserves the full snapshot for cancelled/retried requests.
+    std::optional<SlidingSyncPendingResponse> pending_response{};
     // Wall clock of the last request; connections idle > 1 h are evicted.
     std::chrono::steady_clock::time_point last_used{};
 };

@@ -440,4 +440,7 @@ updated ops) rather than retransmitting the full window every time.
 Connection state is stored in `HomeserverRuntime::sliding_sync_connections`
 (`include/merovingian/homeserver/runtime.hpp`). Connections are keyed by
 `"{user_id}/{device_id}/{conn_id_or___default__}"` and track previous list windows,
-rooms seen, and the last event ordering seen.
+rooms seen, and the last event ordering seen. A response remains pending until
+a later request supplies its `pos`; a retry with the prior position is built
+from the last acknowledged snapshot so an interrupted initial response cannot
+lose the room window.

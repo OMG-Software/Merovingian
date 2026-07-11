@@ -3774,6 +3774,23 @@ namespace
         auto& conn = rt.homeserver.sliding_sync_connections[conn_key];
         conn.last_used = std::chrono::steady_clock::now();
 
+        // MSC4186 does not let a server assume that a completed HTTP response
+        // reached the client. Only a later request carrying the returned pos
+        // acknowledges it. Keep retries on the committed snapshot so a
+        // cancelled initial response cannot turn into an empty room window.
+        if (conn.pending_response.has_value())
+        {
+            auto const requested_pos = pos.has_value() ? sync::encode_stream_token(*pos) : std::string{};
+            if (!pos.has_value() || requested_pos == conn.pending_response->response_pos)
+            {
+                conn.list_prev_windows = std::move(conn.pending_response->list_prev_windows);
+                conn.rooms_seen = std::move(conn.pending_response->rooms_seen);
+                conn.last_event_ordering = conn.pending_response->last_event_ordering;
+                conn.last_sync_stream_id = conn.pending_response->last_sync_stream_id;
+                conn.pending_response.reset();
+            }
+        }
+
         // When the client omits pos (a timeout=0 poll that always requests an
         // immediate snapshot without a since-token) but this connection already
         // has state from a previous response, use the connection's last-known
@@ -4052,19 +4069,25 @@ namespace
 
         // ── Update connection state ──────────────────────────────────────────
 
+        auto next_state = sync::SlidingSyncPendingResponse{};
+        next_state.response_pos = new_pos;
+        next_state.list_prev_windows = conn.list_prev_windows;
+        next_state.rooms_seen = conn.rooms_seen;
+        next_state.last_event_ordering = cur_event;
+        next_state.last_sync_stream_id = cur_sync;
+
         for (auto const& room_id : response_room_ids)
         {
             // Record the snapshot ordering at which this room was last returned to
             // this connection.  Future requests on the same connection will treat
             // this as the delta floor, not the global request pos.
-            conn.rooms_seen[room_id] = cur_event;
+            next_state.rooms_seen[room_id] = cur_event;
         }
-        for (auto& [lname, result] : list_results)
+        for (auto const& [lname, result] : list_results)
         {
-            conn.list_prev_windows[lname] = std::move(result.windowed_room_ids);
+            next_state.list_prev_windows[lname] = result.windowed_room_ids;
         }
-        conn.last_event_ordering = cur_event;
-        conn.last_sync_stream_id = cur_sync;
+        conn.pending_response = std::move(next_state);
 
         return DispatchResult{
             DispatchResult::Status::complete, {200U, std::move(body)},
