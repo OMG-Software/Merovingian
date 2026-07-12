@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.10.45
+Version:        0.10.46
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -101,6 +101,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Sun Jul 12 2026 James Chapman <claude@ping.me.uk> - 0.10.46-1
+- docs: fix accuracy errors and gaps found in a full documentation audit.
+
 * Sat Jul 11 2026 James Chapman <claude@ping.me.uk> - 0.10.45-1
 - fix(sync): route stable POST /_matrix/client/v4/sync and accept body-level pos/timeout; accept singular range in sliding sync lists.
 

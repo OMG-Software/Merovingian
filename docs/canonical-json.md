@@ -17,8 +17,12 @@ Implemented now:
 - duplicate object-key rejection during parsing and serialization
 - UTF-8 validation for parsed strings
 - Unicode escape decoding, including surrogate pairs
-- signed 64-bit integer range enforcement
-- rejection of floating-point/exponent numbers
+- JS-safe-integer range enforcement (`[-(2^53)+1, (2^53)-1]`) for the strict
+  signing parser
+- rejection of floating-point/exponent numbers in the strict signing parser
+- a second general-purpose parser (`parse_json()`, alongside the strict
+  `parse_lossless()`) that preserves doubles and exponent notation for
+  non-signing payloads such as account data and `m.tag` room tags
 - stable parser and serializer error names
 - signable object view scaffolding
 - Matrix-style fixture tests
@@ -55,10 +59,13 @@ No `yyjson_*` type is exposed outside the canonical JSON implementation.
 
 ## Numeric policy
 
-Only signed 64-bit integers are accepted in the current implementation.
-Floating-point values, exponent notation, and unsigned values outside the
-signed 64-bit range are rejected even though `yyjson` can parse broader JSON
-number forms. This keeps Matrix signing inputs lossless and deterministic.
+The strict signing parser (`parse_lossless()`) only accepts integers within
+the JS-safe-integer range `[-(2^53)+1, (2^53)-1]`. Floating-point values,
+exponent notation, and integers outside that range are rejected even though
+`yyjson` can parse broader JSON number forms. This keeps Matrix signing
+inputs lossless and deterministic. The separate general-purpose parser
+(`parse_json()`) accepts doubles and exponent notation for payloads that are
+never signed.
 
 ## Signable object view
 

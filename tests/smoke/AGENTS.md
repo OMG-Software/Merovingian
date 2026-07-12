@@ -7,11 +7,18 @@ They are the first line of defence: if smoke tests fail, nothing else matters.
 
 Smoke tests check that:
 - The server binary starts without crashing
-- The HTTP listener accepts connections
-- `/_matrix/client/versions` returns a valid response
-- The database migration completes cleanly
+- `--help`, `--version`, `--dry-run`, `--check-config`, and `--plan-config-reload`
+  behave as documented from the CLI
+- Config validation and the database migration path complete cleanly
 
-They do **not** test correctness — that is covered by unit and conformance tests.
+They do **not** exercise a live HTTP listener — that end-to-end path (real TCP/TLS
+listener, `/_matrix/client/versions`) is covered by
+`tests/integration/test_http_server_listener_flow.cpp`, and the full
+vertical-slice startup flow (`run_local_smoke_flow` /
+`local_smoke_flow.cpp` in `src/homeserver/`) is exercised from
+`tests/integration/test_homeserver_vertical_slice_flow.cpp`, not from this
+directory. Smoke tests here do **not** test correctness — that is covered by
+unit and conformance tests.
 
 ## Rules
 
@@ -22,5 +29,6 @@ They do **not** test correctness — that is covered by unit and conformance tes
 
 ## Triggering
 
-Smoke tests run as part of `python build.py` via `local_smoke_flow.cpp` in `src/homeserver/`.
-They are also runnable standalone via the built binary with the `--smoke` flag.
+Smoke tests are shell-script probes of CLI behavior registered in
+`tests/smoke/meson.build` and run as part of `python build.py`. There is no
+`--smoke` binary flag; the server binary does not accept one.

@@ -83,6 +83,16 @@ production-gated.
   `auth::constant_time_equal`, backed by `sodium_memcmp`) on every fixed-length hash match —
   the access/refresh store lookups and the in-memory session match — not just the canonical
   policy helper.
+- Device-list stream tokens and cross-device key update semantics: `build_device_list_arrays()`
+  populates `/sync`'s `device_lists.changed`/`left` from `store.device_list_changes` filtered
+  by `since_sync_stream_id`, and `broadcast_device_list_updates()` emits `m.device_list_update`
+  EDUs on cross-signing/key changes. Per-algorithm `device_one_time_keys_count` is wired into
+  `/sync` as well.
+- Key-backup retrieval and deletion: `handle_key_api_route()` implements
+  `get_key_backup_version`, `get_key_backup_version_by_id`, `get_room_key_backup`
+  (session/room/batch), `get_room_key_backup_batch`, `delete_room_key_backup`,
+  `delete_room_key_backup_room`, and `delete_room_key_backup_batch`, all reading/writing real
+  session rows from `persistent_store.key_backup_sessions`.
 
 ## Security posture
 
@@ -118,16 +128,14 @@ These remain deferred:
 - Full Matrix UI-auth fallback flows and account recovery endpoints.
 - Admin bootstrap flow.
 - Rate-limit integration.
-- Device-list stream tokens and cross-device key update semantics.
-- Complete backup retrieval/deletion semantics.
 
 ## Next starting points
 
 1. Add a reviewed crypto dependency boundary for random token generation and password hashing.
-2. Add Matrix device-list update stream semantics and full key-count responses.
-3. Complete backup retrieval/deletion semantics.
-4. Extend conformance fixtures beyond the beta auth/device/key happy paths into
+2. Extend conformance fixtures beyond the beta auth/device/key happy paths into
    UI auth, interactive auth, and negative-device-list cases.
 
-- /keys/upload validates that every one-time and fallback key carries a signature by the device's own ed25519 identity key, rejecting unverifiable keys with 400 M_INVALID_SIGNATURE. This prevents stale device rows from leaving behind SignedKeys that no peer can verify at /keys/claim time, which would block the Olm session for the whole room's Megolm distribution.
-- /keys/query returns persisted device keys, and /keys/claim consumes
+`/keys/upload` validates that every one-time and fallback key carries a signature by the
+device's own Ed25519 identity key, rejecting unverifiable keys with `400 M_INVALID_SIGNATURE`.
+This prevents stale device rows from leaving behind signed keys that no peer can verify at
+`/keys/claim` time, which would block the Olm session for the whole room's Megolm distribution.

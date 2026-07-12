@@ -45,7 +45,7 @@ log_modules.rate_limit=debug
 
 ## Audit-routed failure lines
 
-The five high-signal failure call sites emit a structured log line
+The seven high-signal failure call sites emit a structured log line
 **and** append a row to `audit_log` at the same instant:
 
 | Logger | Audit event type | Audit category |
@@ -54,6 +54,8 @@ The five high-signal failure call sites emit a structured log line
 | `auth` | `login.rejected` | `auth` |
 | `auth` | `access_token.rejected` | `auth` |
 | `client_server` | `request.rejected` | `policy` |
+| `client_server` | `request.user_locked` | `auth` |
+| `client_server` | `request.user_suspended` | `auth` |
 | `auth` | `registration_policy.denied` | `policy` |
 
 `log_diagnostic_audit` is the helper. It is the **only** path that

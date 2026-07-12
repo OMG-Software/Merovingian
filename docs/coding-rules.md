@@ -10,6 +10,14 @@ Rules:
 - Format C++ code with clang-format using the .clang-format file in the project root.
 - Never code against `main` (it's blocked for merge), always use an alternate branch and open a pull request.
 - Comment functions with a brief 2 line explanation of why the function is needed.
+- Member variables must use `m_` prefix.
+- Local project includes use `""`.
+- Third-party includes use `<>`.
+- Standard library includes use `<>`.
+- Include ordering must be:
+  1. local project includes
+  2. third-party includes
+  3. standard library includes
 
 
 ## Tests
