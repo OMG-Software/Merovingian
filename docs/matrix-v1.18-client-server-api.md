@@ -4,12 +4,12 @@
 
 ## Source
 
-- Official OpenAPI document: matrix-v1.18-spec/client-server-api.md
-- Human-readable reference: matrix-v1.18-spec/client-server-api.md
+- Official OpenAPI document: https://spec.matrix.org/v1.18/client-server-api/api.json
+- Human-readable reference: https://spec.matrix.org/v1.18/client-server-api/
 - OpenAPI: 3.1.0
 - Title: Matrix Client-Server API
 - Version: v1.18
-- Generated: 2026-05-21
+- Generated: 2026-07-12
 - Source SHA-256: `2d5c59705e40bd4570b1d78908b57d9a5a7f3d7975a2ac3db8699d7d5c754604`
 
 ## Summary
@@ -228,8 +228,6 @@
 | `POST` | `/_matrix/client/v3/rooms/{roomId}/kick` | `kick` | access token | required application/json | 200, 403 |
 | `POST` | `/_matrix/client/v3/rooms/{roomId}/leave` | `leaveRoom` | access token | required application/json | 200, 429 |
 | `POST` | `/_matrix/client/v3/rooms/{roomId}/unban` | `unban` | access token | required application/json | 200, 403 |
-
-`leaveRoom` is implemented as an idempotent client operation: when the caller is already effectively out of the room, Merovingian still returns `200 {}` instead of surfacing stale local membership state back to the client.
 
 ## Room participation
 
@@ -453,36 +451,7 @@ fields in the JSON body. The server prefers query parameters when both are prese
 
 | Op | Description |
 | --- | --- |
-| `SYNC` | A range window is being sent in full. `range` and `room_ids` are populated. |
-| `INVALIDATE` | A previously sent range is now invalid. `range` is populated; `room_ids` is absent. |
-| `INSERT` | A single room was inserted at `index`. |
-| `DELETE` | The room at `index` was removed. |
-| `UPDATE` | The room at `index` changed without moving. |
-
-#### Connection state
-
-The server maintains per-connection state keyed by `user_id/device_id/conn_id`. This allows
-the server to send only incremental updates on subsequent requests (new rooms, changed rooms,
-updated ops) rather than retransmitting the full window every time.
-
-Connection state is stored in `HomeserverRuntime::sliding_sync_connections`
-(`include/merovingian/homeserver/runtime.hpp`). Connections are keyed by
-`"{user_id}/{device_id}/{conn_id_or___default__}"` and track previous list windows,
-rooms seen, and the last event ordering seen. A response remains pending until
-a later request supplies a distinct returned `pos`; when the returned position
-equals the request position, it is conservatively replayed because a retry is
-otherwise indistinguishable from an acknowledgement. This preserves the room
-window after an interrupted initial response.
-
-If a client position is ahead of a reconstructed server watermark (for example,
-immediately after restart), each component of the returned position is floored
-at the corresponding requested component. This prevents clients from rejecting
-a regressing opaque cursor and retrying the request in a tight loop.
-
-When a connection has not yet seen a room, the room is treated as an initial
-snapshot regardless of any `pos` supplied by the client. The per-room `since`
-floor is `0` for initial rooms and only applies the request `pos` to rooms that
-have already been returned on this connection. This handles Element X creating a
-new `conn_id` while reusing a position from an earlier connection: the new
-connection receives full room state and unread counts instead of a truncated
-delta.
+| `SYNC` | Replace the room list window with the supplied room IDs. |
+| `INSERT` | Insert a room ID at the supplied index. |
+| `DELETE` | Remove the room ID at the supplied index. |
+| `UPDATE` | Move a room ID from one index to another. |
