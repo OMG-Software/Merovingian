@@ -8604,3 +8604,96 @@ SCENARIO("Sliding sync fresh connection with a reused pos returns all rooms as i
         }
     }
 }
+
+SCENARIO("Sliding sync stable v4 endpoint accepts a singular range and body-level timeout",
+         "[sync][sliding-sync][msc4186]")
+{
+    // Spec: MSC4186 §Stable endpoint is POST /_matrix/client/v4/sync. Element X
+    // uses "range" (singular) and body-level "timeout" rather than query params.
+    GIVEN("alice has one joined room")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const alice_reg = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/register", {}, registration_json("alice", "CorrectHorse7!")});
+        REQUIRE(alice_reg.response.status == 200U);
+        auto const alice_token = login_token(alice_reg.response.body);
+
+        auto const create = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", alice_token, R"({"preset":"public_chat"})"});
+        REQUIRE(create.response.status == 200U);
+        auto const rid = room_id(create.response.body);
+
+        WHEN("she syncs via v4 with a singular range")
+        {
+            auto const resp = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST", "/_matrix/client/v4/sync", alice_token,
+                 R"({"conn_id":"v4","timeout":0,"lists":{"0":{"range":[0,19],"required_state":[],"timeline_limit":1}}})"});
+            REQUIRE(resp.response.status == 200U);
+
+            THEN("the joined room appears in rooms and the list count is 1")
+            {
+                auto const body = parse_object(resp.response.body);
+                auto const* rooms = object_member_as_object(body, "rooms");
+                REQUIRE(rooms != nullptr);
+                REQUIRE(rooms->size() == 1U);
+
+                auto const* lists = object_member_as_object(body, "lists");
+                REQUIRE(lists != nullptr);
+                auto const* list0 = object_member_as_object(*lists, "0");
+                REQUIRE(list0 != nullptr);
+                auto const* count_val = int_member(*list0, "count");
+                REQUIRE(count_val != nullptr);
+                REQUIRE(*count_val == 1);
+            }
+        }
+    }
+}
+
+SCENARIO("Sliding sync body-level pos and timeout are honoured on the simplified_msc3575 path",
+         "[sync][sliding-sync][msc4186]")
+{
+    // Spec: newer MSC4186 clients put pos and timeout in the JSON body.
+    GIVEN("alice has one joined room and a pos from an initial sync")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const alice_reg = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/register", {}, registration_json("alice", "CorrectHorse7!")});
+        REQUIRE(alice_reg.response.status == 200U);
+        auto const alice_token = login_token(alice_reg.response.body);
+
+        auto const create = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", alice_token, R"({"preset":"public_chat"})"});
+        REQUIRE(create.response.status == 200U);
+
+        auto const seed_resp = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST", "/_matrix/client/unstable/org.matrix.msc4186/sync", alice_token,
+             R"({"conn_id":"body-pos","lists":{"0":{"ranges":[[0,19]],"required_state":[],"timeline_limit":1}}})"});
+        REQUIRE(seed_resp.response.status == 200U);
+        auto const seed_pos = extract_pos(seed_resp.response.body);
+        REQUIRE_FALSE(seed_pos.empty());
+
+        WHEN("the next request supplies pos and timeout in the body with a singular range")
+        {
+            auto const body = std::string{"{\"conn_id\":\"body-pos\",\"pos\":\""} + seed_pos +
+                              R"(","timeout":0,"lists":{"0":{"range":[0,19],"required_state":[],"timeline_limit":1}}})";
+            auto const resp = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/unstable/org.matrix.simplified_msc3575/sync", alice_token, body});
+            REQUIRE(resp.response.status == 200U);
+
+            THEN("the server acknowledges the body-level pos and returns a non-regressing position")
+            {
+                auto const returned_pos = extract_pos(resp.response.body);
+                REQUIRE_FALSE(returned_pos.empty());
+                REQUIRE(returned_pos == seed_pos);
+            }
+        }
+    }
+}

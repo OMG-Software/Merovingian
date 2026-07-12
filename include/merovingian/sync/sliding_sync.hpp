@@ -123,6 +123,10 @@ struct SlidingSyncRequest final
     std::map<std::string, SlidingSyncList> lists{};
     std::map<std::string, SlidingSyncRoomSubscription> room_subscriptions{};
     std::optional<SlidingSyncExtensionRequests> extensions{};
+    // Newer MSC4186 drafts (and Element X) move pos and timeout into the body.
+    // These are used when the query parameters are absent.
+    std::optional<std::string> pos{};
+    std::optional<std::uint64_t> timeout{};
 };
 
 // ──────────────────────────────────────────────────────────────────────────────
