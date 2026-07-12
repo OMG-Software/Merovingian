@@ -1,28 +1,24 @@
 # Coding Rules
 
+Style-only conventions (member naming, include ordering, quoting) live in
+[`docs/coding-rules.md`](../docs/coding-rules.md) — this file is security-only,
+so every entry below cites the CWE or named vulnerability class it prevents.
+
 ## Mandatory rules
 
 - Security defects block release.
-- RAII everywhere.
-- References preferred over pointers.
-- No raw owning pointers.
-- No naked `new` or `delete`.
-- No manual `malloc` or `free` outside reviewed low-level wrappers.
-- No unchecked narrowing conversions.
-- Member variables must use `m_` prefix.
-- Local project includes use `""`.
-- Third-party includes use `<>`.
-- Standard library includes use `<>`.
-- Include ordering must be:
-  1. local project includes
-  2. third-party includes
-  3. standard library includes
-- No logging secrets.
-- No logging access tokens, refresh tokens, signing keys, device keys, encrypted payloads, authorization headers, or plaintext message content.
-- No parser without fuzz coverage.
-- No protocol feature without tests.
-- No dependency without review.
-- Warnings are errors.
+- RAII everywhere (CWE-401 Missing Release of Memory, CWE-459 Incomplete Cleanup).
+- References preferred over pointers (CWE-476 NULL Pointer Dereference).
+- No raw owning pointers (CWE-401 Missing Release of Memory, CWE-416 Use After Free).
+- No naked `new` or `delete` (CWE-415 Double Free, CWE-416 Use After Free).
+- No manual `malloc` or `free` outside reviewed low-level wrappers (CWE-415 Double Free, CWE-416 Use After Free, CWE-401 Missing Release of Memory).
+- No unchecked narrowing conversions (CWE-197 Numeric Truncation Error).
+- No logging secrets (CWE-532 Insertion of Sensitive Information into Log File).
+- No logging access tokens, refresh tokens, signing keys, device keys, encrypted payloads, authorization headers, or plaintext message content (CWE-532 Insertion of Sensitive Information into Log File).
+- No parser without fuzz coverage (CWE-20 Improper Input Validation).
+- No protocol feature without tests (correctness gate for CWE-20 Improper Input Validation and CWE-863 Incorrect Authorization surfaces reachable through protocol handling).
+- No dependency without review (CWE-1104 Use of Unmaintained Third Party Components / supply-chain risk).
+- Warnings are errors (compiler diagnostics catch instances of the above classes at build time; treating them as non-fatal reintroduces the same bug classes).
 
 ## Ownership policy
 

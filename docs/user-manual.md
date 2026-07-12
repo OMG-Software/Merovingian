@@ -856,25 +856,29 @@ connected to SIGHUP, an admin socket, or any external control API.
 
 ### Startup hardening self-check
 
-Startup logs a fixed checklist of hardening signals. Several checks currently
-report `unknown` because the runtime probe is not yet implemented for that
-platform; `unknown` is not a success claim, it marks work that still needs a
-platform-specific probe or sandbox setup.
+Startup logs a fixed checklist of hardening signals and refuses to start
+unless every check reports `enabled` (`src/main.cpp`). Most checks are real
+compile-time macros or runtime probes (ELF inspection, `/proc/self/status`,
+`pledge`/Capsicum queries, `getrlimit`/`prctl`); a check reports `unknown`
+only when its probe cannot run on the current platform (e.g. the Linux-only
+probes on non-Linux, non-BSD platforms), never as a placeholder.
 
 | Check | Current signal source |
 |---|---|
-| `compiler hardening` | Placeholder, currently `unknown` |
-| `linker hardening` | Placeholder, currently `unknown` |
-| `PIE` | Compile-time macro when available, otherwise `unknown` |
-| `RELRO` | Placeholder, currently `unknown` |
-| `stack protector` | Compile-time macro when available, otherwise `unknown` |
-| `FORTIFY_SOURCE` | Compile-time macro when available, otherwise `unknown` |
-| `seccomp` | Placeholder, currently `unknown` |
-| `pledge/unveil` | Placeholder, currently `unknown` |
-| `capsicum` | Placeholder, currently `unknown` |
-| `privilege drop` | Placeholder, currently `unknown` |
-| `filesystem restrictions` | Placeholder, currently `unknown` |
-| `core dump policy` | Placeholder, currently `unknown` |
+| `compiler hardening` | Compile-time stack-protector + FORTIFY_SOURCE + PIE macros |
+| `linker hardening` | ELF probe (RELRO, bind-now, noexecstack); `unknown` for statically-linked binaries |
+| `PIE` | ELF probe; `unknown` if the probe cannot run or the binary is static |
+| `RELRO` | ELF probe |
+| `stack protector` | Compile-time macro |
+| `FORTIFY_SOURCE` | Compile-time macro |
+| `seccomp` | Runtime probe via `/proc/self/status` (Linux); `unknown` if the filter isn't applied or the platform isn't Linux |
+| `pledge/unveil` | Runtime probe on OpenBSD; reports `enabled` (not applicable) on other platforms |
+| `capsicum` | Runtime probe on FreeBSD; reports `enabled` (not applicable) on other platforms |
+| `privilege drop` | Runtime non-root check on Linux; `unknown` on platforms without a probe |
+| `filesystem restrictions` | Runtime non-root check on Linux; `unknown` on platforms without a probe |
+| `core dump policy` | `getrlimit(RLIMIT_CORE)` probe on Linux; `unknown` elsewhere |
+| `no_new_privs` | `PR_SET_NO_NEW_PRIVS` probe on Linux; `unknown` elsewhere |
+| `capability bounding` | Capability bounding-set drop probe on Linux; `unknown` elsewhere |
 | `secret redaction policy` | Enabled by validated logging defaults |
 
 ### Production packaging
@@ -1777,8 +1781,9 @@ Restart the server for log-module changes to take effect. See
 ### Audit log
 
 High-signal events (rate-limit hits, login rejections, access-token rejections,
-request rejections, registration policy denials) are written to the structured
-audit log. Query it through the admin endpoint:
+request rejections, locked/suspended-account request rejections, registration
+policy denials) are written to the structured audit log. Query it through the
+admin endpoint:
 
 ```sh
 curl 'http://127.0.0.1:8008/_merovingian/admin/audit?category=policy'

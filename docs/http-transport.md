@@ -32,7 +32,13 @@ Implemented now:
 - OpenSSL-backed TLS server context and connection wrappers, with OpenSSL
   resolved from the operating-system package
 - TLS listener accept path with bounded handshake timeout
-- single-mutex serialisation of runtime mutation across acceptors
+- per-room striped mutex serialisation of runtime mutation (256-way stripe
+  keyed by room ID; see [`docs/architecture.md`](architecture.md) "Per-room
+  inbound PDU ingestion") so independent rooms can prepare, commit, and apply
+  concurrently instead of serialising on one global mutex
+- a dedicated `sync_pool` (32 threads by default) separate from the main
+  request pool, so long-polling `/sync` clients cannot starve federation and
+  other short-lived requests
 - self-sufficient CORS emission: every response carries
   `Access-Control-Allow-Origin` and `Vary: Origin`; `OPTIONS` preflight
   responses additionally carry `Access-Control-Allow-Methods`,
@@ -225,6 +231,17 @@ an attacker able to reach a trusted proxy (or a proxy that fails to overwrite
 an inbound `X-Forwarded-For` header) could rotate through malformed
 pseudo-IP values to mint a fresh rate-limit bucket per request and defeat
 per-IP limiting on `/login`, `/register`, and every other endpoint entirely.
+
+## Sync long-poll thread pool
+
+`/sync` long-polls are dispatched to a dedicated `sync_pool` (32 threads),
+separate from the main request pool (8 threads) that serves every other
+client-server and federation request. This split exists because a burst of
+long-polling clients on the main pool could previously exhaust it entirely,
+starving federation and other short-lived requests. See
+[`docs/architecture.md`](architecture.md) "Runtime model" for the full pool
+layout and [`src/sync/AGENTS.md`](../src/sync/AGENTS.md) for sync-specific
+conventions.
 
 ## Fuzzing
 

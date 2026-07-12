@@ -11,9 +11,14 @@ be published as production releases while any blocking gate remains open.
   deployments.~~ Implemented with explicit `reverse_proxy` declaration.
 - Complete full Matrix v1.18 conformance, persistence, endpoint coverage, and
   production-grade rate limiting for client-server routes.
-- Store access tokens only as versioned cryptographic hashes generated from
-  LibSodium CSPRNG output.
-- Store passwords only with LibSodium Argon2id password hashes.
+- ~~Store access tokens only as versioned cryptographic hashes generated from
+  LibSodium CSPRNG output.~~ Implemented: access and refresh tokens are
+  persisted as domain-separated BLAKE2b digests (`token-hash:v2`/`v3`/`v4`),
+  master-key-derived when a master key is configured. See
+  [`docs/auth-identity.md`](../auth-identity.md).
+- ~~Store passwords only with LibSodium Argon2id password hashes.~~
+  Implemented: `crypto_pwhash_str`/`crypto_pwhash_str_verify` (Argon2id) is
+  used for account passwords and registration tokens.
 - Enforce PostgreSQL transaction coverage, migration coverage, and role grants
   against real temporary databases.
 - Fail closed when required production hardening controls are unavailable.
