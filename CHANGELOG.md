@@ -1,26 +1,18 @@
-## 0.10.45
+## 0.10.46
 
-### Fixed
-- **fix(sync): route the stable `POST /_matrix/client/v4/sync` Sliding Sync endpoint and accept body-level `pos`/`timeout`.** Element X uses the stable v4 path and puts `pos` and `timeout` in the JSON body rather than the query string. The server previously only served the unstable MSC4186/MSC3575 prefixes and only read query parameters, so the mobile client received 404/400 and saw no rooms. v4, `org.matrix.simplified_msc3575`, and the legacy unstable prefix now share the same handler, with `pos` and `timeout` accepted from either location.
-- **fix(sync): accept the singular `range` key in Sliding Sync list requests.** Element X sends `range: [start, end]` for a single window, while the legacy spec shape is `ranges: [[start, end]]`. The parser now accepts either form and validates both with the same non-overlapping rules.
-
-### Testing
-- **test(sync): cover the stable v4 endpoint with a singular range.** A regression scenario creates one joined room and syncs via `POST /_matrix/client/v4/sync` using `range: [0, 19]` and a body-level `timeout`; it asserts the room is returned and the list count is `1`.
-- **test(sync): cover body-level `pos` and `timeout` on the simplified MSC3575 path.** A regression scenario obtains a `pos` from the unstable MSC4186 endpoint, then reuses it on `org.matrix.simplified_msc3575` with `pos` and `timeout` in the body and a singular `range`; it asserts the response is accepted and the position is not regressed.
+### Documentation
+- **docs: fix accuracy errors and gaps found in a full documentation audit.** `canonical-json.md` no longer claims signed-64-bit integer enforcement (actual: JS-safe-integer range) and now documents the `parse_json()` general-purpose parser. `auth-identity.md` no longer lists device-list sync, key-count responses, and key-backup retrieval/deletion as deferred — all three are implemented — and a botched-merge formatting defect is fixed. `log-filtering.md` and `user-manual.md` audit-event tables now include `request.user_locked`/`request.user_suspended`. `http-transport.md` no longer describes single-mutex runtime serialisation (actual: 256-way room-striped mutex) and now documents the dedicated `sync_pool`. `user-manual.md`'s hardening self-check table now reflects the real compile-time/runtime probes instead of describing every check as an unimplemented placeholder, and adds the `no_new_privs`/`capability bounding` rows. `architecture.md` now mentions `tests/conformance/` in the testing section. `todos/production-milestone.md` strikes through the token-hashing and Argon2id items, which were already implemented. `tests/smoke/AGENTS.md` no longer describes a nonexistent `--smoke` flag or live-listener checks that the smoke suite doesn't perform. `security/coding-rules.md` entries now cite a CWE or named vulnerability class per `security/AGENTS.md`'s own requirement; the style-only rules it previously mixed in (member prefix, include ordering/quoting) moved to `docs/coding-rules.md`.
 
 ### Changed
-- **chore(release): bump version to 0.10.45 across meson.build, src/main.cpp, src/db_migrate.cpp, packaging metadata, build scripts, and CHANGELOG.md.**
+- **chore(release): bump version to 0.10.46 across meson.build, src/main.cpp, src/db_migrate.cpp, packaging metadata, build scripts, and CHANGELOG.md.**
 
-## 0.10.44
+## 0.10.45
 
 ### Fixed
 - **fix(sync): treat initial Sliding Sync rooms on a fresh connection as full snapshots, not as deltas from a reused pos.** Element X sometimes creates a new `conn_id` and supplies a `pos` from another connection or device. The server was using that position as a per-room since floor, so initial rooms reported zero unread notifications for events at or before the borrowed position and could appear stale. Room-level deltas now use `0` for initial rooms and only apply the request `pos` to rooms this connection has already seen.
 
 ### Testing
 - **test(sync): cover fresh Sliding Sync connections that reuse a pos from another conn_id.** A regression scenario creates three joined rooms, sends a message in one, obtains a `pos` on a seed connection, then syncs with a new `conn_id` reusing that `pos`. It asserts that all three rooms are returned with `initial=true` and that the room containing the message reports a non-zero unread notification count.
-
-### Documentation
-- **docs: fix accuracy errors and gaps found in a full documentation audit.** `canonical-json.md` no longer claims signed-64-bit integer enforcement (actual: JS-safe-integer range) and now documents the `parse_json()` general-purpose parser. `auth-identity.md` no longer lists device-list sync, key-count responses, and key-backup retrieval/deletion as deferred — all three are implemented — and a botched-merge formatting defect is fixed. `log-filtering.md` and `user-manual.md` audit-event tables now include `request.user_locked`/`request.user_suspended`. `http-transport.md` no longer describes single-mutex runtime serialisation (actual: 256-way room-striped mutex) and now documents the dedicated `sync_pool`. `user-manual.md`'s hardening self-check table now reflects the real compile-time/runtime probes instead of describing every check as an unimplemented placeholder, and adds the `no_new_privs`/`capability bounding` rows. `architecture.md` now mentions `tests/conformance/` in the testing section. `todos/production-milestone.md` strikes through the token-hashing and Argon2id items, which were already implemented. `tests/smoke/AGENTS.md` no longer describes a nonexistent `--smoke` flag or live-listener checks that the smoke suite doesn't perform. `security/coding-rules.md` entries now cite a CWE or named vulnerability class per `security/AGENTS.md`'s own requirement; the style-only rules it previously mixed in (member prefix, include ordering/quoting) moved to `docs/coding-rules.md`.
 
 ### Changed
 - **chore(release): bump version to 0.10.44 across meson.build, src/main.cpp, src/db_migrate.cpp, packaging metadata, build scripts, and CHANGELOG.md.**
