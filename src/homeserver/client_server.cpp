@@ -8563,14 +8563,18 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         return sync_json(rt, *user, device_id, sync_request, can_wait);
     }
 
-    // MSC4186 Simplified Sliding Sync — served at both paths for client compatibility.
+    // MSC4186 Simplified Sliding Sync — served at the unstable paths and the
+    // stable v4 path for client compatibility.
     // POST /_matrix/client/unstable/org.matrix.msc4186/sync
     // POST /_matrix/client/unstable/org.matrix.simplified_msc3575/sync  (matrix-rust-sdk alias)
+    // POST /_matrix/client/v4/sync                                        (stable MSC4186)
     auto constexpr msc4186_sync_prefix = std::string_view{"/_matrix/client/unstable/org.matrix.msc4186/sync"};
     auto constexpr msc3575_sync_prefix =
         std::string_view{"/_matrix/client/unstable/org.matrix.simplified_msc3575/sync"};
+    auto constexpr v4_sync_prefix = std::string_view{"/_matrix/client/v4/sync"};
     if (req.method == "POST" &&
-        (starts_with(req.target, msc4186_sync_prefix) || starts_with(req.target, msc3575_sync_prefix)))
+        (starts_with(req.target, msc4186_sync_prefix) || starts_with(req.target, msc3575_sync_prefix) ||
+         starts_with(req.target, v4_sync_prefix)))
     {
         auto const session_4186 = authenticated_session(rt.homeserver, req.access_token);
         auto const device_id_4186 = session_4186.has_value() ? session_4186->device_id : std::string{};
@@ -8579,8 +8583,13 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             return dispatch_err(req, rt, 400U, "M_BAD_JSON", "invalid sliding sync request body");
         }
-        auto const pos = sync::parse_sliding_sync_pos(req.target);
-        auto const timeout = sync::parse_sliding_sync_timeout(req.target).value_or(0U);
+        // Prefer query-string pos/timeout; fall back to the newer body-level fields.
+        auto pos = sync::parse_sliding_sync_pos(req.target);
+        if (!pos.has_value() && sliding_req->pos.has_value())
+        {
+            pos = sync::decode_stream_token(*sliding_req->pos);
+        }
+        auto const timeout = sync::parse_sliding_sync_timeout(req.target).value_or(sliding_req->timeout.value_or(0U));
         log_diagnostic("sliding_sync.dispatch", {
                                                     {"actor",     *user,          false},
                                                     {"device_id", device_id_4186, false}

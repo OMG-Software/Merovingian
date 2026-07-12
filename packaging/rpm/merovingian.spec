@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.10.44
+Version:        0.10.45
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -101,6 +101,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Sat Jul 11 2026 James Chapman <claude@ping.me.uk> - 0.10.45-1
+- fix(sync): route stable POST /_matrix/client/v4/sync and accept body-level pos/timeout; accept singular range in sliding sync lists.
+
 * Sat Jul 11 2026 James Chapman <claude@ping.me.uk> - 0.10.43-1
 - fix(sync): preserve a Sliding Sync snapshot until a later request acknowledges its position, so a cancelled or retried Element X request cannot lose its room window.
 
