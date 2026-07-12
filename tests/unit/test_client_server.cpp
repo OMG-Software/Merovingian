@@ -8510,3 +8510,97 @@ SCENARIO("Sliding sync long-poll returns when a typing notification is posted in
         }
     }
 }
+
+// ─── MSC4186 sliding sync fresh connection with a pos from another connection ──
+// ElementX on mobile sometimes creates a new conn_id and supplies a pos from a
+// previous connection or device. The pos acknowledges state on the connection that
+// produced it, not on the new connection. Initial rooms on the new connection
+// must therefore be returned as full snapshots, not filtered by the requested pos.
+
+SCENARIO("Sliding sync fresh connection with a reused pos returns all rooms as initial",
+         "[sync][sliding-sync][msc4186]")
+{
+    // Spec: MSC4186 §Connections — connection state is scoped by conn_id. A pos
+    // from one conn_id does not prove the client has seen rooms on another.
+    GIVEN("alice has three joined rooms and a pos from another connection")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const alice_reg = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/register", {}, registration_json("alice", "CorrectHorse7!")});
+        REQUIRE(alice_reg.response.status == 200U);
+        auto const alice_token = login_token(alice_reg.response.body);
+
+        // Create three rooms.
+        auto const create1 = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", alice_token, R"({"preset":"public_chat"})"});
+        REQUIRE(create1.response.status == 200U);
+        auto const rid1 = room_id(create1.response.body);
+
+        auto const create2 = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", alice_token, R"({"preset":"public_chat"})"});
+        REQUIRE(create2.response.status == 200U);
+        auto const rid2 = room_id(create2.response.body);
+
+        auto const create3 = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", alice_token, R"({"preset":"public_chat"})"});
+        REQUIRE(create3.response.status == 200U);
+        auto const rid3 = room_id(create3.response.body);
+
+        // Send a message in room 3 so the seed pos advances past the creation of room 1 and 2.
+        auto const send_url =
+            "/_matrix/client/v3/rooms/" + percent_encode_room_identifier(rid3) + "/send/m.room.message/txn1";
+        auto const send_resp = merovingian::homeserver::handle_client_server_request(
+            runtime, {"PUT", send_url, alice_token, R"({"msgtype":"m.text","body":"hi"})"});
+        REQUIRE(send_resp.response.status == 200U);
+
+        // Seed connection: sync with conn_id="seed" to get a pos after the message.
+        auto const seed_resp = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST", "/_matrix/client/unstable/org.matrix.msc4186/sync?timeout=0", alice_token,
+             R"({"conn_id":"seed","lists":{"0":{"ranges":[[0,19]],"required_state":[],"timeline_limit":1}}})"});
+        REQUIRE(seed_resp.response.status == 200U);
+        auto const seed_pos = extract_pos(seed_resp.response.body);
+        REQUIRE_FALSE(seed_pos.empty());
+
+        WHEN("a new connection reuses that pos")
+        {
+            auto const mobile_url = "/_matrix/client/unstable/org.matrix.msc4186/sync?pos=" + seed_pos + "&timeout=0";
+            auto const mobile_resp = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST", mobile_url, alice_token,
+                 R"({"conn_id":"mobile","lists":{"0":{"ranges":[[0,19]],"required_state":[],"timeline_limit":1}}})"});
+            REQUIRE(mobile_resp.response.status == 200U);
+
+            THEN("all three rooms are returned with initial=true")
+            {
+                auto const body = parse_object(mobile_resp.response.body);
+                auto const* rooms = object_member_as_object(body, "rooms");
+                REQUIRE(rooms != nullptr);
+                REQUIRE(rooms->size() == 3U);
+
+                auto const check_initial = [&](std::string const& room_id) {
+                    auto const it =
+                        std::ranges::find_if(*rooms, [&room_id](merovingian::canonicaljson::ObjectMember const& m) {
+                            return m.key == room_id;
+                        });
+                    REQUIRE(it != rooms->end());
+                    auto const* room_obj = std::get_if<merovingian::canonicaljson::Object>(&it->value->storage());
+                    REQUIRE(room_obj != nullptr);
+                    auto const* initial_val = bool_member(*room_obj, "initial");
+                    REQUIRE(initial_val != nullptr);
+                    REQUIRE(*initial_val == true);
+                    return room_obj;
+                };
+                check_initial(rid1);
+                check_initial(rid2);
+                auto const* room3_obj = check_initial(rid3);
+                auto const* notification_val = int_member(*room3_obj, "notification_count");
+                REQUIRE(notification_val != nullptr);
+                REQUIRE(*notification_val == 1);
+            }
+        }
+    }
+}

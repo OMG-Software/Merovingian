@@ -40,7 +40,9 @@ The most secure Matrix Protocol homeserver ever created. Secure by design, imple
 - After code change, run the new test(s).
 - Before creating a new branch from main, pull from origin so that main is up to date.
 - Bump the version number on creating a new branch. See versioning doc for all the places where the version number needs updating.
+- Update the docs when code change invalidates something.
 - Record changes for each version in CHANGELOG.md
+- When a bug or issue is reported, check the spec docs to see if the project does what the spec says.
 - Ignore `.clwb` folder.
 - Ignore directories starting with `build` in the project root (Meson build output).
 - Always work in feature or bug branches, never main.

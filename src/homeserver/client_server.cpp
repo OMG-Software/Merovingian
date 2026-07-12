@@ -3927,12 +3927,12 @@ namespace
             auto const room_seen_it = conn.rooms_seen.find(room_id);
             auto const is_initial = room_seen_it == conn.rooms_seen.end();
             auto const room_last_ordering = is_initial ? std::uint64_t{0U} : room_seen_it->second;
-            // Use the per-room last inclusion ordering as the delta floor.  This
-            // prevents re-delivering a room when the request pos lags behind the
-            // ordering at which the room was already returned on this connection,
-            // which was causing matrix-rust-sdk / ElementX to see the same payload
-            // with a non-advancing pos and reset into a polling loop.
-            auto const room_since = std::max(since_event_ordering, room_last_ordering);
+            // Use the per-room last inclusion ordering as the delta floor for rooms
+            // this connection has already seen.  For an initial room the request pos
+            // may come from another conn_id (or a lost response), so it must not act
+            // as a since floor: the client has not seen this room on this connection
+            // and needs the full snapshot and all unread counts.
+            auto const room_since = is_initial ? std::uint64_t{0U} : std::max(since_event_ordering, room_last_ordering);
             auto room = sync::build_room_response(rt.homeserver, room_id, user, sub, room_since, is_initial, store);
             // Per MSC4186, only include a room in rooms{} when it has actual
             // changes: first appearance (initial), post-pos timeline events, or changed

@@ -450,3 +450,11 @@ If a client position is ahead of a reconstructed server watermark (for example,
 immediately after restart), each component of the returned position is floored
 at the corresponding requested component. This prevents clients from rejecting
 a regressing opaque cursor and retrying the request in a tight loop.
+
+When a connection has not yet seen a room, the room is treated as an initial
+snapshot regardless of any `pos` supplied by the client. The per-room `since`
+floor is `0` for initial rooms and only applies the request `pos` to rooms that
+have already been returned on this connection. This handles Element X creating a
+new `conn_id` while reusing a position from an earlier connection: the new
+connection receives full room state and unread counts instead of a truncated
+delta.
