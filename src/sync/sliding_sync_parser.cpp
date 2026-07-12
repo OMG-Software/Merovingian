@@ -193,9 +193,13 @@ namespace
     {
         auto list = SlidingSyncList{};
 
-        if (auto const* v = find_member(obj, "ranges"); v != nullptr)
+        // Newer MSC4186 / Element X uses the singular "range" key for a single
+        // [start, end] window. Older clients (and the unstable prefix) use
+        // the plural "ranges" array. Accept either; prefer "ranges" when both
+        // are present so we do not accidentally duplicate a window.
+        if (auto const* ranges_val = find_member(obj, "ranges"); ranges_val != nullptr)
         {
-            auto ranges = parse_ranges(*v);
+            auto ranges = parse_ranges(*ranges_val);
             if (!ranges.has_value())
             {
                 return std::nullopt;
@@ -205,6 +209,19 @@ namespace
                 return std::nullopt;
             }
             list.ranges = std::move(*ranges);
+        }
+        else if (auto const* range_val = find_member(obj, "range"); range_val != nullptr)
+        {
+            auto const single = parse_range(*range_val);
+            if (!single.has_value())
+            {
+                return std::nullopt;
+            }
+            if (!sliding_sync_ranges_valid(std::vector<SlidingSyncRange>{*single}))
+            {
+                return std::nullopt;
+            }
+            list.ranges.push_back(*single);
         }
 
         if (auto const* v = find_member(obj, "sort"); v != nullptr)
@@ -469,6 +486,22 @@ auto parse_sliding_sync_request(std::string_view body) -> std::optional<SlidingS
         if (auto const* o = as_object(*v); o != nullptr)
         {
             req.extensions = parse_extension_requests(*o);
+        }
+    }
+
+    if (auto const* v = find_member(*root, "pos"); v != nullptr)
+    {
+        if (auto const* s = as_string(*v); s != nullptr)
+        {
+            req.pos = *s;
+        }
+    }
+
+    if (auto const* v = find_member(*root, "timeout"); v != nullptr)
+    {
+        if (auto const* n = as_int(*v); n != nullptr && *n >= 0)
+        {
+            req.timeout = static_cast<std::uint64_t>(*n);
         }
     }
 

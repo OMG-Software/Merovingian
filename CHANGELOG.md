@@ -1,3 +1,16 @@
+## 0.10.45
+
+### Fixed
+- **fix(sync): route the stable `POST /_matrix/client/v4/sync` Sliding Sync endpoint and accept body-level `pos`/`timeout`.** Element X uses the stable v4 path and puts `pos` and `timeout` in the JSON body rather than the query string. The server previously only served the unstable MSC4186/MSC3575 prefixes and only read query parameters, so the mobile client received 404/400 and saw no rooms. v4, `org.matrix.simplified_msc3575`, and the legacy unstable prefix now share the same handler, with `pos` and `timeout` accepted from either location.
+- **fix(sync): accept the singular `range` key in Sliding Sync list requests.** Element X sends `range: [start, end]` for a single window, while the legacy spec shape is `ranges: [[start, end]]`. The parser now accepts either form and validates both with the same non-overlapping rules.
+
+### Testing
+- **test(sync): cover the stable v4 endpoint with a singular range.** A regression scenario creates one joined room and syncs via `POST /_matrix/client/v4/sync` using `range: [0, 19]` and a body-level `timeout`; it asserts the room is returned and the list count is `1`.
+- **test(sync): cover body-level `pos` and `timeout` on the simplified MSC3575 path.** A regression scenario obtains a `pos` from the unstable MSC4186 endpoint, then reuses it on `org.matrix.simplified_msc3575` with `pos` and `timeout` in the body and a singular `range`; it asserts the response is accepted and the position is not regressed.
+
+### Changed
+- **chore(release): bump version to 0.10.45 across meson.build, src/main.cpp, src/db_migrate.cpp, packaging metadata, build scripts, and CHANGELOG.md.**
+
 ## 0.10.44
 
 ### Fixed
