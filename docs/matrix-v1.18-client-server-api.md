@@ -430,6 +430,25 @@ fields in the JSON body. The server prefers query parameters when both are prese
 | `rooms` | object | One entry per room included in the response. Keyed by room ID. |
 | `extensions` | object | Extension responses. Only present for enabled extensions. |
 
+#### Room object fields (`rooms[roomId]`)
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `name` | string \| null | Room display name. |
+| `avatar` | string \| null | Room avatar MXC URL. |
+| `initial` | boolean | `true` the first time this room appears on this connection. |
+| `is_dm` | boolean | Whether the room is a direct message. |
+| `joined_count` | integer | Number of joined members. |
+| `invited_count` | integer | Number of invited members. |
+| `notification_count` | integer | Unread message/encrypted event count. |
+| `highlight_count` | integer | Unread highlight count. |
+| `num_live` | integer | Number of timeline events that occurred since the previous request. |
+| `timestamp` | integer | `origin_server_ts` of the most recent event in the room. |
+| `heroes` | array | Hero members for computing a fallback room name. |
+| `required_state` | array | State events matching the subscription's `required_state`. |
+| `timeline` | array | **MSC4186: a plain `[Event]` array**, not the `/v3/sync` `{events, limited, prev_batch}` object. |
+| `invite_state` | array | For invited rooms, the stripped state events. |
+
 #### List operations (`ops` array)
 
 | Op | Description |

@@ -6,7 +6,6 @@
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
-#include "merovingian/sync/stream_token.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -460,13 +459,9 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
     auto const limit = static_cast<std::size_t>(sub.timeline_limit);
     if (timeline_events.size() > limit)
     {
-        resp.limited = true;
-        // Keep the last `limit` events and record a prev_batch token for the first dropped.
+        // Keep the last `limit` events; MSC4186 returns timeline as a plain
+        // [Event] array without a per-room prev_batch or limited flag.
         auto const drop_count = timeline_events.size() - limit;
-        // prev_batch points to just before the first kept event.
-        auto const first_kept_ordering = timeline_events[drop_count].first;
-        resp.prev_batch =
-            encode_stream_token(StreamToken{first_kept_ordering > 0U ? first_kept_ordering - 1U : 0U, 0U, 0U});
         timeline_events.erase(timeline_events.begin(),
                               timeline_events.begin() + static_cast<std::ptrdiff_t>(drop_count));
     }

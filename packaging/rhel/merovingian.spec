@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.10.47
+Version:        0.10.48
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -97,7 +97,7 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
-* Sun Jul 12 2026 James Chapman <claude@ping.me.uk> - 0.10.47-1
+* Sun Jul 12 2026 James Chapman <claude@ping.me.uk> - 0.10.48-1
 - docs: reference latest raw MSC4186 proposal and document stable v4 endpoint shape.
 
 * Sun Jul 12 2026 James Chapman <claude@ping.me.uk> - 0.10.46-1

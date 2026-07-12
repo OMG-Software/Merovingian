@@ -184,8 +184,6 @@ struct SlidingSyncRoomResponse final
     std::vector<std::string> required_state_json{};
     // Pre-serialised timeline event JSON objects (chronological order).
     std::vector<std::string> timeline_json{};
-    std::optional<std::string> prev_batch{};
-    bool limited{false};
     // Set for invited rooms in place of timeline/state.
     std::optional<std::string> invite_state_json{};
 };
