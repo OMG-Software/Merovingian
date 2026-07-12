@@ -1,3 +1,11 @@
+## 0.10.47
+
+### Documentation
+- **docs: reference the latest raw MSC4186 proposal and document the stable v4 endpoint shape.** `docs/matrix-v1.18-client-server-api.md` now links the authoritative raw proposal text (`https://raw.githubusercontent.com/matrix-org/matrix-spec-proposals/refs/heads/main/proposals/4186-simplified-sliding-sync.md`), lists all three routed endpoints (`v4`, `org.matrix.msc4186`, `org.matrix.simplified_msc3575`), and documents body-level `pos`/`timeout` and the singular `range` key.
+
+### Changed
+- **chore(release): bump version to 0.10.47 across meson.build, src/main.cpp, src/db_migrate.cpp, packaging metadata, build scripts, and CHANGELOG.md.**
+
 ## 0.10.46
 
 ### Documentation

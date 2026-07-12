@@ -373,6 +373,7 @@ The following endpoints are **not part of the stable v1.18 spec**. They are serv
 ### MSC4186 — Simplified Sliding Sync
 
 - **Proposal**: <https://github.com/matrix-org/matrix-spec-proposals/blob/main/proposals/4186-simplified-sliding-sync.md>
+- **Latest raw proposal** (authoritative for stable endpoint and request shape): <https://raw.githubusercontent.com/matrix-org/matrix-spec-proposals/refs/heads/main/proposals/4186-simplified-sliding-sync.md>
 - **Advertised via**: `unstable_features["org.matrix.msc4186"] = true` and
   `unstable_features["org.matrix.simplified_msc3575"] = true` in `/_matrix/client/versions`
 - **Implementation files**:
@@ -385,9 +386,14 @@ The following endpoints are **not part of the stable v1.18 spec**. They are serv
 
 | Method | Path | Auth | Request body | Responses |
 | --- | --- | --- | --- | --- |
+| `POST` | `/_matrix/client/v4/sync` | access token | optional `application/json` | 200, 400 |
 | `POST` | `/_matrix/client/unstable/org.matrix.msc4186/sync` | access token | optional `application/json` | 200, 400 |
+| `POST` | `/_matrix/client/unstable/org.matrix.simplified_msc3575/sync` | access token | optional `application/json` | 200, 400 |
 
-#### Query parameters
+#### Request parameters
+
+The `pos` and `timeout` parameters may be supplied either as query parameters or as top-level
+fields in the JSON body. The server prefers query parameters when both are present.
 
 | Parameter | Type | Description |
 | --- | --- | --- |
@@ -399,8 +405,11 @@ The following endpoints are **not part of the stable v1.18 spec**. They are serv
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `conn_id` | string | optional | Identifies a logical connection so the server can maintain separate state per client tab. |
+| `pos` | string | optional | Body-level alternative to the `pos` query parameter. |
+| `timeout` | integer | optional | Body-level alternative to the `timeout` query parameter. |
 | `lists` | object | optional | Named room lists. Keys are arbitrary list IDs chosen by the client. |
 | `lists.*.ranges` | array of [start, end] pairs | required if list present | Windowed view into the sorted room list. Ranges MUST NOT overlap; start MUST be ≤ end. |
+| `lists.*.range` | [start, end] | alternative to `ranges` | A single sliding window. Accepted for clients that send one window as a 2-tuple rather than a nested array. |
 | `lists.*.sort` | array of strings | optional | Sort criteria applied left-to-right: `by_recency`, `by_notification_count`, `by_name`. |
 | `lists.*.required_state` | array of [type, state_key] pairs | optional | State events to include in each room. `"*"` is a wildcard in either position. |
 | `lists.*.timeline_limit` | integer | optional | Maximum number of timeline events to return per room. |
