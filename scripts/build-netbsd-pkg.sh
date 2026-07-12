@@ -11,7 +11,7 @@
 # a staged tree using tar, which produces a package that pkg_add can install.
 set -e
 
-VERSION="0.10.47"
+VERSION="0.10.48"
 STAGE="staging-netbsd"
 PREFIX=/usr/pkg
 

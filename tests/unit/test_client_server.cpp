@@ -8697,3 +8697,74 @@ SCENARIO("Sliding sync body-level pos and timeout are honoured on the simplified
         }
     }
 }
+
+SCENARIO("Sliding sync room timeline is a plain [Event] array per MSC4186", "[sync][sliding-sync][msc4186]")
+{
+    // Spec: MSC4186 §rooms[roomId].timeline has type [Event], not the /v3/sync
+    // object shape {events, limited, prev_batch}. Element X deserialises the
+    // array form; sending an object makes it reject the response and replay
+    // the same pos, so the connection never commits and rooms stay invisible.
+    GIVEN("alice has a joined room with one timeline event")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const alice_reg = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/register", {}, registration_json("alice", "CorrectHorse7!")});
+        REQUIRE(alice_reg.response.status == 200U);
+        auto const alice_token = login_token(alice_reg.response.body);
+
+        auto const create = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", alice_token, R"({"preset":"public_chat"})"});
+        REQUIRE(create.response.status == 200U);
+        auto const rid = room_id(create.response.body);
+
+        auto const send_url =
+            "/_matrix/client/v3/rooms/" + percent_encode_room_identifier(rid) + "/send/m.room.message/txn1";
+        auto const send_resp = merovingian::homeserver::handle_client_server_request(
+            runtime, {"PUT", send_url, alice_token, R"({"msgtype":"m.text","body":"hello"})"});
+        REQUIRE(send_resp.response.status == 200U);
+
+        WHEN("alice performs an initial sliding sync")
+        {
+            auto const resp = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST", "/_matrix/client/v4/sync", alice_token,
+                 R"({"conn_id":"timeline-array","timeout":0,"lists":{"0":{"range":[0,19],"required_state":[],"timeline_limit":20}}})"});
+            REQUIRE(resp.response.status == 200U);
+
+            THEN("the room's timeline is a JSON array of events, not an object")
+            {
+                auto const body = parse_object(resp.response.body);
+                auto const* rooms = object_member_as_object(body, "rooms");
+                REQUIRE(rooms != nullptr);
+                REQUIRE(rooms->size() == 1U);
+
+                auto const* room_obj = object_member_as_object(*rooms, rid);
+                REQUIRE(room_obj != nullptr);
+
+                // timeline MUST be an array.
+                auto const* timeline = object_member_as_array(*room_obj, "timeline");
+                REQUIRE(timeline != nullptr);
+                REQUIRE(timeline->size() >= 1U);
+
+                // The /v3/sync object shape MUST NOT appear.
+                auto const* timeline_obj = object_member_as_object(*room_obj, "timeline");
+                REQUIRE(timeline_obj == nullptr);
+
+                // The sent message appears somewhere in the timeline.
+                auto const message_event = std::find_if(timeline->begin(), timeline->end(), [](auto const& ev) {
+                    auto const* obj = std::get_if<merovingian::canonicaljson::Object>(&ev.storage());
+                    if (obj == nullptr)
+                    {
+                        return false;
+                    }
+                    auto const* type = string_member(*obj, "type");
+                    return type != nullptr && *type == "m.room.message";
+                });
+                REQUIRE(message_event != timeline->end());
+            }
+        }
+    }
+}

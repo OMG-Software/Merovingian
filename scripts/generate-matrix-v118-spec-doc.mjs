@@ -90,6 +90,7 @@ function isOperation(method) {
 
 const source = argValue("--source", DEFAULT_SOURCE_URL);
 const output = argValue("--output", DEFAULT_OUTPUT);
+const appendSource = argValue("--append", path.join(path.dirname(output), `${path.basename(output, ".md")}.appendix.md`));
 const fixedDate = argValue("--date", new Date().toISOString().slice(0, 10));
 const sourceText = source.startsWith("http://") || source.startsWith("https://")
   ? await fetchText(source)
@@ -168,6 +169,11 @@ for (const operation of operations) {
   );
 }
 
+let appendix = "";
+if (fs.existsSync(appendSource)) {
+  appendix = `\n${fs.readFileSync(appendSource, "utf8").trimEnd()}\n`;
+}
+
 fs.mkdirSync(path.dirname(output), { recursive: true });
-fs.writeFileSync(output, `${lines.join("\n")}\n`, "utf8");
+fs.writeFileSync(output, `${lines.join("\n")}\n${appendix}`, "utf8");
 console.log(`Wrote ${output} from ${source} (${operations.length} operations)`);

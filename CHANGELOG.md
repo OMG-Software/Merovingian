@@ -1,3 +1,18 @@
+## 0.10.48
+
+### Fixed
+- **fix(sync): return MSC4186 `rooms[roomId].timeline` as a plain `[Event]` array, not a `/v3/sync`-style object.** The room response previously serialised `timeline` as `{events, limited, prev_batch}`, which Element X / matrix-rust-sdk does not accept for MSC4186 Simplified Sliding Sync. The malformed response caused the client to reject the returned `pos` and replay the same request position, so the connection state never committed and rooms stayed invisible. The timeline field is now a direct array of events as required by the proposal.
+- **fix(sync): stop computing per-room `prev_batch` and `limited` for Sliding Sync.** These fields are not part of the MSC4186 room object; removing them also removes the now-unused `SlidingSyncRoomResponse::prev_batch` and `limited` members.
+
+### Testing
+- **test(sync): assert that the v4 sliding sync response returns `timeline` as a JSON array.** A regression scenario creates a room, sends a message, and performs an initial sliding sync via `POST /_matrix/client/v4/sync`. It verifies that `rooms[roomId].timeline` is an array containing the message event and that the legacy `{events, limited, prev_batch}` object shape is absent.
+
+### Documentation
+- **docs: document the MSC4186 room object fields and the array timeline shape.** `docs/matrix-v1.18-client-server-api.md` now lists each field in `rooms[roomId]` and explicitly notes that `timeline` is a plain `[Event]` array, not the `/v3/sync` object.
+
+### Changed
+- **chore(release): bump version to 0.10.48 across meson.build, src/main.cpp, src/db_migrate.cpp, packaging metadata, build scripts, and CHANGELOG.md.**
+
 ## 0.10.47
 
 ### Documentation

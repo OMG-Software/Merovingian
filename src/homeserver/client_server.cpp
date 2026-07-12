@@ -3631,19 +3631,14 @@ namespace
             req_state.push_back(parse_json(json));
         }
         obj.push_back(json_member("required_state", json_arr(std::move(req_state))));
+        // MSC4186 §rooms[roomId].timeline is a plain [Event] array, not an
+        // object with events/limited/prev_batch (that shape belongs to /v3/sync).
         auto tl_events = canonicaljson::Array{};
         for (auto& json : room.timeline_json)
         {
             tl_events.push_back(parse_json(json));
         }
-        auto tl_obj = canonicaljson::Object{};
-        tl_obj.push_back(json_member("events", json_arr(std::move(tl_events))));
-        tl_obj.push_back(json_member("limited", json_bool(room.limited)));
-        if (room.prev_batch.has_value())
-        {
-            tl_obj.push_back(json_member("prev_batch", json_str(*room.prev_batch)));
-        }
-        obj.push_back(json_member("timeline", json_obj(std::move(tl_obj))));
+        obj.push_back(json_member("timeline", json_arr(std::move(tl_events))));
         if (room.invite_state_json.has_value())
         {
             auto iv_events = canonicaljson::Array{};
