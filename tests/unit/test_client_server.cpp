@@ -8511,6 +8511,90 @@ SCENARIO("Sliding sync long-poll returns when a typing notification is posted in
     }
 }
 
+// ─── MSC4186 sliding sync e2ee/to_device-only connection ignores irrelevant wakes ──
+// Element X runs a second, dedicated background sliding sync connection that
+// requests no lists/subscriptions and only enables the to_device/e2ee
+// extensions, so it can keep encryption keys flowing without paying for room
+// list computation. The spurious-wakeup suppression above only checked
+// whether *some* signal existed for the user anywhere (any joined-room
+// timeline event, or any receipt/typing update in a joined room) — not
+// whether this specific connection had asked for that surface. That woke the
+// e2ee/to_device connection on every message, receipt, and typing event in
+// any of the user's rooms, producing an immediate empty response followed by
+// an instant re-poll: a busy-loop sync storm on that connection.
+
+SCENARIO("Sliding sync e2ee/to_device-only long-poll parks through a typing notification it did not request",
+         "[sync][sliding-sync][e2ee][notifier]")
+{
+    // Spec: MSC4186 §long-polling — server MUST NOT return before timeout when
+    // no changes relevant to the connection have occurred.
+    GIVEN("alice and bob sharing a room, with alice's e2ee-only connection parked at pos P")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const alice_reg = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/register", {}, registration_json("alice", "CorrectHorse7!")});
+        REQUIRE(alice_reg.response.status == 200U);
+        auto const alice_token = login_token(alice_reg.response.body);
+
+        auto const bob_reg = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/register", {}, registration_json("bob", "CorrectHorse8!")});
+        REQUIRE(bob_reg.response.status == 200U);
+        auto const bob_token = login_token(bob_reg.response.body);
+
+        auto const create_resp = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", alice_token, R"({"preset":"public_chat"})"});
+        REQUIRE(create_resp.response.status == 200U);
+        auto const rid = room_id(create_resp.response.body);
+
+        auto const join_url = "/_matrix/client/v3/rooms/" + percent_encode_room_identifier(rid) + "/join";
+        auto const bob_join =
+            merovingian::homeserver::handle_client_server_request(runtime, {"POST", join_url, bob_token, "{}"});
+        REQUIRE(bob_join.response.status == 200U);
+
+        // Alice's e2ee/to_device-only connection: no lists, no subscriptions,
+        // and neither typing nor receipts enabled — mirroring Element X's
+        // dedicated background sync connection.
+        auto const init_resp = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/unstable/org.matrix.msc4186/sync?timeout=0", alice_token,
+                      R"({"conn_id":"e2ee-bg","extensions":{"to_device":{"enabled":true},"e2ee":{"enabled":true}}})"});
+        REQUIRE(init_resp.response.status == 200U);
+        auto const pos_p = extract_pos(init_resp.response.body);
+        REQUIRE_FALSE(pos_p.empty());
+
+        WHEN("bob posts a typing notification and sends a message in the shared room")
+        {
+            auto const typing_url =
+                "/_matrix/client/v3/rooms/" + percent_encode_room_identifier(rid) + "/typing/@bob:example.org";
+            auto const typing_resp = merovingian::homeserver::handle_client_server_request(
+                runtime, {"PUT", typing_url, bob_token, R"({"typing":true,"timeout":30000})"});
+            REQUIRE(typing_resp.response.status == 200U);
+
+            auto const send_url =
+                "/_matrix/client/v3/rooms/" + percent_encode_room_identifier(rid) + "/send/m.room.message/txn1";
+            auto const send_resp = merovingian::homeserver::handle_client_server_request(
+                runtime, {"PUT", send_url, bob_token, R"({"msgtype":"m.text","body":"ping"})"});
+            REQUIRE(send_resp.response.status == 200U);
+
+            THEN("alice's e2ee/to_device-only long-poll (can_wait=true) parks with needs_wait instead of firing "
+                 "an empty response")
+            {
+                auto const inc_url = "/_matrix/client/unstable/org.matrix.msc4186/sync?pos=" + pos_p + "&timeout=5000";
+                auto const result = merovingian::homeserver::handle_client_server_request(
+                    runtime,
+                    {"POST", inc_url, alice_token,
+                     R"({"conn_id":"e2ee-bg","extensions":{"to_device":{"enabled":true},"e2ee":{"enabled":true}}})"},
+                    true);
+
+                REQUIRE(result.status == merovingian::homeserver::DispatchResult::Status::needs_wait);
+                REQUIRE(result.wait.since_sync_stream_id > 0U);
+            }
+        }
+    }
+}
+
 // ─── MSC4186 sliding sync fresh connection with a pos from another connection ──
 // ElementX on mobile sometimes creates a new conn_id and supplies a pos from a
 // previous connection or device. The pos acknowledges state on the connection that

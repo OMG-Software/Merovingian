@@ -3818,12 +3818,33 @@ namespace
             auto const cur_event = rt.homeserver.database.next_stream_ordering - 1U;
             auto const cur_sync = store.next_sync_stream_id;
 
+            // Only wake for a surface this specific connection actually requested.
+            // Element X runs a dedicated background connection with no lists or
+            // subscriptions that only asks for the to_device/e2ee extensions; that
+            // connection does not care about room timeline events, receipts, or
+            // typing.  Waking it for those anyway turned every message, receipt, or
+            // typing notification in any of the user's rooms into an immediate
+            // empty response followed by an instant re-poll — a busy-loop sync
+            // storm on that connection while unrelated rooms stayed active.
+            bool const wants_rooms = !ssreq.lists.empty() || !ssreq.room_subscriptions.empty();
+            bool const wants_e2ee =
+                ssreq.extensions.has_value() && ssreq.extensions->e2ee.has_value() && ssreq.extensions->e2ee->enabled;
+            bool const wants_to_device = ssreq.extensions.has_value() && ssreq.extensions->to_device.has_value() &&
+                                         ssreq.extensions->to_device->enabled;
+            bool const wants_account_data = ssreq.extensions.has_value() &&
+                                            ssreq.extensions->account_data.has_value() &&
+                                            ssreq.extensions->account_data->enabled;
+            bool const wants_receipts = ssreq.extensions.has_value() && ssreq.extensions->receipts.has_value() &&
+                                        ssreq.extensions->receipts->enabled;
+            bool const wants_typing = ssreq.extensions.has_value() && ssreq.extensions->typing.has_value() &&
+                                      ssreq.extensions->typing->enabled;
+
             // A new room event only matters to this connection if it landed in a
             // room the user has joined: rooms{} is windowed to the user's own
             // lists/subscriptions, so an event in an unrelated room on the server
             // must not wake this long-poll early.
             bool const has_relevant_event =
-                cur_event > since_event_ordering &&
+                wants_rooms && cur_event > since_event_ordering &&
                 std::ranges::any_of(store.events, [&](database::PersistentEvent const& e) {
                     return e.stream_ordering > since_event_ordering && user_is_joined(store, e.room_id, user);
                 });
@@ -3831,29 +3852,32 @@ namespace
             if (!has_relevant_event)
             {
                 // No relevant room events.  Only respond early if the sync_stream_id
-                // advance contains rows relevant to this user/device:
-                //   - device-list changes where this user is the observer
-                //   - to-device messages addressed to this device
-                //   - account-data rows owned by this user
+                // advance contains rows relevant to a surface this connection asked
+                // for via extensions.<name>.enabled:
+                //   - device-list changes where this user is the observer (e2ee)
+                //   - to-device messages addressed to this device (to_device)
+                //   - account-data rows owned by this user (account_data)
                 //   - receipts or typing updates in any room the user has joined
-                // Typing/receipts were previously ignored, so a typing event or
-                // read receipt in the user's room would advance sync_stream_id
-                // without waking this long-poll, leaving ElementX stale.
-                bool const has_relevant_dlc = std::ranges::any_of(store.device_list_changes, [&](auto const& c) {
-                    return c.observer_user_id == user && c.stream_id > since_sync_stream_id;
-                });
-                bool const has_relevant_tdm = std::ranges::any_of(store.to_device_messages, [&](auto const& m) {
-                    return m.target_user_id == user && m.target_device_id == device_id &&
-                           m.stream_id > since_sync_stream_id;
-                });
-                bool const has_relevant_ad = std::ranges::any_of(store.account_data, [&](auto const& ad) {
-                    return ad.user_id == user && ad.stream_id > since_sync_stream_id;
-                });
-                bool const has_relevant_receipts = std::ranges::any_of(rt.homeserver.receipts, [&](auto const& r) {
-                    return r.stream_id > since_sync_stream_id && user_is_joined(store, r.room_id, user);
-                });
+                //     (receipts / typing)
+                bool const has_relevant_dlc =
+                    wants_e2ee && std::ranges::any_of(store.device_list_changes, [&](auto const& c) {
+                        return c.observer_user_id == user && c.stream_id > since_sync_stream_id;
+                    });
+                bool const has_relevant_tdm =
+                    wants_to_device && std::ranges::any_of(store.to_device_messages, [&](auto const& m) {
+                        return m.target_user_id == user && m.target_device_id == device_id &&
+                               m.stream_id > since_sync_stream_id;
+                    });
+                bool const has_relevant_ad =
+                    wants_account_data && std::ranges::any_of(store.account_data, [&](auto const& ad) {
+                        return ad.user_id == user && ad.stream_id > since_sync_stream_id;
+                    });
+                bool const has_relevant_receipts =
+                    wants_receipts && std::ranges::any_of(rt.homeserver.receipts, [&](auto const& r) {
+                        return r.stream_id > since_sync_stream_id && user_is_joined(store, r.room_id, user);
+                    });
                 bool const has_relevant_typing =
-                    std::ranges::any_of(rt.homeserver.room_typing_stream_id, [&](auto const& kv) {
+                    wants_typing && std::ranges::any_of(rt.homeserver.room_typing_stream_id, [&](auto const& kv) {
                         return kv.second > since_sync_stream_id && user_is_joined(store, kv.first, user);
                     });
                 if (!has_relevant_dlc && !has_relevant_tdm && !has_relevant_ad && !has_relevant_receipts &&

@@ -1,3 +1,14 @@
+## 0.10.50
+
+### Fixed
+- **fix(sync): scope the Sliding Sync long-poll wake check to the extensions and lists a connection actually requested.** #375/#376/#377/#378 scoped the wake check to rooms the caller has joined, but it still woke a connection for *any* signal relevant to the user anywhere — a new timeline event in any joined room, or a receipt/typing update in any joined room — regardless of whether that connection had asked for rooms, receipts, or typing at all. Element X runs a dedicated background sliding sync connection with no `lists`/`room_subscriptions` that only enables the `to_device`/`e2ee` extensions, used to keep encryption keys flowing without paying for room-list computation. Every message, read receipt, or typing notification in any of the user's rooms woke that connection early, and since it had nothing new to report it replied instantly with an empty snapshot at the same `pos`, which the client immediately re-polled — a busy-loop sync storm on that connection (observed as `sliding_sync.dispatch`/`sliding_sync.response` pairs firing every 70-150ms) while the user was simply active in an unrelated room. The wake check now only considers a room timeline event relevant when the connection has at least one list or room subscription, and only considers a device-list-change/to-device/account-data/receipts/typing row relevant when the connection's request enabled that specific extension.
+
+### Testing
+- **test(sync): assert that an e2ee/to_device-only Sliding Sync long-poll parks through a typing notification and message it did not request.** A regression scenario mirrors Element X's background connection (no lists/subscriptions, only `to_device`/`e2ee` enabled); after bob posts a typing notification and sends a message in a room alice has joined, alice's long-poll (`can_wait=true`) must return `needs_wait`, not an empty `complete` response.
+
+### Changed
+- **chore(release): bump version to 0.10.50 across meson.build, src/main.cpp, src/db_migrate.cpp, packaging metadata, build scripts, and CHANGELOG.md.**
+
 ## 0.10.49
 
 ### Fixed

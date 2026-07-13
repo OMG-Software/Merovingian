@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.10.49
+Version:        0.10.50
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -112,6 +112,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Mon Jul 13 2026 James Chapman <claude@ping.me.uk> - 0.10.50-1
+- fix(sync): scope the Sliding Sync long-poll wake check to the extensions/lists a connection actually requested, fixing a sync storm on Element X's e2ee/to_device-only connection.
+
 * Mon Jul 13 2026 James Chapman <claude@ping.me.uk> - 0.10.49-1
 - fix(sync): scope the Sliding Sync long-poll wake check to the requesting user's own rooms.
 
