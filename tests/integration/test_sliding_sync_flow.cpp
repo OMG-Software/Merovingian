@@ -1309,3 +1309,107 @@ SCENARIO("Element X's room-list connection delivers receipts requested with room
         }
     }
 }
+
+SCENARIO("Sliding sync receipts/typing extensions wrap content in a type-tagged event, not bare content",
+         "[homeserver][sliding-sync][integration][elementx][receipts][typing]")
+{
+    // m.receipt and m.typing are EphemeralRoom-kind events (ruma's
+    // SyncReceiptEvent / SyncTypingEvent, both requiring {"type":...,
+    // "content":...}). Sending bare content instead — verified against
+    // ruma-client-api's own deserializer — fails client-side deserialization
+    // with "missing field `type`", which matrix-rust-sdk treats as a failed
+    // sync iteration: the position never advances and the client retries
+    // forever, producing a busy-loop storm on any poll that returns a
+    // non-empty receipt or typing notification.
+    GIVEN("alice and bob, two rooms, repeated polling like the storm report")
+    {
+        auto const config = sliding_sync_config();
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const alice_token = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
+        auto const bob_token = register_and_login(rt, "bob", "CorrectHorse7!", "BOB");
+        auto const room_a = create_room(rt, alice_token);
+        auto const invite1 = merovingian::homeserver::handle_client_server_request(
+            rt, {"POST", "/_matrix/client/v3/rooms/" + room_a + "/invite", alice_token,
+                 R"({"user_id":"@bob:example.org"})"});
+        REQUIRE(invite1.response.status == 200U);
+        auto const join1 = merovingian::homeserver::handle_client_server_request(
+            rt, {"POST", "/_matrix/client/v3/rooms/" + room_a + "/join", bob_token, "{}"});
+        REQUIRE(join1.response.status == 200U);
+        auto const room_b = create_room(rt, alice_token);
+        auto const invite2 = merovingian::homeserver::handle_client_server_request(
+            rt, {"POST", "/_matrix/client/v3/rooms/" + room_b + "/invite", alice_token,
+                 R"({"user_id":"@bob:example.org"})"});
+        REQUIRE(invite2.response.status == 200U);
+        auto const join2 = merovingian::homeserver::handle_client_server_request(
+            rt, {"POST", "/_matrix/client/v3/rooms/" + room_b + "/join", bob_token, "{}"});
+        REQUIRE(join2.response.status == 200U);
+
+        auto const init = sliding_sync(rt, alice_token, element_x_room_list_body());
+        REQUIRE(init.response.status == 200U);
+        auto const pos1 = sliding_sync_pos(init.response.body);
+
+        auto const event_id = send_message_get_id(rt, bob_token, room_a, "hello alice");
+        auto const typing_resp = merovingian::homeserver::handle_client_server_request(
+            rt, {"PUT", "/_matrix/client/v3/rooms/" + room_a + "/typing/@bob:example.org", bob_token,
+                 R"({"typing":true,"timeout":30000})"});
+        REQUIRE(typing_resp.response.status == 200U);
+        auto const receipt_resp = merovingian::homeserver::handle_client_server_request(
+            rt, {"POST", "/_matrix/client/v3/rooms/" + room_a + "/receipt/m.read/" + event_id, alice_token, "{}"});
+        REQUIRE(receipt_resp.response.status == 200U);
+
+        WHEN("alice re-polls and receives the receipt and typing notification")
+        {
+            auto const second = sliding_sync(rt, alice_token, element_x_room_list_body(), pos1);
+            REQUIRE(second.response.status == 200U);
+
+            THEN("extensions.receipts.rooms[roomId] is a type-tagged event, not bare receipt content")
+            {
+                auto const body = parse_object(second.response.body);
+                auto const* ext = object_member_as_object(body, "extensions");
+                REQUIRE(ext != nullptr);
+                auto const* receipts = object_member_as_object(*ext, "receipts");
+                REQUIRE(receipts != nullptr);
+                auto const* receipt_rooms = object_member_as_object(*receipts, "rooms");
+                REQUIRE(receipt_rooms != nullptr);
+                auto const* room_receipt = object_member_as_object(*receipt_rooms, room_a);
+                REQUIRE(room_receipt != nullptr);
+
+                auto const* type = string_member(*room_receipt, "type");
+                REQUIRE(type != nullptr);
+                REQUIRE(*type == "m.receipt");
+                auto const* content = object_member_as_object(*room_receipt, "content");
+                REQUIRE(content != nullptr);
+                // Bare (pre-fix) shape had the event_id directly at the top
+                // level instead of nested under "content" — assert it is not
+                // present there.
+                REQUIRE(object_member_as_object(*room_receipt, event_id) == nullptr);
+            }
+
+            THEN("extensions.typing.rooms[roomId] is a type-tagged event, not bare {user_ids}")
+            {
+                auto const body = parse_object(second.response.body);
+                auto const* ext = object_member_as_object(body, "extensions");
+                REQUIRE(ext != nullptr);
+                auto const* typing = object_member_as_object(*ext, "typing");
+                REQUIRE(typing != nullptr);
+                auto const* typing_rooms = object_member_as_object(*typing, "rooms");
+                REQUIRE(typing_rooms != nullptr);
+                auto const* room_typing = object_member_as_object(*typing_rooms, room_a);
+                REQUIRE(room_typing != nullptr);
+
+                auto const* type = string_member(*room_typing, "type");
+                REQUIRE(type != nullptr);
+                REQUIRE(*type == "m.typing");
+                auto const* content = object_member_as_object(*room_typing, "content");
+                REQUIRE(content != nullptr);
+                auto const* user_ids = object_member_as_array(*content, "user_ids");
+                REQUIRE(user_ids != nullptr);
+                // Bare (pre-fix) shape had "user_ids" directly at the top
+                // level instead of nested under "content".
+                REQUIRE(object_member_as_array(*room_typing, "user_ids") == nullptr);
+            }
+        }
+    }
+}

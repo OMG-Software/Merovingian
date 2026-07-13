@@ -269,7 +269,17 @@ namespace
                 }
                 content.push_back(canonicaljson::make_member(event_id, jobj(std::move(type_obj))));
             }
-            resp.rooms_json.emplace(room_id, jserialize(jobj(std::move(content))));
+            // m.receipt is an EphemeralRoom-kind event (ruma's SyncReceiptEvent):
+            // the client expects {"type":"m.receipt","content":{...}}, not the
+            // bare content object. Sending bare content fails deserialization
+            // client-side, which matrix-rust-sdk treats as a failed sync
+            // iteration — the position never advances and the client retries
+            // forever, producing a busy-loop storm on any poll that returns a
+            // non-empty receipt.
+            auto event = canonicaljson::Object{};
+            event.push_back(canonicaljson::make_member("type", jstr("m.receipt")));
+            event.push_back(canonicaljson::make_member("content", jobj(std::move(content))));
+            resp.rooms_json.emplace(room_id, jserialize(jobj(std::move(event))));
         }
         return resp;
     }
@@ -307,10 +317,17 @@ namespace
                 continue;
             }
 
-            // Serialize as {"user_ids": [...]}
+            // m.typing is an EphemeralRoom-kind event (ruma's SyncTypingEvent):
+            // the client expects {"type":"m.typing","content":{"user_ids":[...]}},
+            // not the bare content object — see the identical note in
+            // build_receipts above for why a bare object here causes a
+            // client-side sync storm.
             auto content = canonicaljson::Object{};
             content.push_back(canonicaljson::make_member("user_ids", jarr(std::move(user_ids))));
-            resp.rooms_json.emplace(room_id, jserialize(jobj(std::move(content))));
+            auto event = canonicaljson::Object{};
+            event.push_back(canonicaljson::make_member("type", jstr("m.typing")));
+            event.push_back(canonicaljson::make_member("content", jobj(std::move(content))));
+            resp.rooms_json.emplace(room_id, jserialize(jobj(std::move(event))));
         }
         return resp;
     }
