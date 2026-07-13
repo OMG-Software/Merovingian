@@ -416,8 +416,8 @@ fields in the JSON body. The server prefers query parameters when both are prese
 | `extensions.to_device` | object | optional | Fetch pending to-device messages. Fields: `enabled`, `limit`, `since`. |
 | `extensions.e2ee` | object | optional | Fetch device list changes and OTK counts. Fields: `enabled`. |
 | `extensions.account_data` | object | optional | Fetch global and per-room account data. Fields: `enabled`. |
-| `extensions.receipts` | object | optional | Fetch read receipts. Fields: `enabled`, `rooms`. |
-| `extensions.typing` | object | optional | Fetch typing notifications. Fields: `enabled`, `rooms`. |
+| `extensions.receipts` | object | optional | Fetch read receipts. Fields: `enabled`, `rooms`. `rooms: ["*"]` (the `AllSubscribed` sentinel) and an omitted/empty `rooms` are equivalent — both mean "every room in this response"; matrix-rust-sdk (Element X) always sends `["*"]` explicitly. |
+| `extensions.typing` | object | optional | Fetch typing notifications. Fields: `enabled`, `rooms`. Same `["*"]`-means-all-rooms handling as `extensions.receipts.rooms`. |
 
 #### Response body fields
 

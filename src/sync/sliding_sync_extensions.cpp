@@ -209,12 +209,19 @@ namespace
     // ── Shared helper: effective room list ────────────────────────────────────
 
     // When an extension names explicit rooms, scope to those. Otherwise fall
-    // back to all rooms that appear in the current response.
+    // back to all rooms that appear in the current response. Per MSC4186,
+    // `"rooms":["*"]` is the `AllSubscribed` sentinel (ruma's
+    // `ExtensionRoomConfig::AllSubscribed` serializes to the literal string
+    // "*"), not a room named "*" — matrix-rust-sdk's RoomListService sends
+    // exactly this for the receipts extension. Treat it the same as omitting
+    // `rooms` entirely, rather than matching against a room that can never
+    // exist.
     [[nodiscard]] auto effective_rooms(std::vector<std::string> const& ext_rooms,
                                        std::vector<std::string> const& response_rooms)
         -> std::vector<std::string> const&
     {
-        return ext_rooms.empty() ? response_rooms : ext_rooms;
+        auto const is_all_subscribed = ext_rooms.empty() || (ext_rooms.size() == 1U && ext_rooms.front() == "*");
+        return is_all_subscribed ? response_rooms : ext_rooms;
     }
 
     // ── receipts extension ────────────────────────────────────────────────────
