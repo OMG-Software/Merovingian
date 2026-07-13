@@ -136,6 +136,69 @@ auto send_message(merovingian::homeserver::ClientServerRuntime& rt, std::string 
     REQUIRE(resp.response.status == 200U);
 }
 
+// Send an m.room.message event and return its event_id.
+[[nodiscard]] auto send_message_get_id(merovingian::homeserver::ClientServerRuntime& rt, std::string const& token,
+                                       std::string const& room_id, std::string_view text) -> std::string
+{
+    auto const resp = merovingian::homeserver::handle_client_server_request(
+        rt, {"PUT", "/_matrix/client/v3/rooms/" + room_id + "/send/m.room.message/txn-elementx", token,
+             std::string{R"({"msgtype":"m.text","body":")"} + std::string{text} + "\"}"});
+    REQUIRE(resp.response.status == 200U);
+    auto const body = parse_object(resp.response.body);
+    auto const* event_id = string_member(body, "event_id");
+    REQUIRE(event_id != nullptr);
+    return *event_id;
+}
+
+// ── Element X / matrix-rust-sdk request fidelity ────────────────────────────
+//
+// Element X runs sliding sync through matrix-sdk-ui's `SyncService`, which
+// wires up two independent sliding sync connections against the same
+// homeserver (see matrix-org/matrix-rust-sdk, crates/matrix-sdk-ui/src/
+// sync_service.rs and matrix-org/matrix-rust-sdk#1928 "The Two Sync Loops"):
+//
+//   - "room-list" (`RoomListService::DEFAULT_CONNECTION_ID`, room_list_service/
+//     mod.rs): the single `all_rooms` list, `DEFAULT_REQUIRED_STATE`,
+//     `timeline_limit=1`, and the account_data/receipts/typing extensions.
+//     `receipts` is requested with `rooms:["*"]`
+//     (`ExtensionRoomConfig::AllSubscribed` serializes to `"*"`).
+//   - "encryption" (encryption_sync_service.rs): no lists or subscriptions at
+//     all, only the to_device/e2ee extensions — a dedicated background
+//     connection so encryption keys keep flowing without paying for room-list
+//     computation, and so it isn't blocked by the main sync being reset.
+//
+// The bodies below reproduce those two connections byte-for-byte (down to the
+// literal `conn_id` strings and the exact `required_state` pairs) so these
+// tests exercise the requests our server actually receives from Element X,
+// not a simplified stand-in.
+
+// matrix-rust-sdk's `DEFAULT_REQUIRED_STATE`
+// (room_list_service/mod.rs). "$LAZY" and "$ME" are MSC4186 sentinel values
+// for lazy-loaded / own membership, not literal state keys.
+auto constexpr element_x_required_state =
+    R"(["m.room.name",""],["m.room.encryption",""],["m.room.member","$LAZY"],["m.room.member","$ME"],)"
+    R"(["m.room.topic",""],["m.room.avatar",""],["m.room.canonical_alias",""],["m.room.power_levels",""],)"
+    R"(["org.matrix.msc3401.call.member","*"],["m.room.join_rules",""],["m.room.tombstone",""],)"
+    R"(["m.room.create",""],["m.room.history_visibility",""],["io.element.functional_members",""],)"
+    R"(["m.space.parent","*"],["m.space.child","*"],["org.matrix.msc3672.beacon_info","*"])";
+
+// Element X's "room-list" connection body (initial and incremental — the
+// list/extensions shape does not change between polls).
+[[nodiscard]] auto element_x_room_list_body() -> std::string
+{
+    return std::string{R"({"conn_id":"room-list","lists":{"all_rooms":{"ranges":[[0,19]],"required_state":[)"} +
+           element_x_required_state +
+           R"(],"timeline_limit":1}},"extensions":{"account_data":{"enabled":true},)"
+           R"("receipts":{"enabled":true,"rooms":["*"]},"typing":{"enabled":true}}})";
+}
+
+// Element X's "encryption" connection body: no lists/subscriptions, only
+// to_device/e2ee.
+[[nodiscard]] auto element_x_encryption_body() -> std::string
+{
+    return R"({"conn_id":"encryption","extensions":{"to_device":{"enabled":true},"e2ee":{"enabled":true}}})";
+}
+
 } // namespace
 
 // ── Advertisement ────────────────────────────────────────────────────────────
@@ -957,6 +1020,291 @@ SCENARIO("MSC4186 sliding sync shows rooms created on another device of the same
                 auto const* initial = bool_member(*rm, "initial");
                 REQUIRE(initial != nullptr);
                 REQUIRE(*initial == true);
+            }
+        }
+    }
+}
+
+// ── Element X compatibility: dual room-list + encryption connections ───────
+//
+// See the "Element X / matrix-rust-sdk request fidelity" note above for what
+// these two connections are and where their shape comes from.
+
+SCENARIO("Element X's room-list connection reports room encryption via required_state",
+         "[homeserver][sliding-sync][integration][elementx]")
+{
+    // Spec: MSC4186 required_state — a room's current m.room.encryption state
+    // event must be included when required_state names it, so Element X can
+    // mark the room as encrypted. private_chat rooms are auto-encrypted per
+    // the Client-Server API's createRoom preset behaviour.
+    GIVEN("alice and bob sharing an auto-encrypted private_chat room")
+    {
+        auto const config = sliding_sync_config();
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const alice_token = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
+        auto const bob_token = register_and_login(rt, "bob", "CorrectHorse7!", "BOB");
+        auto const room_id = create_room(rt, alice_token); // private_chat preset
+
+        // private_chat rooms default to join_rule=invite, so bob needs an
+        // invite from alice before he can join.
+        auto const invite_resp = merovingian::homeserver::handle_client_server_request(
+            rt, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/invite", alice_token,
+                 R"({"user_id":"@bob:example.org"})"});
+        REQUIRE(invite_resp.response.status == 200U);
+
+        auto const join_url = "/_matrix/client/v3/rooms/" + room_id + "/join";
+        auto const bob_join =
+            merovingian::homeserver::handle_client_server_request(rt, {"POST", join_url, bob_token, "{}"});
+        REQUIRE(bob_join.response.status == 200U);
+
+        WHEN("alice performs Element X's initial \"room-list\" sliding sync")
+        {
+            auto const result = sliding_sync(rt, alice_token, element_x_room_list_body());
+
+            THEN("the room is present, initial, and its required_state includes m.room.encryption")
+            {
+                REQUIRE(result.response.status == 200U);
+                auto const rooms = rooms_object(result.response.body);
+                auto const* room = object_member_as_object(rooms, room_id);
+                REQUIRE(room != nullptr);
+                auto const* initial = bool_member(*room, "initial");
+                REQUIRE(initial != nullptr);
+                REQUIRE(*initial == true);
+
+                auto const* required_state = object_member_as_array(*room, "required_state");
+                REQUIRE(required_state != nullptr);
+                auto const has_encryption =
+                    std::ranges::any_of(*required_state, [](merovingian::canonicaljson::Value const& v) {
+                        auto const* ev = std::get_if<merovingian::canonicaljson::Object>(&v.storage());
+                        if (ev == nullptr)
+                            return false;
+                        auto const* type = string_member(*ev, "type");
+                        return type != nullptr && *type == "m.room.encryption";
+                    });
+                REQUIRE(has_encryption);
+            }
+
+            THEN("required_state includes alice's own member event (\"$ME\") and bob's (\"$LAZY\", the most "
+                 "recent timeline sender)")
+            {
+                REQUIRE(result.response.status == 200U);
+                auto const rooms = rooms_object(result.response.body);
+                auto const* room = object_member_as_object(rooms, room_id);
+                REQUIRE(room != nullptr);
+                auto const* required_state = object_member_as_array(*room, "required_state");
+                REQUIRE(required_state != nullptr);
+
+                auto const has_member = [&](std::string_view user_id) {
+                    return std::ranges::any_of(*required_state, [&](merovingian::canonicaljson::Value const& v) {
+                        auto const* ev = std::get_if<merovingian::canonicaljson::Object>(&v.storage());
+                        if (ev == nullptr)
+                            return false;
+                        auto const* type = string_member(*ev, "type");
+                        auto const* state_key = string_member(*ev, "state_key");
+                        return type != nullptr && *type == "m.room.member" && state_key != nullptr &&
+                               *state_key == user_id;
+                    });
+                };
+                REQUIRE(has_member("@alice:example.org"));
+                REQUIRE(has_member("@bob:example.org"));
+            }
+        }
+    }
+}
+
+SCENARIO("Element X's encryption-only connection parks through activity it never requested",
+         "[homeserver][sliding-sync][integration][elementx][notifier]")
+{
+    // Regression coverage for the sync-storm fix: EncryptionSyncService opens
+    // a connection with no lists/subscriptions and only to_device/e2ee
+    // enabled. A message, typing notification, or receipt in a room it never
+    // asked about must not wake it — it must park until its own timeout.
+    GIVEN("alice and bob sharing a room, with alice's encryption connection parked at its initial pos")
+    {
+        auto const config = sliding_sync_config();
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const alice_token = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
+        auto const bob_token = register_and_login(rt, "bob", "CorrectHorse7!", "BOB");
+        auto const room_id = create_room(rt, alice_token);
+
+        // private_chat rooms default to join_rule=invite, so bob needs an
+        // invite from alice before he can join.
+        auto const invite_resp = merovingian::homeserver::handle_client_server_request(
+            rt, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/invite", alice_token,
+                 R"({"user_id":"@bob:example.org"})"});
+        REQUIRE(invite_resp.response.status == 200U);
+
+        auto const join_url = "/_matrix/client/v3/rooms/" + room_id + "/join";
+        auto const bob_join =
+            merovingian::homeserver::handle_client_server_request(rt, {"POST", join_url, bob_token, "{}"});
+        REQUIRE(bob_join.response.status == 200U);
+
+        // Seed both connections exactly as SyncService::build does: room-list
+        // first, then the encryption connection.
+        auto const room_list_init = sliding_sync(rt, alice_token, element_x_room_list_body());
+        REQUIRE(room_list_init.response.status == 200U);
+
+        auto const enc_init = sliding_sync(rt, alice_token, element_x_encryption_body());
+        REQUIRE(enc_init.response.status == 200U);
+        auto const enc_pos = sliding_sync_pos(enc_init.response.body);
+
+        WHEN("bob is active in the shared room: typing, a message, and a read receipt")
+        {
+            auto const typing_url = "/_matrix/client/v3/rooms/" + room_id + "/typing/@bob:example.org";
+            auto const typing_resp = merovingian::homeserver::handle_client_server_request(
+                rt, {"PUT", typing_url, bob_token, R"({"typing":true,"timeout":30000})"});
+            REQUIRE(typing_resp.response.status == 200U);
+
+            auto const event_id = send_message_get_id(rt, bob_token, room_id, "hi alice");
+
+            auto const receipt_resp = merovingian::homeserver::handle_client_server_request(
+                rt, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/receipt/m.read/" + event_id, bob_token, "{}"});
+            REQUIRE(receipt_resp.response.status == 200U);
+
+            THEN("alice's encryption connection long-poll (can_wait=true) parks instead of firing an empty response")
+            {
+                auto const target =
+                    "/_matrix/client/unstable/org.matrix.msc4186/sync?pos=" + enc_pos + "&timeout=30000";
+                auto const result = merovingian::homeserver::handle_client_server_request(
+                    rt, {"POST", target, alice_token, element_x_encryption_body()}, /*can_wait=*/true);
+
+                REQUIRE(result.status == merovingian::homeserver::DispatchResult::Status::needs_wait);
+            }
+        }
+    }
+}
+
+SCENARIO("Element X's encryption-only connection wakes and delivers device_lists.changed on a key upload",
+         "[homeserver][sliding-sync][integration][elementx][e2ee]")
+{
+    // The flip side of the storm fix: a signal the encryption connection did
+    // ask for (e2ee) must still wake it promptly.
+    GIVEN("alice and bob sharing a room, with alice's encryption connection parked at its initial pos")
+    {
+        auto const config = sliding_sync_config();
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const alice_token = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
+        auto const bob_token = register_and_login(rt, "bob", "CorrectHorse7!", "BOB");
+        auto const room_id = create_room(rt, alice_token);
+
+        // private_chat rooms default to join_rule=invite, so bob needs an
+        // invite from alice before he can join.
+        auto const invite_resp = merovingian::homeserver::handle_client_server_request(
+            rt, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/invite", alice_token,
+                 R"({"user_id":"@bob:example.org"})"});
+        REQUIRE(invite_resp.response.status == 200U);
+
+        auto const join_url = "/_matrix/client/v3/rooms/" + room_id + "/join";
+        auto const bob_join =
+            merovingian::homeserver::handle_client_server_request(rt, {"POST", join_url, bob_token, "{}"});
+        REQUIRE(bob_join.response.status == 200U);
+
+        auto const enc_init = sliding_sync(rt, alice_token, element_x_encryption_body());
+        REQUIRE(enc_init.response.status == 200U);
+        auto const enc_pos = sliding_sync_pos(enc_init.response.body);
+
+        WHEN("bob uploads device keys")
+        {
+            auto const keys_body = R"({"device_keys":{"user_id":"@bob:example.org","device_id":"BOB",)"
+                                   R"("algorithms":["m.olm.v1.curve25519-aes-sha2"],)"
+                                   R"("keys":{"curve25519:BOB":"BOBCURVE","ed25519:BOB":"BOBED"}}})";
+            auto const upload = merovingian::homeserver::handle_client_server_request(
+                rt, {"POST", "/_matrix/client/v3/keys/upload", bob_token, keys_body});
+            REQUIRE(upload.response.status == 200U);
+
+            THEN("alice's encryption connection long-poll returns complete with bob in device_lists.changed")
+            {
+                auto const target =
+                    "/_matrix/client/unstable/org.matrix.msc4186/sync?pos=" + enc_pos + "&timeout=30000";
+                auto const result = merovingian::homeserver::handle_client_server_request(
+                    rt, {"POST", target, alice_token, element_x_encryption_body()}, /*can_wait=*/true);
+
+                REQUIRE(result.status == merovingian::homeserver::DispatchResult::Status::complete);
+                REQUIRE(result.response.status == 200U);
+
+                auto const body = parse_object(result.response.body);
+                auto const* ext = object_member_as_object(body, "extensions");
+                REQUIRE(ext != nullptr);
+                auto const* e2ee = object_member_as_object(*ext, "e2ee");
+                REQUIRE(e2ee != nullptr);
+                auto const* dl = object_member_as_object(*e2ee, "device_lists");
+                REQUIRE(dl != nullptr);
+                auto const* changed = object_member_as_array(*dl, "changed");
+                REQUIRE(changed != nullptr);
+                auto const saw_bob = std::ranges::any_of(*changed, [](merovingian::canonicaljson::Value const& v) {
+                    auto const* uid = std::get_if<std::string>(&v.storage());
+                    return uid != nullptr && *uid == "@bob:example.org";
+                });
+                REQUIRE(saw_bob);
+            }
+        }
+    }
+}
+
+SCENARIO("Element X's room-list connection delivers receipts requested with rooms:[\"*\"]",
+         "[homeserver][sliding-sync][integration][elementx][receipts]")
+{
+    // RoomListService enables the receipts extension with
+    // `rooms: Some(vec![ExtensionRoomConfig::AllSubscribed])`, which
+    // serializes to `"rooms":["*"]` (ruma's ExtensionRoomConfig::AllSubscribed
+    // -> "*"), not an explicit room ID list and not an omitted field. The
+    // server must treat "*" the same as "no room filter" (all rooms in the
+    // response), matching every other homeserver's interpretation of the
+    // MSC4186 AllSubscribed sentinel.
+    GIVEN("alice and bob sharing a room, with alice's room-list connection caught up")
+    {
+        auto const config = sliding_sync_config();
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const alice_token = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
+        auto const bob_token = register_and_login(rt, "bob", "CorrectHorse7!", "BOB");
+        auto const room_id = create_room(rt, alice_token);
+
+        // private_chat rooms default to join_rule=invite, so bob needs an
+        // invite from alice before he can join.
+        auto const invite_resp = merovingian::homeserver::handle_client_server_request(
+            rt, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/invite", alice_token,
+                 R"({"user_id":"@bob:example.org"})"});
+        REQUIRE(invite_resp.response.status == 200U);
+
+        auto const join_url = "/_matrix/client/v3/rooms/" + room_id + "/join";
+        auto const bob_join =
+            merovingian::homeserver::handle_client_server_request(rt, {"POST", join_url, bob_token, "{}"});
+        REQUIRE(bob_join.response.status == 200U);
+
+        auto const init = sliding_sync(rt, alice_token, element_x_room_list_body());
+        REQUIRE(init.response.status == 200U);
+        auto const pos = sliding_sync_pos(init.response.body);
+
+        WHEN("bob sends a message and alice reads it, then alice re-polls with pos")
+        {
+            auto const event_id = send_message_get_id(rt, bob_token, room_id, "hi alice");
+
+            auto const receipt_resp = merovingian::homeserver::handle_client_server_request(
+                rt, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/receipt/m.read/" + event_id, bob_token, "{}"});
+            REQUIRE(receipt_resp.response.status == 200U);
+
+            auto const result = sliding_sync(rt, alice_token, element_x_room_list_body(), pos);
+
+            THEN("extensions.receipts.rooms includes the room's receipt, not a literal room named \"*\"")
+            {
+                REQUIRE(result.response.status == 200U);
+                auto const body = parse_object(result.response.body);
+                auto const* ext = object_member_as_object(body, "extensions");
+                REQUIRE(ext != nullptr);
+                auto const* receipts = object_member_as_object(*ext, "receipts");
+                REQUIRE(receipts != nullptr);
+                auto const* receipt_rooms = object_member_as_object(*receipts, "rooms");
+                REQUIRE(receipt_rooms != nullptr);
+                auto const* room_receipt = object_member_as_object(*receipt_rooms, room_id);
+                REQUIRE(room_receipt != nullptr);
             }
         }
     }

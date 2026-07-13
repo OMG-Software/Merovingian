@@ -58,6 +58,7 @@
 #include <string_view>
 #include <tuple>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -3786,6 +3787,7 @@ namespace
             {
                 conn.list_prev_windows = std::move(conn.pending_response->list_prev_windows);
                 conn.rooms_seen = std::move(conn.pending_response->rooms_seen);
+                conn.lazy_members_sent = std::move(conn.pending_response->lazy_members_sent);
                 conn.last_event_ordering = conn.pending_response->last_event_ordering;
                 conn.last_sync_stream_id = conn.pending_response->last_sync_stream_id;
                 conn.pending_response.reset();
@@ -3818,12 +3820,33 @@ namespace
             auto const cur_event = rt.homeserver.database.next_stream_ordering - 1U;
             auto const cur_sync = store.next_sync_stream_id;
 
+            // Only wake for a surface this specific connection actually requested.
+            // Element X runs a dedicated background connection with no lists or
+            // subscriptions that only asks for the to_device/e2ee extensions; that
+            // connection does not care about room timeline events, receipts, or
+            // typing.  Waking it for those anyway turned every message, receipt, or
+            // typing notification in any of the user's rooms into an immediate
+            // empty response followed by an instant re-poll — a busy-loop sync
+            // storm on that connection while unrelated rooms stayed active.
+            bool const wants_rooms = !ssreq.lists.empty() || !ssreq.room_subscriptions.empty();
+            bool const wants_e2ee =
+                ssreq.extensions.has_value() && ssreq.extensions->e2ee.has_value() && ssreq.extensions->e2ee->enabled;
+            bool const wants_to_device = ssreq.extensions.has_value() && ssreq.extensions->to_device.has_value() &&
+                                         ssreq.extensions->to_device->enabled;
+            bool const wants_account_data = ssreq.extensions.has_value() &&
+                                            ssreq.extensions->account_data.has_value() &&
+                                            ssreq.extensions->account_data->enabled;
+            bool const wants_receipts = ssreq.extensions.has_value() && ssreq.extensions->receipts.has_value() &&
+                                        ssreq.extensions->receipts->enabled;
+            bool const wants_typing = ssreq.extensions.has_value() && ssreq.extensions->typing.has_value() &&
+                                      ssreq.extensions->typing->enabled;
+
             // A new room event only matters to this connection if it landed in a
             // room the user has joined: rooms{} is windowed to the user's own
             // lists/subscriptions, so an event in an unrelated room on the server
             // must not wake this long-poll early.
             bool const has_relevant_event =
-                cur_event > since_event_ordering &&
+                wants_rooms && cur_event > since_event_ordering &&
                 std::ranges::any_of(store.events, [&](database::PersistentEvent const& e) {
                     return e.stream_ordering > since_event_ordering && user_is_joined(store, e.room_id, user);
                 });
@@ -3831,29 +3854,32 @@ namespace
             if (!has_relevant_event)
             {
                 // No relevant room events.  Only respond early if the sync_stream_id
-                // advance contains rows relevant to this user/device:
-                //   - device-list changes where this user is the observer
-                //   - to-device messages addressed to this device
-                //   - account-data rows owned by this user
+                // advance contains rows relevant to a surface this connection asked
+                // for via extensions.<name>.enabled:
+                //   - device-list changes where this user is the observer (e2ee)
+                //   - to-device messages addressed to this device (to_device)
+                //   - account-data rows owned by this user (account_data)
                 //   - receipts or typing updates in any room the user has joined
-                // Typing/receipts were previously ignored, so a typing event or
-                // read receipt in the user's room would advance sync_stream_id
-                // without waking this long-poll, leaving ElementX stale.
-                bool const has_relevant_dlc = std::ranges::any_of(store.device_list_changes, [&](auto const& c) {
-                    return c.observer_user_id == user && c.stream_id > since_sync_stream_id;
-                });
-                bool const has_relevant_tdm = std::ranges::any_of(store.to_device_messages, [&](auto const& m) {
-                    return m.target_user_id == user && m.target_device_id == device_id &&
-                           m.stream_id > since_sync_stream_id;
-                });
-                bool const has_relevant_ad = std::ranges::any_of(store.account_data, [&](auto const& ad) {
-                    return ad.user_id == user && ad.stream_id > since_sync_stream_id;
-                });
-                bool const has_relevant_receipts = std::ranges::any_of(rt.homeserver.receipts, [&](auto const& r) {
-                    return r.stream_id > since_sync_stream_id && user_is_joined(store, r.room_id, user);
-                });
+                //     (receipts / typing)
+                bool const has_relevant_dlc =
+                    wants_e2ee && std::ranges::any_of(store.device_list_changes, [&](auto const& c) {
+                        return c.observer_user_id == user && c.stream_id > since_sync_stream_id;
+                    });
+                bool const has_relevant_tdm =
+                    wants_to_device && std::ranges::any_of(store.to_device_messages, [&](auto const& m) {
+                        return m.target_user_id == user && m.target_device_id == device_id &&
+                               m.stream_id > since_sync_stream_id;
+                    });
+                bool const has_relevant_ad =
+                    wants_account_data && std::ranges::any_of(store.account_data, [&](auto const& ad) {
+                        return ad.user_id == user && ad.stream_id > since_sync_stream_id;
+                    });
+                bool const has_relevant_receipts =
+                    wants_receipts && std::ranges::any_of(rt.homeserver.receipts, [&](auto const& r) {
+                        return r.stream_id > since_sync_stream_id && user_is_joined(store, r.room_id, user);
+                    });
                 bool const has_relevant_typing =
-                    std::ranges::any_of(rt.homeserver.room_typing_stream_id, [&](auto const& kv) {
+                    wants_typing && std::ranges::any_of(rt.homeserver.room_typing_stream_id, [&](auto const& kv) {
                         return kv.second > since_sync_stream_id && user_is_joined(store, kv.first, user);
                     });
                 if (!has_relevant_dlc && !has_relevant_tdm && !has_relevant_ad && !has_relevant_receipts &&
@@ -3907,6 +3933,8 @@ namespace
 
         auto rooms_obj = canonicaljson::Object{};
         auto rooms_skipped = std::size_t{0U};
+        auto const empty_lazy_members_set = std::unordered_set<std::string>{};
+        auto lazy_members_included_by_room = std::unordered_map<std::string, std::unordered_set<std::string>>{};
         for (auto const& room_id : response_room_ids)
         {
             auto sub = sync::SlidingSyncRoomSubscription{};
@@ -3939,7 +3967,15 @@ namespace
             // as a since floor: the client has not seen this room on this connection
             // and needs the full snapshot and all unread counts.
             auto const room_since = is_initial ? std::uint64_t{0U} : std::max(since_event_ordering, room_last_ordering);
-            auto room = sync::build_room_response(rt.homeserver, room_id, user, sub, room_since, is_initial, store);
+            auto const lazy_sent_it = conn.lazy_members_sent.find(room_id);
+            auto const& lazy_already_sent =
+                lazy_sent_it != conn.lazy_members_sent.end() ? lazy_sent_it->second : empty_lazy_members_set;
+            auto room = sync::build_room_response(rt.homeserver, room_id, user, sub, room_since, is_initial, store,
+                                                  lazy_already_sent);
+            if (!room.lazy_members_included.empty())
+            {
+                lazy_members_included_by_room[room_id] = room.lazy_members_included;
+            }
             // Per MSC4186, only include a room in rooms{} when it has actual
             // changes: first appearance (initial), post-pos timeline events, or changed
             // required_state.  Unread counts are sent when the room is included for
@@ -4095,6 +4131,7 @@ namespace
         next_state.response_pos = new_pos;
         next_state.list_prev_windows = conn.list_prev_windows;
         next_state.rooms_seen = conn.rooms_seen;
+        next_state.lazy_members_sent = conn.lazy_members_sent;
         next_state.last_event_ordering = cur_event;
         next_state.last_sync_stream_id = cur_sync;
 
@@ -4104,6 +4141,14 @@ namespace
             // this connection.  Future requests on the same connection will treat
             // this as the delta floor, not the global request pos.
             next_state.rooms_seen[room_id] = cur_event;
+        }
+        for (auto const& [room_id, included] : lazy_members_included_by_room)
+        {
+            // Remember which members required_state's "$LAZY" sentinel has
+            // already delivered on this connection, so a later response for
+            // an unchanged member doesn't bypass the delta floor again.
+            auto& sent = next_state.lazy_members_sent[room_id];
+            sent.insert(included.begin(), included.end());
         }
         for (auto const& [lname, result] : list_results)
         {

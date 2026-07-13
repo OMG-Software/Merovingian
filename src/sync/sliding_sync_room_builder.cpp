@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <variant>
 #include <vector>
 
@@ -67,6 +68,107 @@ namespace
         return std::ranges::any_of(pairs, [&](auto const& p) {
             return matches_required_state_pair(p.first, p.second, event_type, state_key);
         });
+    }
+
+    // ── required_state sentinel resolution ("$ME" / "$LAZY") ───────────────
+
+    // Extract the set of user_ids relevant to lazy-loaded ("$LAZY") member
+    // resolution from a timeline: whoever sent an event, plus — for
+    // m.room.member events specifically — the membership's subject, so an
+    // invite/kick/ban target is covered even if they never sent anything.
+    [[nodiscard]] auto extract_timeline_membership(
+        std::vector<std::pair<std::uint64_t, std::string>> const& timeline_events) -> std::unordered_set<std::string>
+    {
+        auto members = std::unordered_set<std::string>{};
+        for (auto const& [ordering, json] : timeline_events)
+        {
+            std::ignore = ordering;
+            auto const parsed = canonicaljson::parse_lossless(json);
+            if (parsed.error != canonicaljson::ParseError::none)
+            {
+                continue;
+            }
+            auto const* root = as_object(parsed.value);
+            if (root == nullptr)
+            {
+                continue;
+            }
+            if (auto const* sender_val = find_member(*root, "sender"); sender_val != nullptr)
+            {
+                if (auto const* s = as_string(*sender_val); s != nullptr)
+                {
+                    members.insert(*s);
+                }
+            }
+            auto const* type_val = find_member(*root, "type");
+            auto const* type_s = type_val != nullptr ? as_string(*type_val) : nullptr;
+            if (type_s != nullptr && *type_s == "m.room.member")
+            {
+                if (auto const* sk_val = find_member(*root, "state_key"); sk_val != nullptr)
+                {
+                    if (auto const* s = as_string(*sk_val); s != nullptr)
+                    {
+                        members.insert(*s);
+                    }
+                }
+            }
+        }
+        return members;
+    }
+
+    // Resolve MSC3575/MSC4186 required_state sentinel state keys ("$ME",
+    // "$LAZY") into concrete pairs the plain matcher understands.
+    //
+    // "$ME" always becomes the requesting user's own ID — matrix-rust-sdk and
+    // Synapse both do a straight substitution, so this reuses all of the
+    // existing since-floor delta logic for free.
+    //
+    // "$LAZY" (only meaningful for m.room.member) becomes:
+    //   - one explicit pair per user relevant to *this response's* timeline
+    //     (`timeline_membership`), when the timeline is limited (truncated —
+    //     there's a gap the client can't otherwise bridge) or this is the
+    //     room's first appearance on the connection. Matches matrix-rust-sdk/
+    //     Synapse's "only the people in the timeline we're returning"
+    //     restriction; or
+    //   - the wildcard "*", when the timeline is a continuous, non-initial
+    //     slice, so the client's existing membership cache stays valid and
+    //     only genuine membership changes need to flow.
+    // Callers separately bypass the since-floor for members newly relevant to
+    // this connection (see build_room_response's lazy_members_already_sent)
+    // regardless of which branch produced the matching pair.
+    [[nodiscard]] auto resolve_required_state(std::vector<std::pair<std::string, std::string>> const& required_state,
+                                              std::string_view user,
+                                              std::unordered_set<std::string> const& timeline_membership,
+                                              bool scope_lazy_to_timeline)
+        -> std::vector<std::pair<std::string, std::string>>
+    {
+        auto resolved = std::vector<std::pair<std::string, std::string>>{};
+        resolved.reserve(required_state.size());
+        for (auto const& [event_type, state_key] : required_state)
+        {
+            if (event_type == "m.room.member" && state_key == "$LAZY")
+            {
+                if (scope_lazy_to_timeline)
+                {
+                    for (auto const& member_id : timeline_membership)
+                    {
+                        resolved.emplace_back(event_type, member_id);
+                    }
+                }
+                else
+                {
+                    resolved.emplace_back(event_type, "*");
+                }
+                continue;
+            }
+            if (event_type == "m.room.member" && state_key == "$ME")
+            {
+                resolved.emplace_back(event_type, std::string{user});
+                continue;
+            }
+            resolved.emplace_back(event_type, state_key);
+        }
+        return resolved;
     }
 
     // ── Name / avatar from state ────────────────────────────────────────────
@@ -346,7 +448,8 @@ namespace
 
 auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_view room_id, std::string_view user,
                          SlidingSyncRoomSubscription const& sub, std::uint64_t room_since_event_ordering,
-                         bool is_initial, database::PersistentStore const& store) -> SlidingSyncRoomResponse
+                         bool is_initial, database::PersistentStore const& store,
+                         std::unordered_set<std::string> const& lazy_members_already_sent) -> SlidingSyncRoomResponse
 {
     auto resp = SlidingSyncRoomResponse{};
 
@@ -407,38 +510,11 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
         resp.heroes = build_heroes(store, room_id, user);
     }
 
-    // ── required_state ──────────────────────────────────────────────────────
-    if (!sub.required_state.empty())
-    {
-        for (auto const& se : store.state)
-        {
-            if (se.room_id != room_id)
-            {
-                continue;
-            }
-            if (!state_event_matches_any(sub.required_state, se.event_type, se.state_key))
-            {
-                continue;
-            }
-            // On incremental responses include only state that changed since pos.
-            for (auto const& ev : store.events)
-            {
-                if (ev.event_id != se.event_id)
-                {
-                    continue;
-                }
-                if (!is_initial && ev.stream_ordering <= room_since_event_ordering)
-                {
-                    break; // unchanged since last pos — skip
-                }
-                resp.required_state_json.push_back(ev.json);
-                break;
-            }
-        }
-    }
-
     // ── Timeline ─────────────────────────────────────────────────────────────
     // Collect events in chronological order, respecting the since floor.
+    // Computed before required_state: resolving required_state's "$LAZY"
+    // member sentinel needs to know which senders/subjects appear in the
+    // timeline this response is about to return.
     auto timeline_events = std::vector<std::pair<std::uint64_t, std::string>>{};
     for (auto const& ev : store.events)
     {
@@ -457,7 +533,8 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
     });
 
     auto const limit = static_cast<std::size_t>(sub.timeline_limit);
-    if (timeline_events.size() > limit)
+    bool const timeline_limited = timeline_events.size() > limit;
+    if (timeline_limited)
     {
         // Keep the last `limit` events; MSC4186 returns timeline as a plain
         // [Event] array without a per-room prev_batch or limited flag.
@@ -465,6 +542,73 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
         timeline_events.erase(timeline_events.begin(),
                               timeline_events.begin() + static_cast<std::ptrdiff_t>(drop_count));
     }
+
+    // ── required_state ──────────────────────────────────────────────────────
+    if (!sub.required_state.empty())
+    {
+        auto const lazy_load_room_members = std::ranges::any_of(sub.required_state, [](auto const& p) {
+            return p.first == "m.room.member" && p.second == "$LAZY";
+        });
+
+        // Members relevant to this response's timeline, and — among those —
+        // the ones this connection has never been sent before. A brand-new
+        // relevant member must be delivered even if their own m.room.member
+        // event predates the since-floor (they only just became relevant;
+        // their membership event itself may be old and otherwise unchanged).
+        auto const timeline_membership =
+            lazy_load_room_members ? extract_timeline_membership(timeline_events) : std::unordered_set<std::string>{};
+        auto new_lazy_members = std::unordered_set<std::string>{};
+        if (lazy_load_room_members)
+        {
+            for (auto const& member_id : timeline_membership)
+            {
+                if (!lazy_members_already_sent.contains(member_id))
+                {
+                    new_lazy_members.insert(member_id);
+                }
+            }
+        }
+
+        auto const scope_lazy_to_timeline = timeline_limited || is_initial;
+        auto const resolved_required_state =
+            resolve_required_state(sub.required_state, user, timeline_membership, scope_lazy_to_timeline);
+
+        for (auto const& se : store.state)
+        {
+            if (se.room_id != room_id)
+            {
+                continue;
+            }
+            if (!state_event_matches_any(resolved_required_state, se.event_type, se.state_key))
+            {
+                continue;
+            }
+            bool const bypass_floor = is_initial || (lazy_load_room_members && se.event_type == "m.room.member" &&
+                                                     new_lazy_members.contains(se.state_key));
+            // On incremental responses include only state that changed since
+            // pos, unless this is a newly-relevant lazy-loaded member seeing
+            // their first delivery on this connection (bypass_floor).
+            for (auto const& ev : store.events)
+            {
+                if (ev.event_id != se.event_id)
+                {
+                    continue;
+                }
+                if (!bypass_floor && ev.stream_ordering <= room_since_event_ordering)
+                {
+                    break; // unchanged since last pos — skip
+                }
+                resp.required_state_json.push_back(ev.json);
+                if (lazy_load_room_members && se.event_type == "m.room.member" &&
+                    timeline_membership.contains(se.state_key))
+                {
+                    resp.lazy_members_included.insert(se.state_key);
+                }
+                break;
+            }
+        }
+    }
+
     for (auto& [ordering, json] : timeline_events)
     {
         resp.timeline_json.push_back(std::move(json));

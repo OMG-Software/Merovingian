@@ -7,9 +7,11 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <vector>
 
 namespace
@@ -246,6 +248,225 @@ SCENARIO("Sliding sync room builder wildcard required_state includes all matchin
             {
                 REQUIRE(resp.required_state_json.size() == 1U);
                 REQUIRE(resp.required_state_json.front().find("m.room.name") != std::string::npos);
+            }
+        }
+    }
+}
+
+// ── required_state sentinels: "$ME" and "$LAZY" (matrix-rust-sdk / Element X) ──
+//
+// matrix-rust-sdk's RoomListService always requests
+// required_state=[..., ["m.room.member","$LAZY"], ["m.room.member","$ME"], ...]
+// (crates/matrix-sdk-ui/src/room_list_service/mod.rs, DEFAULT_REQUIRED_STATE).
+// Before this, matches_required_state_pair did plain string equality, so
+// neither sentinel ever matched a real state_key (always a user ID) —
+// Element X never received any m.room.member events from sliding sync.
+
+SCENARIO("Sliding sync room builder resolves required_state \"$ME\" to the requesting user's own member event",
+         "[sync][sliding-sync][room-builder][lazy-loading]")
+{
+    GIVEN("a room where alice (the requester) and bob have both joined")
+    {
+        auto runtime = merovingian::homeserver::HomeserverRuntime{};
+        auto store = merovingian::database::PersistentStore{};
+
+        append_event(store, "$alice-join", "!room:example.org",
+                     R"({"type":"m.room.member","sender":"@alice:example.org",)"
+                     R"("state_key":"@alice:example.org","content":{"membership":"join"}})",
+                     1U);
+        append_state(store, "!room:example.org", "m.room.member", "@alice:example.org", "$alice-join");
+
+        append_event(store, "$bob-join", "!room:example.org",
+                     R"({"type":"m.room.member","sender":"@bob:example.org",)"
+                     R"("state_key":"@bob:example.org","content":{"membership":"join"}})",
+                     2U);
+        append_state(store, "!room:example.org", "m.room.member", "@bob:example.org", "$bob-join");
+
+        auto sub = merovingian::sync::SlidingSyncRoomSubscription{};
+        sub.required_state = {
+            {"m.room.member", "$ME"}
+        };
+
+        WHEN("alice's initial sliding sync is built")
+        {
+            auto const resp = merovingian::sync::build_room_response(runtime, "!room:example.org", "@alice:example.org",
+                                                                     sub, 0U, true, store);
+
+            THEN("required_state_json contains only alice's own member event")
+            {
+                REQUIRE(resp.required_state_json.size() == 1U);
+                REQUIRE(resp.required_state_json.front().find("@alice:example.org") != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("Sliding sync room builder scopes required_state \"$LAZY\" to timeline senders on initial sync",
+         "[sync][sliding-sync][room-builder][lazy-loading]")
+{
+    GIVEN("alice, bob, and carol have joined a room, but only bob has sent a timeline message")
+    {
+        auto runtime = merovingian::homeserver::HomeserverRuntime{};
+        auto store = merovingian::database::PersistentStore{};
+
+        append_event(store, "$alice-join", "!room:example.org",
+                     R"({"type":"m.room.member","sender":"@alice:example.org",)"
+                     R"("state_key":"@alice:example.org","content":{"membership":"join"}})",
+                     1U);
+        append_state(store, "!room:example.org", "m.room.member", "@alice:example.org", "$alice-join");
+
+        append_event(store, "$bob-join", "!room:example.org",
+                     R"({"type":"m.room.member","sender":"@bob:example.org",)"
+                     R"("state_key":"@bob:example.org","content":{"membership":"join"}})",
+                     2U);
+        append_state(store, "!room:example.org", "m.room.member", "@bob:example.org", "$bob-join");
+
+        append_event(store, "$carol-join", "!room:example.org",
+                     R"({"type":"m.room.member","sender":"@carol:example.org",)"
+                     R"("state_key":"@carol:example.org","content":{"membership":"join"}})",
+                     3U);
+        append_state(store, "!room:example.org", "m.room.member", "@carol:example.org", "$carol-join");
+
+        append_event(store, "$bob-msg", "!room:example.org",
+                     R"({"type":"m.room.message","sender":"@bob:example.org","content":{"body":"hi"}})", 10U);
+
+        auto sub = merovingian::sync::SlidingSyncRoomSubscription{};
+        sub.required_state = {
+            {"m.room.member", "$LAZY"}
+        };
+        // Element X's real default (DEFAULT_LIST_TIMELINE_LIMIT = 1). A
+        // generous limit would let the join events above (which are
+        // themselves timeline events) survive truncation and legitimately
+        // make alice/carol lazy-relevant too, since anyone whose own
+        // membership event is part of the *delivered* timeline is relevant —
+        // this test is specifically about the truncated-timeline case, where
+        // only the most recent event (bob's message) is delivered.
+        sub.timeline_limit = 1U;
+
+        WHEN("alice's initial sliding sync is built")
+        {
+            auto const resp = merovingian::sync::build_room_response(runtime, "!room:example.org", "@alice:example.org",
+                                                                     sub, 0U, true, store);
+
+            THEN("required_state_json contains only bob's member event — not alice's or carol's")
+            {
+                REQUIRE(resp.required_state_json.size() == 1U);
+                REQUIRE(resp.required_state_json.front().find("@bob:example.org") != std::string::npos);
+            }
+
+            THEN("lazy_members_included records bob as newly delivered")
+            {
+                REQUIRE(resp.lazy_members_included == std::unordered_set<std::string>{"@bob:example.org"});
+            }
+        }
+    }
+}
+
+SCENARIO("Sliding sync room builder's \"$LAZY\" bypasses the delta floor for a member new to the connection",
+         "[sync][sliding-sync][room-builder][lazy-loading]")
+{
+    // dave's own membership event (ordering=2) predates the incremental floor
+    // (ordering=40): a plain required_state match would skip it as
+    // "unchanged since pos". But dave has never been lazily delivered on this
+    // connection and just sent his first message in view (ordering=50), so
+    // his membership must be delivered now regardless of the floor.
+    GIVEN("dave joined long ago and just sent his first message after the connection's since-floor")
+    {
+        auto runtime = merovingian::homeserver::HomeserverRuntime{};
+        auto store = merovingian::database::PersistentStore{};
+
+        append_event(store, "$dave-join", "!room:example.org",
+                     R"({"type":"m.room.member","sender":"@dave:example.org",)"
+                     R"("state_key":"@dave:example.org","content":{"membership":"join"}})",
+                     2U);
+        append_state(store, "!room:example.org", "m.room.member", "@dave:example.org", "$dave-join");
+
+        append_event(store, "$dave-msg", "!room:example.org",
+                     R"({"type":"m.room.message","sender":"@dave:example.org","content":{"body":"hello"}})", 50U);
+
+        auto sub = merovingian::sync::SlidingSyncRoomSubscription{};
+        sub.required_state = {
+            {"m.room.member", "$LAZY"}
+        };
+        sub.timeline_limit = 20U; // timeline has 1 event — not limited/truncated
+
+        WHEN("dave has never been lazily delivered on this connection")
+        {
+            auto const already_sent = std::unordered_set<std::string>{};
+            auto const resp = merovingian::sync::build_room_response(runtime, "!room:example.org", "@alice:example.org",
+                                                                     sub, 40U, false, store, already_sent);
+
+            THEN("dave's old member event is still included, bypassing the since-floor")
+            {
+                REQUIRE(resp.required_state_json.size() == 1U);
+                REQUIRE(resp.required_state_json.front().find("@dave:example.org") != std::string::npos);
+                REQUIRE(resp.lazy_members_included == std::unordered_set<std::string>{"@dave:example.org"});
+            }
+        }
+
+        WHEN("dave was already lazily delivered on a prior response on this connection")
+        {
+            auto const already_sent = std::unordered_set<std::string>{"@dave:example.org"};
+            auto const resp = merovingian::sync::build_room_response(runtime, "!room:example.org", "@alice:example.org",
+                                                                     sub, 40U, false, store, already_sent);
+
+            THEN("dave's unchanged member event is not re-sent")
+            {
+                REQUIRE(resp.required_state_json.empty());
+                REQUIRE(resp.lazy_members_included.empty());
+            }
+        }
+    }
+}
+
+SCENARIO("Sliding sync room builder resolves \"$LAZY\" and \"$ME\" together, matching Element X's real request",
+         "[sync][sliding-sync][room-builder][lazy-loading][elementx]")
+{
+    // matrix-rust-sdk's DEFAULT_REQUIRED_STATE requests both sentinels in the
+    // same required_state array; they must not interfere with each other.
+    GIVEN("alice (the requester) and bob have joined, and bob has sent a timeline message")
+    {
+        auto runtime = merovingian::homeserver::HomeserverRuntime{};
+        auto store = merovingian::database::PersistentStore{};
+
+        append_event(store, "$alice-join", "!room:example.org",
+                     R"({"type":"m.room.member","sender":"@alice:example.org",)"
+                     R"("state_key":"@alice:example.org","content":{"membership":"join"}})",
+                     1U);
+        append_state(store, "!room:example.org", "m.room.member", "@alice:example.org", "$alice-join");
+
+        append_event(store, "$bob-join", "!room:example.org",
+                     R"({"type":"m.room.member","sender":"@bob:example.org",)"
+                     R"("state_key":"@bob:example.org","content":{"membership":"join"}})",
+                     2U);
+        append_state(store, "!room:example.org", "m.room.member", "@bob:example.org", "$bob-join");
+
+        append_event(store, "$bob-msg", "!room:example.org",
+                     R"({"type":"m.room.message","sender":"@bob:example.org","content":{"body":"hi"}})", 10U);
+
+        auto sub = merovingian::sync::SlidingSyncRoomSubscription{};
+        sub.required_state = {
+            {"m.room.member", "$LAZY"},
+            {"m.room.member", "$ME"  }
+        };
+        sub.timeline_limit = 20U;
+
+        WHEN("alice's initial sliding sync is built")
+        {
+            auto const resp = merovingian::sync::build_room_response(runtime, "!room:example.org", "@alice:example.org",
+                                                                     sub, 0U, true, store);
+
+            THEN("required_state_json contains both alice's own member event and bob's lazily-loaded one")
+            {
+                REQUIRE(resp.required_state_json.size() == 2U);
+                auto const has_alice = std::ranges::any_of(resp.required_state_json, [](std::string const& json) {
+                    return json.find("@alice:example.org") != std::string::npos;
+                });
+                auto const has_bob = std::ranges::any_of(resp.required_state_json, [](std::string const& json) {
+                    return json.find("@bob:example.org") != std::string::npos;
+                });
+                REQUIRE(has_alice);
+                REQUIRE(has_bob);
             }
         }
     }
