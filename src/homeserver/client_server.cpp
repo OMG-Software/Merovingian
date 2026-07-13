@@ -58,6 +58,7 @@
 #include <string_view>
 #include <tuple>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -3786,6 +3787,7 @@ namespace
             {
                 conn.list_prev_windows = std::move(conn.pending_response->list_prev_windows);
                 conn.rooms_seen = std::move(conn.pending_response->rooms_seen);
+                conn.lazy_members_sent = std::move(conn.pending_response->lazy_members_sent);
                 conn.last_event_ordering = conn.pending_response->last_event_ordering;
                 conn.last_sync_stream_id = conn.pending_response->last_sync_stream_id;
                 conn.pending_response.reset();
@@ -3931,6 +3933,8 @@ namespace
 
         auto rooms_obj = canonicaljson::Object{};
         auto rooms_skipped = std::size_t{0U};
+        auto const empty_lazy_members_set = std::unordered_set<std::string>{};
+        auto lazy_members_included_by_room = std::unordered_map<std::string, std::unordered_set<std::string>>{};
         for (auto const& room_id : response_room_ids)
         {
             auto sub = sync::SlidingSyncRoomSubscription{};
@@ -3963,7 +3967,15 @@ namespace
             // as a since floor: the client has not seen this room on this connection
             // and needs the full snapshot and all unread counts.
             auto const room_since = is_initial ? std::uint64_t{0U} : std::max(since_event_ordering, room_last_ordering);
-            auto room = sync::build_room_response(rt.homeserver, room_id, user, sub, room_since, is_initial, store);
+            auto const lazy_sent_it = conn.lazy_members_sent.find(room_id);
+            auto const& lazy_already_sent =
+                lazy_sent_it != conn.lazy_members_sent.end() ? lazy_sent_it->second : empty_lazy_members_set;
+            auto room = sync::build_room_response(rt.homeserver, room_id, user, sub, room_since, is_initial, store,
+                                                  lazy_already_sent);
+            if (!room.lazy_members_included.empty())
+            {
+                lazy_members_included_by_room[room_id] = room.lazy_members_included;
+            }
             // Per MSC4186, only include a room in rooms{} when it has actual
             // changes: first appearance (initial), post-pos timeline events, or changed
             // required_state.  Unread counts are sent when the room is included for
@@ -4119,6 +4131,7 @@ namespace
         next_state.response_pos = new_pos;
         next_state.list_prev_windows = conn.list_prev_windows;
         next_state.rooms_seen = conn.rooms_seen;
+        next_state.lazy_members_sent = conn.lazy_members_sent;
         next_state.last_event_ordering = cur_event;
         next_state.last_sync_stream_id = cur_sync;
 
@@ -4128,6 +4141,14 @@ namespace
             // this connection.  Future requests on the same connection will treat
             // this as the delta floor, not the global request pos.
             next_state.rooms_seen[room_id] = cur_event;
+        }
+        for (auto const& [room_id, included] : lazy_members_included_by_room)
+        {
+            // Remember which members required_state's "$LAZY" sentinel has
+            // already delivered on this connection, so a later response for
+            // an unchanged member doesn't bypass the delta floor again.
+            auto& sent = next_state.lazy_members_sent[room_id];
+            sent.insert(included.begin(), included.end());
         }
         for (auto const& [lname, result] : list_results)
         {

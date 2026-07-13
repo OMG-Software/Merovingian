@@ -409,7 +409,7 @@ fields in the JSON body. The server prefers query parameters when both are prese
 | `lists.*.ranges` | array of [start, end] pairs | required if list present | Windowed view into the sorted room list. Ranges MUST NOT overlap; start MUST be ≤ end. |
 | `lists.*.range` | [start, end] | alternative to `ranges` | A single sliding window. Accepted for clients that send one window as a 2-tuple rather than a nested array. |
 | `lists.*.sort` | array of strings | optional | Sort criteria applied left-to-right: `by_recency`, `by_notification_count`, `by_name`. |
-| `lists.*.required_state` | array of [type, state_key] pairs | optional | State events to include in each room. `"*"` is a wildcard in either position. |
+| `lists.*.required_state` | array of [type, state_key] pairs | optional | State events to include in each room. `"*"` is a wildcard in either position. `["m.room.member","$ME"]` resolves to the requesting user's own membership event. `["m.room.member","$LAZY"]` (matrix-rust-sdk's MSC3575-era lazy-loading sentinel, still sent by Element X) resolves to the members relevant to the timeline this response returns — scoped to just those members when the timeline is truncated or this is the room's first appearance on the connection, otherwise treated as the wildcard `"*"` for `m.room.member`. A member relevant for the first time on a connection is always delivered even if their own membership event predates the incremental since-floor. |
 | `lists.*.timeline_limit` | integer | optional | Maximum number of timeline events to return per room. |
 | `room_subscriptions` | object | optional | Explicit per-room subscriptions keyed by room ID. |
 | `extensions` | object | optional | Extension requests. Each extension has an `enabled` boolean. |

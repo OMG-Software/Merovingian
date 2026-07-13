@@ -1085,6 +1085,31 @@ SCENARIO("Element X's room-list connection reports room encryption via required_
                     });
                 REQUIRE(has_encryption);
             }
+
+            THEN("required_state includes alice's own member event (\"$ME\") and bob's (\"$LAZY\", the most "
+                 "recent timeline sender)")
+            {
+                REQUIRE(result.response.status == 200U);
+                auto const rooms = rooms_object(result.response.body);
+                auto const* room = object_member_as_object(rooms, room_id);
+                REQUIRE(room != nullptr);
+                auto const* required_state = object_member_as_array(*room, "required_state");
+                REQUIRE(required_state != nullptr);
+
+                auto const has_member = [&](std::string_view user_id) {
+                    return std::ranges::any_of(*required_state, [&](merovingian::canonicaljson::Value const& v) {
+                        auto const* ev = std::get_if<merovingian::canonicaljson::Object>(&v.storage());
+                        if (ev == nullptr)
+                            return false;
+                        auto const* type = string_member(*ev, "type");
+                        auto const* state_key = string_member(*ev, "state_key");
+                        return type != nullptr && *type == "m.room.member" && state_key != nullptr &&
+                               *state_key == user_id;
+                    });
+                };
+                REQUIRE(has_member("@alice:example.org"));
+                REQUIRE(has_member("@bob:example.org"));
+            }
         }
     }
 }

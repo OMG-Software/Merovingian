@@ -8,6 +8,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -186,6 +187,14 @@ struct SlidingSyncRoomResponse final
     std::vector<std::string> timeline_json{};
     // Set for invited rooms in place of timeline/state.
     std::optional<std::string> invite_state_json{};
+    // User IDs whose m.room.member event was included in required_state_json
+    // because required_state named ["m.room.member","$LAZY"] and that user is
+    // relevant to this response (sent or is the subject of a timeline event
+    // returned this call). Server-internal bookkeeping only — never
+    // serialised to the client. The caller merges this into the connection's
+    // committed lazy_members_sent[room_id] so a later response for the same
+    // member doesn't bypass the delta floor again.
+    std::unordered_set<std::string> lazy_members_included{};
 };
 
 // ── Extension response structs ────────────────────────────────────────────────
@@ -256,6 +265,9 @@ struct SlidingSyncPendingResponse final
     std::string response_pos{};
     std::map<std::string, std::vector<std::string>> list_prev_windows{};
     std::unordered_map<std::string, std::uint64_t> rooms_seen{};
+    // Candidate lazy-loaded ("$LAZY") member user_ids per room; see
+    // SlidingSyncConnectionState::lazy_members_sent.
+    std::unordered_map<std::string, std::unordered_set<std::string>> lazy_members_sent{};
     std::uint64_t last_event_ordering{0U};
     std::uint64_t last_sync_stream_id{0U};
 };
@@ -273,6 +285,14 @@ struct SlidingSyncConnectionState final
     // the server compute per-room deltas and avoid re-sending unchanged rooms
     // when the global pos lags behind a room's last inclusion.
     std::unordered_map<std::string, std::uint64_t> rooms_seen{};
+    // Member user_ids already delivered via required_state's "$LAZY" sentinel
+    // on this connection, keyed by room_id. required_state's normal
+    // change-since-floor check would otherwise suppress an old, unchanged
+    // member event the client has genuinely never been sent — this set lets
+    // the room builder bypass the floor exactly once per member per
+    // connection (see build_room_response's lazy_members_already_sent
+    // parameter), then fall back to normal floor-gated delta behaviour.
+    std::unordered_map<std::string, std::unordered_set<std::string>> lazy_members_sent{};
     // Stream position at the end of the last acknowledged response.
     std::uint64_t last_event_ordering{0U};
     std::uint64_t last_sync_stream_id{0U};
