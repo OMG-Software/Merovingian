@@ -3809,17 +3809,28 @@ namespace
                             : (conn.rooms_seen.empty() ? std::uint64_t{0U} : conn.last_sync_stream_id);
 
         // Long-poll: park when nothing relevant to this connection has changed.
-        // A sync_stream_id advance from another user uploading device keys fires
-        // the global notifier and would otherwise cause an immediate return with
-        // empty data, triggering a client reset loop.  We re-wait past irrelevant
-        // bumps by advancing the since_sync_stream_id in the needs_wait params.
+        // A stream advance from another user's room event, device-key upload, etc.
+        // fires the global notifier and would otherwise cause an immediate return
+        // with empty data, triggering a client reset loop.  We re-wait past
+        // irrelevant bumps by advancing both since cursors in the needs_wait params.
         if (can_wait && timeout_ms > 0U)
         {
             auto const cur_event = rt.homeserver.database.next_stream_ordering - 1U;
             auto const cur_sync = store.next_sync_stream_id;
-            if (cur_event <= since_event_ordering)
+
+            // A new room event only matters to this connection if it landed in a
+            // room the user has joined: rooms{} is windowed to the user's own
+            // lists/subscriptions, so an event in an unrelated room on the server
+            // must not wake this long-poll early.
+            bool const has_relevant_event =
+                cur_event > since_event_ordering &&
+                std::ranges::any_of(store.events, [&](database::PersistentEvent const& e) {
+                    return e.stream_ordering > since_event_ordering && user_is_joined(store, e.room_id, user);
+                });
+
+            if (!has_relevant_event)
             {
-                // No new room events.  Only respond early if the sync_stream_id
+                // No relevant room events.  Only respond early if the sync_stream_id
                 // advance contains rows relevant to this user/device:
                 //   - device-list changes where this user is the observer
                 //   - to-device messages addressed to this device
@@ -3848,12 +3859,12 @@ namespace
                 if (!has_relevant_dlc && !has_relevant_tdm && !has_relevant_ad && !has_relevant_receipts &&
                     !has_relevant_typing)
                 {
-                    // Advance the wait cursor past this irrelevant bump so the
+                    // Advance both wait cursors past this irrelevant bump so the
                     // notifier must fire again before the next wakeup attempt.
                     return DispatchResult{
                         DispatchResult::Status::needs_wait,
                         {},
-                        {since_event_ordering, cur_sync, std::chrono::milliseconds{timeout_ms}}
+                        {cur_event, cur_sync, std::chrono::milliseconds{timeout_ms}}
                     };
                 }
             }
