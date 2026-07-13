@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.10.48
+Version:        0.10.49
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -112,6 +112,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Mon Jul 13 2026 James Chapman <claude@ping.me.uk> - 0.10.49-1
+- fix(sync): scope the Sliding Sync long-poll wake check to the requesting user's own rooms.
+
 * Sun Jul 12 2026 James Chapman <claude@ping.me.uk> - 0.10.48-1
 - docs: reference latest raw MSC4186 proposal and document stable v4 endpoint shape.
 

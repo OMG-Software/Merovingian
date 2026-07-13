@@ -14,6 +14,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <tuple>
 
 namespace
 {
@@ -732,6 +733,42 @@ SCENARIO("simplified_msc3575 sync with timeout=0 responds immediately without lo
                 auto const* pos = string_member(obj, "pos");
                 REQUIRE(pos != nullptr);
                 REQUIRE(!pos->empty());
+            }
+        }
+    }
+}
+
+SCENARIO("simplified_msc3575 long-poll does not wake for an event in a room the caller has not joined",
+         "[homeserver][sliding-sync][integration]")
+{
+    GIVEN("two users, each with their own room, and alice already caught up via an initial sync")
+    {
+        auto const config = sliding_sync_config();
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const alice_token = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
+        std::ignore = create_room(rt, alice_token);
+        auto const bob_token = register_and_login(rt, "bob", "CorrectHorse7!", "BOB");
+        auto const bob_room = create_room(rt, bob_token);
+
+        auto const initial = sliding_sync(rt, alice_token, R"({"lists":{"rooms":{"ranges":[[0,9]]}}})");
+        REQUIRE(initial.response.status == 200U);
+        auto const pos = sliding_sync_pos(initial.response.body);
+
+        WHEN("bob sends a message in his own room, then alice long-polls from that pos with a nonzero timeout")
+        {
+            send_message(rt, bob_token, bob_room, "hi");
+
+            auto const result = merovingian::homeserver::handle_client_server_request(
+                rt,
+                {"POST", "/_matrix/client/unstable/org.matrix.simplified_msc3575/sync?pos=" + pos + "&timeout=30000",
+                 alice_token, R"({"lists":{"rooms":{"ranges":[[0,9]]}}})"},
+                /*can_wait=*/true);
+
+            THEN("the handler parks the long-poll rather than returning an empty snapshot for an unrelated room")
+            {
+                REQUIRE(result.status == merovingian::homeserver::DispatchResult::Status::needs_wait);
             }
         }
     }

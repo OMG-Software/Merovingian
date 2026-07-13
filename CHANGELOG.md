@@ -1,3 +1,14 @@
+## 0.10.49
+
+### Fixed
+- **fix(sync): scope the Sliding Sync long-poll wake check to the requesting user's own rooms.** The handler's "has anything relevant changed" gate compared the request's `since` cursor against the homeserver's global event-stream watermark: any event in *any* room on the server (not just rooms the caller has joined) made the gate treat the wait as satisfied and fall through to building a response immediately, even though `rooms{}` had nothing new for this connection. On a multi-room/multi-tenant server the global watermark advances constantly, so long-polls effectively never blocked — the client received a storm of near-instant, empty `rooms_in_response=0` responses with a `pos` that kept advancing regardless. Because the server marks a room's state as "seen" by this connection as soon as a response referencing it round-trips, room state (including `m.room.name` and `m.room.encryption`) that arrived inside one of these rapid-fire responses could be marked delivered without the client ever reliably applying it, since the server never resends unchanged state. The wake check now only treats a new room event as relevant when it landed in a room the caller has joined, matching the existing scoping already used for receipts and typing.
+
+### Testing
+- **test(sync): assert that a Sliding Sync long-poll parks rather than returning early for an event in a room the caller has not joined.** A regression scenario has two users, each with their own room; after alice completes an initial sync, bob sends a message in his own room and alice re-polls with a non-zero timeout from her prior `pos`. It asserts the handler returns `needs_wait` instead of an empty `complete` response.
+
+### Changed
+- **chore(release): bump version to 0.10.49 across meson.build, src/main.cpp, src/db_migrate.cpp, packaging metadata, build scripts, and CHANGELOG.md.**
+
 ## 0.10.48
 
 ### Fixed
