@@ -332,6 +332,13 @@ struct SessionRefreshResult final
 [[nodiscard]] auto bootstrap_local_database(config::Config const& config, database::SchemaState existing_state)
     -> LocalDatabase;
 [[nodiscard]] auto database_has_table(LocalDatabase const& database, std::string_view table_name) noexcept -> bool;
+// Allocates the next timeline stream_ordering and persists the new
+// high-water mark to the event_stream_watermark singleton. Every
+// stream_ordering allocation must flow through this helper: some
+// allocations (membership stream positions) are not backed by a persisted
+// event row, so a counter rebuilt from events alone regresses across
+// restarts and invalidates every pos/since token clients still hold.
+[[nodiscard]] auto allocate_stream_ordering(LocalDatabase& database) -> std::uint64_t;
 [[nodiscard]] auto start_runtime(config::Config const& config) -> RuntimeStartResult;
 [[nodiscard]] auto start_runtime(config::Config const& config, database::SchemaState existing_state)
     -> RuntimeStartResult;

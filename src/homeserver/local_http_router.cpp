@@ -1228,7 +1228,7 @@ namespace
             event.sender_user_id = envelope.sender;
             event.json = envelope.json;
             event.depth = envelope.depth;
-            event.stream_ordering = rt->database.next_stream_ordering++;
+            event.stream_ordering = allocate_stream_ordering(rt->database);
             event.auth_event_ids = envelope.auth_event_ids;
             auto const event_stream_ordering = event.stream_ordering;
             auto state = std::optional<database::PersistentStateEvent>{};
@@ -1416,7 +1416,7 @@ namespace
                     return {true, 200U, {}, std::move(*signed_event)};
                 }
             }
-            auto const stream_ordering = rt->database.next_stream_ordering++;
+            auto const stream_ordering = allocate_stream_ordering(rt->database);
             if (!upsert_membership(rt->database.persistent_store, invite.room_id, *target_user, "invite",
                                    stream_ordering))
             {
@@ -1675,7 +1675,7 @@ auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope
     // unrelated rooms.
     auto const [stream_ordering, sync_stream_id] = [&]() {
         auto global_guard = std::unique_lock<std::recursive_mutex>{runtime.mutex};
-        auto const ordering = runtime.database.next_stream_ordering++;
+        auto const ordering = allocate_stream_ordering(runtime.database);
         auto const sync_id = database::allocate_sync_stream_id(runtime.database.persistent_store);
         return std::make_pair(ordering, sync_id);
     }();

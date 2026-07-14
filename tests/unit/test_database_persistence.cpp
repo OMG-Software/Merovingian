@@ -927,23 +927,27 @@ SCENARIO("Database migration runner applies the current schema and the matching 
                 REQUIRE(upgrade_plan.direction == merovingian::database::MigrationDirection::upgrade);
                 REQUIRE(upgrade_plan.current_version == 0U);
                 REQUIRE(upgrade_plan.target_version == merovingian::database::current_schema_version());
-                REQUIRE(upgrade_plan.steps.size() == 2U);
+                REQUIRE(upgrade_plan.steps.size() == 3U);
                 REQUIRE(upgrade_plan.steps[0].version == 1U);
                 REQUIRE(upgrade_plan.steps[0].name == "initial_schema");
                 REQUIRE(upgrade_plan.steps[1].version == 2U);
                 REQUIRE(upgrade_plan.steps[1].name == "sync_stream_watermark");
+                REQUIRE(upgrade_plan.steps[2].version == 3U);
+                REQUIRE(upgrade_plan.steps[2].name == "event_stream_watermark");
                 REQUIRE(upgraded.ok);
                 REQUIRE(upgraded.state.version == merovingian::database::current_schema_version());
-                REQUIRE(upgraded.state.applied_migrations.size() == 2U);
+                REQUIRE(upgraded.state.applied_migrations.size() == 3U);
                 REQUIRE(upgraded.state.applied_migrations[0].name == "initial_schema");
                 REQUIRE(upgraded.state.applied_migrations[1].name == "sync_stream_watermark");
+                REQUIRE(upgraded.state.applied_migrations[2].name == "event_stream_watermark");
                 REQUIRE(upgraded.state.tables.size() == merovingian::database::current_schema_tables().size());
                 REQUIRE(compatible.valid);
                 REQUIRE(second_plan.steps.empty());
                 REQUIRE(downgrade_plan.direction == merovingian::database::MigrationDirection::downgrade);
-                REQUIRE(downgrade_plan.steps.size() == 2U);
-                REQUIRE(downgrade_plan.steps[0].name == "drop_sync_stream_watermark");
-                REQUIRE(downgrade_plan.steps[1].name == "drop_initial_schema");
+                REQUIRE(downgrade_plan.steps.size() == 3U);
+                REQUIRE(downgrade_plan.steps[0].name == "drop_event_stream_watermark");
+                REQUIRE(downgrade_plan.steps[1].name == "drop_sync_stream_watermark");
+                REQUIRE(downgrade_plan.steps[2].name == "drop_initial_schema");
                 REQUIRE(downgraded.ok);
                 REQUIRE(downgraded.state.version == 0U);
                 REQUIRE(downgraded.state.tables.empty());
@@ -1558,7 +1562,7 @@ SCENARIO("Physical migration files load into validated migration plans", "[datab
     }
 }
 
-SCENARIO("Checked-in migrations cover the v1 bootstrap and v2 sync-stream watermark", "[database][migration][files]")
+SCENARIO("Checked-in migrations cover the v1 bootstrap and the v2/v3 stream watermarks", "[database][migration][files]")
 {
     GIVEN("the repository migration directory")
     {
@@ -1569,16 +1573,19 @@ SCENARIO("Checked-in migrations cover the v1 bootstrap and v2 sync-stream waterm
             REQUIRE_FALSE(directory.empty());
             auto const loaded = merovingian::database::load_migration_files(directory.string());
 
-            THEN("the v1 bootstrap creates the initial schema and a numbered v2 migration adds the watermark table")
+            THEN("the v1 bootstrap creates the initial schema and numbered migrations add the watermark tables")
             {
                 REQUIRE(loaded.ok);
-                REQUIRE(loaded.steps.size() == 2U);
+                REQUIRE(loaded.steps.size() == 3U);
                 REQUIRE(loaded.steps[0].version == 1U);
                 REQUIRE(loaded.steps[0].name == "initial_schema");
                 REQUIRE(loaded.steps[0].statements.size() == merovingian::database::initial_schema_tables().size());
                 REQUIRE(loaded.steps[1].version == 2U);
                 REQUIRE(loaded.steps[1].name == "sync_stream_watermark");
                 REQUIRE(loaded.steps[1].statements.size() == 1U);
+                REQUIRE(loaded.steps[2].version == 3U);
+                REQUIRE(loaded.steps[2].name == "event_stream_watermark");
+                REQUIRE(loaded.steps[2].statements.size() == 1U);
 
                 for (auto const& statement : loaded.steps[0].statements)
                 {
@@ -1643,11 +1650,12 @@ SCENARIO("Database schema inventory covers the core Matrix tables", "[database][
                 // plus the durable room-alias registry plus client_txn_ids
                 // (room_account_data, to_device_messages, device_list_changes,
                 // presence_state) folded into the v1 initial schema.
-                // sync_stream_watermark arrives in migration v2 and is counted in
+                // sync_stream_watermark arrives in migration v2 and
+                // event_stream_watermark in migration v3; both are counted in
                 // the current schema inventory instead.
                 REQUIRE(tables.size() == 45U);
-                REQUIRE(merovingian::database::current_schema_version() == 2U);
-                REQUIRE(merovingian::database::current_schema_tables().size() == 46U);
+                REQUIRE(merovingian::database::current_schema_version() == 3U);
+                REQUIRE(merovingian::database::current_schema_tables().size() == 47U);
                 REQUIRE(users_definition.has_value());
                 REQUIRE(current_state_definition.has_value());
                 REQUIRE(room_aliases_definition.has_value());

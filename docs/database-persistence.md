@@ -21,7 +21,9 @@ remaining work before PostgreSQL-backed production operation.
   were collapsed into the single `initial_schema` step. Once live
   pre-production deployments existed, subsequent schema changes started
   receiving their own numbered migration files; schema version `2` adds the
-  `sync_stream_watermark` table via `migrations/002_sync_stream_watermark.sql`.
+  `sync_stream_watermark` table via `migrations/002_sync_stream_watermark.sql`,
+  and schema version `3` adds the `event_stream_watermark` table via
+  `migrations/003_event_stream_watermark.sql`.
   After the project reaches production-ready `v1.0.0`, every schema change
   must add a forward migration and keep deployed databases compatible.
 - SQLite RAII wrappers around database connections and prepared statements.
@@ -78,6 +80,16 @@ remaining work before PostgreSQL-backed production operation.
   in durable rows (account data, to-device messages, device-list changes,
   presence) into the watermark on startup, so fresh upgrades start from the
   maximum persisted value rather than the table default.
+- `event_stream_watermark` table stores the highest allocated timeline
+  `stream_ordering` and is updated by `homeserver::allocate_stream_ordering()`
+  (via `database::persist_event_stream_watermark()`) on every allocation. Some
+  allocations — membership stream positions — are not backed by a persisted
+  event row, so a counter rebuilt from `max(events.stream_ordering)` alone
+  regresses across restarts, which puts clients' persisted sliding sync
+  `pos`/`since` tokens ahead of the live stream and invalidates them all on
+  every restart. Hydration takes the maximum of the persisted watermark and the
+  highest event `stream_ordering`, then persists the merged floor so the row
+  exists even on fresh upgrades.
 - `/sync` calls `database::ensure_sync_stream_id_ahead_of()` when the client's
   `since` token is ahead of the server's counter. This recovers live deployments
   whose counter rolled back below a stored token (for example, when the watermark

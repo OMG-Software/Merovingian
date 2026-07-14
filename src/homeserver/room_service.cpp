@@ -806,7 +806,7 @@ namespace
             room->events.push_back(composed->json);
         }
 
-        auto const membership_stream = runtime.database.next_stream_ordering++;
+        auto const membership_stream = allocate_stream_ordering(runtime.database);
         if (!store_or_update_membership(runtime.database.persistent_store, room_id, target_user_id, membership,
                                         membership_stream))
         {
@@ -1287,7 +1287,7 @@ namespace
     [[nodiscard]] auto persist_composed_event(HomeserverRuntime& runtime, std::string_view room_id,
                                               std::string_view sender, ComposedEvent const& composed) -> bool
     {
-        auto const stream_ordering = runtime.database.next_stream_ordering++;
+        auto const stream_ordering = allocate_stream_ordering(runtime.database);
         auto state = std::optional<database::PersistentStateEvent>{};
         if (composed.state_key.has_value())
         {
@@ -2333,7 +2333,7 @@ namespace
         {
             return make_operation_result(false, {}, "initial room state event generation failed", 500U);
         }
-        auto const membership_stream = runtime.database.next_stream_ordering++;
+        auto const membership_stream = allocate_stream_ordering(runtime.database);
         auto const membership_result = database::store_membership(runtime.database.persistent_store,
                                                                   {room_id, invitee, "invite", membership_stream});
         if (membership_result == database::MembershipStoreResult::error ||
@@ -2516,7 +2516,7 @@ auto cap_join_candidates(std::vector<std::string> candidates, std::uint32_t max_
                         auth_ids = json_string_array(*av);
                     }
                 }
-                auto const stream_ordering = runtime.database.next_stream_ordering++;
+                auto const stream_ordering = allocate_stream_ordering(runtime.database);
                 // A state event is identified by the PRESENCE of the "state_key" field
                 // in the raw JSON, even when its value is "". EventEnvelope::state_key
                 // defaults to "" both for state events with state_key="" AND for
@@ -3306,7 +3306,7 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
                             auth_ids = json_string_array(*av);
                         }
                     }
-                    auto const stream_ordering = runtime.database.next_stream_ordering++;
+                    auto const stream_ordering = allocate_stream_ordering(runtime.database);
                     // Detect state events by JSON field presence, not .empty(): the
                     // state_key field exists even when "" (e.g. m.room.create).
                     // v12 (MSC4291): m.room.create has no room_id field; derive it.
@@ -3362,7 +3362,7 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
         // Create the local room record and persist the membership.
         // Allocate a stream ordering for the local join event first so it is
         // contiguous with the membership row.
-        auto const membership_stream = runtime.database.next_stream_ordering++;
+        auto const membership_stream = allocate_stream_ordering(runtime.database);
 
         // Persist the local user's join event in the event store and update the
         // m.room.member current_state entry to point to it.
@@ -3447,7 +3447,7 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
             {
                 continue;
             }
-            auto const joined_member_stream = runtime.database.next_stream_ordering++;
+            auto const joined_member_stream = allocate_stream_ordering(runtime.database);
             auto const result = database::store_membership(
                 runtime.database.persistent_store, {std::string{room_id}, joined_member, "join", joined_member_stream});
             if (result == database::MembershipStoreResult::already_exists)
@@ -3532,7 +3532,7 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
                     });
                     for (auto const& member : newly_joined)
                     {
-                        auto const member_stream = runtime.database.next_stream_ordering++;
+                        auto const member_stream = allocate_stream_ordering(runtime.database);
                         auto const result = database::store_membership(runtime.database.persistent_store,
                                                                        {room_id_bg, member, "join", member_stream});
                         if (result == database::MembershipStoreResult::already_exists)
@@ -3606,7 +3606,7 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
         }
         room->events.push_back(composed->json);
 
-        auto const membership_stream = runtime.database.next_stream_ordering++;
+        auto const membership_stream = allocate_stream_ordering(runtime.database);
         auto const result = database::store_membership(runtime.database.persistent_store,
                                                        {std::string{room_id}, *user_id, "join", membership_stream});
         if (result == database::MembershipStoreResult::error)
@@ -3762,7 +3762,7 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
                 {
                     // Re-create the missing membership row so the leave path can proceed
                     // or observe that the user has already left.
-                    auto const recovered_stream = runtime.database.next_stream_ordering++;
+                    auto const recovered_stream = allocate_stream_ordering(runtime.database);
                     std::ignore = store_or_update_membership(runtime.database.persistent_store, room_id, *user_id, *mem,
                                                              recovered_stream);
                     log_diagnostic("room.leave.membership_recovered",
@@ -3800,7 +3800,7 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
         // stream_ordering and re-notify on every repeat call so a row stuck
         // in that state before the fix self-heals instead of staying
         // invisible to /sync forever.
-        auto const membership_stream = runtime.database.next_stream_ordering++;
+        auto const membership_stream = allocate_stream_ordering(runtime.database);
         std::ignore = store_or_update_membership(runtime.database.persistent_store, room_id, *user_id,
                                                  membership_it->membership, membership_stream);
         auto const sync_stream_id = database::allocate_sync_stream_id(runtime.database.persistent_store);
@@ -3987,7 +3987,7 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
         }
 
         // Step 5: update local membership, device lists and in-memory state.
-        auto const membership_stream = runtime.database.next_stream_ordering++;
+        auto const membership_stream = allocate_stream_ordering(runtime.database);
         if (!store_or_update_membership(runtime.database.persistent_store, room_id, *user_id, "leave",
                                         membership_stream))
         {
@@ -4313,7 +4313,7 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
         });
         return make_operation_result(false, {}, "event authorization or signing failed", 403U);
     }
-    auto const stream_ordering = runtime.database.next_stream_ordering++;
+    auto const stream_ordering = allocate_stream_ordering(runtime.database);
     auto state = std::optional<database::PersistentStateEvent>{};
     if (composed->state_key.has_value())
     {

@@ -504,6 +504,18 @@ auto hydrate_local_database(LocalDatabase& database) -> void
             database.next_stream_ordering = event.stream_ordering + 1U;
         }
     }
+    // Some stream_ordering allocations (membership stream positions) are not
+    // backed by a persisted event row, so the counter rebuilt from events
+    // alone can lag the previous lifetime's — which would put clients'
+    // persisted pos/since tokens ahead of the live stream and invalidate
+    // them all on every restart. Merge in the persisted watermark, then
+    // persist the resulting floor so it exists even on fresh upgrades.
+    if (database.persistent_store.event_stream_watermark >= database.next_stream_ordering)
+    {
+        database.next_stream_ordering = database.persistent_store.event_stream_watermark + 1U;
+    }
+    std::ignore =
+        database::persist_event_stream_watermark(database.persistent_store, database.next_stream_ordering - 1U);
 
     log_diagnostic("database.hydrated",
                    {
@@ -564,6 +576,16 @@ auto database_has_table(LocalDatabase const& database, std::string_view table_na
     return std::ranges::any_of(database.tables, [table_name](std::string const& table) {
         return table == table_name;
     });
+}
+
+auto allocate_stream_ordering(LocalDatabase& database) -> std::uint64_t
+{
+    auto const ordering = database.next_stream_ordering++;
+    // Persist the high-water mark immediately: allocations without a backing
+    // event row (membership stream positions) must still survive a restart,
+    // or the rebuilt counter regresses behind clients' persisted pos tokens.
+    std::ignore = database::persist_event_stream_watermark(database.persistent_store, ordering);
+    return ordering;
 }
 
 auto start_runtime(config::Config const& config) -> RuntimeStartResult

@@ -2373,6 +2373,18 @@ auto restore_sync_stream_id(PersistentStore& store) -> void
     return new_id;
 }
 
+[[nodiscard]] auto persist_event_stream_watermark(PersistentStore& store, std::uint64_t watermark) -> bool
+{
+    store.event_stream_watermark = watermark;
+    return record_and_persist(
+        store, record_statement("upsert_event_stream_watermark",
+                                "INSERT INTO event_stream_watermark (singleton, watermark) VALUES (1, $1) "
+                                "ON CONFLICT (singleton) DO UPDATE SET watermark = excluded.watermark",
+                                {
+                                    {std::to_string(watermark), false}
+    }));
+}
+
 [[nodiscard]] auto ensure_sync_stream_id_ahead_of(PersistentStore& store, std::uint64_t since_sync_stream_id) -> bool
 {
     if (since_sync_stream_id <= store.next_sync_stream_id)
