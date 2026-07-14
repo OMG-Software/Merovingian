@@ -1,3 +1,14 @@
+## 0.10.53
+
+### Fixed
+- **fix(sync): Simplified Sliding Sync `timeline` and `required_state` events now carry `event_id` instead of the raw stored PDU JSON.** `build_room_response` pushed a room's stored event JSON (`ev.json`) straight into the response for both the timeline and required_state arrays. Stored event JSON is the signed wire PDU format, which never carries `event_id` — it is derived from a reference hash and only ever injected for client-facing responses (see `client_server.cpp`'s `client_event_value()`, used correctly by `/sync` and `/messages`). Sliding sync skipped that conversion entirely, so every timeline and required_state event was missing `event_id` and additionally leaked federation-only PDU fields (`auth_events`, `prev_events`, `hashes`, `signatures`, `depth`) that must never reach a client. Per the Matrix spec's Room Event Format, `event_id` is mandatory on every client-facing event; `ruma-events` (the crate matrix-rust-sdk uses to parse each sliding sync timeline entry) rejects an event missing it with `missing field 'event_id'`. Because this failure happens per-event inside the client's timeline diff — not at the top level of the sliding sync response — the outer response still parsed and committed normally, `pos` kept advancing, and the connection never looked broken in server logs: the client silently dropped every single message while everything else (typing, receipts, room-list counts) kept working. Reported as "no messages are arriving on the mobile client", initially misdiagnosed as media-specific because a manual server-side repro of a plaintext send/ingest path had not yet exercised the exact Element X connection shape. Root-caused by reproducing that exact shape, capturing the real response body, and feeding it through the actual `ruma-events` deserializer: confirmed `missing field 'event_id'` before the fix and a clean parse after. `build_room_response` now converts stored events through a new `client_event_json()` helper (mirrors `client_event_value()`) for both timeline and required_state entries.
+
+### Testing
+- **test(sync): assert sliding sync timeline and required_state events carry `event_id` matching the real sent/stored event, not the raw PDU shape.** Regression coverage in `test_sliding_sync_flow.cpp` against the exact Element X `"room-list"` connection request shape.
+
+### Changed
+- **chore(release): bump version to 0.10.53 across meson.build, src/main.cpp, src/db_migrate.cpp, packaging metadata, build scripts, and CHANGELOG.md.**
+
 ## 0.10.52
 
 ### Fixed
