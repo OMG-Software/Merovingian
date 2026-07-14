@@ -3762,11 +3762,46 @@ namespace
     {
         auto& store = rt.homeserver.database.persistent_store;
 
+        auto const conn_key = std::string{user} + "/" + std::string{device_id} + "/" +
+                              (ssreq.conn_id.has_value() ? *ssreq.conn_id : "__default__");
+
+        // MSC4186: a pos this server did not issue cannot be served
+        // incrementally — respond 400 M_UNKNOWN_POS so the client expires the
+        // connection and restarts with a fresh initial sync (matrix-rust-sdk:
+        // ErrorKind::UnknownPos → expire_session()).  A component ahead of the
+        // live stream watermark proves the token is foreign: typically retained
+        // by the client (share_pos) across a server restart that rebuilt the
+        // watermarks lower.  The previous behaviour — clamping the returned
+        // token to max(current, requested) so it never regressed — silently
+        // treated every event in the gap as already-seen: the client's since
+        // floor sat above the live stream and incoming events were never
+        // delivered, while the server kept echoing the inflated token back.
+        if (pos.has_value())
+        {
+            auto const event_watermark = rt.homeserver.database.next_stream_ordering - 1U;
+            auto const sync_watermark = store.next_sync_stream_id;
+            if (pos->event_ordering > event_watermark || pos->membership_ordering > event_watermark ||
+                pos->sync_stream_id > sync_watermark)
+            {
+                // Drop the connection state: the client restarts with no pos
+                // and must receive a full initial snapshot.
+                rt.homeserver.sliding_sync_connections.erase(conn_key);
+                log_diagnostic("sliding_sync.unknown_pos",
+                               {
+                                   {"actor",           std::string{user},               false},
+                                   {"device_id",       std::string{device_id},          false},
+                                   {"requested_pos",   sync::encode_stream_token(*pos), false},
+                                   {"event_watermark", std::to_string(event_watermark), false},
+                                   {"sync_watermark",  std::to_string(sync_watermark),  false}
+                });
+                return DispatchResult{
+                    DispatchResult::Status::complete, err(400U, "M_UNKNOWN_POS", "unknown sliding sync position"), {}};
+            }
+        }
+
         // Per-connection state keyed user/device/conn_id.  Looked up early so
         // that the since values below can fall back to the connection's last
         // known position when the client omits pos (e.g. timeout=0 polls).
-        auto const conn_key = std::string{user} + "/" + std::string{device_id} + "/" +
-                              (ssreq.conn_id.has_value() ? *ssreq.conn_id : "__default__");
         auto& conn = rt.homeserver.sliding_sync_connections[conn_key];
         conn.last_used = std::chrono::steady_clock::now();
 
@@ -4008,16 +4043,11 @@ namespace
 
         auto const cur_event = rt.homeserver.database.next_stream_ordering - 1U;
         auto const cur_sync = store.next_sync_stream_id;
-        // A client can retain a position from before a server restart while the
-        // reconstructed in-memory stream watermark temporarily lags it. Never
-        // regress any token component: clients reject a lower opaque cursor and
-        // retry the same request indefinitely.
-        auto const returned_event = std::max(cur_event, pos.has_value() ? pos->event_ordering : std::uint64_t{0U});
-        auto const returned_membership =
-            std::max(cur_event, pos.has_value() ? pos->membership_ordering : std::uint64_t{0U});
-        auto const returned_sync = std::max(cur_sync, pos.has_value() ? pos->sync_stream_id : std::uint64_t{0U});
-        auto const new_pos =
-            sync::encode_stream_token(sync::StreamToken{returned_event, returned_membership, returned_sync});
+        // The returned pos is always the live stream watermarks.  A request
+        // pos ahead of the watermarks was already rejected with M_UNKNOWN_POS
+        // at the top of this function, so the token can only move forward
+        // between responses on the same server lifetime.
+        auto const new_pos = sync::encode_stream_token(sync::StreamToken{cur_event, cur_event, cur_sync});
 
         auto lists_obj = canonicaljson::Object{};
         for (auto& [lname, result] : list_results)

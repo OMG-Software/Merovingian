@@ -923,6 +923,20 @@ namespace
                 store.next_sync_stream_id = parse_u64(row[0]);
             }
         }
+
+        auto const event_watermark = query_rows(connection, "postgresql_load_event_stream_watermark",
+                                                "SELECT watermark FROM event_stream_watermark");
+        if (!event_watermark.ok)
+        {
+            return false;
+        }
+        for (auto const& row : event_watermark.rows)
+        {
+            if (!row.empty())
+            {
+                store.event_stream_watermark = parse_u64(row[0]);
+            }
+        }
         return true;
     }
 

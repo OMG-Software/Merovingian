@@ -11,7 +11,7 @@ namespace merovingian::database
 namespace
 {
 
-    constexpr auto schema_version = std::uint32_t{2U};
+    constexpr auto schema_version = std::uint32_t{3U};
 
     // Tables introduced after the v1 initial schema are listed here so the
     // bootstrap path can create the original v1 shape and then apply numbered
@@ -20,10 +20,17 @@ namespace
         std::string_view{"sync_stream_watermark"},
     };
 
-    [[nodiscard]] auto table_is_v2(std::string_view table_name) noexcept -> bool
+    constexpr auto v3_table_names = std::array{
+        std::string_view{"event_stream_watermark"},
+    };
+
+    [[nodiscard]] auto table_is_post_v1(std::string_view table_name) noexcept -> bool
     {
-        return std::ranges::find(v2_table_names, table_name) != v2_table_names.end();
+        return std::ranges::find(v2_table_names, table_name) != v2_table_names.end() ||
+               std::ranges::find(v3_table_names, table_name) != v3_table_names.end();
     }
+
+    constexpr auto post_v1_table_count = v2_table_names.size() + v3_table_names.size();
 
     constexpr auto core_tables = std::array{
         SchemaTableDefinition{"schema_migrations",
@@ -137,6 +144,8 @@ namespace
                               "DEFAULT '0', currently_active TEXT NOT NULL DEFAULT 'false'"                                                                    },
         SchemaTableDefinition{
                               "sync_stream_watermark",   "singleton INTEGER PRIMARY KEY CHECK (singleton = 1), watermark TEXT NOT NULL DEFAULT '0'"            },
+        SchemaTableDefinition{
+                              "event_stream_watermark",  "singleton INTEGER PRIMARY KEY CHECK (singleton = 1), watermark TEXT NOT NULL DEFAULT '0'"            },
         SchemaTableDefinition{"profiles",                "user_id TEXT PRIMARY KEY, displayname TEXT NOT NULL DEFAULT '', "
                                           "avatar_url TEXT NOT NULL DEFAULT ''"                                       },
         SchemaTableDefinition{"client_txn_ids",
@@ -155,10 +164,10 @@ auto current_schema_version() noexcept -> std::uint32_t
 auto initial_schema_definitions() -> std::vector<SchemaTableDefinition>
 {
     auto definitions = std::vector<SchemaTableDefinition>{};
-    definitions.reserve(core_tables.size() - v2_table_names.size());
+    definitions.reserve(core_tables.size() - post_v1_table_count);
     for (auto const& table : core_tables)
     {
-        if (!table_is_v2(table.name))
+        if (!table_is_post_v1(table.name))
         {
             definitions.push_back(table);
         }
@@ -174,10 +183,10 @@ auto current_schema_definitions() -> std::vector<SchemaTableDefinition>
 auto initial_schema_tables() -> std::vector<std::string_view>
 {
     auto tables = std::vector<std::string_view>{};
-    tables.reserve(core_tables.size() - v2_table_names.size());
+    tables.reserve(core_tables.size() - post_v1_table_count);
     for (auto const& table : core_tables)
     {
-        if (!table_is_v2(table.name))
+        if (!table_is_post_v1(table.name))
         {
             tables.push_back(table.name);
         }

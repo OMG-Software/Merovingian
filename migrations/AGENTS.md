@@ -11,13 +11,16 @@ NNN_snake_case_description.sql
 
 `NNN` is a zero-padded three-digit integer: `001`, `002`, ..., `010`, `011`, ...
 The next migration number is always `max(existing) + 1`.
-Current highest: `002`.
+Current highest: `003`.
 
 Schema version `2` introduced the `sync_stream_watermark` table via
 `002_sync_stream_watermark.sql` to support live pre-production deployments that
-must upgrade in place. After `v1.0.0`, deployed databases become a strict
-compatibility boundary and schema changes must be added as new forward migration
-files instead of modifying already-applied migrations.
+must upgrade in place. Schema version `3` adds the analogous
+`event_stream_watermark` table via `003_event_stream_watermark.sql` so the
+timeline stream_ordering counter survives restarts. After `v1.0.0`, deployed
+databases become a strict compatibility boundary and schema changes must be
+added as new forward migration files instead of modifying already-applied
+migrations.
 
 ## File format
 

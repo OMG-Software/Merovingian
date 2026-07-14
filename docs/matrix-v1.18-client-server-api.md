@@ -395,7 +395,7 @@ fields in the JSON body. The server prefers query parameters when both are prese
 
 | Parameter | Type | Description |
 | --- | --- | --- |
-| `pos` | string | Opaque position token from the previous response. Absent on first request (initial sync). |
+| `pos` | string | Opaque position token from the previous response. Absent on first request (initial sync). A pos this server did not issue — any component ahead of the live stream watermark, e.g. a token the client persisted across a server restart — is rejected with `400 M_UNKNOWN_POS` and the connection state is dropped; the client is expected to restart the connection with a fresh initial (no-pos) sync. |
 | `timeout` | integer | Long-poll wait time in milliseconds. Absent or 0 = respond immediately. |
 
 #### Request body fields

@@ -269,9 +269,18 @@ auto downgrade_initial_schema_migration() -> MigrationStep
     return {2U, "sync_stream_watermark", std::move(statements), MigrationDirection::upgrade};
 }
 
+[[nodiscard]] auto upgrade_event_stream_watermark_migration() -> MigrationStep
+{
+    auto statements = std::vector<PreparedStatement>{};
+    statements.push_back(
+        make_create_table_statement(schema_table_definition("event_stream_watermark").value()).value());
+    return {3U, "event_stream_watermark", std::move(statements), MigrationDirection::upgrade};
+}
+
 auto upgrade_migration_catalog() -> std::vector<MigrationStep>
 {
-    return {initial_schema_migration(), upgrade_sync_stream_watermark_migration()};
+    return {initial_schema_migration(), upgrade_sync_stream_watermark_migration(),
+            upgrade_event_stream_watermark_migration()};
 }
 
 [[nodiscard]] auto downgrade_sync_stream_watermark_migration() -> MigrationStep
@@ -281,9 +290,17 @@ auto upgrade_migration_catalog() -> std::vector<MigrationStep>
     return {1U, "drop_sync_stream_watermark", std::move(statements), MigrationDirection::downgrade};
 }
 
+[[nodiscard]] auto downgrade_event_stream_watermark_migration() -> MigrationStep
+{
+    auto statements = std::vector<PreparedStatement>{};
+    statements.push_back(make_drop_table_statement("event_stream_watermark").value());
+    return {2U, "drop_event_stream_watermark", std::move(statements), MigrationDirection::downgrade};
+}
+
 auto downgrade_migration_catalog() -> std::vector<MigrationStep>
 {
-    return {downgrade_sync_stream_watermark_migration(), downgrade_initial_schema_migration()};
+    return {downgrade_event_stream_watermark_migration(), downgrade_sync_stream_watermark_migration(),
+            downgrade_initial_schema_migration()};
 }
 
 auto migration_plan_between(std::uint32_t current_version, std::uint32_t target_version) -> MigrationPlan

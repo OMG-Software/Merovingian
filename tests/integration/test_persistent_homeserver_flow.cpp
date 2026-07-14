@@ -167,6 +167,95 @@ SCENARIO("SQLite-backed homeserver runtime survives restart with users sessions 
     }
 }
 
+SCENARIO("SQLite-backed runtime restores the event stream watermark so pos tokens survive restart",
+         "[database][sqlite][homeserver][integration][sync]")
+{
+    // Regression: next_stream_ordering was rebuilt from max(events.stream_ordering)
+    // alone, but membership stream positions consume orderings without a backing
+    // event row. Every restart therefore rebuilt the counter LOWER than the
+    // previous lifetime's, putting each client's persisted sliding sync pos ahead
+    // of the live stream — all inbound events landed in the gap and were
+    // permanently skipped (or, since 0.10.52, every client got M_UNKNOWN_POS and
+    // a forced full resync on every server restart).
+    GIVEN("a SQLite homeserver where a room join consumed non-event stream orderings")
+    {
+        auto const sqlite_path = unique_sqlite_path();
+        std::filesystem::remove(sqlite_path);
+        auto const config = sqlite_registration_enabled_config(sqlite_path);
+
+        auto token = std::string{};
+        auto pre_restart_next_ordering = std::uint64_t{0U};
+        auto pos = std::string{};
+        {
+            auto started = merovingian::homeserver::start_client_server(config);
+            REQUIRE(started.started);
+            auto& runtime = started.runtime;
+
+            auto const registered = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST",
+                 "/_matrix/client/v3/register",
+                 {},
+                 R"({"username":"watermark","password":"CorrectHorse7!","auth":{"type":"m.login.registration_token","token":"test-registration-token"}})"});
+            REQUIRE(registered.response.status == 200U);
+            auto const login = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST",
+                 "/_matrix/client/v3/login",
+                 {},
+                 R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@watermark:example.org"},"password":"CorrectHorse7!","device_id":"WATERMARK1"})"});
+            REQUIRE(login.response.status == 200U);
+            token = token_from_login_body(login.response.body);
+            auto const room = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/createRoom", token, {}});
+            REQUIRE(room.response.status == 200U);
+
+            // A sliding sync response encodes the live watermark into pos; the
+            // client persists it across both app and server restarts.
+            auto const sync = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST", "/_matrix/client/unstable/org.matrix.msc4186/sync?timeout=0", token,
+                 R"({"conn_id":"watermark","lists":{"0":{"ranges":[[0,19]],"required_state":[],"timeline_limit":1}}})"});
+            REQUIRE(sync.response.status == 200U);
+            auto const pos_key = std::string{"\"pos\":\""};
+            auto const pos_begin = sync.response.body.find(pos_key);
+            REQUIRE(pos_begin != std::string::npos);
+            auto const pos_value_begin = pos_begin + pos_key.size();
+            auto const pos_value_end = sync.response.body.find('"', pos_value_begin);
+            REQUIRE(pos_value_end != std::string::npos);
+            pos = sync.response.body.substr(pos_value_begin, pos_value_end - pos_value_begin);
+
+            pre_restart_next_ordering = runtime.homeserver.database.next_stream_ordering;
+            REQUIRE(std::filesystem::exists(sqlite_path));
+        }
+
+        WHEN("the runtime is started again from the same SQLite file")
+        {
+            auto restarted = merovingian::homeserver::start_client_server(config);
+            REQUIRE(restarted.started);
+            auto& restarted_runtime = restarted.runtime;
+
+            THEN("the stream ordering counter does not regress behind the previous lifetime")
+            {
+                REQUIRE(restarted_runtime.homeserver.database.next_stream_ordering >= pre_restart_next_ordering);
+            }
+
+            THEN("a sliding sync using the pre-restart pos is served, not rejected as unknown")
+            {
+                auto const resync = merovingian::homeserver::handle_client_server_request(
+                    restarted_runtime,
+                    {"POST", "/_matrix/client/unstable/org.matrix.msc4186/sync?pos=" + pos + "&timeout=0", token,
+                     R"({"conn_id":"watermark","lists":{"0":{"ranges":[[0,19]],"required_state":[],"timeline_limit":1}}})"});
+
+                REQUIRE(resync.response.status == 200U);
+                REQUIRE(resync.response.body.find("M_UNKNOWN_POS") == std::string::npos);
+            }
+        }
+
+        std::filesystem::remove(sqlite_path);
+    }
+}
+
 SCENARIO("SQLite-backed client-server runtime persists E2EE key API state across restart",
          "[database][sqlite][homeserver][key-api][integration]")
 {
@@ -273,7 +362,7 @@ SCENARIO("Persistent homeserver runtime bootstraps a fresh migrated schema", "[d
                 REQUIRE(merovingian::homeserver::database_has_table(started.runtime.database, "device_keys"));
                 REQUIRE(merovingian::homeserver::database_has_table(started.runtime.database, "key_backup_sessions"));
                 REQUIRE(merovingian::homeserver::database_has_table(started.runtime.database, "admin_actions"));
-                REQUIRE(started.runtime.database.persistent_store.schema.applied_migrations.size() == 2U);
+                REQUIRE(started.runtime.database.persistent_store.schema.applied_migrations.size() == 3U);
                 REQUIRE(started.runtime.database.persistent_store.schema.applied_migrations.front().direction ==
                         merovingian::database::MigrationDirection::upgrade);
                 REQUIRE(started.runtime.database.persistent_store.schema.applied_migrations.front().name ==
@@ -301,7 +390,7 @@ SCENARIO("Persistent homeserver startup is idempotent for an already migrated sc
                 REQUIRE(started.started);
                 REQUIRE(started.runtime.database.persistent_store.schema.version ==
                         merovingian::database::current_schema_version());
-                REQUIRE(started.runtime.database.persistent_store.schema.applied_migrations.size() == 2U);
+                REQUIRE(started.runtime.database.persistent_store.schema.applied_migrations.size() == 3U);
             }
         }
     }

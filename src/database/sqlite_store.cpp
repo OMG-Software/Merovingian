@@ -629,8 +629,12 @@ namespace
                                                              column_text(row, 2), column_text(row, 3),
                                                              column_text(row, 4)});
                          }) &&
-               load_rows(connection, "SELECT watermark FROM sync_stream_watermark", [&store](sqlite3_stmt& row) {
-                   store.next_sync_stream_id = parse_u64(column_text(row, 0));
+               load_rows(connection, "SELECT watermark FROM sync_stream_watermark",
+                         [&store](sqlite3_stmt& row) {
+                             store.next_sync_stream_id = parse_u64(column_text(row, 0));
+                         }) &&
+               load_rows(connection, "SELECT watermark FROM event_stream_watermark", [&store](sqlite3_stmt& row) {
+                   store.event_stream_watermark = parse_u64(column_text(row, 0));
                });
     }
 

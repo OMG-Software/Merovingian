@@ -408,6 +408,7 @@ struct PersistentStore final
         , prepared_statements{other.prepared_statements}
         , prepared_statements_mutex{std::make_unique<std::mutex>()}
         , next_sync_stream_id{other.next_sync_stream_id}
+        , event_stream_watermark{other.event_stream_watermark}
     {
     }
     PersistentStore(PersistentStore&& other) noexcept = default;
@@ -461,6 +462,7 @@ struct PersistentStore final
         prepared_statements = other.prepared_statements;
         prepared_statements_mutex = std::make_unique<std::mutex>();
         next_sync_stream_id = other.next_sync_stream_id;
+        event_stream_watermark = other.event_stream_watermark;
         return *this;
     }
     auto operator=(PersistentStore&& other) noexcept -> PersistentStore& = default;
@@ -518,6 +520,13 @@ struct PersistentStore final
     // the row's stream_id strictly exceeds every previous one and clients
     // can compare against the since-token.
     std::uint64_t next_sync_stream_id{0U};
+    // Highest timeline stream_ordering ever allocated, persisted to the
+    // event_stream_watermark singleton. Some allocations (membership stream
+    // positions, soft-failed events) are not backed by a persisted event
+    // row, so rebuilding the counter from max(events.stream_ordering) alone
+    // regresses it across restarts — which invalidates every pos/since token
+    // clients persisted from the previous lifetime.
+    std::uint64_t event_stream_watermark{0U};
 };
 
 struct PersistentStoreOpenResult final
@@ -750,6 +759,12 @@ auto restore_sync_stream_id(PersistentStore& store) -> void;
 // persisted watermark (for example, after adding the watermark table to a
 // database whose typing/receipt surfaces advanced the counter).
 [[nodiscard]] auto ensure_sync_stream_id_ahead_of(PersistentStore& store, std::uint64_t since_sync_stream_id) -> bool;
+// Persists `watermark` (the highest allocated timeline stream_ordering) to
+// the `event_stream_watermark` singleton and mirrors it into
+// `store.event_stream_watermark`. Every stream_ordering allocation must
+// record its value here so a restart cannot roll the timeline counter
+// backward behind a pos/since token a client already holds.
+[[nodiscard]] auto persist_event_stream_watermark(PersistentStore& store, std::uint64_t watermark) -> bool;
 [[nodiscard]] auto sensitive_values_are_redacted(PersistentStore const& store) noexcept -> bool;
 
 namespace detail

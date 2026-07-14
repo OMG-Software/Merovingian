@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.10.51
+Version:        0.10.52
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -97,6 +97,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Tue Jul 14 2026 James Chapman <claude@ping.me.uk> - 0.10.52-1
+- fix(sync): reject a Sliding Sync pos ahead of the live stream with 400 M_UNKNOWN_POS instead of ratcheting it, which silently swallowed all inbound events after a server restart.
+
 * Tue Jul 14 2026 James Chapman <claude@ping.me.uk> - 0.10.51-1
 - fix(sync): wrap the receipts/typing extensions' per-room payload in a type-tagged event, fixing a sync storm caused by matrix-rust-sdk rejecting the malformed bare-content shape.
 
