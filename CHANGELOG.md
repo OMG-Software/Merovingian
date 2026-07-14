@@ -1,3 +1,14 @@
+## 0.10.52
+
+### Fixed
+- **fix(sync): reject a Sliding Sync `pos` ahead of the live stream with `400 M_UNKNOWN_POS` instead of ratcheting it — inbound messages were silently never delivered after a server restart.** The pos handling deliberately never regressed a token component: the returned pos was `max(current watermark, requested pos)`, on the theory that a lower cursor would make clients retry indefinitely. In reality, when a client presents a pos *ahead* of the live stream — matrix-rust-sdk persists `pos` across app and server restarts (`share_pos`), while the server's in-memory stream watermark is rebuilt on startup and can come up lower than the previous lifetime's — the ratchet made the stale token permanent: the client's `since` floor sat above the live stream, so **every new inbound event landed in the gap and was filtered as already-seen**, the long-poll parked, the room was skipped, and the server echoed the inflated token back, forever. Outbound sending kept working (the send path never consults `pos`), which produced the confusing "can send but never receive" symptom. Production logs showed this live: a client polling with pos event-component 920 while the server's stream sat at 918. Per MSC4186, a pos the server cannot serve is now rejected with `400 M_UNKNOWN_POS` and the connection state is dropped; matrix-rust-sdk handles this by expiring the session and starting a fresh initial sync (`ErrorKind::UnknownPos` → `expire_session()`), so clients self-heal immediately. The returned pos is now always the live watermarks.
+
+### Testing
+- **test(sync): assert a future pos is rejected with 400 M_UNKNOWN_POS and that the follow-up no-pos request receives a full initial snapshot.** Replaces the previous "never regresses a client stream position" scenario, which asserted the harmful ratchet behaviour this release removes.
+
+### Changed
+- **chore(release): bump version to 0.10.52 across meson.build, src/main.cpp, src/db_migrate.cpp, packaging metadata, build scripts, and CHANGELOG.md.**
+
 ## 0.10.51
 
 ### Fixed

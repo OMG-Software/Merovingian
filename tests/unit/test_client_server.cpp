@@ -8106,32 +8106,62 @@ SCENARIO("Sliding sync replays an unacknowledged response for a repeated positio
     }
 }
 
-SCENARIO("Sliding sync never regresses a client stream position", "[sync][sliding-sync][msc4186]")
+SCENARIO("Sliding sync rejects a position ahead of the server's stream with M_UNKNOWN_POS",
+         "[sync][sliding-sync][msc4186]")
 {
-    // Spec: MSC4186 §Response body — clients use pos as an opaque cursor for
-    // their next request. A server restart or restored watermark must not send
-    // a lower cursor and make the client retry the same request indefinitely.
-    GIVEN("a client position ahead of the server's reconstructed watermark")
+    // Spec: MSC4186 — a pos the server cannot serve is rejected with a 400
+    // response and errcode M_UNKNOWN_POS; the client then expires the
+    // connection and restarts with a fresh initial sync (matrix-rust-sdk:
+    // ErrorKind::UnknownPos → expire_session()).  A pos component ahead of
+    // the live stream watermark proves this server never issued the token —
+    // typically one the client persisted (share_pos) across a server restart
+    // that rebuilt the watermarks lower.  The previous behaviour clamped the
+    // returned token to max(current, requested) so it never regressed, which
+    // silently treated every event in the gap as already-seen: incoming
+    // messages were never delivered while outbound sending kept working.
+    GIVEN("alice in a room, holding a position ahead of the server's reconstructed watermark")
     {
         auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
         REQUIRE(started.started);
+        auto& runtime = started.runtime;
 
         auto const registration = merovingian::homeserver::handle_client_server_request(
-            started.runtime, {"POST", "/_matrix/client/v3/register", {}, registration_json("alice", "CorrectHorse7!")});
+            runtime, {"POST", "/_matrix/client/v3/register", {}, registration_json("alice", "CorrectHorse7!")});
         REQUIRE(registration.response.status == 200U);
         auto const token = login_token(registration.response.body);
 
-        WHEN("the client requests Sliding Sync from that position")
+        auto const create_resp = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", token, R"({"preset":"public_chat"})"});
+        REQUIRE(create_resp.response.status == 200U);
+        auto const rid = room_id(create_resp.response.body);
+
+        auto constexpr request_body =
+            R"({"conn_id":"position-floor","lists":{"0":{"ranges":[[0,19]],"required_state":[],"timeline_limit":1}}})";
+
+        WHEN("the client requests Sliding Sync from the future position")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"POST", "/_matrix/client/unstable/org.matrix.msc4186/sync?pos=2710_2710_2710&timeout=0", token,
-                 R"({"conn_id":"position-floor"})"});
+                runtime, {"POST", "/_matrix/client/unstable/org.matrix.msc4186/sync?pos=2710_2710_2710&timeout=0",
+                          token, request_body});
 
-            THEN("the returned position does not move backwards")
+            THEN("the request is rejected with 400 M_UNKNOWN_POS")
             {
-                REQUIRE(response.response.status == 200U);
-                REQUIRE(extract_pos(response.response.body) == "2710_2710_2710");
+                REQUIRE(response.response.status == 400U);
+                REQUIRE(response.response.body.find("M_UNKNOWN_POS") != std::string::npos);
+            }
+
+            THEN("the follow-up no-pos request receives a full initial snapshot")
+            {
+                auto const restart = merovingian::homeserver::handle_client_server_request(
+                    runtime,
+                    {"POST", "/_matrix/client/unstable/org.matrix.msc4186/sync?timeout=0", token, request_body});
+
+                REQUIRE(restart.response.status == 200U);
+                // The room must come back as a full initial window, proving the
+                // stale connection state was dropped alongside the rejection.
+                REQUIRE(restart.response.body.find("\"op\":\"SYNC\"") != std::string::npos);
+                REQUIRE(restart.response.body.find(rid) != std::string::npos);
+                REQUIRE(restart.response.body.find(R"("initial":true)") != std::string::npos);
             }
         }
     }
