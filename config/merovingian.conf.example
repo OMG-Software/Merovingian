@@ -89,7 +89,7 @@ listeners.federation.tls_private_key_file=
 # an owner-only secret file containing the PostgreSQL connection URI.
 # role=runtime is for the server process; use role=migration only for the
 # offline database migration command. pool_size controls concurrent DB work.
-#database.backend=sqlite
+#database.backend=postgresql
 #database.uri_file=/etc/merovingian/db-uri
 #database.role=runtime
 #database.pool_size=16
