@@ -1,3 +1,14 @@
+## 0.10.51
+
+### Fixed
+- **fix(sync): wrap the receipts/typing extensions' per-room payload in a type-tagged event instead of sending bare content.** `m.receipt` and `m.typing` are `EphemeralRoom`-kind events (ruma's `SyncReceiptEvent`/`SyncTypingEvent`) — the wire shape is `{"type":"...","content":{...}}`. `build_receipts`/`build_typing` were serialising only the bare content object (e.g. `{"$event_id":{"m.read":{...}}}` with no `type`/`content` wrapper at all). Verified directly against ruma-client-api's own deserializer: the bare shape fails with `missing field 'type'`. matrix-rust-sdk treats a failed extension deserialization as a failed sync iteration — the response is accepted with `200` at the transport level, but the client never commits the new `pos` and immediately retries the same request, producing an unbounded busy-loop storm on **any** poll that returns a non-empty receipt or typing notification. This was invisible until 0.10.50's `rooms:["*"]` fix started actually delivering receipts to Element X for the first time — receipts had always been malformed, but the earlier "*" bug meant they were silently never sent, so the malformed shape never reached a client that would choke on it. Root-caused from a real capture: a fresh sliding sync response was generated locally, matched byte-for-byte against the connection shape reported in production logs, and fed through a standalone Rust program depending on `ruma-client-api` to confirm the exact deserialization failure before and after the fix.
+
+### Testing
+- **test(sync): assert extensions.receipts/typing wrap content in `{"type":...,"content":...}`, not bare content.** Regression coverage for the deserialization-storm fix; also updated the existing `build_extensions` unit coverage in `test_sliding_sync_surfaces.cpp`, which had asserted the old, broken bare-content shape.
+
+### Changed
+- **chore(release): bump version to 0.10.51 across meson.build, src/main.cpp, src/db_migrate.cpp, packaging metadata, build scripts, and CHANGELOG.md.**
+
 ## 0.10.50
 
 ### Fixed

@@ -382,14 +382,27 @@ SCENARIO("Sliding sync extensions build scoped to-device e2ee account-data recei
                 REQUIRE(responses.receipts->rooms_json.size() == 1U);
                 REQUIRE(responses.receipts->rooms_json.contains("!room-a:example.org"));
                 REQUIRE_FALSE(responses.receipts->rooms_json.contains("!room-b:example.org"));
-                auto const receipt_content = parse_object(responses.receipts->rooms_json.at("!room-a:example.org"));
-                REQUIRE(object_member(receipt_content, "$event-a") != nullptr);
+                // m.receipt is an EphemeralRoom-kind event (ruma's
+                // SyncReceiptEvent): the wire shape is
+                // {"type":"m.receipt","content":{...}}, not bare content.
+                auto const receipt_event = parse_object(responses.receipts->rooms_json.at("!room-a:example.org"));
+                REQUIRE(string_member(receipt_event, "type") != nullptr);
+                REQUIRE(*string_member(receipt_event, "type") == "m.receipt");
+                auto const* receipt_content = object_member(receipt_event, "content");
+                REQUIRE(receipt_content != nullptr);
+                REQUIRE(object_member(*receipt_content, "$event-a") != nullptr);
 
                 REQUIRE(responses.typing.has_value());
                 REQUIRE(responses.typing->rooms_json.size() == 1U);
                 REQUIRE(responses.typing->rooms_json.contains("!room-b:example.org"));
-                auto const typing_content = parse_object(responses.typing->rooms_json.at("!room-b:example.org"));
-                auto const* user_ids = array_member(typing_content, "user_ids");
+                // m.typing is likewise an EphemeralRoom-kind event (ruma's
+                // SyncTypingEvent): {"type":"m.typing","content":{"user_ids":...}}.
+                auto const typing_event = parse_object(responses.typing->rooms_json.at("!room-b:example.org"));
+                REQUIRE(string_member(typing_event, "type") != nullptr);
+                REQUIRE(*string_member(typing_event, "type") == "m.typing");
+                auto const* typing_content = object_member(typing_event, "content");
+                REQUIRE(typing_content != nullptr);
+                auto const* user_ids = array_member(*typing_content, "user_ids");
                 REQUIRE(user_ids != nullptr);
                 REQUIRE(user_ids->size() == 1U);
                 auto const* typing_user = std::get_if<std::string>(&(*user_ids)[0].storage());
