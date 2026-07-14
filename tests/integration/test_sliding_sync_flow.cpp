@@ -1413,3 +1413,93 @@ SCENARIO("Sliding sync receipts/typing extensions wrap content in a type-tagged 
         }
     }
 }
+
+// ── timeline / required_state event_id ──────────────────────────────────────
+//
+// Stored event JSON is the signed PDU wire format, which does not carry
+// event_id (it is derived from a reference hash). Client-facing events MUST
+// carry event_id (docs/matrix-v1.18-spec/client-server-api.md#room-event-format).
+// A prior regression sent the raw stored PDU JSON straight through for both
+// timeline and required_state entries: no event_id, plus federation-only
+// fields (auth_events, prev_events, hashes, signatures, depth) that must
+// never reach a client. Verified against the real ruma-events deserializer
+// (the type matrix-rust-sdk uses to parse each sliding sync timeline entry):
+// it rejects the un-fixed shape with "missing field `event_id`" and accepts
+// the fixed shape. That silent per-event parse failure — not a top-level
+// response error — is why pos still advanced normally while messages never
+// appeared on Element X.
+SCENARIO("MSC4186 sliding sync timeline and required_state events carry event_id",
+         "[homeserver][sliding-sync][integration]")
+{
+    GIVEN("an Element X room-list connection already established between two joined users")
+    {
+        auto const config = sliding_sync_config();
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const alice_token = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
+        auto const bob_token = register_and_login(rt, "bob", "CorrectHorse7!", "BOB");
+        auto const room_id = create_room(rt, alice_token);
+        auto const invite_resp = merovingian::homeserver::handle_client_server_request(
+            rt, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/invite", alice_token,
+                 R"({"user_id":"@bob:example.org"})"});
+        REQUIRE(invite_resp.response.status == 200U);
+        auto const join_resp = merovingian::homeserver::handle_client_server_request(
+            rt, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/join", bob_token, "{}"});
+        REQUIRE(join_resp.response.status == 200U);
+
+        auto const init = sliding_sync(rt, alice_token, element_x_room_list_body());
+        REQUIRE(init.response.status == 200U);
+        auto const pos1 = sliding_sync_pos(init.response.body);
+
+        WHEN("bob sends a message and alice polls again on the established connection")
+        {
+            auto const sent_event_id = send_message_get_id(rt, bob_token, room_id, "hello from bob");
+            auto const second = sliding_sync(rt, alice_token, element_x_room_list_body(), pos1);
+            REQUIRE(second.response.status == 200U);
+
+            THEN("the timeline event carries the real event_id, not the raw PDU shape")
+            {
+                auto const rooms = rooms_object(second.response.body);
+                auto const* rm = object_member_as_object(rooms, room_id);
+                REQUIRE(rm != nullptr);
+                auto const* timeline = object_member_as_array(*rm, "timeline");
+                REQUIRE(timeline != nullptr);
+                REQUIRE(!timeline->empty());
+
+                auto const* last_event = std::get_if<merovingian::canonicaljson::Object>(&timeline->back().storage());
+                REQUIRE(last_event != nullptr);
+                auto const* event_id = string_member(*last_event, "event_id");
+                REQUIRE(event_id != nullptr);
+                REQUIRE(*event_id == sent_event_id);
+            }
+        }
+
+        WHEN("alice's own join event is delivered via $ME required_state on the initial poll")
+        {
+            THEN("the required_state event carries event_id")
+            {
+                auto const rooms = rooms_object(init.response.body);
+                auto const* rm = object_member_as_object(rooms, room_id);
+                REQUIRE(rm != nullptr);
+                auto const* required_state = object_member_as_array(*rm, "required_state");
+                REQUIRE(required_state != nullptr);
+
+                auto const found_alice_member = std::ranges::any_of(*required_state, [](auto const& val) {
+                    auto const* ev = std::get_if<merovingian::canonicaljson::Object>(&val.storage());
+                    if (ev == nullptr)
+                        return false;
+                    auto const* type = string_member(*ev, "type");
+                    if (type == nullptr || *type != "m.room.member")
+                        return false;
+                    auto const* state_key = string_member(*ev, "state_key");
+                    if (state_key == nullptr || *state_key != "@alice:example.org")
+                        return false;
+                    auto const* event_id = string_member(*ev, "event_id");
+                    return event_id != nullptr && !event_id->empty();
+                });
+                REQUIRE(found_alice_member);
+            }
+        }
+    }
+}

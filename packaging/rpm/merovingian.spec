@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.10.52
+Version:        0.10.53
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -101,6 +101,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Tue Jul 14 2026 James Chapman <claude@ping.me.uk> - 0.10.53-1
+- fix(sync): Simplified Sliding Sync timeline and required_state events now carry event_id and drop federation-only PDU fields instead of leaking the raw stored event, which was silently failing client-side deserialization and dropping all inbound messages.
+
 * Tue Jul 14 2026 James Chapman <claude@ping.me.uk> - 0.10.52-1
 - fix(sync): reject a Sliding Sync pos ahead of the live stream with 400 M_UNKNOWN_POS instead of ratcheting it, which silently swallowed all inbound events after a server restart.
 
