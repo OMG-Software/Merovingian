@@ -98,6 +98,14 @@ The event signing payload follows the Matrix event signing pipeline:
 4. Sign the canonical bytes with the active Ed25519 provider and store the
    signature as Matrix unpadded Base64 under `signatures.<server>.<key_id>`.
 
+Step 3 uses `canonicaljson::serialize_canonical_strict()`, not the general-purpose
+`serialize_canonical()` — it fails closed with `CanonicalJsonError::float_not_allowed`
+on a `Value` tree containing any double, rather than serializing one. `event_id.cpp`'s
+reference-hash computation and `signable.cpp` use the same strict entry point. Floats
+are already excluded from this path in practice by `parse_lossless()` rejecting them
+at the parse boundary, but the strict serializer closes the same gap for any Value
+tree built programmatically rather than parsed.
+
 Verification rebuilds the same canonical payload, decodes the Matrix Base64
 signature, and delegates Ed25519 verification to the configured provider.
 

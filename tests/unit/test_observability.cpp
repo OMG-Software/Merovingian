@@ -273,6 +273,28 @@ SCENARIO("Diagnostic log summaries preserve join context while redacting unsafe 
     }
 }
 
+SCENARIO("Sanitized HTTP targets redact a bare 'token' query parameter", "[observability][logging][security]")
+{
+    GIVEN("the registration-token validity endpoint's target with the token in the query string")
+    {
+        // GET /_matrix/client/v1/register/m.login.registration_token/validity?token=<secret>
+        // passes the plaintext registration token as a query parameter named
+        // exactly "token" (not "access_token" or another already-recognized
+        // marker) — every request target is logged via sanitized_http_target.
+        auto const target = merovingian::observability::sanitized_http_target(
+            "/_matrix/client/v1/register/m.login.registration_token/validity?token=super-secret-registration-token");
+
+        WHEN("the target is rendered for logging")
+        {
+            THEN("the token value is redacted, not the literal secret")
+            {
+                REQUIRE(target.find("token=<redacted>") != std::string::npos);
+                REQUIRE(target.find("super-secret-registration-token") == std::string::npos);
+            }
+        }
+    }
+}
+
 SCENARIO("Metrics and health-check summaries avoid secrets and event contents", "[observability][metrics][health]")
 {
     GIVEN("safe metrics and health components")

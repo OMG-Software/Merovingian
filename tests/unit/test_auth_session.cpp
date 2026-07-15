@@ -41,6 +41,10 @@ SCENARIO("Client auth endpoint scaffold classifies public and token-protected ro
                 merovingian::auth::ClientAuthEndpoint::logout);
             auto const devices_requires_token = merovingian::auth::client_auth_endpoint_requires_access_token(
                 merovingian::auth::ClientAuthEndpoint::list_devices);
+            // Spec (POST /refresh): "this endpoint does not require authentication
+            // via an access token. Authentication is provided via the refresh token."
+            auto const refresh_requires_token = merovingian::auth::client_auth_endpoint_requires_access_token(
+                merovingian::auth::ClientAuthEndpoint::refresh_token);
             auto const login_mutates =
                 merovingian::auth::client_auth_endpoint_mutates_session(merovingian::auth::ClientAuthEndpoint::login);
             auto const list_devices_mutates = merovingian::auth::client_auth_endpoint_mutates_session(
@@ -52,6 +56,11 @@ SCENARIO("Client auth endpoint scaffold classifies public and token-protected ro
                 REQUIRE_FALSE(register_requires_token);
                 REQUIRE(logout_requires_token);
                 REQUIRE(devices_requires_token);
+                // Spec MUST: /refresh authenticates via the refresh token in the
+                // request body, not an access token — requiring one here would
+                // reject the exact case (an expired access token) /refresh exists
+                // to recover from.
+                REQUIRE_FALSE(refresh_requires_token);
                 REQUIRE(login_mutates);
                 REQUIRE_FALSE(list_devices_mutates);
             }

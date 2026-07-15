@@ -51,7 +51,12 @@ auto client_auth_endpoint_name(ClientAuthEndpoint endpoint) noexcept -> char con
 
 auto client_auth_endpoint_requires_access_token(ClientAuthEndpoint endpoint) noexcept -> bool
 {
-    return endpoint != ClientAuthEndpoint::login && endpoint != ClientAuthEndpoint::register_account;
+    // Spec (client-server-api.md, POST /refresh): "this endpoint does not
+    // require authentication via an access token. Authentication is provided
+    // via the refresh token." Gating it behind an access token defeats the
+    // endpoint's purpose — it exists to recover from an *expired* access token.
+    return endpoint != ClientAuthEndpoint::login && endpoint != ClientAuthEndpoint::register_account &&
+           endpoint != ClientAuthEndpoint::refresh_token;
 }
 
 auto client_auth_endpoint_mutates_session(ClientAuthEndpoint endpoint) noexcept -> bool

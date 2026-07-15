@@ -196,6 +196,7 @@ SCENARIO("Canonical JSON error names are stable", "[canonicaljson]")
         auto constexpr no_error = merovingian::canonicaljson::CanonicalJsonError::none;
         auto constexpr duplicate_key = merovingian::canonicaljson::CanonicalJsonError::duplicate_object_key;
         auto constexpr invalid_string = merovingian::canonicaljson::CanonicalJsonError::invalid_string;
+        auto constexpr float_not_allowed = merovingian::canonicaljson::CanonicalJsonError::float_not_allowed;
 
         WHEN("their names are requested")
         {
@@ -204,12 +205,105 @@ SCENARIO("Canonical JSON error names are stable", "[canonicaljson]")
                 std::string{merovingian::canonicaljson::canonical_json_error_name(duplicate_key)};
             auto const invalid_string_name =
                 std::string{merovingian::canonicaljson::canonical_json_error_name(invalid_string)};
+            auto const float_not_allowed_name =
+                std::string{merovingian::canonicaljson::canonical_json_error_name(float_not_allowed)};
 
             THEN("the diagnostic names are stable")
             {
                 REQUIRE(no_error_name == "none");
                 REQUIRE(duplicate_key_name == "duplicate_object_key");
                 REQUIRE(invalid_string_name == "invalid_string");
+                REQUIRE(float_not_allowed_name == "float_not_allowed");
+            }
+        }
+    }
+}
+
+// Spec: Matrix v1.18 Appendices — Canonical JSON
+// URL:  ../../docs/matrix-v1.18-spec/appendices.md#canonical-json
+//
+// "Integers in the range [-(2^53)+1, (2^53)-1]... no floats in signed/hashed
+// data." serialize_canonical_strict is the entry point event_signer.cpp and
+// event_id.cpp use for signing/hashing payloads; it must fail closed on a
+// Value tree containing a double rather than serializing a plausible-looking
+// but non-canonical result.
+SCENARIO("Canonical JSON strict serialization rejects floats at every nesting depth",
+         "[conformance][canonicaljson][security]")
+{
+    GIVEN("a bare double, and doubles nested in an array and in an object")
+    {
+        auto const bare_double = merovingian::canonicaljson::Value{0.5};
+
+        auto array_with_double = merovingian::canonicaljson::Array{};
+        array_with_double.push_back(merovingian::canonicaljson::Value{std::int64_t{1}});
+        array_with_double.push_back(merovingian::canonicaljson::Value{2.5});
+        auto const nested_in_array = merovingian::canonicaljson::Value{std::move(array_with_double)};
+
+        auto object_with_double = merovingian::canonicaljson::Object{};
+        object_with_double.push_back(
+            merovingian::canonicaljson::make_member("amount", merovingian::canonicaljson::Value{4.5}));
+        auto const nested_in_object = merovingian::canonicaljson::Value{std::move(object_with_double)};
+
+        WHEN("each is serialized with serialize_canonical_strict")
+        {
+            auto const bare_result = merovingian::canonicaljson::serialize_canonical_strict(bare_double);
+            auto const array_result = merovingian::canonicaljson::serialize_canonical_strict(nested_in_array);
+            auto const object_result = merovingian::canonicaljson::serialize_canonical_strict(nested_in_object);
+
+            THEN("every case fails closed with float_not_allowed instead of producing output")
+            {
+                REQUIRE(bare_result.error == merovingian::canonicaljson::CanonicalJsonError::float_not_allowed);
+                REQUIRE(bare_result.output.empty());
+                REQUIRE(array_result.error == merovingian::canonicaljson::CanonicalJsonError::float_not_allowed);
+                REQUIRE(object_result.error == merovingian::canonicaljson::CanonicalJsonError::float_not_allowed);
+            }
+        }
+
+        WHEN("the same values are serialized with the general-purpose serialize_canonical")
+        {
+            auto const bare_result = merovingian::canonicaljson::serialize_canonical(bare_double);
+
+            THEN("floats are still permitted for non-signing payloads (e.g. m.tag order, account data)")
+            {
+                REQUIRE(bare_result.error == merovingian::canonicaljson::CanonicalJsonError::none);
+                REQUIRE(bare_result.output == "0.5");
+            }
+        }
+    }
+}
+
+// Spec: Matrix v1.18 Appendices — Canonical JSON
+// URL:  ../../docs/matrix-v1.18-spec/appendices.md#canonical-json
+//
+// serialize_canonical's float formatting must round-trip exactly (parse the
+// output back and get the same double), not silently corrupt small
+// magnitudes. Before this fix, std::to_string(1e-7) produced "0.000000",
+// which the trailing-zero-stripping logic then collapsed to "0.0" — a
+// non-canonical representation of an entirely different value.
+SCENARIO("Canonical JSON float serialization round-trips small magnitudes correctly", "[conformance][canonicaljson]")
+{
+    GIVEN("a double whose fixed 6-decimal representation would previously round to zero")
+    {
+        auto const tiny_value = merovingian::canonicaljson::Value{1e-7};
+
+        WHEN("it is serialized with the general-purpose serialize_canonical")
+        {
+            auto const result = merovingian::canonicaljson::serialize_canonical(tiny_value);
+
+            THEN("the output is not the previous silently-corrupted \"0.0\"")
+            {
+                REQUIRE(result.error == merovingian::canonicaljson::CanonicalJsonError::none);
+                REQUIRE(result.output != "0.0");
+                REQUIRE(result.output != "0");
+            }
+
+            THEN("the output parses back to the original value")
+            {
+                auto const reparsed = merovingian::canonicaljson::parse_json(result.output);
+                REQUIRE(reparsed.error == merovingian::canonicaljson::ParseError::none);
+                auto const* as_double = std::get_if<double>(&reparsed.value.storage());
+                REQUIRE(as_double != nullptr);
+                REQUIRE(*as_double == 1e-7);
             }
         }
     }

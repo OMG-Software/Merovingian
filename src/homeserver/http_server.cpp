@@ -1002,7 +1002,11 @@ auto serve_http(net::TcpAcceptor& acceptor, ClientServerRuntime& runtime, net::S
 
         sockaddr_storage peer_sa{};
         socklen_t peer_len = sizeof(peer_sa);
-        auto raw_client = ::accept(acceptor.fd(), reinterpret_cast<sockaddr*>(&peer_sa), &peer_len);
+        // SOCK_CLOEXEC: accepted client sockets must not leak into worker
+        // subprocesses spawned via posix_spawn/fork() (federation workers,
+        // thumbnail worker) while a connection is still open. Matches the
+        // SOCK_CLOEXEC listening-socket pattern in net/tcp_acceptor.cpp.
+        auto raw_client = ::accept4(acceptor.fd(), reinterpret_cast<sockaddr*>(&peer_sa), &peer_len, SOCK_CLOEXEC);
         if (raw_client < 0)
         {
             if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
@@ -1089,7 +1093,11 @@ auto serve_tls_http(TlsServerContext& tls_context, net::TcpAcceptor& acceptor, C
 
         sockaddr_storage tls_peer_sa{};
         socklen_t tls_peer_len = sizeof(tls_peer_sa);
-        auto raw_client = ::accept(acceptor.fd(), reinterpret_cast<sockaddr*>(&tls_peer_sa), &tls_peer_len);
+        // SOCK_CLOEXEC: see the plain-HTTP accept loop above for why this
+        // matters — TLS long-poll connections are held open for the longest,
+        // maximizing the window during which a leaked fd could be inherited.
+        auto raw_client =
+            ::accept4(acceptor.fd(), reinterpret_cast<sockaddr*>(&tls_peer_sa), &tls_peer_len, SOCK_CLOEXEC);
         if (raw_client < 0)
         {
             if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)

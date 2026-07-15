@@ -7,7 +7,9 @@
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/core/query_params.hpp"
+#include "merovingian/core/secret_buffer.hpp"
 #include "merovingian/crypto/ed25519.hpp"
+#include "merovingian/crypto/master_key.hpp"
 #include "merovingian/crypto/secret_box.hpp"
 #include "merovingian/crypto/signing_service.hpp"
 #include "merovingian/database/persistent_store.hpp"
@@ -37,7 +39,6 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
-#include <fstream>
 #include <future>
 #include <map>
 #include <memory>
@@ -256,60 +257,26 @@ namespace
         return crypto_sign_keypair(public_key.data(), secret_key.data()) == 0;
     }
 
-    // Load the operator-supplied master key material from the configured file.
-    // The file is treated as opaque binary material; it is hashed with domain
-    // separation before being used as an encryption key.
-    [[nodiscard]] auto load_master_key_material(std::string_view path) -> std::optional<std::vector<std::uint8_t>>
+    // Load the operator-supplied master key material from the configured file,
+    // logging a diagnostic on failure. The file is treated as opaque binary
+    // material; it is hashed with domain separation before being used as an
+    // encryption key. Delegates to crypto::load_master_key_material — the
+    // single source of truth for reading this file, shared with the
+    // federation worker and auth service — rather than re-reading it here,
+    // so the two copies cannot drift apart on size limits or error handling.
+    [[nodiscard]] auto load_master_key_material_logged(std::string_view path) -> std::optional<core::SecretBuffer>
     {
-        if (path.empty())
-        {
-            return std::nullopt;
-        }
-        auto stream = std::ifstream{std::string{path}, std::ios::binary};
-        if (!stream)
-        {
-            log_diagnostic(
-                "signing_key.master_key_file_unreadable",
-                {
-                    {"path",   std::string{path},                false},
-                    {"reason", "failed to open master key file", false}
-            });
-            return std::nullopt;
-        }
-        auto content = std::vector<std::uint8_t>{};
-        auto const size_limit = std::size_t{4096U};
-        auto buffer = std::array<char, 1024U>{};
-        while (stream.good())
-        {
-            stream.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
-            auto const count = static_cast<std::size_t>(stream.gcount());
-            if (count == 0U)
-            {
-                break;
-            }
-            if (content.size() + count > size_limit)
-            {
-                log_diagnostic(
-                    "signing_key.master_key_file_unreadable",
-                    {
-                        {"path",   std::string{path},                    false},
-                        {"reason", "master key file exceeds size limit", false}
-                });
-                return std::nullopt;
-            }
-            content.insert(content.end(), reinterpret_cast<std::uint8_t*>(buffer.data()),
-                           reinterpret_cast<std::uint8_t*>(buffer.data()) + count);
-        }
-        if (content.empty())
+        auto material = crypto::load_master_key_material(path);
+        if (!material.has_value())
         {
             log_diagnostic("signing_key.master_key_file_unreadable",
                            {
-                               {"path",   std::string{path},          false},
-                               {"reason", "master key file is empty", false}
+                               {"path",   std::string{path},                                             false},
+                               {"reason", "master key file is missing, unreadable, empty, or too large", false}
             });
             return std::nullopt;
         }
-        return content;
+        return material;
     }
 
     // Build the database value for an encrypted signing secret:
@@ -346,12 +313,13 @@ namespace
     [[nodiscard]] auto encrypt_signing_secret(HomeserverRuntime const& runtime, std::span<std::uint8_t const> secret)
         -> std::optional<std::string>
     {
-        auto const master_key_material = load_master_key_material(runtime.config.security().secrets.master_key_file);
+        auto const master_key_material =
+            load_master_key_material_logged(runtime.config.security().secrets.master_key_file);
         if (!master_key_material.has_value())
         {
             return std::nullopt;
         }
-        auto const key = crypto::derive_secret_box_key(*master_key_material);
+        auto const key = crypto::derive_secret_box_key(master_key_material->bytes());
         if (!key.has_value())
         {
             return std::nullopt;
@@ -373,7 +341,7 @@ namespace
         if (auto const ciphertext = decode_encrypted_secret_from_storage(stored); ciphertext.has_value())
         {
             auto const master_key_material =
-                load_master_key_material(runtime.config.security().secrets.master_key_file);
+                crypto::load_master_key_material(runtime.config.security().secrets.master_key_file);
             if (!master_key_material.has_value())
             {
                 log_diagnostic(
@@ -383,7 +351,7 @@ namespace
                 });
                 return std::nullopt;
             }
-            auto const key = crypto::derive_secret_box_key(*master_key_material);
+            auto const key = crypto::derive_secret_box_key(master_key_material->bytes());
             if (!key.has_value())
             {
                 return std::nullopt;

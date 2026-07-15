@@ -8,7 +8,12 @@ This capability note describes runtime-wired observability and audit behavior.
 - Admin metrics summaries through `/_merovingian/admin/metrics`.
 - Admin audit summaries through `/_merovingian/admin/audit` (with
   `?category=` and `?event_type=` query-string filters).
-- Structured log redaction helpers.
+- Structured log redaction helpers. `contains_sensitive_marker` (used by
+  `sanitize_query`/`sanitized_http_target` to redact query-string values)
+  recognizes the bare key `token` as sensitive, in addition to
+  `access_token`/`refresh_token`/`session_token` — needed because
+  `GET /_matrix/client/v1/register/m.login.registration_token/validity`
+  passes the plaintext registration token as `?token=`.
 - Stable request-correlation fields (`request_id`, `trace_id`, `span_id`) for
   local HTTP router diagnostics.
 - Health, metric, and hardening snapshot helpers.

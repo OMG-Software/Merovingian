@@ -163,7 +163,7 @@ namespace
         {
             return std::nullopt;
         }
-        return crypto::derive_token_hmac_key_v3(*material);
+        return crypto::derive_token_hmac_key_v3(material->bytes());
     }
 
     // v4 HMAC key: derived from the operator's master key file, completely
@@ -176,7 +176,7 @@ namespace
         {
             return std::nullopt;
         }
-        return crypto::derive_token_hmac_key(*material);
+        return crypto::derive_token_hmac_key(material->bytes());
     }
 
     [[nodiscard]] auto hash_token_with_key(std::string_view token, std::span<unsigned char const> key,

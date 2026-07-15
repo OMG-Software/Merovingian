@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.10.54
+Version:        0.10.55
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -101,6 +101,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Wed Jul 15 2026 James Chapman <claude@ping.me.uk> - 0.10.55-1
+- fix(security): redact a bare "token" query parameter in logs, stop requiring access-token authentication on /refresh, mark accepted client sockets close-on-exec, fail closed on floats in the signing/hashing canonical JSON path, and wrap the operator master key and its derived keys (secret-box, access-token HMAC, IPC auth) in zeroising buffers.
+
 * Wed Jul 15 2026 James Chapman <claude@ping.me.uk> - 0.10.54-1
 - fix(security): reject self-leave from a banned or never-joined user (ban-evasion bypass), reject events with an unrecognized membership value, reject federation PDUs verified with an expired signing key, sniff actual media content instead of trusting the declared Content-Type, and reject Content-Type headers containing '|' (internal pipe-format injection).
 

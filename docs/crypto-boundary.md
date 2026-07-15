@@ -59,6 +59,18 @@ implementing custom cryptographic primitives.
 - `secret_box` authenticated encryption for at-rest signing-secret storage,
   using a domain-separated XSalsa20-Poly1305 key derived from a configured
   master key (`security.secrets.master_key_file`).
+- `crypto::load_master_key_material()` (the single source of truth for reading
+  the master-key file, shared by the main process, the auth service, and the
+  federation worker) reads directly into a `core::SecretBuffer` rather than a
+  plain `std::vector`, and zeroises its stack read buffer after every chunk —
+  the master key is the root secret every derived key below is drawn from, so
+  it must not sit unwiped in freed heap memory or swap. `SecretBoxKey`,
+  `TokenHmacKey`, and `IpcAuthKey` (the 32-byte keys derived from it) each
+  zeroise their `bytes` array with `sodium_memzero` on destruction and on the
+  losing side of every copy/move, while staying ordinary copyable/movable
+  value types — unlike `SecretBuffer`, which is heap-based and move-only, a
+  mismatch for these small keys that are passed by value throughout the
+  codebase.
 
 ## Security posture
 

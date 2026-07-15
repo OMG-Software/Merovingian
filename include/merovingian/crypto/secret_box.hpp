@@ -15,10 +15,20 @@ namespace merovingian::crypto
 {
 
 // A 32-byte symmetric key suitable for libsodium's crypto_secretbox.
-// The bytes are secret material and must be cleared on destruction.
+//
+// Secret material must not survive past its scope (core/AGENTS.md): the
+// destructor zeroises `bytes` with sodium_memzero, and copies/moves zeroise
+// whichever instance is left behind rather than relying on the caller.
 struct SecretBoxKey final
 {
     std::array<std::uint8_t, 32U> bytes{};
+
+    SecretBoxKey() noexcept = default;
+    SecretBoxKey(SecretBoxKey const& other) noexcept;
+    auto operator=(SecretBoxKey const& other) noexcept -> SecretBoxKey&;
+    SecretBoxKey(SecretBoxKey&& other) noexcept;
+    auto operator=(SecretBoxKey&& other) noexcept -> SecretBoxKey&;
+    ~SecretBoxKey();
 };
 
 // Nonce + XSalsa20-Poly1305 ciphertext, stored as raw bytes (caller encodes

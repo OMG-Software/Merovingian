@@ -24,6 +24,11 @@ Implemented now:
 - per-endpoint rate-limit policy scaffolding
 - HTTP request-head fuzz target
 - TCP listener and accept loop via `merovingian::net::TcpAcceptor`
+- accepted client sockets (both plain-HTTP and TLS accept loops in
+  `http_server.cpp`) are created with `accept4(..., SOCK_CLOEXEC)`, matching
+  the listening socket, so they cannot leak into a `posix_spawn`/`fork()`ed
+  worker subprocess (federation worker, thumbnail worker) while a connection
+  — e.g. a long-poll `/sync` — is still open
 - RAII signal-safe shutdown via `merovingian::net::ShutdownSignal` (SIGINT, SIGTERM)
 - per-connection request read, parse, and dispatch via `merovingian::homeserver::serve_http`
 - dispatch-mode separation so client listeners use the Matrix JSON

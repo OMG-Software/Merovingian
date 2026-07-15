@@ -235,7 +235,8 @@ auto make_event_signing_payload(canonicaljson::Value const& event) -> canonicalj
         return {{}, canonicaljson::CanonicalJsonError::invalid_string};
     }
 
-    return canonicaljson::serialize_canonical(canonicaljson::Value{clone_without_unsigned_and_signatures(*object)});
+    return canonicaljson::serialize_canonical_strict(
+        canonicaljson::Value{clone_without_unsigned_and_signatures(*object)});
 }
 
 auto make_event_signing_payload(canonicaljson::Value const& event, rooms::RoomVersionPolicy const& policy)
@@ -269,12 +270,12 @@ auto make_event_signing_payload(canonicaljson::Value const& event, rooms::RoomVe
     // not part of the canonical event body — it is derived from the content hash.
     if (policy.event_id_format == rooms::EventIdFormat::reference_hash)
     {
-        return canonicaljson::serialize_canonical(
+        return canonicaljson::serialize_canonical_strict(
             canonicaljson::Value{clone_without_unsigned_signatures_and_event_id(*redacted_obj)});
     }
 
     // Legacy room versions (1–3) include event_id in the event body itself.
-    return canonicaljson::serialize_canonical(
+    return canonicaljson::serialize_canonical_strict(
         canonicaljson::Value{clone_without_unsigned_and_signatures(*redacted_obj)});
 }
 
@@ -307,7 +308,7 @@ auto attach_event_signature(canonicaljson::Value const& event, SigningKeyId cons
     upsert_signature(signatures, key_id, signature);
     signed_object.push_back(canonicaljson::make_member("signatures", canonicaljson::Value{std::move(signatures)}));
 
-    return canonicaljson::serialize_canonical(canonicaljson::Value{std::move(signed_object)});
+    return canonicaljson::serialize_canonical_strict(canonicaljson::Value{std::move(signed_object)});
 }
 
 auto sign_event_for_server(canonicaljson::Value const& event, rooms::RoomVersionPolicy const& policy,

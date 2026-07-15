@@ -148,8 +148,8 @@ namespace
     // pdu_sink already does, or a join/leave/knock accepted by a worker is
     // invisible to main's own store (and therefore to every subsequent /send
     // message from that member, which main authorizes against its own state).
-    auto serialize_membership_ingest(federation::FederationEndpoint endpoint,
-                                     federation::InboundPduEnvelope const& env) -> std::string
+    auto serialize_membership_ingest(federation::FederationEndpoint endpoint, federation::InboundPduEnvelope const& env)
+        -> std::string
     {
         auto result = std::string{R"({"type":"membership_ingest","endpoint":)"};
         result.reserve(512U + env.json.size());
@@ -283,8 +283,8 @@ namespace
         return 0;
     }
 
-    [[nodiscard]] auto field_string_array(canonicaljson::Object const& obj,
-                                          std::string_view key) -> std::vector<std::string>
+    [[nodiscard]] auto field_string_array(canonicaljson::Object const& obj, std::string_view key)
+        -> std::vector<std::string>
     {
         auto out = std::vector<std::string>{};
         for (auto const& member : obj)
@@ -526,7 +526,7 @@ auto WorkerEventLoop::run() -> void
                      "' is unavailable; cannot authenticate IPC channel");
         return;
     }
-    auto const auth_key = crypto::derive_ipc_auth_key(*master_material);
+    auto const auth_key = crypto::derive_ipc_auth_key(master_material->bytes());
     if (!auth_key.has_value())
     {
         LOG_CRITICAL("Federation worker: failed to derive IPC auth key from master key file");

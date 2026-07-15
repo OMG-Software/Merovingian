@@ -67,8 +67,20 @@ inputs lossless and deterministic. The separate general-purpose parser
 (`parse_json()`) accepts doubles and exponent notation for payloads that are
 never signed.
 
+The serializer mirrors this split: `serialize_canonical_strict()` rejects a
+`Value` tree containing any double with `CanonicalJsonError::float_not_allowed`
+instead of serializing it, and is the entry point `event_signer.cpp`,
+`event_id.cpp`, and `signable.cpp` use for signing/hashing payloads.
+`serialize_canonical()` still accepts floats — via `std::to_chars`, a correct
+shortest-round-tripping conversion, not the fixed-precision `std::to_string`
+formatting an earlier version used — because it is also the general-purpose
+serializer for ordinary, never-signed JSON responses that legitimately
+contain floats (e.g. `m.tag` `order`, account data).
+
 ## Signable object view
 
-`make_signable_object_view` currently serializes the supplied canonical JSON
-value deterministically. Later event-signing work will layer Matrix-specific
-event field elision and signing-key metadata over this primitive.
+`make_signable_object_view` serializes the supplied canonical JSON value with
+`serialize_canonical_strict` — it is a signing-scoped entry point, so a
+`Value` tree containing a float fails closed rather than being serialized.
+Later event-signing work will layer Matrix-specific event field elision and
+signing-key metadata over this primitive.
