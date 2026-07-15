@@ -61,6 +61,18 @@ Implemented now:
   join/knock)
 - an `m.room.member` event with an unrecognized `membership` value is
   rejected outright rather than defaulting to `leave`
+- third-party (3PID) invite auth: an `m.room.member` event with `membership:
+  "invite"` and a `content.third_party_invite` property is authorized against
+  the full spec rule tree — target-not-banned, `signed.mxid`/`token`
+  presence, `signed.mxid == state_key`, a matching `m.room.third_party_invite`
+  state event for `signed.token`, sender match against that event's sender,
+  and Ed25519 signature verification of the canonical `signed` payload
+  (`{mxid, sender, token}`) against `content.public_key`/`public_keys` on the
+  `m.room.third_party_invite` event. `m.room.third_party_invite` event
+  creation itself is gated on the room's invite power level (not the generic
+  `state_default` power other state events use). `crypto::ed25519_verify` is
+  a new stateless verification entry point (no signing-key store needed) used
+  for this and by the production `Ed25519Provider`
 - unit coverage for content hashes, reference-hash event IDs, event envelope
   parsing, signing payloads, signature attachment/verification, redaction,
   room-version fixtures, full auth rule steps, and v2 state resolution
@@ -70,7 +82,16 @@ Not implemented yet:
 - full Matrix room-version conformance fixture suite
 - resident-side restricted-join allow-condition evaluation (requires checking
   parent-space membership when choosing whether to grant a join)
-- third-party invite auth event handling
+- accepting third-party invites end-to-end: `POST /invite` with a 3PID
+  address/`id_server` (requires an identity-server HTTP client — otherwise the
+  homeserver has no real party to source `public_key`/`public_keys` from) and
+  `third_party_signed` on `/join` (requires the
+  `PUT /_matrix/federation/v1/exchange_third_party_invite/{roomId}` endpoint,
+  or local authority to sign an intermediate invite event on behalf of the
+  original inviter — a different sender than the joining user). The auth-rule
+  engine above already validates either shape correctly once such an invite
+  event exists in room state; only the endpoints that create/exchange it are
+  outstanding
 
 ## Runtime wiring
 

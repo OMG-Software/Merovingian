@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "../federation_signing_test_support.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/events/authorization.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
@@ -147,6 +148,63 @@ namespace
            std::string{sender} +
            "\",\"room_id\":\"!room:example.org\",\"content\":{},\"origin_server_ts\":5,\"depth\":4,"
            "\"prev_events\":[],\"auth_events\":[],\"hashes\":{\"sha256\":\"hash\"}}";
+}
+
+// Spec: client-server-api.md#mroomthird_party_invite
+[[nodiscard]] auto make_third_party_invite_event(std::string_view sender, std::string_view token,
+                                                 std::string_view public_key_b64) -> std::string
+{
+    return "{\"type\":\"m.room.third_party_invite\",\"state_key\":\"" + std::string{token} + "\",\"sender\":\"" +
+           std::string{sender} +
+           "\",\"room_id\":\"!room:example.org\",\"content\":{\"display_name\":\"Alice\",\"key_validity_url\":"
+           "\"https://example.org/key\",\"public_key\":\"" +
+           std::string{public_key_b64} +
+           "\"},\"origin_server_ts\":2,\"depth\":1,\"prev_events\":[],\"auth_events\":[],"
+           "\"hashes\":{\"sha256\":\"hash\"}}";
+}
+
+// Like make_third_party_invite_event() but carries the public key list form
+// (content.public_keys) instead of the single legacy content.public_key.
+[[nodiscard]] auto make_third_party_invite_event_with_keys_list(std::string_view sender, std::string_view token,
+                                                                std::string_view public_key_b64) -> std::string
+{
+    return "{\"type\":\"m.room.third_party_invite\",\"state_key\":\"" + std::string{token} + "\",\"sender\":\"" +
+           std::string{sender} +
+           "\",\"room_id\":\"!room:example.org\",\"content\":{\"display_name\":\"Alice\",\"public_keys\":[{"
+           "\"public_key\":\"not-the-right-key\"},{\"public_key\":\"" +
+           std::string{public_key_b64} +
+           "\"}]},\"origin_server_ts\":2,\"depth\":1,\"prev_events\":[],\"auth_events\":[],"
+           "\"hashes\":{\"sha256\":\"hash\"}}";
+}
+
+// Signs the canonical {"mxid":..,"sender":..,"token":..} payload (field order is
+// already alphabetical, matching canonical JSON with "signatures" stripped) and
+// returns the invite's m.room.member event JSON with content.third_party_invite
+// populated per client-server-api.md's Third-party Signed shape.
+[[nodiscard]] auto make_third_party_signed_member_event(std::string_view inviter, std::string_view invitee_mxid,
+                                                        std::string_view signed_sender, std::string_view token,
+                                                        std::string_view signature_domain,
+                                                        std::string_view signature_key_id,
+                                                        std::string_view signature_b64) -> std::string
+{
+    return "{\"type\":\"m.room.member\",\"state_key\":\"" + std::string{invitee_mxid} + "\",\"sender\":\"" +
+           std::string{inviter} +
+           "\",\"room_id\":\"!room:example.org\",\"content\":{\"membership\":\"invite\",\"third_party_invite\":{"
+           "\"display_name\":\"Alice\",\"signed\":{\"mxid\":\"" +
+           std::string{invitee_mxid} + "\",\"sender\":\"" + std::string{signed_sender} + "\",\"token\":\"" +
+           std::string{token} + "\",\"signatures\":{\"" + std::string{signature_domain} + "\":{\"" +
+           std::string{signature_key_id} + "\":\"" + std::string{signature_b64} +
+           "\"}}}}},\"origin_server_ts\":3,\"depth\":2,\"prev_events\":[],\"auth_events\":[],"
+           "\"hashes\":{\"sha256\":\"hash\"}}";
+}
+
+[[nodiscard]] auto sign_third_party_invite_payload(std::string_view mxid, std::string_view sender,
+                                                   std::string_view token, std::string const& secret_key_bytes)
+    -> std::string
+{
+    auto const payload = "{\"mxid\":\"" + std::string{mxid} + "\",\"sender\":\"" + std::string{sender} +
+                         "\",\"token\":\"" + std::string{token} + "\"}";
+    return merovingian::federation::test::sign_payload_b64(payload, secret_key_bytes);
 }
 
 } // namespace
@@ -1929,6 +1987,359 @@ SCENARIO("Auth rules reject a ban when the sender's power level equals the targe
                 // Spec MUST: to ban, sender's power level must be strictly greater than
                 // the target's current power level. Equal levels are not sufficient.
                 REQUIRE_FALSE(decision.allowed);
+            }
+        }
+    }
+}
+
+// --- third-party invite auth (rule 4.3.1) --------------------------------------
+// Spec: Matrix rooms/v11.md Authorization rules for m.room.member, rule 4.3.1
+// URL: ../../docs/matrix-v1.18-spec/rooms/v11.md#authorization-rules
+//
+// "If content has a third_party_invite property" is a fully self-contained
+// decision tree for invites accepted via a 3PID token, replacing the normal
+// invite checks (target-not-joined, sender-joined, invite-power).
+SCENARIO("Auth rules allow a third-party invite whose signature matches the invite's public key",
+         "[events][auth][membership][third-party-invite][conformance]")
+{
+    GIVEN("a pending m.room.third_party_invite signed by the identity server's key")
+    {
+        auto const keypair = merovingian::federation::test::keypair_from_seed("tpi-seed-1");
+        auto const public_key_b64 = merovingian::federation::test::pubkey_b64(keypair);
+        auto const signature_b64 = sign_third_party_invite_payload("@bob:example.org", "@alice:example.org",
+                                                                   "random8nonce", keypair.secret_key);
+
+        auto const* policy = merovingian::rooms::find_room_version_policy("12");
+        REQUIRE(policy != nullptr);
+
+        auto auth_events = merovingian::events::AuthEventMap{};
+        auth_events.create = merovingian::canonicaljson::parse_lossless(make_create_event("@alice:example.org")).value;
+        auth_events.third_party_invite =
+            merovingian::canonicaljson::parse_lossless(
+                make_third_party_invite_event("@alice:example.org", "random8nonce", public_key_b64))
+                .value;
+
+        auto const member_json =
+            make_third_party_signed_member_event("@alice:example.org", "@bob:example.org", "@alice:example.org",
+                                                 "random8nonce", "example.org", "ed25519:0", signature_b64);
+        auto const parsed = merovingian::canonicaljson::parse_lossless(member_json);
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+
+        WHEN("the third-party invite join event is authorized")
+        {
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(parsed.value, *policy, auth_events);
+
+            THEN("the invite is allowed")
+            {
+                // Spec MUST: rule 4.3.1.7 — a signature in "signed" matches a public
+                // key carried by the m.room.third_party_invite event.
+                REQUIRE(decision.allowed);
+                REQUIRE(decision.rule_step == "6");
+            }
+        }
+    }
+
+    GIVEN("a pending m.room.third_party_invite whose public key is only in content.public_keys")
+    {
+        auto const keypair = merovingian::federation::test::keypair_from_seed("tpi-seed-2");
+        auto const public_key_b64 = merovingian::federation::test::pubkey_b64(keypair);
+        auto const signature_b64 = sign_third_party_invite_payload("@bob:example.org", "@alice:example.org",
+                                                                   "random8nonce", keypair.secret_key);
+
+        auto const* policy = merovingian::rooms::find_room_version_policy("12");
+        REQUIRE(policy != nullptr);
+
+        auto auth_events = merovingian::events::AuthEventMap{};
+        auth_events.create = merovingian::canonicaljson::parse_lossless(make_create_event("@alice:example.org")).value;
+        auth_events.third_party_invite =
+            merovingian::canonicaljson::parse_lossless(
+                make_third_party_invite_event_with_keys_list("@alice:example.org", "random8nonce", public_key_b64))
+                .value;
+
+        auto const member_json =
+            make_third_party_signed_member_event("@alice:example.org", "@bob:example.org", "@alice:example.org",
+                                                 "random8nonce", "example.org", "ed25519:0", signature_b64);
+        auto const parsed = merovingian::canonicaljson::parse_lossless(member_json);
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+
+        WHEN("the third-party invite join event is authorized")
+        {
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(parsed.value, *policy, auth_events);
+
+            THEN("the invite is allowed — the matching key is found in content.public_keys")
+            {
+                REQUIRE(decision.allowed);
+            }
+        }
+    }
+}
+
+SCENARIO("Auth rules reject a third-party invite for a banned target user",
+         "[events][auth][membership][third-party-invite][conformance]")
+{
+    GIVEN("a target user who is already banned from the room")
+    {
+        auto const keypair = merovingian::federation::test::keypair_from_seed("tpi-seed-3");
+        auto const public_key_b64 = merovingian::federation::test::pubkey_b64(keypair);
+        auto const signature_b64 = sign_third_party_invite_payload("@bob:example.org", "@alice:example.org",
+                                                                   "random8nonce", keypair.secret_key);
+
+        auto const* policy = merovingian::rooms::find_room_version_policy("12");
+        REQUIRE(policy != nullptr);
+
+        auto auth_events = merovingian::events::AuthEventMap{};
+        auth_events.create = merovingian::canonicaljson::parse_lossless(make_create_event("@alice:example.org")).value;
+        auth_events.third_party_invite =
+            merovingian::canonicaljson::parse_lossless(
+                make_third_party_invite_event("@alice:example.org", "random8nonce", public_key_b64))
+                .value;
+        auth_events.target_member = merovingian::canonicaljson::parse_lossless(
+                                        make_member_event("@alice:example.org", "@bob:example.org", "ban"))
+                                        .value;
+
+        auto const member_json =
+            make_third_party_signed_member_event("@alice:example.org", "@bob:example.org", "@alice:example.org",
+                                                 "random8nonce", "example.org", "ed25519:0", signature_b64);
+        auto const parsed = merovingian::canonicaljson::parse_lossless(member_json);
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+
+        WHEN("the third-party invite join event is authorized")
+        {
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(parsed.value, *policy, auth_events);
+
+            THEN("the invite is rejected — rule 4.3.1.1 bans take priority over a valid signature")
+            {
+                REQUIRE_FALSE(decision.allowed);
+            }
+        }
+    }
+}
+
+SCENARIO("Auth rules reject a third-party invite whose signed mxid does not match state_key",
+         "[events][auth][membership][third-party-invite][conformance]")
+{
+    GIVEN("a signed blob whose mxid names a different user than the event's state_key")
+    {
+        auto const keypair = merovingian::federation::test::keypair_from_seed("tpi-seed-4");
+        auto const public_key_b64 = merovingian::federation::test::pubkey_b64(keypair);
+        // Signed for @carol, but the member event's state_key targets @bob.
+        auto const signature_b64 = sign_third_party_invite_payload("@carol:example.org", "@alice:example.org",
+                                                                   "random8nonce", keypair.secret_key);
+
+        auto const* policy = merovingian::rooms::find_room_version_policy("12");
+        REQUIRE(policy != nullptr);
+
+        auto auth_events = merovingian::events::AuthEventMap{};
+        auth_events.create = merovingian::canonicaljson::parse_lossless(make_create_event("@alice:example.org")).value;
+        auth_events.third_party_invite =
+            merovingian::canonicaljson::parse_lossless(
+                make_third_party_invite_event("@alice:example.org", "random8nonce", public_key_b64))
+                .value;
+
+        auto const member_json = make_third_party_signed_member_event(
+            "@alice:example.org", "@bob:example.org", /* signed.mxid */ "@carol:example.org", "random8nonce",
+            "example.org", "ed25519:0", signature_b64);
+        auto const parsed = merovingian::canonicaljson::parse_lossless(member_json);
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+
+        WHEN("the third-party invite join event is authorized")
+        {
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(parsed.value, *policy, auth_events);
+
+            THEN("the invite is rejected — rule 4.3.1.4 requires signed.mxid == state_key")
+            {
+                REQUIRE_FALSE(decision.allowed);
+            }
+        }
+    }
+}
+
+SCENARIO("Auth rules reject a third-party invite with no matching m.room.third_party_invite event",
+         "[events][auth][membership][third-party-invite][conformance]")
+{
+    GIVEN("a token that does not match any m.room.third_party_invite state event in the room")
+    {
+        auto const keypair = merovingian::federation::test::keypair_from_seed("tpi-seed-5");
+        auto const signature_b64 = sign_third_party_invite_payload("@bob:example.org", "@alice:example.org",
+                                                                   "random8nonce", keypair.secret_key);
+
+        auto const* policy = merovingian::rooms::find_room_version_policy("12");
+        REQUIRE(policy != nullptr);
+
+        auto auth_events = merovingian::events::AuthEventMap{};
+        auth_events.create = merovingian::canonicaljson::parse_lossless(make_create_event("@alice:example.org")).value;
+        // auth_events.third_party_invite deliberately left empty — no matching event.
+
+        auto const member_json =
+            make_third_party_signed_member_event("@alice:example.org", "@bob:example.org", "@alice:example.org",
+                                                 "random8nonce", "example.org", "ed25519:0", signature_b64);
+        auto const parsed = merovingian::canonicaljson::parse_lossless(member_json);
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+
+        WHEN("the third-party invite join event is authorized")
+        {
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(parsed.value, *policy, auth_events);
+
+            THEN("the invite is rejected — rule 4.3.1.5 requires a matching m.room.third_party_invite event")
+            {
+                REQUIRE_FALSE(decision.allowed);
+            }
+        }
+    }
+}
+
+SCENARIO("Auth rules reject a third-party invite whose sender does not match the invite event's sender",
+         "[events][auth][membership][third-party-invite][conformance]")
+{
+    GIVEN("an m.room.third_party_invite created by @alice but the join event claims sender @mallory")
+    {
+        auto const keypair = merovingian::federation::test::keypair_from_seed("tpi-seed-6");
+        auto const public_key_b64 = merovingian::federation::test::pubkey_b64(keypair);
+        auto const signature_b64 = sign_third_party_invite_payload("@bob:example.org", "@mallory:example.org",
+                                                                   "random8nonce", keypair.secret_key);
+
+        auto const* policy = merovingian::rooms::find_room_version_policy("12");
+        REQUIRE(policy != nullptr);
+
+        auto auth_events = merovingian::events::AuthEventMap{};
+        auth_events.create = merovingian::canonicaljson::parse_lossless(make_create_event("@alice:example.org")).value;
+        auth_events.third_party_invite =
+            merovingian::canonicaljson::parse_lossless(
+                make_third_party_invite_event("@alice:example.org", "random8nonce", public_key_b64))
+                .value;
+
+        auto const member_json =
+            make_third_party_signed_member_event("@mallory:example.org", "@bob:example.org", "@mallory:example.org",
+                                                 "random8nonce", "example.org", "ed25519:0", signature_b64);
+        auto const parsed = merovingian::canonicaljson::parse_lossless(member_json);
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+
+        WHEN("the third-party invite join event is authorized")
+        {
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(parsed.value, *policy, auth_events);
+
+            THEN("the invite is rejected — rule 4.3.1.6 requires sender == m.room.third_party_invite sender")
+            {
+                REQUIRE_FALSE(decision.allowed);
+            }
+        }
+    }
+}
+
+// Spec: rooms/v11.md rule 4.3.1.8 — "Otherwise, reject."
+// A forged or corrupted signature MUST NOT be accepted merely because every
+// other field (mxid, token, sender) lines up correctly.
+SCENARIO("Auth rules reject a third-party invite with a forged signature",
+         "[events][auth][membership][third-party-invite][security][conformance]")
+{
+    GIVEN("a signed blob whose signature was produced by the wrong key")
+    {
+        auto const invite_keypair = merovingian::federation::test::keypair_from_seed("tpi-seed-7-invite-key");
+        auto const attacker_keypair = merovingian::federation::test::keypair_from_seed("tpi-seed-7-attacker-key");
+        auto const invite_public_key_b64 = merovingian::federation::test::pubkey_b64(invite_keypair);
+        // Signed with the ATTACKER's key, not the key published on the invite.
+        auto const forged_signature_b64 = sign_third_party_invite_payload("@bob:example.org", "@alice:example.org",
+                                                                          "random8nonce", attacker_keypair.secret_key);
+
+        auto const* policy = merovingian::rooms::find_room_version_policy("12");
+        REQUIRE(policy != nullptr);
+
+        auto auth_events = merovingian::events::AuthEventMap{};
+        auth_events.create = merovingian::canonicaljson::parse_lossless(make_create_event("@alice:example.org")).value;
+        auth_events.third_party_invite =
+            merovingian::canonicaljson::parse_lossless(
+                make_third_party_invite_event("@alice:example.org", "random8nonce", invite_public_key_b64))
+                .value;
+
+        auto const member_json =
+            make_third_party_signed_member_event("@alice:example.org", "@bob:example.org", "@alice:example.org",
+                                                 "random8nonce", "example.org", "ed25519:0", forged_signature_b64);
+        auto const parsed = merovingian::canonicaljson::parse_lossless(member_json);
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+
+        WHEN("the third-party invite join event is authorized")
+        {
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(parsed.value, *policy, auth_events);
+
+            THEN("the invite is rejected — the signature does not verify against the invite's public key")
+            {
+                // Security-critical: do NOT weaken this to accept mismatched keys.
+                REQUIRE_FALSE(decision.allowed);
+            }
+        }
+    }
+}
+
+// Spec: rooms/v11.md Authorization rules, rule 6 — "If type is
+// m.room.third_party_invite: allow if and only if sender's current power
+// level is greater than or equal to the invite level." This is distinct from
+// the generic state_default gate (step 13/rule 7) that other state events use.
+SCENARIO("Auth rules gate m.room.third_party_invite creation on invite power, not state_default",
+         "[events][auth][third-party-invite][power-levels][conformance]")
+{
+    GIVEN("a room where invite power (50) is lower than state_default (100)")
+    {
+        auto const tpi_json = make_third_party_invite_event("@alice:example.org", "random8nonce", "abc123");
+        auto const parsed = merovingian::canonicaljson::parse_lossless(tpi_json);
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+        auto const* policy = merovingian::rooms::find_room_version_policy("12");
+        REQUIRE(policy != nullptr);
+        auto auth_events = merovingian::events::AuthEventMap{};
+        auth_events.create = merovingian::canonicaljson::parse_lossless(make_create_event("@admin:example.org")).value;
+        auth_events.power_levels =
+            merovingian::canonicaljson::parse_lossless(
+                make_power_levels_event("@alice:example.org", 50, 50, 50, 50, 0, 100, 0, "@alice:example.org", 50))
+                .value;
+        auth_events.sender_member = merovingian::canonicaljson::parse_lossless(
+                                        make_member_event("@alice:example.org", "@alice:example.org", "join"))
+                                        .value;
+
+        WHEN("@alice (power 50, below state_default 100 but at invite level 50) creates the invite")
+        {
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(parsed.value, *policy, auth_events);
+
+            THEN("the event is allowed — invite power, not state_default, gates this event type")
+            {
+                REQUIRE(decision.allowed);
+                REQUIRE(decision.rule_step == "6");
+            }
+        }
+    }
+
+    GIVEN("a room where @alice's power is below the invite level")
+    {
+        auto const tpi_json = make_third_party_invite_event("@alice:example.org", "random8nonce", "abc123");
+        auto const parsed = merovingian::canonicaljson::parse_lossless(tpi_json);
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+        auto const* policy = merovingian::rooms::find_room_version_policy("12");
+        REQUIRE(policy != nullptr);
+        auto auth_events = merovingian::events::AuthEventMap{};
+        auth_events.create = merovingian::canonicaljson::parse_lossless(make_create_event("@admin:example.org")).value;
+        auth_events.power_levels =
+            merovingian::canonicaljson::parse_lossless(
+                make_power_levels_event("@alice:example.org", 50, 50, 50, 50, 0, 50, 0, "@alice:example.org", 0))
+                .value;
+        auth_events.sender_member = merovingian::canonicaljson::parse_lossless(
+                                        make_member_event("@alice:example.org", "@alice:example.org", "join"))
+                                        .value;
+
+        WHEN("@alice (power 0, below invite level 50) creates the invite")
+        {
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(parsed.value, *policy, auth_events);
+
+            THEN("the event is rejected")
+            {
+                REQUIRE_FALSE(decision.allowed);
+                REQUIRE(decision.rule_step == "6");
             }
         }
     }

@@ -54,4 +54,12 @@ public:
 [[nodiscard]] auto ed25519_signature_shape_is_valid(Ed25519Signature const& signature) noexcept -> bool;
 [[nodiscard]] auto ed25519_key_id_is_valid(std::string_view key_id) noexcept -> bool;
 
+// Stateless Ed25519 verification against an arbitrary public key — no signing key
+// store or provider is required, unlike Ed25519Provider::sign. Used to verify
+// signatures made by parties outside the federation trust store (e.g. an identity
+// server's third-party-invite token signature), as well as by the production
+// Ed25519Provider implementation for federation/event signature checks.
+[[nodiscard]] auto ed25519_verify(Ed25519PublicKey const& public_key, std::string_view message,
+                                  Ed25519Signature const& signature) noexcept -> VerificationResult;
+
 } // namespace merovingian::crypto

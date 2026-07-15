@@ -997,11 +997,28 @@ namespace
         return {};
     }
 
+    // Extracts content.third_party_invite.signed.token from an in-progress
+    // m.room.member event, if present. Used to look up the matching
+    // m.room.third_party_invite state event for rule 4.3.1 (auth of 3PID invites).
+    [[nodiscard]] auto third_party_invite_token(canonicaljson::Value const& event) -> std::string
+    {
+        auto const* obj = std::get_if<canonicaljson::Object>(&event.storage());
+        auto const* content = obj == nullptr ? nullptr : object_member_as_object(*obj, "content");
+        auto const* third_party_invite =
+            content == nullptr ? nullptr : object_member_as_object(*content, "third_party_invite");
+        auto const* signed_obj =
+            third_party_invite == nullptr ? nullptr : object_member_as_object(*third_party_invite, "signed");
+        auto const* token = signed_obj == nullptr ? nullptr : string_member(*signed_obj, "token");
+        return token == nullptr ? std::string{} : *token;
+    }
+
     [[nodiscard]] auto build_auth_event_map(database::PersistentStore const& store, std::string_view room_id,
                                             std::string_view sender, std::string_view target_state_key,
-                                            std::string_view event_type) -> events::AuthEventMap
+                                            std::string_view event_type, canonicaljson::Value const& event)
+        -> events::AuthEventMap
     {
         auto result = events::AuthEventMap{};
+        auto const invite_token = third_party_invite_token(event);
         for (auto const& state : store.state)
         {
             if (state.room_id != room_id)
@@ -1028,6 +1045,11 @@ namespace
                 state.state_key == target_state_key)
             {
                 result.target_member = find_event_json(store, state.event_id);
+            }
+            if (state.event_type == "m.room.third_party_invite" && !invite_token.empty() &&
+                state.state_key == invite_token)
+            {
+                result.third_party_invite = find_event_json(store, state.event_id);
             }
         }
         return result;
@@ -1208,7 +1230,7 @@ namespace
             if (auth_policy != nullptr)
             {
                 auto auth_map = build_auth_event_map(runtime.database.persistent_store, room_id, sender,
-                                                     state_key.value_or(""), event_type);
+                                                     state_key.value_or(""), event_type, signed_event_value.value);
                 auto const has_create_event = !std::holds_alternative<std::nullptr_t>(auth_map.create.storage());
                 if (has_create_event)
                 {
