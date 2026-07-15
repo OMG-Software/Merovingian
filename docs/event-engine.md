@@ -54,6 +54,13 @@ Implemented now:
 - restricted-room join auth accepts a valid
   `content.join_authorised_via_users_server` when the named resident user is
   joined and has sufficient invite power
+- self-leave (`membership: "leave"`, sender matches state_key) is only
+  authorized when the sender's current membership is `invite`, `join`, or
+  `knock` — a banned or never-joined user cannot self-leave (which would
+  otherwise flip `ban` to `leave` and let a banned user re-enter via a normal
+  join/knock)
+- an `m.room.member` event with an unrecognized `membership` value is
+  rejected outright rather than defaulting to `leave`
 - unit coverage for content hashes, reference-hash event IDs, event envelope
   parsing, signing payloads, signature attachment/verification, redaction,
   room-version fixtures, full auth rule steps, and v2 state resolution

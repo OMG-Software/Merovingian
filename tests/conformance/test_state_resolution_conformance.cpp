@@ -92,6 +92,27 @@ using merovingian::events::StateResolutionRequest;
     return make_event_ref("m.room.member", user_id, event_id, user_id, ts, depth, json);
 }
 
+// Build an m.room.member leave event for a user (self-leave: sender == state_key).
+[[nodiscard]] auto make_member_leave_event(std::string user_id, std::string event_id, std::int64_t ts,
+                                           std::uint64_t depth) -> StateEventReference
+{
+    auto const json = std::string{"{\"type\":\"m.room.member\",\"state_key\":\""} + user_id + "\",\"sender\":\"" +
+                      user_id + "\",\"event_id\":\"" + event_id + "\",\"origin_server_ts\":" + std::to_string(ts) +
+                      ",\"content\":{\"membership\":\"leave\"}}";
+    return make_event_ref("m.room.member", user_id, event_id, user_id, ts, depth, json);
+}
+
+// Build an m.room.join_rules event with join_rule "public" — lets a self-join
+// succeed without a preceding invite (spec auth rule Step 5).
+[[nodiscard]] auto make_public_join_rules_event(std::string const& sender, std::string const& event_id, std::int64_t ts,
+                                                std::uint64_t depth) -> StateEventReference
+{
+    auto const json = std::string{"{\"type\":\"m.room.join_rules\",\"state_key\":\"\",\"sender\":\""} + sender +
+                      "\",\"event_id\":\"" + event_id + "\",\"origin_server_ts\":" + std::to_string(ts) +
+                      ",\"content\":{\"join_rule\":\"public\"}}";
+    return make_event_ref("m.room.join_rules", "", event_id, sender, ts, depth, json);
+}
+
 // Build an m.room.power_levels event granting a specific user level 100.
 [[nodiscard]] auto make_power_levels_event(std::string const& sender, std::string const& event_id, std::int64_t ts,
                                            std::uint64_t depth) -> StateEventReference
@@ -520,13 +541,16 @@ SCENARIO("State resolution v2: conflicting membership events are resolved to a s
         // Shared create event anchors both groups.
         auto const create = make_create_event("@alice:example.org", "$create:example.org", 500);
 
+        // Shared public join_rules: without it a non-creator self-join defaults
+        // to invite-only (auth rule Step 5) and would be denied regardless of
+        // this scenario's join/leave conflict, defeating the point of the test.
+        auto const join_rules = make_public_join_rules_event("@alice:example.org", "$join_rules:example.org", 600, 0);
+
         // Group A: @charlie has membership=join (depth=10).
-        auto const join_event = make_state_event("m.room.member", "@charlie:example.org", "$charlie_join:example.org",
-                                                 "@charlie:example.org", 1000, 10);
+        auto const join_event = make_member_event("@charlie:example.org", "$charlie_join:example.org", 1000, 10);
 
         // Group B: @charlie has membership=leave (depth=5).
-        auto const leave_event = make_state_event("m.room.member", "@charlie:example.org", "$charlie_leave:example.org",
-                                                  "@charlie:example.org", 2000, 5);
+        auto const leave_event = make_member_leave_event("@charlie:example.org", "$charlie_leave:example.org", 2000, 5);
 
         auto request = merovingian::events::StateResolutionRequest{};
         request.room_version = "10";
@@ -534,11 +558,13 @@ SCENARIO("State resolution v2: conflicting membership events are resolved to a s
         auto group_a = merovingian::events::StateGroup{};
         group_a.group_id = "branch-a";
         group_a.state.push_back(create);
+        group_a.state.push_back(join_rules);
         group_a.state.push_back(join_event);
 
         auto group_b = merovingian::events::StateGroup{};
         group_b.group_id = "branch-b";
         group_b.state.push_back(create);
+        group_b.state.push_back(join_rules);
         group_b.state.push_back(leave_event);
 
         request.state_groups.push_back(std::move(group_a));
@@ -588,11 +614,14 @@ SCENARIO("State resolution v2: unconflicted state survives and conflicted state 
         // Shared unconflicted event: both groups have the same create.
         auto const create = make_state_event("m.room.create", "", "$create:example.org", "@alice:example.org", 500, 0);
 
+        // Shared public join_rules: without it a non-creator self-join defaults
+        // to invite-only (auth rule Step 5) and would be denied regardless of
+        // this scenario's join/leave conflict, defeating the point of the test.
+        auto const join_rules = make_public_join_rules_event("@alice:example.org", "$join_rules:example.org", 600, 0);
+
         // Conflicting: Group A has @bob=join (depth 8), Group B has @bob=leave (depth 3).
-        auto const bob_join =
-            make_state_event("m.room.member", "@bob:example.org", "$bob_join:example.org", "@bob:example.org", 1000, 8);
-        auto const bob_leave = make_state_event("m.room.member", "@bob:example.org", "$bob_leave:example.org",
-                                                "@bob:example.org", 2000, 3);
+        auto const bob_join = make_member_event("@bob:example.org", "$bob_join:example.org", 1000, 8);
+        auto const bob_leave = make_member_leave_event("@bob:example.org", "$bob_leave:example.org", 2000, 3);
 
         auto request = merovingian::events::StateResolutionRequest{};
         request.room_version = "10";
@@ -600,11 +629,13 @@ SCENARIO("State resolution v2: unconflicted state survives and conflicted state 
         auto group_a = merovingian::events::StateGroup{};
         group_a.group_id = "branch-a";
         group_a.state.push_back(create);
+        group_a.state.push_back(join_rules);
         group_a.state.push_back(bob_join);
 
         auto group_b = merovingian::events::StateGroup{};
         group_b.group_id = "branch-b";
         group_b.state.push_back(create);
+        group_b.state.push_back(join_rules);
         group_b.state.push_back(bob_leave);
 
         request.state_groups.push_back(std::move(group_a));
@@ -614,11 +645,11 @@ SCENARIO("State resolution v2: unconflicted state survives and conflicted state 
         {
             auto const result = merovingian::events::resolve_state_v2(request, *policy);
 
-            THEN("the result is resolved with exactly two state entries")
+            THEN("the result is resolved with exactly three state entries")
             {
                 REQUIRE(result.resolved);
-                // Expect: the create event + the winning bob membership.
-                REQUIRE(result.resolved_state.size() == 2U);
+                // Expect: the create event + the shared join_rules event + the winning bob membership.
+                REQUIRE(result.resolved_state.size() == 3U);
             }
 
             THEN("the create event appears in the resolved state (unconflicted)")

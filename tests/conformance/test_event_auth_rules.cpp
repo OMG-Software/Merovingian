@@ -476,6 +476,107 @@ SCENARIO("Auth rules allow a self-leave event", "[events][auth][membership][leav
     }
 }
 
+// Spec: Matrix Server-Server API v1.18 — Authorization Rules, Room Version 12
+// URL: ../../docs/matrix-v1.18-spec/rooms/v12.md
+// "If membership is leave: 1. If the sender matches state_key, allow if and
+// only if that user's current membership state is invite, join, or knock."
+// A banned user's current membership is `ban`, which is not in that set, so a
+// self-leave from `ban` MUST be rejected — otherwise a banned user could
+// unban themselves by sending membership=leave and then rejoin/knock.
+SCENARIO("Auth rules reject a self-leave event from a banned user", "[events][auth][membership][leave][security]")
+{
+    GIVEN("a room where @alice is banned and sends a self-leave")
+    {
+        auto const leave_json = make_member_event("@alice:example.org", "@alice:example.org", "leave");
+        auto const parsed = merovingian::canonicaljson::parse_lossless(leave_json);
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+        auto const* policy = merovingian::rooms::find_room_version_policy("12");
+        REQUIRE(policy != nullptr);
+        auto auth_events = merovingian::events::AuthEventMap{};
+        auth_events.create = merovingian::canonicaljson::parse_lossless(make_create_event("@bob:example.org")).value;
+        auth_events.sender_member = merovingian::canonicaljson::parse_lossless(
+                                        make_member_event("@bob:example.org", "@alice:example.org", "ban"))
+                                        .value;
+
+        WHEN("the self-leave event is authorized")
+        {
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(parsed.value, *policy, auth_events);
+
+            THEN("the self-leave is rejected (banned user cannot unban themselves)")
+            {
+                // Spec MUST: self-leave is only allowed from invite, join, or knock.
+                REQUIRE_FALSE(decision.allowed);
+            }
+        }
+    }
+}
+
+// Spec: Matrix Server-Server API v1.18 — Authorization Rules, Room Version 12
+// URL: ../../docs/matrix-v1.18-spec/rooms/v12.md
+// Same rule as above: a user with no prior membership (never joined, invited,
+// or knocked) has an implicit current membership of `leave`, which is not in
+// {invite, join, knock} — a bare self-leave with no supporting state MUST be
+// rejected.
+SCENARIO("Auth rules reject a self-leave event with no prior membership", "[events][auth][membership][leave][security]")
+{
+    GIVEN("a room where @alice has never joined and sends a self-leave")
+    {
+        auto const leave_json = make_member_event("@alice:example.org", "@alice:example.org", "leave");
+        auto const parsed = merovingian::canonicaljson::parse_lossless(leave_json);
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+        auto const* policy = merovingian::rooms::find_room_version_policy("12");
+        REQUIRE(policy != nullptr);
+        auto auth_events = merovingian::events::AuthEventMap{};
+        auth_events.create = merovingian::canonicaljson::parse_lossless(make_create_event("@bob:example.org")).value;
+        // No auth_events.sender_member set — @alice has no prior membership event.
+
+        WHEN("the self-leave event is authorized")
+        {
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(parsed.value, *policy, auth_events);
+
+            THEN("the self-leave is rejected")
+            {
+                // Spec MUST: self-leave is only allowed from invite, join, or knock;
+                // a user who was never a member has an implicit membership of leave.
+                REQUIRE_FALSE(decision.allowed);
+            }
+        }
+    }
+}
+
+// Spec: Matrix Server-Server API v1.18 — Authorization Rules, Room Version 12
+// URL: ../../docs/matrix-v1.18-spec/rooms/v12.md
+// "If membership is ... 8. Otherwise, the membership is unknown. Reject."
+SCENARIO("Auth rules reject a member event with an unrecognized membership value",
+         "[events][auth][membership][security]")
+{
+    GIVEN("a room where @alice sends an m.room.member event with a garbage membership value")
+    {
+        auto const garbage_json = make_member_event("@alice:example.org", "@alice:example.org", "wizard");
+        auto const parsed = merovingian::canonicaljson::parse_lossless(garbage_json);
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+        auto const* policy = merovingian::rooms::find_room_version_policy("12");
+        REQUIRE(policy != nullptr);
+        auto auth_events = merovingian::events::AuthEventMap{};
+        auth_events.create = merovingian::canonicaljson::parse_lossless(make_create_event("@alice:example.org")).value;
+
+        WHEN("the event is authorized")
+        {
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(parsed.value, *policy, auth_events);
+
+            THEN("the event is rejected as an unknown membership transition")
+            {
+                // Spec MUST: an unrecognized membership value is rejected, not
+                // silently treated as any known transition (e.g. leave).
+                REQUIRE_FALSE(decision.allowed);
+            }
+        }
+    }
+}
+
 SCENARIO("Auth rules allow a ban when the banner has sufficient power", "[events][auth][membership][ban]")
 {
     GIVEN("a room where @alice has ban power and bans @bob")

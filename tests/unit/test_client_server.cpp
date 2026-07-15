@@ -4493,6 +4493,28 @@ SCENARIO("Media upload accepts a raw binary body with a Content-Type header", "[
                 REQUIRE(response_header(download.response, "Content-Type") == "application/octet-stream");
             }
         }
+
+        WHEN("POST /_matrix/media/v3/upload is called with a '|' in the Content-Type header")
+        {
+            // A Content-Type containing '|' would, if spliced unescaped into the
+            // internal declared_mime|sniffed_mime|scanner_clean|bytes pipe format,
+            // shift the parsed field boundaries and let the attacker forge the
+            // scanner_clean flag and prepend bytes to the stored body. The handler
+            // must reject the request outright rather than attempt to sanitize it.
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST",
+                          "/_matrix/media/v3/upload",
+                          token,
+                          "some bytes",
+                          {merovingian::http::Header{"Content-Type",
+                                                     "application/octet-stream|application/octet-stream|dirty|X"}}});
+
+            THEN("the request is rejected with 400, not silently reinterpreted")
+            {
+                REQUIRE(response.response.status == 400U);
+                REQUIRE(response.response.body.find("M_BAD_REQUEST") != std::string::npos);
+            }
+        }
     }
 }
 

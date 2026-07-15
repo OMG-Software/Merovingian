@@ -198,12 +198,19 @@ SCENARIO("Remote media fetch stores fetched bytes only after policy and processi
 
         WHEN("safe remote content and unsafe decoder work are requested")
         {
+            // Real PNG magic bytes are required here: the repository now sniffs the
+            // actual content and quarantines uploads whose declared MIME type doesn't
+            // match (see media/security.hpp sniff_mime_type) — a literal "png-bytes"
+            // string sniffs as text/plain and would be quarantined, not accepted.
+            // Kept to the PNG signature alone (8 bytes) — test_repository() caps
+            // max_upload_bytes at 16, and any trailing payload counts against it.
+            auto const png_bytes = std::string{"\x89PNG\r\n\x1a\n", 8U};
             auto const fetched = merovingian::media::fetch_remote_media(repository, {"remote.example.org",
                                                                                      "media123",
                                                                                      "remote.example.org",
                                                                                      {"203.0.113.20"},
                                                                                      "image/png",
-                                                                                     "png-bytes",
+                                                                                     png_bytes,
                                                                                      true,
                                                                                      16U,
                                                                                      64U,
@@ -214,7 +221,7 @@ SCENARIO("Remote media fetch stores fetched bytes only after policy and processi
                                                                                             "remote.example.org",
                                                                                             {"203.0.113.20"},
                                                                                             "image/png",
-                                                                                            "png-bytes",
+                                                                                            png_bytes,
                                                                                             true,
                                                                                             2048U,
                                                                                             64U,
@@ -226,7 +233,7 @@ SCENARIO("Remote media fetch stores fetched bytes only after policy and processi
                 REQUIRE(fetched.ok);
                 REQUIRE(fetched.status == 200U);
                 REQUIRE(fetched.content_type == "image/png");
-                REQUIRE(fetched.bytes == "png-bytes");
+                REQUIRE(fetched.bytes == png_bytes);
                 REQUIRE(fetched.hash_algorithm == "blake2b");
                 REQUIRE_FALSE(fetched.storage_id.empty());
                 REQUIRE(repository.records.size() == 1U);

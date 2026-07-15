@@ -6,6 +6,18 @@ current in-process runtime path.
 ## Runtime Behavior
 
 - Authenticated local uploads run through the homeserver media route.
+- The declared `Content-Type` header is never trusted as the "sniffed" MIME
+  type for policy decisions. `media::sniff_mime_type()` inspects the actual
+  upload bytes (magic-byte signatures for PNG/JPEG/GIF/PDF, a printable-ASCII
+  heuristic for `text/plain`, falling back to `application/octet-stream`),
+  and `evaluate_media_upload()`'s declared-vs-sniffed mismatch check
+  quarantines uploads where the two disagree. `client_server.cpp` sniffs the
+  client's raw request body for local uploads; `repository.cpp`'s
+  `fetch_remote_media` sniffs the raw response body for federated fetches — a
+  remote server's declared `Content-Type` is equally untrustworthy. A
+  `Content-Type` header containing `|` is rejected with `400 M_BAD_REQUEST`
+  rather than spliced into the internal `declared_mime|sniffed_mime|
+  scanner_clean|bytes` pipe format, where it could shift field boundaries.
 - `GET /_matrix/media/v3/config` reports `m.upload.size` from
   `security.media.max_upload_size`, so client upload hints match the policy
   enforced by the repository.

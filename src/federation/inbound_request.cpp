@@ -1480,11 +1480,17 @@ auto federation_remote_is_known(FederationRuntimeState const& runtime, std::stri
 
 auto authorize_federation_pdu(FederationPdu const& pdu, std::string_view expected_origin) -> FederationDecision
 {
-    return authorize_federation_pdu(pdu, expected_origin, std::nullopt);
+    return authorize_federation_pdu(pdu, expected_origin, std::nullopt, 0U);
+}
+
+auto authorize_federation_pdu(FederationPdu const& pdu, std::string_view expected_origin,
+                              std::optional<FederationKeyRecord> const& key) -> FederationDecision
+{
+    return authorize_federation_pdu(pdu, expected_origin, key, 0U);
 }
 
 auto authorize_federation_pdu(FederationPdu const& pdu, [[maybe_unused]] std::string_view expected_origin,
-                              std::optional<FederationKeyRecord> const& key) -> FederationDecision
+                              std::optional<FederationKeyRecord> const& key, std::uint64_t now_ts) -> FederationDecision
 {
     if (pdu.event_id.empty() || pdu.room_id.empty() || pdu.event_type.empty() || pdu.sender.empty())
     {
@@ -1510,6 +1516,15 @@ auto authorize_federation_pdu(FederationPdu const& pdu, [[maybe_unused]] std::st
     if (!key.has_value() || key->server_name != pdu_sender_domain)
     {
         return make_decision(false, 403U, "sender domain signing key unavailable");
+    }
+    // Fail-closed: the remote key resolver falls back to a stale cached key when
+    // it cannot reach the remote to refresh (remote_key_cache.cpp `cache.stale_fallback`).
+    // That fallback exists so callers can distinguish "known but unreachable" from
+    // "never seen", not so a PDU can be admitted on an expired key. Reject rather
+    // than verify with a key that is known to be past its published validity.
+    if (now_ts != 0U && key->valid_until_ts != 0U && now_ts > key->valid_until_ts)
+    {
+        return make_decision(false, 403U, "sender domain signing key has expired");
     }
     auto const room_ver = pdu.room_version.empty() ? std::string{"12"} : pdu.room_version;
     auto const* room_version = rooms::find_room_version_policy(room_ver);
@@ -2094,7 +2109,7 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
                 }
             }
         }
-        auto const pdu_decision = authorize_federation_pdu(pdu, request.origin, key_for_pdu);
+        auto const pdu_decision = authorize_federation_pdu(pdu, request.origin, key_for_pdu, request.now_ts);
         if (!pdu_decision.accepted)
         {
             ++remote.trust.consecutive_failures;

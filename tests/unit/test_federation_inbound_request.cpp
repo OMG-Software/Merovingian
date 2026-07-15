@@ -997,6 +997,57 @@ SCENARIO("Federation PDU authorization verifies JSON event signatures with the r
     }
 }
 
+SCENARIO("Federation PDU authorization rejects a PDU verified with an expired signing key",
+         "[federation][inbound][pdu][security]")
+{
+    GIVEN("a validly-signed PDU whose signing key has passed its valid_until_ts")
+    {
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const token = std::string{"verify-token"};
+        auto const pdu = merovingian::federation::parse_federation_pdu(signed_json_pdu(origin, key_id, token));
+        auto key = merovingian::federation::FederationKeyRecord{};
+        key.server_name = origin;
+        key.key_id = key_id;
+        // Key expired at ts=1000; the request/verification clock reads ts=2000 —
+        // this simulates remote_key_cache.cpp's `cache.stale_fallback` path, where
+        // a key that could not be refreshed is still handed to the caller.
+        key.valid_until_ts = 1000U;
+        key.public_key_bytes = merovingian::federation::test::keypair_from_seed(token).public_key;
+
+        WHEN("the PDU is authorized with a now_ts past the key's validity")
+        {
+            auto const decision = merovingian::federation::authorize_federation_pdu(pdu, origin, key, 2000U);
+
+            THEN("the PDU is rejected rather than admitted on an expired key")
+            {
+                REQUIRE_FALSE(decision.accepted);
+                REQUIRE(decision.reason == "sender domain signing key has expired");
+            }
+        }
+
+        WHEN("the same PDU is authorized with a now_ts before the key's expiry")
+        {
+            auto const decision = merovingian::federation::authorize_federation_pdu(pdu, origin, key, 500U);
+
+            THEN("the PDU is accepted")
+            {
+                REQUIRE(decision.accepted);
+            }
+        }
+
+        WHEN("the PDU is authorized via the 3-arg overload (no now_ts, e.g. tests with no wall-clock context)")
+        {
+            auto const decision = merovingian::federation::authorize_federation_pdu(pdu, origin, key);
+
+            THEN("the expiry check is skipped and the PDU is accepted on signature alone")
+            {
+                REQUIRE(decision.accepted);
+            }
+        }
+    }
+}
+
 SCENARIO("Federation PDU authorization rejects comma-delimited PDUs when a signing key is available",
          "[federation][inbound][pdu][security]")
 {
