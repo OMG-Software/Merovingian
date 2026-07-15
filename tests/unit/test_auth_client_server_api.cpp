@@ -103,6 +103,7 @@ SCENARIO("Client-server auth route scaffold attaches token requirements and rate
             auto const registration = merovingian::auth::match_client_auth_route("POST", "/_matrix/client/v3/register");
             auto const logout = merovingian::auth::match_client_auth_route("POST", "/_matrix/client/v3/logout");
             auto const devices = merovingian::auth::match_client_auth_route("GET", "/_matrix/client/v3/devices");
+            auto const refresh = merovingian::auth::match_client_auth_route("POST", "/_matrix/client/v3/refresh");
 
             THEN("public routes stay public and sensitive routes receive conservative rate limits")
             {
@@ -113,6 +114,9 @@ SCENARIO("Client-server auth route scaffold attaches token requirements and rate
                 // Spec MUST: authenticated endpoints require a valid token.
                 REQUIRE(logout.route.requires_access_token);
                 REQUIRE(devices.route.requires_access_token);
+                // Spec MUST: /refresh authenticates via the refresh token in the
+                // body, not an access token. Do NOT add requires_access_token here.
+                REQUIRE_FALSE(refresh.route.requires_access_token);
                 // Security MUST: per-IP rate limit on unauthenticated sensitive
                 // endpoints (20/min). The stricter per-user cap (5/min for
                 // /login) is enforced separately by the runtime rate-limit engine.

@@ -83,7 +83,7 @@ namespace
             return {{}, canonicaljson::CanonicalJsonError::invalid_string};
         }
 
-        return canonicaljson::serialize_canonical(canonicaljson::Value{clone_without_fields(*object, fields)});
+        return canonicaljson::serialize_canonical_strict(canonicaljson::Value{clone_without_fields(*object, fields)});
     }
 
 } // namespace

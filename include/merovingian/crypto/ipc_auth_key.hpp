@@ -18,9 +18,19 @@ namespace merovingian::crypto
 // MAC each other's ephemeral KX public keys with it, so only a peer that can
 // read the master key file can complete the handshake. crypto_kx provides
 // confidentiality only; this key adds mutual authentication.
+// Secret material must not survive past its scope (core/AGENTS.md): the
+// destructor zeroises `bytes` with sodium_memzero, and copies/moves zeroise
+// whichever instance is left behind rather than relying on the caller.
 struct IpcAuthKey final
 {
     std::array<unsigned char, crypto_auth_KEYBYTES> bytes{};
+
+    IpcAuthKey() noexcept = default;
+    IpcAuthKey(IpcAuthKey const& other) noexcept;
+    auto operator=(IpcAuthKey const& other) noexcept -> IpcAuthKey&;
+    IpcAuthKey(IpcAuthKey&& other) noexcept;
+    auto operator=(IpcAuthKey&& other) noexcept -> IpcAuthKey&;
+    ~IpcAuthKey();
 };
 
 // Derive an independent IPC channel auth key from master key material using a

@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "../support/temp_directory.hpp"
 #include "merovingian/crypto/constant_time.hpp"
 #include "merovingian/crypto/ed25519.hpp"
+#include "merovingian/crypto/ipc_auth_key.hpp"
+#include "merovingian/crypto/master_key.hpp"
 #include "merovingian/crypto/random.hpp"
 #include "merovingian/crypto/secret_box.hpp"
 #include "merovingian/crypto/signing_service.hpp"
@@ -9,6 +12,11 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
+#include <chrono>
+#include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -748,5 +756,153 @@ SCENARIO("Crypto signing service rejects a provider signature with invalid byte 
                 REQUIRE(result.key_id == "ed25519:auto");
             }
         }
+    }
+}
+
+namespace
+{
+
+[[nodiscard]] auto write_master_key_file(std::string_view content) -> std::filesystem::path
+{
+    auto const path = merovingian::tests::temporary_directory() /
+                      ("merovingian-master-key-test-" +
+                       std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".bin");
+    auto stream = std::ofstream{path, std::ios::binary};
+    stream.write(content.data(), static_cast<std::streamsize>(content.size()));
+    stream.close();
+    return path;
+}
+
+} // namespace
+
+SCENARIO("load_master_key_material returns a SecretBuffer with the file's exact bytes", "[crypto][master_key]")
+{
+    GIVEN("a master key file containing arbitrary binary content, including embedded NUL bytes")
+    {
+        auto const content = std::string{"\x00\x01\xffsome-master-key-bytes", 24U};
+        auto const path = write_master_key_file(content);
+
+        WHEN("the material is loaded")
+        {
+            auto const material = merovingian::crypto::load_master_key_material(path.string());
+
+            THEN("it succeeds and the bytes match exactly, unaffected by the embedded NUL")
+            {
+                REQUIRE(material.has_value());
+                REQUIRE(material->bytes().size() == content.size());
+                // Compare as unsigned bytes: content.begin() iterates plain
+                // (possibly signed) char, so 0xFF read from an ASCII escape
+                // would compare unequal to the same bit pattern in a
+                // std::uint8_t span via operator== integer promotion.
+                REQUIRE(std::equal(material->bytes().begin(), material->bytes().end(), content.begin(), content.end(),
+                                   [](std::uint8_t lhs, char rhs) noexcept {
+                                       return lhs == static_cast<std::uint8_t>(rhs);
+                                   }));
+            }
+        }
+
+        std::filesystem::remove(path);
+    }
+}
+
+SCENARIO("load_master_key_material fails closed for missing, empty, and oversized files", "[crypto][master_key]")
+{
+    GIVEN("an empty path")
+    {
+        WHEN("the material is loaded")
+        {
+            THEN("it fails closed")
+            {
+                REQUIRE_FALSE(merovingian::crypto::load_master_key_material("").has_value());
+            }
+        }
+    }
+
+    GIVEN("a path that does not exist")
+    {
+        WHEN("the material is loaded")
+        {
+            THEN("it fails closed")
+            {
+                REQUIRE_FALSE(
+                    merovingian::crypto::load_master_key_material("/nonexistent/merovingian-master-key").has_value());
+            }
+        }
+    }
+
+    GIVEN("an empty master key file")
+    {
+        auto const path = write_master_key_file("");
+
+        WHEN("the material is loaded")
+        {
+            THEN("it fails closed")
+            {
+                REQUIRE_FALSE(merovingian::crypto::load_master_key_material(path.string()).has_value());
+            }
+        }
+
+        std::filesystem::remove(path);
+    }
+
+    GIVEN("a master key file exceeding the 4096-byte cap")
+    {
+        auto const path = write_master_key_file(std::string(4097U, 'x'));
+
+        WHEN("the material is loaded")
+        {
+            THEN("it fails closed rather than silently truncating")
+            {
+                REQUIRE_FALSE(merovingian::crypto::load_master_key_material(path.string()).has_value());
+            }
+        }
+
+        std::filesystem::remove(path);
+    }
+
+    GIVEN("a master key file exactly at the 4096-byte cap")
+    {
+        auto const path = write_master_key_file(std::string(4096U, 'y'));
+
+        WHEN("the material is loaded")
+        {
+            THEN("it succeeds")
+            {
+                auto const material = merovingian::crypto::load_master_key_material(path.string());
+                REQUIRE(material.has_value());
+                REQUIRE(material->bytes().size() == 4096U);
+            }
+        }
+
+        std::filesystem::remove(path);
+    }
+}
+
+SCENARIO("load_master_key_material's output derives working keys through every downstream KDF", "[crypto][master_key]")
+{
+    GIVEN("a real master key file")
+    {
+        auto const path = write_master_key_file("integration-master-key-material");
+
+        WHEN("the material is loaded and used to derive each dependent key")
+        {
+            auto const material = merovingian::crypto::load_master_key_material(path.string());
+            REQUIRE(material.has_value());
+
+            auto const secret_box_key = merovingian::crypto::derive_secret_box_key(material->bytes());
+            auto const token_key_v4 = merovingian::crypto::derive_token_hmac_key(material->bytes());
+            auto const token_key_v3 = merovingian::crypto::derive_token_hmac_key_v3(material->bytes());
+            auto const ipc_key = merovingian::crypto::derive_ipc_auth_key(material->bytes());
+
+            THEN("every derivation succeeds — the SecretBuffer-backed span is a drop-in replacement")
+            {
+                REQUIRE(secret_box_key.has_value());
+                REQUIRE(token_key_v4.has_value());
+                REQUIRE(token_key_v3.has_value());
+                REQUIRE(ipc_key.has_value());
+            }
+        }
+
+        std::filesystem::remove(path);
     }
 }

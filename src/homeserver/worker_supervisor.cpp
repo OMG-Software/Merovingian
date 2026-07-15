@@ -290,7 +290,7 @@ auto WorkerSupervisor::spawn_and_connect() -> void
         throw std::runtime_error{"ipc: master key file '" + master_key_file_ +
                                  "' is unavailable; cannot authenticate worker IPC channel"};
     }
-    auto const auth_key = crypto::derive_ipc_auth_key(*master_material);
+    auto const auth_key = crypto::derive_ipc_auth_key(master_material->bytes());
     if (!auth_key.has_value())
     {
         throw std::runtime_error{"ipc: failed to derive worker IPC auth key from master key file"};

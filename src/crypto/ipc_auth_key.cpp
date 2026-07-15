@@ -9,6 +9,44 @@
 
 namespace merovingian::crypto
 {
+
+IpcAuthKey::IpcAuthKey(IpcAuthKey const& other) noexcept
+    : bytes(other.bytes)
+{
+}
+
+auto IpcAuthKey::operator=(IpcAuthKey const& other) noexcept -> IpcAuthKey&
+{
+    if (this != &other)
+    {
+        sodium_memzero(bytes.data(), bytes.size());
+        bytes = other.bytes;
+    }
+    return *this;
+}
+
+IpcAuthKey::IpcAuthKey(IpcAuthKey&& other) noexcept
+    : bytes(other.bytes)
+{
+    sodium_memzero(other.bytes.data(), other.bytes.size());
+}
+
+auto IpcAuthKey::operator=(IpcAuthKey&& other) noexcept -> IpcAuthKey&
+{
+    if (this != &other)
+    {
+        sodium_memzero(bytes.data(), bytes.size());
+        bytes = other.bytes;
+        sodium_memzero(other.bytes.data(), other.bytes.size());
+    }
+    return *this;
+}
+
+IpcAuthKey::~IpcAuthKey()
+{
+    sodium_memzero(bytes.data(), bytes.size());
+}
+
 namespace
 {
 

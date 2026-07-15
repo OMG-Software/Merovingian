@@ -16,9 +16,20 @@ namespace merovingian::crypto
 // 32-byte HMAC key derived from operator-supplied master key material using a
 // domain-separated libsodium generic hash. This key is used for access-token
 // hashing and must never be reused for signing-secret encryption.
+//
+// Secret material must not survive past its scope (core/AGENTS.md): the
+// destructor zeroises `bytes` with sodium_memzero, and copies/moves zeroise
+// whichever instance is left behind rather than relying on the caller.
 struct TokenHmacKey final
 {
     std::array<unsigned char, crypto_generichash_KEYBYTES> bytes{};
+
+    TokenHmacKey() noexcept = default;
+    TokenHmacKey(TokenHmacKey const& other) noexcept;
+    auto operator=(TokenHmacKey const& other) noexcept -> TokenHmacKey&;
+    TokenHmacKey(TokenHmacKey&& other) noexcept;
+    auto operator=(TokenHmacKey&& other) noexcept -> TokenHmacKey&;
+    ~TokenHmacKey();
 };
 
 // Derive an independent access-token HMAC key from master key material.

@@ -3,17 +3,19 @@
 
 #include "merovingian/crypto/master_key.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <fstream>
 #include <ios>
-#include <vector>
+
+#include <sodium.h>
 
 namespace merovingian::crypto
 {
 
-auto load_master_key_material(std::string_view path) -> std::optional<std::vector<std::uint8_t>>
+auto load_master_key_material(std::string_view path) -> std::optional<core::SecretBuffer>
 {
     if (path.empty())
     {
@@ -24,30 +26,44 @@ auto load_master_key_material(std::string_view path) -> std::optional<std::vecto
     {
         return std::nullopt;
     }
-    auto content = std::vector<std::uint8_t>{};
     auto constexpr size_limit = std::size_t{4096U};
-    auto buffer = std::array<char, 1024U>{};
+    // Read into a fixed-size, mlocked, zeroise-on-destruction scratch buffer
+    // rather than an ordinary std::vector — the master key is the root secret
+    // every derived key (access-token HMAC, secret-box, IPC auth) comes from,
+    // so it must never sit unwiped in freed heap memory or swap.
+    auto scratch = core::SecretBuffer{size_limit};
+    auto const scratch_bytes = scratch.bytes();
+    auto total = std::size_t{0U};
+    auto read_buffer = std::array<char, 1024U>{};
     while (stream.good())
     {
-        stream.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+        stream.read(read_buffer.data(), static_cast<std::streamsize>(read_buffer.size()));
         auto const count = stream.gcount();
         if (count <= 0)
         {
             break;
         }
         auto const added = static_cast<std::size_t>(count);
-        if (content.size() + added > size_limit)
+        if (total + added > size_limit)
         {
+            sodium_memzero(read_buffer.data(), read_buffer.size());
             return std::nullopt;
         }
-        content.insert(content.end(), reinterpret_cast<std::uint8_t*>(buffer.data()),
-                       reinterpret_cast<std::uint8_t*>(buffer.data()) + added);
+        std::copy_n(reinterpret_cast<std::uint8_t const*>(read_buffer.data()), added, scratch_bytes.data() + total);
+        total += added;
+        // The stack read buffer held plaintext key bytes for this iteration;
+        // wipe it immediately rather than leaving residue until the next
+        // iteration overwrites it or the function returns.
+        sodium_memzero(read_buffer.data(), read_buffer.size());
     }
-    if (content.empty())
+    if (total == 0U)
     {
         return std::nullopt;
     }
-    return content;
+    // Copy down to a right-sized owner; `scratch`'s destructor wipes the
+    // oversized 4096-byte working buffer (including any unused tail) when
+    // this function returns.
+    return core::SecretBuffer{scratch_bytes.subspan(0U, total)};
 }
 
 } // namespace merovingian::crypto

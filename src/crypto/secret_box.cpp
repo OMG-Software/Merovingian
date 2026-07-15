@@ -10,6 +10,44 @@
 
 namespace merovingian::crypto
 {
+
+SecretBoxKey::SecretBoxKey(SecretBoxKey const& other) noexcept
+    : bytes(other.bytes)
+{
+}
+
+auto SecretBoxKey::operator=(SecretBoxKey const& other) noexcept -> SecretBoxKey&
+{
+    if (this != &other)
+    {
+        sodium_memzero(bytes.data(), bytes.size());
+        bytes = other.bytes;
+    }
+    return *this;
+}
+
+SecretBoxKey::SecretBoxKey(SecretBoxKey&& other) noexcept
+    : bytes(other.bytes)
+{
+    sodium_memzero(other.bytes.data(), other.bytes.size());
+}
+
+auto SecretBoxKey::operator=(SecretBoxKey&& other) noexcept -> SecretBoxKey&
+{
+    if (this != &other)
+    {
+        sodium_memzero(bytes.data(), bytes.size());
+        bytes = other.bytes;
+        sodium_memzero(other.bytes.data(), other.bytes.size());
+    }
+    return *this;
+}
+
+SecretBoxKey::~SecretBoxKey()
+{
+    sodium_memzero(bytes.data(), bytes.size());
+}
+
 namespace
 {
 

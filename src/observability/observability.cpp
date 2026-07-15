@@ -73,7 +73,7 @@ namespace
     {
         auto const lowered = lower_ascii(key);
         if (lowered == "body" || lowered.ends_with("_body") || lowered == "authorization" || lowered == "password" ||
-            lowered == "secret" || lowered == "session")
+            lowered == "secret" || lowered == "session" || lowered == "token")
         {
             return true;
         }

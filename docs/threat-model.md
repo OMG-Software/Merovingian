@@ -496,6 +496,56 @@ threat it closes; the controls above are the standing defences these reinforce.
   body bytes seen downstream. Fixed by rejecting a media upload whose
   `Content-Type` contains `|` with `400 M_BAD_REQUEST` before the pipe body
   is constructed.
+- **Registration token leaked into structured logs via an unredacted `token`
+  query parameter (2026-07 audit):** `contains_sensitive_marker` recognized
+  `access_token`/`refresh_token`/`session_token` but never the bare key
+  `token`, and `GET /_matrix/client/v1/register/m.login.registration_token/
+  validity?token=<secret>` passes the plaintext registration token under
+  exactly that key. Every request target is logged via
+  `sanitized_http_target`, so the raw secret reached structured logs in
+  cleartext. Fixed by adding `token` to the exact-match redaction list.
+- **`/refresh` gated behind an access token it does not need (2026-07
+  audit):** `client_auth_endpoint_requires_access_token` excluded only
+  `login` and `register_account`, so a request to refresh an *expired*
+  access token — the case the endpoint exists to handle — could be rejected
+  before the refresh token in the body was ever inspected, contrary to spec
+  ("this endpoint does not require authentication via an access token").
+  Fixed by excluding `refresh_token` from the access-token requirement.
+- **Accepted client sockets leaked into forked worker subprocesses (2026-07
+  audit):** `http_server.cpp`'s plain-HTTP and TLS accept loops used
+  `::accept()` instead of `accept4(..., SOCK_CLOEXEC)`, unlike every other
+  fd-creation site in the codebase. Because federation workers and the
+  thumbnail worker are spawned via `posix_spawn`/`fork()` while client
+  connections (including long-poll `/sync`) remain open, an accepted socket
+  without `FD_CLOEXEC` was inherited by every subsequently spawned worker
+  for as long as the connection stayed open. Fixed by using
+  `accept4(..., SOCK_CLOEXEC)` in both accept loops.
+- **Canonical JSON serializer had no float guard on the signing/hashing path
+  (2026-07 audit):** `serialize_canonical()` used `std::to_string(double)`
+  for float formatting — fixed to 6 fractional digits, not shortest
+  round-trip — so a small magnitude like `1e-7` silently corrupted to
+  `"0.0"`. Unreachable from event signing today because every signing
+  caller parses with `parse_lossless()`, which rejects floats at the parse
+  boundary, but the serializer itself had no independent guard. Fixed by
+  splitting into `serialize_canonical()` (floats still permitted, now via a
+  portable shortest-round-tripping conversion, for ordinary never-signed
+  responses like `m.tag` order) and `serialize_canonical_strict()`
+  (rejects any float with `CanonicalJsonError::float_not_allowed`), with
+  `event_signer.cpp`, `event_id.cpp`, and `signable.cpp` switched to the
+  strict entry point.
+- **Master key material and its derived keys held in unwiped, unmlocked
+  memory (2026-07 audit):** `load_master_key_material()` — the root secret
+  every derived key (secret-box, access-token HMAC, IPC auth) comes from —
+  was read into a plain `std::vector` and an unwiped stack buffer, neither
+  zeroised nor `mlock`ed, leaving it recoverable from a core dump, an
+  unrelated arbitrary-read bug, or a swapped page. The three 32-byte derived
+  keys (`SecretBoxKey`, `TokenHmacKey`, `IpcAuthKey`) wrapped their bytes in
+  a bare `std::array` with no destructor. Fixed by reading directly into a
+  `core::SecretBuffer` (mlocked, zeroised on destruction) and giving each
+  derived-key struct a destructor (plus copy/move operators) that zeroises
+  `bytes` with `sodium_memzero`. `src/homeserver/room_service.cpp`'s
+  duplicate copy of the master-key loader is removed in favor of the single
+  `src/crypto/` implementation.
 
 ## Security principles
 

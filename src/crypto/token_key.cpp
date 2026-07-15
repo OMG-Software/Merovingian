@@ -9,6 +9,44 @@
 
 namespace merovingian::crypto
 {
+
+TokenHmacKey::TokenHmacKey(TokenHmacKey const& other) noexcept
+    : bytes(other.bytes)
+{
+}
+
+auto TokenHmacKey::operator=(TokenHmacKey const& other) noexcept -> TokenHmacKey&
+{
+    if (this != &other)
+    {
+        sodium_memzero(bytes.data(), bytes.size());
+        bytes = other.bytes;
+    }
+    return *this;
+}
+
+TokenHmacKey::TokenHmacKey(TokenHmacKey&& other) noexcept
+    : bytes(other.bytes)
+{
+    sodium_memzero(other.bytes.data(), other.bytes.size());
+}
+
+auto TokenHmacKey::operator=(TokenHmacKey&& other) noexcept -> TokenHmacKey&
+{
+    if (this != &other)
+    {
+        sodium_memzero(bytes.data(), bytes.size());
+        bytes = other.bytes;
+        sodium_memzero(other.bytes.data(), other.bytes.size());
+    }
+    return *this;
+}
+
+TokenHmacKey::~TokenHmacKey()
+{
+    sodium_memzero(bytes.data(), bytes.size());
+}
+
 namespace
 {
 

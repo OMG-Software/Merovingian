@@ -28,6 +28,10 @@ production-gated.
 - Client-server registration, password login, refresh-token rotation, logout,
   global logout, whoami, device listing, single-device fetch, device update,
   and device delete routes use runtime token validation.
+- `POST /refresh` does not require access-token authentication — spec: "this
+  endpoint does not require authentication via an access token. Authentication
+  is provided via the refresh token." `client_auth_endpoint_requires_access_token`
+  excludes `login`, `register_account`, and `refresh_token`.
 - Account 3PID email and MSISDN flows are implemented for the local account
   surface: unauthenticated `requestToken` endpoints issue validation sessions,
   `POST /account/3pid/add` enforces password UIA, the deprecated

@@ -14,6 +14,8 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <array>
+#include <charconv>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -22,10 +24,13 @@
 #include <mutex>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <thread>
 #include <utility>
 
 #include <arpa/inet.h>
+#include <dirent.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <openssl/evp.h>
 #include <openssl/pem.h>
@@ -98,6 +103,53 @@ auto send_all_tls(SSL& connection, std::string_view data) -> bool
     }
     return true;
 }
+
+#if defined(__linux__)
+// Finds the server-side fd for a still-open accepted connection by matching
+// its peer port against `client_local_port` (the connecting client socket's
+// own local port, i.e. the port the server sees as its peer). There is no
+// production hook that exposes the accepted fd directly, so this scans the
+// process's own fd table — reliable as long as the connection is still open
+// when called, which the caller ensures by holding the request incomplete.
+// Linux-only: relies on /proc/self/fd, which isn't guaranteed on the
+// project's supported BSDs (see the SCENARIO below that uses this).
+[[nodiscard]] auto find_accepted_socket_fd(std::uint16_t client_local_port) -> int
+{
+    auto* dir = ::opendir("/proc/self/fd");
+    if (dir == nullptr)
+    {
+        return -1;
+    }
+    auto found = -1;
+    while (auto* entry = ::readdir(dir))
+    {
+        auto const name = std::string_view{entry->d_name};
+        if (name == "." || name == "..")
+        {
+            continue;
+        }
+        auto candidate = 0;
+        if (std::from_chars(name.data(), name.data() + name.size(), candidate).ec != std::errc{})
+        {
+            continue;
+        }
+        auto peer = sockaddr_in{};
+        auto peer_len = socklen_t{sizeof(peer)};
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+        if (::getpeername(candidate, reinterpret_cast<sockaddr*>(&peer), &peer_len) != 0)
+        {
+            continue;
+        }
+        if (peer.sin_family == AF_INET && ntohs(peer.sin_port) == client_local_port)
+        {
+            found = candidate;
+            break;
+        }
+    }
+    ::closedir(dir);
+    return found;
+}
+#endif // defined(__linux__)
 
 [[nodiscard]] auto receive_until_close(int fd) -> std::string
 {
@@ -323,6 +375,112 @@ SCENARIO("merovingian-server accepts an HTTP request and returns the router's re
         }
     }
 }
+
+#if defined(__linux__)
+// This scenario's fd-discovery technique (find_accepted_socket_fd) depends on
+// /proc/self/fd, which is Linux-specific: none of the project's supported
+// BSDs guarantee it (OpenBSD removed procfs outright; FreeBSD/NetBSD don't
+// mount it by default in CI). The production behaviour being verified
+// (accept4(..., SOCK_CLOEXEC) in http_server.cpp) is itself fully portable
+// across all four platforms — only this test's verification mechanism is
+// Linux-only.
+SCENARIO("merovingian-server marks accepted client sockets close-on-exec",
+         "[homeserver][http][listener][integration][security]")
+{
+    GIVEN("a started runtime and a TCP acceptor bound to an ephemeral loopback port")
+    {
+        auto const config = registration_enabled_config();
+        auto runtime_result = merovingian::homeserver::start_client_server(config);
+        REQUIRE(runtime_result.started);
+
+        auto acceptor = merovingian::net::TcpAcceptor{};
+        REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+        auto const port = acceptor.bound_port();
+        REQUIRE(port > 0U);
+
+        auto shutdown = merovingian::net::ShutdownSignal{};
+        auto stats = merovingian::homeserver::HttpServeStats{};
+        auto pool = merovingian::net::ThreadPool{4U};
+        auto runtime = std::move(runtime_result.runtime);
+
+        WHEN("a client connects and holds the connection open with an incomplete request")
+        {
+            auto server_thread = std::thread{[&]() {
+                merovingian::homeserver::serve_http(acceptor, runtime, shutdown, stats,
+                                                    merovingian::homeserver::HttpDispatchMode::local_router, pool);
+            }};
+            // A std::thread destroyed while still joinable calls std::terminate.
+            // If a REQUIRE below throws to unwind this WHEN block, this guard's
+            // destructor still runs (raising shutdown and joining) before
+            // server_thread's own destructor gets a chance to abort the process
+            // — a failed assertion should report as a failed test, not a SIGABRT
+            // that also takes out the rest of the test binary.
+            struct ServerThreadGuard final
+            {
+                merovingian::net::ShutdownSignal& shutdown_signal;
+                std::thread& thread;
+
+                ~ServerThreadGuard()
+                {
+                    shutdown_signal.fire();
+                    if (thread.joinable())
+                    {
+                        thread.join();
+                    }
+                }
+            } server_thread_guard{shutdown, server_thread};
+
+            auto const client_fd = connect_loopback(port);
+            REQUIRE(client_fd >= 0);
+
+            auto client_local = sockaddr_in{};
+            auto client_local_len = socklen_t{sizeof(client_local)};
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+            REQUIRE(::getsockname(client_fd, reinterpret_cast<sockaddr*>(&client_local), &client_local_len) == 0);
+            auto const client_local_port = ntohs(client_local.sin_port);
+
+            // Deliberately incomplete: no terminating blank line, so the
+            // server's request-head parser keeps waiting for more data and
+            // the accepted connection (and its fd) stays open long enough to
+            // inspect from this test.
+            REQUIRE(send_all(client_fd, "GET /no-such-route HTTP/1.1\r\nHost: localhost\r\n"));
+
+            auto accepted_fd = -1;
+            // Poll rather than sleep-once: the accept loop runs on its own
+            // thread and there is no synchronous "connection accepted" signal
+            // to wait on directly.
+            for (auto attempt = 0; attempt < 200 && accepted_fd < 0; ++attempt)
+            {
+                accepted_fd = find_accepted_socket_fd(client_local_port);
+                if (accepted_fd < 0)
+                {
+                    std::this_thread::sleep_for(std::chrono::milliseconds{5});
+                }
+            }
+            REQUIRE(accepted_fd >= 0);
+
+            auto const flags = ::fcntl(accepted_fd, F_GETFD, 0);
+            REQUIRE(flags >= 0);
+
+            // Complete the request so the server thread can finish and be
+            // joined cleanly by server_thread_guard's destructor below.
+            REQUIRE(send_all(client_fd, "\r\n"));
+            std::ignore = receive_until_close(client_fd);
+            ::close(client_fd);
+
+            THEN("the accepted socket carries FD_CLOEXEC")
+            {
+                // Spec (src/net/AGENTS.md): "All sockets must be opened with
+                // O_CLOEXEC / SOCK_CLOEXEC. File descriptors must not leak
+                // across fork()/exec()." An accepted client socket without
+                // this flag would be inherited by any worker subprocess
+                // spawned (posix_spawn/fork) while the connection is open.
+                REQUIRE((flags & FD_CLOEXEC) != 0);
+            }
+        }
+    }
+}
+#endif // defined(__linux__)
 
 SCENARIO("merovingian-server accepts Matrix JSON requests over a configured TLS listener",
          "[homeserver][http][listener][tls][integration]")

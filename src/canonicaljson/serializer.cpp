@@ -7,6 +7,8 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdio>
+#include <cstdlib>
 #include <string>
 #include <utility>
 #include <variant>
@@ -80,17 +82,53 @@ namespace
         output.push_back('"');
     }
 
-    [[nodiscard]] auto serialize_value(Value const& value) -> SerializeResult;
+    [[nodiscard]] auto serialize_value(Value const& value, bool reject_floats) -> SerializeResult;
+
+    // Shortest decimal representation that round-trips exactly. Escalates
+    // %g precision with snprintf/strtod until the formatted text parses back
+    // to the exact same bit pattern, rather than relying on std::to_chars'
+    // floating-point overload — that overload is part of C++17 but several
+    // supported toolchains (e.g. NetBSD's libstdc++ build) only implement
+    // to_chars for integers, making a floating-point call ambiguous at
+    // compile time. Unlike std::to_string (fixed 6 fractional digits), this
+    // cannot silently collapse a small magnitude value like 1e-7 to "0.0" —
+    // a real bug in the previous implementation. Only used by the non-strict
+    // (general JSON response) serialization path; see
+    // serialize_canonical_strict for the signing/hashing path, which rejects
+    // floats outright instead.
+    [[nodiscard]] auto format_double(double value) -> std::string
+    {
+        auto buffer = std::array<char, 32U>{};
+        for (auto precision = 1; precision <= 17; ++precision)
+        {
+            auto const written = std::snprintf(buffer.data(), buffer.size(), "%.*g", precision, value);
+            if (written <= 0 || static_cast<std::size_t>(written) >= buffer.size())
+            {
+                continue;
+            }
+            char* end = nullptr;
+            auto const round_tripped = std::strtod(buffer.data(), &end);
+            if (end == buffer.data() + written && round_tripped == value)
+            {
+                return std::string{buffer.data(), static_cast<std::size_t>(written)};
+            }
+        }
+        // 17 significant decimal digits always round-trips an IEEE-754 double;
+        // this is an unreachable fallback if the loop above ever fails to find
+        // a round-tripping precision by 17.
+        auto const written = std::snprintf(buffer.data(), buffer.size(), "%.17g", value);
+        return std::string{buffer.data(), static_cast<std::size_t>(written > 0 ? written : 0)};
+    }
 
     // JSON arrays recurse through nested values; value tree depth is parser-bounded.
     // NOLINTNEXTLINE(misc-no-recursion)
-    [[nodiscard]] auto serialize_array(Array const& array) -> SerializeResult
+    [[nodiscard]] auto serialize_array(Array const& array, bool reject_floats) -> SerializeResult
     {
         auto output = std::string{"["};
         auto first = true;
         for (auto const& item : array)
         {
-            auto item_result = serialize_value(item);
+            auto item_result = serialize_value(item, reject_floats);
             if (item_result.error != CanonicalJsonError::none)
             {
                 return {{}, item_result.error};
@@ -109,7 +147,7 @@ namespace
 
     // JSON objects recurse through nested values; value tree depth is parser-bounded.
     // NOLINTNEXTLINE(misc-no-recursion)
-    [[nodiscard]] auto serialize_object(Object const& object) -> SerializeResult
+    [[nodiscard]] auto serialize_object(Object const& object, bool reject_floats) -> SerializeResult
     {
         if (object_has_duplicate_keys(object))
         {
@@ -124,7 +162,7 @@ namespace
             {
                 return {{}, CanonicalJsonError::invalid_string};
             }
-            auto value_result = serialize_value(*member.value);
+            auto value_result = serialize_value(*member.value, reject_floats);
             if (value_result.error != CanonicalJsonError::none)
             {
                 return {{}, value_result.error};
@@ -156,7 +194,7 @@ namespace
 
     // Canonical JSON values can be trees; recursion is bounded for parsed inputs.
     // NOLINTNEXTLINE(misc-no-recursion)
-    [[nodiscard]] auto serialize_value(Value const& value) -> SerializeResult
+    [[nodiscard]] auto serialize_value(Value const& value, bool reject_floats) -> SerializeResult
     {
         auto const& storage = value.storage();
         if (std::holds_alternative<std::nullptr_t>(storage))
@@ -173,20 +211,22 @@ namespace
         }
         if (auto const* number = std::get_if<double>(&storage); number != nullptr)
         {
-            // Use the shortest decimal representation that round-trips. This
-            // keeps non-canonical responses compact and avoids exposing extra
-            // precision to clients.
-            auto output = std::to_string(*number);
-            // Strip trailing zeros and a dangling decimal point.
-            while (!output.empty() && output.back() == '0')
+            // Canonical JSON MUST NOT contain floats in signed/hashed data
+            // (docs/matrix-v1.18-spec/appendices.md#canonical-json). The
+            // strict signing/hashing path (serialize_canonical_strict, used by
+            // event_signer.cpp and event_id.cpp) fails closed here instead of
+            // producing a plausible-looking bad hash. The general-purpose path
+            // (serialize_canonical) is also used for ordinary, never-signed
+            // JSON responses that legitimately contain floats — e.g. the
+            // m.tag `order` field — so it still serializes them, now with a
+            // correct shortest-round-tripping representation rather than the
+            // previous std::to_string-based one, which silently corrupted
+            // small magnitudes (e.g. 1e-7) to "0.0".
+            if (reject_floats)
             {
-                output.pop_back();
+                return {{}, CanonicalJsonError::float_not_allowed};
             }
-            if (!output.empty() && output.back() == '.')
-            {
-                output.push_back('0');
-            }
-            return {std::move(output), CanonicalJsonError::none};
+            return {format_double(*number), CanonicalJsonError::none};
         }
         if (auto const* string = std::get_if<std::string>(&storage); string != nullptr)
         {
@@ -200,11 +240,11 @@ namespace
         }
         if (auto const* array = std::get_if<Array>(&storage); array != nullptr)
         {
-            return serialize_array(*array);
+            return serialize_array(*array, reject_floats);
         }
         if (auto const* object = std::get_if<Object>(&storage); object != nullptr)
         {
-            return serialize_object(*object);
+            return serialize_object(*object, reject_floats);
         }
 
         return {{}, CanonicalJsonError::invalid_string};
@@ -222,6 +262,8 @@ auto canonical_json_error_name(CanonicalJsonError error) noexcept -> char const*
         return "duplicate_object_key";
     case CanonicalJsonError::invalid_string:
         return "invalid_string";
+    case CanonicalJsonError::float_not_allowed:
+        return "float_not_allowed";
     }
 
     return "invalid_string";
@@ -250,7 +292,12 @@ auto object_has_duplicate_keys(Object const& object) noexcept -> bool
 
 auto serialize_canonical(Value const& value) -> SerializeResult
 {
-    return serialize_value(value);
+    return serialize_value(value, /*reject_floats=*/false);
+}
+
+auto serialize_canonical_strict(Value const& value) -> SerializeResult
+{
+    return serialize_value(value, /*reject_floats=*/true);
 }
 
 } // namespace merovingian::canonicaljson

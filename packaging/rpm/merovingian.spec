@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.10.55
+Version:        0.10.56
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -101,6 +101,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Wed Jul 15 2026 James Chapman <claude@ping.me.uk> - 0.10.56-1
+- fix(security): redact a bare "token" query parameter in logs, stop requiring access-token authentication on /refresh, mark accepted client sockets close-on-exec, fail closed on floats in the signing/hashing canonical JSON path, and wrap the operator master key and its derived keys (secret-box, access-token HMAC, IPC auth) in zeroising buffers.
+
 * Wed Jul 15 2026 James Chapman <claude@ping.me.uk> - 0.10.55-1
 - docs: consolidate every security-relevant rule scattered across ~25 module AGENTS.md files into docs/security-coding-rules.md, an explained reference with a "why" for each rule; security/coding-rules.md is now a pointer to it.
 
