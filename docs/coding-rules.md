@@ -2,6 +2,8 @@
 
 This document records project coding rules that apply across production code, tests, tools, and generated scaffolding.
 
+Security-relevant rules — the ones that create a vulnerability if violated, each with a "why" — live in [`security-coding-rules.md`](security-coding-rules.md).
+
 Rules:
 - Good security is always more important. Code defensively.
 - RAII is non negotiable, use it.

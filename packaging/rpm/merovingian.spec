@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.10.54
+Version:        0.10.55
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -101,6 +101,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Wed Jul 15 2026 James Chapman <claude@ping.me.uk> - 0.10.55-1
+- docs: consolidate every security-relevant rule scattered across ~25 module AGENTS.md files into docs/security-coding-rules.md, an explained reference with a "why" for each rule; security/coding-rules.md is now a pointer to it.
+
 * Wed Jul 15 2026 James Chapman <claude@ping.me.uk> - 0.10.54-1
 - fix(security): reject self-leave from a banned or never-joined user (ban-evasion bypass), reject events with an unrecognized membership value, reject federation PDUs verified with an expired signing key, sniff actual media content instead of trusting the declared Content-Type, and reject Content-Type headers containing '|' (internal pipe-format injection).
 
