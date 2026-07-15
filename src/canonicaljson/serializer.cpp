@@ -7,7 +7,8 @@
 
 #include <algorithm>
 #include <array>
-#include <charconv>
+#include <cstdio>
+#include <cstdlib>
 #include <string>
 #include <utility>
 #include <variant>
@@ -83,18 +84,40 @@ namespace
 
     [[nodiscard]] auto serialize_value(Value const& value, bool reject_floats) -> SerializeResult;
 
-    // Shortest decimal representation that round-trips exactly, per
-    // std::to_chars' default floating-point format. Unlike std::to_string
-    // (fixed 6 fractional digits), this cannot silently collapse a small
-    // magnitude value like 1e-7 to "0.0" — a real bug in the previous
-    // implementation. Only used by the non-strict (general JSON response)
-    // serialization path; see serialize_canonical_strict for the
-    // signing/hashing path, which rejects floats outright instead.
+    // Shortest decimal representation that round-trips exactly. Escalates
+    // %g precision with snprintf/strtod until the formatted text parses back
+    // to the exact same bit pattern, rather than relying on std::to_chars'
+    // floating-point overload — that overload is part of C++17 but several
+    // supported toolchains (e.g. NetBSD's libstdc++ build) only implement
+    // to_chars for integers, making a floating-point call ambiguous at
+    // compile time. Unlike std::to_string (fixed 6 fractional digits), this
+    // cannot silently collapse a small magnitude value like 1e-7 to "0.0" —
+    // a real bug in the previous implementation. Only used by the non-strict
+    // (general JSON response) serialization path; see
+    // serialize_canonical_strict for the signing/hashing path, which rejects
+    // floats outright instead.
     [[nodiscard]] auto format_double(double value) -> std::string
     {
         auto buffer = std::array<char, 32U>{};
-        auto const result = std::to_chars(buffer.data(), buffer.data() + buffer.size(), value);
-        return std::string{buffer.data(), result.ptr};
+        for (auto precision = 1; precision <= 17; ++precision)
+        {
+            auto const written = std::snprintf(buffer.data(), buffer.size(), "%.*g", precision, value);
+            if (written <= 0 || static_cast<std::size_t>(written) >= buffer.size())
+            {
+                continue;
+            }
+            char* end = nullptr;
+            auto const round_tripped = std::strtod(buffer.data(), &end);
+            if (end == buffer.data() + written && round_tripped == value)
+            {
+                return std::string{buffer.data(), static_cast<std::size_t>(written)};
+            }
+        }
+        // 17 significant decimal digits always round-trips an IEEE-754 double;
+        // this is an unreachable fallback if the loop above ever fails to find
+        // a round-tripping precision by 17.
+        auto const written = std::snprintf(buffer.data(), buffer.size(), "%.17g", value);
+        return std::string{buffer.data(), static_cast<std::size_t>(written > 0 ? written : 0)};
     }
 
     // JSON arrays recurse through nested values; value tree depth is parser-bounded.

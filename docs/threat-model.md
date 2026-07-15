@@ -528,8 +528,8 @@ threat it closes; the controls above are the standing defences these reinforce.
   caller parses with `parse_lossless()`, which rejects floats at the parse
   boundary, but the serializer itself had no independent guard. Fixed by
   splitting into `serialize_canonical()` (floats still permitted, now via a
-  correct `std::to_chars` shortest-round-trip conversion, for ordinary
-  never-signed responses like `m.tag` order) and `serialize_canonical_strict()`
+  portable shortest-round-tripping conversion, for ordinary never-signed
+  responses like `m.tag` order) and `serialize_canonical_strict()`
   (rejects any float with `CanonicalJsonError::float_not_allowed`), with
   `event_signer.cpp`, `event_id.cpp`, and `signable.cpp` switched to the
   strict entry point.

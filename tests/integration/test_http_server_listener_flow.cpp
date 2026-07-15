@@ -104,12 +104,15 @@ auto send_all_tls(SSL& connection, std::string_view data) -> bool
     return true;
 }
 
+#if defined(__linux__)
 // Finds the server-side fd for a still-open accepted connection by matching
 // its peer port against `client_local_port` (the connecting client socket's
 // own local port, i.e. the port the server sees as its peer). There is no
 // production hook that exposes the accepted fd directly, so this scans the
 // process's own fd table — reliable as long as the connection is still open
 // when called, which the caller ensures by holding the request incomplete.
+// Linux-only: relies on /proc/self/fd, which isn't guaranteed on the
+// project's supported BSDs (see the SCENARIO below that uses this).
 [[nodiscard]] auto find_accepted_socket_fd(std::uint16_t client_local_port) -> int
 {
     auto* dir = ::opendir("/proc/self/fd");
@@ -146,6 +149,7 @@ auto send_all_tls(SSL& connection, std::string_view data) -> bool
     ::closedir(dir);
     return found;
 }
+#endif // defined(__linux__)
 
 [[nodiscard]] auto receive_until_close(int fd) -> std::string
 {
@@ -372,6 +376,14 @@ SCENARIO("merovingian-server accepts an HTTP request and returns the router's re
     }
 }
 
+#if defined(__linux__)
+// This scenario's fd-discovery technique (find_accepted_socket_fd) depends on
+// /proc/self/fd, which is Linux-specific: none of the project's supported
+// BSDs guarantee it (OpenBSD removed procfs outright; FreeBSD/NetBSD don't
+// mount it by default in CI). The production behaviour being verified
+// (accept4(..., SOCK_CLOEXEC) in http_server.cpp) is itself fully portable
+// across all four platforms — only this test's verification mechanism is
+// Linux-only.
 SCENARIO("merovingian-server marks accepted client sockets close-on-exec",
          "[homeserver][http][listener][integration][security]")
 {
@@ -397,6 +409,26 @@ SCENARIO("merovingian-server marks accepted client sockets close-on-exec",
                 merovingian::homeserver::serve_http(acceptor, runtime, shutdown, stats,
                                                     merovingian::homeserver::HttpDispatchMode::local_router, pool);
             }};
+            // A std::thread destroyed while still joinable calls std::terminate.
+            // If a REQUIRE below throws to unwind this WHEN block, this guard's
+            // destructor still runs (raising shutdown and joining) before
+            // server_thread's own destructor gets a chance to abort the process
+            // — a failed assertion should report as a failed test, not a SIGABRT
+            // that also takes out the rest of the test binary.
+            struct ServerThreadGuard final
+            {
+                merovingian::net::ShutdownSignal& shutdown_signal;
+                std::thread& thread;
+
+                ~ServerThreadGuard()
+                {
+                    shutdown_signal.fire();
+                    if (thread.joinable())
+                    {
+                        thread.join();
+                    }
+                }
+            } server_thread_guard{shutdown, server_thread};
 
             auto const client_fd = connect_loopback(port);
             REQUIRE(client_fd >= 0);
@@ -431,13 +463,10 @@ SCENARIO("merovingian-server marks accepted client sockets close-on-exec",
             REQUIRE(flags >= 0);
 
             // Complete the request so the server thread can finish and be
-            // joined cleanly.
+            // joined cleanly by server_thread_guard's destructor below.
             REQUIRE(send_all(client_fd, "\r\n"));
             std::ignore = receive_until_close(client_fd);
             ::close(client_fd);
-
-            shutdown.fire();
-            server_thread.join();
 
             THEN("the accepted socket carries FD_CLOEXEC")
             {
@@ -451,6 +480,7 @@ SCENARIO("merovingian-server marks accepted client sockets close-on-exec",
         }
     }
 }
+#endif // defined(__linux__)
 
 SCENARIO("merovingian-server accepts Matrix JSON requests over a configured TLS listener",
          "[homeserver][http][listener][tls][integration]")

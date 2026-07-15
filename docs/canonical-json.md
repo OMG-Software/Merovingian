@@ -71,11 +71,13 @@ The serializer mirrors this split: `serialize_canonical_strict()` rejects a
 `Value` tree containing any double with `CanonicalJsonError::float_not_allowed`
 instead of serializing it, and is the entry point `event_signer.cpp`,
 `event_id.cpp`, and `signable.cpp` use for signing/hashing payloads.
-`serialize_canonical()` still accepts floats — via `std::to_chars`, a correct
-shortest-round-tripping conversion, not the fixed-precision `std::to_string`
-formatting an earlier version used — because it is also the general-purpose
-serializer for ordinary, never-signed JSON responses that legitimately
-contain floats (e.g. `m.tag` `order`, account data).
+`serialize_canonical()` still accepts floats — via a portable escalating-precision
+`snprintf`/`strtod` round-trip search, not the fixed-precision `std::to_string`
+formatting an earlier version used (`std::to_chars`'s floating-point overload
+was considered but isn't implemented on every supported toolchain, e.g.
+NetBSD's libstdc++ build only has the integer overloads) — because it is also
+the general-purpose serializer for ordinary, never-signed JSON responses that
+legitimately contain floats (e.g. `m.tag` `order`, account data).
 
 ## Signable object view
 
