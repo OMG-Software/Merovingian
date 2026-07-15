@@ -291,7 +291,7 @@ auto membership_policy_allows(MembershipPolicy policy) -> EventAuthorizationDeci
     return {false, "membership", "4", "membership transition is not allowed"};
 }
 
-auto parse_membership_state(std::string_view membership) noexcept -> MembershipState
+auto parse_membership_state(std::string_view membership) noexcept -> std::optional<MembershipState>
 {
     if (membership == "join")
     {
@@ -313,7 +313,7 @@ auto parse_membership_state(std::string_view membership) noexcept -> MembershipS
     {
         return MembershipState::knock;
     }
-    return MembershipState::leave;
+    return std::nullopt;
 }
 
 auto domain_of(std::string_view matrix_id) noexcept -> std::string_view
@@ -507,24 +507,32 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
         }
 
         auto const content_membership = extract_content_membership(event);
-        auto const requested = parse_membership_state(content_membership);
+        auto const requested_opt = parse_membership_state(content_membership);
+        if (!requested_opt.has_value())
+        {
+            return make_denied("4", "membership value is unrecognized");
+        }
+        auto const requested = *requested_opt;
 
         auto const target_is_sender = *sender == *state_key;
 
         auto sender_current_membership = MembershipState::leave;
         if (value_has_content(auth_events.sender_member))
         {
-            sender_current_membership = parse_membership_state(extract_content_membership(auth_events.sender_member));
+            sender_current_membership = parse_membership_state(extract_content_membership(auth_events.sender_member))
+                                            .value_or(MembershipState::leave);
         }
 
         auto target_current_membership = MembershipState::leave;
         if (target_is_sender && value_has_content(auth_events.sender_member))
         {
-            target_current_membership = parse_membership_state(extract_content_membership(auth_events.sender_member));
+            target_current_membership = parse_membership_state(extract_content_membership(auth_events.sender_member))
+                                            .value_or(MembershipState::leave);
         }
         else if (value_has_content(auth_events.target_member))
         {
-            target_current_membership = parse_membership_state(extract_content_membership(auth_events.target_member));
+            target_current_membership = parse_membership_state(extract_content_membership(auth_events.target_member))
+                                            .value_or(MembershipState::leave);
         }
 
         // Step 5: For join, sender must equal state_key (v6+)
@@ -711,8 +719,16 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
         {
             if (target_is_sender)
             {
-                // Self-leave is always allowed (unless banned in some room versions)
-                return make_allowed("7");
+                // Self-leave is allowed if and only if the user's current membership is
+                // invite, join, or knock. A banned or already-left user cannot self-leave
+                // (that would let a banned user unban themselves).
+                if (membership_at_least_one_of(
+                        target_current_membership,
+                        {MembershipState::invite, MembershipState::join, MembershipState::knock}))
+                {
+                    return make_allowed("7");
+                }
+                return make_denied("7", "self-leave requires current membership of invite, join, or knock");
             }
 
             // Kicking another user
@@ -779,7 +795,8 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
     auto sender_membership = MembershipState::leave;
     if (value_has_content(auth_events.sender_member))
     {
-        sender_membership = parse_membership_state(extract_content_membership(auth_events.sender_member));
+        sender_membership = parse_membership_state(extract_content_membership(auth_events.sender_member))
+                                .value_or(MembershipState::leave);
     }
     else
     {

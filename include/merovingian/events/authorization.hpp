@@ -6,6 +6,7 @@
 #include "merovingian/rooms/room_version_policy.hpp"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -111,7 +112,7 @@ struct AuthChain final
 [[nodiscard]] auto auth_chain_contains(AuthChain const& chain, std::string_view event_id) noexcept -> bool;
 auto append_auth_chain_event(AuthChain& chain, std::string_view event_id) -> void;
 
-[[nodiscard]] auto parse_membership_state(std::string_view membership) noexcept -> MembershipState;
+[[nodiscard]] auto parse_membership_state(std::string_view membership) noexcept -> std::optional<MembershipState>;
 [[nodiscard]] auto extract_user_power_level(canonicaljson::Value const& power_levels_event,
                                             std::string_view user_id) noexcept -> std::int64_t;
 [[nodiscard]] auto extract_power_level_key(canonicaljson::Value const& power_levels_event, std::string_view key,

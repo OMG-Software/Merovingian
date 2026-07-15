@@ -30,6 +30,7 @@
 #include "merovingian/homeserver/space_hierarchy.hpp"
 #include "merovingian/http/rate_limit.hpp"
 #include "merovingian/http/request.hpp"
+#include "merovingian/media/security.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
@@ -8282,9 +8283,24 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     {
         auto const ct = request_header(req, "Content-Type");
         auto const declared_mime = ct.empty() ? std::string_view{"application/octet-stream"} : ct;
+        // declared_mime is spliced unescaped into the leading fields of the
+        // internal declared_mime|sniffed_mime|scanner_clean|bytes format (see
+        // media/AGENTS.md); a '|' in a client-controlled Content-Type header
+        // would shift those field boundaries and let the body's scanner_clean
+        // flag and leading bytes be forged. Reject rather than sanitize, since
+        // a MIME type legitimately never contains '|'.
+        if (declared_mime.find('|') != std::string_view::npos)
+        {
+            return dispatch_err(req, rt, 400U, "M_BAD_REQUEST", "Content-Type must not contain '|'");
+        }
+        // Sniff the actual bytes rather than trusting the client-declared
+        // Content-Type — a declared_mime|declared_mime pipe body (the previous
+        // behaviour) made the quarantine mismatch check in media/security.cpp
+        // compare a value against itself and thus a permanent no-op.
+        auto const sniffed_mime = media::sniff_mime_type(req.body);
         auto inner = req;
         inner.target = "/_matrix/media/v3/upload";
-        inner.body = std::string{declared_mime} + "|" + std::string{declared_mime} + "|clean|" + req.body;
+        inner.body = std::string{declared_mime} + "|" + sniffed_mime + "|clean|" + req.body;
         auto const r = call_local(inner);
         // 200: stored; 202: stored but quarantined by server policy.
         // Both carry a content_uri. The Matrix spec defines only 200 for this

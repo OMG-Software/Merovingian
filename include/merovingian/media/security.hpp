@@ -127,6 +127,16 @@ struct AdminQuarantineRequest final
     std::string reason{};
 };
 
+// Inspects the leading bytes of an upload and returns the MIME type its
+// content actually matches, independent of any client-declared Content-Type.
+// Recognizes the magic-byte signatures of the media module's default
+// allow-list (image/png, image/jpeg, image/gif, application/pdf) plus a
+// text/plain heuristic (printable ASCII/UTF-8 with no control bytes besides
+// tab/newline/CR). Falls back to application/octet-stream when nothing
+// matches — never returns empty, so callers cannot mistake "no bytes" for
+// "sniffing was skipped".
+[[nodiscard]] auto sniff_mime_type(std::string_view bytes) -> std::string;
+
 [[nodiscard]] auto media_disposition_name(MediaDisposition disposition) noexcept -> char const*;
 [[nodiscard]] auto media_mime_type_is_allowed(MediaUploadPolicy const& policy, std::string_view mime_type) noexcept
     -> bool;

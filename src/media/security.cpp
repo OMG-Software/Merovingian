@@ -99,6 +99,45 @@ auto media_disposition_name(MediaDisposition disposition) noexcept -> char const
     return "unknown";
 }
 
+auto sniff_mime_type(std::string_view bytes) -> std::string
+{
+    auto const starts_with = [bytes](std::string_view prefix) noexcept -> bool {
+        return bytes.size() >= prefix.size() && bytes.substr(0U, prefix.size()) == prefix;
+    };
+
+    // PNG: 8-byte fixed signature.
+    if (starts_with("\x89PNG\r\n\x1a\n"))
+    {
+        return "image/png";
+    }
+    // JPEG: SOI marker followed by any marker byte.
+    if (bytes.size() >= 3U && static_cast<unsigned char>(bytes[0]) == 0xFFU &&
+        static_cast<unsigned char>(bytes[1]) == 0xD8U && static_cast<unsigned char>(bytes[2]) == 0xFFU)
+    {
+        return "image/jpeg";
+    }
+    // GIF: GIF87a or GIF89a.
+    if (starts_with("GIF87a") || starts_with("GIF89a"))
+    {
+        return "image/gif";
+    }
+    // PDF: "%PDF-" header.
+    if (starts_with("%PDF-"))
+    {
+        return "application/pdf";
+    }
+    // text/plain heuristic: every byte is printable ASCII or a common
+    // whitespace control (tab, LF, CR); empty content does not count as text.
+    if (!bytes.empty() && std::ranges::all_of(bytes, [](char c) noexcept {
+            auto const byte = static_cast<unsigned char>(c);
+            return byte == '\t' || byte == '\n' || byte == '\r' || (byte >= 0x20U && byte < 0x7FU);
+        }))
+    {
+        return "text/plain";
+    }
+    return "application/octet-stream";
+}
+
 auto media_mime_type_is_allowed(MediaUploadPolicy const& policy, std::string_view mime_type) noexcept -> bool
 {
     return std::ranges::any_of(policy.allowed_mime_types, [mime_type](std::string const& allowed) {

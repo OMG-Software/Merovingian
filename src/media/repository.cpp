@@ -729,7 +729,11 @@ auto fetch_remote_media(LocalMediaRepository& repository, RemoteMediaDownloadReq
     auto upload = LocalMediaUploadRequest{};
     upload.owner_user_id = "@remote-media:" + request.origin_server;
     upload.declared_mime_type = request.content_type;
-    upload.sniffed_mime_type = request.content_type;
+    // Unlike the local-upload path (sniffed in homeserver/client_server.cpp before
+    // this request is built), a remote federation response has no such upstream
+    // sniffing step, so the remote server's declared Content-Type is not trustworthy
+    // evidence of its own accord — sniff the fetched bytes directly.
+    upload.sniffed_mime_type = sniff_mime_type(request.bytes);
     upload.bytes = request.bytes;
     upload.scanner_clean = request.scanner_clean;
     upload.decoded_size_bytes = request.decoded_size_bytes;

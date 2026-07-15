@@ -827,3 +827,85 @@ SCENARIO("evaluate_decoder_safety rejects when decoded pixel count exceeds the l
         }
     }
 }
+
+SCENARIO("sniff_mime_type identifies content by magic bytes, not by label", "[media][security][sniff]")
+{
+    GIVEN("byte sequences representing each recognized signature and one disguised payload")
+    {
+        auto const png_bytes = std::string{"\x89PNG\r\n\x1a\n", 8U} + "rest-of-file";
+        auto const jpeg_bytes = std::string{"\xFF\xD8\xFF\xE0", 4U} + "rest-of-file";
+        auto const gif87_bytes = std::string{"GIF87a"} + "rest-of-file";
+        auto const gif89_bytes = std::string{"GIF89a"} + "rest-of-file";
+        auto const pdf_bytes = std::string{"%PDF-1.4\n..."};
+        auto const text_bytes = std::string{"hello, world!\nsecond line\r\n"};
+        auto const binary_bytes = std::string{"\x00\x01\x02\xFE\xFF", 5U};
+        auto const empty_bytes = std::string{};
+        // An attacker declaring Content-Type: image/png while uploading an HTML
+        // payload — the scenario the media quarantine mismatch check exists to
+        // catch (see media/AGENTS.md and evaluate_media_upload's mismatch check).
+        auto const disguised_html_bytes = std::string{"<html><body><script>evil()</script></body></html>"};
+
+        WHEN("each payload is sniffed")
+        {
+            THEN("magic-byte signatures are identified correctly")
+            {
+                REQUIRE(merovingian::media::sniff_mime_type(png_bytes) == "image/png");
+                REQUIRE(merovingian::media::sniff_mime_type(jpeg_bytes) == "image/jpeg");
+                REQUIRE(merovingian::media::sniff_mime_type(gif87_bytes) == "image/gif");
+                REQUIRE(merovingian::media::sniff_mime_type(gif89_bytes) == "image/gif");
+                REQUIRE(merovingian::media::sniff_mime_type(pdf_bytes) == "application/pdf");
+            }
+
+            THEN("printable content is identified as text/plain")
+            {
+                REQUIRE(merovingian::media::sniff_mime_type(text_bytes) == "text/plain");
+            }
+
+            THEN("non-printable content with no recognized signature falls back to application/octet-stream")
+            {
+                REQUIRE(merovingian::media::sniff_mime_type(binary_bytes) == "application/octet-stream");
+            }
+
+            THEN("empty content is not classified as text/plain and falls back to application/octet-stream")
+            {
+                REQUIRE(merovingian::media::sniff_mime_type(empty_bytes) == "application/octet-stream");
+            }
+
+            THEN("content declared as an image but actually HTML sniffs as its real type, not the declared one")
+            {
+                // This is the core security property: sniffing must reflect the
+                // bytes, not the caller's claim, so evaluate_media_upload's
+                // declared-vs-sniffed mismatch check can catch disguised uploads.
+                auto const sniffed = merovingian::media::sniff_mime_type(disguised_html_bytes);
+                REQUIRE(sniffed != "image/png");
+                REQUIRE(sniffed == "text/plain");
+            }
+        }
+    }
+}
+
+SCENARIO("evaluate_media_upload quarantines content whose sniffed type does not match the declared type",
+         "[media][security][upload][sniff]")
+{
+    GIVEN("a policy and an upload whose declared MIME type does not match its sniffed content")
+    {
+        auto const policy = default_upload_policy();
+        auto request = merovingian::media::MediaUploadRequest{};
+        request.byte_size = 64U;
+        request.declared_mime_type = "image/png";
+        request.sniffed_mime_type = merovingian::media::sniff_mime_type("<html>not a png</html>");
+        request.content_hash = "sha256:abc";
+        request.scanner_clean = true;
+
+        WHEN("the upload is evaluated")
+        {
+            auto const decision = merovingian::media::evaluate_media_upload(policy, request);
+
+            THEN("the upload is quarantined rather than accepted at face value")
+            {
+                REQUIRE(decision.disposition == merovingian::media::MediaDisposition::quarantine);
+                REQUIRE(decision.reason == "declared MIME type does not match content");
+            }
+        }
+    }
+}

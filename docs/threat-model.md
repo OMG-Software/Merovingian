@@ -448,6 +448,54 @@ threat it closes; the controls above are the standing defences these reinforce.
   which strips any query string and rejects an empty ID, an embedded `/`, a
   `..` traversal sequence, or an embedded space before the ID reaches the
   admin action.
+- **Self-leave authorized regardless of current membership — ban evasion
+  (2026-07 audit):** `authorize_event_against_auth_events` allowed a
+  self-leave (`membership: "leave"`, sender matches state_key)
+  unconditionally, with a comment noting "unless banned in some room
+  versions" that was never implemented. A banned user could send a
+  self-leave event to flip their own membership from `ban` to `leave`, then
+  knock or rejoin under normal join rules. Fixed by requiring the sender's
+  current membership be `invite`, `join`, or `knock` before a self-leave is
+  authorized, per the room v10-v12 authorization rules.
+- **Unrecognized `membership` value silently treated as `leave` (2026-07
+  audit):** `parse_membership_state` fell through to `MembershipState::leave`
+  for any string outside the five defined values, contrary to the spec's
+  "Otherwise, the membership is unknown. Reject." Combined with the
+  self-leave bug above, a malformed `membership` value could be admitted
+  into room state under the guise of a "leave". Fixed by rejecting an
+  unrecognized `membership` value on the event under authorization, while
+  internal lookups of already-accepted prior state still fall back to
+  `leave` (the safe "not a member" default).
+- **Federation PDUs verified against an expired signing key (2026-07
+  audit):** `remote_key_cache.cpp`'s resolver deliberately falls back to a
+  stale cached key when a live refresh fails, so callers can distinguish
+  "known but unreachable" from "never seen" — but `authorize_federation_pdu`
+  never checked the returned key's `valid_until_ts` before using it to
+  verify a PDU's Ed25519 signature. If a remote server's key was rotated
+  after a compromise and the old server became unreachable, an attacker
+  holding the old private key could keep forging PDU signatures
+  indefinitely. Fixed by rejecting PDUs verified against a key whose
+  `valid_until_ts` has passed as of the request's `now_ts`.
+- **Media content-sniffing was a no-op, defeating the declared/actual MIME
+  mismatch quarantine (2026-07 audit):** `client_server.cpp` built the
+  internal upload pipe body by copying the client-declared `Content-Type`
+  into both the "declared" and "sniffed" MIME fields, so
+  `evaluate_media_upload`'s mismatch check always compared a value to
+  itself. An attacker could upload arbitrary content (e.g. HTML with an
+  embedded `<script>`) while declaring an allow-listed type such as
+  `image/png`. Fixed by adding `media::sniff_mime_type()` (magic-byte
+  detection plus a printable-ASCII heuristic for `text/plain`) and sniffing
+  the real bytes for both local uploads (`client_server.cpp`) and federated
+  media fetches (`repository.cpp`'s `fetch_remote_media`).
+- **Unsanitized `Content-Type` header allowed field injection into the
+  internal media pipe protocol (2026-07 audit):** the internal
+  `declared_mime|sniffed_mime|scanner_clean|bytes` format relies on `|` as a
+  field delimiter, but `http::header_value_is_valid()` permits `|` in header
+  values. A client-controlled `Content-Type` containing `|` could shift the
+  parsed field boundaries and forge the `scanner_clean` flag and leading
+  body bytes seen downstream. Fixed by rejecting a media upload whose
+  `Content-Type` contains `|` with `400 M_BAD_REQUEST` before the pipe body
+  is constructed.
 
 ## Security principles
 

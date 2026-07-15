@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.10.53
+Version:        0.10.54
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -97,6 +97,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Wed Jul 15 2026 James Chapman <claude@ping.me.uk> - 0.10.54-1
+- fix(security): reject self-leave from a banned or never-joined user (ban-evasion bypass), reject events with an unrecognized membership value, reject federation PDUs verified with an expired signing key, sniff actual media content instead of trusting the declared Content-Type, and reject Content-Type headers containing '|' (internal pipe-format injection).
+
 * Tue Jul 14 2026 James Chapman <claude@ping.me.uk> - 0.10.53-1
 - fix(sync): Simplified Sliding Sync timeline and required_state events now carry event_id and drop federation-only PDU fields instead of leaking the raw stored event, which was silently failing client-side deserialization and dropping all inbound messages.
 

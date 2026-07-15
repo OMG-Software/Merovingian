@@ -6153,7 +6153,11 @@ SCENARIO("POST /media/v3/upload stores media and returns content_uri", "[conform
                 started.runtime, {"POST",
                                   "/_matrix/media/v3/upload",
                                   token,
-                                  "test-image-data",
+                                  // Real PNG magic bytes: the media repository now sniffs
+                                  // actual content and quarantines declared/actual MIME
+                                  // mismatches (media/security.hpp sniff_mime_type), so a
+                                  // plain string declared as image/png would be quarantined.
+                                  "\x89PNG\r\n\x1a\ntest-image-data",
                                   {merovingian::http::Header{"Content-Type", "image/png"}}});
 
             THEN("the server returns 200 with a content_uri")
@@ -6185,7 +6189,10 @@ SCENARIO("GET /media/v3/download/{serverName}/{mediaId} returns uploaded media",
             started.runtime, {"POST",
                               "/_matrix/media/v3/upload",
                               token,
-                              "test-image-data",
+                              // Real PNG magic bytes: the media repository now sniffs actual
+                              // content and quarantines declared/actual MIME mismatches (see
+                              // media/security.hpp sniff_mime_type).
+                              "\x89PNG\r\n\x1a\ntest-image-data",
                               {merovingian::http::Header{"Content-Type", "image/png"}}});
         REQUIRE(upload.response.status == 200U);
         auto const upload_body = parse_object(upload.response.body);
@@ -6319,7 +6326,10 @@ SCENARIO("GET /media/v3/thumbnail/{serverName}/{mediaId} returns thumbnail for u
             started.runtime, {"POST",
                               "/_matrix/media/v3/upload",
                               token,
-                              "test-image-data",
+                              // Real PNG magic bytes: the media repository now sniffs actual
+                              // content and quarantines declared/actual MIME mismatches (see
+                              // media/security.hpp sniff_mime_type).
+                              "\x89PNG\r\n\x1a\ntest-image-data",
                               {merovingian::http::Header{"Content-Type", "image/png"}}});
         REQUIRE(upload.response.status == 200U);
         auto const upload_body = parse_object(upload.response.body);
@@ -6474,7 +6484,10 @@ SCENARIO("GET /v1/media/download/{serverName}/{mediaId} returns uploaded media",
             started.runtime, {"POST",
                               "/_matrix/media/v3/upload",
                               token,
-                              "test-image-data",
+                              // Real PNG magic bytes: the media repository now sniffs actual
+                              // content and quarantines declared/actual MIME mismatches (see
+                              // media/security.hpp sniff_mime_type).
+                              "\x89PNG\r\n\x1a\ntest-image-data",
                               {merovingian::http::Header{"Content-Type", "image/png"}}});
         REQUIRE(upload.response.status == 200U);
         auto const upload_body = parse_object(upload.response.body);
@@ -6596,7 +6609,10 @@ SCENARIO("GET /v1/media/thumbnail/{serverName}/{mediaId} returns thumbnail for u
             started.runtime, {"POST",
                               "/_matrix/media/v3/upload",
                               token,
-                              "test-image-data",
+                              // Real PNG magic bytes: the media repository now sniffs actual
+                              // content and quarantines declared/actual MIME mismatches (see
+                              // media/security.hpp sniff_mime_type).
+                              "\x89PNG\r\n\x1a\ntest-image-data",
                               {merovingian::http::Header{"Content-Type", "image/png"}}});
         REQUIRE(upload.response.status == 200U);
         auto const upload_body = parse_object(upload.response.body);
