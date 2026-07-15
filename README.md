@@ -54,7 +54,7 @@ If you want to build or contribute to the project, start here:
 
 - [docs/dev-environment.md](C:/dev/Merovingian/docs/dev-environment.md) for Linux, BSD, and WSL development setup
 - [docs/testing-standards.md](C:/dev/Merovingian/docs/testing-standards.md) for the project’s Given/When/Then testing rules
-- [security/coding-rules.md](C:/dev/Merovingian/security/coding-rules.md) for implementation constraints and secure coding expectations
+- [docs/security-coding-rules.md](C:/dev/Merovingian/docs/security-coding-rules.md) for implementation constraints and secure coding expectations
 - [docs/release-process.md](C:/dev/Merovingian/docs/release-process.md) for build, test, and release evidence expectations
 
 Typical local setup starts with:

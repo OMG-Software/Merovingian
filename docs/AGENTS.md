@@ -15,6 +15,7 @@ new documents.
 | Document | Update trigger |
 |---|---|
 | `coding-rules.md` | A new project-wide coding rule is established |
+| `security-coding-rules.md` | A security-relevant rule is added, changed, or removed in any module `AGENTS.md` file |
 | `testing-standards.md` | A new testing convention is adopted |
 | `versioning.md` | Version scheme changes; see also the version bump table |
 | `auth-identity.md` | Auth, session token, or identity changes |
