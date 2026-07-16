@@ -10,6 +10,7 @@
 - Registration token loading (issue #406): read token file directly into `core::SecretBuffer`, fail closed when `mlock` fails, and hash via `auth::hash_registration_token`.
 - Update `scripts/reject-unsafe.sh` and `docs/security-coding-rules.md` to encode the permitted libsodium boundary and reject regressions.
 - Add unit and conformance tests covering the key-backup version enforcement paths.
+- Add unit tests for the new crypto-boundary helpers (`secure_random_bytes`, `secure_random_hex`, `to_hex`, base64, `generic_hash`, `ed25519_sign_detached`, `ed25519_verify`, `RuntimeEd25519Provider`) and auth helpers (`token_secret_has_required_entropy`, `token_hash_is_persistable`, access-token v2/v3/v4 hashing, `password_matches`, registration-token hashing).
 
 ## 0.10.58
 
