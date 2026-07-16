@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.10.57
+Version:        0.10.58
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -112,6 +112,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Thu Jul 16 2026 James Chapman <claude@ping.me.uk> - 0.10.58-1
+- docs: restructure README.md around latest-release, artifact verification, installation/configuration, first-start, upgrade, and troubleshooting sections.
+
 * Thu Jul 16 2026 James Chapman <claude@ping.me.uk> - 0.10.57-1
 - feat(events): implement third-party (3PID) invite authorization (spec rule 4.3.1) and gate m.room.third_party_invite creation on invite power; add crypto::ed25519_verify.
 
