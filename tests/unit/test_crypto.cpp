@@ -3,9 +3,12 @@
 #include "../support/temp_directory.hpp"
 #include "merovingian/crypto/constant_time.hpp"
 #include "merovingian/crypto/ed25519.hpp"
+#include "merovingian/crypto/encoding.hpp"
+#include "merovingian/crypto/generic_hash.hpp"
 #include "merovingian/crypto/ipc_auth_key.hpp"
 #include "merovingian/crypto/master_key.hpp"
 #include "merovingian/crypto/random.hpp"
+#include "merovingian/crypto/runtime_ed25519_provider.hpp"
 #include "merovingian/crypto/secret_box.hpp"
 #include "merovingian/crypto/signing_service.hpp"
 #include "merovingian/crypto/token_key.hpp"
@@ -13,10 +16,13 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <span>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -929,5 +935,163 @@ SCENARIO("load_master_key_material's output derives working keys through every d
         }
 
         std::filesystem::remove(path);
+    }
+}
+
+SCENARIO("Crypto encoding round-trips hex and base64 without embedded null terminators", "[crypto][encoding]")
+{
+    GIVEN("a known byte sequence")
+    {
+        auto constexpr input = std::string_view{"hello"};
+        auto const input_bytes =
+            std::span<unsigned char const>{reinterpret_cast<unsigned char const*>(input.data()), input.size()};
+
+        WHEN("it is hex encoded")
+        {
+            auto const encoded = merovingian::crypto::to_hex(input_bytes);
+
+            THEN("the result is lowercase hex and has no trailing null")
+            {
+                REQUIRE(encoded.has_value());
+                REQUIRE(*encoded == "68656c6c6f");
+                REQUIRE(encoded->find('\0') == std::string::npos);
+            }
+        }
+
+        WHEN("it is URL-safe base64 encoded and decoded")
+        {
+            auto const encoded = merovingian::crypto::base64_urlsafe_encode(input);
+            auto const decoded = encoded.has_value() ? merovingian::crypto::base64_urlsafe_decode(*encoded)
+                                                     : std::optional<std::string>{std::nullopt};
+
+            THEN("the decoded value matches the original and the encoded string has no embedded null")
+            {
+                REQUIRE(encoded.has_value());
+                REQUIRE(encoded->find('\0') == std::string::npos);
+                REQUIRE(decoded.has_value());
+                REQUIRE(*decoded == input);
+            }
+        }
+
+        WHEN("it is standard base64 encoded and decoded")
+        {
+            auto const encoded = merovingian::crypto::base64_original_encode(input);
+            auto const decoded = encoded.has_value() ? merovingian::crypto::base64_original_decode(*encoded)
+                                                     : std::optional<std::string>{std::nullopt};
+
+            THEN("the decoded value matches the original and the encoded string has no embedded null")
+            {
+                REQUIRE(encoded.has_value());
+                REQUIRE(encoded->find('\0') == std::string::npos);
+                REQUIRE(decoded.has_value());
+                REQUIRE(*decoded == input);
+            }
+        }
+    }
+
+    GIVEN("invalid base64 input")
+    {
+        THEN("decoding returns nullopt")
+        {
+            REQUIRE_FALSE(merovingian::crypto::base64_urlsafe_decode("!!!").has_value());
+            REQUIRE_FALSE(merovingian::crypto::base64_original_decode("!!!").has_value());
+        }
+    }
+}
+
+SCENARIO("Crypto generic hash is deterministic and key-separated", "[crypto][hash]")
+{
+    GIVEN("two calls with the same pieces")
+    {
+        auto constexpr pieces = std::array<std::string_view, 2>{"alpha", "beta"};
+        auto const a = merovingian::crypto::generic_hash(std::span{pieces});
+        auto const b = merovingian::crypto::generic_hash(std::span{pieces});
+
+        WHEN("compared")
+        {
+            THEN("they are identical and have the expected hex length")
+            {
+                REQUIRE(a.has_value());
+                REQUIRE(b.has_value());
+                REQUIRE(*a == *b);
+                REQUIRE(a->size() == crypto_generichash_BYTES * 2U);
+            }
+        }
+    }
+
+    GIVEN("the same pieces hashed with and without a key")
+    {
+        auto constexpr pieces = std::array<std::string_view, 2>{"alpha", "beta"};
+        auto const key = std::array<std::uint8_t, 16>{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
+        auto const keyed = merovingian::crypto::generic_hash(std::span{pieces}, std::span{key});
+        auto const unkeyed = merovingian::crypto::generic_hash(std::span{pieces});
+
+        WHEN("compared")
+        {
+            THEN("the keyed digest differs from the unkeyed digest")
+            {
+                REQUIRE(keyed.has_value());
+                REQUIRE(unkeyed.has_value());
+                REQUIRE(*keyed != *unkeyed);
+            }
+        }
+    }
+
+    GIVEN("a single contiguous input")
+    {
+        auto const hex = merovingian::crypto::hash_bytes_to_hex("hello");
+
+        WHEN("hashed to hex")
+        {
+            THEN("it returns a non-empty hex digest")
+            {
+                REQUIRE(hex.has_value());
+                REQUIRE(hex->size() == crypto_generichash_BYTES * 2U);
+            }
+        }
+    }
+}
+
+SCENARIO("RuntimeEd25519Provider signs and verifies with its own keypair", "[crypto][signing]")
+{
+    GIVEN("a generated Ed25519 keypair")
+    {
+        auto const keypair = merovingian::crypto::generate_ed25519_keypair();
+        REQUIRE(keypair.has_value());
+        auto provider = merovingian::crypto::RuntimeEd25519Provider{keypair->secret_key};
+        auto const handle = merovingian::crypto::Ed25519SecretKeyHandle{"ed25519:auto"};
+        auto const public_key = merovingian::crypto::Ed25519PublicKey{
+            std::string{reinterpret_cast<char const*>(keypair->public_key.data()), keypair->public_key.size()}
+        };
+
+        WHEN("a message is signed")
+        {
+            auto constexpr message = std::string_view{"test message"};
+            auto const sign_result = provider.sign(handle, message);
+
+            THEN("the signature is valid against the matching public key")
+            {
+                REQUIRE(sign_result.signature.bytes.size() == crypto_sign_BYTES);
+                auto const verify_result =
+                    provider.verify(public_key, message,
+                                    merovingian::crypto::Ed25519Signature{std::string{sign_result.signature.bytes}});
+                REQUIRE(verify_result.valid);
+            }
+        }
+
+        WHEN("a different message is presented for verification")
+        {
+            auto constexpr message = std::string_view{"test message"};
+            auto constexpr other = std::string_view{"other message"};
+            auto const sign_result = provider.sign(handle, message);
+            REQUIRE(sign_result.signature.bytes.size() == crypto_sign_BYTES);
+            auto const verify_result = provider.verify(
+                public_key, other, merovingian::crypto::Ed25519Signature{std::string{sign_result.signature.bytes}});
+
+            THEN("verification is rejected")
+            {
+                REQUIRE_FALSE(verify_result.valid);
+            }
+        }
     }
 }

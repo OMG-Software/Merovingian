@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "merovingian/auth/identity.hpp"
+#include "merovingian/auth/password.hpp"
 #include "merovingian/auth/token.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -243,6 +244,28 @@ SCENARIO("Auth variable-length constant-time compare hides secret length", "[aut
                 REQUIRE_FALSE(different_same_length);
                 REQUIRE_FALSE(different_length);
                 REQUIRE_FALSE(empty_vs_value);
+            }
+        }
+    }
+}
+
+SCENARIO("Auth password hashing round-trips through Argon2id verification", "[auth][password][slow]")
+{
+    GIVEN("a plaintext password")
+    {
+        auto constexpr plaintext = "CorrectHorseBatteryStaple7!";
+
+        WHEN("it is hashed and verified")
+        {
+            auto const hash = merovingian::auth::hash_password(plaintext);
+
+            THEN("the hash is non-empty, differs from the plaintext, and verifies correctly")
+            {
+                REQUIRE(hash.has_value());
+                REQUIRE_FALSE(hash->empty());
+                REQUIRE(*hash != plaintext);
+                REQUIRE(merovingian::auth::password_matches(*hash, plaintext));
+                REQUIRE_FALSE(merovingian::auth::password_matches(*hash, "wrong-password"));
             }
         }
     }
