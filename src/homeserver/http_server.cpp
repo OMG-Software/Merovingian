@@ -50,6 +50,34 @@ namespace
         observability::log_diagnostic("http_server", event, fields, severity);
     }
 
+    // Loop on ::send() until the whole buffer is written or a non-recoverable
+    // error occurs.  This matches the TLS path's behaviour: a short write on a
+    // non-blocking socket is retried rather than silently truncated.
+    [[nodiscard]] auto send_all(int fd, std::string_view data) noexcept -> bool
+    {
+        auto const* ptr = data.data();
+        auto remaining = data.size();
+        while (remaining > 0U)
+        {
+            auto const n = ::send(fd, ptr, remaining, MSG_NOSIGNAL);
+            if (n < 0)
+            {
+                if (errno == EINTR)
+                {
+                    continue;
+                }
+                return false;
+            }
+            if (n == 0)
+            {
+                return false;
+            }
+            ptr += static_cast<std::size_t>(n);
+            remaining -= static_cast<std::size_t>(n);
+        }
+        return true;
+    }
+
     // Convert the peer sockaddr captured at accept() time to a dotted-decimal
     // (IPv4) or colon-separated (IPv6) string. Returns an empty string when
     // the address family is unknown rather than crashing — the rate limiter
@@ -817,7 +845,7 @@ namespace
                     }
                     else
                     {
-                        std::ignore = ::send(fd, formatted.data(), formatted.size(), MSG_NOSIGNAL);
+                        std::ignore = send_all(fd, formatted);
                     }
                     std::ignore = ::shutdown(fd, SHUT_RDWR);
                     ::close(fd);

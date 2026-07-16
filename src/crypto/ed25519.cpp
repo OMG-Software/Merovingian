@@ -50,4 +50,37 @@ auto ed25519_verify(Ed25519PublicKey const& public_key, std::string_view message
     return {ok, ok ? std::string{} : std::string{"signature verification failed"}};
 }
 
+auto generate_ed25519_keypair() -> std::optional<Ed25519Keypair>
+{
+    static auto const ready = sodium_init() >= 0;
+    if (!ready)
+    {
+        return std::nullopt;
+    }
+    auto keypair = Ed25519Keypair{};
+    if (crypto_sign_keypair(keypair.public_key.data(), keypair.secret_key.data()) != 0)
+    {
+        return std::nullopt;
+    }
+    return keypair;
+}
+
+auto ed25519_sign_detached(std::span<unsigned char const> secret_key, std::string_view message)
+    -> std::optional<Ed25519Signature>
+{
+    static auto const ready = sodium_init() >= 0;
+    if (!ready || secret_key.size() != 64U)
+    {
+        return std::nullopt;
+    }
+    auto signature = std::string(64U, '\0');
+    if (crypto_sign_detached(reinterpret_cast<unsigned char*>(signature.data()), nullptr,
+                             reinterpret_cast<unsigned char const*>(message.data()), message.size(),
+                             secret_key.data()) != 0)
+    {
+        return std::nullopt;
+    }
+    return Ed25519Signature{std::move(signature)};
+}
+
 } // namespace merovingian::crypto

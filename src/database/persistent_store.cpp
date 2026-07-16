@@ -1880,16 +1880,22 @@ auto apply_store_event_with_state(PersistentStore& store, PreparedStateUpdate co
     return true;
 }
 
-[[nodiscard]] auto delete_all_key_backup_sessions(PersistentStore& store, std::string_view user_id) -> bool
+[[nodiscard]] auto delete_all_key_backup_sessions(PersistentStore& store, std::string_view user_id,
+                                                  std::string_view version) -> bool
 {
-    if (!record_and_persist(store, record_statement("delete_all_key_backup_sessions",
-                                                    "DELETE FROM key_backup_sessions WHERE user_id = $1",
-                                                    {public_value(user_id)})))
+    if (version.empty())
     {
         return false;
     }
-    std::erase_if(store.key_backup_sessions, [user_id](auto const& s) {
-        return s.user_id == user_id;
+    if (!record_and_persist(store,
+                            record_statement("delete_all_key_backup_sessions",
+                                             "DELETE FROM key_backup_sessions WHERE user_id = $1 AND version = $2",
+                                             {public_value(user_id), public_value(version)})))
+    {
+        return false;
+    }
+    std::erase_if(store.key_backup_sessions, [user_id, version](auto const& s) {
+        return s.user_id == user_id && s.version == version;
     });
     return true;
 }

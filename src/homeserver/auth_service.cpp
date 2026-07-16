@@ -4,8 +4,14 @@
 #include "merovingian/homeserver/auth_service.hpp"
 
 #include "merovingian/auth/identity.hpp"
+#include "merovingian/auth/password.hpp"
 #include "merovingian/auth/session.hpp"
+#include "merovingian/auth/token.hpp"
+#include "merovingian/core/file_descriptor.hpp"
+#include "merovingian/core/secret_buffer.hpp"
+#include "merovingian/crypto/constant_time.hpp"
 #include "merovingian/crypto/master_key.hpp"
+#include "merovingian/crypto/random.hpp"
 #include "merovingian/crypto/token_key.hpp"
 #include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/observability/logger.hpp"
@@ -17,7 +23,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <fstream>
+#include <cstring>
 #include <mutex>
 #include <optional>
 #include <span>
@@ -27,7 +33,9 @@
 #include <unordered_map>
 #include <vector>
 
-#include <sodium.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 namespace merovingian::homeserver
 {
@@ -38,28 +46,6 @@ namespace
                         observability::LogEventSeverity severity = observability::LogEventSeverity::debug) -> void
     {
         observability::log_diagnostic("auth", event, std::move(fields), severity);
-    }
-
-    auto constexpr token_secret_bytes = std::size_t{32U};
-    auto constexpr token_hash_bytes = std::size_t{crypto_generichash_BYTES};
-
-    [[nodiscard]] auto sodium_is_ready() noexcept -> bool
-    {
-        static auto const ready = sodium_init() >= 0;
-        return ready;
-    }
-
-    [[nodiscard]] auto to_hex(unsigned char const* bytes, std::size_t size) -> std::string
-    {
-        auto output = std::string((size * 2U) + 1U, '\0');
-        std::ignore = sodium_bin2hex(output.data(), output.size(), bytes, size);
-        output.pop_back();
-        return output;
-    }
-
-    [[nodiscard]] auto password_hash_is_v2(std::string_view password_hash) noexcept -> bool
-    {
-        return password_hash.starts_with("password-hash:v2:");
     }
 
     [[nodiscard]] auto token_hash_is_v2(std::string_view token_hash) noexcept -> bool
@@ -77,71 +63,15 @@ namespace
         return token_hash.starts_with("token-hash:v4:");
     }
 
-    [[nodiscard]] auto password_hash_payload(std::string_view password_hash) noexcept -> std::string_view
-    {
-        auto constexpr prefix = std::string_view{"password-hash:v2:"};
-        return password_hash_is_v2(password_hash) ? password_hash.substr(prefix.size()) : std::string_view{};
-    }
-
-    [[nodiscard]] auto hash_password(std::string_view password) -> std::optional<std::string>
-    {
-        if (!sodium_is_ready())
-        {
-            return std::nullopt;
-        }
-        auto output = std::array<char, crypto_pwhash_STRBYTES>{};
-        if (crypto_pwhash_str(output.data(), password.data(), static_cast<unsigned long long>(password.size()),
-                              crypto_pwhash_OPSLIMIT_INTERACTIVE, crypto_pwhash_MEMLIMIT_INTERACTIVE) != 0)
-        {
-            return std::nullopt;
-        }
-        return "password-hash:v2:" + std::string{output.data()};
-    }
-
     [[nodiscard]] auto dummy_password_hash() -> std::string const*
     {
-        static auto const dummy = hash_password("merovingian-invalid-login-dummy");
+        static auto const dummy = auth::hash_password("merovingian-invalid-login-dummy");
         return dummy.has_value() ? &(*dummy) : nullptr;
-    }
-
-    [[nodiscard]] auto password_matches(std::string_view password_hash, std::string_view password) noexcept -> bool
-    {
-        if (!sodium_is_ready())
-        {
-            return false;
-        }
-        auto const payload = password_hash_payload(password_hash);
-        if (payload.empty())
-        {
-            return false;
-        }
-        return crypto_pwhash_str_verify(payload.data(), password.data(),
-                                        static_cast<unsigned long long>(password.size())) == 0;
     }
 
     [[nodiscard]] auto user_id_from_localpart(std::string_view server_name, std::string_view localpart) -> std::string
     {
         return "@" + std::string{localpart} + ":" + std::string{server_name};
-    }
-
-    [[nodiscard]] auto hash_token_v2(std::string_view token) -> std::optional<std::string>
-    {
-        if (!sodium_is_ready())
-        {
-            return std::nullopt;
-        }
-        auto digest = std::array<unsigned char, token_hash_bytes>{};
-        auto token_bytes = std::vector<unsigned char>{};
-        token_bytes.reserve(token.size());
-        for (auto const character : token)
-        {
-            token_bytes.push_back(static_cast<unsigned char>(character));
-        }
-        if (crypto_generichash(digest.data(), digest.size(), token_bytes.data(), token_bytes.size(), nullptr, 0U) != 0)
-        {
-            return std::nullopt;
-        }
-        return "token-hash:v2:" + to_hex(digest.data(), digest.size());
     }
 
     // Master key material loading is shared with the federation worker process
@@ -179,83 +109,53 @@ namespace
         return crypto::derive_token_hmac_key(material->bytes());
     }
 
-    [[nodiscard]] auto hash_token_with_key(std::string_view token, std::span<unsigned char const> key,
-                                           std::string_view prefix) -> std::optional<std::string>
-    {
-        if (!sodium_is_ready())
-        {
-            return std::nullopt;
-        }
-        auto digest = std::array<unsigned char, token_hash_bytes>{};
-        auto token_bytes = std::vector<unsigned char>{};
-        token_bytes.reserve(token.size());
-        for (auto const character : token)
-        {
-            token_bytes.push_back(static_cast<unsigned char>(character));
-        }
-        if (crypto_generichash(digest.data(), digest.size(), token_bytes.data(), token_bytes.size(), key.data(),
-                               key.size()) != 0)
-        {
-            return std::nullopt;
-        }
-        return std::string{prefix} + to_hex(digest.data(), digest.size());
-    }
-
-    [[nodiscard]] auto hash_token_v3(HomeserverRuntime const& runtime, std::string_view token)
-        -> std::optional<std::string>
-    {
-        auto const key = token_hmac_key_v3(runtime);
-        if (!key.has_value())
-        {
-            return std::nullopt;
-        }
-        return hash_token_with_key(token, key->bytes, "token-hash:v3:");
-    }
-
-    [[nodiscard]] auto hash_token_v4(HomeserverRuntime const& runtime, std::string_view token)
-        -> std::optional<std::string>
-    {
-        auto const key = token_hmac_key_v4(runtime);
-        if (!key.has_value())
-        {
-            return std::nullopt;
-        }
-        return hash_token_with_key(token, key->bytes, "token-hash:v4:");
-    }
+    constexpr auto token_secret_bytes = std::size_t{32U};
 
     [[nodiscard]] auto issue_token_hash(HomeserverRuntime const& runtime, std::string_view token)
         -> std::optional<std::string>
     {
         // Prefer the master-key-derived v4 hash when a master key is configured.
-        if (auto const v4 = hash_token_v4(runtime, token); v4.has_value())
+        if (auto const key = token_hmac_key_v4(runtime); key.has_value())
         {
-            return v4;
+            if (auto const v4 = auth::hash_access_token_v4(token, *key); v4.has_value())
+            {
+                return v4;
+            }
         }
-        // No master key: fall back to the signing-secret-derived v3 hash for
+        // No master key: fall back to the master-key-derived v3 hash for
         // backwards compatibility.
-        if (auto const v3 = hash_token_v3(runtime, token); v3.has_value())
+        if (auto const key = token_hmac_key_v3(runtime); key.has_value())
         {
-            return v3;
+            if (auto const v3 = auth::hash_access_token_v3(token, *key); v3.has_value())
+            {
+                return v3;
+            }
         }
         // Signing key and master key both unavailable: fall back to the unkeyed
         // v2 hash so local operations still work. Federation will fail separately
         // if keys are broken; login should not be collateral damage.
-        return hash_token_v2(token);
+        return auth::hash_access_token_v2(token);
     }
 
     [[nodiscard]] auto lookup_token_hashes(HomeserverRuntime const& runtime, std::string_view token)
         -> std::vector<std::string>
     {
         auto hashes = std::vector<std::string>{};
-        if (auto const v4 = hash_token_v4(runtime, token); v4.has_value())
+        if (auto const key = token_hmac_key_v4(runtime); key.has_value())
         {
-            hashes.push_back(*v4);
+            if (auto const v4 = auth::hash_access_token_v4(token, *key); v4.has_value())
+            {
+                hashes.push_back(*v4);
+            }
         }
-        if (auto const v3 = hash_token_v3(runtime, token); v3.has_value())
+        if (auto const key = token_hmac_key_v3(runtime); key.has_value())
         {
-            hashes.push_back(*v3);
+            if (auto const v3 = auth::hash_access_token_v3(token, *key); v3.has_value())
+            {
+                hashes.push_back(*v3);
+            }
         }
-        if (auto const v2 = hash_token_v2(token); v2.has_value())
+        if (auto const v2 = auth::hash_access_token_v2(token); v2.has_value())
         {
             hashes.push_back(*v2);
         }
@@ -267,19 +167,17 @@ namespace
         auto const same_version = (token_hash_is_v2(left) && token_hash_is_v2(right)) ||
                                   (token_hash_is_v3(left) && token_hash_is_v3(right)) ||
                                   (token_hash_is_v4(left) && token_hash_is_v4(right));
-        return same_version && left.size() == right.size() &&
-               sodium_memcmp(left.data(), right.data(), left.size()) == 0;
+        return same_version && left.size() == right.size() && crypto::constant_time_equal(left, right);
     }
 
     [[nodiscard]] auto issue_token() -> std::optional<std::string>
     {
-        if (!sodium_is_ready())
+        auto const random_hex = crypto::secure_random_hex(token_secret_bytes);
+        if (!random_hex.has_value())
         {
             return std::nullopt;
         }
-        auto bytes = std::array<unsigned char, token_secret_bytes>{};
-        randombytes_buf(bytes.data(), bytes.size());
-        return "mvs_" + to_hex(bytes.data(), bytes.size());
+        return "mvs_" + *random_hex;
     }
 
     [[nodiscard]] auto find_user(LocalDatabase& database, std::string_view user_id) -> LocalUser*
@@ -369,7 +267,12 @@ namespace
         {
             return;
         }
-        auto const v4_hash = hash_token_v4(runtime, token);
+        auto const key = token_hmac_key_v4(runtime);
+        if (!key.has_value())
+        {
+            return;
+        }
+        auto const v4_hash = auth::hash_access_token_v4(token, *key);
         if (!v4_hash.has_value())
         {
             return;
@@ -403,30 +306,82 @@ namespace
         std::ignore = database::store_access_token(runtime.database.persistent_store, new_row);
     }
 
-    auto trim_line_ending(std::string& value) -> void
+    auto trim_line_ending(std::span<std::uint8_t>& token) -> void
     {
-        while (!value.empty() && (value.back() == '\n' || value.back() == '\r'))
+        while (!token.empty() &&
+               (token.back() == static_cast<std::uint8_t>('\n') || token.back() == static_cast<std::uint8_t>('\r')))
         {
-            value.pop_back();
+            token = token.subspan(0U, token.size() - 1U);
         }
     }
 
-    // Hash a registration token with Argon2id using libsodium's recommended
-    // interactive limits.  The resulting string is safe to keep in memory and to
-    // compare with crypto_pwhash_str_verify.
-    [[nodiscard]] auto hash_registration_token(std::string_view token) -> std::optional<std::string>
+    [[nodiscard]] auto read_registration_token_file(std::string const& path) -> std::optional<core::SecretBuffer>
     {
-        if (!sodium_is_ready() || token.empty())
+        auto constexpr max_token_bytes = std::size_t{4096U};
+
+        auto fd = core::FileDescriptor{::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW)};
+        if (!fd.valid())
         {
             return std::nullopt;
         }
-        auto output = std::array<char, crypto_pwhash_STRBYTES>{};
-        if (crypto_pwhash_str(output.data(), token.data(), static_cast<unsigned long long>(token.size()),
-                              crypto_pwhash_OPSLIMIT_INTERACTIVE, crypto_pwhash_MEMLIMIT_INTERACTIVE) != 0)
+
+        struct stat stat_buf{};
+        if (::fstat(fd.get(), &stat_buf) != 0)
         {
             return std::nullopt;
         }
-        return std::string{output.data()};
+        if (!S_ISREG(stat_buf.st_mode))
+        {
+            return std::nullopt;
+        }
+
+        auto const file_size = static_cast<std::size_t>(stat_buf.st_size);
+        if (file_size == 0U || file_size > max_token_bytes)
+        {
+            return std::nullopt;
+        }
+
+        auto secret = core::SecretBuffer{file_size};
+        if (!secret.is_locked())
+        {
+            // Fail closed: if we cannot pin the plaintext into RAM we must not
+            // load it at all (issue #406).
+            return std::nullopt;
+        }
+
+        auto token = secret.bytes();
+        auto total_read = std::size_t{0U};
+        while (total_read < file_size)
+        {
+            auto const remaining = file_size - total_read;
+            auto const n = ::read(fd.get(), token.data() + total_read, remaining);
+            if (n == 0)
+            {
+                break;
+            }
+            if (n < 0)
+            {
+                if (errno == EINTR)
+                {
+                    continue;
+                }
+                return std::nullopt;
+            }
+            total_read += static_cast<std::size_t>(n);
+        }
+        if (total_read == 0U)
+        {
+            return std::nullopt;
+        }
+
+        token = token.subspan(0U, total_read);
+        trim_line_ending(token);
+        if (token.empty())
+        {
+            return std::nullopt;
+        }
+
+        return secret;
     }
 
     [[nodiscard]] auto make_user(HomeserverRuntime& runtime, std::string_view localpart, std::string_view password,
@@ -446,7 +401,7 @@ namespace
             return make_operation_result(false, {}, "user already exists");
         }
 
-        auto const password_hash = hash_password(password);
+        auto const password_hash = auth::hash_password(password);
         if (!password_hash.has_value())
         {
             return make_operation_result(false, {}, "password hashing failed");
@@ -494,26 +449,19 @@ namespace
         return it->second;
     }
 
-    auto input = std::ifstream{registration.token_file};
-    if (!input)
+    auto secret = read_registration_token_file(registration.token_file);
+    if (!secret.has_value())
     {
         return std::nullopt;
     }
 
-    auto token = std::string{};
-    std::getline(input, token);
+    auto token = secret->bytes();
     trim_line_ending(token);
-    if (token.empty())
-    {
-        return std::nullopt;
-    }
+    auto hash = auth::hash_registration_token(token);
 
-    auto hash = hash_registration_token(token);
-    // Best-effort memory clearing of the plaintext token after hashing.  This
-    // reduces the window in which a memory disclosure would reveal the raw secret.
-    std::ignore = sodium_mlock(token.data(), token.size());
-    std::fill(token.begin(), token.end(), '\0');
-    sodium_munlock(token.data(), token.size());
+    // The SecretBuffer destructor zeroises the plaintext token and releases the
+    // mlock when `secret` goes out of scope.  We never keep the plaintext in an
+    // unpinned std::string.
 
     if (!hash.has_value())
     {
@@ -523,17 +471,6 @@ namespace
     auto const [inserted, ok] = cache.emplace(registration.token_file, std::move(*hash));
     std::ignore = ok;
     return inserted->second;
-}
-
-[[nodiscard]] auto registration_token_matches(std::string_view expected_hash, std::string_view presented) noexcept
-    -> bool
-{
-    if (!sodium_is_ready() || expected_hash.empty() || presented.empty())
-    {
-        return false;
-    }
-    return crypto_pwhash_str_verify(expected_hash.data(), presented.data(),
-                                    static_cast<unsigned long long>(presented.size())) == 0;
 }
 
 auto register_local_user(HomeserverRuntime& runtime, std::string_view localpart, std::string_view password,
@@ -563,7 +500,7 @@ auto register_local_user(HomeserverRuntime& runtime, std::string_view localpart,
     if (registration.require_token)
     {
         auto const expected_hash = load_hashed_registration_token(registration);
-        if (!expected_hash.has_value() || !registration_token_matches(*expected_hash, registration_token))
+        if (!expected_hash.has_value() || !auth::registration_token_matches(*expected_hash, registration_token))
         {
             return make_operation_result(false, {}, "registration token rejected", 403U);
         }
@@ -589,7 +526,7 @@ auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std:
     });
     auto* user = find_user(runtime.database, user_id);
     auto const* password_hash = user != nullptr ? &user->password_hash : dummy_password_hash();
-    auto const password_valid = password_hash != nullptr && password_matches(*password_hash, password);
+    auto const password_valid = password_hash != nullptr && auth::password_matches(*password_hash, password);
     if (user == nullptr || !password_valid)
     {
         auto const audit_reason = user == nullptr ? "unknown user" : "bad credentials";
@@ -1023,7 +960,7 @@ auto change_local_user_password(HomeserverRuntime& runtime, std::string_view acc
     {
         return make_operation_result(false, {}, "password rejected", 400U);
     }
-    auto const new_hash = hash_password(new_password);
+    auto const new_hash = auth::hash_password(new_password);
     if (!new_hash.has_value())
     {
         return make_operation_result(false, {}, "password hashing failed", 500U);
@@ -1077,7 +1014,7 @@ auto verify_local_user_password(HomeserverRuntime& runtime, std::string_view acc
     {
         return false;
     }
-    return password_matches(user->password_hash, password);
+    return auth::password_matches(user->password_hash, password);
 }
 
 auto account_state_for_user(HomeserverRuntime const& runtime, std::string_view user_id)

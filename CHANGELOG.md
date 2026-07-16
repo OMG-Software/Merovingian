@@ -1,3 +1,16 @@
+## 0.10.59
+
+- Security/crypto-boundary (issue #396): consolidate all libsodium access in `src/crypto/`, `src/auth/`, `src/events/`, and `src/core/secret_buffer.cpp`; `src/ipc/channel.cpp` now uses `crypto::IpcStreamCipher` for KX + secretstream.
+- Hand-rolled JSON scanners (issues #397, #401, #403): replace `worker_pool.cpp` `json_get_u64`, `federation_request_routing.cpp` `/send` `room_id` extraction, and `ipc_ed25519_provider.cpp` `sign_response` parsing with `canonicaljson::parse_json()` and typed accessors.
+- Backfill query hardening (issue #399): `parse_backfill_query()` checks `errno == ERANGE` after `std::strtoull()` and rejects out-of-range `limit` values.
+- File-descriptor close path (issue #400): `close_all_file_descriptors_except()` checks `errno != 0` after `std::strtol()` on `/proc/self/fd` entries and rejects overflowed names.
+- Sync-pool plain-socket writes (issue #402): add a looped `send_all()` helper so short `::send()` writes on the sync-pool plain-socket path are retried instead of truncated.
+- Constant-time comparison (issue #405): `crypto::constant_time_equal_variable_length()` now returns `false` if any libsodium `crypto_generichash_*` step fails, eliminating the fail-open all-zero digest path.
+- Key-backup version enforcement (issue #404): modifying session endpoints require the requested `?version=` to match the current backup version and return `403 M_WRONG_ROOM_KEYS_VERSION` with `current_version` when it does not; GET endpoints filter by the requested version and default to the current version when it is omitted; `delete_all_key_backup_sessions` now respects a `version` parameter.
+- Registration token loading (issue #406): read token file directly into `core::SecretBuffer`, fail closed when `mlock` fails, and hash via `auth::hash_registration_token`.
+- Update `scripts/reject-unsafe.sh` and `docs/security-coding-rules.md` to encode the permitted libsodium boundary and reject regressions.
+- Add unit and conformance tests covering the key-backup version enforcement paths.
+
 ## 0.10.58
 
 ### Changed

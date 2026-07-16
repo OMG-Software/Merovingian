@@ -24,8 +24,6 @@
 #include <variant>
 #include <vector>
 
-#include <sodium.h>
-
 namespace merovingian::federation
 {
 namespace
@@ -181,19 +179,11 @@ namespace
     [[nodiscard]] auto verify_one_signature(std::string_view payload, std::string_view signature_base64,
                                             std::string_view public_key_base64) -> bool
     {
-        if (sodium_init() < 0)
-        {
-            return false;
-        }
         auto const signature_bytes = events::matrix_bytes_from_base64(signature_base64);
         auto const public_key_bytes = events::matrix_bytes_from_base64(public_key_base64);
-        if (signature_bytes.size() != crypto_sign_BYTES || public_key_bytes.size() != crypto_sign_PUBLICKEYBYTES)
-        {
-            return false;
-        }
-        return crypto_sign_verify_detached(reinterpret_cast<unsigned char const*>(signature_bytes.data()),
-                                           reinterpret_cast<unsigned char const*>(payload.data()), payload.size(),
-                                           reinterpret_cast<unsigned char const*>(public_key_bytes.data())) == 0;
+        auto const result = crypto::ed25519_verify(crypto::Ed25519PublicKey{std::string{public_key_bytes}}, payload,
+                                                   crypto::Ed25519Signature{std::string{signature_bytes}});
+        return result.valid;
     }
 
     // Builds the outbound GET /_matrix/key/v2/server request from a resolved
@@ -366,7 +356,8 @@ auto find_cached_remote_key(database::PersistentStore const& store, std::string_
     record.key_id = persistent->key_id;
     record.public_key_bytes = events::matrix_bytes_from_base64(persistent->public_key);
     record.valid_until_ts = persistent->valid_until_ts;
-    if (record.public_key_bytes.size() != crypto_sign_PUBLICKEYBYTES)
+    auto constexpr expected_public_bytes = crypto::Ed25519Keypair{}.public_key.size();
+    if (record.public_key_bytes.size() != expected_public_bytes)
     {
         return std::nullopt;
     }
@@ -387,7 +378,8 @@ auto find_any_cached_remote_key(database::PersistentStore const& store, std::str
         record.key_id = persistent.key_id;
         record.public_key_bytes = events::matrix_bytes_from_base64(persistent.public_key);
         record.valid_until_ts = persistent.valid_until_ts;
-        if (record.public_key_bytes.size() == crypto_sign_PUBLICKEYBYTES)
+        auto constexpr expected_public_bytes = crypto::Ed25519Keypair{}.public_key.size();
+        if (record.public_key_bytes.size() == expected_public_bytes)
         {
             return record;
         }

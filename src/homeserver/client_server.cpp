@@ -11,10 +11,15 @@
 
 #include "merovingian/auth/identity.hpp"
 #include "merovingian/auth/key_api.hpp"
+#include "merovingian/auth/password.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/core/query_params.hpp"
+#include "merovingian/crypto/ed25519.hpp"
+#include "merovingian/crypto/encoding.hpp"
+#include "merovingian/crypto/generic_hash.hpp"
+#include "merovingian/crypto/random.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/events/event_signer.hpp"
 #include "merovingian/federation/outbound_membership.hpp"
@@ -63,8 +68,6 @@
 #include <utility>
 #include <variant>
 #include <vector>
-
-#include <sodium.h>
 
 namespace merovingian::homeserver
 {
@@ -425,17 +428,11 @@ namespace
     }
 
     // Generate a 32-character lowercase hex filter ID from 16 random bytes.
-    // Uses libsodium so the randomness is cryptographically strong, matching
-    // the same pattern used for access tokens.
+    // Delegates to the crypto module so libsodium calls stay inside src/crypto.
     [[nodiscard]] auto generate_filter_id() -> std::string
     {
-        std::ignore = sodium_init();
-        auto bytes = std::array<unsigned char, 16U>{};
-        randombytes_buf(bytes.data(), bytes.size());
-        auto output = std::string(bytes.size() * 2U + 1U, '\0');
-        std::ignore = sodium_bin2hex(output.data(), output.size(), bytes.data(), bytes.size());
-        output.pop_back(); // remove the null terminator included by sodium_bin2hex
-        return output;
+        auto const id = crypto::secure_random_hex(16U);
+        return id.value_or("merovingian-fallback-filter-id");
     }
 
     // Generate a server-side opaque device_id for clients that omit
@@ -445,21 +442,8 @@ namespace
     // to collide on a single shared device record.
     [[nodiscard]] auto generate_device_id() -> std::string
     {
-        std::ignore = sodium_init();
-        auto bytes = std::array<unsigned char, 16U>{};
-        randombytes_buf(bytes.data(), bytes.size());
-        auto output = std::string(bytes.size() * 2U + 1U, '\0');
-        std::ignore = sodium_bin2hex(output.data(), output.size(), bytes.data(), bytes.size());
-        output.pop_back(); // remove the null terminator included by sodium_bin2hex
-        return output;
-    }
-
-    [[nodiscard]] auto lowercase_hex(unsigned char const* bytes, std::size_t size) -> std::string
-    {
-        auto output = std::string(size * 2U + 1U, '\0');
-        std::ignore = sodium_bin2hex(output.data(), output.size(), bytes, size);
-        output.pop_back();
-        return output;
+        auto const id = crypto::secure_random_hex(16U);
+        return id.value_or("merovingian-fallback-device-id");
     }
 
     // Thin builder facade over the project's canonical JSON value model.
@@ -1709,10 +1693,8 @@ namespace
 
     [[nodiscard]] auto generate_registration_session_id() -> std::string
     {
-        std::ignore = sodium_init();
-        auto bytes = std::array<unsigned char, 16U>{};
-        randombytes_buf(bytes.data(), bytes.size());
-        return lowercase_hex(bytes.data(), bytes.size());
+        auto const id = crypto::secure_random_hex(16U);
+        return id.value_or("merovingian-fallback-registration-session");
     }
 
     auto constexpr registration_validation_session_ttl_ms = std::uint64_t{15U * 60U * 1000U};
@@ -4416,34 +4398,17 @@ namespace
                    std::tie(rhs->room_id, rhs->session_id, rhs->json);
         });
 
-        std::ignore = sodium_init();
-        auto state = crypto_generichash_state{};
-        if (crypto_generichash_init(&state, nullptr, 0U, crypto_generichash_BYTES) != 0)
-        {
-            return std::string{"0"};
-        }
-
-        auto const update = [&state](std::string_view value) {
-            std::ignore =
-                crypto_generichash_update(&state, reinterpret_cast<unsigned char const*>(value.data()), value.size());
-            auto const separator = static_cast<unsigned char>(0);
-            std::ignore = crypto_generichash_update(&state, &separator, 1U);
-        };
-
-        update(version);
+        auto pieces = std::vector<std::string_view>{};
+        pieces.reserve(sessions.size() * 3U + 1U);
+        pieces.push_back(version);
         for (auto const* session : sessions)
         {
-            update(session->room_id);
-            update(session->session_id);
-            update(session->json);
+            pieces.push_back(session->room_id);
+            pieces.push_back(session->session_id);
+            pieces.push_back(session->json);
         }
-
-        auto digest = std::array<unsigned char, crypto_generichash_BYTES>{};
-        if (crypto_generichash_final(&state, digest.data(), digest.size()) != 0)
-        {
-            return std::string{"0"};
-        }
-        return lowercase_hex(digest.data(), digest.size());
+        auto const etag = crypto::generic_hash(pieces);
+        return etag.value_or("0");
     }
 
     [[nodiscard]] auto room_keys_update_response(database::PersistentStore const& store, std::string_view user_id,
@@ -4454,6 +4419,21 @@ namespace
             json_member("etag", json_str(key_backup_etag(store, user_id, version))),
             json_member("version", json_str(version)),
         }));
+    }
+
+    [[nodiscard]] auto wrong_room_keys_version_response(database::PersistentStore const& store,
+                                                        std::string_view user_id) -> LocalHttpResponse
+    {
+        auto current_version = std::string{};
+        if (auto const* current = key_backup_version_for_user(store, user_id); current != nullptr)
+        {
+            current_version = current->version;
+        }
+        return resp(403U, json_serialize(json_obj({
+                              json_member("errcode", json_str("M_WRONG_ROOM_KEYS_VERSION")),
+                              json_member("error", json_str("key backup version is not the current version")),
+                              json_member("current_version", json_str(current_version)),
+                          })));
     }
 
     // Compute the next unique version string for a user's key backup.
@@ -4510,6 +4490,26 @@ namespace
             query = query.substr(amp + 1U);
         }
         return {};
+    }
+
+    // Resolve the backup version for a key-API request. If the request provides
+    // an explicit `?version=`, that value is returned. Otherwise the user's
+    // current backup version is used. Returns nullopt when no version can be
+    // determined.
+    [[nodiscard]] auto resolve_key_backup_version(ClientServerRuntime const& rt, std::string_view user,
+                                                  std::string_view target) -> std::optional<std::string_view>
+    {
+        auto const param = extract_key_backup_version_param(target);
+        if (!param.empty())
+        {
+            return param;
+        }
+        if (auto const* current = key_backup_version_for_user(rt.homeserver.database.persistent_store, user);
+            current != nullptr)
+        {
+            return current->version;
+        }
+        return std::nullopt;
     }
 
     [[nodiscard]] auto key_backup_metadata_response(database::PersistentStore const& store,
@@ -4731,19 +4731,9 @@ namespace
             return false;
         }
 
-        // Decode the signature bytes and validate length.
+        // Decode the signature bytes and the device's Ed25519 public key.
         auto const sig_bytes = events::matrix_bytes_from_base64(sig_b64);
-        if (sig_bytes.size() != crypto_sign_BYTES)
-        {
-            return false;
-        }
-
-        // Decode the device's Ed25519 public key and validate length.
         auto const pubkey_bytes = events::matrix_bytes_from_base64(ed25519_public_key_b64);
-        if (pubkey_bytes.size() != crypto_sign_PUBLICKEYBYTES)
-        {
-            return false;
-        }
 
         // Build the signable payload: canonical JSON of the key object minus
         // the `signatures` field (same convention as event signing).
@@ -4763,10 +4753,9 @@ namespace
             return false;
         }
 
-        return crypto_sign_verify_detached(reinterpret_cast<unsigned char const*>(sig_bytes.data()),
-                                           reinterpret_cast<unsigned char const*>(serialized.output.data()),
-                                           serialized.output.size(),
-                                           reinterpret_cast<unsigned char const*>(pubkey_bytes.data())) == 0;
+        auto const result = crypto::ed25519_verify(crypto::Ed25519PublicKey{std::string{pubkey_bytes}},
+                                                   serialized.output, crypto::Ed25519Signature{std::string{sig_bytes}});
+        return result.valid;
     }
 
     // Validate that every member of an OTK or fallback-key object is a
@@ -6332,7 +6321,7 @@ namespace
             return database::delete_key_backup_room_sessions(store, user, version, path->room_id);
         }
         case auth::KeyApiEndpoint::delete_room_key_backup_batch:
-            return database::delete_all_key_backup_sessions(store, user);
+            return database::delete_all_key_backup_sessions(store, user, version);
         case auth::KeyApiEndpoint::upload_keys:
         case auth::KeyApiEndpoint::query_keys:
         case auth::KeyApiEndpoint::claim_keys:
@@ -6383,11 +6372,33 @@ namespace
             return resp(200U, key_backup_metadata_response(rt.homeserver.database.persistent_store, *version));
         }
         case auth::KeyApiEndpoint::get_room_key_backup_batch: {
+            auto const batch_ver_param = extract_key_backup_version_param(req.target);
+            std::string_view batch_ver;
+            if (!batch_ver_param.empty())
+            {
+                if (key_backup_version_for_user(rt.homeserver.database.persistent_store, user, batch_ver_param) ==
+                    nullptr)
+                {
+                    return resp(404U, matrix_error("M_NOT_FOUND", "key backup version not found"));
+                }
+                batch_ver = batch_ver_param;
+            }
+            else if (auto const* current = key_backup_version_for_user(rt.homeserver.database.persistent_store, user);
+                     current != nullptr)
+            {
+                batch_ver = current->version;
+            }
+            else
+            {
+                // No version specified and no current backup: return an empty rooms object.
+                return resp(200U, json_serialize(json_obj({json_member("rooms", json_obj({}))})));
+            }
+
             auto const& all_sessions = rt.homeserver.database.persistent_store.key_backup_sessions;
             auto room_map = std::map<std::string, canonicaljson::Object>{};
             for (auto const& s : all_sessions)
             {
-                if (s.user_id == user)
+                if (s.user_id == user && s.version == batch_ver)
                 {
                     room_map[s.room_id].push_back(json_member(s.session_id, json_embed_raw(s.json)));
                 }
@@ -6401,6 +6412,25 @@ namespace
             return resp(200U, json_serialize(json_obj({json_member("rooms", json_obj(std::move(rooms)))})));
         }
         case auth::KeyApiEndpoint::get_room_key_backup: {
+            auto const get_ver_param = extract_key_backup_version_param(req.target);
+            std::string_view get_ver;
+            if (!get_ver_param.empty())
+            {
+                if (key_backup_version_for_user(rt.homeserver.database.persistent_store, user, get_ver_param) ==
+                    nullptr)
+                {
+                    return resp(404U, matrix_error("M_NOT_FOUND", "key backup version not found"));
+                }
+                get_ver = get_ver_param;
+            }
+            else if (auto const* current = key_backup_version_for_user(rt.homeserver.database.persistent_store, user);
+                     current != nullptr)
+            {
+                get_ver = current->version;
+            }
+            // If no version was specified and there is no current backup, get_ver
+            // remains empty so all searches below return empty/no-match results.
+
             if (auto const path = room_key_backup_path_parts(req.target); path.has_value())
             {
                 if (!path->session_id.has_value())
@@ -6409,7 +6439,7 @@ namespace
                     auto sessions_obj = canonicaljson::Object{};
                     for (auto const& s : all_sessions)
                     {
-                        if (s.user_id == user && s.room_id == path->room_id)
+                        if (s.user_id == user && s.version == get_ver && s.room_id == path->room_id)
                         {
                             sessions_obj.push_back(json_member(s.session_id, json_embed_raw(s.json)));
                         }
@@ -6420,7 +6450,8 @@ namespace
 
                 auto const& sessions = rt.homeserver.database.persistent_store.key_backup_sessions;
                 auto const it = std::ranges::find_if(sessions, [&](auto const& s) {
-                    return s.user_id == user && s.room_id == path->room_id && s.session_id == *path->session_id;
+                    return s.user_id == user && s.version == get_ver && s.room_id == path->room_id &&
+                           s.session_id == *path->session_id;
                 });
                 if (it == sessions.end())
                 {
@@ -6441,7 +6472,7 @@ namespace
                 auto sessions_obj = canonicaljson::Object{};
                 for (auto const& s : all_sessions)
                 {
-                    if (s.user_id == user && s.room_id == room_id)
+                    if (s.user_id == user && s.version == get_ver && s.room_id == room_id)
                     {
                         sessions_obj.push_back(json_member(s.session_id, json_embed_raw(s.json)));
                     }
@@ -6453,7 +6484,7 @@ namespace
             auto const session_id = clean.substr(separator + 1U);
             auto const& sessions = rt.homeserver.database.persistent_store.key_backup_sessions;
             auto const it = std::ranges::find_if(sessions, [&](auto const& s) {
-                return s.user_id == user && s.room_id == room_id && s.session_id == session_id;
+                return s.user_id == user && s.version == get_ver && s.room_id == room_id && s.session_id == session_id;
             });
             if (it == sessions.end())
             {
@@ -6586,11 +6617,24 @@ namespace
         case auth::KeyApiEndpoint::delete_room_key_backup_room:
         case auth::KeyApiEndpoint::delete_room_key_backup:
         case auth::KeyApiEndpoint::delete_room_key_backup_batch: {
-            // Session operations require ?version= query parameter.
-            auto const session_ver = extract_key_backup_version_param(req.target);
-            if (session_ver.empty())
+            // Session operations target an explicit ?version= or fall back to the
+            // user's current backup version. The resolved version must exist and
+            // be the current version (issue #404).
+            auto const session_ver_opt = resolve_key_backup_version(rt, user, req.target);
+            if (!session_ver_opt.has_value())
             {
-                return err(400U, "M_MISSING_PARAM", "version query parameter is required");
+                return resp(404U, matrix_error("M_NOT_FOUND", "no key backup version found"));
+            }
+            auto const session_ver = *session_ver_opt;
+            if (key_backup_version_for_user(rt.homeserver.database.persistent_store, user, session_ver) == nullptr)
+            {
+                return resp(404U, matrix_error("M_NOT_FOUND", "key backup version not found"));
+            }
+            // Spec: the requested version MUST be the current backup version.
+            auto const* current_version = key_backup_version_for_user(rt.homeserver.database.persistent_store, user);
+            if (current_version == nullptr || current_version->version != session_ver)
+            {
+                return wrong_room_keys_version_response(rt.homeserver.database.persistent_store, user);
             }
             if (!store_key_api_payload(rt, route.endpoint, user, device_id, req, session_ver))
             {
@@ -7318,7 +7362,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         // the request path (matches /register).  Only the hash is consulted; a missing
         // or unreadable token file means no token is configured -> valid:false.
         auto const expected_hash = load_hashed_registration_token(rt.homeserver.config.security().registration);
-        auto const valid = expected_hash.has_value() && registration_token_matches(*expected_hash, *token);
+        auto const valid = expected_hash.has_value() && auth::registration_token_matches(*expected_hash, *token);
         return dispatch_resp(req, rt, 200U,
                              json_serialize(json_obj({json_member("valid", canonicaljson::Value{valid})})));
     }

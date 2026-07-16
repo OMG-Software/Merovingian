@@ -215,8 +215,9 @@ auto parse_backfill_query(std::string_view target) -> std::optional<BackfillRequ
             // strtoull tolerates trailing garbage which we treat as malformed.
             auto buffer = std::string{value};
             char* end = nullptr;
+            errno = 0;
             auto const parsed = std::strtoull(buffer.c_str(), &end, 10);
-            if (end == nullptr || *end != '\0')
+            if (end == nullptr || *end != '\0' || errno == ERANGE)
             {
                 return std::nullopt;
             }

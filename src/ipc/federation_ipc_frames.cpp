@@ -4,6 +4,7 @@
 #include "merovingian/ipc/federation_ipc_frames.hpp"
 
 #include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/crypto/encoding.hpp"
 #include "merovingian/http/outbound_client.hpp"
 #include "merovingian/http/request.hpp"
 
@@ -15,8 +16,6 @@
 #include <utility>
 #include <variant>
 #include <vector>
-
-#include <sodium.h>
 
 namespace merovingian::ipc
 {
@@ -177,11 +176,8 @@ namespace
     // whatever bytes a remote peer happened to send back.
     [[nodiscard]] auto base64_encode_body(std::string_view bytes) -> std::string
     {
-        auto out = std::string(sodium_base64_ENCODED_LEN(bytes.size(), sodium_base64_VARIANT_ORIGINAL), '\0');
-        std::ignore = sodium_bin2base64(out.data(), out.size(), reinterpret_cast<unsigned char const*>(bytes.data()),
-                                        bytes.size(), sodium_base64_VARIANT_ORIGINAL);
-        out.resize(std::char_traits<char>::length(out.c_str()));
-        return out;
+        auto const encoded = crypto::base64_original_encode(bytes);
+        return encoded.value_or("");
     }
 
     // Decodes a base64 "body" field produced by base64_encode_body. Returns
@@ -189,15 +185,8 @@ namespace
     // for other malformed IPC fields.
     [[nodiscard]] auto base64_decode_body(std::string_view encoded) -> std::string
     {
-        auto out = std::string((encoded.size() / 4U + 1U) * 3U, '\0');
-        auto decoded_length = std::size_t{0U};
-        if (sodium_base642bin(reinterpret_cast<unsigned char*>(out.data()), out.size(), encoded.data(), encoded.size(),
-                              nullptr, &decoded_length, nullptr, sodium_base64_VARIANT_ORIGINAL) != 0)
-        {
-            return {};
-        }
-        out.resize(decoded_length);
-        return out;
+        auto const decoded = crypto::base64_original_decode(encoded);
+        return decoded.value_or("");
     }
 
 } // namespace

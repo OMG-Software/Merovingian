@@ -57,9 +57,4 @@ namespace merovingian::homeserver
 // the hash rather than holding the plaintext token on the request path.
 [[nodiscard]] auto load_hashed_registration_token(config::RegistrationSecurityConfig const& registration)
     -> std::optional<std::string>;
-// Constant-time verify a presented registration token against an Argon2id hash
-// produced by load_hashed_registration_token (crypto_pwhash_str_verify).
-[[nodiscard]] auto registration_token_matches(std::string_view expected_hash, std::string_view presented) noexcept
-    -> bool;
-
 } // namespace merovingian::homeserver

@@ -46,8 +46,6 @@
 #include <variant>
 #include <vector>
 
-#include <sodium.h>
-
 namespace merovingian::homeserver
 {
 
@@ -1583,7 +1581,8 @@ namespace
                     runtime.database.persistent_store, *outbound, *discovery, timeout, key_clock);
             }
             auto key = ensure_runtime_server_signing_key(runtime);
-            if (!key.has_value() || runtime.database.signing_secret_key.bytes().size() != crypto_sign_SECRETKEYBYTES)
+            auto constexpr expected_secret_bytes = crypto::Ed25519Keypair{}.secret_key.size();
+            if (!key.has_value() || runtime.database.signing_secret_key.bytes().size() != expected_secret_bytes)
             {
                 log_diagnostic("dispatch.start.rejected", {
                                                               {"reason", "server signing key unavailable", false}

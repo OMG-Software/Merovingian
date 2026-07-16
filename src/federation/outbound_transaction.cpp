@@ -6,6 +6,7 @@
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/crypto/random.hpp"
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
@@ -16,8 +17,6 @@
 #include <string>
 #include <utility>
 #include <vector>
-
-#include <sodium.h>
 
 namespace merovingian::federation
 {
@@ -101,16 +100,8 @@ auto make_outbound_transaction(std::string_view destination, std::string_view me
 
 auto make_federation_transaction_id() -> std::string
 {
-    if (sodium_init() < 0)
-    {
-        return {};
-    }
-    auto bytes = std::array<unsigned char, 16U>{};
-    randombytes_buf(bytes.data(), bytes.size());
-    auto output = std::string(bytes.size() * 2U + 1U, '\0');
-    std::ignore = sodium_bin2hex(output.data(), output.size(), bytes.data(), bytes.size());
-    output.pop_back();
-    return output;
+    auto const id = crypto::secure_random_hex(16U);
+    return id.value_or("");
 }
 
 auto build_edu_transaction_body(std::string_view origin, std::string_view edu_type, std::string_view edu_content_json)

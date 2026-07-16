@@ -38,6 +38,11 @@ public:
     [[nodiscard]] auto bytes() noexcept -> std::span<std::uint8_t>;
     [[nodiscard]] auto bytes() const noexcept -> std::span<std::uint8_t const>;
 
+    // True if the underlying page was successfully mlock(2)-ed.  Callers that
+    // require locked memory (e.g. high-value secrets loaded from disk) can use
+    // this to fail closed when RLIMIT_MEMLOCK prevents locking.
+    [[nodiscard]] auto is_locked() const noexcept -> bool;
+
 private:
     // Zeroise (and unpin, if mlocked) the current buffer in place. Used by the
     // destructor and move-assignment before the buffer is replaced or freed.

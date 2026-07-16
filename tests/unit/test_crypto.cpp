@@ -152,6 +152,31 @@ SCENARIO("Crypto variable-length constant-time comparison hides length differenc
     }
 }
 
+SCENARIO("Crypto variable-length constant-time comparison fails closed on hash errors", "[crypto][security][boundary]")
+{
+    // libsodium hash failures cannot be triggered reliably from a unit test,
+    // but the observable contract is that any failure inside the hash path
+    // must return false rather than fall open.  We verify the normal unequal
+    // cases still reject, which is the only externally testable surface of
+    // the fail-closed path.
+    GIVEN("strings that differ in content or length")
+    {
+        WHEN("the comparison is made")
+        {
+            auto const different_content =
+                merovingian::crypto::constant_time_equal_variable_length("merovingian:a", "merovingian:b");
+            auto const different_length =
+                merovingian::crypto::constant_time_equal_variable_length("short", "a-much-longer-secret");
+
+            THEN("the result is false")
+            {
+                REQUIRE_FALSE(different_content);
+                REQUIRE_FALSE(different_length);
+            }
+        }
+    }
+}
+
 SCENARIO("Crypto random boundary rejects invalid request sizes", "[crypto]")
 {
     GIVEN("zero, bounded, and oversized requests")

@@ -34,8 +34,8 @@ namespace
     return config;
 }
 
-[[nodiscard]] auto remote_for(std::string const& origin, std::string const& key_id,
-                              std::string const& key_seed) -> merovingian::federation::FederationRemoteRuntime
+[[nodiscard]] auto remote_for(std::string const& origin, std::string const& key_id, std::string const& key_seed)
+    -> merovingian::federation::FederationRemoteRuntime
 {
     auto remote = merovingian::federation::FederationRemoteRuntime{};
     remote.server_name = origin;
@@ -49,9 +49,10 @@ namespace
     return remote;
 }
 
-[[nodiscard]] auto signed_make_request(
-    std::string const& origin, std::string const& key_id, std::string const& key_seed, std::string const& target,
-    std::string const& method = "GET") -> merovingian::federation::SignedFederationRequest
+[[nodiscard]] auto signed_make_request(std::string const& origin, std::string const& key_id,
+                                       std::string const& key_seed, std::string const& target,
+                                       std::string const& method = "GET")
+    -> merovingian::federation::SignedFederationRequest
 {
     auto request = merovingian::federation::SignedFederationRequest{};
     request.method = method;
@@ -69,8 +70,8 @@ namespace
 }
 
 [[nodiscard]] auto signed_put_request(std::string const& origin, std::string const& key_id, std::string const& key_seed,
-                                      std::string const& target,
-                                      std::string const& body) -> merovingian::federation::SignedFederationRequest
+                                      std::string const& target, std::string const& body)
+    -> merovingian::federation::SignedFederationRequest
 {
     auto request = merovingian::federation::SignedFederationRequest{};
     request.method = "PUT";
@@ -87,8 +88,8 @@ namespace
     return request;
 }
 
-[[nodiscard]] auto json_member(merovingian::canonicaljson::Object const& object,
-                               std::string_view key) -> merovingian::canonicaljson::Value const*
+[[nodiscard]] auto json_member(merovingian::canonicaljson::Object const& object, std::string_view key)
+    -> merovingian::canonicaljson::Value const*
 {
     for (auto const& member : object)
     {
@@ -196,6 +197,8 @@ SCENARIO("Backfill query parser collects event ids and limit, rejects malformed 
                 "/_matrix/federation/v1/backfill/!room:example.org?limit=10");
             auto const bad_limit = merovingian::federation::parse_backfill_query(
                 "/_matrix/federation/v1/backfill/!room:example.org?v=$e1&limit=notanumber");
+            auto const overflow_limit = merovingian::federation::parse_backfill_query(
+                "/_matrix/federation/v1/backfill/!room:example.org?v=$e1&limit=18446744073709551616");
 
             THEN("event ids decode, accumulate, limit parses, and bad shapes return nullopt")
             {
@@ -211,6 +214,7 @@ SCENARIO("Backfill query parser collects event ids and limit, rejects malformed 
                 REQUIRE(encoded->limit == 5U);
                 REQUIRE_FALSE(missing_v.has_value());
                 REQUIRE_FALSE(bad_limit.has_value());
+                REQUIRE_FALSE(overflow_limit.has_value());
             }
         }
     }

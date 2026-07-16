@@ -20,7 +20,10 @@
 #include <thread>
 #include <utility>
 
-#include <sodium.h>
+namespace merovingian::crypto
+{
+class IpcStreamCipher;
+} // namespace merovingian::crypto
 
 namespace merovingian::ipc
 {
@@ -157,11 +160,11 @@ private:
     auto dispatcher_loop() -> void;
 
     core::FileDescriptor fd_;
-    Role role_;
     std::uint32_t max_frame_bytes_{kIpcMaxFrameBytes};
 
-    crypto_secretstream_xchacha20poly1305_state push_state_{};
-    crypto_secretstream_xchacha20poly1305_state pull_state_{};
+    // Pimpl to the libsodium-backed stream cipher. Lives in src/crypto/ so the
+    // IPC module never calls libsodium directly (crypto-boundary rule, issue #396).
+    std::unique_ptr<crypto::IpcStreamCipher> cipher_;
 
     std::mutex write_mu_{};
     std::atomic<std::uint64_t> next_id_{1U};

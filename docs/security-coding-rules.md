@@ -148,15 +148,17 @@ quickly finding everything a given `AGENTS.md` file contributed.
 
 ## Cryptography
 
-- **Never call libsodium functions directly from outside `src/crypto/` or `src/events/`.**
+- **Never call libsodium functions directly from outside the permitted crypto boundary**
+  (`src/crypto/`, `src/events/`, `src/auth/`, and `src/core/secret_buffer.cpp`).
   Do not bypass the `Ed25519Provider` interface by calling libsodium directly, even inside
-  those two modules.
-  Why: confining crypto primitive usage to two reviewed modules means every use of a
-  primitive has been checked for correct parameter order, correct buffer sizing, and correct
-  error handling — the kind of mistake that turns a sound algorithm into a broken protocol.
-  It also means the whole codebase has exactly one place to update when a primitive's API or
+  those modules except where the module's own rules explicitly require it (e.g. `src/auth/`
+  for password hashing, `src/core/secret_buffer.cpp` for `mlock`/`munlock`).
+  Why: confining crypto primitive usage to reviewed modules means every use of a primitive
+  has been checked for correct parameter order, correct buffer sizing, and correct error
+  handling — the kind of mistake that turns a sound algorithm into a broken protocol. It
+  also means the whole codebase has exactly one place to update when a primitive's API or
   security guidance changes.
-  Source: `src/crypto/AGENTS.md`.
+  Source: `src/crypto/AGENTS.md`, `src/auth/AGENTS.md`, `src/core/AGENTS.md`.
 
 - **Always use constant-time comparison for secrets.** Call `constant_time_equal()` from
   `crypto/constant_time.hpp`; never use `==`, `memcmp`, or `std::equal` on secret bytes —

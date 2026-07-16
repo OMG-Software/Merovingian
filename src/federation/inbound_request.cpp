@@ -33,8 +33,6 @@
 #include <utility>
 #include <vector>
 
-#include <sodium.h>
-
 namespace merovingian::federation
 {
 namespace
@@ -79,12 +77,6 @@ namespace
         std::condition_variable cv_{};
         int count_;
     };
-
-    [[nodiscard]] auto sodium_is_ready() noexcept -> bool
-    {
-        static auto const ready = sodium_init() >= 0;
-        return ready;
-    }
 
     // Builds the Matrix canonical-JSON object signed for an X-Matrix request:
     // {content?, destination, method, origin, uri}. `content` is the request
@@ -1226,16 +1218,7 @@ namespace
         [[nodiscard]] auto verify(crypto::Ed25519PublicKey const& public_key, std::string_view message,
                                   crypto::Ed25519Signature const& signature) -> crypto::VerificationResult override
         {
-            if (!crypto::ed25519_public_key_shape_is_valid(public_key) ||
-                !crypto::ed25519_signature_shape_is_valid(signature))
-            {
-                return {false, "invalid Ed25519 material"};
-            }
-            auto const ok =
-                crypto_sign_verify_detached(reinterpret_cast<unsigned char const*>(signature.bytes.data()),
-                                            reinterpret_cast<unsigned char const*>(message.data()), message.size(),
-                                            reinterpret_cast<unsigned char const*>(public_key.bytes.data())) == 0;
-            return {ok, ok ? std::string{} : std::string{"signature verification failed"}};
+            return crypto::ed25519_verify(public_key, message, signature);
         }
     };
 
@@ -1261,16 +1244,16 @@ auto make_federation_signature(std::string_view origin, std::string_view destina
                                std::string_view target, std::string_view body, std::span<std::uint8_t const> secret_key)
     -> std::string
 {
-    if (!sodium_is_ready() || secret_key.size() != crypto_sign_SECRETKEYBYTES)
+    auto constexpr expected_secret_bytes = crypto::Ed25519Keypair{}.secret_key.size();
+    if (secret_key.size() != expected_secret_bytes)
     {
         // Key size mismatch means no signature can be produced. Log so operators
         // can detect misconfiguration without needing a debugger attached.
-        log_diagnostic("signature.key_size_invalid",
-                       {
-                           {"expected", std::to_string(crypto_sign_SECRETKEYBYTES), false},
-                           {"actual",   std::to_string(secret_key.size()),          false},
-                           {"origin",   std::string{origin},                        false},
-                           {"target",   std::string{target},                        false}
+        log_diagnostic("signature.key_size_invalid", {
+                                                         {"expected", std::to_string(expected_secret_bytes), false},
+                                                         {"actual",   std::to_string(secret_key.size()),     false},
+                                                         {"origin",   std::string{origin},                   false},
+                                                         {"target",   std::string{target},                   false}
         });
         return {};
     }
@@ -1301,14 +1284,14 @@ auto make_federation_signature(std::string_view origin, std::string_view destina
                                             {"embedded_pk",   embedded_pk,                     false},
                                             {"payload_bytes", std::to_string(payload->size()), false}
     });
-    auto signature = std::string(crypto_sign_BYTES, '\0');
-    if (crypto_sign_detached(reinterpret_cast<unsigned char*>(signature.data()), nullptr,
-                             reinterpret_cast<unsigned char const*>(payload->data()), payload->size(),
-                             reinterpret_cast<unsigned char const*>(secret_key.data())) != 0)
+    auto const signed_bytes = crypto::ed25519_sign_detached(
+        std::span<unsigned char const>{reinterpret_cast<unsigned char const*>(secret_key.data()), secret_key.size()},
+        *payload);
+    if (!signed_bytes.has_value())
     {
         return {};
     }
-    return events::matrix_base64_from_bytes(signature);
+    return events::matrix_base64_from_bytes(signed_bytes->bytes);
 }
 
 auto parse_x_matrix_authorization_header(std::string_view header_value) -> std::optional<XMatrixCredentials>
@@ -1436,11 +1419,11 @@ auto verify_signed_federation_request(SignedFederationRequest const& request, Fe
     auto const payload =
         federation_request_payload(request.origin, request.destination, request.method, request.target, request.body);
     auto const signature = events::matrix_bytes_from_base64(request.signature);
-    if (!payload.has_value() || !crypto::ed25519_signature_shape_is_valid(crypto::Ed25519Signature{signature}) ||
-        !crypto::ed25519_public_key_shape_is_valid(crypto::Ed25519PublicKey{key.public_key_bytes}) ||
-        crypto_sign_verify_detached(reinterpret_cast<unsigned char const*>(signature.data()),
-                                    reinterpret_cast<unsigned char const*>(payload->data()), payload->size(),
-                                    reinterpret_cast<unsigned char const*>(key.public_key_bytes.data())) != 0)
+    auto const verify_result = payload.has_value() ? std::optional<crypto::VerificationResult>{crypto::ed25519_verify(
+                                                         crypto::Ed25519PublicKey{std::string{key.public_key_bytes}},
+                                                         *payload, crypto::Ed25519Signature{std::string{signature}})}
+                                                   : std::nullopt;
+    if (!verify_result.has_value() || !verify_result->valid)
     {
         return make_decision(false, 403U, "request signature verification failed");
     }

@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 
@@ -21,6 +26,12 @@ struct Ed25519SecretKeyHandle final
 struct Ed25519Signature final
 {
     std::string bytes{};
+};
+
+struct Ed25519Keypair final
+{
+    std::array<std::uint8_t, 32U> public_key{};
+    std::array<std::uint8_t, 64U> secret_key{};
 };
 
 struct SignatureResult final
@@ -54,6 +65,11 @@ public:
 [[nodiscard]] auto ed25519_signature_shape_is_valid(Ed25519Signature const& signature) noexcept -> bool;
 [[nodiscard]] auto ed25519_key_id_is_valid(std::string_view key_id) noexcept -> bool;
 
+// Generate a fresh Ed25519 signing keypair. The secret key is the 64-byte
+// libsodium representation (seed || public key). Returns std::nullopt if
+// libsodium is unavailable or key generation fails.
+[[nodiscard]] auto generate_ed25519_keypair() -> std::optional<Ed25519Keypair>;
+
 // Stateless Ed25519 verification against an arbitrary public key — no signing key
 // store or provider is required, unlike Ed25519Provider::sign. Used to verify
 // signatures made by parties outside the federation trust store (e.g. an identity
@@ -61,5 +77,11 @@ public:
 // Ed25519Provider implementation for federation/event signature checks.
 [[nodiscard]] auto ed25519_verify(Ed25519PublicKey const& public_key, std::string_view message,
                                   Ed25519Signature const& signature) noexcept -> VerificationResult;
+
+// Sign a message with a raw 64-byte libsodium Ed25519 secret key. This is the
+// low-level primitive used by RuntimeEd25519Provider; callers that have a provider
+// should prefer Ed25519Provider::sign so the key never leaves the provider.
+[[nodiscard]] auto ed25519_sign_detached(std::span<unsigned char const> secret_key, std::string_view message)
+    -> std::optional<Ed25519Signature>;
 
 } // namespace merovingian::crypto
