@@ -73,16 +73,7 @@ namespace
         [[nodiscard]] auto verify(crypto::Ed25519PublicKey const& public_key, std::string_view message,
                                   crypto::Ed25519Signature const& signature) -> crypto::VerificationResult override
         {
-            if (!crypto::ed25519_public_key_shape_is_valid(public_key) ||
-                !crypto::ed25519_signature_shape_is_valid(signature))
-            {
-                return {false, "invalid Ed25519 material"};
-            }
-            auto const ok =
-                crypto_sign_verify_detached(reinterpret_cast<unsigned char const*>(signature.bytes.data()),
-                                            reinterpret_cast<unsigned char const*>(message.data()), message.size(),
-                                            reinterpret_cast<unsigned char const*>(public_key.bytes.data())) == 0;
-            return {ok, ok ? std::string{} : std::string{"signature verification failed"}};
+            return crypto::ed25519_verify(public_key, message, signature);
         }
 
     private:

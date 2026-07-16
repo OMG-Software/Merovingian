@@ -91,7 +91,8 @@ namespace
     // Spec: SS API §authorization-rules — receivers MUST check auth before persisting.
     [[nodiscard]] auto build_pdu_auth_event_map(database::PersistentStore const& store, std::string_view room_id,
                                                 std::string_view sender, std::string_view target_state_key,
-                                                std::string_view event_type) -> events::AuthEventMap
+                                                std::string_view event_type,
+                                                std::string_view third_party_invite_token = {}) -> events::AuthEventMap
     {
         auto load = [&](std::string_view event_id) -> canonicaljson::Value {
             for (auto const& evt : store.events)
@@ -135,6 +136,11 @@ namespace
                      state.state_key == target_state_key)
             {
                 result.target_member = load(state.event_id);
+            }
+            else if (state.event_type == "m.room.third_party_invite" && !third_party_invite_token.empty() &&
+                     state.state_key == third_party_invite_token)
+            {
+                result.third_party_invite = load(state.event_id);
             }
         }
         return result;
@@ -1690,8 +1696,19 @@ auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope
     // for the backend commit so independent rooms can commit in parallel.
     auto global_guard = std::unique_lock<std::recursive_mutex>{runtime.mutex};
 
+    auto const third_party_invite_token = [&]() -> std::string {
+        auto const* pdu_obj = std::get_if<canonicaljson::Object>(&pdu_parsed.value.storage());
+        auto const* content = pdu_obj == nullptr ? nullptr : object_member_as_object(*pdu_obj, "content");
+        auto const* third_party_invite =
+            content == nullptr ? nullptr : object_member_as_object(*content, "third_party_invite");
+        auto const* signed_obj =
+            third_party_invite == nullptr ? nullptr : object_member_as_object(*third_party_invite, "signed");
+        auto const* token = signed_obj == nullptr ? nullptr : string_member(*signed_obj, "token");
+        return token == nullptr ? std::string{} : *token;
+    }();
     auto const auth_map = build_pdu_auth_event_map(runtime.database.persistent_store, room_id, envelope.sender,
-                                                   envelope.state_key.value_or(std::string{}), envelope.event_type);
+                                                   envelope.state_key.value_or(std::string{}), envelope.event_type,
+                                                   third_party_invite_token);
     auto const auth_decision = events::authorize_event_against_auth_events(pdu_parsed.value, *room_policy, auth_map);
     if (!auth_decision.allowed)
     {

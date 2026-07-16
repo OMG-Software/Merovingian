@@ -245,6 +245,23 @@ namespace
             {
                 result.target_member = it->second.event_json;
             }
+
+            // Spec: rooms/v11.md rule 4.3.1.5 — 3PID-token invites are authorized
+            // against the m.room.third_party_invite event named by content's token.
+            auto const* content = object_member_as_object(*obj, "content");
+            auto const* third_party_invite =
+                content == nullptr ? nullptr : object_member_as_object(*content, "third_party_invite");
+            auto const* signed_obj =
+                third_party_invite == nullptr ? nullptr : object_member_as_object(*third_party_invite, "signed");
+            auto const* token = signed_obj == nullptr ? nullptr : string_member(*signed_obj, "token");
+            if (token != nullptr)
+            {
+                if (auto it = current_state.find(StateKey{"m.room.third_party_invite", *token});
+                    it != current_state.end())
+                {
+                    result.third_party_invite = it->second.event_json;
+                }
+            }
         }
         return result;
     }

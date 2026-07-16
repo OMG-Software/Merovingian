@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.10.56
+Version:        0.10.57
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -112,6 +112,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Thu Jul 16 2026 James Chapman <claude@ping.me.uk> - 0.10.57-1
+- feat(events): implement third-party (3PID) invite authorization (spec rule 4.3.1) and gate m.room.third_party_invite creation on invite power; add crypto::ed25519_verify.
+
 * Wed Jul 15 2026 James Chapman <claude@ping.me.uk> - 0.10.56-1
 - fix(security): redact a bare "token" query parameter in logs, stop requiring access-token authentication on /refresh, mark accepted client sockets close-on-exec, fail closed on floats in the signing/hashing canonical JSON path, and wrap the operator master key and its derived keys (secret-box, access-token HMAC, IPC auth) in zeroising buffers.
 

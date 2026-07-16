@@ -4,6 +4,8 @@
 #include "merovingian/events/authorization.hpp"
 
 #include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/crypto/ed25519.hpp"
+#include "merovingian/events/event_signer.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 
@@ -214,6 +216,175 @@ namespace
             return 100;
         }
         return 0;
+    }
+
+    // Every candidate public key a third-party invite's "signed" blob may be
+    // checked against: content.public_key (legacy single-key form) plus each
+    // entry of content.public_keys[].public_key.
+    // Spec: rooms/v11.md Authorization rules for m.room.member, rule 4.3.1.7.
+    [[nodiscard]] auto collect_third_party_invite_public_keys(canonicaljson::Value const& third_party_invite_event)
+        -> std::vector<std::string>
+    {
+        auto keys = std::vector<std::string>{};
+        auto const* event_obj = value_is_object(third_party_invite_event);
+        auto const* content = event_obj == nullptr ? nullptr : object_member_as_object(*event_obj, "content");
+        if (content == nullptr)
+        {
+            return keys;
+        }
+        if (auto const* single_key = string_member(*content, "public_key"); single_key != nullptr)
+        {
+            keys.push_back(*single_key);
+        }
+        if (auto const* list = object_member(*content, "public_keys"); list != nullptr)
+        {
+            if (auto const* array = std::get_if<canonicaljson::Array>(&list->storage()); array != nullptr)
+            {
+                for (auto const& entry : *array)
+                {
+                    auto const* entry_obj = value_is_object(entry);
+                    if (entry_obj == nullptr)
+                    {
+                        continue;
+                    }
+                    if (auto const* key = string_member(*entry_obj, "public_key"); key != nullptr)
+                    {
+                        keys.push_back(*key);
+                    }
+                }
+            }
+        }
+        return keys;
+    }
+
+    // Spec: rooms/v11.md rule 4.3.1.7 — "If any signature in signed matches any
+    // public key in the m.room.third_party_invite event, allow." The signed blob
+    // ({mxid, sender, token, signatures}) is signed like any other Matrix signed
+    // JSON object: canonical JSON with "signatures" (and "unsigned") stripped.
+    [[nodiscard]] auto third_party_invite_signature_is_valid(canonicaljson::Object const& signed_obj,
+                                                             canonicaljson::Value const& third_party_invite_event)
+        -> bool
+    {
+        auto const* signatures_value = object_member(signed_obj, "signatures");
+        auto const* signatures = signatures_value == nullptr ? nullptr : value_is_object(*signatures_value);
+        if (signatures == nullptr)
+        {
+            return false;
+        }
+
+        auto const candidate_keys = collect_third_party_invite_public_keys(third_party_invite_event);
+        if (candidate_keys.empty())
+        {
+            return false;
+        }
+
+        auto const payload = make_event_signing_payload(canonicaljson::Value{signed_obj});
+        if (payload.error != canonicaljson::CanonicalJsonError::none)
+        {
+            return false;
+        }
+
+        for (auto const& server_entry : *signatures)
+        {
+            auto const* key_signatures = value_is_object(*server_entry.value);
+            if (key_signatures == nullptr)
+            {
+                continue;
+            }
+            for (auto const& key_entry : *key_signatures)
+            {
+                auto const* signature_b64 = std::get_if<std::string>(&key_entry.value->storage());
+                if (signature_b64 == nullptr)
+                {
+                    continue;
+                }
+                auto const signature = crypto::Ed25519Signature{matrix_bytes_from_base64(*signature_b64)};
+                if (!crypto::ed25519_signature_shape_is_valid(signature))
+                {
+                    continue;
+                }
+                for (auto const& public_key_b64 : candidate_keys)
+                {
+                    auto const public_key = crypto::Ed25519PublicKey{matrix_bytes_from_base64(public_key_b64)};
+                    if (!crypto::ed25519_public_key_shape_is_valid(public_key))
+                    {
+                        continue;
+                    }
+                    if (crypto::ed25519_verify(public_key, payload.output, signature).valid)
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    // Spec: rooms/v11.md Authorization rules for m.room.member — rule 4.3.1.
+    // "If content has a third_party_invite property" — a fully self-contained
+    // decision tree that replaces the normal invite checks (target-not-joined,
+    // sender-joined, invite-power) for invites accepted via a 3PID token.
+    [[nodiscard]] auto authorize_third_party_invite(canonicaljson::Value const& third_party_invite_content,
+                                                    std::string_view state_key, std::string_view sender,
+                                                    MembershipState target_current_membership,
+                                                    canonicaljson::Value const& third_party_invite_event)
+        -> EventAuthorizationDecision
+    {
+        // 4.3.1.1: target user banned -> reject.
+        if (target_current_membership == MembershipState::ban)
+        {
+            return make_denied("6", "banned user cannot accept a third-party invite");
+        }
+
+        // 4.3.1.2: third_party_invite must have a "signed" property.
+        auto const* tpi_obj = value_is_object(third_party_invite_content);
+        auto const* signed_value = tpi_obj == nullptr ? nullptr : object_member(*tpi_obj, "signed");
+        auto const* signed_obj = signed_value == nullptr ? nullptr : value_is_object(*signed_value);
+        if (signed_obj == nullptr)
+        {
+            return make_denied("6", "third_party_invite missing signed property");
+        }
+
+        // 4.3.1.3: "signed" must have "mxid" and "token".
+        auto const* mxid = string_member(*signed_obj, "mxid");
+        auto const* token = string_member(*signed_obj, "token");
+        if (mxid == nullptr || token == nullptr)
+        {
+            return make_denied("6", "third_party_invite signed is missing mxid or token");
+        }
+
+        // 4.3.1.4: mxid must match the event's state_key.
+        if (*mxid != state_key)
+        {
+            return make_denied("6", "third_party_invite signed mxid does not match state_key");
+        }
+
+        // 4.3.1.5: an m.room.third_party_invite event with state_key == token must
+        // be present in current room state.
+        auto const* tpi_event_obj = value_is_object(third_party_invite_event);
+        auto const* tpi_event_state_key =
+            tpi_event_obj == nullptr ? nullptr : string_member(*tpi_event_obj, "state_key");
+        if (!value_has_content(third_party_invite_event) || tpi_event_state_key == nullptr ||
+            *tpi_event_state_key != *token)
+        {
+            return make_denied("6", "no matching m.room.third_party_invite event for token");
+        }
+
+        // 4.3.1.6: sender must match the sender of the m.room.third_party_invite event.
+        auto const* tpi_event_sender = string_member(*tpi_event_obj, "sender");
+        if (tpi_event_sender == nullptr || *tpi_event_sender != sender)
+        {
+            return make_denied("6", "sender does not match m.room.third_party_invite sender");
+        }
+
+        // 4.3.1.7 / 4.3.1.8: a signature in "signed" must verify against a public
+        // key carried by the m.room.third_party_invite event; otherwise reject.
+        if (!third_party_invite_signature_is_valid(*signed_obj, third_party_invite_event))
+        {
+            return make_denied("6", "third_party_invite signature does not match any public key");
+        }
+
+        return make_allowed("6");
     }
 
 } // namespace
@@ -684,6 +855,17 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
         // Step 6: invites
         if (requested == MembershipState::invite)
         {
+            // Rule 4.3.1: a 3PID-token invite is a fully self-contained decision —
+            // it replaces (does not supplement) the normal invite checks below.
+            auto const* content_obj = object_member_as_object(*obj, "content");
+            auto const* third_party_invite_value =
+                content_obj == nullptr ? nullptr : object_member(*content_obj, "third_party_invite");
+            if (third_party_invite_value != nullptr && value_is_object(*third_party_invite_value) != nullptr)
+            {
+                return authorize_third_party_invite(*third_party_invite_value, *state_key, *sender,
+                                                    target_current_membership, auth_events.third_party_invite);
+            }
+
             // Target must not be currently joined or banned
             if (target_current_membership == MembershipState::join)
             {
@@ -809,6 +991,25 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
     if (sender_membership != MembershipState::join)
     {
         return make_denied("10", "sender is not joined to the room");
+    }
+
+    // Step 6 (spec numbering): m.room.third_party_invite is gated on the room's
+    // invite power level specifically, not the generic state_default power used
+    // by other state events at step 13 below.
+    // Spec: rooms/v11.md Authorization rules, "6. If type is
+    // m.room.third_party_invite: allow if and only if sender's current power
+    // level is greater than or equal to the invite level."
+    if (*event_type == "m.room.third_party_invite")
+    {
+        auto const invite_power = value_has_content(auth_events.power_levels)
+                                      ? extract_power_level_key(auth_events.power_levels, "invite", 0)
+                                      : 0;
+        auto const sender_power = effective_sender_power(auth_events.power_levels, *sender, auth_events.create, policy);
+        if (sender_power < invite_power)
+        {
+            return make_denied("6", "insufficient power to create a third-party invite");
+        }
+        return make_allowed("6");
     }
 
     // Step 11: check power levels for the event type
