@@ -58,8 +58,8 @@ private:
 // libraries afterwards: it closes descriptors those libraries cache. In
 // particular, on NetBSD libsodium keeps a persistent /dev/urandom descriptor
 // (Linux/FreeBSD use the getrandom(2)/arc4random syscalls and hold no fd), so a
-// sweep there silently breaks every subsequent libsodium RNG call with
-// sodium_misuse() -> abort(). Tests that must exercise the sweep should fork and
+// sweep there silently breaks every subsequent libsodium RNG call, which the
+// library handles by calling abort(). Tests that must exercise the sweep should fork and
 // run it in a throwaway child.
 auto close_all_file_descriptors_except(std::set<int> const& keep_open) noexcept -> void;
 

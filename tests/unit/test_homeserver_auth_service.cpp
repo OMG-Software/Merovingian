@@ -19,6 +19,7 @@
 
 #include "../support/registration_token.hpp"
 #include "merovingian/auth/identity.hpp"
+#include "merovingian/auth/password.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/runtime.hpp"
@@ -560,6 +561,77 @@ SCENARIO("access_token_is_soft_logout returns false for empty and unknown tokens
             THEN("returns false — unknown tokens are not soft-logout candidates")
             {
                 REQUIRE_FALSE(soft);
+            }
+        }
+    }
+}
+
+// --- load_hashed_registration_token ------------------------------------------------
+
+SCENARIO("load_hashed_registration_token loads and hashes a token file once",
+         "[homeserver][auth][registration][security]")
+{
+    GIVEN("a registration token file")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto token_file = merovingian::tests::registration_token_file();
+        auto config = merovingian::config::RegistrationSecurityConfig{};
+        config.enabled = true;
+        config.require_token = true;
+        config.token_file = token_file;
+
+        WHEN("the token file is hashed")
+        {
+            auto const first = merovingian::homeserver::load_hashed_registration_token(config);
+
+            THEN("a non-empty Argon2id hash is returned")
+            {
+                REQUIRE(first.has_value());
+                REQUIRE(!first->empty());
+            }
+        }
+
+        WHEN("the hash is used to verify the original token")
+        {
+            auto const hash = merovingian::homeserver::load_hashed_registration_token(config);
+
+            THEN("the correct token validates and an incorrect token is rejected")
+            {
+                REQUIRE(hash.has_value());
+                REQUIRE(merovingian::auth::registration_token_matches(
+                    *hash, std::string{merovingian::tests::registration_token}));
+                REQUIRE_FALSE(merovingian::auth::registration_token_matches(*hash, "not-the-token"));
+            }
+        }
+
+        WHEN("the same token file is hashed twice")
+        {
+            auto const first = merovingian::homeserver::load_hashed_registration_token(config);
+            auto const second = merovingian::homeserver::load_hashed_registration_token(config);
+
+            THEN("the second call returns the cached hash without re-reading the file")
+            {
+                REQUIRE(first.has_value());
+                REQUIRE(second.has_value());
+                REQUIRE(*first == *second);
+            }
+        }
+    }
+
+    GIVEN("a missing token file")
+    {
+        auto config = merovingian::config::RegistrationSecurityConfig{};
+        config.enabled = true;
+        config.require_token = true;
+        config.token_file = "/nonexistent/registration/token/file.txt";
+
+        WHEN("load_hashed_registration_token is called")
+        {
+            auto const hash = merovingian::homeserver::load_hashed_registration_token(config);
+
+            THEN("no hash is returned so registration is rejected")
+            {
+                REQUIRE_FALSE(hash.has_value());
             }
         }
     }

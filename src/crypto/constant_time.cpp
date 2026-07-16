@@ -4,6 +4,7 @@
 #include "merovingian/crypto/constant_time.hpp"
 
 #include <array>
+#include <optional>
 #include <span>
 #include <string_view>
 #include <tuple>
@@ -39,26 +40,41 @@ auto constant_time_equal(std::string_view left, std::string_view right) noexcept
 
 auto constant_time_equal_variable_length(std::string_view left, std::string_view right) noexcept -> bool
 {
-    auto hash_one = [](std::string_view value) -> std::array<unsigned char, crypto_generichash_BYTES> {
+    // Treat any libsodium failure as "not equal" rather than producing a zero
+    // digest, which would create a fail-open path if both inputs fail to hash.
+    auto hash_one = [](std::string_view value) -> std::optional<std::array<unsigned char, crypto_generichash_BYTES>> {
         auto digest = std::array<unsigned char, crypto_generichash_BYTES>{};
         auto state = crypto_generichash_state{};
         if (crypto_generichash_init(&state, nullptr, 0U, crypto_generichash_BYTES) != 0)
         {
-            return digest;
+            return std::nullopt;
         }
         // Domain separation: prefix every input with the public context string so
         // the comparison digest cannot be confused with hashes produced elsewhere.
-        std::ignore = crypto_generichash_update(
-            &state, reinterpret_cast<unsigned char const*>(comparison_context.data()), comparison_context.size());
-        std::ignore = crypto_generichash_update(&state, reinterpret_cast<unsigned char const*>(value.data()),
-                                                static_cast<unsigned long long>(value.size()));
-        std::ignore = crypto_generichash_final(&state, digest.data(), digest.size());
+        if (crypto_generichash_update(&state, reinterpret_cast<unsigned char const*>(comparison_context.data()),
+                                      comparison_context.size()) != 0)
+        {
+            return std::nullopt;
+        }
+        if (crypto_generichash_update(&state, reinterpret_cast<unsigned char const*>(value.data()),
+                                      static_cast<unsigned long long>(value.size())) != 0)
+        {
+            return std::nullopt;
+        }
+        if (crypto_generichash_final(&state, digest.data(), digest.size()) != 0)
+        {
+            return std::nullopt;
+        }
         return digest;
     };
 
     auto const left_digest = hash_one(left);
     auto const right_digest = hash_one(right);
-    return sodium_memcmp(left_digest.data(), right_digest.data(), left_digest.size()) == 0;
+    if (!left_digest.has_value() || !right_digest.has_value())
+    {
+        return false;
+    }
+    return sodium_memcmp(left_digest->data(), right_digest->data(), left_digest->size()) == 0;
 }
 
 } // namespace merovingian::crypto

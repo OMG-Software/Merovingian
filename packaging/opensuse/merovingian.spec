@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.10.58
+Version:        0.10.59
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -112,6 +112,11 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Thu Jul 16 2026 James Chapman <claude@ping.me.uk> - 0.10.59-1
+- Security/crypto-boundary (issue #396): route all libsodium access through src/crypto/ and src/auth/; src/ipc/channel.cpp now uses crypto::IpcStreamCipher.
+- Registration token loading (issue #406): load token file into core::SecretBuffer and fail closed if mlock fails.
+- Key-backup deletion (issue #404): scope session deletion to (user_id, version).
+
 * Thu Jul 16 2026 James Chapman <claude@ping.me.uk> - 0.10.58-1
 - docs: restructure README.md around latest-release, artifact verification, installation/configuration, first-start, upgrade, and troubleshooting sections.
 

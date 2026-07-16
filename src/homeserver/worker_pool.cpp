@@ -3,6 +3,8 @@
 
 #include "merovingian/homeserver/worker_pool.hpp"
 
+#include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/events/event_signer.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
@@ -14,7 +16,6 @@
 #include "merovingian/net/thread_pool.hpp"
 #include "merovingian/observability/logger.hpp"
 
-#include <charconv>
 #include <chrono>
 #include <cstdint>
 #include <functional>
@@ -33,6 +34,9 @@ namespace
 {
 
     // Minimal JSON helpers for sign_request / pdu_ingest frames.
+    // Serializers (json_str, json_str_array_literal) build wire JSON.  Parsers
+    // below use canonicaljson::parse_json instead of substring scanning so
+    // escaping, whitespace, and nested keys are handled correctly.
 
     auto json_str(std::string_view s) -> std::string
     {
@@ -83,186 +87,169 @@ namespace
         return result;
     }
 
-    auto json_get_str(std::string_view json, std::string_view key) -> std::string
+    // Typed JSON accessors used by the deserializers below.
+    [[nodiscard]] auto object_member(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> canonicaljson::Value const*
     {
-        auto const needle = std::string{"\""} + std::string{key} + "\":\"";
-        auto const pos = json.find(needle);
-        if (pos == std::string_view::npos)
+        for (auto const& member : object)
+        {
+            if (member.key == key)
+            {
+                return member.value.get();
+            }
+        }
+        return nullptr;
+    }
+
+    [[nodiscard]] auto string_member(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> std::string const*
+    {
+        auto const* value = object_member(object, key);
+        if (value == nullptr)
+        {
+            return nullptr;
+        }
+        return std::get_if<std::string>(&value->storage());
+    }
+
+    [[nodiscard]] auto integer_member(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> std::int64_t const*
+    {
+        auto const* value = object_member(object, key);
+        if (value == nullptr)
+        {
+            return nullptr;
+        }
+        return std::get_if<std::int64_t>(&value->storage());
+    }
+
+    [[nodiscard]] auto array_member(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> canonicaljson::Array const*
+    {
+        auto const* value = object_member(object, key);
+        if (value == nullptr)
+        {
+            return nullptr;
+        }
+        return std::get_if<canonicaljson::Array>(&value->storage());
+    }
+
+    [[nodiscard]] auto string_array_from_json(canonicaljson::Array const* array) -> std::vector<std::string>
+    {
+        auto result = std::vector<std::string>{};
+        if (array == nullptr)
+        {
+            return result;
+        }
+        for (auto const& entry : *array)
+        {
+            if (auto const* text = std::get_if<std::string>(&entry.storage()); text != nullptr)
+            {
+                result.push_back(*text);
+            }
+        }
+        return result;
+    } // Backward-compatible wrappers that parse with canonicaljson and use the
+    // typed accessors above.  These replace the previous hand-rolled substring
+    // scanners (issues #403 and #397) without requiring every call site to be
+    // rewritten.  Functions that extract many fields parse once in their own
+    // deserialize_* helpers for efficiency.
+    [[nodiscard]] auto json_get_str(std::string_view json, std::string_view key) -> std::string
+    {
+        auto const parsed = canonicaljson::parse_json(json);
+        if (parsed.error != canonicaljson::ParseError::none)
         {
             return {};
         }
-        auto i = pos + needle.size();
-        auto result = std::string{};
-        while (i < json.size())
+        auto const* root = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+        if (root == nullptr)
         {
-            auto const ch = json[i];
-            if (ch == '\"')
-            {
-                break;
-            }
-            if (ch == '\\' && i + 1 < json.size())
-            {
-                ++i;
-                switch (json[i])
-                {
-                case '\"':
-                    result += '\"';
-                    break;
-                case '\\':
-                    result += '\\';
-                    break;
-                case 'b':
-                    result += '\b';
-                    break;
-                case 'f':
-                    result += '\f';
-                    break;
-                case 'n':
-                    result += '\n';
-                    break;
-                case 'r':
-                    result += '\r';
-                    break;
-                case 't':
-                    result += '\t';
-                    break;
-                default:
-                    result += json[i];
-                    break;
-                }
-            }
-            else
-            {
-                result += ch;
-            }
-            ++i;
+            return {};
         }
-        return result;
-    }
-
-    auto json_get_u64(std::string_view json, std::string_view key) -> std::uint64_t
-    {
-        auto const needle = std::string{"\""} + std::string{key} + "\":";
-        auto const pos = json.find(needle);
-        if (pos == std::string_view::npos)
-        {
-            return 0U;
-        }
-        auto const start = pos + needle.size();
-        auto value = std::uint64_t{0U};
-        std::from_chars(json.data() + start, json.data() + json.size(), value);
-        return value;
-    }
-
-    auto json_str_array(std::string_view json, std::size_t pos) -> std::vector<std::string>
-    {
-        auto result = std::vector<std::string>{};
-        while (pos < json.size() && json[pos] != ']')
-        {
-            if (json[pos] == '\"')
-            {
-                ++pos;
-                auto item = std::string{};
-                while (pos < json.size() && json[pos] != '\"')
-                {
-                    if (json[pos] == '\\' && pos + 1 < json.size())
-                    {
-                        ++pos;
-                        switch (json[pos])
-                        {
-                        case '\"':
-                            item += '\"';
-                            break;
-                        case '\\':
-                            item += '\\';
-                            break;
-                        case 'n':
-                            item += '\n';
-                            break;
-                        case 'r':
-                            item += '\r';
-                            break;
-                        case 't':
-                            item += '\t';
-                            break;
-                        default:
-                            item += json[pos];
-                            break;
-                        }
-                    }
-                    else
-                    {
-                        item += json[pos];
-                    }
-                    ++pos;
-                }
-                result.push_back(std::move(item));
-            }
-            ++pos;
-        }
-        return result;
+        auto const* value = string_member(*root, key);
+        return value == nullptr ? std::string{} : *value;
     }
 
     auto deserialize_pdu_ingest(std::string_view json) -> federation::InboundPduEnvelope
     {
         auto env = federation::InboundPduEnvelope{};
-        env.event_id = json_get_str(json, "event_id");
-        env.room_id = json_get_str(json, "room_id");
-        env.room_version = json_get_str(json, "room_version");
-        env.sender = json_get_str(json, "sender");
-        env.event_type = json_get_str(json, "event_type");
-        env.origin_server_ts = static_cast<std::int64_t>(json_get_u64(json, "origin_server_ts"));
-        env.depth = json_get_u64(json, "depth");
-        env.json = json_get_str(json, "json");
-
-        auto const sk_needle = std::string_view{R"("state_key":")"};
-        auto const sk_pos = json.find(sk_needle);
-        if (sk_pos != std::string_view::npos)
+        auto const parsed = canonicaljson::parse_json(json);
+        if (parsed.error != canonicaljson::ParseError::none)
         {
-            env.state_key = json_get_str(json, "state_key");
+            return env;
+        }
+        auto const* root = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+        if (root == nullptr)
+        {
+            return env;
         }
 
-        auto const aei_needle = std::string_view{R"("auth_event_ids":[)"};
-        auto const aei_pos = json.find(aei_needle);
-        if (aei_pos != std::string_view::npos)
+        if (auto const* value = string_member(*root, "event_id"); value != nullptr)
         {
-            env.auth_event_ids = json_str_array(json, aei_pos + aei_needle.size());
+            env.event_id = *value;
+        }
+        if (auto const* value = string_member(*root, "room_id"); value != nullptr)
+        {
+            env.room_id = *value;
+        }
+        if (auto const* value = string_member(*root, "room_version"); value != nullptr)
+        {
+            env.room_version = *value;
+        }
+        if (auto const* value = string_member(*root, "sender"); value != nullptr)
+        {
+            env.sender = *value;
+        }
+        if (auto const* value = string_member(*root, "event_type"); value != nullptr)
+        {
+            env.event_type = *value;
+        }
+        if (auto const* value = integer_member(*root, "origin_server_ts"); value != nullptr)
+        {
+            env.origin_server_ts = *value;
+        }
+        if (auto const* value = integer_member(*root, "depth"); value != nullptr && *value >= 0)
+        {
+            env.depth = static_cast<std::uint64_t>(*value);
+        }
+        if (auto const* value = string_member(*root, "json"); value != nullptr)
+        {
+            env.json = *value;
+        }
+        if (auto const* value = string_member(*root, "state_key"); value != nullptr)
+        {
+            env.state_key = *value;
         }
 
-        auto const pei_needle = std::string_view{R"("prev_event_ids":[)"};
-        auto const pei_pos = json.find(pei_needle);
-        if (pei_pos != std::string_view::npos)
-        {
-            env.prev_event_ids = json_str_array(json, pei_pos + pei_needle.size());
-        }
+        env.auth_event_ids = string_array_from_json(array_member(*root, "auth_event_ids"));
+        env.prev_event_ids = string_array_from_json(array_member(*root, "prev_event_ids"));
 
-        auto const sigs_needle = std::string_view{R"("signatures":[)"};
-        auto const sigs_pos = json.find(sigs_needle);
-        if (sigs_pos != std::string_view::npos)
+        if (auto const* signatures = array_member(*root, "signatures"); signatures != nullptr)
         {
-            auto pos = sigs_pos + sigs_needle.size();
-            while (pos < json.size() && json[pos] != ']')
+            for (auto const& entry : *signatures)
             {
-                auto const obj_start = json.find('{', pos);
-                if (obj_start == std::string_view::npos)
+                auto const* sig_obj = std::get_if<canonicaljson::Object>(&entry.storage());
+                if (sig_obj == nullptr)
                 {
-                    break;
+                    continue;
                 }
-                auto const obj_end = json.find('}', obj_start);
-                if (obj_end == std::string_view::npos)
-                {
-                    break;
-                }
-                auto const obj = json.substr(obj_start, obj_end - obj_start + 1U);
                 auto sig = events::EventSignature{};
-                sig.server_name = json_get_str(obj, "sn");
-                sig.key_id = json_get_str(obj, "ki");
-                sig.signature = json_get_str(obj, "sig");
+                if (auto const* sn = string_member(*sig_obj, "sn"); sn != nullptr)
+                {
+                    sig.server_name = *sn;
+                }
+                if (auto const* ki = string_member(*sig_obj, "ki"); ki != nullptr)
+                {
+                    sig.key_id = *ki;
+                }
+                if (auto const* s = string_member(*sig_obj, "sig"); s != nullptr)
+                {
+                    sig.signature = *s;
+                }
                 if (!sig.server_name.empty())
                 {
                     env.signatures.push_back(std::move(sig));
                 }
-                pos = obj_end + 1U;
             }
         }
 
@@ -394,10 +381,22 @@ namespace
     // from a worker.
     [[nodiscard]] auto deserialize_edu_ingest(std::string_view json) -> std::optional<federation::InboundEduEnvelope>
     {
-        auto const edu_type = json_get_str(json, "edu_type");
-        auto const origin = json_get_str(json, "origin");
-        auto const content_json = json_get_str(json, "content_json");
-        return federation::parse_inbound_edu_envelope(edu_type, origin, content_json);
+        auto const parsed = canonicaljson::parse_json(json);
+        if (parsed.error != canonicaljson::ParseError::none)
+        {
+            return std::nullopt;
+        }
+        auto const* root = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+        if (root == nullptr)
+        {
+            return std::nullopt;
+        }
+        auto const edu_type = string_member(*root, "edu_type");
+        auto const origin = string_member(*root, "origin");
+        auto const content_json = string_member(*root, "content_json");
+        return federation::parse_inbound_edu_envelope(edu_type == nullptr ? std::string{} : *edu_type,
+                                                      origin == nullptr ? std::string{} : *origin,
+                                                      content_json == nullptr ? std::string{} : *content_json);
     }
 
     auto serialize_edu_ingest_result(federation::EduDispositionResult const& result) -> std::string
@@ -429,16 +428,33 @@ namespace
     [[nodiscard]] auto deserialize_invite_ingest(std::string_view json) -> federation::InviteRequest
     {
         auto request = federation::InviteRequest{};
-        request.room_id = json_get_str(json, "room_id");
-        request.event_id = json_get_str(json, "event_id");
-        request.room_version = json_get_str(json, "room_version");
-        request.invite_event_json = json_get_str(json, "invite_event_json");
-        auto const irs_needle = std::string_view{R"("invite_room_state_json":[)"};
-        auto const irs_pos = json.find(irs_needle);
-        if (irs_pos != std::string_view::npos)
+        auto const parsed = canonicaljson::parse_json(json);
+        if (parsed.error != canonicaljson::ParseError::none)
         {
-            request.invite_room_state_json = json_str_array(json, irs_pos + irs_needle.size());
+            return request;
         }
+        auto const* root = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+        if (root == nullptr)
+        {
+            return request;
+        }
+        if (auto const* value = string_member(*root, "room_id"); value != nullptr)
+        {
+            request.room_id = *value;
+        }
+        if (auto const* value = string_member(*root, "event_id"); value != nullptr)
+        {
+            request.event_id = *value;
+        }
+        if (auto const* value = string_member(*root, "room_version"); value != nullptr)
+        {
+            request.room_version = *value;
+        }
+        if (auto const* value = string_member(*root, "invite_event_json"); value != nullptr)
+        {
+            request.invite_event_json = *value;
+        }
+        request.invite_room_state_json = string_array_from_json(array_member(*root, "invite_room_state_json"));
         return request;
     }
 
@@ -974,8 +990,8 @@ auto WorkerPool::shard_for(std::string_view room_id) const noexcept -> std::size
     return federation_worker_shard_for(room_id, cfg_.shards);
 }
 
-auto WorkerPool::send_outbound_request(http::OutboundRequest const& request,
-                                       std::string_view room_id) -> http::OutboundResult
+auto WorkerPool::send_outbound_request(http::OutboundRequest const& request, std::string_view room_id)
+    -> http::OutboundResult
 {
     auto const index = shard_for(room_id);
     if (index >= workers_.size())

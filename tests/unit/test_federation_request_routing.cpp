@@ -63,6 +63,42 @@ SCENARIO("EDU-only federation send transactions bypass the worker pool", "[feder
     }
 }
 
+SCENARIO("Federation /send room_id extraction uses the real JSON parser", "[federation][routing][room-id][json]")
+{
+    GIVEN("a /send body whose first PDU contains a decoy substring before the real room_id")
+    {
+        auto request = make_request(
+            "/_matrix/federation/v1/send/txn-decoy",
+            R"({"pdus":[{"content":{"room_id":"!decoy:example.org"},"room_id":"!real:example.org","event_id":"$event"}]})");
+        request.method = "PUT";
+
+        WHEN("the room_id is extracted")
+        {
+            THEN("the real room_id is returned, not the nested decoy")
+            {
+                REQUIRE(federation_worker_room_id_from_request(request) == "!real:example.org");
+                REQUIRE_FALSE(federation_request_should_bypass_worker(request));
+            }
+        }
+    }
+
+    GIVEN("a /send body with a Unicode-escaped room_id and extra whitespace")
+    {
+        auto request =
+            make_request("/_matrix/federation/v1/send/txn-unicode",
+                         "{\"pdus\": [ { \"room_id\" : \"!room\\u003aexample.org\" , \"event_id\" : \"$event\" } ] }");
+        request.method = "PUT";
+
+        WHEN("the room_id is extracted")
+        {
+            THEN("the escaped room_id is decoded correctly")
+            {
+                REQUIRE(federation_worker_room_id_from_request(request) == "!room:example.org");
+            }
+        }
+    }
+}
+
 SCENARIO("Federation media download bypasses the worker pool because the worker has no local media repository",
          "[federation][routing][worker-bypass][media]")
 {

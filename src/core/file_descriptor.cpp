@@ -169,12 +169,18 @@ namespace
                 continue;
             }
             char* end = nullptr;
-            auto const fd = static_cast<int>(std::strtol(entry->d_name, &end, 10));
-            if (end == entry->d_name || *end != '\0')
+            errno = 0;
+            auto const parsed = std::strtol(entry->d_name, &end, 10);
+            if (end == entry->d_name || *end != '\0' || errno != 0)
             {
                 continue;
             }
-            if (fd < 0 || keep.contains(fd))
+            if (parsed < 0 || parsed > INT_MAX)
+            {
+                continue;
+            }
+            auto const fd = static_cast<int>(parsed);
+            if (keep.contains(fd))
             {
                 continue;
             }

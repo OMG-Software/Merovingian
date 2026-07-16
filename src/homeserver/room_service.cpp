@@ -55,8 +55,6 @@
 #include <variant>
 #include <vector>
 
-#include <sodium.h>
-
 namespace merovingian::homeserver
 {
 namespace
@@ -201,12 +199,6 @@ namespace
     [[nodiscard]] auto record_room_share_ended_device_changes(HomeserverRuntime& runtime, std::string_view room_id,
                                                               std::string_view departing_user_id) -> bool;
 
-    [[nodiscard]] auto sodium_is_ready() noexcept -> bool
-    {
-        static auto const ready = sodium_init() >= 0;
-        return ready;
-    }
-
     [[nodiscard]] auto find_room(LocalDatabase& database, std::string_view room_id) -> LocalRoom*
     {
         auto const iterator = std::ranges::find_if(database.rooms, [room_id](LocalRoom const& room) {
@@ -244,17 +236,6 @@ namespace
     {
         auto const pos = sender.rfind(':');
         return pos == std::string_view::npos || pos + 1U >= sender.size() ? std::string_view{} : sender.substr(pos + 1);
-    }
-
-    auto generate_random_signing_keypair(std::array<unsigned char, crypto_sign_PUBLICKEYBYTES>& public_key,
-                                         std::array<unsigned char, crypto_sign_SECRETKEYBYTES>& secret_key) noexcept
-        -> bool
-    {
-        if (!sodium_is_ready())
-        {
-            return false;
-        }
-        return crypto_sign_keypair(public_key.data(), secret_key.data()) == 0;
     }
 
     // Load the operator-supplied master key material from the configured file,
@@ -1434,7 +1415,8 @@ namespace
         resolved_port = resolution.resolved_port;
         pinned_addresses = resolution.pinned_addresses;
     }
-    if (secret_key.size() != crypto_sign_SECRETKEYBYTES)
+    auto constexpr expected_secret_bytes = crypto::Ed25519Keypair{}.secret_key.size();
+    if (secret_key.size() != expected_secret_bytes)
     {
         log_diagnostic(diagnostic_event, {
                                              {"reason", "server signing key not initialized", false}
@@ -1509,8 +1491,7 @@ namespace
     // Tying the id to the key material gives every generated key a unique id, so a
     // stale federation notary cache for a previous id becomes irrelevant after a
     // rotation. Shared by key generation and key rotation.
-    [[nodiscard]] auto derive_ed25519_key_id(std::array<unsigned char, crypto_sign_PUBLICKEYBYTES> const& public_key)
-        -> std::string
+    [[nodiscard]] auto derive_ed25519_key_id(std::span<unsigned char const> public_key) -> std::string
     {
         static constexpr auto hex_digits = std::string_view{"0123456789abcdef"};
         auto key_version = std::string{};
@@ -1561,8 +1542,9 @@ namespace
         // size before trusting it.  Fail closed if the secret cannot hydrate into a
         // full Ed25519 secret key — attempting to sign with wrong-length material
         // produces corrupt signatures.
+        auto constexpr expected_secret_bytes = crypto::Ed25519Keypair{}.secret_key.size();
         auto const raw_secret = decrypt_stored_signing_secret(runtime, it->secret_key);
-        if (!raw_secret.has_value() || raw_secret->size() != crypto_sign_SECRETKEYBYTES)
+        if (!raw_secret.has_value() || raw_secret->size() != expected_secret_bytes)
         {
             log_diagnostic(
                 "signing_key.rejected",
@@ -1571,7 +1553,7 @@ namespace
                     {"key_id",      it->key_id,                                                              false},
                     {"reason",      "secret_size_invalid",                                                   false},
                     {"secret_size", std::to_string(raw_secret.value_or(std::vector<std::uint8_t>{}).size()), false},
-                    {"expected",    std::to_string(crypto_sign_SECRETKEYBYTES),                              false}
+                    {"expected",    std::to_string(expected_secret_bytes),                                   false}
             });
             return std::nullopt;
         }
@@ -1599,16 +1581,15 @@ namespace
                                                  {"has_legacy_key", has_legacy ? "true" : "false", false}
     });
 
-    auto public_key = std::array<unsigned char, crypto_sign_PUBLICKEYBYTES>{};
-    auto secret_key = std::array<unsigned char, crypto_sign_SECRETKEYBYTES>{};
-    if (!generate_random_signing_keypair(public_key, secret_key))
+    auto const keypair = crypto::generate_ed25519_keypair();
+    if (!keypair.has_value())
     {
         return std::nullopt;
     }
 
     // Derive the key_id from the public key material so each new key gets a unique
     // id; stale notary-cache entries for old ids become irrelevant after rotation.
-    auto const key_id = derive_ed25519_key_id(public_key);
+    auto const key_id = derive_ed25519_key_id(keypair->public_key);
 
     // Publish now + 7 days as valid_until_ts so federation peers periodically
     // re-fetch the key rather than caching it indefinitely.
@@ -1621,7 +1602,7 @@ namespace
     // compatibility a server without a configured master key falls back to the
     // legacy plaintext base64 format, but a diagnostic is emitted so operators know
     // the secret is not protected at rest.
-    auto secret_span = std::span<std::uint8_t const>{secret_key.data(), secret_key.size()};
+    auto secret_span = std::span<std::uint8_t const>{keypair->secret_key.data(), keypair->secret_key.size()};
     auto stored_secret = encrypt_signing_secret(runtime, secret_span);
     auto encrypted = std::string{"true"};
     if (!stored_secret.has_value())
@@ -1635,8 +1616,8 @@ namespace
                     {"reason",      "security.secrets.master_key_file not configured; storing signing secret in plaintext",
                      false                                                                                                       }
             });
-            stored_secret = events::matrix_base64_from_bytes(
-                std::string_view{reinterpret_cast<char const*>(secret_key.data()), secret_key.size()});
+            stored_secret = events::matrix_base64_from_bytes(std::string_view{
+                reinterpret_cast<char const*>(keypair->secret_key.data()), keypair->secret_key.size()});
             encrypted = "false";
         }
         else
@@ -1653,7 +1634,7 @@ namespace
         std::string{server_name},
         key_id,
         events::matrix_base64_from_bytes(
-            std::string_view{reinterpret_cast<char const*>(public_key.data()), public_key.size()}),
+            std::string_view{reinterpret_cast<char const*>(keypair->public_key.data()), keypair->public_key.size()}),
         now_ms + seven_days_ms,
         *stored_secret,
     };
@@ -1669,8 +1650,9 @@ namespace
     {
         return std::nullopt;
     }
-    runtime.database.signing_secret_key = core::SecretBuffer{secret_key.size()};
-    std::copy(secret_key.begin(), secret_key.end(), runtime.database.signing_secret_key.bytes().begin());
+    runtime.database.signing_secret_key = core::SecretBuffer{keypair->secret_key.size()};
+    std::copy(keypair->secret_key.begin(), keypair->secret_key.end(),
+              runtime.database.signing_secret_key.bytes().begin());
     return key;
 }
 
@@ -1822,24 +1804,23 @@ namespace
 
     // Generate the new active key with a derived key_id and a rolling 7-day expiry,
     // matching ensure_runtime_server_signing_key's first-generation behaviour.
-    auto public_key = std::array<unsigned char, crypto_sign_PUBLICKEYBYTES>{};
-    auto secret_key = std::array<unsigned char, crypto_sign_SECRETKEYBYTES>{};
-    if (!generate_random_signing_keypair(public_key, secret_key))
+    auto const keypair = crypto::generate_ed25519_keypair();
+    if (!keypair.has_value())
     {
         return make_operation_result(false, {}, "signing key generation failed", 500U);
     }
-    auto const key_id = derive_ed25519_key_id(public_key);
+    auto const key_id = derive_ed25519_key_id(keypair->public_key);
     auto constexpr seven_days_ms = std::uint64_t{7U * 24U * 60U * 60U * 1000U};
 
-    auto stored_secret =
-        encrypt_signing_secret(runtime, std::span<std::uint8_t const>{secret_key.data(), secret_key.size()});
+    auto stored_secret = encrypt_signing_secret(
+        runtime, std::span<std::uint8_t const>{keypair->secret_key.data(), keypair->secret_key.size()});
     auto encrypted = std::string{"true"};
     if (!stored_secret.has_value())
     {
         if (runtime.config.security().secrets.master_key_file.empty())
         {
-            stored_secret = events::matrix_base64_from_bytes(
-                std::string_view{reinterpret_cast<char const*>(secret_key.data()), secret_key.size()});
+            stored_secret = events::matrix_base64_from_bytes(std::string_view{
+                reinterpret_cast<char const*>(keypair->secret_key.data()), keypair->secret_key.size()});
             encrypted = "false";
         }
         else
@@ -1852,7 +1833,7 @@ namespace
         current->server_name,
         key_id,
         events::matrix_base64_from_bytes(
-            std::string_view{reinterpret_cast<char const*>(public_key.data()), public_key.size()}),
+            std::string_view{reinterpret_cast<char const*>(keypair->public_key.data()), keypair->public_key.size()}),
         now_ms + seven_days_ms,
         *stored_secret,
     };
@@ -1860,8 +1841,9 @@ namespace
     {
         return make_operation_result(false, {}, "failed to store rotated signing key", 500U);
     }
-    runtime.database.signing_secret_key = core::SecretBuffer{secret_key.size()};
-    std::copy(secret_key.begin(), secret_key.end(), runtime.database.signing_secret_key.bytes().begin());
+    runtime.database.signing_secret_key = core::SecretBuffer{keypair->secret_key.size()};
+    std::copy(keypair->secret_key.begin(), keypair->secret_key.end(),
+              runtime.database.signing_secret_key.bytes().begin());
     reset_runtime_crypto_provider(runtime);
     log_diagnostic("signing_key.rotated",
                    {

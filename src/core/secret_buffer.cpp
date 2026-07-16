@@ -89,4 +89,9 @@ auto SecretBuffer::bytes() const noexcept -> std::span<std::uint8_t const>
     return std::span<std::uint8_t const>{m_buffer};
 }
 
+auto SecretBuffer::is_locked() const noexcept -> bool
+{
+    return m_mlocked;
+}
+
 } // namespace merovingian::core

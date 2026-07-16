@@ -1424,7 +1424,7 @@ SCENARIO("Key backup session helpers upsert one row per tuple and support scoped
                                                                      "!room-a:example.org", "SESSION1"));
             REQUIRE(merovingian::database::delete_key_backup_room_sessions(store, "@alice:example.org", "1",
                                                                            "!room-a:example.org"));
-            REQUIRE(merovingian::database::delete_all_key_backup_sessions(store, "@alice:example.org"));
+            REQUIRE(merovingian::database::delete_all_key_backup_sessions(store, "@alice:example.org", "1"));
 
             THEN("cleanup removes only the requested scope and leaves other users untouched")
             {
@@ -1435,6 +1435,23 @@ SCENARIO("Key backup session helpers upsert one row per tuple and support scoped
                 REQUIRE(store.prepared_statements[4].name == "delete_key_backup_session");
                 REQUIRE(store.prepared_statements[5].name == "delete_key_backup_room_sessions");
                 REQUIRE(store.prepared_statements[6].name == "delete_all_key_backup_sessions");
+            }
+        }
+
+        WHEN("delete_all is scoped to a version")
+        {
+            REQUIRE(merovingian::database::store_key_backup_session(
+                store, {"@alice:example.org", "1", "!room-a:example.org", "SESSION1", R"({"session_data":{"v":1}})"}));
+            REQUIRE(merovingian::database::store_key_backup_session(
+                store, {"@alice:example.org", "2", "!room-a:example.org", "SESSION2", R"({"session_data":{"v":2}})"}));
+
+            REQUIRE(merovingian::database::delete_all_key_backup_sessions(store, "@alice:example.org", "1"));
+
+            THEN("only sessions for that version are removed")
+            {
+                REQUIRE(store.key_backup_sessions.size() == 1U);
+                REQUIRE(store.key_backup_sessions.front().version == "2");
+                REQUIRE(store.key_backup_sessions.front().session_id == "SESSION2");
             }
         }
 

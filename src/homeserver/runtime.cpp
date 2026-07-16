@@ -6,6 +6,7 @@
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/crypto/ed25519.hpp"
+#include "merovingian/crypto/runtime_ed25519_provider.hpp"
 #include "merovingian/database/postgresql_store.hpp"
 #include "merovingian/database/schema.hpp"
 #include "merovingian/federation/runtime_federation.hpp"
@@ -32,8 +33,6 @@
 #include <variant>
 #include <vector>
 
-#include <sodium.h>
-
 namespace merovingian::homeserver
 {
 namespace
@@ -44,41 +43,6 @@ namespace
     {
         observability::log_diagnostic("runtime", event, std::move(fields), severity);
     }
-
-    // Production Ed25519 provider backed by the runtime signing secret.
-    // The secret is copied once from the mlocked SecretBuffer into this object
-    // when the runtime starts (or after key rotation) and held for the lifetime
-    // of the runtime so that signing operations do not repeatedly copy the key.
-    class RuntimeEd25519Provider final : public crypto::Ed25519Provider
-    {
-    public:
-        explicit RuntimeEd25519Provider(std::array<unsigned char, crypto_sign_SECRETKEYBYTES> secret_key)
-            : secret_key_{std::move(secret_key)}
-        {
-        }
-
-        [[nodiscard]] auto sign(crypto::Ed25519SecretKeyHandle const& /*key*/, std::string_view message)
-            -> crypto::SignatureResult override
-        {
-            auto signature = std::string(crypto_sign_BYTES, '\0');
-            if (crypto_sign_detached(reinterpret_cast<unsigned char*>(signature.data()), nullptr,
-                                     reinterpret_cast<unsigned char const*>(message.data()), message.size(),
-                                     secret_key_.data()) != 0)
-            {
-                return {{}, "Ed25519 signing failed"};
-            }
-            return {crypto::Ed25519Signature{std::move(signature)}, {}};
-        }
-
-        [[nodiscard]] auto verify(crypto::Ed25519PublicKey const& public_key, std::string_view message,
-                                  crypto::Ed25519Signature const& signature) -> crypto::VerificationResult override
-        {
-            return crypto::ed25519_verify(public_key, message, signature);
-        }
-
-    private:
-        std::array<unsigned char, crypto_sign_SECRETKEYBYTES> secret_key_{};
-    };
 
     [[nodiscard]] auto make_metric(std::string name, std::int64_t value, observability::MetricType type,
                                    std::string help, std::vector<observability::MetricLabel> labels = {})
@@ -288,12 +252,13 @@ namespace
 // use by rotate_server_signing_key.
 auto reset_runtime_crypto_provider(HomeserverRuntime& runtime) -> void
 {
-    if (runtime.database.signing_secret_key.bytes().size() == crypto_sign_SECRETKEYBYTES)
+    auto constexpr expected_secret_bytes = crypto::Ed25519Keypair{}.secret_key.size();
+    if (runtime.database.signing_secret_key.bytes().size() == expected_secret_bytes)
     {
-        auto secret_key = std::array<unsigned char, crypto_sign_SECRETKEYBYTES>{};
+        auto secret_key = std::array<unsigned char, expected_secret_bytes>{};
         std::copy(runtime.database.signing_secret_key.bytes().begin(),
                   runtime.database.signing_secret_key.bytes().end(), secret_key.begin());
-        runtime.crypto_provider_owned = std::make_unique<RuntimeEd25519Provider>(std::move(secret_key));
+        runtime.crypto_provider_owned = std::make_unique<crypto::RuntimeEd25519Provider>(std::move(secret_key));
         runtime.crypto_provider = runtime.crypto_provider_owned.get();
     }
     else

@@ -1,11 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "merovingian/auth/identity.hpp"
+#include "merovingian/auth/password.hpp"
 #include "merovingian/auth/token.hpp"
+#include "merovingian/crypto/token_key.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <array>
 #include <chrono>
+#include <span>
 
 SCENARIO("Auth identity validators enforce Matrix-shaped identifiers", "[auth]")
 {
@@ -243,6 +247,127 @@ SCENARIO("Auth variable-length constant-time compare hides secret length", "[aut
                 REQUIRE_FALSE(different_same_length);
                 REQUIRE_FALSE(different_length);
                 REQUIRE_FALSE(empty_vs_value);
+            }
+        }
+    }
+}
+
+SCENARIO("Auth password hashing round-trips through Argon2id verification", "[auth][password][slow]")
+{
+    GIVEN("a plaintext password")
+    {
+        auto constexpr plaintext = "CorrectHorseBatteryStaple7!";
+
+        WHEN("it is hashed and verified")
+        {
+            auto const hash = merovingian::auth::hash_password(plaintext);
+
+            THEN("the hash is non-empty, differs from the plaintext, and verifies correctly")
+            {
+                REQUIRE(hash.has_value());
+                REQUIRE_FALSE(hash->empty());
+                REQUIRE(*hash != plaintext);
+                REQUIRE(merovingian::auth::password_matches(*hash, plaintext));
+                REQUIRE_FALSE(merovingian::auth::password_matches(*hash, "wrong-password"));
+            }
+        }
+    }
+}
+
+SCENARIO("Auth token helpers classify secrets, hashes, and access tokens", "[auth][tokens]")
+{
+    GIVEN("token secrets of varying entropy")
+    {
+        THEN("only secrets with at least 32 bytes are accepted")
+        {
+            REQUIRE(merovingian::auth::token_secret_has_required_entropy("0123456789abcdefghijklmnopqrstuvwxyz"));
+            REQUIRE_FALSE(merovingian::auth::token_secret_has_required_entropy("short"));
+            REQUIRE_FALSE(merovingian::auth::token_secret_has_required_entropy(std::string(4097U, 'x')));
+        }
+    }
+
+    GIVEN("token hashes with and without required fields")
+    {
+        THEN("persistence requires a non-empty algorithm and value")
+        {
+            REQUIRE(merovingian::auth::token_hash_is_persistable(
+                merovingian::auth::TokenHash{"external-kdf", "abcdefghijklmnopqrstuvwxyz0123456789"}));
+            REQUIRE_FALSE(merovingian::auth::token_hash_is_persistable(merovingian::auth::TokenHash{"", "value"}));
+            REQUIRE_FALSE(merovingian::auth::token_hash_is_persistable(merovingian::auth::TokenHash{"algo", ""}));
+            REQUIRE_FALSE(merovingian::auth::token_hash_is_persistable(
+                merovingian::auth::TokenHash{"algo", std::string(31U, 'x')}));
+        }
+    }
+
+    GIVEN("a plaintext access token and an HMAC key")
+    {
+        auto constexpr token = "0123456789abcdefghijklmnopqrstuvwxyz";
+        auto key = merovingian::crypto::TokenHmacKey{};
+        key.bytes.fill(0xAB);
+
+        WHEN("it is hashed under each supported version")
+        {
+            auto const v2 = merovingian::auth::hash_access_token_v2(token);
+            auto const v3 = merovingian::auth::hash_access_token_v3(token, key);
+            auto const v4 = merovingian::auth::hash_access_token_v4(token, key);
+
+            THEN("each version produces a distinct, prefixed hash and rejects empty tokens")
+            {
+                REQUIRE(v2.has_value());
+                REQUIRE(v2->starts_with("token-hash:v2:"));
+                REQUIRE(v3.has_value());
+                REQUIRE(v3->starts_with("token-hash:v3:"));
+                REQUIRE(v4.has_value());
+                REQUIRE(v4->starts_with("token-hash:v4:"));
+                REQUIRE(*v3 != *v4);
+                REQUIRE_FALSE(merovingian::auth::hash_access_token_v2("").has_value());
+                REQUIRE_FALSE(merovingian::auth::hash_access_token_v3("", key).has_value());
+                REQUIRE_FALSE(merovingian::auth::hash_access_token_v4("", key).has_value());
+            }
+        }
+    }
+}
+
+SCENARIO("Auth password matching rejects malformed inputs", "[auth][password]")
+{
+    GIVEN("empty inputs and a legacy hash")
+    {
+        auto constexpr plaintext = "CorrectHorseBatteryStaple7!";
+
+        WHEN("password_matches is called with malformed arguments")
+        {
+            auto const result = merovingian::auth::password_matches("", plaintext);
+
+            THEN("it returns false without attempting verification")
+            {
+                REQUIRE_FALSE(result);
+                REQUIRE_FALSE(merovingian::auth::password_matches("some-hash", ""));
+                // A hash without the v2 prefix is still passed to libsodium for verification.
+                REQUIRE_FALSE(merovingian::auth::password_matches("not-a-password-hash", plaintext));
+            }
+        }
+    }
+}
+
+SCENARIO("Auth registration token hashing round-trips", "[auth][tokens][slow]")
+{
+    GIVEN("a registration token")
+    {
+        auto const token =
+            std::array<unsigned char, 32>{0,  1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11, 12, 13, 14, 15,
+                                          16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31};
+
+        WHEN("it is hashed and verified")
+        {
+            auto const hash = merovingian::auth::hash_registration_token(std::span{token});
+
+            THEN("the hash is non-empty and verifies only the original token")
+            {
+                REQUIRE(hash.has_value());
+                REQUIRE_FALSE(hash->empty());
+                REQUIRE(merovingian::auth::registration_token_matches(
+                    *hash, std::string{reinterpret_cast<char const*>(token.data()), token.size()}));
+                REQUIRE_FALSE(merovingian::auth::registration_token_matches(*hash, "wrong-token"));
             }
         }
     }

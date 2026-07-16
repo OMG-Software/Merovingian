@@ -1,6 +1,6 @@
 # Merovingian
 
-**Latest release: v0.10.58**
+**Latest release: v0.10.59**
 
 **Note: Merovingian is now in beta. It is suitable for evaluation and testing, but is not yet ready for production use. Do not deploy it as a production Matrix homeserver.**
 
@@ -43,7 +43,7 @@ Most homeservers are large, single-process applications where security is largel
 
 That combination — a narrow, memory-safe-by-construction attack surface, process-level containment of untrusted input, fail-closed defaults throughout, and continuously verified hardening — is what makes Merovingian a suitable home for genuinely sensitive Matrix communications, not just a spec-conformant one. For the full detail, see [docs/threat-model.md](docs/threat-model.md), [docs/hardening.md](docs/hardening.md), [docs/crypto-boundary.md](docs/crypto-boundary.md), and [docs/security-coding-rules.md](docs/security-coding-rules.md).
 
-Merovingian has reached **beta** (v0.10.58). Federation, persistence, packaging, and runtime security controls are implemented and covered by CI. The project is suitable for evaluation and testing; it should not be treated as production-ready until the blocking items in [docs/todos/production-milestone.md](docs/todos/production-milestone.md) are closed.
+Merovingian has reached **beta** (v0.10.59). Federation, persistence, packaging, and runtime security controls are implemented and covered by CI. The project is suitable for evaluation and testing; it should not be treated as production-ready until the blocking items in [docs/todos/production-milestone.md](docs/todos/production-milestone.md) are closed.
 
 Open work items, capability gaps, and milestone blockers live in [docs/todos/](docs/todos/). See `priorities.md` for the ordered short list, `capability-gaps.md` for per-area gaps, and `beta-milestone.md` / `production-milestone.md` for milestone gates.
 
@@ -59,9 +59,9 @@ Verify a downloaded artifact before installing:
 
 ```sh
 gpg --keyserver keys.openpgp.org --recv-keys 66DFCC50187C8E46B5ED85FD92A3A264F0A7BE20
-gpg --verify merovingian-0.10.58-linux-static-x86_64.tar.gz.asc \
-             merovingian-0.10.58-linux-static-x86_64.tar.gz
-sha256sum -c merovingian-0.10.58-linux-static-x86_64.tar.gz.sha256
+gpg --verify merovingian-0.10.59-linux-static-x86_64.tar.gz.asc \
+             merovingian-0.10.59-linux-static-x86_64.tar.gz
+sha256sum -c merovingian-0.10.59-linux-static-x86_64.tar.gz.sha256
 ```
 
 Releases also carry SLSA provenance attestations (`gh attestation verify`), SPDX/CycloneDX SBOMs, and a machine-readable license summary. See [docs/release-process.md](docs/release-process.md) and [docs/user-manual.md](docs/user-manual.md) for full details.
@@ -72,10 +72,10 @@ Merovingian can be installed from a distro package, a portable static Linux tarb
 
 ```sh
 # Debian/Ubuntu example
-sudo dpkg -i merovingian_0.10.58_amd64.deb
+sudo dpkg -i merovingian_0.10.59_amd64.deb
 
 # Fedora/RHEL example
-sudo rpm -i merovingian-0.10.58.x86_64.rpm
+sudo rpm -i merovingian-0.10.59.x86_64.rpm
 ```
 
 Merovingian is designed to sit behind a reverse proxy such as nginx, Apache httpd, Caddy, Traefik, or HAProxy. The proxy should own public TLS, while Merovingian stays bound to loopback listeners behind it. Worked examples for each proxy are in [docs/user-manual.md § Reverse proxy](docs/user-manual.md#reverse-proxy).

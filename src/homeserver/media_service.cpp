@@ -4,6 +4,7 @@
 #include "merovingian/homeserver/media_service.hpp"
 
 #include "merovingian/core/query_params.hpp"
+#include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/federation/outbound_transaction.hpp"
 #include "merovingian/federation/server_discovery.hpp"
@@ -25,8 +26,6 @@
 #include <tuple>
 #include <utility>
 #include <vector>
-
-#include <sodium.h>
 
 namespace merovingian::homeserver
 {
@@ -342,9 +341,9 @@ namespace
                                                                   std::string_view trusted_ca_pem)
         -> std::optional<OperationResult>
     {
+        auto constexpr expected_secret_bytes = crypto::Ed25519Keypair{}.secret_key.size();
         auto const signing_key = ensure_runtime_server_signing_key(runtime);
-        if (!signing_key.has_value() ||
-            runtime.database.signing_secret_key.bytes().size() != crypto_sign_SECRETKEYBYTES)
+        if (!signing_key.has_value() || runtime.database.signing_secret_key.bytes().size() != expected_secret_bytes)
         {
             log_diagnostic("remote_fetch.federation_endpoint.no_signing_key",
                            {

@@ -6,6 +6,7 @@
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/crypto/encoding.hpp"
 #include "merovingian/database/persistent_store.hpp"
 
 #include <algorithm>
@@ -21,8 +22,6 @@
 #include <unordered_set>
 #include <utility>
 #include <vector>
-
-#include <sodium.h>
 
 namespace merovingian::homeserver
 {
@@ -114,34 +113,14 @@ namespace
 
     [[nodiscard]] auto base64url_encode(std::string_view input) -> std::string
     {
-        if (input.empty() || sodium_init() < 0)
-        {
-            return {};
-        }
-        auto const variant = sodium_base64_VARIANT_URLSAFE_NO_PADDING;
-        auto output = std::string(sodium_base64_ENCODED_LEN(input.size(), variant), '\0');
-        std::ignore = sodium_bin2base64(output.data(), output.size(),
-                                        reinterpret_cast<unsigned char const*>(input.data()), input.size(), variant);
-        output.resize(std::char_traits<char>::length(output.c_str()));
-        return output;
+        auto const encoded = crypto::base64_urlsafe_encode(input);
+        return encoded.value_or("");
     }
 
     [[nodiscard]] auto base64url_decode(std::string_view input) -> std::string
     {
-        if (input.empty() || sodium_init() < 0)
-        {
-            return {};
-        }
-        auto output = std::string((input.size() * 3U) / 4U + 3U, '\0');
-        auto decoded_length = std::size_t{0U};
-        if (sodium_base642bin(reinterpret_cast<unsigned char*>(output.data()), output.size(), input.data(),
-                              input.size(), nullptr, &decoded_length, nullptr,
-                              sodium_base64_VARIANT_URLSAFE_NO_PADDING) != 0)
-        {
-            return {};
-        }
-        output.resize(decoded_length);
-        return output;
+        auto const decoded = crypto::base64_urlsafe_decode(input);
+        return decoded.value_or("");
     }
 
     // ---- Persistent-store state helpers ---------------------------------------

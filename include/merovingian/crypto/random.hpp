@@ -3,7 +3,10 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
+#include <optional>
 #include <string>
+#include <vector>
 
 namespace merovingian::crypto
 {
@@ -28,5 +31,13 @@ public:
 };
 
 [[nodiscard]] auto random_size_is_allowed(std::size_t size) noexcept -> bool;
+
+// Generate cryptographically strong random bytes. Returns std::nullopt if the
+// requested size is out of bounds or libsodium fails.
+[[nodiscard]] auto secure_random_bytes(std::size_t size) -> std::optional<std::vector<std::uint8_t>>;
+
+// Generate a lowercase hex string from `byte_count` random bytes. Returns
+// std::nullopt on failure. Common uses are opaque filter and device IDs.
+[[nodiscard]] auto secure_random_hex(std::size_t byte_count) -> std::optional<std::string>;
 
 } // namespace merovingian::crypto

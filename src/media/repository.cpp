@@ -3,6 +3,9 @@
 
 #include "merovingian/media/repository.hpp"
 
+#include "merovingian/crypto/encoding.hpp"
+#include "merovingian/crypto/generic_hash.hpp"
+#include "merovingian/crypto/random.hpp"
 #include "merovingian/media/security.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
@@ -18,8 +21,6 @@
 #include <utility>
 #include <vector>
 
-#include <sodium.h>
-
 namespace merovingian::media
 {
 namespace
@@ -31,25 +32,10 @@ namespace
         observability::log_diagnostic("media_repository", event, fields, severity);
     }
 
-    auto constexpr media_digest_bytes = std::size_t{crypto_generichash_BYTES};
-
-    [[nodiscard]] auto sodium_is_ready() noexcept -> bool
-    {
-        static auto const ready = sodium_init() >= 0;
-        return ready;
-    }
     [[nodiscard]] auto media_id_is_safe(std::string_view media_id) noexcept -> bool
     {
         return !media_id.empty() && media_id.find('/') == std::string_view::npos &&
                media_id.find("..") == std::string_view::npos && media_id.find(' ') == std::string_view::npos;
-    }
-
-    [[nodiscard]] auto to_hex(unsigned char const* bytes, std::size_t size) -> std::string
-    {
-        auto output = std::string((size * 2U) + 1U, '\0');
-        std::ignore = sodium_bin2hex(output.data(), output.size(), bytes, size);
-        output.pop_back();
-        return output;
     }
 
     [[nodiscard]] auto upload_policy(RuntimeMediaConfig const& config, bool from_remote_fetch) -> MediaUploadPolicy
@@ -259,22 +245,8 @@ auto make_local_media_storage_id(std::string_view digest, std::uint64_t size_byt
 
 auto calculate_media_digest(std::string_view bytes) -> std::string
 {
-    if (!sodium_is_ready())
-    {
-        return {};
-    }
-    auto digest = std::array<unsigned char, media_digest_bytes>{};
-    auto media_bytes = std::vector<unsigned char>{};
-    media_bytes.reserve(bytes.size());
-    for (auto const byte : bytes)
-    {
-        media_bytes.push_back(static_cast<unsigned char>(byte));
-    }
-    if (crypto_generichash(digest.data(), digest.size(), media_bytes.data(), media_bytes.size(), nullptr, 0U) != 0)
-    {
-        return {};
-    }
-    return to_hex(digest.data(), digest.size());
+    auto const digest = crypto::hash_bytes_to_hex(bytes);
+    return digest.value_or("");
 }
 
 auto media_repository_summary(LocalMediaRepository const& repository) -> std::string
@@ -567,9 +539,8 @@ auto download_local_media(LocalMediaRepository& repository, std::string_view ser
 
 [[nodiscard]] auto make_multipart_boundary() -> std::string
 {
-    auto bytes = std::array<unsigned char, 16U>{};
-    randombytes_buf(bytes.data(), bytes.size());
-    return "mrv_" + to_hex(bytes.data(), bytes.size());
+    auto const id = crypto::secure_random_hex(16U);
+    return id.has_value() ? "mrv_" + *id : "mrv_boundary_fallback";
 }
 
 auto build_federation_media_download_body(std::string_view media_content_type, std::string_view bytes)

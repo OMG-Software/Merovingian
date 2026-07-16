@@ -7380,6 +7380,177 @@ SCENARIO("POST /room_keys/version assigns a distinct version ID for each new bac
     }
 }
 
+SCENARIO("Key backup session operations require an existing version", "[homeserver][client-server][key-backup]")
+{
+    GIVEN("a registered and logged-in user with one key backup version")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVALICE"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+
+        auto const backup = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/room_keys/version", token,
+                      R"({"algorithm":"m.megolm_backup.v1","auth_data":{}})"});
+        REQUIRE(backup.response.status == 200U);
+
+        WHEN("a session is uploaded with a version query parameter that does not exist")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"PUT", "/_matrix/client/v3/room_keys/keys/!room%3Aexample.org/sessionA?version=nonexistent", token,
+                 R"({"first_message_index":0,"forwarded_count":0,"is_verified":false,"session_data":{}})"});
+
+            THEN("the server returns 404 M_NOT_FOUND")
+            {
+                REQUIRE(response.response.status == 404U);
+                REQUIRE(response.response.body.find("M_NOT_FOUND") != std::string::npos);
+            }
+        }
+
+        WHEN("a session is uploaded without a version query parameter")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"PUT", "/_matrix/client/v3/room_keys/keys/!room%3Aexample.org/sessionA", token,
+                          R"({"first_message_index":0,"forwarded_count":0,"is_verified":false,"session_data":{}})"});
+
+            THEN("the server defaults to the current version and returns 200")
+            {
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(response.response.body.find("M_NOT_FOUND") == std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("Key backup session writes are rejected for non-current versions and reads are filtered by version",
+         "[homeserver][client-server][key-backup]")
+{
+    GIVEN("a registered and logged-in user with two backup versions")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVALICE"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+
+        auto const first_backup = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/room_keys/version", token,
+                      R"({"algorithm":"m.megolm_backup.v1","auth_data":{}})"});
+        REQUIRE(first_backup.response.status == 200U);
+        auto const first_ver =
+            *merovingian::tests::string_member(merovingian::tests::parse_object(first_backup.response.body), "version");
+
+        auto const session_body =
+            std::string{R"({"first_message_index":0,"forwarded_count":0,"is_verified":false,"session_data":{}})"};
+        REQUIRE(
+            merovingian::homeserver::handle_client_server_request(
+                runtime, {"PUT", "/_matrix/client/v3/room_keys/keys/!room%3Aexample.org/sessionA?version=" + first_ver,
+                          token, session_body})
+                .response.status == 200U);
+
+        auto const second_backup = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/room_keys/version", token,
+                      R"({"algorithm":"m.megolm_backup.v1","auth_data":{}})"});
+        REQUIRE(second_backup.response.status == 200U);
+        auto const second_ver = *merovingian::tests::string_member(
+            merovingian::tests::parse_object(second_backup.response.body), "version");
+
+        REQUIRE(first_ver != second_ver);
+
+        WHEN("a session is uploaded to the previous backup version")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"PUT", "/_matrix/client/v3/room_keys/keys/!room%3Aexample.org/sessionB?version=" + first_ver,
+                          token, session_body});
+
+            THEN("the server returns 403 M_WRONG_ROOM_KEYS_VERSION with the current version")
+            {
+                REQUIRE(response.response.status == 403U);
+                auto const body = merovingian::tests::parse_object(response.response.body);
+                REQUIRE(*merovingian::tests::string_member(body, "errcode") == "M_WRONG_ROOM_KEYS_VERSION");
+                REQUIRE(*merovingian::tests::string_member(body, "current_version") == second_ver);
+            }
+        }
+
+        WHEN("the batch endpoint is requested without a version")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/room_keys/keys", token, {}});
+
+            THEN("the current version is used and the rooms object is empty")
+            {
+                REQUIRE(response.response.status == 200U);
+                auto const body = merovingian::tests::parse_object(response.response.body);
+                auto const* rooms = merovingian::tests::object_member_as_object(body, "rooms");
+                REQUIRE(rooms != nullptr);
+                REQUIRE(rooms->empty());
+            }
+        }
+
+        WHEN("the batch endpoint is requested with the non-current version")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/room_keys/keys?version=" + first_ver, token, {}});
+
+            THEN("only sessions from that version are returned")
+            {
+                REQUIRE(response.response.status == 200U);
+                auto const body = merovingian::tests::parse_object(response.response.body);
+                auto const* rooms = merovingian::tests::object_member_as_object(body, "rooms");
+                REQUIRE(rooms != nullptr);
+                auto const* room = merovingian::tests::object_member_as_object(*rooms, "!room:example.org");
+                REQUIRE(room != nullptr);
+                auto const* sessions = merovingian::tests::object_member_as_object(*room, "sessions");
+                REQUIRE(sessions != nullptr);
+                REQUIRE(merovingian::tests::object_member(*sessions, "sessionA") != nullptr);
+            }
+        }
+
+        WHEN("the batch endpoint is requested with the current version")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/room_keys/keys?version=" + second_ver, token, {}});
+
+            THEN("the returned rooms object is empty because no sessions were stored for that version")
+            {
+                REQUIRE(response.response.status == 200U);
+                auto const body = merovingian::tests::parse_object(response.response.body);
+                auto const* rooms = merovingian::tests::object_member_as_object(body, "rooms");
+                REQUIRE(rooms != nullptr);
+                REQUIRE(rooms->empty());
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Bug 8: PUT /typing must validate room existence and membership
 // ---------------------------------------------------------------------------

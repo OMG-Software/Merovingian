@@ -3,6 +3,8 @@
 
 #include "merovingian/ipc/ipc_ed25519_provider.hpp"
 
+#include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/events/event_signer.hpp"
 #include "merovingian/ipc/channel.hpp"
 #include "merovingian/observability/logger.hpp"
@@ -14,6 +16,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace merovingian::ipc
 {
@@ -71,62 +74,31 @@ namespace
         return result;
     }
 
-    // Extract a JSON-escaped string value for `key`. Returns empty string on failure.
-    auto json_get_str(std::string_view json, std::string_view key) -> std::string
+    // Typed JSON accessors used to read sign_response fields.  These replace the
+    // previous hand-rolled substring scanner so Unicode escapes and nested content
+    // cannot confuse the extractor.
+    [[nodiscard]] auto object_member(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> canonicaljson::Value const*
     {
-        auto const needle = std::string{"\""} + std::string{key} + "\":\"";
-        auto const pos = json.find(needle);
-        if (pos == std::string_view::npos)
+        for (auto const& member : object)
         {
-            return {};
+            if (member.key == key)
+            {
+                return member.value.get();
+            }
         }
-        auto i = pos + needle.size();
-        auto result = std::string{};
-        while (i < json.size())
+        return nullptr;
+    }
+
+    [[nodiscard]] auto string_member(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> std::string const*
+    {
+        auto const* value = object_member(object, key);
+        if (value == nullptr)
         {
-            auto const ch = json[i];
-            if (ch == '"')
-            {
-                break;
-            }
-            if (ch == '\\' && i + 1 < json.size())
-            {
-                ++i;
-                switch (json[i])
-                {
-                case '"':
-                    result += '"';
-                    break;
-                case '\\':
-                    result += '\\';
-                    break;
-                case 'b':
-                    result += '\b';
-                    break;
-                case 'f':
-                    result += '\f';
-                    break;
-                case 'n':
-                    result += '\n';
-                    break;
-                case 'r':
-                    result += '\r';
-                    break;
-                case 't':
-                    result += '\t';
-                    break;
-                default:
-                    result += json[i];
-                    break;
-                }
-            }
-            else
-            {
-                result += ch;
-            }
-            ++i;
+            return nullptr;
         }
-        return result;
+        return std::get_if<std::string>(&value->storage());
     }
 
 } // namespace
@@ -158,25 +130,37 @@ auto IpcEd25519Provider::sign(crypto::Ed25519SecretKeyHandle const& key, std::st
         return {{}, "IpcEd25519Provider: sign_request IPC timeout or failure"};
     }
 
-    auto const type = json_get_str(*reply, "type");
-    if (type != "sign_response")
+    auto const parsed = canonicaljson::parse_json(*reply);
+    if (parsed.error != canonicaljson::ParseError::none)
     {
-        return {{}, "IpcEd25519Provider: unexpected response type: " + type};
+        return {{}, "IpcEd25519Provider: malformed sign_response JSON"};
+    }
+    auto const* root = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+    if (root == nullptr)
+    {
+        return {{}, "IpcEd25519Provider: sign_response body is not a JSON object"};
     }
 
-    auto const error = json_get_str(*reply, "error");
-    if (!error.empty())
+    auto const* type = string_member(*root, "type");
+    if (type == nullptr || *type != "sign_response")
     {
-        return {{}, "IpcEd25519Provider: main returned error: " + error};
+        auto const type_str = type == nullptr ? std::string{} : *type;
+        return {{}, "IpcEd25519Provider: unexpected response type: " + type_str};
     }
 
-    auto const signature_b64 = json_get_str(*reply, "signature");
-    if (signature_b64.empty())
+    auto const* error = string_member(*root, "error");
+    if (error != nullptr && !error->empty())
+    {
+        return {{}, "IpcEd25519Provider: main returned error: " + *error};
+    }
+
+    auto const* signature_b64 = string_member(*root, "signature");
+    if (signature_b64 == nullptr || signature_b64->empty())
     {
         return {{}, "IpcEd25519Provider: empty signature in response"};
     }
 
-    auto const signature_bytes = events::matrix_bytes_from_base64(signature_b64);
+    auto const signature_bytes = events::matrix_bytes_from_base64(*signature_b64);
     if (signature_bytes.size() != crypto_sign_BYTES)
     {
         return {{}, "IpcEd25519Provider: invalid signature shape from main"};

@@ -3,10 +3,13 @@
 
 #include "merovingian/homeserver/federation_request_routing.hpp"
 
+#include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/core/query_params.hpp"
 
 #include <cstdint>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace merovingian::homeserver
@@ -15,64 +18,41 @@ namespace merovingian::homeserver
 namespace
 {
 
-    // Minimal JSON string extractor used to read room_id from /send bodies.
-    // Assumes the value is a simple string with the common JSON escapes; it is
-    // intentionally small because it only runs for the federation routing path.
-    [[nodiscard]] auto json_get_str(std::string_view json, std::string_view key) -> std::string
+    // Typed JSON accessors used to read room_id from /send bodies.  These avoid
+    // the substring/escape pitfalls of the previous hand-rolled scanner.
+    [[nodiscard]] auto object_member(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> canonicaljson::Value const*
     {
-        auto const needle = std::string{"\""} + std::string{key} + "\":\"";
-        auto const pos = json.find(needle);
-        if (pos == std::string_view::npos)
+        for (auto const& member : object)
         {
-            return {};
+            if (member.key == key)
+            {
+                return member.value.get();
+            }
         }
-        auto i = pos + needle.size();
-        auto result = std::string{};
-        while (i < json.size())
+        return nullptr;
+    }
+
+    [[nodiscard]] auto string_member(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> std::string const*
+    {
+        auto const* value = object_member(object, key);
+        if (value == nullptr)
         {
-            auto const ch = json[i];
-            if (ch == '\"')
-            {
-                break;
-            }
-            if (ch == '\\' && i + 1 < json.size())
-            {
-                ++i;
-                switch (json[i])
-                {
-                case '\"':
-                    result += '\"';
-                    break;
-                case '\\':
-                    result += '\\';
-                    break;
-                case 'b':
-                    result += '\b';
-                    break;
-                case 'f':
-                    result += '\f';
-                    break;
-                case 'n':
-                    result += '\n';
-                    break;
-                case 'r':
-                    result += '\r';
-                    break;
-                case 't':
-                    result += '\t';
-                    break;
-                default:
-                    result += json[i];
-                    break;
-                }
-            }
-            else
-            {
-                result += ch;
-            }
-            ++i;
+            return nullptr;
         }
-        return result;
+        return std::get_if<std::string>(&value->storage());
+    }
+
+    [[nodiscard]] auto array_member(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> canonicaljson::Array const*
+    {
+        auto const* value = object_member(object, key);
+        if (value == nullptr)
+        {
+            return nullptr;
+        }
+        return std::get_if<canonicaljson::Array>(&value->storage());
     }
 
     // Federation endpoints where the room ID is a path segment. Order is not
@@ -117,72 +97,39 @@ namespace
         return prefixes;
     }
 
-    // For /send/{txnId} the room ID is inside the request body. We extract the
-    // first PDU's room_id. All PDUs in a transaction are for the same room in
-    // practice; routing by the first PDU is sufficient for shard selection.
+    // For /send/{txnId} the room ID is inside the request body. We parse the
+    // whole body and extract the first PDU's room_id. All PDUs in a transaction
+    // are for the same room in practice; routing by the first PDU is sufficient
+    // for shard selection.  Using the canonical JSON parser avoids the escape
+    // and substring pitfalls of the previous hand-rolled scanner.
     [[nodiscard]] auto room_id_from_send_body(std::string_view body) -> std::string
     {
-        auto const pdus_pos = body.find("\"pdus\":");
-        if (pdus_pos == std::string_view::npos)
+        auto const parsed = canonicaljson::parse_json(body);
+        if (parsed.error != canonicaljson::ParseError::none)
         {
             return {};
         }
-        auto const array_start = body.find('[', pdus_pos);
-        if (array_start == std::string_view::npos)
+        auto const* root = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+        if (root == nullptr)
         {
             return {};
         }
-        auto const first_obj = body.find('{', array_start);
-        if (first_obj == std::string_view::npos)
+        auto const* pdus = array_member(*root, "pdus");
+        if (pdus == nullptr || pdus->empty())
         {
             return {};
         }
-        // Track brace depth to find the matching '}' for the first PDU object.
-        // A naive find('}') stops at the first nested object (e.g. "content" or
-        // "hashes"), which excludes room_id if it appears after a nested field.
-        auto depth = int{0};
-        auto in_string = bool{false};
-        auto obj_end = std::string_view::npos;
-        for (auto i = first_obj; i < body.size(); ++i)
-        {
-            auto const ch = body[i];
-            if (in_string)
-            {
-                if (ch == '\\')
-                {
-                    ++i; // skip escaped character
-                }
-                else if (ch == '"')
-                {
-                    in_string = false;
-                }
-            }
-            else
-            {
-                if (ch == '"')
-                {
-                    in_string = true;
-                }
-                else if (ch == '{')
-                {
-                    ++depth;
-                }
-                else if (ch == '}')
-                {
-                    --depth;
-                    if (depth == 0)
-                    {
-                        obj_end = i;
-                        break;
-                    }
-                }
-            }
-        }
-        if (obj_end == std::string_view::npos)
+        auto const* first_pdu = std::get_if<canonicaljson::Object>(&(*pdus)[0].storage());
+        if (first_pdu == nullptr)
         {
             return {};
         }
-        return json_get_str(body.substr(first_obj, obj_end - first_obj), "room_id");
+        auto const* room_id = string_member(*first_pdu, "room_id");
+        if (room_id == nullptr)
+        {
+            return {};
+        }
+        return *room_id;
     }
 
     [[nodiscard]] auto room_id_from_path_target(std::string_view target) -> std::string
