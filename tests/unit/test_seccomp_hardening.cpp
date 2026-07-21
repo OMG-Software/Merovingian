@@ -12,13 +12,14 @@
 #include <linux/seccomp.h>
 #include <sys/syscall.h>
 #include <unistd.h>
-#endif
 
 // #428: personality() is allowed in the seccomp allowlist only for
 // ThreadSanitizer builds (which call personality(ADDR_NO_RANDOMIZE) during
 // worker startup after exec); production builds must not carry it, since it
 // would let an attacker with arbitrary code execution disable ASLR. Mirrors
-// the sanitizer-detection pattern in media/thumbnail_worker_main.cpp.
+// the sanitizer-detection pattern in media/thumbnail_worker_main.cpp. Scoped
+// to __linux__ (like the scenarios that use it below): seccomp is Linux-only,
+// so on other platforms this constant is unused and -Werror would reject it.
 #if defined(__has_feature)
 #if __has_feature(thread_sanitizer)
 constexpr bool tsan_build = true;
@@ -29,6 +30,7 @@ constexpr bool tsan_build = false;
 constexpr bool tsan_build = true;
 #else
 constexpr bool tsan_build = false;
+#endif
 #endif
 
 SCENARIO("seccomp hardening check maps probe results to the correct status", "[platform][hardening][seccomp]")
