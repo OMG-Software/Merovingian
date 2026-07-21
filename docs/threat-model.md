@@ -304,6 +304,33 @@ threat it closes; the controls above are the standing defences these reinforce.
   signed value never crosses IPC is deferred (requires a `build_outbound_request`
   provider-abstraction refactor) for minimal additional security value.
 
+  **Main does not re-verify PDU Ed25519 signatures before persisting (#450,
+  accepted residual gap):** main's `pdu_sink` (wired in
+  `homeserver/local_http_router.cpp::ingest_pdu_event`, invoked directly for
+  same-process federation and relayed from the worker via
+  `homeserver/worker_pool.cpp`'s `pdu_ingest` IPC handler) runs
+  `events::authorize_event_against_auth_events` and
+  `events::verify_pdu_content_hash`, but does not independently re-run Ed25519
+  signature verification against the sender's published key. The worker is the
+  sole signature-verification boundary for the relay path
+  (`federation::authorize_federation_pdu` with a resolver-fetched key, in
+  `federation/inbound_request.cpp`, called before the transaction handler
+  invokes `pdu_sink`). This is consistent with the residual worker-trust model
+  above — the worker cannot forge a peer's identity and holds no signing
+  secret — but it means main, which holds the signing secret and owns the
+  authoritative store, trusts the worker's prior verification rather than
+  checking cryptographically for itself. If the worker's `remote_key_resolver`
+  is ever unwired, or a future bug relays before verifying, or the worker
+  process is compromised, main would persist a forged PDU into the event
+  graph. Accepted as a defense-in-depth gap rather than fixed with independent
+  re-verification: doing so would require plumbing the raw PDU and a
+  main-side-resolved remote key through to `ingest_pdu_event` (a different
+  shape than the `InboundPduEnvelope` it receives today), which is a larger
+  structural change than this gap's severity (LOW) warrants. Revisit if the
+  worker's trust model changes (e.g. #319/#323-style hardening is ever
+  weakened) or if `InboundPduEnvelope` gains a verified-signature carrier as
+  part of unrelated work.
+
 - **Signing secret in federation worker address space (v0.10.2):**
   in Phase 1 the worker loaded the server signing secret from the database, so a
   compromised worker could forge federation signatures. Phase 2 removes the

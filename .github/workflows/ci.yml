@@ -60,6 +60,20 @@ jobs:
       - name: Build and test
         run: sh scripts/build-linux.sh --builddir build
 
+      - name: Catch2 failure report (runtime logs filtered out)
+        if: failure()
+        run: |
+          # The unit test binary emits thousands of structured runtime log
+          # lines (timestamp + <LEVEL> + module:) that bury Catch2's own
+          # failure report. Drop those so what remains is Catch2 section
+          # headers, FAILED assertions, and the test-case summary — i.e. the
+          # failing test name + file:line. Mirrors the NetBSD job's inline
+          # equivalent below.
+          if [ -f build/meson-logs/testlog.txt ]; then
+            grep -vE '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]+ \+[0-9]{4}  <(INFO|WARNING|ERROR|DEBUG|CRITICAL)>' build/meson-logs/testlog.txt \
+              | tail -n 300
+          fi
+
       - name: Conformance gate
         run: sh scripts/check-conformance-gate.sh build
 
@@ -138,6 +152,14 @@ jobs:
       - name: Build and test
         run: sh scripts/build-linux.sh --builddir build-fedora
 
+      - name: Catch2 failure report (runtime logs filtered out)
+        if: failure()
+        run: |
+          if [ -f build-fedora/meson-logs/testlog.txt ]; then
+            grep -vE '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]+ \+[0-9]{4}  <(INFO|WARNING|ERROR|DEBUG|CRITICAL)>' build-fedora/meson-logs/testlog.txt \
+              | tail -n 300
+          fi
+
       - name: Conformance gate
         run: sh scripts/check-conformance-gate.sh build-fedora
 
@@ -199,6 +221,14 @@ jobs:
 
       - name: Build and test
         run: sh scripts/build-linux.sh --builddir build-debian
+
+      - name: Catch2 failure report (runtime logs filtered out)
+        if: failure()
+        run: |
+          if [ -f build-debian/meson-logs/testlog.txt ]; then
+            grep -vE '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]+ \+[0-9]{4}  <(INFO|WARNING|ERROR|DEBUG|CRITICAL)>' build-debian/meson-logs/testlog.txt \
+              | tail -n 300
+          fi
 
       - name: Conformance gate
         run: sh scripts/check-conformance-gate.sh build-debian
@@ -262,6 +292,14 @@ jobs:
 
       - name: Build and test
         run: sh scripts/build-linux.sh --builddir build-rhel
+
+      - name: Catch2 failure report (runtime logs filtered out)
+        if: failure()
+        run: |
+          if [ -f build-rhel/meson-logs/testlog.txt ]; then
+            grep -vE '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]+ \+[0-9]{4}  <(INFO|WARNING|ERROR|DEBUG|CRITICAL)>' build-rhel/meson-logs/testlog.txt \
+              | tail -n 300
+          fi
 
       - name: Conformance gate
         run: sh scripts/check-conformance-gate.sh build-rhel
@@ -346,6 +384,14 @@ jobs:
       - name: Build and test
         run: sh scripts/build-linux.sh --builddir build-opensuse
 
+      - name: Catch2 failure report (runtime logs filtered out)
+        if: failure()
+        run: |
+          if [ -f build-opensuse/meson-logs/testlog.txt ]; then
+            grep -vE '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]+ \+[0-9]{4}  <(INFO|WARNING|ERROR|DEBUG|CRITICAL)>' build-opensuse/meson-logs/testlog.txt \
+              | tail -n 300
+          fi
+
       - name: Conformance gate
         run: sh scripts/check-conformance-gate.sh build-opensuse
 
@@ -374,7 +420,15 @@ jobs:
           usesh: true
           run: |
             pkg install -y meson ninja llvm catch2 pkgconf git perl5 bison flex gmake openssl libsodium postgresql17-client curl png libjpeg-turbo
-            sh scripts/build-bsd.sh --builddir build
+            if ! sh scripts/build-bsd.sh --builddir build; then
+                echo "::group::FreeBSD Catch2 failure report (runtime logs filtered out)"
+                if [ -f build/meson-logs/testlog.txt ]; then
+                    grep -vE '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]+ \+[0-9]{4}  <(INFO|WARNING|ERROR|DEBUG|CRITICAL)>' build/meson-logs/testlog.txt \
+                        | tail -n 300
+                fi
+                echo "::endgroup::"
+                exit 1
+            fi
             mkdir -p artifacts/bin artifacts/config artifacts/docs
             cp build/src/merovingian-server artifacts/bin/
             cp config/merovingian.conf.example artifacts/config/
@@ -407,7 +461,15 @@ jobs:
           prepare: |
             pkg_add -I meson ninja pkgconf git bison flex gmake openssl libsodium postgresql-client curl png jpeg-turbo
           run: |
-            sh scripts/build-bsd.sh --builddir build
+            if ! sh scripts/build-bsd.sh --builddir build; then
+                echo "::group::OpenBSD Catch2 failure report (runtime logs filtered out)"
+                if [ -f build/meson-logs/testlog.txt ]; then
+                    grep -vE '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]+ \+[0-9]{4}  <(INFO|WARNING|ERROR|DEBUG|CRITICAL)>' build/meson-logs/testlog.txt \
+                        | tail -n 300
+                fi
+                echo "::endgroup::"
+                exit 1
+            fi
             mkdir -p artifacts/bin artifacts/config artifacts/docs
             cp build/src/merovingian-server artifacts/bin/
             cp config/merovingian.conf.example artifacts/config/

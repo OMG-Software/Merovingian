@@ -8342,9 +8342,17 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         // behaviour) made the quarantine mismatch check in media/security.cpp
         // compare a value against itself and thus a permanent no-op.
         auto const sniffed_mime = media::sniff_mime_type(req.body);
+        // #418: thread the actual scanner verdict through rather than
+        // hardcoding "clean" — a hardcoded verdict made the quarantine
+        // branch in media/security.cpp structurally unreachable even with
+        // security.media.enable_av_scanner=true. See
+        // content_matches_eicar_test_signature() for what "actual" means
+        // here: Merovingian does not integrate a real AV engine, so this is
+        // a deterministic check for the industry-standard EICAR test file.
+        auto const scanner_verdict = media::content_matches_eicar_test_signature(req.body) ? "dirty" : "clean";
         auto inner = req;
         inner.target = "/_matrix/media/v3/upload";
-        inner.body = std::string{declared_mime} + "|" + sniffed_mime + "|clean|" + req.body;
+        inner.body = std::string{declared_mime} + "|" + sniffed_mime + "|" + scanner_verdict + "|" + req.body;
         auto const r = call_local(inner);
         // 200: stored; 202: stored but quarantined by server policy.
         // Both carry a content_uri. The Matrix spec defines only 200 for this

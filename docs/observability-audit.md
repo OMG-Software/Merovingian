@@ -62,6 +62,19 @@ appears in the structured log line, so an operator can pivot from
 `stderr` to `audit_log` without re-parsing. The log side and the
 audit row are emitted from the same call site to keep them in lockstep.
 
+**Audit sink installation on worker threads (issue #420):** the active
+`LocalDatabase*` the sink writes through is a `thread_local`
+(`homeserver/local_services.cpp`), installed by `LocalDatabaseScope` only on
+the thread that constructs `HomeserverRuntime` (main). Every call site above
+that routes through the sink-based `observability::log_diagnostic_audit`
+overload (rather than the explicit-database overload) previously silently
+no-op'd when it ran on an HTTP `ThreadPool` worker thread — in practice this
+meant `registration_policy.denied` was never recorded in production, since
+`/register` is dispatched on a pool worker. `net::ThreadPool` gained an
+`on_thread_start` hook; `main.cpp`'s `serve_until_shutdown` passes a callback
+that installs the audit database on every worker thread in both the main
+and sync HTTP pools before they start dequeuing work.
+
 ### Operator recipe
 
 ```sh

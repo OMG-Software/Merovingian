@@ -1502,6 +1502,40 @@ SCENARIO("PostgreSQL connection policy rejects unsafe or ambiguous libpq inputs"
     }
 }
 
+// Regression test for #442: unlike sqlite_store.cpp's
+// create_table_if_missing_sql (covered by "create_table_sql generates DDL
+// for core tables..." in test_database_schema.cpp), the PostgreSQL path
+// previously concatenated table.name and columns_sql directly into DDL with
+// no identifier validation or quoting. This proves the generated bootstrap
+// DDL quotes every core table identifier and that no core table is silently
+// dropped by the added validation.
+SCENARIO("PostgreSQL schema bootstrap statements quote every core table identifier",
+         "[database][postgresql][schema][security]")
+{
+    GIVEN("the compiled initial schema table definitions")
+    {
+        auto const tables = merovingian::database::initial_schema_definitions();
+
+        WHEN("the PostgreSQL bootstrap statements are generated")
+        {
+            auto const statements = merovingian::database::postgresql_schema_bootstrap_statements();
+
+            THEN("one quoted CREATE TABLE statement is produced per core table, plus the migration record")
+            {
+                REQUIRE(statements.size() == tables.size() + 1U);
+                for (auto const& table : tables)
+                {
+                    auto const quoted_name = "\"" + std::string{table.name} + "\"";
+                    auto const found = std::ranges::any_of(statements, [&](auto const& statement) {
+                        return statement.sql.find("CREATE TABLE IF NOT EXISTS " + quoted_name) != std::string::npos;
+                    });
+                    REQUIRE(found);
+                }
+            }
+        }
+    }
+}
+
 SCENARIO("PostgreSQL connection summaries redact credentials before logging", "[database][postgresql]")
 {
     GIVEN("URI and key-value libpq connection strings containing passwords")
@@ -1538,7 +1572,9 @@ SCENARIO("PostgreSQL schema bootstrap exposes current schema statements", "[data
                 // row that records the initial_schema migration ledger entry.
                 REQUIRE(statements.size() == merovingian::database::initial_schema_tables().size() + 1U);
                 REQUIRE(statements.front().name == "postgresql_create_schema_migrations");
-                REQUIRE(statements.front().sql.find("CREATE TABLE IF NOT EXISTS schema_migrations") == 0U);
+                // #442: the table identifier is now quoted (and validated as
+                // a core table) rather than concatenated raw.
+                REQUIRE(statements.front().sql.find(R"(CREATE TABLE IF NOT EXISTS "schema_migrations")") == 0U);
                 REQUIRE(statements.back().sql.find("ON CONFLICT") != std::string::npos);
             }
         }

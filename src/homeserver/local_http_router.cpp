@@ -771,7 +771,12 @@ namespace
         }
         auto const server_name = path.substr(0U, separator);
         auto const media_id = path.substr(separator + 1U);
-        if (media_id.find('/') != std::string_view::npos)
+        // #444: reject the same traversal/whitespace shapes the repository
+        // boundary (media_id_is_safe() in repository.cpp) rejects, so a
+        // crafted URL never parses into a media_id any downstream code could
+        // mistake for a safe value before the repository layer catches it.
+        if (media_id.empty() || media_id.find('/') != std::string_view::npos ||
+            media_id.find("..") != std::string_view::npos || media_id.find(' ') != std::string_view::npos)
         {
             return std::nullopt;
         }
@@ -837,39 +842,33 @@ namespace
             switch (envelope.type)
             {
             case federation::EduType::typing: {
-                // content: {room_id, user_id, typing}
-                auto const& content = envelope.content_json;
-                auto const room_id_pos = content.find("\"room_id\"");
-                auto const user_id_pos = content.find("\"user_id\"");
-                if (room_id_pos == std::string::npos || user_id_pos == std::string::npos)
+                // content: {room_id, user_id, typing}. Parsed with the
+                // canonical JSON parser (#425) rather than substring
+                // scanning: a user_id containing an escaped quote (e.g.
+                // "@a:b\"c") made find('"', ...) stop at the escaped quote,
+                // yielding a truncated/arbitrary user_id.
+                auto const parsed = canonicaljson::parse_lossless(envelope.content_json);
+                auto const* root = parsed.error == canonicaljson::ParseError::none
+                                       ? std::get_if<canonicaljson::Object>(&parsed.value.storage())
+                                       : nullptr;
+                auto const* room_id_ptr = root == nullptr ? nullptr : object_member_as_string(*root, "room_id");
+                auto const* user_id_ptr = root == nullptr ? nullptr : object_member_as_string(*root, "user_id");
+                if (room_id_ptr == nullptr || user_id_ptr == nullptr || room_id_ptr->empty() || user_id_ptr->empty())
                 {
                     return {federation::EduDispositionStatus::rejected_invalid, "missing room_id or user_id"};
                 }
-                auto typing = content.find("\"typing\":true") != std::string::npos;
-                auto room_id = std::string{};
-                auto user_id = std::string{};
-                // Extract quoted value after "room_id"
-                auto const room_val_start = content.find('"', content.find(':', room_id_pos));
-                if (room_val_start != std::string::npos)
+                auto const* typing_ptr = object_member_as_bool(*root, "typing");
+                auto const typing = typing_ptr != nullptr && *typing_ptr;
+                auto const& room_id = *room_id_ptr;
+                auto const& user_id = *user_id_ptr;
+                // Spec: the EDU sender's own homeserver must be the one
+                // reporting the user's typing state (SS API #edus) — a
+                // remote origin claiming a user_id on a different domain is
+                // a cross-origin identity spoof (#425).
+                if (!user_belongs_to_origin(user_id, envelope.origin))
                 {
-                    auto const room_val_end = content.find('"', room_val_start + 1U);
-                    if (room_val_end != std::string::npos)
-                    {
-                        room_id = content.substr(room_val_start + 1U, room_val_end - room_val_start - 1U);
-                    }
-                }
-                auto const user_val_start = content.find('"', content.find(':', user_id_pos));
-                if (user_val_start != std::string::npos)
-                {
-                    auto const user_val_end = content.find('"', user_val_start + 1U);
-                    if (user_val_end != std::string::npos)
-                    {
-                        user_id = content.substr(user_val_start + 1U, user_val_end - user_val_start - 1U);
-                    }
-                }
-                if (room_id.empty() || user_id.empty())
-                {
-                    return {federation::EduDispositionStatus::rejected_invalid, "empty room_id or user_id"};
+                    return {federation::EduDispositionStatus::rejected_invalid,
+                            "user_id domain does not match envelope origin"};
                 }
                 auto const previous_users = current_typing_users_in_room(*rt, room_id);
                 auto existing = std::ranges::find_if(rt->typing_users, [&](auto const& t) {
@@ -1651,6 +1650,20 @@ namespace
 
 } // namespace
 
+// #450 TRUST BOUNDARY: this function (main's pdu_sink) re-checks
+// authorization and content-hash integrity below, but it does NOT
+// independently re-verify the PDU's Ed25519 signature against the sender's
+// published key — that already happened once, before this ever runs, at
+// federation::authorize_federation_pdu() (inbound_request.cpp) using a
+// remote_key_resolver-fetched key. Whether this call came directly from the
+// same-process federation path or was relayed from the federation worker
+// over IPC (see worker_pool.cpp's pdu_ingest handler), main trusts that
+// prior verification rather than repeating it. See docs/threat-model.md,
+// "Main does not re-verify PDU Ed25519 signatures before persisting" for the
+// accepted-risk rationale (worker cannot forge peer identity, holds no
+// signing secret; re-verifying here would need the raw PDU + a
+// main-side-resolved key, a larger shape change than this LOW-severity gap
+// warrants).
 auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope const& envelope)
     -> federation::PduIngestionResult
 {
@@ -2196,6 +2209,8 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
     -> LocalHttpResponse
 {
     auto signed_request_opt = std::optional<federation::SignedFederationRequest>{};
+    auto held_for_review = false;
+    auto blocked_by_local_policy = false;
 
     {
         auto guard = std::unique_lock<std::recursive_mutex>{runtime.mutex};
@@ -2271,18 +2286,27 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         }
 
         auto const local_rule = find_policy_rule(runtime, "federation", signed_request_opt->origin);
-        auto const held_for_review = local_rule.has_value() && local_rule->action == "quarantine";
-        auto const blocked_by_local_policy =
+        held_for_review = local_rule.has_value() && local_rule->action == "quarantine";
+        blocked_by_local_policy =
             local_rule.has_value() && local_rule->action != "allow" && local_rule->action != "quarantine";
-        auto const decision = trust_safety::evaluate_federation_policy(
-            {signed_request_opt->origin, held_for_review, blocked_by_local_policy,
-             resolve_policy_server_hook(runtime, trust_safety::PolicySurface::federation, signed_request_opt->origin)});
-        if (!decision.allowed)
-        {
-            auto const body =
-                decision.reason.public_summary.empty() ? decision.reason.code : decision.reason.public_summary;
-            return response(403U, body);
-        }
+    }
+
+    // #415: the policy-server hook (when trust_safety.enabled and a
+    // policy_server_url is configured) performs a synchronous outbound HTTP
+    // call via resolve_policy_server_hook() -> OutboundClient::perform(),
+    // which can block for up to policy_server_timeout. It MUST run outside
+    // runtime.mutex — that mutex guards runtime.started and most
+    // client-server dispatch paths that re-enter the runtime, so holding it
+    // across a network call to a slow or unreachable policy server would
+    // freeze the entire process, not just federation handling.
+    auto const decision = trust_safety::evaluate_federation_policy(
+        {signed_request_opt->origin, held_for_review, blocked_by_local_policy,
+         resolve_policy_server_hook(runtime, trust_safety::PolicySurface::federation, signed_request_opt->origin)});
+    if (!decision.allowed)
+    {
+        auto const body =
+            decision.reason.public_summary.empty() ? decision.reason.code : decision.reason.public_summary;
+        return response(403U, body);
     }
 
     // The federation core protects its own bookkeeping, and production

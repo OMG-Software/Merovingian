@@ -219,10 +219,14 @@ SCENARIO("Auth token helpers avoid plaintext token disclosure", "[auth][tokens]"
             auto const different =
                 merovingian::auth::constant_time_equal(token_secret, "different-token-secret-000000000000");
 
-            THEN("logs contain only metadata and comparison remains exact")
+            THEN("logs contain only a coarse size bucket, not the exact length or the token itself")
             {
+                // #437: the exact byte length is a minor side channel (it
+                // distinguishes token versions and valid- from
+                // invalid-length presented tokens); redaction now discloses
+                // only a coarse size bucket.
                 REQUIRE(redacted.find(token_secret) == std::string::npos);
-                REQUIRE(redacted == "[redacted-token:length=36]");
+                REQUIRE(redacted == "[redacted-token:size=short]");
                 REQUIRE(matching);
                 REQUIRE_FALSE(different);
             }
@@ -269,6 +273,64 @@ SCENARIO("Auth password hashing round-trips through Argon2id verification", "[au
                 REQUIRE(*hash != plaintext);
                 REQUIRE(merovingian::auth::password_matches(*hash, plaintext));
                 REQUIRE_FALSE(merovingian::auth::password_matches(*hash, "wrong-password"));
+            }
+        }
+    }
+}
+
+// Regression test for #434: crypto_pwhash_str_verify's first argument must
+// be a null-terminated C string, but password_matches passed
+// string_view::data() directly. Every caller today passes a std::string, so
+// the call happens to be safe — this constructs the exact latent scenario
+// the issue describes: a hash string_view sliced out of a larger buffer,
+// where the byte immediately after the slice is not a null terminator.
+SCENARIO("Auth password matching is safe with a non-null-terminated string_view slice", "[auth][password][security]")
+{
+    GIVEN("a password hash embedded in a larger buffer, viewed through a non-null-terminated slice")
+    {
+        auto constexpr plaintext = "CorrectHorseBatteryStaple7!";
+        auto const hash = merovingian::auth::hash_password(plaintext);
+        REQUIRE(hash.has_value());
+
+        // The byte right after the slice boundary is 'T', not '\0'.
+        auto const buffer = *hash + std::string{"TRAILING-NON-HASH-BYTES-NO-NULL-HERE"};
+        auto const sliced_hash = std::string_view{buffer}.substr(0U, hash->size());
+
+        WHEN("the sliced hash is verified against the correct password")
+        {
+            auto const result = merovingian::auth::password_matches(sliced_hash, plaintext);
+
+            THEN("verification still succeeds — the implementation copies into a null-terminated buffer first")
+            {
+                REQUIRE(result);
+            }
+        }
+    }
+}
+
+// Same latent-buffer-shape regression as above, for registration_token_matches.
+SCENARIO("Auth registration token matching is safe with a non-null-terminated string_view slice",
+         "[auth][tokens][security]")
+{
+    GIVEN("a registration token hash embedded in a larger buffer, viewed through a non-null-terminated slice")
+    {
+        auto const token =
+            std::array<unsigned char, 32>{0,  1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11, 12, 13, 14, 15,
+                                          16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31};
+        auto const hash = merovingian::auth::hash_registration_token(std::span{token});
+        REQUIRE(hash.has_value());
+
+        auto const buffer = *hash + std::string{"TRAILING-NON-HASH-BYTES-NO-NULL-HERE"};
+        auto const sliced_hash = std::string_view{buffer}.substr(0U, hash->size());
+        auto const presented_token = std::string{reinterpret_cast<char const*>(token.data()), token.size()};
+
+        WHEN("the sliced hash is verified against the correct token")
+        {
+            auto const result = merovingian::auth::registration_token_matches(sliced_hash, presented_token);
+
+            THEN("verification still succeeds — the implementation copies into a null-terminated buffer first")
+            {
+                REQUIRE(result);
             }
         }
     }

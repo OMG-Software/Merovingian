@@ -38,6 +38,12 @@ namespace merovingian::federation
 namespace
 {
 
+    // Bounds FederationRuntimeState::accepted_transactions (#416). Sized well
+    // above any plausible legitimate transaction volume between dedup entries
+    // aging out; a sustained flood of distinct transaction ids evicts the
+    // oldest entries instead of growing memory without bound.
+    constexpr auto kMaxAcceptedTransactions = std::size_t{10'000U};
+
     auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields,
                         observability::LogEventSeverity severity = observability::LogEventSeverity::debug) -> void
     {
@@ -2225,6 +2231,15 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
     persist_remote_trust(runtime, remote);
     {
         auto guard = federation_guard(runtime);
+        // #416: cap the replay-dedup ring so a sustained stream of distinct
+        // transaction ids (from a single origin with valid keys, or a Sybil
+        // of many) cannot grow the main process's memory without bound.
+        // Entries are appended in acceptance order, so the front is always
+        // the oldest.
+        if (runtime.accepted_transactions.size() >= kMaxAcceptedTransactions)
+        {
+            runtime.accepted_transactions.pop_front();
+        }
         runtime.accepted_transactions.push_back(
             {request.origin, transaction.transaction_id, transaction.pdus.size(), transaction.edus.size()});
     }

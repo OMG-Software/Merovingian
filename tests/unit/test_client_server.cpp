@@ -4406,6 +4406,40 @@ SCENARIO("Media upload accepts a raw binary body with a Content-Type header", "[
             }
         }
 
+        // Regression test for #418: the internal media pipe body previously
+        // hardcoded scanner_clean to "clean" regardless of any scan result,
+        // so the quarantine-on-infection path in media/security.cpp was
+        // structurally unreachable from the real client-facing upload
+        // endpoint even with security.media.enable_av_scanner=true (the
+        // default). The fix threads a real (if minimal) scan result through:
+        // a deterministic check for the industry-standard EICAR antivirus
+        // test signature. This test drives the upload through the actual
+        // production entry point (handle_client_server_request), not the
+        // local-router test harness shortcut, so it fails if the hardcoded
+        // "clean" literal ever comes back.
+        WHEN("POST /_matrix/media/v3/upload is called with the EICAR antivirus test signature as the body")
+        {
+            auto const eicar_body =
+                std::string{R"(X5O!P%@AP[4\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*)"};
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST",
+                          "/_matrix/media/v3/upload",
+                          token,
+                          eicar_body,
+                          {merovingian::http::Header{"Content-Type", "text/plain"}}});
+
+            THEN("the upload is quarantined rather than accepted clean")
+            {
+                // The client-facing response stays 200 with a content_uri —
+                // quarantine is an internal disposition (see
+                // homeserver/AGENTS.md), not a client-visible error — but the
+                // repository metrics prove the scanner verdict was honored.
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(response.response.body.find("content_uri") != std::string::npos);
+                REQUIRE(runtime.homeserver.media_repository.metrics.uploads_quarantined == 1U);
+            }
+        }
+
         WHEN("POST /_matrix/media/v3/upload?filename=avatar.jpg is called with raw JPEG bytes")
         {
             // The ?filename= variant was rejected before the fix because the

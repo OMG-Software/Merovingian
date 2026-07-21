@@ -7,6 +7,7 @@
 
 #include <chrono>
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace
@@ -245,6 +246,66 @@ SCENARIO("Wall-clock rate limiter: default /register cap is 20/60s, not the lega
         {
             REQUIRE(reg_policy.max_requests == 20U);
             REQUIRE(reg_policy.window_seconds == 60U);
+        }
+    }
+}
+
+// Regression test for #412: RateLimitEngine::check() previously returned
+// allowed=true whenever both the per-IP and per-user policies resolved to
+// nullopt (e.g. an operator-configured default_per_ip with
+// window_seconds > 3600, which rate_limit_policy_is_valid() rejects). A
+// security-first homeserver must fail closed on an unusable policy, matching
+// the standalone request_is_rate_limited() helper.
+SCENARIO("Wall-clock rate limiter: an unresolvable policy fails closed, not open",
+         "[homeserver][client-server][rate-limit][wall-clock][security]")
+{
+    GIVEN("a config whose default per-IP policy is invalid and no per-target or per-user override exists")
+    {
+        auto clock = ManualClock{};
+        auto config = RateLimitConfig{};
+        config.default_per_ip = RateLimitPolicy{90U, 3601U}; // window_seconds > 3600 is invalid.
+        auto engine = RateLimitEngine{config, clock};
+        auto const target = std::string_view{"/_matrix/client/v3/some_unconfigured_endpoint"};
+
+        WHEN("a request is checked against the unresolvable policy")
+        {
+            auto const d = engine.check(ip_bucket("10.0.0.1", target), target, std::string_view{});
+
+            THEN("the request is denied rather than allowed")
+            {
+                REQUIRE_FALSE(d.allowed);
+                REQUIRE(d.deny_reason == "invalid_policy");
+            }
+        }
+    }
+}
+
+// Regression test for #427: the per-IP bucket table must not grow without
+// bound when an attacker (e.g. rotating a client-supplied X-Forwarded-For
+// value behind a trusted proxy) forces a fresh bucket key on every request.
+SCENARIO("Wall-clock rate limiter: sustained distinct bucket keys do not grow the table without bound",
+         "[homeserver][client-server][rate-limit][wall-clock][security][dos]")
+{
+    GIVEN("a rate-limit engine and a stream of requests each carrying a unique bucket key")
+    {
+        auto clock = ManualClock{};
+        auto engine = RateLimitEngine{default_config(), clock};
+        auto const target = std::string_view{"/_matrix/client/v3/register"};
+
+        WHEN("far more than the bucket-table cap worth of distinct IPs are seen")
+        {
+            constexpr auto requests = 100'020U;
+            for (auto i = 0U; i < requests; ++i)
+            {
+                auto const ip = "203.0.113." + std::to_string(i / 65536U) + "." + std::to_string(i % 65536U);
+                std::ignore = engine.check(ip_bucket(ip, target), target, std::string_view{});
+            }
+
+            THEN("the bucket table is bounded rather than growing to the full request count")
+            {
+                REQUIRE(engine.ip_bucket_count() <= 100'000U);
+                REQUIRE(engine.ip_bucket_count() < requests);
+            }
         }
     }
 }

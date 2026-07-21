@@ -876,9 +876,59 @@ SCENARIO("sniff_mime_type identifies content by magic bytes, not by label", "[me
                 // This is the core security property: sniffing must reflect the
                 // bytes, not the caller's claim, so evaluate_media_upload's
                 // declared-vs-sniffed mismatch check can catch disguised uploads.
+                // It must also not be classified as text/plain (#445): that MIME
+                // type is in the default allow-list, so a caller who declared
+                // Content-Type: text/plain for this same payload would otherwise
+                // sail through with no mismatch at all — see the dedicated #445
+                // regression scenario below.
                 auto const sniffed = merovingian::media::sniff_mime_type(disguised_html_bytes);
                 REQUIRE(sniffed != "image/png");
-                REQUIRE(sniffed == "text/plain");
+                REQUIRE(sniffed != "text/plain");
+                REQUIRE(sniffed == "application/octet-stream");
+            }
+        }
+    }
+}
+
+// Regression test for #445: sniff_mime_type's text/plain heuristic classified
+// any all-printable-ASCII blob as text/plain, including a body that is
+// itself an HTML/JS polyglot. Since text/plain is in the default MIME
+// allow-list, a caller declaring Content-Type: text/plain for such a payload
+// previously sailed through evaluate_media_upload with no declared-vs-sniffed
+// mismatch at all (unlike the image/png-disguise case above, which the
+// mismatch check already caught). Tightened so content that opens with '<'
+// (after leading whitespace) is never classified as text/plain.
+SCENARIO("sniff_mime_type does not classify an ASCII HTML/JS polyglot as text/plain",
+         "[media][security][sniff][security]")
+{
+    GIVEN("an all-printable-ASCII payload that is also a valid HTML/JS polyglot, declared as text/plain")
+    {
+        auto const polyglot_bytes = std::string{"<script>alert(document.cookie)</script>"};
+        auto const leading_whitespace_polyglot_bytes = std::string{"\n  <html><body>evil</body></html>"};
+
+        WHEN("the payload is sniffed")
+        {
+            THEN("it is not classified as text/plain, so a declared text/plain upload mismatches and is quarantined")
+            {
+                REQUIRE(merovingian::media::sniff_mime_type(polyglot_bytes) != "text/plain");
+                REQUIRE(merovingian::media::sniff_mime_type(leading_whitespace_polyglot_bytes) != "text/plain");
+            }
+        }
+
+        WHEN("evaluate_media_upload sees a text/plain declaration over this content")
+        {
+            auto const policy = default_upload_policy();
+            auto request = merovingian::media::MediaUploadRequest{};
+            request.byte_size = polyglot_bytes.size();
+            request.declared_mime_type = "text/plain";
+            request.sniffed_mime_type = merovingian::media::sniff_mime_type(polyglot_bytes);
+            request.content_hash = "sha256:abc";
+            request.scanner_clean = true;
+            auto const decision = merovingian::media::evaluate_media_upload(policy, request);
+
+            THEN("the declared-vs-sniffed mismatch quarantines it instead of accepting it as plain text")
+            {
+                REQUIRE(decision.disposition == merovingian::media::MediaDisposition::quarantine);
             }
         }
     }

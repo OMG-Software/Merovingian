@@ -429,6 +429,58 @@ SCENARIO("OutboundClient rejects an untrusted self-signed certificate", "[http][
     }
 }
 
+// Regression test for #413: mero_curl_write_header must cap the number of
+// stored response headers rather than growing without bound. libcurl imposes
+// no default header-count cap, so a hostile federation peer streaming
+// hundreds of thousands of headers could otherwise drive an allocation
+// failure past the header callback's noexcept boundary and abort the whole
+// process. This test proves the cap deterministically aborts the transfer
+// well before that: 300 header lines exceeds the 256-header cap.
+SCENARIO("OutboundClient aborts a transfer that streams far more response headers than the cap allows",
+         "[http][outbound][tls][integration][security]")
+{
+    GIVEN("a one-shot TLS server that streams 300 response headers, above the stored-header cap")
+    {
+        auto const certificate = write_test_tls_certificate();
+        auto tls_context = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
+                                                                            certificate.private_key_file);
+        REQUIRE(tls_context.ok());
+
+        auto acceptor = merovingian::net::TcpAcceptor{};
+        REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+        auto const port = acceptor.bound_port();
+
+        auto const body = std::string{R"({"ignored":true})"};
+        auto response = std::string{"HTTP/1.1 200 OK\r\n"};
+        for (auto i = 0U; i < 300U; ++i)
+        {
+            response += "X-Pad-" + std::to_string(i) + ": v\r\n";
+        }
+        response += "Content-Length: " + std::to_string(body.size());
+        response += "\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n";
+        response += body;
+
+        WHEN("OutboundClient::perform receives the oversized header stream")
+        {
+            auto server_thread = std::thread{[&]() {
+                run_one_shot_tls_server(acceptor, *tls_context.context, response);
+            }};
+
+            auto client = merovingian::http::OutboundClient{};
+            auto const request = make_localhost_request(port, "localhost", certificate.certificate_pem);
+            auto const result = client.perform(request);
+
+            server_thread.join();
+
+            THEN("the transfer is aborted cleanly rather than the process aborting via bad_alloc/terminate")
+            {
+                REQUIRE_FALSE(result.ok);
+                REQUIRE(result.error == merovingian::http::OutboundError::response_too_large);
+            }
+        }
+    }
+}
+
 SCENARIO("OutboundClient refuses to follow a 3xx redirect from a federation peer",
          "[http][outbound][tls][integration][redirect]")
 {

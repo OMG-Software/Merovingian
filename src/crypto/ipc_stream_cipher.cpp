@@ -36,6 +36,17 @@ struct IpcStreamCipher::State
 {
     crypto_secretstream_xchacha20poly1305_state push{};
     crypto_secretstream_xchacha20poly1305_state pull{};
+
+    // #419: the secretstream states hold the derived XChaCha20-Poly1305
+    // session keys for the lifetime of the channel. The constructor already
+    // zeroizes every transient key buffer on every path; this ensures the
+    // long-lived state itself is wiped too, before the owning unique_ptr
+    // frees the heap allocation (crypto/AGENTS.md rule 7).
+    ~State()
+    {
+        sodium_memzero(&push, sizeof(push));
+        sodium_memzero(&pull, sizeof(pull));
+    }
 };
 
 IpcStreamCipher::IpcStreamCipher(Role const role, IpcAuthKey auth_key,
@@ -50,7 +61,14 @@ IpcStreamCipher::IpcStreamCipher(Role const role, IpcAuthKey auth_key,
 
     auto my_pk = std::array<std::uint8_t, crypto_kx_PUBLICKEYBYTES>{};
     auto my_sk = std::array<std::uint8_t, crypto_kx_SECRETKEYBYTES>{};
-    crypto_kx_keypair(my_pk.data(), my_sk.data());
+    if (crypto_kx_keypair(my_pk.data(), my_sk.data()) != 0)
+    {
+        // #432: fail closed rather than sending an uninitialized public key
+        // to the peer (an info leak of uninitialized stack memory) and
+        // deriving session keys from an uninitialized secret key.
+        secure_zero(my_sk);
+        throw std::runtime_error{"ipc: key pair generation failed"};
+    }
 
     auto peer_pk = std::array<std::uint8_t, crypto_kx_PUBLICKEYBYTES>{};
 

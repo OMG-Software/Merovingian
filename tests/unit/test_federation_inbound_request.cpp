@@ -493,6 +493,54 @@ SCENARIO("Inbound federation transaction accepts signed public trusted remotes",
     }
 }
 
+// Regression test for #416: FederationRuntimeState::accepted_transactions
+// previously grew without bound — every accepted transaction with a distinct
+// transaction_id was appended and never evicted, so a stream of distinct
+// ids (from one origin with valid keys, or a Sybil of many) exhausted main
+// process memory over time. The fix caps the ring at kMaxAcceptedTransactions
+// (10,000, inbound_request.cpp) and evicts the oldest entry first.
+SCENARIO("Inbound federation accepted-transaction dedup ring is bounded, not unbounded",
+         "[federation][inbound][transaction][security]")
+{
+    GIVEN("a runtime with a known public remote")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        // This scenario is exercising the dedup-ring bound, not the
+        // per-origin transaction/PDU rate limiters (default 120/60s and
+        // 600/60s) — raise both caps so the loop below isn't cut short by an
+        // unrelated 429.
+        runtime.config.per_origin_transaction_rate = {1'000'000U, 60U};
+        runtime.config.per_origin_pdu_rate = {1'000'000U, 60U};
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const token = std::string{"verify-token"};
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
+        auto const json_pdu = signed_json_pdu(origin, key_id, token);
+        auto const body = transaction_body(origin, json_pdu);
+        auto const secret_key = merovingian::federation::test::keypair_from_seed(token).secret_key;
+
+        WHEN("far more than the dedup-ring cap worth of distinct transaction ids are accepted")
+        {
+            constexpr auto transactions = 10'010U;
+            for (auto i = 0U; i < transactions; ++i)
+            {
+                auto request = signed_request(origin, key_id, token, body);
+                request.target = "/_matrix/federation/v1/send/txn-bound-" + std::to_string(i);
+                request.signature = merovingian::federation::make_federation_signature(
+                    request.origin, request.destination, request.method, request.target, request.body, secret_key);
+                auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
+                REQUIRE(response.status == 200U);
+            }
+
+            THEN("the dedup ring is bounded rather than growing to the full transaction count")
+            {
+                REQUIRE(runtime.accepted_transactions.size() <= 10'000U);
+                REQUIRE(runtime.accepted_transactions.size() < transactions);
+            }
+        }
+    }
+}
+
 SCENARIO("Inbound federation seeds discovery state for remotes resolved on demand",
          "[federation][inbound][transaction]")
 {

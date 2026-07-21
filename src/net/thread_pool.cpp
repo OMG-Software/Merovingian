@@ -72,7 +72,8 @@ namespace
 
 } // namespace
 
-ThreadPool::ThreadPool(std::size_t worker_count)
+ThreadPool::ThreadPool(std::size_t worker_count, std::function<void()> on_thread_start)
+    : on_thread_start_{std::move(on_thread_start)}
 {
     workers_.reserve(worker_count);
     try
@@ -154,6 +155,10 @@ auto ThreadPool::running() const -> bool
 auto ThreadPool::worker_loop() -> void
 {
     in_worker = true;
+    if (on_thread_start_)
+    {
+        on_thread_start_();
+    }
     while (true)
     {
         auto work = std::function<void()>{};

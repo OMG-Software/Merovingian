@@ -182,6 +182,7 @@ if get_option ('build_tests')
       'unit/test_federation_worker_args.cpp',
       'unit/test_worker_supervisor.cpp',
       'unit/test_worker_event_loop.cpp',
+      'unit/test_ipc_stream_cipher.cpp',
     ),
     include_directories: inc,
     dependencies: [catch2_dep, thread_dep, libsodium_dep, openssl_dep, libpq_dep, sqlite_dep, libcurl_dep, resolv_dep],

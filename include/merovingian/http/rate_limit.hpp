@@ -129,7 +129,12 @@ public:
 
         if (!per_ip.has_value() && !per_user.has_value())
         {
-            return RateLimitDecision{.allowed = true, .deny_reason = "invalid_policy"};
+            // Fail closed: a policy that cannot be resolved (missing config entry
+            // combined with an invalid default, or a default that fails
+            // rate_limit_policy_is_valid()) must never be treated as "no limit".
+            // Matches the fail-closed behaviour of the standalone
+            // request_is_rate_limited() helper.
+            return RateLimitDecision{.allowed = false, .deny_reason = "invalid_policy"};
         }
 
         auto const ip_decision = ip_bucket.empty() ? RateLimitDecision{true, 0U, 0U, 0U, 0U, 0U, 0U, 0U, ""}
@@ -175,13 +180,77 @@ public:
         m_user_buckets.clear();
     }
 
+    // Exposes bucket-table sizes so tests can assert the bound in #427 holds
+    // (sustained distinct keys do not grow the table past kMaxBucketsPerTable)
+    // without depending on internal layout.
+    [[nodiscard]] auto ip_bucket_count() const noexcept -> std::size_t
+    {
+        return m_ip_buckets.size();
+    }
+
+    [[nodiscard]] auto user_bucket_count() const noexcept -> std::size_t
+    {
+        return m_user_buckets.size();
+    }
+
 private:
     struct Bucket final
     {
-        std::string key{};
         std::uint32_t count{0U};
+        // The window length in force when this bucket was created/reset.
+        // Stored per-bucket (not just looked up from the caller's current
+        // policy) because entries in the same table can belong to different
+        // routes with different configured windows, and eviction sweeps need
+        // to judge staleness without re-resolving each bucket's policy.
+        std::uint32_t window_seconds{0U};
         TimePoint window_start{};
     };
+
+    // Bounds each bucket table so an attacker who can force many distinct keys
+    // (e.g. rotating a client-supplied X-Forwarded-For value through a trusted
+    // proxy) cannot grow memory or per-check scan cost without bound. Set well
+    // above any plausible legitimate concurrent-key count; the eviction sweep
+    // below only runs when a brand-new key arrives while a table is already at
+    // capacity, not on every check().
+    static constexpr std::size_t kMaxBucketsPerTable = 100'000U;
+
+    // Makes room in `table` for a new key: first evicts entries whose window
+    // is clearly expired (more than twice its own window length old, safely
+    // stale under any clock skew or missed sweep), then — if still at
+    // capacity — evicts the single least-recently-touched entry. This bounds
+    // table growth under sustained distinct-key pressure (see #427).
+    static auto evict_to_make_room(std::unordered_map<std::string, Bucket>& table, TimePoint now) -> void
+    {
+        if (table.size() < kMaxBucketsPerTable)
+        {
+            return;
+        }
+        for (auto it = table.begin(); it != table.end();)
+        {
+            auto const stale_after = std::chrono::seconds{static_cast<std::int64_t>(it->second.window_seconds) * 2};
+            if (now - it->second.window_start >= stale_after)
+            {
+                it = table.erase(it);
+            }
+            else
+            {
+                ++it;
+            }
+        }
+        if (table.size() < kMaxBucketsPerTable)
+        {
+            return;
+        }
+        auto oldest = table.begin();
+        for (auto it = table.begin(); it != table.end(); ++it)
+        {
+            if (it->second.window_start < oldest->second.window_start)
+            {
+                oldest = it;
+            }
+        }
+        table.erase(oldest);
+    }
 
     [[nodiscard]] static auto lookup_policy(std::unordered_map<std::string, RateLimitPolicy> const& table,
                                             std::string_view target) -> RateLimitPolicy const*
@@ -210,42 +279,44 @@ private:
         return static_cast<std::uint32_t>(remaining_ms);
     }
 
-    [[nodiscard]] auto check_bucket(std::vector<Bucket>& table, std::string_view bucket_key,
+    [[nodiscard]] auto check_bucket(std::unordered_map<std::string, Bucket>& table, std::string_view bucket_key,
                                     std::optional<RateLimitPolicy> const& policy, TimePoint now) -> RateLimitDecision
     {
         if (!policy.has_value() || bucket_key.empty())
         {
             return RateLimitDecision{true, 0U, 0U, 0U, 0U, 0U, 0U, 0U, ""};
         }
-        auto it = std::ranges::find_if(table, [bucket_key](Bucket const& b) {
-            return b.key == bucket_key;
-        });
+        auto const key = std::string{bucket_key};
+        auto it = table.find(key);
         if (it == table.end())
         {
-            table.push_back({std::string{bucket_key}, 1U, now});
+            evict_to_make_room(table, now);
+            it = table.emplace(key, Bucket{1U, policy->window_seconds, now}).first;
             return RateLimitDecision{true, policy->max_requests, policy->window_seconds, 1U, 1U, 0U, 0U, 0U, ""};
         }
-        if (now - it->window_start >= std::chrono::seconds{policy->window_seconds})
+        auto& bucket = it->second;
+        bucket.window_seconds = policy->window_seconds;
+        if (now - bucket.window_start >= std::chrono::seconds{policy->window_seconds})
         {
-            it->count = 0U;
-            it->window_start = now;
+            bucket.count = 0U;
+            bucket.window_start = now;
         }
-        if (it->count >= policy->max_requests)
+        if (bucket.count >= policy->max_requests)
         {
-            auto const retry_after_ms = remaining_window_ms(it->window_start, *policy, now);
-            return RateLimitDecision{
-                false,          policy->max_requests, policy->window_seconds, it->count, it->count, 0U, 0U,
-                retry_after_ms, "per_ip_cap"};
+            auto const retry_after_ms = remaining_window_ms(bucket.window_start, *policy, now);
+            return RateLimitDecision{false,        policy->max_requests, policy->window_seconds,
+                                     bucket.count, bucket.count,         0U,
+                                     0U,           retry_after_ms,       "per_ip_cap"};
         }
-        ++it->count;
-        return RateLimitDecision{true, policy->max_requests, policy->window_seconds, it->count, it->count, 0U, 0U, 0U,
-                                 ""};
+        ++bucket.count;
+        return RateLimitDecision{
+            true, policy->max_requests, policy->window_seconds, bucket.count, bucket.count, 0U, 0U, 0U, ""};
     }
 
     RateLimitConfig m_config{};
     Clock* m_clock{nullptr};
-    std::vector<Bucket> m_ip_buckets{};
-    std::vector<Bucket> m_user_buckets{};
+    std::unordered_map<std::string, Bucket> m_ip_buckets{};
+    std::unordered_map<std::string, Bucket> m_user_buckets{};
 };
 
 } // namespace merovingian::http

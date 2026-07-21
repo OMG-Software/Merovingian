@@ -12,6 +12,25 @@
 #include <linux/seccomp.h>
 #include <sys/syscall.h>
 #include <unistd.h>
+
+// #428: personality() is allowed in the seccomp allowlist only for
+// ThreadSanitizer builds (which call personality(ADDR_NO_RANDOMIZE) during
+// worker startup after exec); production builds must not carry it, since it
+// would let an attacker with arbitrary code execution disable ASLR. Mirrors
+// the sanitizer-detection pattern in media/thumbnail_worker_main.cpp. Scoped
+// to __linux__ (like the scenarios that use it below): seccomp is Linux-only,
+// so on other platforms this constant is unused and -Werror would reject it.
+#if defined(__has_feature)
+#if __has_feature(thread_sanitizer)
+constexpr bool tsan_build = true;
+#else
+constexpr bool tsan_build = false;
+#endif
+#elif defined(__SANITIZE_THREAD__)
+constexpr bool tsan_build = true;
+#else
+constexpr bool tsan_build = false;
+#endif
 #endif
 
 SCENARIO("seccomp hardening check maps probe results to the correct status", "[platform][hardening][seccomp]")
@@ -309,14 +328,24 @@ SCENARIO("seccomp filter allows ThreadSanitizer worker startup syscalls", "[plat
     {
         WHEN("sanitizer runtime syscalls are checked")
         {
-            THEN("personality is allowed")
+            THEN("personality is allowed only in ThreadSanitizer builds")
             {
                 // ThreadSanitizer calls personality(ADDR_NO_RANDOMIZE) in the
                 // federation worker after exec to disable ASLR for deterministic
                 // shadow-memory layout. The worker inherits the server's seccomp
                 // filter, so blocking personality kills the child with SIGSYS.
+                // Production (non-TSan) builds must NOT carry this syscall (#428):
+                // it would let an attacker with arbitrary code execution disable
+                // ASLR, weakening a core exploit mitigation.
 #ifdef __NR_personality
-                REQUIRE(merovingian::platform::seccomp_is_syscall_allowed(__NR_personality));
+                if constexpr (tsan_build)
+                {
+                    REQUIRE(merovingian::platform::seccomp_is_syscall_allowed(__NR_personality));
+                }
+                else
+                {
+                    REQUIRE_FALSE(merovingian::platform::seccomp_is_syscall_allowed(__NR_personality));
+                }
 #endif
             }
         }
@@ -389,10 +418,19 @@ SCENARIO("worker seccomp filter denies exec/spawn syscalls but allows the worker
         }
         WHEN("ThreadSanitizer's personality syscall is checked")
         {
-            THEN("personality is allowed in the worker filter too")
+            THEN("personality is allowed in the worker filter too, only for ThreadSanitizer builds")
             {
+                // #428: production (non-TSan) builds must not carry this
+                // syscall in the worker filter either.
 #ifdef __NR_personality
-                REQUIRE(merovingian::platform::worker_seccomp_is_syscall_allowed(__NR_personality));
+                if constexpr (tsan_build)
+                {
+                    REQUIRE(merovingian::platform::worker_seccomp_is_syscall_allowed(__NR_personality));
+                }
+                else
+                {
+                    REQUIRE_FALSE(merovingian::platform::worker_seccomp_is_syscall_allowed(__NR_personality));
+                }
 #endif
             }
         }

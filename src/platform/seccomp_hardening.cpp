@@ -334,7 +334,17 @@ namespace
         // ThreadSanitizer disables ASLR by calling personality(ADDR_NO_RANDOMIZE)
         // during worker startup after exec. The child inherits the server's filter, so
         // the syscall must be permitted for sanitizer builds to reach full handshake.
+        // #428: gated to TSan builds only. personality() lets a caller disable ASLR
+        // for the process; in a production (non-TSan) build this has no legitimate
+        // use and would let an attacker with arbitrary code execution weaken a core
+        // exploit mitigation that hardening_self_check otherwise enforces.
+#if defined(__has_feature)
+#if __has_feature(thread_sanitizer)
         ALLOW_SYSCALL(__NR_personality),
+#endif
+#elif defined(__SANITIZE_THREAD__)
+        ALLOW_SYSCALL(__NR_personality),
+#endif
 
         // ── Process identity ───────────────────────────────────────────────
         ALLOW_SYSCALL(__NR_getpid),
@@ -566,7 +576,15 @@ namespace
         __NR_getrandom,
         __NR_capget,
         __NR_capset,
+    // #428: gated to TSan builds only, same rationale as k_seccomp_filter
+    // above — production builds must not carry this syscall.
+#if defined(__has_feature)
+#if __has_feature(thread_sanitizer)
         __NR_personality,
+#endif
+#elif defined(__SANITIZE_THREAD__)
+        __NR_personality,
+#endif
         // ── Process identity ───────────────────────────────────────────────
         __NR_getpid,
         __NR_getppid,

@@ -274,6 +274,12 @@ needs in the child must also be present:
 | --- | --- | --- |
 | `personality` | 135 | ThreadSanitizer calls `personality(ADDR_NO_RANDOMIZE)` in the worker after `execve` to disable ASLR for deterministic shadow-memory layout. Blocking it kills the child with SIGSYS before the IPC handshake completes. |
 
+`personality` is gated behind `__has_feature(thread_sanitizer)` / `__SANITIZE_THREAD__`
+in both the main and worker allowlists (#428): it is compiled into the filter only for
+TSan builds. A production build must never carry it — `personality(ADDR_NO_RANDOMIZE)`
+lets a caller with arbitrary code execution disable ASLR, weakening a core exploit
+mitigation the platform self-check otherwise enforces.
+
 **Build-header caveat** — `clone3`, `close_range`, and `faccessat2` were added in
 Linux 5.3, 5.9, and 5.8 respectively. Kernel headers shipped with older build
 environments (e.g. Ubuntu 20.04 `linux-libc-dev` at 5.4) may not define the

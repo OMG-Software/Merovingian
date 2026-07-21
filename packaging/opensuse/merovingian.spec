@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.10.59
+Version:        0.10.60
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -112,6 +112,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Tue Jul 21 2026 James Chapman <claude@ping.me.uk> - 0.10.60-1
+- Security (issues #409-#450): membership/redaction authorization power-level fixes, fail-closed rate limiter with bounded buckets, bounded curl header allocations, policy-server call moved outside runtime.mutex, bounded federation dedup ring, real AV scanner verdict wiring, IPC cipher key zeroization, audit sink installed on worker threads, typing EDU origin/JSON fixes, TSan-only seccomp personality(), null-terminated crypto buffers, token hash/log hardening, PostgreSQL identifier validation, media_id validation unification, tightened MIME sniffing, and documented pdu_sink trust boundary.
+
 * Thu Jul 16 2026 James Chapman <claude@ping.me.uk> - 0.10.59-1
 - Security/crypto-boundary (issue #396): route all libsodium access through src/crypto/ and src/auth/; src/ipc/channel.cpp now uses crypto::IpcStreamCipher.
 - Registration token loading (issue #406): load token file into core::SecretBuffer and fail closed if mlock fails.

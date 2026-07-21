@@ -866,6 +866,11 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
     // strictly positive. Empty targets are also rejected so an operator
     // typo (a stray blank line) does not silently insert a catch-all
     // entry that shadows the configured `default_per_ip`.
+    // The upper bound mirrors http::rate_limit_policy_is_valid() (rate_limit.hpp):
+    // a policy config.cpp accepts but the engine later rejects as invalid resolves
+    // to nullopt at runtime, and an unresolvable policy must never be silently
+    // treated as "no limit" (see RateLimitEngine::check() fail-closed behaviour).
+    constexpr auto max_window_seconds = 3600U;
     for (auto const& [target, policy] : config.client_rate_limits().per_ip)
     {
         if (target.empty())
@@ -873,9 +878,9 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
             findings.push_back({"client_rate_limits.per_ip", "rate-limit target must not be empty"});
             break;
         }
-        if (policy.max_requests == 0U || policy.window_seconds == 0U)
+        if (policy.max_requests == 0U || policy.window_seconds == 0U || policy.window_seconds > max_window_seconds)
         {
-            findings.push_back({"client_rate_limits.per_ip." + target, "rate-limit policy must be N>0 per Ws>0"});
+            findings.push_back({"client_rate_limits.per_ip." + target, "rate-limit policy must be N>0 per 0<Ws<=3600"});
         }
     }
     for (auto const& [target, policy] : config.client_rate_limits().per_user)
@@ -885,16 +890,18 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
             findings.push_back({"client_rate_limits.per_user", "rate-limit target must not be empty"});
             break;
         }
-        if (policy.max_requests == 0U || policy.window_seconds == 0U)
+        if (policy.max_requests == 0U || policy.window_seconds == 0U || policy.window_seconds > max_window_seconds)
         {
-            findings.push_back({"client_rate_limits.per_user." + target, "rate-limit policy must be N>0 per Ws>0"});
+            findings.push_back(
+                {"client_rate_limits.per_user." + target, "rate-limit policy must be N>0 per 0<Ws<=3600"});
         }
     }
     if (config.client_rate_limits().default_per_ip.max_requests == 0U ||
-        config.client_rate_limits().default_per_ip.window_seconds == 0U)
+        config.client_rate_limits().default_per_ip.window_seconds == 0U ||
+        config.client_rate_limits().default_per_ip.window_seconds > max_window_seconds)
     {
         findings.push_back(
-            {"client_rate_limits.default_per_ip", "default per-IP rate-limit policy must be N>0 per Ws>0"});
+            {"client_rate_limits.default_per_ip", "default per-IP rate-limit policy must be N>0 per 0<Ws<=3600"});
     }
 
     // Log-modules config. The wildcard "*" sets the default; otherwise

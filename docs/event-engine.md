@@ -32,7 +32,13 @@ Implemented now:
   and demotion guard over the union of old and new `users` keys (per spec
   rule 9.8 — a user at or above the sender's power cannot be changed or
   removed by a non-superior sender), state-default and events-default power
-  enforcement, redaction power
+  enforcement. Kick/unban and ban additionally require the sender's power to
+  be strictly greater than the target's own power level (spec rules 5.4/6.2)
+  — the `redact`/`ban` power levels are not consulted when authorizing
+  `m.room.redaction` itself (issue #410); it is authorized through the same
+  `events[type]`/`events_default` path as any other message event. `redact`
+  only governs whether an already-authorized redaction is *applied* to its
+  target (see docs/matrix-v1.18-spec/server-server-api.md#redactions)
 - auth-event map construction from current room state for authorization
 - auth checking wired into the event sending path: composed events are
   authorized against current room state before persistence; auth is

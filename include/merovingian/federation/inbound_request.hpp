@@ -13,6 +13,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -206,7 +207,13 @@ struct FederationRuntimeState final
     // federation dispatch runs without HomeserverRuntime::mutex.
     FederationRuntimeMutex mutex{std::make_shared<std::recursive_mutex>()};
     std::vector<FederationRemoteRuntime> remotes{};
-    std::vector<FederationAcceptedTransaction> accepted_transactions{};
+    // Replay-dedup ring (see #416): capped at kMaxAcceptedTransactions
+    // (inbound_request.cpp) so a sustained stream of distinct transaction ids
+    // cannot grow the main process's memory without bound. Entries are always
+    // appended in acceptance order under federation_guard(), so the oldest
+    // entry is always at the front — a plain FIFO pop_front() eviction (O(1)
+    // on a deque) is enough to keep this bounded.
+    std::deque<FederationAcceptedTransaction> accepted_transactions{};
     std::vector<FederationRateLimitBucket> rate_limit_buckets{};
     std::vector<observability::AuditLogEvent> audit_events{};
     RemoteKeyResolver remote_key_resolver{};

@@ -141,6 +141,15 @@ namespace
            "\"hashes\":{\"sha256\":\"hash\"}}";
 }
 
+[[nodiscard]] auto make_redaction_event(std::string_view sender, std::string_view redacts) -> std::string
+{
+    return "{\"type\":\"m.room.redaction\",\"sender\":\"" + std::string{sender} + "\",\"redacts\":\"" +
+           std::string{redacts} + "\",\"room_id\":\"!room:example.org\",\"content\":{\"redacts\":\"" +
+           std::string{redacts} +
+           "\"},\"origin_server_ts\":4,\"depth\":3,\"prev_events\":[],\"auth_events\":[],"
+           "\"hashes\":{\"sha256\":\"hash\"}}";
+}
+
 [[nodiscard]] auto make_state_event(std::string_view sender, std::string_view type, std::string_view state_key)
     -> std::string
 {
@@ -2340,6 +2349,260 @@ SCENARIO("Auth rules gate m.room.third_party_invite creation on invite power, no
             {
                 REQUIRE_FALSE(decision.allowed);
                 REQUIRE(decision.rule_step == "6");
+            }
+        }
+    }
+}
+
+// Spec: rooms/v10.md Authorization rules, rule 6.2 — "If the sender's power
+// level is greater than or equal to the ban level, AND the target user's
+// power level is less than the sender's power level, allow." A sender who
+// merely clears the ban-level bar is not enough: the target's own power must
+// also be strictly lower than the sender's. Regression test for #409.
+SCENARIO("Auth rules reject a ban when the target's power level is not below the sender's",
+         "[events][auth][membership][ban][power-levels][security]")
+{
+    GIVEN("a room where @alice (power 50) has ban power but @bob is an equal-power moderator")
+    {
+        auto const ban_json = make_member_event("@alice:example.org", "@bob:example.org", "ban");
+        auto const parsed = merovingian::canonicaljson::parse_lossless(ban_json);
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+        auto const* policy = merovingian::rooms::find_room_version_policy("12");
+        REQUIRE(policy != nullptr);
+        auto auth_events = merovingian::events::AuthEventMap{};
+        // Neither @alice nor @bob is the creator, so neither holds infinite power.
+        auth_events.create = merovingian::canonicaljson::parse_lossless(make_create_event("@admin:example.org")).value;
+        auth_events.power_levels =
+            merovingian::canonicaljson::parse_lossless(
+                make_power_levels_event_users("@alice:example.org", 50, 50, 50, 50, 0, 50, 0,
+                                              {
+                                                  {"@alice:example.org", 50},
+                                                  {"@bob:example.org",   50}
+        }))
+                .value;
+        auth_events.sender_member = merovingian::canonicaljson::parse_lossless(
+                                        make_member_event("@alice:example.org", "@alice:example.org", "join"))
+                                        .value;
+        auth_events.target_member = merovingian::canonicaljson::parse_lossless(
+                                        make_member_event("@bob:example.org", "@bob:example.org", "join"))
+                                        .value;
+
+        WHEN("@alice (power 50, meets ban level) tries to ban @bob (also power 50)")
+        {
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(parsed.value, *policy, auth_events);
+
+            THEN("the ban is rejected — target power is not strictly less than sender power")
+            {
+                REQUIRE_FALSE(decision.allowed);
+            }
+        }
+    }
+}
+
+// Spec: rooms/v10.md Authorization rules, rule 5.4 — the same target-power
+// guard applies to kicks (membership=leave targeting another user).
+// Regression test for #409.
+SCENARIO("Auth rules reject a kick when the target's power level is not below the sender's",
+         "[events][auth][membership][kick][power-levels][security]")
+{
+    GIVEN("a room where @alice (power 50) has kick power but @bob is an equal-power moderator")
+    {
+        auto const kick_json = make_member_event("@alice:example.org", "@bob:example.org", "leave");
+        auto const parsed = merovingian::canonicaljson::parse_lossless(kick_json);
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+        auto const* policy = merovingian::rooms::find_room_version_policy("12");
+        REQUIRE(policy != nullptr);
+        auto auth_events = merovingian::events::AuthEventMap{};
+        auth_events.create = merovingian::canonicaljson::parse_lossless(make_create_event("@admin:example.org")).value;
+        auth_events.power_levels =
+            merovingian::canonicaljson::parse_lossless(
+                make_power_levels_event_users("@alice:example.org", 50, 50, 50, 50, 0, 50, 0,
+                                              {
+                                                  {"@alice:example.org", 50},
+                                                  {"@bob:example.org",   50}
+        }))
+                .value;
+        auth_events.sender_member = merovingian::canonicaljson::parse_lossless(
+                                        make_member_event("@alice:example.org", "@alice:example.org", "join"))
+                                        .value;
+        auth_events.target_member = merovingian::canonicaljson::parse_lossless(
+                                        make_member_event("@bob:example.org", "@bob:example.org", "join"))
+                                        .value;
+
+        WHEN("@alice (power 50, meets kick level) tries to kick @bob (also power 50)")
+        {
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(parsed.value, *policy, auth_events);
+
+            THEN("the kick is rejected — target power is not strictly less than sender power")
+            {
+                REQUIRE_FALSE(decision.allowed);
+            }
+        }
+    }
+}
+
+// Spec: rooms/v10.md Authorization rules, rule 5 — "To unban somebody, you
+// must have power level greater than or equal to both the kick and ban
+// levels, and greater than the target user's power level." A sender who only
+// meets the ban level (but not the kick level) MUST NOT be able to unban.
+// Regression test for #409.
+SCENARIO("Auth rules reject an unban when the sender meets ban level but not kick level",
+         "[events][auth][membership][ban][power-levels][security]")
+{
+    GIVEN("a room where the ban level (0) is lower than the kick level (50) and @bob is banned")
+    {
+        auto const unban_json = make_member_event("@alice:example.org", "@bob:example.org", "leave");
+        auto const parsed = merovingian::canonicaljson::parse_lossless(unban_json);
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+        auto const* policy = merovingian::rooms::find_room_version_policy("12");
+        REQUIRE(policy != nullptr);
+        auto auth_events = merovingian::events::AuthEventMap{};
+        auth_events.create = merovingian::canonicaljson::parse_lossless(make_create_event("@admin:example.org")).value;
+        // ban_level=0, kick_level=50: @alice (power 10) clears the ban bar but not the kick bar.
+        auth_events.power_levels =
+            merovingian::canonicaljson::parse_lossless(
+                make_power_levels_event("@alice:example.org", 0, 50, 50, 50, 0, 50, 0, "@alice:example.org", 10))
+                .value;
+        auth_events.sender_member = merovingian::canonicaljson::parse_lossless(
+                                        make_member_event("@alice:example.org", "@alice:example.org", "join"))
+                                        .value;
+        auth_events.target_member =
+            merovingian::canonicaljson::parse_lossless(make_member_event("@bob:example.org", "@bob:example.org", "ban"))
+                .value;
+
+        WHEN("@alice (power 10) tries to unban @bob")
+        {
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(parsed.value, *policy, auth_events);
+
+            THEN("the unban is rejected — sender power is below the kick level")
+            {
+                REQUIRE_FALSE(decision.allowed);
+            }
+        }
+    }
+}
+
+// Spec: rooms/v10.md Authorization rules, rule 5 — the same rule text as
+// above. A sender meeting both the ban and kick level, and outranking the
+// (defaulted, power 0) target, MUST be allowed to unban.
+SCENARIO("Auth rules allow an unban when the sender meets both ban and kick levels and outranks the target",
+         "[events][auth][membership][ban][power-levels]")
+{
+    GIVEN("a room where @alice meets both the ban and kick levels and @bob is banned at default power")
+    {
+        auto const unban_json = make_member_event("@alice:example.org", "@bob:example.org", "leave");
+        auto const parsed = merovingian::canonicaljson::parse_lossless(unban_json);
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+        auto const* policy = merovingian::rooms::find_room_version_policy("12");
+        REQUIRE(policy != nullptr);
+        auto auth_events = merovingian::events::AuthEventMap{};
+        auth_events.create = merovingian::canonicaljson::parse_lossless(make_create_event("@admin:example.org")).value;
+        auth_events.power_levels =
+            merovingian::canonicaljson::parse_lossless(
+                make_power_levels_event("@alice:example.org", 50, 50, 50, 50, 0, 50, 0, "@alice:example.org", 50))
+                .value;
+        auth_events.sender_member = merovingian::canonicaljson::parse_lossless(
+                                        make_member_event("@alice:example.org", "@alice:example.org", "join"))
+                                        .value;
+        auth_events.target_member =
+            merovingian::canonicaljson::parse_lossless(make_member_event("@bob:example.org", "@bob:example.org", "ban"))
+                .value;
+
+        WHEN("@alice (power 50) unbans @bob (default power 0)")
+        {
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(parsed.value, *policy, auth_events);
+
+            THEN("the unban is allowed")
+            {
+                REQUIRE(decision.allowed);
+            }
+        }
+    }
+}
+
+// Spec: server-server-api.md#redactions — "Redaction events are
+// authorized...like any other event of that type" (via events_default /
+// events["m.room.redaction"]); the `redact` and `ban` power levels play no
+// part in authorizing the redaction event itself (they only govern whether
+// an already-authorized redaction is *applied* to its target). Regression
+// test for #410: with events_default=0 and redact=100, a power-0 sender must
+// be allowed to send the redaction event.
+SCENARIO("Auth rules authorize m.room.redaction via events_default, not the redact/ban levels",
+         "[events][auth][redaction][power-levels][security]")
+{
+    GIVEN("a room with events_default=0 but redact=100 and @alice at default power 0")
+    {
+        auto const redaction_json = make_redaction_event("@alice:example.org", "$someevent");
+        auto const parsed = merovingian::canonicaljson::parse_lossless(redaction_json);
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+        auto const* policy = merovingian::rooms::find_room_version_policy("12");
+        REQUIRE(policy != nullptr);
+        auto auth_events = merovingian::events::AuthEventMap{};
+        auth_events.create = merovingian::canonicaljson::parse_lossless(make_create_event("@admin:example.org")).value;
+        auth_events.power_levels =
+            merovingian::canonicaljson::parse_lossless(
+                make_power_levels_event("@alice:example.org", 100, 50, 50, 100, 0, 50, 0, "@alice:example.org", 0))
+                .value;
+        auth_events.sender_member = merovingian::canonicaljson::parse_lossless(
+                                        make_member_event("@alice:example.org", "@alice:example.org", "join"))
+                                        .value;
+
+        WHEN("@alice (power 0) sends the redaction")
+        {
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(parsed.value, *policy, auth_events);
+
+            THEN("the redaction is allowed — events_default (0) gates it, not redact (100)")
+            {
+                REQUIRE(decision.allowed);
+            }
+        }
+    }
+}
+
+// Regression test for #410, the mirror case: with events["m.room.redaction"]=100
+// and redact=0, a power-60 sender must be REJECTED even though 60 >= redact(0).
+// The old code's `sender_power >= redact_level || sender_power >= ban_level`
+// check would have allowed this; the fix authorizes via events_default/events
+// map only.
+SCENARIO("Auth rules reject m.room.redaction when below the events-map level, even if above the redact level",
+         "[events][auth][redaction][power-levels][security]")
+{
+    GIVEN("a room with events[\"m.room.redaction\"]=100, redact=0, ban=0, and @alice at power 60")
+    {
+        auto const redaction_json = make_redaction_event("@alice:example.org", "$someevent");
+        auto const parsed = merovingian::canonicaljson::parse_lossless(redaction_json);
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+        auto const* policy = merovingian::rooms::find_room_version_policy("12");
+        REQUIRE(policy != nullptr);
+        auto auth_events = merovingian::events::AuthEventMap{};
+        auth_events.create = merovingian::canonicaljson::parse_lossless(make_create_event("@admin:example.org")).value;
+        // make_power_levels_event has no "events" map parameter, so build the JSON
+        // directly to set events["m.room.redaction"]=100 alongside redact=0/ban=0.
+        auto const power_levels_json =
+            std::string{"{\"type\":\"m.room.power_levels\",\"state_key\":\"\",\"sender\":\"@alice:example.org\","
+                        "\"room_id\":\"!room:example.org\",\"content\":{\"ban\":0,\"invite\":50,\"kick\":50,"
+                        "\"redact\":0,\"users_default\":0,\"state_default\":50,\"events_default\":0,"
+                        "\"events\":{\"m.room.redaction\":100},\"users\":{\"@alice:example.org\":60}},"
+                        "\"origin_server_ts\":2,\"depth\":1,\"prev_events\":[],\"auth_events\":[],"
+                        "\"hashes\":{\"sha256\":\"hash\"}}"};
+        auth_events.power_levels = merovingian::canonicaljson::parse_lossless(power_levels_json).value;
+        auth_events.sender_member = merovingian::canonicaljson::parse_lossless(
+                                        make_member_event("@alice:example.org", "@alice:example.org", "join"))
+                                        .value;
+
+        WHEN("@alice (power 60) sends the redaction")
+        {
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(parsed.value, *policy, auth_events);
+
+            THEN("the redaction is rejected — events[\"m.room.redaction\"] (100) gates it, not redact (0)")
+            {
+                REQUIRE_FALSE(decision.allowed);
             }
         }
     }

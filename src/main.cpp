@@ -13,6 +13,7 @@
 #include "merovingian/homeserver/federation_proxy.hpp"
 #include "merovingian/homeserver/http_server.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
+#include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/homeserver/tls.hpp"
 #include "merovingian/media/runtime_media.hpp"
 #include "merovingian/net/listener.hpp"
@@ -48,7 +49,7 @@
 namespace
 {
 
-constexpr auto version = std::string_view{"0.10.59"};
+constexpr auto version = std::string_view{"0.10.60"};
 
 struct BootstrapConfigResult final
 {
@@ -688,11 +689,21 @@ struct ListenerBinding final
     auto stats = merovingian::homeserver::HttpServeStats{};
     // Main pool handles all non-sync request types. Keep this modest so that
     // threads aren't wasted ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â sync long-polls are offloaded to sync_pool below.
-    auto pool = merovingian::net::ThreadPool{8U};
+    // #420: the audit sink's active-database pointer is thread_local (see
+    // homeserver/local_services.cpp), installed by default only on the
+    // thread that constructs HomeserverRuntime (main). HTTP handlers run on
+    // these pool worker threads, where it would otherwise stay nullptr
+    // forever and the audit sink would silently no-op, dropping e.g. every
+    // registration_policy.denied row in production. Install it on every
+    // worker thread in both pools before they start dequeuing work.
+    auto const install_audit_sink_hook = [&runtime]() {
+        merovingian::homeserver::install_local_audit_database(&runtime.homeserver.database);
+    };
+    auto pool = merovingian::net::ThreadPool{8U, install_audit_sink_hook};
     // Dedicated pool for /sync long-polls. Each waiting sync client occupies one
     // thread here rather than in the main pool, so regular requests (join, send,
     // login, federation) are always serviced without delay.
-    auto sync_pool = merovingian::net::ThreadPool{32U};
+    auto sync_pool = merovingian::net::ThreadPool{32U, install_audit_sink_hook};
     auto threads = std::vector<std::thread>{};
     threads.reserve(bindings.size());
 

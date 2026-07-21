@@ -232,12 +232,22 @@ namespace
         curl_slist* list_{nullptr};
     };
 
+    // Bounds on stored response headers. Unlike the body (capped by
+    // request.max_response_body_bytes), libcurl imposes no default cap on the
+    // number or total size of header lines it will hand to the header
+    // callback, so a hostile peer could otherwise drive unbounded allocation.
+    // See #413.
+    constexpr auto max_response_header_count = std::size_t{256U};
+    constexpr auto max_response_header_bytes = std::size_t{64U * 1024U};
+
     struct ResponseSink final
     {
         std::string body{};
         std::vector<OutboundHeader> headers{};
         std::size_t cap{0U};
+        std::size_t header_bytes_seen{0U};
         bool too_large{false};
+        bool headers_too_large{false};
     };
 
     extern "C" auto mero_curl_write_body(char* ptr, std::size_t size, std::size_t nmemb, void* userdata) noexcept
@@ -269,30 +279,54 @@ namespace
             return 0U;
         }
         auto const bytes = size * nitems;
-        auto line = std::string_view{buffer, bytes};
-        // Strip trailing CRLF so the stored header values are clean.
-        while (!line.empty() && (line.back() == '\r' || line.back() == '\n'))
+        // Bound both the header count and the cumulative bytes stored before
+        // touching any allocating container. A hostile peer streaming an
+        // unbounded number of response headers must abort the transfer here,
+        // not drive a bad_alloc past this noexcept boundary (that would call
+        // std::terminate and take down the whole process). Returning a short
+        // count signals libcurl to fail the transfer.
+        auto const header_bytes_remaining =
+            max_response_header_bytes - std::min(sink->header_bytes_seen, max_response_header_bytes);
+        if (sink->headers.size() >= max_response_header_count || bytes > header_bytes_remaining)
         {
-            line.remove_suffix(1U);
+            sink->headers_too_large = true;
+            return 0U;
         }
-        // Skip the status line and the blank separator between headers and body.
-        if (line.empty() || line.starts_with("HTTP/"))
+        try
         {
+            auto line = std::string_view{buffer, bytes};
+            // Strip trailing CRLF so the stored header values are clean.
+            while (!line.empty() && (line.back() == '\r' || line.back() == '\n'))
+            {
+                line.remove_suffix(1U);
+            }
+            // Skip the status line and the blank separator between headers and body.
+            if (line.empty() || line.starts_with("HTTP/"))
+            {
+                return bytes;
+            }
+            auto const colon = line.find(':');
+            if (colon == std::string_view::npos)
+            {
+                return bytes;
+            }
+            auto name = line.substr(0U, colon);
+            auto value = line.substr(colon + 1U);
+            while (!value.empty() && (value.front() == ' ' || value.front() == '\t'))
+            {
+                value.remove_prefix(1U);
+            }
+            sink->headers.push_back(OutboundHeader{std::string{name}, std::string{value}});
+            sink->header_bytes_seen += bytes;
             return bytes;
         }
-        auto const colon = line.find(':');
-        if (colon == std::string_view::npos)
+        catch (...)
         {
-            return bytes;
+            // Allocation failure or similar: signal libcurl to abort rather
+            // than let the exception escape this noexcept callback.
+            sink->headers_too_large = true;
+            return 0U;
         }
-        auto name = line.substr(0U, colon);
-        auto value = line.substr(colon + 1U);
-        while (!value.empty() && (value.front() == ' ' || value.front() == '\t'))
-        {
-            value.remove_prefix(1U);
-        }
-        sink->headers.push_back(OutboundHeader{std::string{name}, std::string{value}});
-        return bytes;
     }
 
     [[nodiscard]] auto map_curl_code(CURLcode code, ResponseSink const& sink) noexcept -> OutboundError
@@ -322,7 +356,8 @@ namespace
         case CURLE_OPERATION_TIMEDOUT:
             return OutboundError::timeout;
         case CURLE_WRITE_ERROR:
-            return sink.too_large ? OutboundError::response_too_large : OutboundError::network_error;
+            return (sink.too_large || sink.headers_too_large) ? OutboundError::response_too_large
+                                                              : OutboundError::network_error;
         default:
             return OutboundError::network_error;
         }
