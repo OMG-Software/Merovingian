@@ -131,6 +131,15 @@ remaining work before PostgreSQL-backed production operation.
   plus underscore, ≤ 63 chars) before being interpolated into the
   `SET ROLE` statement, so the API is safe to call with operator-supplied
   role names.
+- **Bootstrap table-identifier validation (issue #442):** PostgreSQL's
+  `create_table_if_missing_sql` previously concatenated `table.name` directly
+  into `CREATE TABLE IF NOT EXISTS <name> (...)` DDL with no validation or
+  quoting, unlike the SQLite path. It now mirrors `sqlite_store.cpp` exactly:
+  `schema_table_is_core()` gates the name to the compiled core-table set, and
+  `quote_sqlite_identifier()` (generic ANSI double-quote identifier quoting,
+  despite the name — valid for PostgreSQL too) wraps it. Current callers only
+  ever pass hardcoded core table names, so this is defense-in-depth against a
+  future caller passing a non-core or attacker-influenced name.
 
 - Client transaction-idempotency dedup via the version-1 `client_txn_ids` table.
   Keyed on `(user_id, room_id, event_type, txn_id)`; `room_id` is empty string

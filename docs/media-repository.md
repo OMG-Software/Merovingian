@@ -18,6 +18,25 @@ current in-process runtime path.
   `Content-Type` header containing `|` is rejected with `400 M_BAD_REQUEST`
   rather than spliced into the internal `declared_mime|sniffed_mime|
   scanner_clean|bytes` pipe format, where it could shift field boundaries.
+- The `text/plain` sniffing heuristic (issue #445) does not classify content
+  that opens with `<` (after leading whitespace) as `text/plain`, even if
+  every byte is otherwise printable ASCII — an ASCII-only HTML/JS polyglot
+  declared as `Content-Type: text/plain` would otherwise match the sniffed
+  type (both `text/plain`) and sail through `evaluate_media_upload`'s
+  declared-vs-sniffed mismatch check with no mismatch at all, since
+  `text/plain` is in the default MIME allow-list. Such content now sniffs as
+  `application/octet-stream`, so a declared `text/plain` upload mismatches
+  and is quarantined. `X-Content-Type-Options: nosniff` is set on every
+  response regardless (see `docs/http-transport.md`), which independently
+  stops a browser from executing it as markup.
+- `media_id` validation is unified across every gate (issues #443/#444):
+  `security.cpp`'s `media_id_is_valid()` (used for remote-fetch requests) now
+  rejects embedded spaces exactly like `repository.cpp`'s stricter
+  `media_id_is_safe()` (used at the storage boundary), and the download/
+  thumbnail route parser (`local_media_download_parts()` in
+  `local_http_router.cpp`) rejects `..` and embedded spaces in the
+  `media_id` path segment before it ever reaches the repository layer,
+  matching the check the admin media routes already applied.
 - `GET /_matrix/media/v3/config` reports `m.upload.size` from
   `security.media.max_upload_size`, so client upload hints match the policy
   enforced by the repository.
@@ -64,6 +83,17 @@ current in-process runtime path.
   `security.media.local_upload_policy` / `remote_fetch_media_policy` in
   `docs/user-manual.md`), which defaults remote-fetched media to
   `quarantine` rather than blindly trusting it.
+  **Local uploads (issue #418):** `client_server.cpp` previously hardcoded
+  `scanner_clean` to the literal `"clean"` in the internal pipe body
+  regardless of upload content, making the quarantine-on-infection path
+  structurally unreachable even with `enable_av_scanner=true`. It now runs
+  `media::content_matches_eicar_test_signature()` — a deterministic,
+  dependency-free check for the industry-standard EICAR antivirus test
+  string (https://www.eicar.org/download-anti-malware-testfile/) — and
+  threads the real result through. This is not a general-purpose AV engine;
+  it exists so `enable_av_scanner` has a genuine, testable effect for
+  plaintext uploads and the quarantine path can be exercised end-to-end
+  without needing real malware.
 - Admin quarantine, release, and remove actions update repository state, persistent metadata, admin actions, and audit events.
 - Media metrics expose accepted uploads, rejected uploads, quarantines,
   releases, removals, remote fetch accept/reject counts, processing rejections,

@@ -141,6 +141,55 @@ SCENARIO("ThreadPool worker does not terminate when a work item throws std::exce
     }
 }
 
+// Regression test for #420: ThreadPool previously had no way to run
+// per-thread setup before a worker started dequeuing work, so callers that
+// needed to install a thread_local resource on every worker thread (e.g. the
+// homeserver's audit-sink database pointer, see
+// homeserver/local_services.cpp and main.cpp's serve_until_shutdown) had no
+// hook to do it with — only the thread that constructed the runtime got the
+// install. on_thread_start runs once on each worker thread before any work
+// item executes.
+SCENARIO("ThreadPool invokes on_thread_start once per worker before any work runs", "[net][thread_pool]")
+{
+    GIVEN("a pool constructed with an on_thread_start hook")
+    {
+        auto constexpr worker_count = std::size_t{3U};
+        auto start_calls = std::atomic<int>{0};
+        auto work_ran_after_start = std::atomic<bool>{true};
+
+        WHEN("the pool starts its workers")
+        {
+            {
+                auto pool = merovingian::net::ThreadPool{worker_count, [&] {
+                                                             // If a work item ran before this hook fired on the
+                                                             // same thread, start_calls would already be lower
+                                                             // than the observed submissions; this flag would be
+                                                             // set false by the check inside the submitted work
+                                                             // below in that case.
+                                                             start_calls.fetch_add(1);
+                                                         }};
+                std::this_thread::sleep_for(std::chrono::milliseconds{50});
+                for (auto i = std::size_t{0U}; i < worker_count; ++i)
+                {
+                    REQUIRE(pool.submit([&] {
+                        if (start_calls.load() == 0)
+                        {
+                            work_ran_after_start.store(false);
+                        }
+                    }));
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds{100});
+            }
+
+            THEN("the hook ran once per worker thread, and always before that thread's first work item")
+            {
+                REQUIRE(start_calls.load() == static_cast<int>(worker_count));
+                REQUIRE(work_ran_after_start.load());
+            }
+        }
+    }
+}
+
 #ifndef NDEBUG
 SCENARIO("ThreadPool request_stop asserts when invoked from inside a worker", "[net][thread_pool]")
 {

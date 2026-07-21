@@ -20,7 +20,12 @@ namespace merovingian::net
 class ThreadPool final
 {
 public:
-    explicit ThreadPool(std::size_t worker_count);
+    // `on_thread_start`, when set, runs once on each worker thread before it
+    // begins dequeuing work — e.g. to install a thread_local resource that
+    // callbacks running on that thread will need (see homeserver/AGENTS.md's
+    // audit-sink installation, #420). The callback itself must not throw or
+    // re-enter the pool.
+    explicit ThreadPool(std::size_t worker_count, std::function<void()> on_thread_start = {});
     ThreadPool(ThreadPool const&) = delete;
     auto operator=(ThreadPool const&) -> ThreadPool& = delete;
     ThreadPool(ThreadPool&&) = delete;
@@ -46,6 +51,7 @@ private:
     std::condition_variable queue_cv_{};
     std::queue<std::function<void()>> queue_{};
     bool stopping_{false};
+    std::function<void()> on_thread_start_{};
     std::vector<std::thread> workers_{};
 };
 

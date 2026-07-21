@@ -211,6 +211,59 @@ SCENARIO("Admin media routes reject query strings and path-confusion characters 
     }
 }
 
+// Regression test for #444: local_media_download_parts() (the route parser
+// for GET .../download/{server_name}/{media_id} and .../thumbnail/...)
+// accepted ".." and embedded spaces in the media_id segment, unlike
+// media_id_is_safe() at the repository boundary (#443). A crafted URL parsed
+// into a traversal-shaped media_id that any code inspecting or routing on it
+// before the repository layer would see unvalidated. Fixed by applying the
+// same rejection rules the route parser already uses for admin media routes
+// (admin_media_id_from_suffix()).
+SCENARIO("Media download and thumbnail routes reject path traversal and embedded spaces in the media ID",
+         "[media][repository][integration][security]")
+{
+    GIVEN("a running homeserver")
+    {
+        auto started = merovingian::homeserver::start_runtime(media_test_config());
+        REQUIRE(started.started);
+        auto runtime = std::move(started.runtime);
+
+        WHEN("a download request's media_id segment contains a path traversal sequence")
+        {
+            auto const result = merovingian::homeserver::handle_local_http_request(
+                runtime, {"GET", "/_matrix/media/v3/download/example.org/../secret", {}, {}});
+
+            THEN("the route is rejected as not found rather than parsing a traversal-shaped media_id")
+            {
+                REQUIRE(result.status == 404U);
+            }
+        }
+
+        WHEN("a download request's media_id segment contains an embedded space")
+        {
+            auto const result = merovingian::homeserver::handle_local_http_request(
+                runtime, {"GET", "/_matrix/media/v3/download/example.org/has space", {}, {}});
+
+            THEN("the route is rejected as not found")
+            {
+                REQUIRE(result.status == 404U);
+            }
+        }
+
+        WHEN("a thumbnail request's media_id segment contains a path traversal sequence")
+        {
+            auto const result = merovingian::homeserver::handle_local_http_request(
+                runtime,
+                {"GET", "/_matrix/media/v3/thumbnail/example.org/../secret?width=32&height=32&method=crop", {}, {}});
+
+            THEN("the route is rejected as not found")
+            {
+                REQUIRE(result.status == 404U);
+            }
+        }
+    }
+}
+
 SCENARIO("Integrated media repository restores durable blob storage after restart",
          "[media][repository][integration][persistence]")
 {

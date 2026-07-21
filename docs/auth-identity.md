@@ -67,6 +67,14 @@ production-gated.
   v3 and v4 are unavailable and issuance falls back to the unkeyed
   `token-hash:v2:` hash so local operations keep working — configure a master
   key for hardened token hashing (the federation worker already requires one).
+  **(issue #436)** Every time a new token is issued under this fallback, a
+  `token.unkeyed_hash_fallback` diagnostic is logged at `warning` so operators
+  notice the degraded mode instead of discovering it in a post-breach audit
+  (a DB leak of unkeyed v2 hashes is offline-brute-forceable).
+- `redacted_token_for_log()` (issue #437) discloses only a coarse size bucket
+  (`tiny`/`short`/`medium`/`long`), never the exact byte length — the precise
+  length was a minor side channel that let an observer of logs distinguish
+  token versions and valid- from invalid-length presented tokens.
 - Client-server auth/device/key actions append durable audit rows without
   logging plaintext credentials, bearer tokens, or key payloads.
 - Unit coverage for identity validation, account lock/suspension behavior, password policy, token activity, and log redaction.

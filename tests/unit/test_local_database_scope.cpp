@@ -11,11 +11,14 @@
 // |  reset re-seat — the three behaviours the runtime relies on.           |
 // +-------------------------------------------------------------------------+
 
+#include "merovingian/auth/session.hpp"
 #include "merovingian/homeserver/local_services.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstddef>
+#include <thread>
+#include <tuple>
 #include <type_traits>
 
 namespace
@@ -102,6 +105,58 @@ SCENARIO("LocalDatabaseScope::reset re-seats the install on a new database", "[h
             THEN("the active audit-sink pointer is the new database")
             {
                 REQUIRE(merovingian::homeserver::current_audit_database() == &second);
+            }
+        }
+    }
+}
+
+// Regression test for #420: the audit-sink database pointer is thread_local,
+// installed by LocalDatabaseScope only on the thread that constructs it
+// (the main thread). Production HTTP handlers run on ThreadPool worker
+// threads, which never got the install — so the audit sink silently no-oped
+// there. This directly exercises the mechanism the fix relies on
+// (installing the pointer on whichever thread the callback runs on, exactly
+// what ThreadPool's on_thread_start hook now does in main.cpp) rather than
+// the ThreadPool wiring itself.
+SCENARIO("A worker thread must install the audit-sink database itself, or denials are silently dropped",
+         "[homeserver][audit][scope][security]")
+{
+    AuditDatabaseReset const reset{};
+    GIVEN("a database and a registration policy that denies")
+    {
+        auto database = make_dummy_database();
+        database.opened = true;
+        auto const denying_policy =
+            merovingian::auth::RegistrationPolicy{.enabled = true, .require_token = true, .token_present = false};
+
+        WHEN("registration_policy runs on a thread that never installed the audit database")
+        {
+            auto worker = std::thread{[&] {
+                // This thread's own thread_local slot starts nullptr — no
+                // install happened here, mirroring a ThreadPool worker
+                // before the #420 fix.
+                std::ignore = merovingian::auth::registration_policy(denying_policy);
+            }};
+            worker.join();
+
+            THEN("the denial is silently dropped: no audit row is recorded")
+            {
+                REQUIRE(database.audit_events.empty());
+            }
+        }
+
+        WHEN("registration_policy runs on a thread that installs the audit database first")
+        {
+            auto worker = std::thread{[&] {
+                merovingian::homeserver::install_local_audit_database(&database);
+                std::ignore = merovingian::auth::registration_policy(denying_policy);
+            }};
+            worker.join();
+
+            THEN("the denial is recorded in the audit log")
+            {
+                REQUIRE_FALSE(database.audit_events.empty());
+                REQUIRE(database.audit_events.back().event_type == "registration_policy.denied");
             }
         }
     }

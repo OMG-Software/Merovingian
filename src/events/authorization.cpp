@@ -143,12 +143,6 @@ namespace
         return false;
     }
 
-    [[nodiscard]] auto user_can_redact(std::int64_t sender_power, std::int64_t redact_level,
-                                       std::int64_t ban_level) noexcept -> bool
-    {
-        return sender_power >= redact_level || sender_power >= ban_level;
-    }
-
     [[nodiscard]] auto array_contains_string(canonicaljson::Value const& value, std::string_view needle) noexcept
         -> bool
     {
@@ -913,39 +907,43 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
                 return make_denied("7", "self-leave requires current membership of invite, join, or knock");
             }
 
-            // Kicking another user
+            // Kicking (or unbanning) another user
             if (sender_current_membership != MembershipState::join)
             {
                 return make_denied("7", "kicker must be joined");
             }
 
-            // If target is banned, only someone with ban power can unban
+            auto const sender_power =
+                effective_sender_power(auth_events.power_levels, *sender, auth_events.create, policy);
+
+            // Spec rule 5.3: unbanning is just a "leave" targeting a banned user, not
+            // a separate branch — if the target is banned, the sender additionally
+            // needs at least the ban level before rule 5.4 is even considered.
             if (target_current_membership == MembershipState::ban)
             {
                 auto const ban_power = value_has_content(auth_events.power_levels)
                                            ? extract_power_level_key(auth_events.power_levels, "ban", 50)
                                            : 50;
-                auto const sender_power =
-                    effective_sender_power(auth_events.power_levels, *sender, auth_events.create, policy);
                 if (sender_power < ban_power)
                 {
                     return make_denied("7", "insufficient power to unban");
                 }
-                return make_allowed("7");
             }
 
-            // Kick requires kick power
+            // Spec rule 5.4: kick (and the remaining unban check) requires the
+            // sender's power to be at least the kick level AND strictly greater
+            // than the target's own power level.
             auto const kick_power = value_has_content(auth_events.power_levels)
                                         ? extract_power_level_key(auth_events.power_levels, "kick", 50)
                                         : 50;
-            auto const sender_power =
-                effective_sender_power(auth_events.power_levels, *sender, auth_events.create, policy);
-            if (sender_power < kick_power)
+            auto const target_power =
+                effective_sender_power(auth_events.power_levels, *state_key, auth_events.create, policy);
+            if (sender_power >= kick_power && target_power < sender_power)
             {
-                return make_denied("7", "insufficient power to kick");
+                return make_allowed("7");
             }
 
-            return make_allowed("7");
+            return make_denied("7", "insufficient power to kick or unban target");
         }
 
         // Step 8: ban
@@ -956,17 +954,21 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
                 return make_denied("8", "banner must be joined");
             }
 
+            // Spec rule 6.2: ban requires the sender's power to be at least the ban
+            // level AND strictly greater than the target's own power level.
             auto const ban_power = value_has_content(auth_events.power_levels)
                                        ? extract_power_level_key(auth_events.power_levels, "ban", 50)
                                        : 50;
             auto const sender_power =
                 effective_sender_power(auth_events.power_levels, *sender, auth_events.create, policy);
-            if (sender_power < ban_power)
+            auto const target_power =
+                effective_sender_power(auth_events.power_levels, *state_key, auth_events.create, policy);
+            if (sender_power >= ban_power && target_power < sender_power)
             {
-                return make_denied("8", "insufficient power to ban");
+                return make_allowed("8");
             }
 
-            return make_allowed("8");
+            return make_denied("8", "insufficient power to ban");
         }
 
         // Unknown membership
@@ -1119,20 +1121,13 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
         return make_allowed("11");
     }
 
-    if (*event_type == "m.room.redaction")
-    {
-        auto const redact_power = value_has_content(auth_events.power_levels)
-                                      ? extract_power_level_key(auth_events.power_levels, "redact", 50)
-                                      : 50;
-        auto const ban_power = value_has_content(auth_events.power_levels)
-                                   ? extract_power_level_key(auth_events.power_levels, "ban", 50)
-                                   : 50;
-        if (!user_can_redact(sender_power, redact_power, ban_power))
-        {
-            return make_denied("12", "insufficient power to redact");
-        }
-        return make_allowed("12");
-    }
+    // m.room.redaction is NOT authorized against the "redact" or "ban" power
+    // levels — that pair only governs whether an *already-authorized* redaction
+    // is applied to its target (see docs/matrix-v1.18-spec/server-server-api.md
+    // #redactions). Authorization-wise a redaction is just another non-state
+    // message event, so it falls through to the generic events[type]/events_default
+    // check at step 14 below (rule 14 keys on event_type, "m.room.redaction"
+    // included).
 
     // Step 13: state events require state_default power
     if (is_state_event)

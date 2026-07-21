@@ -766,6 +766,15 @@ WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRunt
             auto const ch = ptr->channel_snapshot();
             if (type == "pdu_ingest")
             {
+                // #450 TRUST BOUNDARY: `env` here is relayed from the worker,
+                // which is responsible for having already run
+                // federation::authorize_federation_pdu() (Ed25519 signature
+                // verification via its own remote_key_resolver) before ever
+                // sending this IPC frame. pdu_sink below re-checks
+                // authorization and content-hash but does not repeat
+                // signature verification — main trusts the worker's prior
+                // check. See docs/threat-model.md, "Main does not re-verify
+                // PDU Ed25519 signatures before persisting".
                 auto const env = deserialize_pdu_ingest(json);
                 std::ignore = handler_pool_.submit([this, ch, id, env]() {
                     auto result = federation::PduIngestionResult{};

@@ -137,6 +137,17 @@ struct AdminQuarantineRequest final
 // "sniffing was skipped".
 [[nodiscard]] auto sniff_mime_type(std::string_view bytes) -> std::string;
 
+// Merovingian does not integrate a real antivirus engine (see
+// docs/user-manual.md and the WARNING in config/merovingian.conf.example —
+// E2EE makes any scanner meaningless for encrypted-room attachments
+// regardless of this check). This is a deterministic, dependency-free check
+// for the industry-standard EICAR antivirus test signature
+// (https://www.eicar.org/download-anti-malware-testfile/), so that
+// `security.media.enable_av_scanner` has a genuine, testable effect on
+// plaintext uploads rather than being a permanent no-op, and so the
+// quarantine path can be exercised end-to-end without needing real malware.
+[[nodiscard]] auto content_matches_eicar_test_signature(std::string_view bytes) noexcept -> bool;
+
 [[nodiscard]] auto media_disposition_name(MediaDisposition disposition) noexcept -> char const*;
 [[nodiscard]] auto media_mime_type_is_allowed(MediaUploadPolicy const& policy, std::string_view mime_type) noexcept
     -> bool;

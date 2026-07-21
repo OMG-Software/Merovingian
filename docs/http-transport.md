@@ -127,6 +127,14 @@ transfer and surface as `response_too_large`. A 3xx
 response surfaces as `redirect_rejected` with the status and headers
 preserved on the result for audit logging.
 
+Response headers are likewise capped (issue #413): at most 256 headers and
+64 KiB of cumulative header bytes are stored; libcurl imposes no default
+limit on either, so a hostile peer streaming an unbounded header count could
+otherwise trigger a `bad_alloc` that escapes the `noexcept` header callback
+and calls `std::terminate`, aborting the whole process. Exceeding either cap
+aborts the transfer (`response_too_large`); allocation failures inside the
+callback are also caught and mapped the same way instead of propagating.
+
 libcurl error codes map onto `OutboundError`: TLS verification failures
 collapse to `tls_verification_failed`, connect/resolve failures to
 `connection_failed`, timeouts to `timeout`, and the catch-all is
@@ -220,6 +228,20 @@ cap applies regardless of which room, device, or media ID appears in the URL:
 Operators override any class via `client_rate_limits.per_ip.<target>` and
 `client_rate_limits.per_user.<target>`; `client_rate_limits.default_per_ip` is
 the fallback for unmatched targets. All policy changes require a server restart.
+`window_seconds` must be `1..3600` — both `rate_limit_policy_is_valid()` (engine)
+and config validation reject anything outside that range.
+
+**Fail-closed on an unresolvable policy (issue #412):** if both the per-IP and
+per-user policies resolve to `nullopt` (e.g. an operator-configured
+`default_per_ip` with `window_seconds > 3600`), `RateLimitEngine::check()`
+denies the request rather than allowing it — a misconfigured policy must never
+silently disable rate limiting.
+
+**Bounded bucket tables (issue #427):** `m_ip_buckets`/`m_user_buckets` are
+hash maps capped at 100,000 entries each, with stale-entry and
+least-recently-touched eviction, so a client rotating a spoofable
+`X-Forwarded-For` value (see below) cannot grow the table or the per-check
+cost without bound.
 
 ### Trusted-proxy client IP resolution
 

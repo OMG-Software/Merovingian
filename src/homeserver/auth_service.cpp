@@ -134,6 +134,17 @@ namespace
         // Signing key and master key both unavailable: fall back to the unkeyed
         // v2 hash so local operations still work. Federation will fail separately
         // if keys are broken; login should not be collateral damage.
+        // #436: v2 is an unkeyed crypto_generichash — a DB leak lets an
+        // attacker build an offline rainbow table and recover token
+        // plaintexts. Warn loudly so operators notice the server is
+        // running in this weaker degraded mode (fixable by configuring a
+        // master key file) rather than discovering it silently in a
+        // post-breach audit.
+        log_diagnostic("token.unkeyed_hash_fallback",
+                       {
+                           {"reason", "no master key or signing key configured", false}
+        },
+                       observability::LogEventSeverity::warning);
         return auth::hash_access_token_v2(token);
     }
 

@@ -276,9 +276,27 @@ namespace
         return true;
     }
 
-    [[nodiscard]] auto create_table_if_missing_sql(SchemaTableDefinition const& table) -> std::string
+    // #442: unlike sqlite_store.cpp's equivalent, this previously concatenated
+    // table.name directly into DDL with no identifier validation or quoting.
+    // Mirrors sqlite_store.cpp's create_table_if_missing_sql exactly: only
+    // core tables (schema_table_is_core) may be materialised, and the name is
+    // quoted via quote_sqlite_identifier — which despite the name is generic
+    // ANSI double-quote identifier quoting, valid for PostgreSQL too. Current
+    // callers pass only hardcoded core table names, so this is
+    // defense-in-depth against a future caller passing an attacker-influenced
+    // or non-core name.
+    [[nodiscard]] auto create_table_if_missing_sql(SchemaTableDefinition const& table) -> std::optional<std::string>
     {
-        return "CREATE TABLE IF NOT EXISTS " + std::string{table.name} + " (" + std::string{table.columns_sql} + ")";
+        if (!schema_table_is_core(table.name))
+        {
+            return std::nullopt;
+        }
+        auto quoted = quote_sqlite_identifier(table.name);
+        if (!quoted.has_value())
+        {
+            return std::nullopt;
+        }
+        return "CREATE TABLE IF NOT EXISTS " + std::move(*quoted) + " (" + std::string{table.columns_sql} + ")";
     }
 
     [[nodiscard]] auto migration_record_statement(std::uint32_t version, std::string name) -> PreparedStatement
@@ -1077,7 +1095,15 @@ auto postgresql_schema_bootstrap_statements() -> std::vector<PreparedStatement>
     auto statements = std::vector<PreparedStatement>{};
     for (auto const& table : initial_schema_definitions())
     {
-        statements.push_back({"postgresql_create_" + std::string{table.name}, create_table_if_missing_sql(table), {}});
+        // #442: fail closed rather than emitting unvalidated DDL — every
+        // entry in initial_schema_definitions() is a hardcoded core table,
+        // so this should never actually be nullopt in practice.
+        auto sql = create_table_if_missing_sql(table);
+        if (!sql.has_value())
+        {
+            continue;
+        }
+        statements.push_back({"postgresql_create_" + std::string{table.name}, std::move(*sql), {}});
     }
     // Bootstrap records only the initial schema row. Runtime startup can
     // then apply newer numbered migrations against the freshly created

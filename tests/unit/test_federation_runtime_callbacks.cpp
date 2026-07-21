@@ -3,6 +3,7 @@
 #include "federation_signing_test_support.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/config/config.hpp"
 #include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/crypto/signing_service.hpp"
 #include "merovingian/events/event_id.hpp"
@@ -13,6 +14,7 @@
 #include "merovingian/federation/runtime_federation.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
+#include "merovingian/trust_safety/policy_engine.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -1158,6 +1160,196 @@ SCENARIO("Federation dispatch does not hold the global runtime mutex while trans
             {
                 REQUIRE(runtime_mutex_available);
                 REQUIRE(response.status == 200U);
+            }
+        }
+    }
+}
+
+// Regression test for #415: resolve_policy_server_hook() performs a
+// synchronous outbound call (here, the injectable trust_safety_policy_server
+// test hook standing in for the real policy-server HTTP request) and MUST run
+// outside runtime.mutex. Before the fix, the hook was invoked while
+// handle_federation_http_request still held the guard, so a slow or
+// unreachable policy server froze every other runtime.mutex consumer
+// (server-name lookup, most client-server dispatch) for up to
+// policy_server_timeout.
+SCENARIO("Federation dispatch does not hold the global runtime mutex while the policy-server hook runs",
+         "[homeserver][federation][concurrency][trust-safety]")
+{
+    GIVEN("a homeserver runtime with trust-safety enabled and a blocking policy-server hook")
+    {
+        auto runtime = merovingian::homeserver::HomeserverRuntime{};
+        runtime.started = true;
+        runtime.federation = merovingian::federation::make_federation_runtime_state(runtime_config());
+        runtime.config.security().trust_safety.enabled = true;
+        runtime.config.security().trust_safety.policy_server_url = "https://policy.example.org/check";
+        runtime.config.security().trust_safety.policy_server_timeout = "5s";
+
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        merovingian::federation::upsert_remote(runtime.federation, remote_for(origin, key_id, "policy-lock-seed"));
+        runtime.federation.pdu_sink =
+            [](merovingian::federation::InboundPduEnvelope const&) -> merovingian::federation::PduIngestionResult {
+            return {merovingian::federation::PduIngestionStatus::accepted, {}};
+        };
+
+        auto hook_entered = false;
+        auto release_hook = false;
+        auto gate_mutex = std::mutex{};
+        auto gate_cv = std::condition_variable{};
+        runtime.trust_safety_policy_server = [&](merovingian::trust_safety::PolicySurface,
+                                                 std::string_view) -> merovingian::trust_safety::PolicyServerHook {
+            {
+                auto const lock = std::lock_guard{gate_mutex};
+                hook_entered = true;
+            }
+            gate_cv.notify_all();
+            auto lock = std::unique_lock{gate_mutex};
+            gate_cv.wait(lock, [&release_hook] {
+                return release_hook;
+            });
+            auto hook = merovingian::trust_safety::PolicyServerHook{};
+            hook.enabled = true;
+            hook.reachable = true;
+            // No explicit decision from the (simulated) policy server;
+            // allow_without_result opts into the permissive default so this
+            // test's assertion is about mutex availability, not about
+            // trust_safety's fail-closed-on-no-decision policy (which is
+            // exercised elsewhere).
+            hook.allow_without_result = true;
+            return hook;
+        };
+
+        auto request = merovingian::homeserver::LocalHttpRequest{};
+        request.method = "PUT";
+        request.target = "/_matrix/federation/v1/send/txn-policy-lock";
+        request.sig_verified = true;
+        request.verified_origin = origin;
+        request.verified_key_id = key_id;
+        request.body = R"({"origin":"matrix.example.org","origin_server_ts":1000,"pdus":[],"edus":[]})";
+
+        auto response = merovingian::homeserver::LocalHttpResponse{};
+
+        WHEN("a federation transaction is blocked inside the policy-server hook")
+        {
+            auto worker = std::thread{[&] {
+                response = merovingian::homeserver::handle_federation_http_request(runtime, request);
+            }};
+
+            auto hook_started = false;
+            {
+                auto lock = std::unique_lock{gate_mutex};
+                hook_started = gate_cv.wait_for(lock, std::chrono::seconds{2}, [&hook_entered] {
+                    return hook_entered;
+                });
+            }
+            if (!hook_started)
+            {
+                {
+                    auto const lock = std::lock_guard{gate_mutex};
+                    release_hook = true;
+                }
+                gate_cv.notify_all();
+                worker.join();
+            }
+            REQUIRE(hook_started);
+
+            auto const runtime_mutex_available = runtime.mutex.try_lock();
+            if (runtime_mutex_available)
+            {
+                runtime.mutex.unlock();
+            }
+
+            {
+                auto const lock = std::lock_guard{gate_mutex};
+                release_hook = true;
+            }
+            gate_cv.notify_all();
+            worker.join();
+
+            THEN("other runtime work can still acquire the global mutex while the hook blocks")
+            {
+                REQUIRE(runtime_mutex_available);
+                REQUIRE(response.status == 200U);
+            }
+        }
+    }
+}
+
+// Regression test for #425: the typing EDU handler never checked that
+// content.user_id's domain matched the verified envelope origin, so a
+// federated server could report typing state for a user on a completely
+// different domain. Spec: SS API #edus — the EDU sender's own homeserver
+// must be the one reporting the user's typing state.
+SCENARIO("Typing EDU is rejected when content.user_id's domain does not match the envelope origin",
+         "[homeserver][federation][typing][security]")
+{
+    GIVEN("evil.example sends an m.typing EDU claiming a user_id on a different domain")
+    {
+        auto runtime = merovingian::homeserver::HomeserverRuntime{};
+        runtime.started = true;
+        runtime.federation = merovingian::federation::make_federation_runtime_state(runtime_config());
+        auto const origin = std::string{"evil.example"};
+        auto const key_id = std::string{"ed25519:auto"};
+        merovingian::federation::upsert_remote(runtime.federation, remote_for(origin, key_id, "typing-spoof-seed"));
+
+        auto request = merovingian::homeserver::LocalHttpRequest{};
+        request.method = "PUT";
+        request.target = "/_matrix/federation/v1/send/txn-typing-spoof";
+        request.sig_verified = true;
+        request.verified_origin = origin;
+        request.verified_key_id = key_id;
+        request.body =
+            R"({"origin":"evil.example","origin_server_ts":1000,"pdus":[],"edus":[{"edu_type":"m.typing","content":{"room_id":"!room:good.example","user_id":"@alice:good.example","typing":true}}]})";
+
+        WHEN("the transaction is handled")
+        {
+            auto const response = merovingian::homeserver::handle_federation_http_request(runtime, request);
+
+            THEN("the spoofed typing state is not recorded")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(runtime.typing_users.empty());
+            }
+        }
+    }
+}
+
+// Regression test for #425: room_id/user_id were extracted by scanning the
+// raw content JSON for the next '"' rather than parsing it, so a user_id
+// containing an escaped quote stopped the scan early and yielded a
+// truncated/arbitrary value injected into typing_users.
+SCENARIO("Typing EDU parses a user_id containing an escaped quote correctly instead of truncating it",
+         "[homeserver][federation][typing][security]")
+{
+    GIVEN("matrix.example.org sends an m.typing EDU whose user_id contains an escaped quote")
+    {
+        auto runtime = merovingian::homeserver::HomeserverRuntime{};
+        runtime.started = true;
+        runtime.federation = merovingian::federation::make_federation_runtime_state(runtime_config());
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        merovingian::federation::upsert_remote(runtime.federation, remote_for(origin, key_id, "typing-quote-seed"));
+
+        auto request = merovingian::homeserver::LocalHttpRequest{};
+        request.method = "PUT";
+        request.target = "/_matrix/federation/v1/send/txn-typing-quote";
+        request.sig_verified = true;
+        request.verified_origin = origin;
+        request.verified_key_id = key_id;
+        request.body =
+            R"({"origin":"matrix.example.org","origin_server_ts":1000,"pdus":[],"edus":[{"edu_type":"m.typing","content":{"room_id":"!room:matrix.example.org","user_id":"@a\"b:matrix.example.org","typing":true}}]})";
+
+        WHEN("the transaction is handled")
+        {
+            auto const response = merovingian::homeserver::handle_federation_http_request(runtime, request);
+
+            THEN("the full user_id is recorded, not a truncated prefix")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(runtime.typing_users.size() == 1U);
+                REQUIRE(runtime.typing_users.front().user_id == R"(@a"b:matrix.example.org)");
+                REQUIRE(runtime.typing_users.front().room_id == "!room:matrix.example.org");
             }
         }
     }

@@ -113,7 +113,14 @@ auto redacted_token_for_log(std::string_view token_secret) -> std::string
         return "[redacted-token:empty]";
     }
 
-    return "[redacted-token:length=" + std::to_string(token_secret.size()) + ']';
+    // #437: the exact byte length is a minor side channel — it lets an
+    // attacker observing logs distinguish token versions (each has a fixed
+    // length) and tell a valid-length presented token from an invalid-length
+    // one, pruning the search space. Bucket into coarse size classes instead
+    // of disclosing the precise count.
+    auto const size = token_secret.size();
+    auto const bucket = size <= 16U ? "tiny" : size <= 64U ? "short" : size <= 256U ? "medium" : "long";
+    return std::string{"[redacted-token:size="} + bucket + ']';
 }
 
 auto hash_access_token_v2(std::string_view token) -> std::optional<std::string>

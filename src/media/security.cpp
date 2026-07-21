@@ -27,10 +27,13 @@ namespace
         return id.size() >= 3U && id.front() == '@' && id.find(':') != std::string_view::npos;
     }
 
+    // Mirrors repository.cpp's media_id_is_safe() exactly (#443) — both gates
+    // must reject the same shapes so a caller that only reaches one of them
+    // does not get a weaker check than the storage boundary applies.
     [[nodiscard]] auto media_id_is_valid(std::string_view media_id) noexcept -> bool
     {
         return !media_id.empty() && media_id.find('/') == std::string_view::npos &&
-               media_id.find("..") == std::string_view::npos;
+               media_id.find("..") == std::string_view::npos && media_id.find(' ') == std::string_view::npos;
     }
 
     [[nodiscard]] auto address_is_private_or_loopback(std::string_view address) noexcept -> bool
@@ -126,9 +129,27 @@ auto sniff_mime_type(std::string_view bytes) -> std::string
     {
         return "application/pdf";
     }
+    // #445: a body that is all printable ASCII but opens with '<' (after
+    // leading whitespace) reads as markup (HTML/XML/SVG), not plain text —
+    // classifying it as text/plain would let an ASCII-only HTML/JS polyglot
+    // sit in the default MIME allow-list. X-Content-Type-Options: nosniff is
+    // set on every response this server sends (see http_server.cpp's
+    // format_response and client_server.cpp's apply_cors_headers), which is
+    // the primary defense against a browser executing this as markup
+    // regardless of the declared Content-Type; this tightens the heuristic
+    // itself so the ambiguous classification is not made at the source.
+    auto const looks_like_markup = [bytes]() noexcept -> bool {
+        auto pos = std::size_t{0U};
+        while (pos < bytes.size() &&
+               (bytes[pos] == ' ' || bytes[pos] == '\t' || bytes[pos] == '\r' || bytes[pos] == '\n'))
+        {
+            ++pos;
+        }
+        return pos < bytes.size() && bytes[pos] == '<';
+    };
     // text/plain heuristic: every byte is printable ASCII or a common
     // whitespace control (tab, LF, CR); empty content does not count as text.
-    if (!bytes.empty() && std::ranges::all_of(bytes, [](char c) noexcept {
+    if (!bytes.empty() && !looks_like_markup() && std::ranges::all_of(bytes, [](char c) noexcept {
             auto const byte = static_cast<unsigned char>(c);
             return byte == '\t' || byte == '\n' || byte == '\r' || (byte >= 0x20U && byte < 0x7FU);
         }))
@@ -136,6 +157,13 @@ auto sniff_mime_type(std::string_view bytes) -> std::string
         return "text/plain";
     }
     return "application/octet-stream";
+}
+
+auto content_matches_eicar_test_signature(std::string_view bytes) noexcept -> bool
+{
+    constexpr auto eicar_signature =
+        std::string_view{R"(X5O!P%@AP[4\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*)"};
+    return bytes.find(eicar_signature) != std::string_view::npos;
 }
 
 auto media_mime_type_is_allowed(MediaUploadPolicy const& policy, std::string_view mime_type) noexcept -> bool

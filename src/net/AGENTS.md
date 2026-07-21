@@ -22,3 +22,7 @@ No Matrix-specific logic lives here.
   rejected once shutdown begins; in-flight requests are allowed to complete.
 - Prefer the separate `sync_pool` for long-poll sync requests to avoid starving the main pool
   (see `docs/http-transport.md`).
+- `ThreadPool`'s optional `on_thread_start` constructor callback runs once per worker thread
+  before it dequeues any work — use it to install thread_local state a worker's callbacks will
+  need (e.g. the homeserver's audit-sink database pointer, see
+  `docs/observability-audit.md`), not to do per-task setup.
