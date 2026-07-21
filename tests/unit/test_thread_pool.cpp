@@ -159,6 +159,7 @@ SCENARIO("ThreadPool invokes on_thread_start once per worker before any work run
 
         WHEN("the pool starts its workers")
         {
+            auto start_calls_reached_expected = false;
             {
                 auto pool = merovingian::net::ThreadPool{worker_count, [&] {
                                                              // If a work item ran before this hook fired on the
@@ -168,7 +169,19 @@ SCENARIO("ThreadPool invokes on_thread_start once per worker before any work run
                                                              // below in that case.
                                                              start_calls.fetch_add(1);
                                                          }};
-                std::this_thread::sleep_for(std::chrono::milliseconds{50});
+                // Poll instead of a single fixed sleep: a fixed delay is
+                // flaky under sanitizer instrumentation or a loaded CI
+                // runner, where all `worker_count` threads may not have
+                // started within an arbitrarily short window.
+                auto constexpr poll_deadline = std::chrono::seconds{5};
+                auto const poll_start = std::chrono::steady_clock::now();
+                while (start_calls.load() < static_cast<int>(worker_count) &&
+                       std::chrono::steady_clock::now() - poll_start < poll_deadline)
+                {
+                    std::this_thread::sleep_for(std::chrono::milliseconds{5});
+                }
+                start_calls_reached_expected = start_calls.load() == static_cast<int>(worker_count);
+
                 for (auto i = std::size_t{0U}; i < worker_count; ++i)
                 {
                     REQUIRE(pool.submit([&] {
@@ -183,7 +196,7 @@ SCENARIO("ThreadPool invokes on_thread_start once per worker before any work run
 
             THEN("the hook ran once per worker thread, and always before that thread's first work item")
             {
-                REQUIRE(start_calls.load() == static_cast<int>(worker_count));
+                REQUIRE(start_calls_reached_expected);
                 REQUIRE(work_ran_after_start.load());
             }
         }
