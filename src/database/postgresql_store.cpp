@@ -276,6 +276,44 @@ namespace
         return true;
     }
 
+    // schema.cpp's SchemaTableDefinition::columns_sql is shared, backend-agnostic
+    // DDL text written in SQLite's dialect (per-column types like TEXT/BLOB,
+    // which SQLite accepts as a loose affinity hint regardless of spelling).
+    // PostgreSQL is strictly typed and has no "BLOB" type at all — its binary
+    // column type is BYTEA (#448 introduced the first BLOB columns and broke
+    // postgres-integration CI: "type "blob" does not exist"). Rather than
+    // forking columns_sql per backend, translate the handful of SQLite-only
+    // type spellings to their PostgreSQL equivalents at the point each
+    // backend turns a SchemaTableDefinition into DDL. Whole-word replacement
+    // (not a bare substring swap) so this can never mangle an identifier that
+    // happens to contain "BLOB" as a substring.
+    [[nodiscard]] auto translate_ddl_types_for_postgresql(std::string sql) -> std::string
+    {
+        auto const is_word_byte = [](char character) noexcept {
+            return (character >= 'A' && character <= 'Z') || (character >= 'a' && character <= 'z') ||
+                   (character >= '0' && character <= '9') || character == '_';
+        };
+        constexpr auto from = std::string_view{"BLOB"};
+        constexpr auto to = std::string_view{"BYTEA"};
+        auto position = std::size_t{0U};
+        while ((position = sql.find(from, position)) != std::string::npos)
+        {
+            auto const before_ok = position == 0U || !is_word_byte(sql[position - 1U]);
+            auto const after_index = position + from.size();
+            auto const after_ok = after_index >= sql.size() || !is_word_byte(sql[after_index]);
+            if (before_ok && after_ok)
+            {
+                sql.replace(position, from.size(), to);
+                position += to.size();
+            }
+            else
+            {
+                position += from.size();
+            }
+        }
+        return sql;
+    }
+
     // #442: unlike sqlite_store.cpp's equivalent, this previously concatenated
     // table.name directly into DDL with no identifier validation or quoting.
     // Mirrors sqlite_store.cpp's create_table_if_missing_sql exactly: only
@@ -296,7 +334,8 @@ namespace
         {
             return std::nullopt;
         }
-        return "CREATE TABLE IF NOT EXISTS " + std::move(*quoted) + " (" + std::string{table.columns_sql} + ")";
+        return "CREATE TABLE IF NOT EXISTS " + std::move(*quoted) + " (" +
+               translate_ddl_types_for_postgresql(std::string{table.columns_sql}) + ")";
     }
 
     [[nodiscard]] auto migration_record_statement(std::uint32_t version, std::string name) -> PreparedStatement
@@ -1011,6 +1050,14 @@ namespace
         for (auto const& step : plan.steps)
         {
             auto statements = step.statements;
+            // Migration step SQL (from schema.cpp's shared, backend-agnostic
+            // definitions, or from an offline-loaded migrations/*.sql file)
+            // is written in SQLite's dialect — translate SQLite-only type
+            // spellings (BLOB) before executing against PostgreSQL (#448).
+            for (auto& statement : statements)
+            {
+                statement.sql = translate_ddl_types_for_postgresql(std::move(statement.sql));
+            }
             statements.push_back(migration_record_statement(step.version, step.name));
             if (!connection.execute_transaction(statements))
             {
