@@ -72,8 +72,9 @@ namespace
     [[nodiscard]] auto contains_sensitive_marker(std::string_view key) -> bool
     {
         auto const lowered = lower_ascii(key);
-        if (lowered == "body" || lowered.ends_with("_body") || lowered == "authorization" || lowered == "password" ||
-            lowered == "secret" || lowered == "session" || lowered == "token")
+        if (lowered == "body" || lowered.ends_with("_body") || lowered == "authorization" ||
+            lowered == "password" || lowered == "secret" || lowered == "session" || lowered == "token" ||
+            lowered == "actor")
         {
             return true;
         }

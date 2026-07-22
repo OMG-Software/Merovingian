@@ -2540,7 +2540,7 @@ namespace
                                      {"effective_ip",   effective_ip,                                     false}
             },
                                  observability::LogEventSeverity::warning, observability::AuditCategory::policy,
-                                 "rate_limit.exceeded", req.access_token, req.target,
+                                 "rate_limit.exceeded", "<unknown>", req.target,
                                  "max=" + std::to_string(decision.max_requests) + " per " +
                                      std::to_string(decision.window_seconds) + "s");
         }
@@ -7066,7 +7066,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                  {"reason", "runtime not started",                            false}
         },
                              observability::LogEventSeverity::warning, observability::AuditCategory::policy,
-                             "request.rejected", req.access_token, req.target, "503:runtime not started");
+                             "request.rejected", "<unknown>", req.target, "503:runtime not started");
         return dispatch_err(req, rt, 503U, "M_UNAVAILABLE", "runtime not started");
     }
     // Media upload routes are governed by security.media.max_upload_size rather
@@ -7098,7 +7098,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                  {"reason",      "request body too large",                         false}
         },
                              observability::LogEventSeverity::warning, observability::AuditCategory::policy,
-                             "request.rejected", req.access_token, req.target, "413:request body too large");
+                             "request.rejected", "<unknown>", req.target, "413:request body too large");
         return dispatch_err(req, rt, 413U, "M_TOO_LARGE", "request body too large");
     }
     // CORS preflight: browsers send OPTIONS before any cross-origin POST/PUT/DELETE.
@@ -7126,7 +7126,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                  {"reason", "rate limit exceeded",                            false}
         },
                              observability::LogEventSeverity::warning, observability::AuditCategory::policy,
-                             "request.rejected", req.access_token, req.target, "429:rate limit exceeded");
+                             "request.rejected", "<unknown>", req.target, "429:rate limit exceeded");
         return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", "rate limit exceeded",
                             rate_limit_decision.retry_after_ms);
     }
@@ -7629,21 +7629,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     }
 
     // GET /_matrix/media/v3/thumbnail/{serverName}/{mediaId}
-    // GET /_matrix/client/v1/media/thumbnail/{serverName}/{mediaId}
-    // Media thumbnail for locally stored content. Both the unauthenticated v3
-    // endpoint and the authenticated v1 endpoint delegate to the local router.
+    // Media thumbnail for locally stored content. The v3 endpoint is spec-
+    // unauthenticated and delegates to the local router before the auth gate.
+    // The authenticated v1 endpoint is dispatched after the auth gate below.
     auto constexpr media_v3_thumbnail_prefix = std::string_view{"/_matrix/media/v3/thumbnail/"};
-    auto constexpr media_v1_thumbnail_prefix = std::string_view{"/_matrix/client/v1/media/thumbnail/"};
-    if (req.method == "GET" &&
-        (starts_with(req.target, media_v3_thumbnail_prefix) || starts_with(req.target, media_v1_thumbnail_prefix)))
-    {
-        return media_download_dispatch_result(req, rt, call_local(req));
-    }
-
-    // GET /_matrix/client/v1/media/download/{serverName}/{mediaId}
-    // Authenticated media download. Delegates to the local router.
-    auto constexpr media_v1_download_prefix = std::string_view{"/_matrix/client/v1/media/download/"};
-    if (req.method == "GET" && starts_with(req.target, media_v1_download_prefix))
+    if (req.method == "GET" && starts_with(req.target, media_v3_thumbnail_prefix))
     {
         return media_download_dispatch_result(req, rt, call_local(req));
     }
@@ -7840,6 +7830,23 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             return dispatch_err(req, rt, 403U, "M_USER_SUSPENDED", "You cannot perform this action while suspended.");
         }
     }
+
+    // GET /_matrix/client/v1/media/download/{serverName}/{mediaId}
+    // GET /_matrix/client/v1/media/thumbnail/{serverName}/{mediaId}
+    // Authenticated media endpoints (MSC3860 / Matrix v1.11). The v1 routes
+    // require an access token per spec v1.18 §13.8, so they are dispatched after
+    // the auth gate above. The unauthenticated v3 routes remain pre-auth.
+    auto constexpr media_v1_download_prefix = std::string_view{"/_matrix/client/v1/media/download/"};
+    if (req.method == "GET" && starts_with(req.target, media_v1_download_prefix))
+    {
+        return media_download_dispatch_result(req, rt, call_local(req));
+    }
+    auto constexpr media_v1_thumbnail_prefix = std::string_view{"/_matrix/client/v1/media/thumbnail/"};
+    if (req.method == "GET" && starts_with(req.target, media_v1_thumbnail_prefix))
+    {
+        return media_download_dispatch_result(req, rt, call_local(req));
+    }
+
     if (req.method == "POST" && target_path(req.target) == "/_matrix/client/v3/logout/all")
     {
         auto const r = logout_all_local_user(rt.homeserver, req.access_token);

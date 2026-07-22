@@ -454,6 +454,10 @@ namespace
         {
             request.invite_event_json = *value;
         }
+        if (auto const* value = string_member(*root, "origin"); value != nullptr)
+        {
+            request.origin = *value;
+        }
         request.invite_room_state_json = string_array_from_json(array_member(*root, "invite_room_state_json"));
         return request;
     }

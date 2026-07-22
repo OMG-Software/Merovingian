@@ -350,6 +350,8 @@ namespace
         result += ipc::ipc_json_str(request.room_version);
         result += R"(,"invite_event_json":)";
         result += ipc::ipc_json_str(request.invite_event_json);
+        result += R"(,"origin":)";
+        result += ipc::ipc_json_str(request.origin);
         result += R"(,"invite_room_state_json":[)";
         auto first = true;
         for (auto const& state_json : request.invite_room_state_json)

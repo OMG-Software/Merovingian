@@ -81,12 +81,12 @@ namespace
 {
     // A minimal valid JSON request body. The Matrix request-signing scheme
     // embeds the body as a parsed JSON object, so test bodies must be JSON.
-    return R"({"origin":")" + origin + R"("})";
+    return "{\"origin\":\"" + origin + "\"}";
 }
 
 [[nodiscard]] auto transaction_body(std::string const& origin, std::string const& pdu_json) -> std::string
 {
-    return std::string{"{\"origin\":\""} + origin + R"(","origin_server_ts":1000,"pdus":[)" + pdu_json + "]}";
+    return std::string{"{\"origin\":\""} + origin + "\",\"origin_server_ts\":1000,\"pdus\":[" + pdu_json + "]}";
 }
 
 // Builds a transaction body carrying several PDUs, used to exercise the
@@ -103,7 +103,7 @@ namespace
         }
         joined += pdus[i];
     }
-    return std::string{"{\"origin\":\""} + origin + R"(","origin_server_ts":1000,"pdus":[)" + joined + "]}";
+    return std::string{"{\"origin\":\""} + origin + "\",\"origin_server_ts\":1000,\"pdus\":[" + joined + "]}";
 }
 
 [[nodiscard]] auto transaction_body_edus(std::string const& origin, std::size_t count) -> std::string
@@ -116,9 +116,9 @@ namespace
             edus += ",";
         }
         edus +=
-            R"({"edu_type":"m.typing","content":{"room_id":"!room:example.org","user_id":"@alice:matrix.example.org","typing":true}})";
+            "{\"edu_type\":\"m.typing\",\"content\":{\"room_id\":\"!room:example.org\",\"user_id\":\"@alice:matrix.example.org\",\"typing\":true}}";
     }
-    return std::string{"{\"origin\":\""} + origin + R"(","origin_server_ts":1000,"pdus":[],"edus":[)" + edus + "]}";
+    return std::string{"{\"origin\":\""} + origin + "\",\"origin_server_ts\":1000,\"pdus\":[],\"edus\":[" + edus + "]}";
 }
 
 // Shared state for a counting fake RemoteKeyResolver. Tracks how many times
@@ -481,9 +481,9 @@ SCENARIO("Inbound federation transaction accepts signed public trusted remotes",
             THEN("the transaction is accepted once and retries are idempotent")
             {
                 REQUIRE(response.status == 200U);
-                REQUIRE(response.body == R"({"pdus":{}})");
+                REQUIRE(response.body == "{\"pdus\":{}}");
                 REQUIRE(duplicate.status == 200U);
-                REQUIRE(duplicate.body == R"({"pdus":{}})");
+                REQUIRE(duplicate.body == "{\"pdus\":{}}");
                 REQUIRE(runtime.accepted_transactions.size() == 1U);
                 REQUIRE(runtime.accepted_transactions.front().transaction_id == "txn123");
                 REQUIRE(runtime.remotes.front().trust.consecutive_failures == 0U);
@@ -578,7 +578,7 @@ SCENARIO("Inbound federation seeds discovery state for remotes resolved on deman
             THEN("the resolved discovery and signing state allow the transaction")
             {
                 REQUIRE(response.status == 200U);
-                REQUIRE(response.body == R"({"pdus":{}})");
+                REQUIRE(response.body == "{\"pdus\":{}}");
                 REQUIRE(runtime.remotes.size() == 1U);
                 REQUIRE(runtime.remotes.front().discovery.resolved_addresses ==
                         std::vector<std::string>{"203.0.113.10"});
@@ -588,7 +588,7 @@ SCENARIO("Inbound federation seeds discovery state for remotes resolved on deman
     }
 }
 
-SCENARIO("Inbound federation handles non-transaction endpoints without PDU validation", "[federation][inbound][routes]")
+SCENARIO("Inbound federation handles non-transaction endpoints with PDU validation", "[federation][inbound][routes]")
 {
     GIVEN("a runtime with a signed v1 invite request and an invite handler")
     {
@@ -597,12 +597,19 @@ SCENARIO("Inbound federation handles non-transaction endpoints without PDU valid
         auto const key_id = std::string{"ed25519:auto"};
         auto const token = std::string{"verify-token"};
         merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
-        // v1 invite body IS the bare signed event — the handler echoes it
-        // back as the response payload. The shape is valid canonical JSON
-        // so parse_invite_body succeeds without a v2 envelope.
-        auto const invite_event_json = std::string{
-            R"({"type":"m.room.member","state_key":"@alice:matrix.example.org","sender":"@alice:matrix.example.org",)"
-            R"("room_id":"!room1:example.org","content":{"membership":"invite"}})"};
+
+        // Build a properly signed invite event so it passes the PDU
+        // verification pipeline (signature + content hash + origin check).
+        auto const sender = std::string{"@alice:matrix.example.org"};
+        auto const target_user = std::string{"@alice:matrix.example.org"};
+        auto const unsigned_invite_json =
+            std::string{"{\"type\":\"m.room.member\",\"state_key\":\""} + target_user +
+            "\",\"sender\":\"" + sender +
+            "\",\"room_id\":\"!room1:example.org\",\"content\":{\"membership\":\"invite\"},\"depth\":1,\"origin_server_ts\":1000,\"prev_events\":[],\"auth_events\":[]}";
+        auto const invite_event_json =
+            merovingian::federation::test::make_signed_event_json(unsigned_invite_json, origin, key_id, token, "12");
+        REQUIRE_FALSE(invite_event_json.empty());
+
         auto invite_seen = std::make_shared<bool>(false);
         runtime.invite_handler = [invite_seen](merovingian::federation::InviteRequest const& request) {
             *invite_seen = true;
@@ -622,7 +629,7 @@ SCENARIO("Inbound federation handles non-transaction endpoints without PDU valid
         {
             auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
 
-            THEN("the invite handler runs and produces a 200 response without transaction-validating the body")
+            THEN("the invite handler runs and produces a 200 response")
             {
                 REQUIRE(response.status == 200U);
                 REQUIRE(*invite_seen);
@@ -647,7 +654,7 @@ SCENARIO("Inbound federation rejects malformed send targets and unsigned PDUs", 
             origin, extra_segment.destination, extra_segment.method, extra_segment.target, extra_segment.body,
             merovingian::federation::test::keypair_from_seed(token).secret_key);
         auto missing_signature =
-            signed_request(origin, key_id, token, transaction_body(origin, R"({"type":"m.room.message"})"));
+            signed_request(origin, key_id, token, transaction_body(origin, "{\"type\":\"m.room.message\"}"));
 
         WHEN("the requests are handled")
         {
@@ -1599,7 +1606,7 @@ SCENARIO("A signature_verified request is handled without re-checking the raw si
             THEN("the request is accepted (the raw signature is not re-verified)")
             {
                 REQUIRE(response.status == 200U);
-                REQUIRE(response.body == R"({"pdus":{}})");
+                REQUIRE(response.body == "{\"pdus\":{}}");
             }
         }
 

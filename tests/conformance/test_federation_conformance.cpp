@@ -28,6 +28,7 @@
 #include "merovingian/federation/key_query.hpp"
 #include "merovingian/federation/membership_endpoints.hpp"
 #include "merovingian/federation/runtime_federation.hpp"
+#include "merovingian/rooms/room_version_policy.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -129,6 +130,40 @@ auto const origin = std::string{"remote.example.org"};
 auto const key_id = std::string{"ed25519:auto"};
 auto const key_seed = std::string{"conformance-test-seed"};
 
+// Build a properly signed m.room.member PDU from the remote server.
+// The event is signed with the same key_seed used by remote_for(), so
+// authorize_federation_pdu verifies the Ed25519 signature and
+// verify_pdu_content_hash passes. The membership parameter selects
+// "join", "leave", or "knock".
+[[nodiscard]] auto make_signed_member_pdu(std::string const& room_id_arg, std::string const& sender,
+                                           std::string const& membership, std::string_view room_ver = "12")
+    -> std::string
+{
+    auto const unsigned_json =
+        std::string{"{\"type\":\"m.room.member\",\"room_id\":\""} + room_id_arg + "\",\"sender\":\"" + sender +
+        "\",\"state_key\":\"" + sender + "\",\"content\":{\"membership\":\"" + membership + "\"},\"depth\":1," +
+        "\"origin_server_ts\":1,\"prev_events\":[],\"auth_events\":[]}";
+    return merovingian::federation::test::make_signed_event_json(unsigned_json, origin, key_id, key_seed,
+                                                                 std::string{room_ver});
+}
+
+// Build a properly signed v2 invite body wrapping a signed m.room.member
+// invite event from the remote server.
+[[nodiscard]] auto make_signed_v2_invite_body(std::string const& room_id_arg, std::string const& sender,
+                                               std::string const& state_key,
+                                               std::string_view room_ver = "12") -> std::string
+{
+    auto const unsigned_json =
+        std::string{"{\"type\":\"m.room.member\",\"room_id\":\""} + room_id_arg + "\",\"sender\":\"" + sender +
+        "\",\"state_key\":\"" + state_key + "\",\"content\":{\"membership\":\"invite\"},\"depth\":1," +
+        "\"origin_server_ts\":1,\"prev_events\":[],\"auth_events\":[]}";
+    auto const signed_event =
+        merovingian::federation::test::make_signed_event_json(unsigned_json, origin, key_id, key_seed,
+                                                              std::string{room_ver});
+    return std::string{"{\"room_version\":\""} + std::string{room_ver} + "\",\"event\":" + signed_event +
+           ",\"invite_room_state\":[]}";
+}
+
 // Navigate a JSON object and return a pointer to the Value for `key`.
 [[nodiscard]] auto json_get(merovingian::canonicaljson::Object const& obj, std::string const& key)
     -> merovingian::canonicaljson::Value const*
@@ -143,13 +178,13 @@ auto const key_seed = std::string{"conformance-test-seed"};
 {
     auto store = merovingian::database::PersistentStore{};
     store.device_keys.push_back(
-        {"@alice:remote.example.org", "DEVICE1", R"({"device_id":"DEVICE1","keys":{"ed25519:DEVICE1":"key-one"}})"});
+        {"@alice:remote.example.org", "DEVICE1", "{\"device_id\":\"DEVICE1\",\"keys\":{\"ed25519:DEVICE1\":\"key-one\"}}"});
     store.device_keys.push_back(
-        {"@alice:remote.example.org", "DEVICE2", R"({"device_id":"DEVICE2","keys":{"ed25519:DEVICE2":"key-two"}})"});
+        {"@alice:remote.example.org", "DEVICE2", "{\"device_id\":\"DEVICE2\",\"keys\":{\"ed25519:DEVICE2\":\"key-two\"}}"});
     store.cross_signing_keys.push_back(
-        {"@alice:remote.example.org", "master", R"({"usage":["master"],"keys":{"ed25519:master":"mk"}})"});
+        {"@alice:remote.example.org", "master", "{\"usage\":[\"master\"],\"keys\":{\"ed25519:master\":\"mk\"}}"});
     store.cross_signing_keys.push_back(
-        {"@alice:remote.example.org", "self_signing", R"({"usage":["self_signing"],"keys":{"ed25519:ssk":"sk"}})"});
+        {"@alice:remote.example.org", "self_signing", "{\"usage\":[\"self_signing\"],\"keys\":{\"ed25519:ssk\":\"sk\"}}"});
     return store;
 }
 
@@ -251,13 +286,8 @@ SCENARIO("send_join persists membership and returns auth chain and state", "[fed
         auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
         merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
 
-        auto const join_event_body = std::string{"{\"type\":\"m.room.member\","
-                                                 "\"room_id\":\"!conformance:local.example.org\","
-                                                 "\"sender\":\"@remote:remote.example.org\","
-                                                 "\"state_key\":\"@remote:remote.example.org\","
-                                                 "\"content\":{\"membership\":\"join\"},"
-                                                 "\"depth\":1,\"hashes\":{\"sha256\":\"x\"},"
-                                                 "\"origin_server_ts\":1,\"prev_events\":[],\"auth_events\":[]}"};
+        auto const join_event_body =
+            make_signed_member_pdu(std::string{room_id}, "@remote:remote.example.org", "join");
 
         auto accept_invoked = std::make_shared<bool>(false);
         runtime.membership_acceptor = [accept_invoked, join_event_body](
@@ -351,13 +381,8 @@ SCENARIO("send_join passes the resolved room version to the membership acceptor 
             return "10";
         };
 
-        auto const join_event_body = std::string{"{\"type\":\"m.room.member\","
-                                                 "\"room_id\":\"!conformance:local.example.org\","
-                                                 "\"sender\":\"@remote:remote.example.org\","
-                                                 "\"state_key\":\"@remote:remote.example.org\","
-                                                 "\"content\":{\"membership\":\"join\"},"
-                                                 "\"depth\":1,\"hashes\":{\"sha256\":\"x\"},"
-                                                 "\"origin_server_ts\":1,\"prev_events\":[],\"auth_events\":[]}"};
+        auto const join_event_body =
+            make_signed_member_pdu(std::string{room_id}, "@remote:remote.example.org", "join", "10");
 
         auto captured_room_version = std::make_shared<std::string>();
         runtime.membership_acceptor = [captured_room_version,
@@ -473,13 +498,7 @@ SCENARIO("send_leave processes departure and returns 200", "[federation][conform
         {
             auto const event_id = std::string{"$leave_event:"} + origin;
             auto const target = "/_matrix/federation/v2/send_leave/" + std::string{room_id} + "/" + event_id;
-            auto const body = std::string{"{\"type\":\"m.room.member\","
-                                          "\"room_id\":\"!conformance:local.example.org\","
-                                          "\"sender\":\"@remote:remote.example.org\","
-                                          "\"state_key\":\"@remote:remote.example.org\","
-                                          "\"content\":{\"membership\":\"leave\"},"
-                                          "\"depth\":2,\"hashes\":{\"sha256\":\"x\"},"
-                                          "\"origin_server_ts\":2,\"prev_events\":[],\"auth_events\":[]}"};
+            auto const body = make_signed_member_pdu(std::string{room_id}, "@remote:remote.example.org", "leave");
             auto const request = signed_put_request(origin, key_id, key_seed, target, body);
             auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
 
@@ -524,7 +543,8 @@ SCENARIO("invite v2 processes inbound invite and returns signed event", "[federa
         {
             auto const event_id = std::string{"$invite_event:"} + origin;
             auto const target = "/_matrix/federation/v2/invite/" + std::string{room_id} + "/" + event_id;
-            auto const body = std::string{"{\"room_version\":\"12\",\"invite_event_json\":\"{}\"}"};
+            auto const body = make_signed_v2_invite_body(std::string{room_id}, "@remote:remote.example.org",
+                                                         "@local:local.example.org");
             auto const request = signed_put_request(origin, key_id, key_seed, target, body);
             auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
 
@@ -564,8 +584,14 @@ SCENARIO("invite v1 processes inbound invite and returns signed event", "[federa
         {
             auto const event_id = std::string{"$invite_event:"} + origin;
             auto const target = "/_matrix/federation/v1/invite/" + std::string{room_id} + "/" + event_id;
-            auto const body = std::string{"{\"event\":{\"type\":\"m.room.member\"}}"};
-            auto const request = signed_put_request(origin, key_id, key_seed, target, body);
+            // v1 invite body IS the bare signed event.
+            // Build a properly signed invite event with state_key pointing to a local user.
+            auto const unsigned_json =
+                std::string{"{\"type\":\"m.room.member\",\"room_id\":\""} + std::string{room_id} +
+                "\",\"sender\":\"@remote:remote.example.org\",\"state_key\":\"@local:local.example.org\",\"content\":{\"membership\":\"invite\"},\"depth\":1,\"origin_server_ts\":1,\"prev_events\":[],\"auth_events\":[]}";
+            auto const signed_body = merovingian::federation::test::make_signed_event_json(unsigned_json, origin,
+                                                                                            key_id, key_seed, "12");
+            auto const request = signed_put_request(origin, key_id, key_seed, target, signed_body);
             auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
 
             THEN("the runtime returns 200 and the invite handler was invoked")
@@ -668,7 +694,7 @@ SCENARIO("signed federation user/keys/query returns device and cross-signing map
         WHEN("a signed user/keys/query request is dispatched")
         {
             auto const request = signed_post_request(origin, key_id, key_seed, "/_matrix/federation/v1/user/keys/query",
-                                                     R"({"device_keys":{"@alice:remote.example.org":[]}})");
+                                                     "{\"device_keys\":{\"@alice:remote.example.org\":[]}}");
             auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
 
             THEN("the response is 200 with the required key maps")
@@ -718,7 +744,7 @@ SCENARIO("signed federation user/keys/claim returns the claimed nested one-time 
 
         auto store = merovingian::database::PersistentStore{};
         store.one_time_keys.push_back(
-            {"@alice:remote.example.org", "DEVICE1", "signed_curve25519:AAAABBBB", R"({"key":"otk-payload"})"});
+            {"@alice:remote.example.org", "DEVICE1", "signed_curve25519:AAAABBBB", "{\"key\":\"otk-payload\"}"});
         runtime.one_time_keys_claim_provider = [store](std::string_view body) mutable {
             return merovingian::federation::build_one_time_keys_claim_response(store, body);
         };
@@ -727,7 +753,7 @@ SCENARIO("signed federation user/keys/claim returns the claimed nested one-time 
         {
             auto const request = signed_post_request(
                 origin, key_id, key_seed, "/_matrix/federation/v1/user/keys/claim",
-                R"({"one_time_keys":{"@alice:remote.example.org":{"DEVICE1":"signed_curve25519"}}})");
+                "{\"one_time_keys\":{\"@alice:remote.example.org\":{\"DEVICE1\":\"signed_curve25519\"}}}");
             auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
 
             THEN("the response is 200 with one_time_keys nested by user and device")
@@ -908,7 +934,7 @@ SCENARIO("GET /event/{eventId} returns the PDU when the event_query_provider is 
         // Provider returns a non-empty body for the known event, empty for unknown.
         runtime.event_query_provider = [](std::string_view ev_id) -> std::string {
             if (ev_id == "$known_event:local.example.org")
-                return R"({"type":"m.room.message","room_id":"!conformance:local.example.org"})";
+                return "{\"type\":\"m.room.message\",\"room_id\":\"!conformance:local.example.org\"}";
             return {};
         };
 
@@ -987,7 +1013,7 @@ SCENARIO("GET /state/{roomId} returns room state when the state_query_provider i
         runtime.state_query_provider = [](std::string_view queried_room_id,
                                           std::string_view queried_event_id) -> std::string {
             if (queried_room_id == "!conformance:local.example.org" && queried_event_id == "$anchor:local.example.org")
-                return R"({"auth_chain":[],"pdus":[]})";
+                return "{\"auth_chain\":[],\"pdus\":[]}";
             return {};
         };
 
@@ -1075,7 +1101,7 @@ SCENARIO("GET /state_ids/{roomId} returns event-ID lists when the state_ids_quer
         runtime.state_ids_query_provider = [](std::string_view queried_room_id,
                                               std::string_view queried_event_id) -> std::string {
             if (queried_room_id == "!conformance:local.example.org" && queried_event_id == "$anchor:local.example.org")
-                return R"({"pdu_ids":["$create:local.example.org"],"auth_chain_ids":[]})";
+                return "{\"pdu_ids\":[\"$create:local.example.org\"],\"auth_chain_ids\":[]}";
             return {};
         };
 
@@ -1155,13 +1181,13 @@ SCENARIO("POST /get_missing_events/{roomId} returns missing PDUs when the provid
         runtime.missing_events_query_provider = [provider_invoked](std::string_view /*room_id*/,
                                                                    std::string_view /*body*/) -> std::string {
             *provider_invoked = true;
-            return R"({"events":[]})";
+            return "{\"events\":[]}";
         };
 
         WHEN("a signed POST /get_missing_events request is dispatched")
         {
             auto const target = std::string{"/_matrix/federation/v1/get_missing_events/!conformance:local.example.org"};
-            auto const body = std::string{R"({"limit":10,"min_depth":1,"earliest_events":[],"latest_events":[]})"};
+            auto const body = std::string{"{\"limit\":10,\"min_depth\":1,\"earliest_events\":[],\"latest_events\":[]}"};
             auto const response = merovingian::federation::handle_inbound_federation_request(
                 runtime, signed_post_request(origin, key_id, key_seed, target, body));
 
@@ -1188,7 +1214,7 @@ SCENARIO("POST /get_missing_events/{roomId} returns missing PDUs when the provid
         WHEN("a signed POST /get_missing_events request is dispatched")
         {
             auto const target = std::string{"/_matrix/federation/v1/get_missing_events/!conformance:local.example.org"};
-            auto const body = std::string{R"({"limit":10,"min_depth":1,"earliest_events":[],"latest_events":[]})"};
+            auto const body = std::string{"{\"limit\":10,\"min_depth\":1,\"earliest_events\":[],\"latest_events\":[]}"};
             auto const response = merovingian::federation::handle_inbound_federation_request(
                 runtime, signed_post_request(origin, key_id, key_seed, target, body));
 
@@ -1436,14 +1462,7 @@ SCENARIO("PUT /send_knock processes the knock and returns 200 when the acceptor 
         {
             auto const event_id = std::string{"$knock_event:"} + origin;
             auto const target = "/_matrix/federation/v1/send_knock/" + std::string{room_id} + "/" + event_id;
-            // Minimal well-formed knock PDU envelope.
-            auto const body = std::string{R"({"type":"m.room.member",)"
-                                          R"("room_id":"!conformance:local.example.org",)"
-                                          R"("sender":"@remote:remote.example.org",)"
-                                          R"("state_key":"@remote:remote.example.org",)"
-                                          R"("content":{"membership":"knock"},)"
-                                          R"("depth":2,"hashes":{"sha256":"x"},)"
-                                          R"("origin_server_ts":2,"prev_events":[],"auth_events":[]})"};
+            auto const body = make_signed_member_pdu(std::string{room_id}, "@remote:remote.example.org", "knock");
             auto const response = merovingian::federation::handle_inbound_federation_request(
                 runtime, signed_put_request(origin, key_id, key_seed, target, body));
 
@@ -1469,13 +1488,13 @@ SCENARIO("PUT /send_knock processes the knock and returns 200 when the acceptor 
         {
             auto const event_id = std::string{"$knock_event:"} + origin;
             auto const target = "/_matrix/federation/v1/send_knock/" + std::string{room_id} + "/" + event_id;
-            auto const body = std::string{R"({"type":"m.room.member",)"
-                                          R"("room_id":"!conformance:local.example.org",)"
-                                          R"("sender":"@remote:remote.example.org",)"
-                                          R"("state_key":"@remote:remote.example.org",)"
-                                          R"("content":{"membership":"knock"},)"
-                                          R"("depth":2,"hashes":{"sha256":"x"},)"
-                                          R"("origin_server_ts":2,"prev_events":[],"auth_events":[]})"};
+            auto const body = std::string{"{\"type\":\"m.room.member\","
+                                          "\"room_id\":\"!conformance:local.example.org\","
+                                          "\"sender\":\"@remote:remote.example.org\","
+                                          "\"state_key\":\"@remote:remote.example.org\","
+                                          "\"content\":{\"membership\":\"knock\"},"
+                                          "\"depth\":2,\"hashes\":{\"sha256\":\"x\"},"
+                                          "\"origin_server_ts\":2,\"prev_events\":[],\"auth_events\":[]}"};
             auto const response = merovingian::federation::handle_inbound_federation_request(
                 runtime, signed_put_request(origin, key_id, key_seed, target, body));
 
@@ -2117,13 +2136,8 @@ SCENARIO("send_join v1 endpoint returns 200 with the required response fields", 
         auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
         merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
 
-        auto const join_event_body = std::string{"{\"type\":\"m.room.member\","
-                                                 "\"room_id\":\"!conformance:local.example.org\","
-                                                 "\"sender\":\"@remote:remote.example.org\","
-                                                 "\"state_key\":\"@remote:remote.example.org\","
-                                                 "\"content\":{\"membership\":\"join\"},"
-                                                 "\"depth\":1,\"hashes\":{\"sha256\":\"x\"},"
-                                                 "\"origin_server_ts\":1,\"prev_events\":[],\"auth_events\":[]}"};
+        auto const join_event_body =
+            make_signed_member_pdu(std::string{room_id}, "@remote:remote.example.org", "join");
 
         runtime.membership_acceptor =
             [join_event_body](
@@ -2196,13 +2210,7 @@ SCENARIO("send_leave v1 endpoint returns 200 without event field", "[federation]
             auto const event_id = std::string{"$leave_event:"} + origin;
             // v1 path — federation/v1/send_leave (not v2)
             auto const target = "/_matrix/federation/v1/send_leave/" + std::string{room_id} + "/" + event_id;
-            auto const body = std::string{"{\"type\":\"m.room.member\","
-                                          "\"room_id\":\"!conformance:local.example.org\","
-                                          "\"sender\":\"@remote:remote.example.org\","
-                                          "\"state_key\":\"@remote:remote.example.org\","
-                                          "\"content\":{\"membership\":\"leave\"},"
-                                          "\"depth\":2,\"hashes\":{\"sha256\":\"x\"},"
-                                          "\"origin_server_ts\":2,\"prev_events\":[],\"auth_events\":[]}"};
+            auto const body = make_signed_member_pdu(std::string{room_id}, "@remote:remote.example.org", "leave");
             auto const response = merovingian::federation::handle_inbound_federation_request(
                 runtime, signed_put_request(origin, key_id, key_seed, target, body));
 
@@ -2243,7 +2251,7 @@ SCENARIO("send_knock response contains the knock_room_state array", "[federation
             result.status = 200U;
             // Resident server supplies stripped state events for knock display.
             result.knock_room_state_json = {
-                R"({"type":"m.room.name","state_key":"","content":{"name":"Knock Test Room"}})"};
+                "{\"type\":\"m.room.name\",\"state_key\":\"\",\"content\":{\"name\":\"Knock Test Room\"}}"};
             return result;
         };
 
@@ -2251,13 +2259,7 @@ SCENARIO("send_knock response contains the knock_room_state array", "[federation
         {
             auto const event_id = std::string{"$knock_event:"} + origin;
             auto const target = "/_matrix/federation/v1/send_knock/" + std::string{room_id} + "/" + event_id;
-            auto const body = std::string{R"({"type":"m.room.member",)"
-                                          R"("room_id":"!conformance:local.example.org",)"
-                                          R"("sender":"@remote:remote.example.org",)"
-                                          R"("state_key":"@remote:remote.example.org",)"
-                                          R"("content":{"membership":"knock"},)"
-                                          R"("depth":2,"hashes":{"sha256":"x"},)"
-                                          R"("origin_server_ts":2,"prev_events":[],"auth_events":[]})"};
+            auto const body = make_signed_member_pdu(std::string{room_id}, "@remote:remote.example.org", "knock");
             auto const response = merovingian::federation::handle_inbound_federation_request(
                 runtime, signed_put_request(origin, key_id, key_seed, target, body));
 
@@ -2298,8 +2300,8 @@ SCENARIO("invite v2 response body contains the event key as a JSON object", "[fe
         merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
 
         auto const signed_event_json =
-            std::string{R"({"type":"m.room.member","sender":"@alice:remote.example.org",)"
-                        R"("state_key":"@bob:local.example.org","content":{"membership":"invite"}})"};
+            std::string{"{\"type\":\"m.room.member\",\"sender\":\"@alice:remote.example.org\","
+                        "\"state_key\":\"@bob:local.example.org\",\"content\":{\"membership\":\"invite\"}}"};
 
         runtime.invite_handler = [signed_event_json]([[maybe_unused]] merovingian::federation::InviteRequest const& req)
             -> merovingian::federation::InviteAcceptResult {
@@ -2310,7 +2312,8 @@ SCENARIO("invite v2 response body contains the event key as a JSON object", "[fe
         {
             auto const event_id = std::string{"$invite_event:"} + origin;
             auto const target = "/_matrix/federation/v2/invite/" + std::string{room_id} + "/" + event_id;
-            auto const body = std::string{"{\"room_version\":\"12\",\"invite_event_json\":\"{}\"}"};
+            auto const body = make_signed_v2_invite_body(std::string{room_id}, "@alice:remote.example.org",
+                                                         "@bob:local.example.org");
             auto const response = merovingian::federation::handle_inbound_federation_request(
                 runtime, signed_put_request(origin, key_id, key_seed, target, body));
 
@@ -2352,7 +2355,7 @@ SCENARIO("backfill response contains origin, origin_server_ts, and pdus fields",
         auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
         merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
 
-        auto const pdu_body = std::string{R"({"type":"m.room.message","content":{"body":"hello"}})"};
+        auto const pdu_body = std::string{"{\"type\":\"m.room.message\",\"content\":{\"body\":\"hello\"}}"};
         runtime.backfill_provider = [pdu_body]([[maybe_unused]] merovingian::federation::BackfillRequest const& req)
             -> merovingian::federation::BackfillResult {
             return {true, 200U, {}, {pdu_body}};

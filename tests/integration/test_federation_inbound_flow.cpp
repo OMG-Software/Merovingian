@@ -585,6 +585,74 @@ SCENARIO("Homeserver routes an inbound m.direct_to_device EDU with a realistic O
     }
 }
 
+// GIVEN a well-formed m.direct_to_device EDU whose store write fails (an
+// empty "sender" — edu_content_is_valid() only checks the field is present,
+// not non-empty, so this reaches the sink) WHEN the sink processes it THEN
+// the disposition must not claim acceptance for a room-key share that was
+// never actually written to the recipient's to-device queue.
+//
+// Bug this guards against: enqueue_direct_to_device_messages()
+// (local_http_router.cpp) discarded the per-device store result with
+// std::ignore, and the EduType::direct_to_device case always returned
+// EduDispositionStatus::accepted regardless of whether anything was
+// persisted. A megolm room-key share that failed validation inside
+// enqueue_to_device_message() was therefore dropped with zero trace: the
+// transaction was still ack'd 200, edu_dispatched still incremented instead
+// of edu_dropped, and the recipient device was left permanently unable to
+// decrypt any event sent with that session (client symptom: "Unable to
+// decrypt: unknown inbound session") with nothing in any log to explain why.
+SCENARIO("An m.direct_to_device EDU that fails to persist is not silently reported as accepted",
+         "[integration][federation][edu][to-device][e2ee]")
+{
+    GIVEN("a started runtime with a real, migrated on-disk SQLite database and wired federation callbacks")
+    {
+        auto config = federation_config();
+        auto const tmp_dir = std::filesystem::temp_directory_path() /
+                             ("merovingian-edu-inbound-flow-fail-" +
+                              std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        std::filesystem::create_directories(tmp_dir);
+        config.database().backend = merovingian::config::DatabaseBackend::sqlite;
+        config.database().sqlite_path = (tmp_dir / "edu-inbound-flow-fail-test.sqlite3").string();
+
+        auto started = merovingian::homeserver::start_runtime(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+
+        auto const origin = std::string{"matrix.ping.me.uk"};
+        auto const target_user = std::string{"@james:pong.ping.me.uk"};
+        auto const target_device = std::string{"DEVICE1"};
+
+        auto envelope = merovingian::federation::InboundEduEnvelope{};
+        envelope.type = merovingian::federation::EduType::direct_to_device;
+        envelope.edu_type = "m.direct_to_device";
+        envelope.origin = origin;
+        envelope.content_json = std::string{"{\"sender\":\"\",\"type\":\"m.room_key\",\"messages\":{\""} + target_user +
+                                "\":{\"" + target_device + "\":{\"algorithm\":\"m.megolm.v1.aes-sha2\"}}}}";
+
+        WHEN("the edu_sink processes the envelope")
+        {
+            REQUIRE(runtime.federation.edu_sink != nullptr);
+            auto const disposition = runtime.federation.edu_sink(envelope);
+
+            THEN("the disposition does not claim the message was accepted")
+            {
+                REQUIRE(disposition.status != merovingian::federation::EduDispositionStatus::accepted);
+            }
+
+            AND_THEN("no row was written to the target device's to-device queue")
+            {
+                auto const has_row = std::ranges::any_of(
+                    runtime.database.persistent_store.to_device_messages,
+                    [&](merovingian::database::PersistentToDeviceMessage const& m) {
+                        return m.target_user_id == target_user && m.target_device_id == target_device;
+                    });
+                REQUIRE_FALSE(has_row);
+            }
+        }
+    }
+}
+
 // --- Destination binding (relay / replay prevention) --------------------------
 // Spec: Matrix Server-Server API v1.18, Request Authentication (X-Matrix).
 // URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#request-authentication

@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.10.61
+Version:        0.10.62
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -97,6 +97,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Wed Jul 22 2026 James Chapman <claude@ping.me.uk> - 0.10.62-1
+- Security fixes for issues #460-#463
+
 * Wed Jul 22 2026 James Chapman <claude@ping.me.uk> - 0.10.61-1
 - Resolve open issues #411-#457: spec-conformant state-resolution mainline ordering, federation sender-domain parsing for port-suffixed server names, receipt-baselined sync notification counts, reload-plan coverage for all config blocks, overflow/locale/routing hardening, BLOB media storage, and pinned SQLite durability pragmas.
 
