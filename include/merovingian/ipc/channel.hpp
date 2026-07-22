@@ -144,13 +144,18 @@ public:
 
     [[nodiscard]] auto healthy() const noexcept -> bool;
 
+    // Assembles a wire frame: {"id":N[,"reply_to":M][,<body fields>]}.
+    // body: a JSON object WITHOUT "id"/"reply_to"; "{}" contributes no fields
+    // (#451). Public so framing is directly testable; sending still goes
+    // through send_request/send_response/send_notification.
+    [[nodiscard]] auto build_frame(std::uint64_t id, std::optional<std::uint64_t> reply_to, std::string_view body)
+        -> std::string;
+
 private:
     [[nodiscard]] auto raw_send_exact(void const* buf, std::size_t n) noexcept -> bool;
     [[nodiscard]] auto raw_recv_exact(void* buf, std::size_t n) noexcept -> bool;
     [[nodiscard]] auto write_frame(std::string_view plaintext) noexcept -> bool;
     [[nodiscard]] auto read_frame() noexcept -> std::optional<std::string>;
-    [[nodiscard]] auto build_frame(std::uint64_t id, std::optional<std::uint64_t> reply_to, std::string_view body)
-        -> std::string;
     // Logs a warning that a frame of `body.size()` bytes for the given IPC
     // message kind was dropped for exceeding the frame cap. The frame "type"
     // is extracted from the body for diagnostics. Used by the send paths so an

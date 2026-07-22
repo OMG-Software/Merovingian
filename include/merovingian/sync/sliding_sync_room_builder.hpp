@@ -41,4 +41,13 @@ namespace merovingian::sync
                                        std::unordered_set<std::string> const& lazy_members_already_sent = {})
     -> SlidingSyncRoomResponse;
 
+// Stream ordering of the event named by the user's most recent read receipt
+// (m.read or m.read.private) in the room, or 0 when the user has never sent
+// one. notification_count / highlight_count and the by_notification_count
+// room-list sort count events strictly after this baseline — "events the user
+// has not read", not "events the client has not synced" (#417).
+[[nodiscard]] auto read_receipt_ordering(homeserver::HomeserverRuntime const& rt,
+                                         database::PersistentStore const& store, std::string_view room_id,
+                                         std::string_view user) -> std::uint64_t;
+
 } // namespace merovingian::sync

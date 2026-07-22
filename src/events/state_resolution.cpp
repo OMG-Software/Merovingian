@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 #include <unordered_set>
@@ -80,6 +81,69 @@ namespace
     [[nodiscard]] auto value_is_object(canonicaljson::Value const& value) noexcept -> canonicaljson::Object const*
     {
         return std::get_if<canonicaljson::Object>(&value.storage());
+    }
+
+    [[nodiscard]] auto array_member(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> canonicaljson::Array const*
+    {
+        auto const* value = object_member(object, key);
+        if (value == nullptr)
+        {
+            return nullptr;
+        }
+        return std::get_if<canonicaljson::Array>(&value->storage());
+    }
+
+    // Extract the event id from one auth_events entry. v3+ rooms use plain
+    // event-id strings; v1/v2 rooms use [event_id, hash] pairs.
+    [[nodiscard]] auto auth_entry_event_id(canonicaljson::Value const& entry) noexcept -> std::string const*
+    {
+        if (auto const* id = std::get_if<std::string>(&entry.storage()); id != nullptr)
+        {
+            return id;
+        }
+        if (auto const* pair = std::get_if<canonicaljson::Array>(&entry.storage()); pair != nullptr && !pair->empty())
+        {
+            return std::get_if<std::string>(&pair->front().storage());
+        }
+        return nullptr;
+    }
+
+    // Find the m.room.power_levels event among `event_json`'s auth_events.
+    // Returns the ancestor's id, or nullptr if none is present or its JSON is
+    // not available in the index (the walk cannot continue past unknown events).
+    [[nodiscard]] auto power_levels_auth_ancestor(canonicaljson::Object const& event_json,
+                                                  EventJsonIndex const& events_by_id) -> std::string const*
+    {
+        auto const* auth = array_member(event_json, "auth_events");
+        if (auth == nullptr)
+        {
+            return nullptr;
+        }
+        for (auto const& entry : *auth)
+        {
+            auto const* id = auth_entry_event_id(entry);
+            if (id == nullptr)
+            {
+                continue;
+            }
+            auto const it = events_by_id.find(*id);
+            if (it == events_by_id.end())
+            {
+                continue;
+            }
+            auto const* obj = value_is_object(it->second.get());
+            if (obj == nullptr)
+            {
+                continue;
+            }
+            auto const* type = string_member(*obj, "type");
+            if (type != nullptr && *type == "m.room.power_levels")
+            {
+                return &it->first;
+            }
+        }
+        return nullptr;
     }
 
     [[nodiscard]] auto value_has_content(canonicaljson::Value const& value) noexcept -> bool
@@ -159,50 +223,46 @@ namespace
             {
                 return pa.sender_power > pb.sender_power;
             }
-            return pa.origin_server_ts < pb.origin_server_ts;
+            if (pa.origin_server_ts != pb.origin_server_ts)
+            {
+                return pa.origin_server_ts < pb.origin_server_ts;
+            }
+            // Spec (rooms/v10 — Reverse topological power ordering, rule 3):
+            // final tie-break is the lexicographically smaller event_id.
+            return a.event_id < b.event_id;
         }
     };
 
-    // Walk the auth_events chain of a power_levels event to build the mainline.
-    // The walk is bounded by max_mainline_auth_chain_depth to prevent cyclic or
-    // adversarially deep auth chains from consuming unbounded time/memory.
-    [[nodiscard]] auto collect_mainline_power_events(canonicaljson::Value const& power_levels_event)
-        -> std::vector<std::string>
+    // Build the mainline [P0, P1, …, Pn] of the resolved power_levels event:
+    // P(i+1) is the m.room.power_levels event in Pi's auth_events, walked
+    // transitively (spec rooms/v10 — Mainline ordering). The walk is bounded by
+    // max_mainline_auth_chain_depth to prevent cyclic or adversarially deep
+    // auth chains from consuming unbounded time/memory, and stops when an
+    // ancestor's JSON is not available in the index.
+    [[nodiscard]] auto collect_mainline_power_events(std::string const& head_event_id,
+                                                     canonicaljson::Value const& power_levels_event,
+                                                     EventJsonIndex const& events_by_id) -> std::vector<std::string>
     {
         auto result = std::vector<std::string>{};
-        auto const* obj = value_is_object(power_levels_event);
-        if (obj == nullptr)
-        {
-            return result;
-        }
+        auto visited = std::unordered_set<std::string>{};
 
-        auto const* event_id = string_member(*obj, "event_id");
-        if (event_id == nullptr)
+        auto current_id = head_event_id;
+        auto const* current = value_is_object(power_levels_event);
+        while (current != nullptr && result.size() < max_mainline_auth_chain_depth)
         {
-            return result;
-        }
-
-        // Start with the power_levels event itself as the mainline head.
-        result.push_back(*event_id);
-        auto const* auth_events = object_member_as_object(*obj, "auth_events");
-        if (auth_events == nullptr)
-        {
-            return result;
-        }
-
-        auto visited = std::unordered_set<std::string>{*event_id};
-        for (auto const& member : *auth_events)
-        {
-            if (result.size() >= max_mainline_auth_chain_depth)
+            if (current_id.empty() || !visited.insert(current_id).second)
             {
                 break;
             }
-            auto const* id = std::get_if<std::string>(&member.value->storage());
-            if (id == nullptr || !visited.insert(*id).second)
+            result.push_back(current_id);
+
+            auto const* ancestor_id = power_levels_auth_ancestor(*current, events_by_id);
+            if (ancestor_id == nullptr)
             {
-                continue;
+                break;
             }
-            result.push_back(*id);
+            current_id = *ancestor_id;
+            current = value_is_object(events_by_id.at(*ancestor_id).get());
         }
         return result;
     }
@@ -430,34 +490,65 @@ auto reverse_topological_power_sort(std::vector<StateEventReference> const& conf
     return sorted;
 }
 
-auto mainline_order(std::vector<StateEventReference>& events, StateMap const& unconflicted) -> void
+auto is_power_event(StateEventReference const& event) noexcept -> bool
+{
+    if (event.key.event_type == "m.room.power_levels" || event.key.event_type == "m.room.join_rules")
+    {
+        return event.key.state_key.empty();
+    }
+    if (event.key.event_type != "m.room.member")
+    {
+        return false;
+    }
+    auto const* obj = value_is_object(event.event_json);
+    if (obj == nullptr)
+    {
+        return false;
+    }
+    auto const* content = object_member_as_object(*obj, "content");
+    if (content == nullptr)
+    {
+        return false;
+    }
+    auto const* membership = string_member(*content, "membership");
+    if (membership == nullptr)
+    {
+        return false;
+    }
+    return (*membership == "leave" || *membership == "ban") && event.sender != event.key.state_key;
+}
+
+auto build_event_json_index(std::vector<StateGroup> const& groups) -> EventJsonIndex
+{
+    auto index = EventJsonIndex{};
+    for (auto const& group : groups)
+    {
+        for (auto const& event : group.state)
+        {
+            if (!event.event_id.empty() && value_has_content(event.event_json))
+            {
+                index.emplace(event.event_id, std::cref(event.event_json));
+            }
+        }
+    }
+    return index;
+}
+
+auto mainline_order(std::vector<StateEventReference>& events, StateMap const& resolved,
+                    EventJsonIndex const& events_by_id) -> void
 {
     auto const pl_key = StateKey{"m.room.power_levels", ""};
     std::vector<std::string> mainline;
 
-    auto it = unconflicted.find(pl_key);
-    if (it != unconflicted.end() && value_has_content(it->second.event_json))
+    auto it = resolved.find(pl_key);
+    if (it != resolved.end() && value_has_content(it->second.event_json))
     {
-        mainline = collect_mainline_power_events(it->second.event_json);
-    }
-    for (auto const& ev : events)
-    {
-        if (ev.key == pl_key && value_has_content(ev.event_json))
-        {
-            auto ev_mainline = collect_mainline_power_events(ev.event_json);
-            for (auto const& id : ev_mainline)
-            {
-                if (std::find(mainline.begin(), mainline.end(), id) == mainline.end())
-                {
-                    mainline.push_back(id);
-                }
-            }
-        }
+        mainline = collect_mainline_power_events(it->second.event_id, it->second.event_json, events_by_id);
     }
 
     // If the mainline hit the depth cap, sorting by it would be misleading;
-    // treat all such events as depth 0 so we still terminate but do not produce
-    // an ordering that depends on truncated data.
+    // fall back to a timestamp ordering so we still terminate but do not
+    // produce an ordering that depends on truncated data.
     auto const mainline_truncated = mainline.size() >= max_mainline_auth_chain_depth;
 
     auto mainline_depth = std::unordered_map<std::string, std::size_t>{};
@@ -467,65 +558,69 @@ auto mainline_order(std::vector<StateEventReference>& events, StateMap const& un
         mainline_depth[mainline[i]] = i;
     }
 
-    auto mainline_compare = [&mainline_depth, mainline_truncated](StateEventReference const& a,
-                                                                  StateEventReference const& b) -> bool {
-        if (mainline_truncated)
+    // Spec (rooms/v10 — Mainline ordering): walk the event's power-levels
+    // ancestry (e1, e2, …) until an event on the mainline is found; its
+    // mainline index is the event's position. If the walk exhausts without
+    // reaching the mainline, the position is ∞ — a sentinel greater than any
+    // index — so the event sorts as oldest.
+    auto const infinity = std::numeric_limits<std::size_t>::max();
+    auto mainline_position = [&](StateEventReference const& event) -> std::size_t {
+        auto visited = std::unordered_set<std::string>{};
+        auto const* current = value_is_object(event.event_json);
+        for (std::size_t hops = 0; current != nullptr && hops < max_mainline_auth_chain_depth; ++hops)
+        {
+            auto const* auth = array_member(*current, "auth_events");
+            if (auth == nullptr)
+            {
+                return infinity;
+            }
+            // A mainline hit among the auth entries wins immediately: every
+            // mainline entry is a power_levels event, and a valid event cites
+            // at most one power_levels event in its auth_events.
+            for (auto const& entry : *auth)
+            {
+                auto const* id = auth_entry_event_id(entry);
+                if (id == nullptr)
+                {
+                    continue;
+                }
+                if (auto dit = mainline_depth.find(*id); dit != mainline_depth.end())
+                {
+                    return dit->second;
+                }
+            }
+            auto const* ancestor_id = power_levels_auth_ancestor(*current, events_by_id);
+            if (ancestor_id == nullptr || !visited.insert(*ancestor_id).second)
+            {
+                return infinity;
+            }
+            current = value_is_object(events_by_id.at(*ancestor_id).get());
+        }
+        return infinity;
+    };
+
+    auto position_by_event_id = std::unordered_map<std::string, std::size_t>{};
+    position_by_event_id.reserve(events.size());
+    for (auto const& event : events)
+    {
+        position_by_event_id.emplace(event.event_id, mainline_truncated ? infinity : mainline_position(event));
+    }
+
+    auto mainline_compare = [&position_by_event_id](StateEventReference const& a,
+                                                    StateEventReference const& b) -> bool {
+        auto const pos_a = position_by_event_id.at(a.event_id);
+        auto const pos_b = position_by_event_id.at(b.event_id);
+        if (pos_a != pos_b)
+        {
+            // Spec: x < y when x's mainline position is GREATER than y's
+            // (an auth chain based on an earlier mainline event sorts first).
+            return pos_a > pos_b;
+        }
+        if (a.origin_server_ts != b.origin_server_ts)
         {
             return a.origin_server_ts < b.origin_server_ts;
         }
-
-        auto depth_a = std::size_t{0};
-        auto depth_b = std::size_t{0};
-
-        auto const* obj_a = value_is_object(a.event_json);
-        if (obj_a != nullptr)
-        {
-            auto const* auth_a = object_member_as_object(*obj_a, "auth_events");
-            if (auth_a != nullptr)
-            {
-                for (auto const& member : *auth_a)
-                {
-                    auto const* id = std::get_if<std::string>(&member.value->storage());
-                    if (id != nullptr)
-                    {
-                        auto dit = mainline_depth.find(*id);
-                        if (dit != mainline_depth.end())
-                        {
-                            depth_a = dit->second;
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-
-        auto const* obj_b = value_is_object(b.event_json);
-        if (obj_b != nullptr)
-        {
-            auto const* auth_b = object_member_as_object(*obj_b, "auth_events");
-            if (auth_b != nullptr)
-            {
-                for (auto const& member : *auth_b)
-                {
-                    auto const* id = std::get_if<std::string>(&member.value->storage());
-                    if (id != nullptr)
-                    {
-                        auto dit = mainline_depth.find(*id);
-                        if (dit != mainline_depth.end())
-                        {
-                            depth_b = dit->second;
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-
-        if (depth_a != depth_b)
-        {
-            return depth_a > depth_b;
-        }
-        return a.origin_server_ts < b.origin_server_ts;
+        return a.event_id < b.event_id;
     };
 
     std::stable_sort(events.begin(), events.end(), mainline_compare);
@@ -600,29 +695,61 @@ auto resolve_state_v2(StateResolutionRequest const& request, rooms::RoomVersionP
         }
     }
 
-    auto sorted = reverse_topological_power_sort(all_conflicted, unconflicted);
-
-    // Step 4: Apply mainline ordering for power_levels events
-    mainline_order(sorted, unconflicted);
-
-    // Step 5: Iterate through sorted conflicted events, auth-check each against current resolved state.
-    // All candidates for each key must be iterated — a later (lower-power) candidate can still
-    // overwrite an earlier one if it passes auth. Do NOT short-circuit on resolved.contains(key).
-    for (auto const& event : sorted)
-    {
-        // Events whose JSON representation is null/invalid cannot be applied.
-        if (!value_has_content(event.event_json))
+    // Iterative auth checks (spec rooms/v10 — Algorithm): apply each event to
+    // the running resolved state if it passes the authorization rules. All
+    // candidates for each key must be iterated — a later (lower-power)
+    // candidate can still overwrite an earlier one if it passes auth. Do NOT
+    // short-circuit on resolved.contains(key).
+    auto apply_iterative_auth_checks = [&resolved, &policy](std::vector<StateEventReference> const& sorted) -> void {
+        for (auto const& event : sorted)
         {
-            continue;
+            // Events whose JSON representation is null/invalid cannot be applied.
+            if (!value_has_content(event.event_json))
+            {
+                continue;
+            }
+
+            auto auth_map = build_auth_event_map_from_state(event.event_json, resolved);
+            auto const decision = authorize_event_against_auth_events(event.event_json, policy, auth_map);
+            if (decision.allowed)
+            {
+                resolved[event.key] = event;
+            }
         }
+    };
 
-        auto auth_map = build_auth_event_map_from_state(event.event_json, resolved);
-        auto const decision = authorize_event_against_auth_events(event.event_json, policy, auth_map);
-        if (decision.allowed)
+    // Algorithm step 1: select the power events from the conflicted set and
+    // sort them by the reverse topological power ordering.
+    auto power_events = std::vector<StateEventReference>{};
+    auto remaining_events = std::vector<StateEventReference>{};
+    for (auto const& event : all_conflicted)
+    {
+        if (is_power_event(event))
         {
-            resolved[event.key] = event;
+            power_events.push_back(event);
+        }
+        else
+        {
+            remaining_events.push_back(event);
         }
     }
+    auto const sorted_power = reverse_topological_power_sort(power_events, unconflicted);
+
+    // Algorithm step 2: auth-check the power events first, starting from the
+    // unconflicted state, to obtain the partially resolved state.
+    apply_iterative_auth_checks(sorted_power);
+
+    // Algorithm step 3: order only the remaining (non-power) events by the
+    // mainline ordering based on the power levels in the partially resolved
+    // state.
+    auto const events_by_id = build_event_json_index(request.state_groups);
+    mainline_order(remaining_events, resolved, events_by_id);
+
+    // Algorithm step 4: auth-check the remaining events against the partially
+    // resolved state. (Step 5 — reapplying the unconflicted map — is a no-op
+    // here because unconflicted and conflicted keys are disjoint by
+    // construction.)
+    apply_iterative_auth_checks(remaining_events);
 
     // Build result
     auto result_state = std::vector<StateEventReference>{};

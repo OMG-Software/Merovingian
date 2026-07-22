@@ -3,29 +3,42 @@
 
 #include "merovingian/config/runtime_config.hpp"
 
+#include <memory>
+#include <mutex>
 #include <utility>
 
 namespace merovingian::config
 {
 
-RuntimeConfigSnapshot::RuntimeConfigSnapshot(Config config)
-    : m_current{std::move(config)}
+// SHARED_PTR: reviewed — immutable Config snapshot; see runtime_config.hpp (#422).
+RuntimeConfigSnapshot::RuntimeConfigSnapshot()
+    : m_current{std::make_shared<Config const>()} // SHARED_PTR: reviewed (#422)
 {
 }
 
-auto RuntimeConfigSnapshot::current() const noexcept -> Config const&
+RuntimeConfigSnapshot::RuntimeConfigSnapshot(Config config)
+    : m_current{std::make_shared<Config const>(std::move(config))} // SHARED_PTR: reviewed (#422)
 {
+}
+
+auto RuntimeConfigSnapshot::current() const -> std::shared_ptr<Config const> // SHARED_PTR: reviewed (#422)
+{
+    auto lock = std::scoped_lock{m_mutex};
     return m_current;
 }
 
 auto RuntimeConfigSnapshot::plan_reload(Config const& next) const -> ReloadPlan
 {
-    return build_reload_plan(m_current, next);
+    auto const snapshot = current();
+    return build_reload_plan(*snapshot, next);
 }
 
 auto RuntimeConfigSnapshot::apply_reload(Config next) -> RuntimeConfigApplyResult
 {
-    auto const plan = plan_reload(next);
+    // Plan and swap under one lock so two concurrent reloads cannot
+    // interleave their diff and their swap (#422).
+    auto lock = std::scoped_lock{m_mutex};
+    auto const plan = build_reload_plan(*m_current, next);
     if (!plan.has_changes())
     {
         return RuntimeConfigApplyResult::unchanged;
@@ -36,7 +49,7 @@ auto RuntimeConfigSnapshot::apply_reload(Config next) -> RuntimeConfigApplyResul
         return RuntimeConfigApplyResult::restart_required;
     }
 
-    m_current = std::move(next);
+    m_current = std::make_shared<Config const>(std::move(next)); // SHARED_PTR: reviewed (#422)
     return RuntimeConfigApplyResult::applied;
 }
 

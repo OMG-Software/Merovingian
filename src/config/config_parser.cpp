@@ -706,7 +706,11 @@ auto parse_i64_value(std::string_view value, std::int64_t& output) noexcept -> b
             return false;
         }
     }
-    auto parsed = std::int64_t{0};
+    // Accumulate the magnitude unsigned: INT64_MIN's magnitude (2^63) is one
+    // more than INT64_MAX, so a signed accumulator cannot represent it (#455).
+    auto const limit = negative ? static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) + 1ULL
+                                : static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+    auto parsed = std::uint64_t{0U};
     for (; index < value.size(); ++index)
     {
         auto const character = value[index];
@@ -714,14 +718,16 @@ auto parse_i64_value(std::string_view value, std::int64_t& output) noexcept -> b
         {
             return false;
         }
-        auto const digit = static_cast<std::int64_t>(character - '0');
-        if (parsed > (std::numeric_limits<std::int64_t>::max() - digit) / 10LL)
+        auto const digit = static_cast<std::uint64_t>(character - '0');
+        if (parsed > (limit - digit) / 10ULL)
         {
             return false;
         }
-        parsed = (parsed * 10LL) + digit;
+        parsed = (parsed * 10ULL) + digit;
     }
-    output = negative ? -parsed : parsed;
+    // Two's complement: negating in unsigned space then casting yields
+    // INT64_MIN for magnitude 2^63 without signed overflow.
+    output = negative ? static_cast<std::int64_t>(0ULL - parsed) : static_cast<std::int64_t>(parsed);
     return true;
 }
 

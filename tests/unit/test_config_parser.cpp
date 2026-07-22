@@ -4,6 +4,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstdint>
+#include <limits>
 #include <string>
 
 SCENARIO("Key-value config parser preserves secure defaults for empty input", "[config][parser]")
@@ -581,6 +583,50 @@ SCENARIO("Key-value config parser rejects zero request timeout for the federatio
                 }
                 REQUIRE(found);
                 REQUIRE_FALSE(merovingian::config::is_valid(result.config));
+            }
+        }
+    }
+}
+
+// Regression for #455: parse_i64_value computed the magnitude in a signed
+// accumulator and rejected anything above INT64_MAX, so the legal literal
+// -9223372036854775808 (INT64_MIN) could not be configured.
+SCENARIO("Key-value config parser accepts the full signed 64-bit range", "[config][parser][i64]")
+{
+    GIVEN("token lifetimes at the extremes of the i64 range")
+    {
+        auto const input = std::string{"security.access_token_lifetime_ms=-9223372036854775808\n"
+                                       "security.refresh_token_lifetime_ms=9223372036854775807\n"};
+
+        WHEN("the config is parsed")
+        {
+            auto const result = merovingian::config::parse_key_value_config(input);
+
+            THEN("INT64_MIN and INT64_MAX both parse without an overflow finding")
+            {
+                REQUIRE(result.config.security().access_token_lifetime_ms == std::numeric_limits<std::int64_t>::min());
+                REQUIRE(result.config.security().refresh_token_lifetime_ms == std::numeric_limits<std::int64_t>::max());
+            }
+        }
+    }
+}
+
+SCENARIO("Key-value config parser still rejects i64 values beyond the representable range", "[config][parser][i64]")
+{
+    GIVEN("token lifetimes one past each end of the i64 range")
+    {
+        auto const too_negative = std::string{"security.access_token_lifetime_ms=-9223372036854775809\n"};
+        auto const too_positive = std::string{"security.access_token_lifetime_ms=9223372036854775808\n"};
+
+        WHEN("the configs are parsed")
+        {
+            auto const negative_result = merovingian::config::parse_key_value_config(too_negative);
+            auto const positive_result = merovingian::config::parse_key_value_config(too_positive);
+
+            THEN("both report a finding instead of wrapping")
+            {
+                REQUIRE_FALSE(negative_result.findings.empty());
+                REQUIRE_FALSE(positive_result.findings.empty());
             }
         }
     }

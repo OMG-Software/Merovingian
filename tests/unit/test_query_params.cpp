@@ -4,6 +4,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <string>
+
 SCENARIO("Query parameter parser extracts key-value pairs from URL query strings", "[core][http][query]")
 {
     GIVEN("a URL with query parameters")
@@ -177,6 +179,65 @@ SCENARIO("URL path component encoding escapes Matrix identifiers for outbound ro
             THEN("reserved delimiters are percent-encoded while unreserved bytes pass through")
             {
                 REQUIRE(encoded == "%21room2%3Amatrix.example.org%2B%24event%40alice");
+            }
+        }
+    }
+}
+
+// Regression for #440: from_hex silently mapped non-hex characters to 0, so
+// malformed sequences like "%ZZ" decoded to NUL bytes that propagated into
+// filter ids and downstream C-string handling.
+SCENARIO("Percent decoding keeps malformed escapes literal instead of injecting NUL", "[core][query][security]")
+{
+    GIVEN("query values with malformed percent escapes")
+    {
+        WHEN("the values are decoded")
+        {
+            auto const bad_hex = merovingian::core::percent_decode("%ZZ");
+            auto const half_bad = merovingian::core::percent_decode("%2G");
+            auto const valid = merovingian::core::percent_decode("%2F");
+            auto const path_bad = merovingian::core::percent_decode_path_component("%ZZtail");
+
+            THEN("malformed escapes pass through literally and contain no NUL bytes")
+            {
+                REQUIRE(bad_hex == "%ZZ");
+                REQUIRE(half_bad == "%2G");
+                REQUIRE(bad_hex.find('\0') == std::string::npos);
+                REQUIRE(half_bad.find('\0') == std::string::npos);
+                REQUIRE(path_bad == "%ZZtail");
+            }
+
+            THEN("well-formed escapes still decode")
+            {
+                REQUIRE(valid == "/");
+            }
+        }
+    }
+}
+
+// Regression for #426: the timeout parser accumulated digits with no overflow
+// guard, so an overlong decimal wrapped modulo 2^64 into an attacker-chosen
+// effective timeout for the sync long-poll pool.
+SCENARIO("Sync timeout query parameter rejects overflowing values", "[core][query][security]")
+{
+    GIVEN("sync targets with overflowing and maximal timeout values")
+    {
+        auto const overflowing = std::string{"/_matrix/client/v3/sync?timeout=99999999999999999999999999"};
+        auto const max_valid = std::string{"/_matrix/client/v3/sync?timeout=18446744073709551615"};
+
+        WHEN("the query parameters are parsed")
+        {
+            auto const wrapped = merovingian::core::parse_query_params(overflowing);
+            auto const maximal = merovingian::core::parse_query_params(max_valid);
+
+            THEN("the overflowing value is discarded rather than wrapped")
+            {
+                REQUIRE(wrapped.timeout == merovingian::core::SyncRequest{}.timeout);
+            }
+
+            THEN("the largest representable value still parses")
+            {
+                REQUIRE(maximal.timeout == 18446744073709551615ULL);
             }
         }
     }

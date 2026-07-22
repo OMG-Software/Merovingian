@@ -4,6 +4,8 @@
 #include "merovingian/config/reload_plan.hpp"
 
 #include <string>
+#include <tuple>
+#include <unordered_map>
 #include <utility>
 
 namespace merovingian::config
@@ -14,6 +16,30 @@ namespace
     auto add_change(ReloadPlan& plan, std::string const& key) -> void
     {
         plan.add_change({key, reload_policy_for_key(key)});
+    }
+
+    // Emit one change per added, removed, or altered entry of a string-keyed
+    // map-valued config block (client_rate_limits.per_*, log_modules.*).
+    template <typename MapType>
+    auto diff_keyed_map(ReloadPlan& plan, std::string const& prefix, MapType const& current, MapType const& next)
+        -> void
+    {
+        for (auto const& [key, value] : current)
+        {
+            auto const it = next.find(key);
+            if (it == next.end() || !(it->second == value))
+            {
+                add_change(plan, prefix + key);
+            }
+        }
+        for (auto const& [key, value] : next)
+        {
+            std::ignore = value;
+            if (!current.contains(key))
+            {
+                add_change(plan, prefix + key);
+            }
+        }
     }
 
 } // namespace
@@ -306,6 +332,114 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "security.logging.structured");
     }
+
+    // #421: the blocks below previously produced no diff at all, so an edit
+    // to any of these keys was reported as "no changes" and silently dropped.
+
+    if (current.server().cors.allowed_origins != next.server().cors.allowed_origins)
+    {
+        add_change(plan, "server.cors.allowed_origins");
+    }
+    if (current.server().cors.max_age != next.server().cors.max_age)
+    {
+        add_change(plan, "server.cors.max_age");
+    }
+    if (current.server().cors.allow_credentials != next.server().cors.allow_credentials)
+    {
+        add_change(plan, "server.cors.allow_credentials");
+    }
+    if (current.server().cors.allow_methods != next.server().cors.allow_methods)
+    {
+        add_change(plan, "server.cors.allow_methods");
+    }
+    if (current.server().cors.allow_headers != next.server().cors.allow_headers)
+    {
+        add_change(plan, "server.cors.allow_headers");
+    }
+
+    if (current.server().turn.server != next.server().turn.server)
+    {
+        add_change(plan, "server.turn.server");
+    }
+    if (current.server().turn.username != next.server().turn.username)
+    {
+        add_change(plan, "server.turn.username");
+    }
+    if (current.server().turn.password != next.server().turn.password)
+    {
+        add_change(plan, "server.turn.password");
+    }
+    if (current.server().turn.ttl_seconds != next.server().turn.ttl_seconds)
+    {
+        add_change(plan, "server.turn.ttl_seconds");
+    }
+
+    if (current.security().secrets.master_key_file != next.security().secrets.master_key_file)
+    {
+        add_change(plan, "security.secrets.master_key_file");
+    }
+
+    if (current.security().trust_safety.enabled != next.security().trust_safety.enabled)
+    {
+        add_change(plan, "security.trust_safety.enabled");
+    }
+    if (current.security().trust_safety.policy_server_url != next.security().trust_safety.policy_server_url)
+    {
+        add_change(plan, "security.trust_safety.policy_server_url");
+    }
+    if (current.security().trust_safety.policy_server_timeout != next.security().trust_safety.policy_server_timeout)
+    {
+        add_change(plan, "security.trust_safety.policy_server_timeout");
+    }
+    if (current.security().trust_safety.policy_server_allow_without_result !=
+        next.security().trust_safety.policy_server_allow_without_result)
+    {
+        add_change(plan, "security.trust_safety.policy_server_allow_without_result");
+    }
+
+    if (current.security().access_token_lifetime_ms != next.security().access_token_lifetime_ms)
+    {
+        add_change(plan, "security.access_token_lifetime_ms");
+    }
+    if (current.security().refresh_token_lifetime_ms != next.security().refresh_token_lifetime_ms)
+    {
+        add_change(plan, "security.refresh_token_lifetime_ms");
+    }
+
+    if (current.federation_worker().request_timeout_seconds != next.federation_worker().request_timeout_seconds)
+    {
+        add_change(plan, "federation.worker.request_timeout_seconds");
+    }
+    if (current.federation_worker().threads != next.federation_worker().threads)
+    {
+        add_change(plan, "federation.worker.threads");
+    }
+    if (current.federation_worker().relay_threads != next.federation_worker().relay_threads)
+    {
+        add_change(plan, "federation.worker.relay_threads");
+    }
+    if (current.federation_worker().shards != next.federation_worker().shards)
+    {
+        add_change(plan, "federation.worker.shards");
+    }
+    if (current.federation_worker().worker_binary != next.federation_worker().worker_binary)
+    {
+        add_change(plan, "federation.worker.binary");
+    }
+    if (current.federation_worker().apply_hardening != next.federation_worker().apply_hardening)
+    {
+        add_change(plan, "federation.worker.apply_hardening");
+    }
+
+    if (!(current.client_rate_limits().default_per_ip == next.client_rate_limits().default_per_ip))
+    {
+        add_change(plan, "client_rate_limits.default_per_ip");
+    }
+    diff_keyed_map(plan, "client_rate_limits.per_ip.", current.client_rate_limits().per_ip,
+                   next.client_rate_limits().per_ip);
+    diff_keyed_map(plan, "client_rate_limits.per_user.", current.client_rate_limits().per_user,
+                   next.client_rate_limits().per_user);
+    diff_keyed_map(plan, "log_modules.", current.log_modules().levels, next.log_modules().levels);
 
     return plan;
 }

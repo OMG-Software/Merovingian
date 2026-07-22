@@ -735,3 +735,225 @@ SCENARIO("partition_conflicted_state separates shared state from conflicting sta
         }
     }
 }
+
+namespace
+{
+
+// Build a state event whose JSON carries event_id and an auth_events array of
+// event-id strings — the v3+ PDU shape consumed by the mainline walk.
+[[nodiscard]] auto make_event_with_auth(std::string const& event_type, std::string const& state_key,
+                                        std::string const& event_id, std::string const& sender, std::int64_t ts,
+                                        std::vector<std::string> const& auth_ids, std::string const& content_json)
+    -> StateEventReference
+{
+    auto auth = std::string{"["};
+    for (auto const& id : auth_ids)
+    {
+        if (auth.size() > 1U)
+        {
+            auth += ",";
+        }
+        auth += "\"" + id + "\"";
+    }
+    auth += "]";
+    auto const json = std::string{"{\"type\":\""} + event_type + "\",\"state_key\":\"" + state_key +
+                      "\",\"sender\":\"" + sender + "\",\"event_id\":\"" + event_id +
+                      "\",\"origin_server_ts\":" + std::to_string(ts) + ",\"auth_events\":" + auth +
+                      ",\"content\":" + content_json + "}";
+    return make_event_ref(event_type, state_key, event_id, sender, ts, 1, json);
+}
+
+auto const power_levels_content =
+    std::string{"{\"ban\":50,\"events_default\":0,\"invite\":0,\"kick\":50,\"redact\":50,"
+                "\"state_default\":50,\"users\":{\"@alice:example.org\":100},\"users_default\":0}"};
+
+} // namespace
+
+// Spec: Matrix v1.18 — Room v2 state resolution, Mainline ordering
+// URL: ../../docs/matrix-v1.18-spec/rooms/v10.md (Definitions — Mainline ordering)
+//
+// The mainline of the resolved power-levels event P0 is [P0, P1, …, Pn] where
+// P(i+1) is the m.room.power_levels event in Pi's auth_events, walked
+// transitively. An event's mainline position is found by walking its own
+// power-levels ancestry until a mainline event is reached; an event with no
+// mainline ancestor gets position ∞ (a sentinel greater than any index).
+// Ordering is smallest-to-largest where x < y when the mainline position of x
+// is GREATER than that of y, then by origin_server_ts, then event_id.
+SCENARIO("Mainline ordering walks power-levels ancestry transitively with an infinity sentinel",
+         "[conformance][state-resolution][v2][mainline]")
+{
+    GIVEN("a two-hop power-levels mainline and events anchored at different depths")
+    {
+        // Mainline: $pl2 (head, resolved) -> $pl1. $plx is a power event NOT on
+        // the mainline whose own auth chain reaches $pl1.
+        auto const create = make_event_with_auth("m.room.create", "", "$create", "@alice:example.org", 1, {},
+                                                 "{\"creator\":\"@alice:example.org\",\"room_version\":\"10\"}");
+        auto const pl1 = make_event_with_auth("m.room.power_levels", "", "$pl1", "@alice:example.org", 100, {"$create"},
+                                              power_levels_content);
+        auto const pl2 = make_event_with_auth("m.room.power_levels", "", "$pl2", "@alice:example.org", 200,
+                                              {"$pl1", "$create"}, power_levels_content);
+        auto const plx = make_event_with_auth("m.room.power_levels", "", "$plx", "@alice:example.org", 150, {"$pl1"},
+                                              power_levels_content);
+
+        // topic_c has no power-levels ancestor at all -> position ∞ (sorted first).
+        auto const topic_c =
+            make_event_with_auth("m.room.topic", "", "$topic_c", "@alice:example.org", 50, {"$create"}, "{}");
+        // topic_e reaches the mainline only transitively via the non-mainline $plx -> position 1.
+        auto const topic_e =
+            make_event_with_auth("m.room.topic", "", "$topic_e", "@alice:example.org", 10, {"$plx"}, "{}");
+        // topic_a is anchored directly at $pl1 -> position 1.
+        auto const topic_a =
+            make_event_with_auth("m.room.topic", "", "$topic_a", "@alice:example.org", 20, {"$pl1"}, "{}");
+        // topic_b is anchored at the head $pl2 -> position 0 (sorted last).
+        auto const topic_b =
+            make_event_with_auth("m.room.topic", "", "$topic_b", "@alice:example.org", 5, {"$pl2"}, "{}");
+
+        auto context_group = merovingian::events::StateGroup{};
+        context_group.group_id = "context";
+        context_group.state = {create, pl1, pl2, plx, topic_a, topic_b, topic_c, topic_e};
+
+        auto const groups = std::vector<merovingian::events::StateGroup>{context_group};
+        auto const events_by_id = merovingian::events::build_event_json_index(groups);
+
+        auto resolved = merovingian::events::StateMap{};
+        resolved[merovingian::events::StateKey{"m.room.power_levels", ""}] = pl2;
+
+        WHEN("the events are ordered by the mainline ordering based on the resolved power levels")
+        {
+            auto events = std::vector<StateEventReference>{topic_b, topic_e, topic_a, topic_c};
+            merovingian::events::mainline_order(events, resolved, events_by_id);
+
+            THEN("events sort by descending mainline position, ties broken by origin_server_ts")
+            {
+                REQUIRE(events.size() == 4U);
+                // Spec MUST: no mainline ancestor -> position ∞ -> smallest (first).
+                REQUIRE(events[0].event_id == "$topic_c");
+                // Spec MUST: position found by walking power-levels ancestry transitively.
+                REQUIRE(events[1].event_id == "$topic_e");
+                // Spec MUST: same position (1) -> smaller origin_server_ts first.
+                REQUIRE(events[2].event_id == "$topic_a");
+                // Spec MUST: position 0 (anchored at the head) sorts last.
+                REQUIRE(events[3].event_id == "$topic_b");
+            }
+        }
+    }
+}
+
+// Spec: Matrix v1.18 — Room v2 state resolution, Algorithm steps 1-4
+// URL: ../../docs/matrix-v1.18-spec/rooms/v10.md (Definitions — Algorithm)
+//
+// Step 1/2: power events from the conflicted set are sorted by reverse
+// topological power ordering and auth-checked FIRST against the unconflicted
+// state. Step 3/4: only the REMAINING (non-power) events are then ordered by
+// the mainline ordering based on the power level in the partially resolved
+// state, and auth-checked. A timestamp-only ordering of the non-power events
+// violates step 3.
+SCENARIO("State resolution v2 orders non-power events by mainline of the partially resolved power levels",
+         "[conformance][state-resolution][v2][mainline]")
+{
+    GIVEN("a fork conflicting over both power levels and the room topic")
+    {
+        auto const* policy = merovingian::rooms::find_room_version_policy("10");
+        REQUIRE(policy != nullptr);
+
+        auto const create = make_event_with_auth("m.room.create", "", "$create", "@alice:example.org", 100, {},
+                                                 "{\"creator\":\"@alice:example.org\",\"room_version\":\"10\"}");
+        auto const alice_join =
+            make_event_with_auth("m.room.member", "@alice:example.org", "$alice_join", "@alice:example.org", 200,
+                                 {"$create"}, "{\"membership\":\"join\"}");
+
+        // Conflicted power levels: $pl2 descends from $pl1 (same sender power),
+        // so reverse-topo ordering applies $pl1 then $pl2 -> $pl2 wins.
+        auto const pl1 = make_event_with_auth("m.room.power_levels", "", "$pl1", "@alice:example.org", 300, {"$create"},
+                                              power_levels_content);
+        auto const pl2 = make_event_with_auth("m.room.power_levels", "", "$pl2", "@alice:example.org", 400,
+                                              {"$pl1", "$create"}, power_levels_content);
+
+        // Conflicted topic: $topic_a is NEWER by timestamp but anchored at the
+        // older mainline event $pl1 (position 1); $topic_b is older by
+        // timestamp but anchored at the resolved head $pl2 (position 0).
+        auto const topic_a =
+            make_event_with_auth("m.room.topic", "", "$topic_a", "@alice:example.org", 900, {"$pl1"}, "{}");
+        auto const topic_b =
+            make_event_with_auth("m.room.topic", "", "$topic_b", "@alice:example.org", 400, {"$pl2"}, "{}");
+
+        auto group_a = merovingian::events::StateGroup{};
+        group_a.group_id = "branch-a";
+        group_a.state = {create, alice_join, pl1, topic_a};
+
+        auto group_b = merovingian::events::StateGroup{};
+        group_b.group_id = "branch-b";
+        group_b.state = {create, alice_join, pl2, topic_b};
+
+        auto request = merovingian::events::StateResolutionRequest{};
+        request.room_version = "10";
+        request.state_groups = {group_a, group_b};
+
+        WHEN("resolve_state_v2 is called")
+        {
+            auto const result = merovingian::events::resolve_state_v2(request, *policy);
+
+            THEN("the descendant power-levels event wins the power conflict")
+            {
+                REQUIRE(result.resolved);
+                auto const* pl_winner = result_event_for(result, "m.room.power_levels", "");
+                REQUIRE(pl_winner != nullptr);
+                REQUIRE(pl_winner->event_id == "$pl2");
+            }
+
+            THEN("the topic anchored at the resolved power levels head wins despite its older timestamp")
+            {
+                // Spec MUST: step 3 orders remaining events by mainline position
+                // (position 0 sorts last, so it is applied last and wins), NOT by
+                // origin_server_ts alone.
+                REQUIRE(result.resolved);
+                auto const* topic_winner = result_event_for(result, "m.room.topic", "");
+                REQUIRE(topic_winner != nullptr);
+                REQUIRE(topic_winner->event_id == "$topic_b");
+            }
+        }
+    }
+}
+
+// Spec: Matrix v1.18 — Room v2 state resolution, Definitions — Power events
+// URL: ../../docs/matrix-v1.18-spec/rooms/v10.md (Definitions — Power events)
+//
+// A power event is a state event with type m.room.power_levels or
+// m.room.join_rules, or an m.room.member event with membership leave or ban
+// where the sender does not match the state_key.
+SCENARIO("Power events are classified per the spec definition", "[conformance][state-resolution][v2]")
+{
+    GIVEN("state events of each class")
+    {
+        auto const pl =
+            make_event_with_auth("m.room.power_levels", "", "$pl", "@alice:example.org", 1, {}, power_levels_content);
+        auto const join_rules = make_event_with_auth("m.room.join_rules", "", "$jr", "@alice:example.org", 1, {},
+                                                     "{\"join_rule\":\"public\"}");
+        auto const kick = make_event_with_auth("m.room.member", "@bob:example.org", "$kick", "@alice:example.org", 1,
+                                               {}, "{\"membership\":\"leave\"}");
+        auto const self_leave = make_event_with_auth("m.room.member", "@bob:example.org", "$leave", "@bob:example.org",
+                                                     1, {}, "{\"membership\":\"leave\"}");
+        auto const ban = make_event_with_auth("m.room.member", "@bob:example.org", "$ban", "@alice:example.org", 1, {},
+                                              "{\"membership\":\"ban\"}");
+        auto const join = make_event_with_auth("m.room.member", "@bob:example.org", "$join", "@bob:example.org", 1, {},
+                                               "{\"membership\":\"join\"}");
+        auto const topic = make_event_with_auth("m.room.topic", "", "$topic", "@alice:example.org", 1, {}, "{}");
+
+        WHEN("each event is classified")
+        {
+            THEN("power_levels, join_rules, kicks and bans are power events; the rest are not")
+            {
+                // Spec MUST: m.room.power_levels and m.room.join_rules are power events.
+                REQUIRE(merovingian::events::is_power_event(pl));
+                REQUIRE(merovingian::events::is_power_event(join_rules));
+                // Spec MUST: leave/ban with sender != state_key are power events.
+                REQUIRE(merovingian::events::is_power_event(kick));
+                REQUIRE(merovingian::events::is_power_event(ban));
+                // Spec MUST: a self-leave (sender == state_key) is NOT a power event.
+                REQUIRE_FALSE(merovingian::events::is_power_event(self_leave));
+                REQUIRE_FALSE(merovingian::events::is_power_event(join));
+                REQUIRE_FALSE(merovingian::events::is_power_event(topic));
+            }
+        }
+    }
+}

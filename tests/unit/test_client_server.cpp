@@ -8940,7 +8940,11 @@ SCENARIO("Sliding sync fresh connection with a reused pos returns all rooms as i
                 auto const* room3_obj = check_initial(rid3);
                 auto const* notification_val = int_member(*room3_obj, "notification_count");
                 REQUIRE(notification_val != nullptr);
-                REQUIRE(*notification_val == 1);
+                // #417: the only message in room 3 was sent by alice herself —
+                // a user's own messages never count as unread, so the fresh
+                // connection reports zero notifications (previously this
+                // asserted 1 because counts were keyed to the sync position).
+                REQUIRE(*notification_val == 0);
             }
         }
     }

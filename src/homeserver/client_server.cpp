@@ -5508,6 +5508,13 @@ namespace
         return starts_with(target, prefix) ? target.substr(prefix.size()) : std::string_view{};
     }
 
+    // Path component of a request target: the query string is not part of the
+    // route, so exact-equality matches must not compare against it (#452).
+    [[nodiscard]] auto target_path(std::string_view target) noexcept -> std::string_view
+    {
+        return target.substr(0U, std::min(target.find('?'), target.size()));
+    }
+
     [[nodiscard]] auto parse_query_bool(std::optional<std::string> const& value) -> std::optional<bool>
     {
         if (!value.has_value())
@@ -6076,7 +6083,10 @@ namespace
     [[nodiscard]] auto admin_review_path_parts(std::string_view target) -> std::optional<AdminReviewPathParts>
     {
         auto constexpr prefix = std::string_view{"/_matrix/client/v3/admin/safety/review/"};
-        auto const suffix = route_suffix(target, prefix);
+        // #454: drop the query string and percent-decode the id segment, or a
+        // call like .../review/room/%21room%3Aexample.org?notify=1 stores a
+        // target id that never matches later lookups.
+        auto const suffix = route_suffix(target_path(target), prefix);
         auto const separator = suffix.find('/');
         if (suffix.empty() || separator == std::string_view::npos || separator == 0U || separator + 1U >= suffix.size())
         {
@@ -6087,20 +6097,22 @@ namespace
         {
             return std::nullopt;
         }
-        return AdminReviewPathParts{*review_target, std::string{suffix.substr(separator + 1U)}};
+        return AdminReviewPathParts{*review_target, core::percent_decode_path_component(suffix.substr(separator + 1U))};
     }
 
     [[nodiscard]] auto admin_policy_rule_path_parts(std::string_view target) -> std::optional<AdminPolicyRulePathParts>
     {
         auto constexpr prefix = std::string_view{"/_matrix/client/v3/admin/safety/policy_rules/"};
-        auto const suffix = route_suffix(target, prefix);
+        // #454: as above — strip the query string and percent-decode the
+        // entity so rules persist under the real Matrix identifier.
+        auto const suffix = route_suffix(target_path(target), prefix);
         auto const separator = suffix.find('/');
         if (suffix.empty() || separator == std::string_view::npos || separator == 0U || separator + 1U >= suffix.size())
         {
             return std::nullopt;
         }
         return AdminPolicyRulePathParts{std::string{suffix.substr(0U, separator)},
-                                        std::string{suffix.substr(separator + 1U)}};
+                                        core::percent_decode_path_component(suffix.substr(separator + 1U))};
     }
 
     [[nodiscard]] auto is_valid_policy_rule_action(std::string_view action) noexcept -> bool
@@ -7828,7 +7840,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             return dispatch_err(req, rt, 403U, "M_USER_SUSPENDED", "You cannot perform this action while suspended.");
         }
     }
-    if (req.method == "POST" && req.target == "/_matrix/client/v3/logout/all")
+    if (req.method == "POST" && target_path(req.target) == "/_matrix/client/v3/logout/all")
     {
         auto const r = logout_all_local_user(rt.homeserver, req.access_token);
         log_diagnostic(r.ok ? "account.logout_all.accepted" : "account.logout_all.rejected",
@@ -8664,7 +8676,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         return dispatch_resp(req, rt, 200U, joined_rooms_json(rt, *user));
     }
     auto constexpr sync_prefix = std::string_view{"/_matrix/client/v3/sync"};
-    if (req.method == "GET" && starts_with(req.target, sync_prefix))
+    if (req.method == "GET" && target_path(req.target) == sync_prefix)
     {
         // Resolve the session bound to the access token so we key the
         // per-device sync surfaces (to_device, OTK count, fallback keys)

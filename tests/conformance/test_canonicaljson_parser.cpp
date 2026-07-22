@@ -325,6 +325,36 @@ SCENARIO("Canonical JSON signable object view serializes deterministically", "[c
     }
 }
 
+// Spec: Matrix v1.18 Appendices — Signing JSON
+// URL:  ../../docs/matrix-v1.18-spec/appendices.md#signing-json
+//
+// "First, the object is signed with the `signatures` and `unsigned` keys
+// removed" — the signable view MUST elide both top-level keys so a signature
+// is never computed over existing signatures or unprotected metadata (#430).
+SCENARIO("Canonical JSON signable object view strips signatures and unsigned",
+         "[conformance][canonicaljson][signable][signing]")
+{
+    GIVEN("an object carrying signatures and unsigned alongside protected content")
+    {
+        auto const parsed = merovingian::canonicaljson::parse_lossless(
+            "{\"content\":{\"body\":\"hi\"},\"signatures\":{\"example.org\":{\"ed25519:1\":\"sig\"}},"
+            "\"type\":\"m.room.message\",\"unsigned\":{\"age\":5}}");
+
+        WHEN("the signable view is serialized")
+        {
+            auto const signable = merovingian::canonicaljson::make_signable_object_view(parsed.value);
+
+            THEN("signatures and unsigned are elided; nested keys with those names survive")
+            {
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+                REQUIRE(signable.error == merovingian::canonicaljson::CanonicalJsonError::none);
+                // Spec MUST: strip top-level signatures and unsigned before signing.
+                REQUIRE(signable.output == "{\"content\":{\"body\":\"hi\"},\"type\":\"m.room.message\"}");
+            }
+        }
+    }
+}
+
 // Spec: Matrix v1.18 Appendices — Canonical JSON — Examples
 // URL:  ../../docs/matrix-v1.18-spec/appendices.md#examples
 //

@@ -24,6 +24,7 @@
 #include <cstddef>
 #include <cstdlib>
 #include <fstream>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <ranges>
@@ -849,7 +850,13 @@ auto resolve_policy_server_hook(HomeserverRuntime& runtime, trust_safety::Policy
     hook.reachable = false;
     hook.allow_without_result = trust_safety_config.policy_server_allow_without_result;
     auto const timeout = config::parse_duration_seconds(trust_safety_config.policy_server_timeout);
-    hook.timeout_milliseconds = timeout.valid ? timeout.seconds * 1000U : 0U;
+    // Widen before multiplying: seconds is uint32_t, so seconds * 1000 wraps
+    // for anything above ~49.7 days and could yield a tiny or zero timeout
+    // (#431). Saturate at the uint32_t millisecond ceiling instead.
+    auto const timeout_milliseconds =
+        timeout.valid ? static_cast<std::uint64_t>(timeout.seconds) * 1000ULL : std::uint64_t{0U};
+    hook.timeout_milliseconds = static_cast<std::uint32_t>(
+        std::min<std::uint64_t>(timeout_milliseconds, std::numeric_limits<std::uint32_t>::max()));
 
     if (runtime.trust_safety_policy_server)
     {

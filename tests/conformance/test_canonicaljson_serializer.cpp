@@ -27,7 +27,9 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <clocale>
 #include <string>
+#include <tuple>
 #include <utility>
 
 SCENARIO("Canonical JSON serializes primitive values", "[canonicaljson]")
@@ -429,6 +431,47 @@ SCENARIO("Canonical JSON output contains no insignificant whitespace", "[conform
                 REQUIRE(obj_out.output.find('\n') == std::string::npos);
                 REQUIRE(arr_out.output.find(' ') == std::string::npos);
                 REQUIRE(arr_out.output.find('\n') == std::string::npos);
+            }
+        }
+    }
+}
+
+// Spec: Matrix v1.18 Appendices — Canonical JSON (grammar)
+// URL:  ../../docs/matrix-v1.18-spec/appendices.md#canonical-json
+//
+// JSON numbers use '.' as the decimal separator. Regression for #435:
+// format_double used snprintf/strtod, both of which consult LC_NUMERIC — a
+// process running under a comma-decimal locale serialized floats as "1,5",
+// invalid JSON for every conforming parser.
+SCENARIO("Float serialization is locale-independent", "[conformance][canonicaljson][serializer][locale]")
+{
+    GIVEN("a comma-decimal numeric locale, when the platform provides one")
+    {
+        auto const* previous = std::setlocale(LC_NUMERIC, nullptr);
+        auto const saved = std::string{previous != nullptr ? previous : "C"};
+        // Try common comma-decimal locale spellings; skip silently when the
+        // platform has none installed (the C locale then keeps '.').
+        auto const* applied = std::setlocale(LC_NUMERIC, "de_DE.UTF-8");
+        if (applied == nullptr)
+        {
+            applied = std::setlocale(LC_NUMERIC, "de_DE");
+        }
+        if (applied == nullptr)
+        {
+            applied = std::setlocale(LC_NUMERIC, "fr_FR.UTF-8");
+        }
+
+        WHEN("a float-bearing value is serialized on the non-strict path")
+        {
+            auto value = merovingian::canonicaljson::Value{1.5};
+            auto const serialized = merovingian::canonicaljson::serialize_canonical(value);
+            std::ignore = std::setlocale(LC_NUMERIC, saved.c_str());
+
+            THEN("the output uses '.' as the decimal separator regardless of locale")
+            {
+                REQUIRE(serialized.error == merovingian::canonicaljson::CanonicalJsonError::none);
+                // Spec MUST: JSON numbers use '.'; "1,5" is not JSON.
+                REQUIRE(serialized.output == "1.5");
             }
         }
     }

@@ -2589,3 +2589,48 @@ SCENARIO("reload_room clears a room's rows when it no longer exists in the datab
         }
     }
 }
+
+// Regression for #448: media_blobs.bytes was a TEXT column and the SQLite
+// reader built strings with a C-string constructor, so binary payloads
+// containing NUL (every real PNG/JPEG) truncated on reload. The column is now
+// BLOB and reads are length-based.
+SCENARIO("Persistent store round-trips binary media blob bytes containing NUL and invalid UTF-8",
+         "[database][persistence][media][binary]")
+{
+    GIVEN("a SQLite persistent store")
+    {
+        auto const sqlite_path = unique_sqlite_path();
+        std::filesystem::remove(sqlite_path);
+        auto opened = merovingian::database::open_sqlite_persistent_store(sqlite_path.string());
+        REQUIRE(opened.ok);
+        auto& store = opened.store;
+
+        WHEN("a blob with embedded NUL and invalid UTF-8 bytes is stored and the database reopened")
+        {
+            auto binary = std::string{"\x89PNG"};
+            binary.push_back('\0');
+            binary.push_back('\0');
+            binary += "\xff\xfe\x01";
+            binary.push_back('\0');
+            binary += "tail";
+
+            auto const digest = std::string(64U, 'b');
+            auto const blob_ok = merovingian::database::store_media_blob(
+                store, {"blob_" + digest + "_" + std::to_string(binary.size()), "blake2b", digest,
+                        static_cast<std::uint64_t>(binary.size()), binary, 1U});
+            auto reopened = merovingian::database::open_sqlite_persistent_store(sqlite_path.string());
+            REQUIRE(reopened.ok);
+
+            THEN("every byte survives the round trip, including the NULs")
+            {
+                REQUIRE(blob_ok);
+                REQUIRE(reopened.store.media_blobs.size() == 1U);
+                auto const& row = reopened.store.media_blobs.front();
+                REQUIRE(row.bytes.size() == binary.size());
+                REQUIRE(row.bytes == binary);
+            }
+        }
+
+        std::filesystem::remove(sqlite_path);
+    }
+}

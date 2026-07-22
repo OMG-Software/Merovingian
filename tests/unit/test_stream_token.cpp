@@ -4,6 +4,10 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstdint>
+#include <limits>
+#include <string>
+
 SCENARIO("Stream tokens encode and decode round-trip", "[sync][stream-token]")
 {
     GIVEN("a stream token with event and membership orderings")
@@ -187,6 +191,38 @@ SCENARIO("Stream tokens advance monotonically", "[sync][stream-token]")
                 REQUIRE(later_decoded.has_value());
                 REQUIRE(earlier_decoded->event_ordering < later_decoded->event_ordering);
                 REQUIRE(earlier_decoded->membership_ordering < later_decoded->membership_ordering);
+            }
+        }
+    }
+}
+// Regression for #456: decode_component had no length cap, so a 17+ digit hex
+// component silently wrapped around uint64_t — a crafted pos token like
+// "ffffffffffffffff00_0_0" decoded to a truncated (small) ordering, defeating
+// the pos never-regress guarantee for malformed input.
+SCENARIO("Over-long stream token components are rejected instead of wrapping", "[sync][stream-token][security]")
+{
+    GIVEN("tokens whose hex components exceed 64 bits")
+    {
+        auto const wrapping = std::string{"ffffffffffffffff00_0_0"};
+        auto const wrapping_membership = std::string{"0_10000000000000000_0"};
+        auto const max_valid = std::string{"ffffffffffffffff_ffffffffffffffff_ffffffffffffffff"};
+
+        WHEN("the tokens are decoded")
+        {
+            auto const wrapped = merovingian::sync::decode_stream_token(wrapping);
+            auto const wrapped_membership = merovingian::sync::decode_stream_token(wrapping_membership);
+            auto const decoded_max = merovingian::sync::decode_stream_token(max_valid);
+
+            THEN("components longer than 16 hex digits are rejected")
+            {
+                REQUIRE_FALSE(wrapped.has_value());
+                REQUIRE_FALSE(wrapped_membership.has_value());
+            }
+
+            THEN("a full-width 16-digit component still decodes")
+            {
+                REQUIRE(decoded_max.has_value());
+                REQUIRE(decoded_max->event_ordering == std::numeric_limits<std::uint64_t>::max());
             }
         }
     }

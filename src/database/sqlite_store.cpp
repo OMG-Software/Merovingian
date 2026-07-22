@@ -159,6 +159,18 @@ namespace
             return std::nullopt;
         }
 
+        // Pin durability pragmas explicitly (#447): the stock defaults
+        // (synchronous=FULL, journal_mode=DELETE) are safe, but a deployment
+        // environment that loads global default pragmas could silently
+        // weaken them. Every connection this process opens states its
+        // requirements instead of trusting the environment.
+        if (sqlite3_exec(raw, "PRAGMA synchronous = FULL", nullptr, nullptr, nullptr) != SQLITE_OK ||
+            sqlite3_exec(raw, "PRAGMA journal_mode = DELETE", nullptr, nullptr, nullptr) != SQLITE_OK)
+        {
+            sqlite3_close(raw);
+            return std::nullopt;
+        }
+
         return SqliteConnection{raw};
     }
 
@@ -201,8 +213,16 @@ namespace
     [[nodiscard]] auto column_text(sqlite3_stmt& statement, int column) -> std::string
     {
         auto const* value = sqlite3_column_text(&statement, column);
+        if (value == nullptr)
+        {
+            return {};
+        }
+        // Length-based construction (#448): media blob bytes (and other
+        // binary payloads) may legitimately contain NUL, which a C-string
+        // constructor would silently truncate on reload.
+        auto const size = sqlite3_column_bytes(&statement, column);
         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
-        return value == nullptr ? std::string{} : std::string{reinterpret_cast<char const*>(value)};
+        return std::string{reinterpret_cast<char const*>(value), static_cast<std::size_t>(size)};
     }
 
     [[nodiscard]] auto text_is_true(std::string_view value) noexcept -> bool

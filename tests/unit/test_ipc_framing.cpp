@@ -936,3 +936,31 @@ SCENARIO("IpcChannel dispatch thread survives an unhandled request-handler excep
         pair.client->stop();
     }
 }
+// Regression for #451: a body of exactly "{}" (no fields) was appended after
+// the frame header comma, producing {"id":1,} — invalid JSON. The peer's
+// parser rejected the frame and marked the channel unhealthy, tearing down
+// the worker link.
+SCENARIO("IpcChannel build_frame emits valid JSON for an empty-object body", "[ipc][channel][framing]")
+{
+    GIVEN("a healthy channel pair")
+    {
+        auto pair = make_channel_pair();
+
+        WHEN("frames are built from empty and non-empty bodies")
+        {
+            auto const empty_body = pair.server->build_frame(1U, std::nullopt, "{}");
+            auto const empty_reply = pair.server->build_frame(2U, std::uint64_t{1U}, "{}");
+            auto const with_field = pair.server->build_frame(3U, std::nullopt, R"({"type":"ping"})");
+
+            THEN("no frame carries a trailing comma")
+            {
+                REQUIRE(empty_body == R"({"id":1})");
+                REQUIRE(empty_reply == R"({"id":2,"reply_to":1})");
+                REQUIRE(with_field == R"({"id":3,"type":"ping"})");
+            }
+        }
+
+        pair.server->stop();
+        pair.client->stop();
+    }
+}

@@ -142,15 +142,11 @@ namespace
         {
             return;
         }
-        // Ensure the directory stream is closed on all paths, but not the underlying
-        // walk_fd if the caller still owns it. fdopendir took ownership of walk_fd,
-        // so closedir will close it; we dup it first so the caller can close it later.
-        auto const owned = FileDescriptor{::fcntl(walk_fd, F_DUPFD_CLOEXEC, 0)};
-        if (!owned.valid())
-        {
-            std::ignore = ::closedir(dir);
-            return;
-        }
+        // fdopendir took ownership of walk_fd and closedir will close it.
+        // No duplicate is taken here: on Linux /proc/self/fd is dynamic, so a
+        // dup would appear in the readdir sweep, be closed mid-iteration, and
+        // then be closed a second time by its RAII owner (#439). Callers do
+        // not use walk_fd after this function returns.
 
         auto keep = keep_open;
         // Do not close the original walk_fd; closedir consumes the fdopendir-owned copy.

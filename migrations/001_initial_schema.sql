@@ -10,7 +10,7 @@ CREATE TABLE access_tokens (user_id TEXT NOT NULL, device_id TEXT NOT NULL, toke
 -- statement create_refresh_tokens
 CREATE TABLE refresh_tokens (token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, device_id TEXT NOT NULL, revoked TEXT NOT NULL, expires_at TEXT NOT NULL DEFAULT '')
 -- statement create_server_signing_keys
-CREATE TABLE server_signing_keys (server_name TEXT NOT NULL, key_id TEXT NOT NULL, public_key TEXT NOT NULL, valid_until_ts TEXT NOT NULL, secret_key TEXT, PRIMARY KEY (server_name, key_id))
+CREATE TABLE server_signing_keys (server_name TEXT NOT NULL, key_id TEXT NOT NULL, public_key TEXT NOT NULL, valid_until_ts TEXT NOT NULL, secret_key BLOB NOT NULL DEFAULT '', PRIMARY KEY (server_name, key_id))
 -- statement create_rooms
 CREATE TABLE rooms (room_id TEXT PRIMARY KEY, creator_user_id TEXT NOT NULL)
 -- statement create_room_aliases
@@ -64,7 +64,7 @@ CREATE TABLE key_backup_sessions (user_id TEXT NOT NULL, version TEXT NOT NULL, 
 -- statement create_media
 CREATE TABLE media (media_id TEXT PRIMARY KEY, owner_user_id TEXT NOT NULL, content_type TEXT NOT NULL, size_bytes TEXT NOT NULL, hash_algorithm TEXT NOT NULL, digest TEXT NOT NULL, quarantined TEXT NOT NULL, removed TEXT NOT NULL)
 -- statement create_media_blobs
-CREATE TABLE media_blobs (storage_id TEXT PRIMARY KEY, hash_algorithm TEXT NOT NULL, digest TEXT NOT NULL, size_bytes TEXT NOT NULL, bytes TEXT NOT NULL, ref_count TEXT NOT NULL)
+CREATE TABLE media_blobs (storage_id TEXT PRIMARY KEY, hash_algorithm TEXT NOT NULL, digest TEXT NOT NULL, size_bytes TEXT NOT NULL, bytes BLOB NOT NULL, ref_count TEXT NOT NULL)
 -- statement create_remote_media
 CREATE TABLE remote_media (server_name TEXT NOT NULL, media_id TEXT NOT NULL, content_type TEXT NOT NULL, size_bytes TEXT NOT NULL, quarantined TEXT NOT NULL, PRIMARY KEY (server_name, media_id))
 -- statement create_federation_destinations

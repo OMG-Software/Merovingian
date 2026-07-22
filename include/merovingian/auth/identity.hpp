@@ -54,6 +54,12 @@ struct LoginPolicyDecision final
 // Validates a full user ID received over federation (historical localpart rules).
 [[nodiscard]] auto user_id_is_valid_federated(std::string_view user_id) noexcept -> bool;
 
+// Extracts the server_name from a Matrix user ID (`@localpart:server_name`).
+// server_name may itself carry a port (`host:port`), so the split is on the
+// FIRST colon (spec appendices — identifier grammar). Returns an empty view
+// when the input does not have the `@localpart:server_name` shape.
+[[nodiscard]] auto user_id_server_name(std::string_view user_id) noexcept -> std::string_view;
+
 [[nodiscard]] auto device_id_is_valid(std::string_view device_id) noexcept -> bool;
 [[nodiscard]] auto password_is_acceptable(std::string_view password) noexcept -> bool;
 [[nodiscard]] auto login_policy(UserIdentity const& user) -> LoginPolicyDecision;

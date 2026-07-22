@@ -171,3 +171,94 @@ SCENARIO("Reload plan flags restart-required identity and secret source changes"
         }
     }
 }
+
+namespace
+{
+
+[[nodiscard]] auto plan_has_key(merovingian::config::ReloadPlan const& plan, std::string const& key) -> bool
+{
+    return std::ranges::any_of(plan.changes(), [&](merovingian::config::ReloadChange const& change) {
+        return change.key == key;
+    });
+}
+
+} // namespace
+
+// Regression for #421: build_reload_plan produced no diff at all for these
+// blocks, so `--plan-config-reload` reported "no changes" and the edit was
+// silently dropped.
+SCENARIO("Reload plan emits a diff for every documented config block", "[config][reload]")
+{
+    GIVEN("a next config that changes cors, turn, secrets, trust_safety, token lifetimes, worker, "
+          "rate limits and log modules")
+    {
+        auto const current = merovingian::config::Config{};
+
+        auto server = merovingian::config::ServerConfig{};
+        server.cors.max_age = 60U;
+        server.turn.server = "turn:turn.example.org:3478";
+
+        auto security = merovingian::config::SecurityConfig{};
+        security.secrets.master_key_file = "/etc/merovingian/master.key";
+        security.trust_safety.enabled = true;
+        security.access_token_lifetime_ms = 3600000LL / 24LL;
+        security.refresh_token_lifetime_ms = 1234LL;
+
+        auto rate_limits = merovingian::config::ClientRateLimitsConfig{};
+        rate_limits.default_per_ip = {30U, 60U};
+        rate_limits.per_ip["/login"] = {10U, 60U};
+
+        auto log_modules = merovingian::config::LogModulesConfig{};
+        log_modules.levels["federation"] = merovingian::observability::LogLevel::debug;
+
+        auto worker = merovingian::config::FederationWorkerConfig{};
+        worker.shards = 4U;
+
+        auto const next = merovingian::config::Config{
+            server,
+            merovingian::config::ListenersConfig{},
+            merovingian::config::DatabaseConfig{},
+            security,
+            rate_limits,
+            log_modules,
+            worker,
+        };
+
+        WHEN("a reload plan is built")
+        {
+            auto const plan = merovingian::config::build_reload_plan(current, next);
+
+            THEN("every edited key appears in the plan")
+            {
+                REQUIRE(plan.has_changes());
+                REQUIRE(plan_has_key(plan, "server.cors.max_age"));
+                REQUIRE(plan_has_key(plan, "server.turn.server"));
+                REQUIRE(plan_has_key(plan, "security.secrets.master_key_file"));
+                REQUIRE(plan_has_key(plan, "security.trust_safety.enabled"));
+                REQUIRE(plan_has_key(plan, "security.access_token_lifetime_ms"));
+                REQUIRE(plan_has_key(plan, "security.refresh_token_lifetime_ms"));
+                REQUIRE(plan_has_key(plan, "federation.worker.shards"));
+                REQUIRE(plan_has_key(plan, "client_rate_limits.default_per_ip"));
+                REQUIRE(plan_has_key(plan, "client_rate_limits.per_ip./login"));
+                REQUIRE(plan_has_key(plan, "log_modules.federation"));
+            }
+
+            THEN("startup-only blocks are flagged restart_required, runtime blocks reloadable")
+            {
+                for (auto const& change : plan.changes())
+                {
+                    if (change.key == "security.secrets.master_key_file" ||
+                        change.key.starts_with("federation.worker.") || change.key.starts_with("server.cors.") ||
+                        change.key.starts_with("client_rate_limits.") || change.key.starts_with("log_modules."))
+                    {
+                        REQUIRE(change.policy == merovingian::config::ReloadPolicy::restart_required);
+                    }
+                    else
+                    {
+                        REQUIRE(change.policy == merovingian::config::ReloadPolicy::reloadable);
+                    }
+                }
+            }
+        }
+    }
+}

@@ -33,7 +33,11 @@ namespace
 
     [[nodiscard]] auto decode_component(std::string_view encoded) -> std::optional<std::uint64_t>
     {
-        if (encoded.empty())
+        // 16 hex digits fill a uint64_t exactly; anything longer would wrap
+        // the shift-accumulate below, letting a crafted token decode to a
+        // truncated (arbitrarily small) ordering (#456).
+        constexpr auto max_hex_digits = std::size_t{16U};
+        if (encoded.empty() || encoded.size() > max_hex_digits)
         {
             return std::nullopt;
         }

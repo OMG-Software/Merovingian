@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.10.60
+Version:        0.10.61
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -97,6 +97,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Wed Jul 22 2026 James Chapman <claude@ping.me.uk> - 0.10.61-1
+- Resolve open issues #411-#457: spec-conformant state-resolution mainline ordering, federation sender-domain parsing for port-suffixed server names, receipt-baselined sync notification counts, reload-plan coverage for all config blocks, overflow/locale/routing hardening, BLOB media storage, and pinned SQLite durability pragmas.
+
 * Tue Jul 21 2026 James Chapman <claude@ping.me.uk> - 0.10.60-1
 - Security (issues #409-#450): membership/redaction authorization power-level fixes, fail-closed rate limiter with bounded buckets, bounded curl header allocations, policy-server call moved outside runtime.mutex, bounded federation dedup ring, real AV scanner verdict wiring, IPC cipher key zeroization, audit sink installed on worker threads, typing EDU origin/JSON fixes, TSan-only seccomp personality(), null-terminated crypto buffers, token hash/log hardening, PostgreSQL identifier validation, media_id validation unification, tightened MIME sniffing, and documented pdu_sink trust boundary.
 
