@@ -8,6 +8,7 @@
 // |  the fix establishes — not implementation details.                      |
 // +-------------------------------------------------------------------------+
 
+#include "../support/registration_token.hpp"
 #include "federation_signing_test_support.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
@@ -22,8 +23,6 @@
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/observability/observability.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
-
-#include "../support/registration_token.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -102,8 +101,7 @@ auto constexpr remote_key_seed = "security-test-remote-seed";
 
 // Build a properly signed m.room.member join PDU from the remote server.
 [[nodiscard]] auto make_signed_join_pdu(std::string const& room_id, std::string const& sender,
-                                         std::vector<std::string> const& auth_events = {})
-    -> std::string
+                                        std::vector<std::string> const& auth_events = {}) -> std::string
 {
     // Build the unsigned event JSON (no hashes or signatures — sign_event_for_server
     // computes and attaches both).
@@ -118,24 +116,23 @@ auto constexpr remote_key_seed = "security-test-remote-seed";
     }
     auth_events_json += "]";
 
-    auto const unsigned_json =
-        std::string{"{\"type\":\"m.room.member\",\"room_id\":\""} + room_id + "\",\"sender\":\"" + sender +
-        "\",\"state_key\":\"" + sender + "\",\"content\":{\"membership\":\"join\"},\"depth\":6,\"origin_server_ts\":2000," +
-        "\"prev_events\":[],\"auth_events\":" + auth_events_json + "}";
+    auto const unsigned_json = std::string{"{\"type\":\"m.room.member\",\"room_id\":\""} + room_id +
+                               "\",\"sender\":\"" + sender + "\",\"state_key\":\"" + sender +
+                               "\",\"content\":{\"membership\":\"join\"},\"depth\":6,\"origin_server_ts\":2000," +
+                               "\"prev_events\":[],\"auth_events\":" + auth_events_json + "}";
 
     return merovingian::federation::test::make_signed_event_json(unsigned_json, remote_origin, remote_key_id,
                                                                  remote_key_seed, "12");
 }
 
 // Build a properly signed m.room.member invite PDU from the remote server.
-[[nodiscard]] auto
-make_signed_invite_pdu(std::string const& room_id, std::string const& sender, std::string const& state_key)
-    -> std::string
+[[nodiscard]] auto make_signed_invite_pdu(std::string const& room_id, std::string const& sender,
+                                          std::string const& state_key) -> std::string
 {
-    auto const unsigned_json =
-        std::string{"{\"type\":\"m.room.member\",\"room_id\":\""} + room_id + "\",\"sender\":\"" + sender +
-        "\",\"state_key\":\"" + state_key + "\",\"content\":{\"membership\":\"invite\"},\"depth\":1,\"origin_server_ts\":1000," +
-        "\"prev_events\":[],\"auth_events\":[]}";
+    auto const unsigned_json = std::string{"{\"type\":\"m.room.member\",\"room_id\":\""} + room_id +
+                               "\",\"sender\":\"" + sender + "\",\"state_key\":\"" + state_key +
+                               "\",\"content\":{\"membership\":\"invite\"},\"depth\":1,\"origin_server_ts\":1000," +
+                               "\"prev_events\":[],\"auth_events\":[]}";
 
     return merovingian::federation::test::make_signed_event_json(unsigned_json, remote_origin, remote_key_id,
                                                                  remote_key_seed, "12");
@@ -203,7 +200,9 @@ SCENARIO("Unauthenticated v1 media thumbnail is rejected with 401", "[security][
         WHEN("an unauthenticated GET v1 media thumbnail is dispatched")
         {
             auto const result = merovingian::homeserver::handle_client_server_request(
-                runtime, {"GET", "/_matrix/client/v1/media/thumbnail/" + server_name + "/" + media_id + "?width=32&height=32", "", ""});
+                runtime,
+                {"GET", "/_matrix/client/v1/media/thumbnail/" + server_name + "/" + media_id + "?width=32&height=32",
+                 "", ""});
 
             THEN("the server responds 401 M_MISSING_TOKEN and does not return any media")
             {
@@ -235,9 +234,9 @@ SCENARIO("send_join with invalid PDU signature is rejected", "[security][federat
 
         auto acceptor_called = std::make_shared<bool>(false);
         runtime.membership_acceptor =
-            [acceptor_called](merovingian::federation::FederationEndpoint, std::string_view,
-                              std::string_view, merovingian::federation::InboundPduEnvelope const&)
-            -> merovingian::federation::MembershipAcceptResult {
+            [acceptor_called](
+                merovingian::federation::FederationEndpoint, std::string_view, std::string_view,
+                merovingian::federation::InboundPduEnvelope const&) -> merovingian::federation::MembershipAcceptResult {
             *acceptor_called = true;
             return {true, 200U, {}, {}, {}, "12", {}};
         };
@@ -258,8 +257,8 @@ SCENARIO("send_join with invalid PDU signature is rejected", "[security][federat
 
         WHEN("the forged send_join is handled")
         {
-            auto const response =
-                merovingian::federation::handle_inbound_federation_request(runtime, signed_put(target, forged_join_body));
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_put(target, forged_join_body));
 
             THEN("the server rejects the PDU and does not call the membership acceptor")
             {
@@ -280,9 +279,9 @@ SCENARIO("send_join with valid PDU signature is accepted", "[security][federatio
 
         auto acceptor_called = std::make_shared<bool>(false);
         runtime.membership_acceptor =
-            [acceptor_called](merovingian::federation::FederationEndpoint, std::string_view,
-                              std::string_view, merovingian::federation::InboundPduEnvelope const&)
-            -> merovingian::federation::MembershipAcceptResult {
+            [acceptor_called](
+                merovingian::federation::FederationEndpoint, std::string_view, std::string_view,
+                merovingian::federation::InboundPduEnvelope const&) -> merovingian::federation::MembershipAcceptResult {
             *acceptor_called = true;
             return {true, 200U, {}, {}, {}, "12", {}};
         };
@@ -321,9 +320,9 @@ SCENARIO("send_join with sender domain mismatch is rejected", "[security][federa
 
         auto acceptor_called = std::make_shared<bool>(false);
         runtime.membership_acceptor =
-            [acceptor_called](merovingian::federation::FederationEndpoint, std::string_view,
-                              std::string_view, merovingian::federation::InboundPduEnvelope const&)
-            -> merovingian::federation::MembershipAcceptResult {
+            [acceptor_called](
+                merovingian::federation::FederationEndpoint, std::string_view, std::string_view,
+                merovingian::federation::InboundPduEnvelope const&) -> merovingian::federation::MembershipAcceptResult {
             *acceptor_called = true;
             return {true, 200U, {}, {}, {}, "12", {}};
         };
@@ -336,10 +335,10 @@ SCENARIO("send_join with sender domain mismatch is rejected", "[security][federa
         // Build a signed PDU — but signed with remote.example.org's key while
         // the sender claims to be from evil.example.org. The key record is for
         // remote.example.org, so the sender domain won't match the key.
-        auto const unsigned_json =
-            std::string{"{\"type\":\"m.room.member\",\"room_id\":\""} + room_id + "\",\"sender\":\"" + sender +
-            "\",\"state_key\":\"" + sender + "\",\"content\":{\"membership\":\"join\"},\"depth\":6," +
-            "\"origin_server_ts\":2000,\"prev_events\":[],\"auth_events\":[]}";
+        auto const unsigned_json = std::string{"{\"type\":\"m.room.member\",\"room_id\":\""} + room_id +
+                                   "\",\"sender\":\"" + sender + "\",\"state_key\":\"" + sender +
+                                   "\",\"content\":{\"membership\":\"join\"},\"depth\":6," +
+                                   "\"origin_server_ts\":2000,\"prev_events\":[],\"auth_events\":[]}";
 
         // Sign with remote's key but the sender domain is evil.example.org.
         auto const signed_join = merovingian::federation::test::make_signed_event_json(
@@ -382,7 +381,8 @@ SCENARIO("invite with invalid PDU signature is rejected", "[security][federation
 
         auto handler_called = std::make_shared<bool>(false);
         runtime.invite_handler =
-            [handler_called](merovingian::federation::InviteRequest const&) -> merovingian::federation::InviteAcceptResult {
+            [handler_called](
+                merovingian::federation::InviteRequest const&) -> merovingian::federation::InviteAcceptResult {
             *handler_called = true;
             return {true, 200U, {}, "signed"};
         };
@@ -394,9 +394,9 @@ SCENARIO("invite with invalid PDU signature is rejected", "[security][federation
 
         // Forged invite event with a garbage signature.
         auto const forged_invite_body =
-            std::string{"{\"room_version\":\"12\",\"event\":{\"type\":\"m.room.member\",\"state_key\":\""} + target_user +
-            "\",\"content\":{\"membership\":\"invite\"},\"room_id\":\"" + room_id + "\",\"sender\":\"" + sender +
-            "\",\"event_id\":\"" + invite_event_id +
+            std::string{"{\"room_version\":\"12\",\"event\":{\"type\":\"m.room.member\",\"state_key\":\""} +
+            target_user + "\",\"content\":{\"membership\":\"invite\"},\"room_id\":\"" + room_id + "\",\"sender\":\"" +
+            sender + "\",\"event_id\":\"" + invite_event_id +
             "\",\"depth\":1,\"prev_events\":[],\"auth_events\":[],\"hashes\":{\"sha256\":\"x\"}," +
             "\"origin_server_ts\":1000,\"signatures\":{\"remote.example.org\":{\"ed25519:auto\":\"AAAA\"}}}," +
             "\"invite_room_state\":[]}";
@@ -405,8 +405,8 @@ SCENARIO("invite with invalid PDU signature is rejected", "[security][federation
 
         WHEN("the forged invite is handled")
         {
-            auto const response =
-                merovingian::federation::handle_inbound_federation_request(runtime, signed_put(target, forged_invite_body));
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_put(target, forged_invite_body));
 
             THEN("the server rejects the invite and does not call the invite handler")
             {
@@ -427,8 +427,8 @@ SCENARIO("invite with valid PDU signature is accepted", "[security][federation][
 
         auto handler_called = std::make_shared<bool>(false);
         runtime.invite_handler =
-            [handler_called](merovingian::federation::InviteRequest const& req)
-            -> merovingian::federation::InviteAcceptResult {
+            [handler_called](
+                merovingian::federation::InviteRequest const& req) -> merovingian::federation::InviteAcceptResult {
             *handler_called = true;
             return {true, 200U, {}, req.invite_event_json};
         };
@@ -469,7 +469,8 @@ SCENARIO("invite with sender/origin mismatch is rejected", "[security][federatio
 
         auto handler_called = std::make_shared<bool>(false);
         runtime.invite_handler =
-            [handler_called](merovingian::federation::InviteRequest const&) -> merovingian::federation::InviteAcceptResult {
+            [handler_called](
+                merovingian::federation::InviteRequest const&) -> merovingian::federation::InviteAcceptResult {
             *handler_called = true;
             return {true, 200U, {}, "signed"};
         };
@@ -481,10 +482,10 @@ SCENARIO("invite with sender/origin mismatch is rejected", "[security][federatio
         auto const invite_event_id = std::string{"$invite462c:"} + remote_origin;
 
         // Build a signed PDU signed by remote.example.org but with sender from evil.example.org.
-        auto const unsigned_json =
-            std::string{"{\"type\":\"m.room.member\",\"room_id\":\""} + room_id + "\",\"sender\":\"" + sender +
-            "\",\"state_key\":\"" + target_user + "\",\"content\":{\"membership\":\"invite\"},\"depth\":1," +
-            "\"origin_server_ts\":1000,\"prev_events\":[],\"auth_events\":[]}";
+        auto const unsigned_json = std::string{"{\"type\":\"m.room.member\",\"room_id\":\""} + room_id +
+                                   "\",\"sender\":\"" + sender + "\",\"state_key\":\"" + target_user +
+                                   "\",\"content\":{\"membership\":\"invite\"},\"depth\":1," +
+                                   "\"origin_server_ts\":1000,\"prev_events\":[],\"auth_events\":[]}";
 
         auto const signed_invite = merovingian::federation::test::make_signed_event_json(
             unsigned_json, remote_origin, remote_key_id, remote_key_seed, "12");
@@ -513,8 +514,7 @@ SCENARIO("invite with sender/origin mismatch is rejected", "[security][federatio
 // GIVEN a request with a valid bearer token that triggers a pre-auth rejection
 // WHEN the audit entry is recorded
 // THEN the actor field in the audit_events contains a placeholder, never the raw token
-SCENARIO("audit log actor field never contains the raw bearer token on 413 rejection",
-         "[security][audit][issue-463]")
+SCENARIO("audit log actor field never contains the raw bearer token on 413 rejection", "[security][audit][issue-463]")
 {
     GIVEN("a started client-server runtime and a raw bearer token")
     {
@@ -548,8 +548,7 @@ SCENARIO("audit log actor field never contains the raw bearer token on 413 rejec
     }
 }
 
-SCENARIO("audit log actor field never contains the raw bearer token on 429 rejection",
-         "[security][audit][issue-463]")
+SCENARIO("audit log actor field never contains the raw bearer token on 429 rejection", "[security][audit][issue-463]")
 {
     GIVEN("a started client-server runtime and a logged-in user")
     {
@@ -566,7 +565,8 @@ SCENARIO("audit log actor field never contains the raw bearer token on 429 rejec
 
         auto const login = merovingian::homeserver::handle_client_server_request(
             runtime, {"POST", "/_matrix/client/v3/login", "",
-                      "{\"type\":\"m.login.password\",\"identifier\":{\"type\":\"m.id.user\",\"user\":\"rate_test_user_463\"},\"password\":\"CorrectHorse7!\",\"device_id\":\"DEV463\"}"});
+                      "{\"type\":\"m.login.password\",\"identifier\":{\"type\":\"m.id.user\",\"user\":\"rate_test_user_"
+                      "463\"},\"password\":\"CorrectHorse7!\",\"device_id\":\"DEV463\"}"});
         REQUIRE(login.response.status == 200U);
 
         // Extract the access token from the login response.

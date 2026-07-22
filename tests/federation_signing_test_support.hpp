@@ -5,6 +5,7 @@
 #include "merovingian/core/secret_buffer.hpp"
 #include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/crypto/signing_service.hpp"
+#include "merovingian/events/event_id.hpp"
 #include "merovingian/events/event_signer.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
 
@@ -105,7 +106,7 @@ struct SigningKeypair final
     // "fallback" sorts before "key" in canonical JSON.
     auto const payload = std::string{R"({"fallback":true,"key":")"} + std::string{key_value} + R"("})";
     auto const sig_b64 = sign_payload_b64(payload, secret_key_bytes);
-    return std::string{R"({"fallback":true,"key":")"} + std::string{key_value} + R"(","signatures":")" +
+    return std::string{R"({"fallback":true,"key":")"} + std::string{key_value} + R"(","signatures":{")" +
            std::string{user_id} + R"(":{"ed25519:)" + std::string{device_id} + R"(":")" + sig_b64 + R"("}}})";
 }
 
@@ -149,16 +150,16 @@ public:
     {
     }
 
-    [[nodiscard]] auto sign(merovingian::crypto::Ed25519SecretKeyHandle const&,
-                            std::string_view message) -> merovingian::crypto::SignatureResult override
+    [[nodiscard]] auto sign(merovingian::crypto::Ed25519SecretKeyHandle const&, std::string_view message)
+        -> merovingian::crypto::SignatureResult override
     {
         auto kp = keypair_from_seed(key_material_);
         auto sig = std::array<unsigned char, crypto_sign_BYTES>{};
         crypto_sign_detached(sig.data(), nullptr, reinterpret_cast<unsigned char const*>(message.data()),
                              message.size(), reinterpret_cast<unsigned char const*>(kp.secret_key.data()));
-        return {merovingian::crypto::Ed25519Signature{
-                    std::string{reinterpret_cast<char const*>(sig.data()), sig.size()}},
-                {}};
+        return {
+            merovingian::crypto::Ed25519Signature{std::string{reinterpret_cast<char const*>(sig.data()), sig.size()}},
+            {}};
     }
 
     [[nodiscard]] auto verify(merovingian::crypto::Ed25519PublicKey const&, std::string_view,
@@ -172,11 +173,19 @@ private:
     std::string key_material_{};
 };
 
-// Builds a fully signed PDU event JSON: computes the content hash, creates the
-// signing payload, signs it with Ed25519, and attaches the signature. The
-// resulting JSON has valid hashes.sha256 and signatures fields, so it passes
-// both verify_pdu_content_hash and authorize_federation_pdu when the remote's
+// Builds a fully signed PDU event JSON: computes and attaches the content
+// hash, then signs the result with Ed25519. The resulting JSON has valid
+// hashes.sha256 and signatures fields, so it passes both
+// verify_pdu_content_hash and authorize_federation_pdu when the remote's
 // signing_key was built from the same key_seed.
+//
+// sign_event_for_server() only signs whatever event is handed to it — it
+// does NOT compute or attach hashes.sha256 (see event_signer.cpp). Production
+// code (room_service.cpp: compose_event/handle_send_join/handle_send_leave)
+// always calls events::make_content_hash() and attaches the "hashes" member
+// as an explicit prior step before signing; this helper mirrors that exact
+// sequence so a "properly signed" test PDU is indistinguishable from a
+// production one.
 //
 // Parameters:
 //   unsigned_event_json — the event JSON WITHOUT signatures or hashes fields.
@@ -186,8 +195,8 @@ private:
 //                         seed must be used to build the FederationKeyRecord.
 //   room_version        — room version string (e.g. "12") for signing rules.
 [[nodiscard]] inline auto make_signed_event_json(std::string_view unsigned_event_json, std::string_view server_name,
-                                                  std::string_view key_id, std::string_view key_seed,
-                                                  std::string_view room_version = "12") -> std::string
+                                                 std::string_view key_id, std::string_view key_seed,
+                                                 std::string_view room_version = "12") -> std::string
 {
     auto const parsed = merovingian::canonicaljson::parse_lossless(unsigned_event_json);
     if (parsed.error != merovingian::canonicaljson::ParseError::none)
@@ -199,13 +208,32 @@ private:
     {
         return {};
     }
+    auto const* event_object = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+    if (event_object == nullptr)
+    {
+        return {};
+    }
+    auto const content_hash = merovingian::events::make_content_hash(parsed.value);
+    if (!content_hash.error.empty())
+    {
+        return {};
+    }
+    auto hashed_object = *event_object;
+    auto hashes = merovingian::canonicaljson::Object{};
+    hashes.push_back(
+        merovingian::canonicaljson::make_member("sha256", merovingian::canonicaljson::Value{content_hash.sha256}));
+    hashed_object.push_back(
+        merovingian::canonicaljson::make_member("hashes", merovingian::canonicaljson::Value{std::move(hashes)}));
+    auto const hashed_event = merovingian::canonicaljson::Value{std::move(hashed_object)};
+
     auto const kp = keypair_from_seed(key_seed);
-    auto store = TestSigningKeyStore{merovingian::crypto::SigningKeyRecord{
-        std::string{server_name}, std::string{key_id},
-        merovingian::crypto::Ed25519PublicKey{kp.public_key}, true}};
+    auto store = TestSigningKeyStore{
+        merovingian::crypto::SigningKeyRecord{std::string{server_name}, std::string{key_id},
+                                              merovingian::crypto::Ed25519PublicKey{kp.public_key}, true}
+    };
     auto provider = TestEd25519Provider{std::string{key_seed}};
     auto const signed_event =
-        merovingian::events::sign_event_for_server(parsed.value, *policy, store, provider, std::string{server_name});
+        merovingian::events::sign_event_for_server(hashed_event, *policy, store, provider, std::string{server_name});
     return signed_event.event_json;
 }
 
