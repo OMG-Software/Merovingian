@@ -77,12 +77,15 @@ formatting an earlier version used (`std::to_chars`'s floating-point overload
 was considered but isn't implemented on every supported toolchain, e.g.
 NetBSD's libstdc++ build only has the integer overloads) — because it is also
 the general-purpose serializer for ordinary, never-signed JSON responses that
-legitimately contain floats (e.g. `m.tag` `order`, account data).
+legitimately contain floats (e.g. `m.tag` `order`, account data). Because
+`snprintf`/`strtod` both consult `LC_NUMERIC`, the formatter normalizes the
+active locale's decimal separator back to `.` so float output stays valid
+JSON even if some library calls `setlocale()` (#435).
 
 ## Signable object view
 
-`make_signable_object_view` serializes the supplied canonical JSON value with
+`make_signable_object_view` elides the top-level `signatures` and `unsigned`
+keys (per the spec's Signing JSON procedure) and serializes the result with
 `serialize_canonical_strict` — it is a signing-scoped entry point, so a
 `Value` tree containing a float fails closed rather than being serialized.
-Later event-signing work will layer Matrix-specific event field elision and
-signing-key metadata over this primitive.
+Signing-key metadata layering remains future event-signing work.

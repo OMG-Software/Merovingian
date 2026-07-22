@@ -7,9 +7,11 @@
 
 #include <algorithm>
 #include <array>
+#include <clocale>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <variant>
 
@@ -96,6 +98,33 @@ namespace
     // (general JSON response) serialization path; see
     // serialize_canonical_strict for the signing/hashing path, which rejects
     // floats outright instead.
+    // snprintf/strtod both consult LC_NUMERIC (#435): under a non-C numeric
+    // locale %g emits e.g. "1,5", and the strtod round-trip check succeeds in
+    // the same locale — producing output that is invalid JSON for every
+    // conforming parser. Replace the active locale's decimal separator with
+    // '.' so the serialized text is locale-independent. (std::to_chars for
+    // doubles would avoid this entirely but is unavailable on several
+    // supported toolchains, e.g. NetBSD's libstdc++ build.)
+    [[nodiscard]] auto normalize_decimal_point(std::string text) -> std::string
+    {
+        auto const* locale_info = std::localeconv();
+        if (locale_info == nullptr || locale_info->decimal_point == nullptr)
+        {
+            return text;
+        }
+        auto const decimal_point = std::string_view{locale_info->decimal_point};
+        if (decimal_point.empty() || decimal_point == ".")
+        {
+            return text;
+        }
+        auto const position = text.find(decimal_point);
+        if (position != std::string::npos)
+        {
+            text.replace(position, decimal_point.size(), ".");
+        }
+        return text;
+    }
+
     [[nodiscard]] auto format_double(double value) -> std::string
     {
         auto buffer = std::array<char, 32U>{};
@@ -110,14 +139,14 @@ namespace
             auto const round_tripped = std::strtod(buffer.data(), &end);
             if (end == buffer.data() + written && round_tripped == value)
             {
-                return std::string{buffer.data(), static_cast<std::size_t>(written)};
+                return normalize_decimal_point(std::string{buffer.data(), static_cast<std::size_t>(written)});
             }
         }
         // 17 significant decimal digits always round-trips an IEEE-754 double;
         // this is an unreachable fallback if the loop above ever fails to find
         // a round-tripping precision by 17.
         auto const written = std::snprintf(buffer.data(), buffer.size(), "%.17g", value);
-        return std::string{buffer.data(), static_cast<std::size_t>(written > 0 ? written : 0)};
+        return normalize_decimal_point(std::string{buffer.data(), static_cast<std::size_t>(written > 0 ? written : 0)});
     }
 
     // JSON arrays recurse through nested values; value tree depth is parser-bounded.

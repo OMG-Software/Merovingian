@@ -806,9 +806,13 @@ only reports what *would* happen.
 | `security.federation.join_response_max_size` | Restart required |
 | `federation.worker.*` | Restart required |
 | `server.cors.*` | Restart required |
+| `security.secrets.master_key_file` | Restart required |
 | `client_rate_limits.*` | Restart required |
 | `log_modules.*` | Restart required |
 | `database.pool_size` | Reloadable |
+| `server.turn.*` | Reloadable |
+| `security.trust_safety.*` | Reloadable |
+| `security.access_token_lifetime_ms` / `security.refresh_token_lifetime_ms` | Reloadable |
 | Other `listeners.*` keys | Reloadable |
 | `security.registration.*` | Reloadable |
 | `security.encryption.*` | Reloadable |

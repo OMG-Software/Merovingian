@@ -780,20 +780,24 @@ namespace
             });
             return make_operation_result(true, result.content_type + "|" + result.bytes, {}, 200U);
         }
-        log_diagnostic("thumbnail.fallback_original", {
+        log_diagnostic("thumbnail.generation_failed", {
                                                           {"media_id", std::string{media_id},         false},
                                                           {"reason",   result.reason,                 false},
                                                           {"status",   std::to_string(result.status), false}
         });
+        return make_operation_result(false, {}, "thumbnail generation failed", 404U);
     }
 
-    // Fallback: serve the original media bytes with their own content type.
-    log_diagnostic("thumbnail.accepted_original",
+    // #446: never fall back to the full-size original. A 32x32 thumbnail
+    // request answered with a multi-megabyte blob is a bandwidth/CPU
+    // amplification vector; when thumbnailing is disabled or the worker is
+    // not installed, the endpoint reports the thumbnail as unavailable.
+    log_diagnostic("thumbnail.unavailable",
                    {
                        {"media_id",     std::string{media_id}, false},
                        {"content_type", record->content_type,  false}
     });
-    return make_operation_result(true, record->content_type + "|" + blob->bytes, {}, 200U);
+    return make_operation_result(false, {}, "thumbnails unavailable", 404U);
 }
 
 [[nodiscard]] auto admin_quarantine_local_media(HomeserverRuntime& runtime, std::string_view access_token,

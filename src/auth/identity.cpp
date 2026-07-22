@@ -341,6 +341,22 @@ auto user_id_is_valid_federated(std::string_view user_id) noexcept -> bool
     return localpart_is_valid_federated(localpart) && server_name_is_valid(server_name);
 }
 
+auto user_id_server_name(std::string_view user_id) noexcept -> std::string_view
+{
+    if (user_id.size() < 2U || user_id.front() != '@')
+    {
+        return {};
+    }
+    // The localpart cannot contain ':', so the server name — which may itself
+    // be host:port — is everything after the FIRST colon.
+    auto const separator = user_id.find(':');
+    if (separator == std::string_view::npos || separator + 1U >= user_id.size())
+    {
+        return {};
+    }
+    return user_id.substr(separator + 1U);
+}
+
 auto device_id_is_valid(std::string_view device_id) noexcept -> bool
 {
     return !device_id.empty() && device_id.size() <= 255U &&

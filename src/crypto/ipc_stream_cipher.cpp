@@ -191,9 +191,17 @@ auto IpcStreamCipher::decrypt(std::span<std::uint8_t const> const ciphertext, st
         return false;
     }
     auto tag = std::uint8_t{};
-    return crypto_secretstream_xchacha20poly1305_pull(&state_->pull, reinterpret_cast<std::uint8_t*>(plaintext.data()),
-                                                      nullptr, &tag, ciphertext.data(), ciphertext.size(), nullptr,
-                                                      0) == 0;
+    if (crypto_secretstream_xchacha20poly1305_pull(&state_->pull, reinterpret_cast<std::uint8_t*>(plaintext.data()),
+                                                   nullptr, &tag, ciphertext.data(), ciphertext.size(), nullptr,
+                                                   0) != 0)
+    {
+        return false;
+    }
+    // Our protocol only ever pushes TAG_MESSAGE (#433): a peer sending
+    // TAG_FINAL or TAG_REKEY would silently desynchronize the stream state.
+    // Reject anything else so an unexpected tag surfaces as a decrypt
+    // failure instead of being accepted as a normal message.
+    return tag == crypto_secretstream_xchacha20poly1305_TAG_MESSAGE;
 }
 
 } // namespace merovingian::crypto

@@ -72,6 +72,12 @@ constexpr std::uint64_t max_cpu_seconds = sanitizer_build ? 120U : 60U;
 #endif
 constexpr std::uint64_t max_file_size = 64U * 1024U * 1024U;
 constexpr std::uint32_t absolute_max_dimension = 4096U;
+// Worker-imposed pixel ceiling for BOTH the decoded frame and the resampled
+// output (#449). The per-axis cap alone still admits a 4096x4096 RGBA buffer
+// (64 MiB); a crafted IHDR could stack such allocations close to the
+// RLIMIT_AS ceiling and OOM the worker. ~4.1 Mpixels keeps any single RGBA
+// buffer at ~16 MiB regardless of what the request asks for.
+constexpr std::uint32_t max_worker_pixels = 4'096'000U;
 
 struct Rgba final
 {
@@ -369,9 +375,13 @@ auto main() -> int
     }
     else
     {
+        // A request may not raise the pixel budget above the worker's own
+        // ceiling, and an unlimited (0) request still gets the ceiling (#449).
+        auto const pixel_budget =
+            request->max_pixels == 0U ? max_worker_pixels : std::min(request->max_pixels, max_worker_pixels);
         auto status = request->format == ThumbnailSourceFormat::png
-                          ? decode_png(request->source_bytes, request->max_pixels, image)
-                          : decode_jpeg(request->source_bytes, request->max_pixels, image);
+                          ? decode_png(request->source_bytes, pixel_budget, image)
+                          : decode_jpeg(request->source_bytes, pixel_budget, image);
         if (status != ThumbnailWorkerStatus::ok)
         {
             response = respond(status, image, {});
@@ -380,6 +390,14 @@ auto main() -> int
         {
             auto target_w = std::min(request->target_width, absolute_max_dimension);
             auto target_h = std::min(request->target_height, absolute_max_dimension);
+            // Apply the pixel budget to the OUTPUT as well: a capped-axis
+            // 4096x4096 request must not allocate a 64 MiB RGBA buffer.
+            while (static_cast<std::uint64_t>(target_w) * static_cast<std::uint64_t>(target_h) > pixel_budget &&
+                   (target_w > 1U || target_h > 1U))
+            {
+                target_w = std::max(1U, target_w / 2U);
+                target_h = std::max(1U, target_h / 2U);
+            }
             auto const resampled = resample(image, target_w, target_h, request->method);
             auto png_bytes = std::string{};
             if (!encode_png(resampled, png_bytes))

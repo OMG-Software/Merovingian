@@ -1936,7 +1936,7 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
                    : response(401U, "admin authentication required",
                               observability_headers(correlation, "text/plain; charset=utf-8"));
     }
-    if (request.method == "GET" && request.target == "/_matrix/key/v2/server")
+    if (request.method == "GET" && request.target.substr(0U, request.target.find('?')) == "/_matrix/key/v2/server")
     {
         return response_from_operation(publish_server_signing_keys(runtime));
     }
@@ -2219,7 +2219,7 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
             return response(503U, "runtime not started");
         }
         wire_federation_callbacks_impl(runtime);
-        if (request.method == "GET" && request.target == "/_matrix/key/v2/server")
+        if (request.method == "GET" && request.target.substr(0U, request.target.find('?')) == "/_matrix/key/v2/server")
         {
             return response_from_operation(publish_server_signing_keys(runtime));
         }

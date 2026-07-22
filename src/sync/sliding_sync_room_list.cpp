@@ -5,6 +5,7 @@
 
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/sync/sliding_sync_room_builder.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -309,27 +310,18 @@ namespace
     }
 
     // Total number of unread m.room.message / m.room.encrypted events in the
-    // room since the user's last m.read receipt.
-    [[nodiscard]] auto notification_key(database::PersistentStore const& store, std::string_view room_id,
-                                        std::string_view user) noexcept -> std::uint64_t
+    // room since the user's last read receipt (#417). Without the receipt
+    // baseline this sort key degenerates to "total message count" and every
+    // room sorts identically regardless of read state.
+    [[nodiscard]] auto notification_key(homeserver::HomeserverRuntime const& rt, database::PersistentStore const& store,
+                                        std::string_view room_id, std::string_view user) -> std::uint64_t
     {
-        // Find the stream_ordering of the user's last read receipt in the room.
-        // TODO: scan store.receipts filtered by user to find the true read_ordering.
-        auto read_ordering = std::uint64_t{0U};
-        std::ignore = user;
-        for (auto const& ev : store.events)
-        {
-            if (ev.room_id != room_id)
-            {
-                continue;
-            }
-            std::ignore = ev;
-        }
+        auto const read_ordering = read_receipt_ordering(rt, store, room_id, user);
 
         auto count = std::uint64_t{0U};
         for (auto const& ev : store.events)
         {
-            if (ev.room_id != room_id || ev.stream_ordering <= read_ordering)
+            if (ev.room_id != room_id || ev.stream_ordering <= read_ordering || ev.sender_user_id == user)
             {
                 continue;
             }
@@ -486,8 +478,8 @@ auto compute_room_list(homeserver::HomeserverRuntime const& rt, std::string_view
         {
             if (key == "by_notification_count")
             {
-                auto const na = notification_key(store, a, user);
-                auto const nb = notification_key(store, b, user);
+                auto const na = notification_key(rt, store, a, user);
+                auto const nb = notification_key(rt, store, b, user);
                 if (na != nb)
                 {
                     return na > nb; // descending

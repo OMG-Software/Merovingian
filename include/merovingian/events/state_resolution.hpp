@@ -7,6 +7,7 @@
 #include "merovingian/rooms/room_version_policy.hpp"
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -72,6 +73,11 @@ struct StateResolutionResult final
 
 using StateMap = std::unordered_map<StateKey, StateEventReference, StateKeyHash>;
 
+// Index of event JSON by event id, used by the mainline walk to follow
+// auth_events links. The referenced values must outlive the index (they are
+// views into the StateResolutionRequest's state groups).
+using EventJsonIndex = std::unordered_map<std::string, std::reference_wrapper<canonicaljson::Value const>>;
+
 [[nodiscard]] auto state_key_matches(StateKey const& left, StateKey const& right) noexcept -> bool;
 [[nodiscard]] auto state_group_contains(StateGroup const& group, StateKey const& key) noexcept -> bool;
 [[nodiscard]] auto state_group_event(StateGroup const& group, StateKey const& key) noexcept
@@ -84,6 +90,19 @@ using StateMap = std::unordered_map<StateKey, StateEventReference, StateKeyHash>
 [[nodiscard]] auto partition_conflicted_state(std::vector<StateGroup> const& groups) -> std::pair<StateMap, StateMap>;
 [[nodiscard]] auto reverse_topological_power_sort(std::vector<StateEventReference> const& conflicted,
                                                   StateMap const& unconflicted) -> std::vector<StateEventReference>;
-auto mainline_order(std::vector<StateEventReference>& events, StateMap const& unconflicted) -> void;
+
+// Spec (rooms/v10 — Definitions, Power events): a power event is an
+// m.room.power_levels or m.room.join_rules state event, or an m.room.member
+// event with membership leave/ban whose sender differs from the state_key.
+[[nodiscard]] auto is_power_event(StateEventReference const& event) noexcept -> bool;
+
+[[nodiscard]] auto build_event_json_index(std::vector<StateGroup> const& groups) -> EventJsonIndex;
+
+// Sort `events` by the mainline ordering based on the m.room.power_levels
+// event in `resolved` (the partially resolved state after power events have
+// been auth-checked). `events_by_id` supplies event JSON for the transitive
+// auth_events walk.
+auto mainline_order(std::vector<StateEventReference>& events, StateMap const& resolved,
+                    EventJsonIndex const& events_by_id) -> void;
 
 } // namespace merovingian::events

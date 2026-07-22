@@ -652,3 +652,48 @@ SCENARIO("Event ID grammar vs semantics: short IDs are syntactically valid but n
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Spec: Matrix v1.18 Appendices — User Identifiers
+// URL:  ../../docs/matrix-v1.18-spec/appendices.md#user-identifiers
+//
+// user_id = "@" user_id_localpart ":" server_name
+// server_name may itself include a port (host:port), so the server name is
+// everything after the FIRST colon — splitting on the last colon would return
+// only the port for a port-suffixed server name.
+// ---------------------------------------------------------------------------
+
+SCENARIO("User ID server name extraction splits on the first colon", "[conformance][identifiers][user-id]")
+{
+    GIVEN("user IDs whose server names do and do not carry an explicit port")
+    {
+        WHEN("the server name is extracted")
+        {
+            THEN("a port-suffixed server name is returned in full")
+            {
+                // Spec MUST: server_name = hostname [ ":" port ] — the port is
+                // part of the server name, not a separator to split on.
+                REQUIRE(merovingian::auth::user_id_server_name("@user:example.com:8448") == "example.com:8448");
+            }
+
+            THEN("a bare server name is returned unchanged")
+            {
+                REQUIRE(merovingian::auth::user_id_server_name("@user:example.com") == "example.com");
+            }
+
+            THEN("an IPv6-literal server name is returned in full")
+            {
+                REQUIRE(merovingian::auth::user_id_server_name("@user:[2001:db8::1]:5000") == "[2001:db8::1]:5000");
+            }
+
+            THEN("inputs that are not user IDs yield an empty server name")
+            {
+                // Spec MUST: a user ID starts with '@' and contains a ':'.
+                REQUIRE(merovingian::auth::user_id_server_name("user:example.com").empty());
+                REQUIRE(merovingian::auth::user_id_server_name("@useronly").empty());
+                REQUIRE(merovingian::auth::user_id_server_name("@user:").empty());
+                REQUIRE(merovingian::auth::user_id_server_name("").empty());
+            }
+        }
+    }
+}

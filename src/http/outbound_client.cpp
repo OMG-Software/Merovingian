@@ -316,6 +316,12 @@ namespace
             {
                 value.remove_prefix(1U);
             }
+            // RFC 7230 §3.2.4: strip trailing OWS too, so stored values
+            // compare cleanly (e.g. MIME type checks) (#441).
+            while (!value.empty() && (value.back() == ' ' || value.back() == '\t'))
+            {
+                value.remove_suffix(1U);
+            }
             sink->headers.push_back(OutboundHeader{std::string{name}, std::string{value}});
             sink->header_bytes_seen += bytes;
             return bytes;
@@ -503,7 +509,8 @@ auto detect_system_ca_trust() -> SystemCaTrust
     };
     // OpenSSL hashed certificate directories.
     constexpr std::array<std::string_view, 4U> bundle_dirs{
-        "/etc/ssl/certs", "/etc/pki/tls/certs",
+        "/etc/ssl/certs",
+        "/etc/pki/tls/certs",
         "/etc/openssl/certs",         // NetBSD
         "/usr/pkg/etc/openssl/certs", // NetBSD pkgsrc prefix
     };

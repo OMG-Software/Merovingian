@@ -18,6 +18,8 @@ struct RateLimitPolicy final
 {
     std::uint32_t max_requests{90U};
     std::uint32_t window_seconds{60U};
+
+    [[nodiscard]] auto operator==(RateLimitPolicy const& other) const noexcept -> bool = default;
 };
 
 struct RateLimitState final

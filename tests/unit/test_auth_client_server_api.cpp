@@ -328,3 +328,30 @@ SCENARIO("Client-server auth boundary plan emits audit events for route decision
         }
     }
 }
+
+// Regression for #438: the /devices/{deviceId} matcher used a bare prefix
+// check, so /devices/ (empty deviceId) and /devices/foo/bar (extra segments)
+// were both routed to the device handler.
+SCENARIO("Device route matching requires a single non-empty deviceId segment", "[auth][routing]")
+{
+    GIVEN("device targets with and without a valid deviceId")
+    {
+        WHEN("the routes are matched")
+        {
+            auto const valid = merovingian::auth::match_client_auth_route("PUT", "/_matrix/client/v3/devices/ABCDEFG");
+            auto const empty_id = merovingian::auth::match_client_auth_route("PUT", "/_matrix/client/v3/devices/");
+            auto const extra_segment =
+                merovingian::auth::match_client_auth_route("PUT", "/_matrix/client/v3/devices/foo/bar");
+            auto const query_only =
+                merovingian::auth::match_client_auth_route("PUT", "/_matrix/client/v3/devices/?x=1");
+
+            THEN("only the single-segment deviceId target matches")
+            {
+                REQUIRE(valid.matched);
+                REQUIRE_FALSE(empty_id.matched);
+                REQUIRE_FALSE(extra_segment.matched);
+                REQUIRE_FALSE(query_only.matched);
+            }
+        }
+    }
+}

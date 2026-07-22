@@ -4,6 +4,8 @@
 #include "merovingian/core/query_params.hpp"
 
 #include <cctype>
+#include <limits>
+#include <optional>
 
 namespace merovingian::core
 {
@@ -11,7 +13,10 @@ namespace merovingian::core
 namespace
 {
 
-    [[nodiscard]] auto from_hex(char ch) noexcept -> std::uint8_t
+    // RFC 3986 requires '%' to be followed by exactly two HEXDIG. Returning
+    // nullopt (instead of silently mapping bad input to 0) lets the decoders
+    // keep malformed sequences literal rather than injecting NUL bytes (#440).
+    [[nodiscard]] auto from_hex(char ch) noexcept -> std::optional<std::uint8_t>
     {
         if (ch >= '0' && ch <= '9')
         {
@@ -19,13 +24,13 @@ namespace
         }
         if (ch >= 'a' && ch <= 'f')
         {
-            return static_cast<std::uint8_t>(ch - 'a') + 10U;
+            return static_cast<std::uint8_t>(static_cast<std::uint8_t>(ch - 'a') + 10U);
         }
         if (ch >= 'A' && ch <= 'F')
         {
-            return static_cast<std::uint8_t>(ch - 'A') + 10U;
+            return static_cast<std::uint8_t>(static_cast<std::uint8_t>(ch - 'A') + 10U);
         }
-        return 0U;
+        return std::nullopt;
     }
 
     [[nodiscard]] auto is_unreserved_path_byte(unsigned char byte) noexcept -> bool
@@ -52,8 +57,16 @@ auto percent_decode(std::string_view encoded) -> std::string
         {
             auto const high = from_hex(encoded[i + 1U]);
             auto const low = from_hex(encoded[i + 2U]);
-            result.push_back(static_cast<char>((high << 4U) | low));
-            i += 3U;
+            if (high.has_value() && low.has_value())
+            {
+                result.push_back(static_cast<char>((*high << 4U) | *low));
+                i += 3U;
+                continue;
+            }
+            // Malformed escape (e.g. "%ZZ"): keep it literal instead of
+            // decoding to NUL (#440).
+            result.push_back(encoded[i]);
+            ++i;
         }
         else if (encoded[i] == '+')
         {
@@ -80,8 +93,15 @@ auto percent_decode_path_component(std::string_view encoded) -> std::string
         {
             auto const high = from_hex(encoded[i + 1U]);
             auto const low = from_hex(encoded[i + 2U]);
-            result.push_back(static_cast<char>((high << 4U) | low));
-            i += 3U;
+            if (high.has_value() && low.has_value())
+            {
+                result.push_back(static_cast<char>((*high << 4U) | *low));
+                i += 3U;
+                continue;
+            }
+            // Malformed escape: keep it literal instead of decoding to NUL (#440).
+            result.push_back(encoded[i]);
+            ++i;
         }
         else
         {
@@ -153,7 +173,16 @@ auto parse_query_params(std::string_view target) -> SyncRequest
             {
                 if (ch >= '0' && ch <= '9')
                 {
-                    result = result * 10U + static_cast<std::uint64_t>(ch - '0');
+                    auto const digit = static_cast<std::uint64_t>(ch - '0');
+                    // Overflow-checked accumulate (#426): an overlong decimal
+                    // would otherwise wrap modulo 2^64 and let a client pick
+                    // an arbitrary (possibly enormous) effective timeout.
+                    if (result > (std::numeric_limits<std::uint64_t>::max() - digit) / 10U)
+                    {
+                        parsed = false;
+                        break;
+                    }
+                    result = result * 10U + digit;
                 }
                 else
                 {

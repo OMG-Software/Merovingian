@@ -58,6 +58,20 @@ remaining work before PostgreSQL-backed production operation.
   (`crypto::constant_time_equal`, backed by `sodium_memcmp`) for the access and
   refresh token lookups, so a database-equivalent match does not branch on the
   fixed-length hash bytes.
+- Binary payload columns are `BLOB` (#448): `media_blobs.bytes` holds raw media
+  content and `server_signing_keys.secret_key` holds encrypted key material
+  (`BLOB NOT NULL DEFAULT ''`, empty = no secret persisted). Both were folded
+  into the version-1 initial schema per the pre-1.0 migration policy. SQLite
+  column reads are length-based (`sqlite3_column_bytes`), so payloads
+  containing NUL or invalid UTF-8 round-trip byte-exactly. `SchemaTableDefinition::columns_sql`
+  is shared, backend-agnostic DDL text written in SQLite's dialect; PostgreSQL
+  has no `BLOB` type, so `postgresql_store.cpp`'s `translate_ddl_types_for_postgresql()`
+  rewrites `BLOB` to `BYTEA` (whole-word, so it cannot mangle an identifier)
+  wherever a `SchemaTableDefinition` becomes DDL for that backend — both the
+  bootstrap path and the migration-step path.
+- Every SQLite connection pins `PRAGMA synchronous = FULL` and
+  `PRAGMA journal_mode = DELETE` at open (#447), so an environment that
+  installs global default pragmas cannot silently weaken durability.
 - SQLite hydration fails closed when a row query cannot be prepared or stepped
   to completion.
 - SQLite connections use a non-zero busy timeout for short-lived lock

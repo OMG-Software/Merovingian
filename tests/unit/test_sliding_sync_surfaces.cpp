@@ -77,6 +77,25 @@ auto append_event(merovingian::database::PersistentStore& store, std::string_vie
     });
 }
 
+// Messages that should count as unread for @alice must come from someone
+// else — a user's own messages are never notifications (#417).
+auto append_event_from(merovingian::database::PersistentStore& store, std::string_view sender,
+                       std::string_view event_id, std::string_view room_id, std::string_view json,
+                       std::uint64_t stream_ordering) -> void
+{
+    store.events.push_back({
+        std::string{event_id},
+        std::string{room_id},
+        std::string{sender},
+        std::string{json},
+        1U,
+        stream_ordering,
+        {},
+        {},
+        {},
+    });
+}
+
 auto append_state(merovingian::database::PersistentStore& store, std::string_view room_id, std::string_view event_type,
                   std::string_view state_key, std::string_view event_id) -> void
 {
@@ -209,14 +228,14 @@ SCENARIO("Sliding sync room lists emit incremental sync ops when notification an
                      3U);
         append_state(store, "!gamma:example.org", "m.room.name", "", "$gamma-name");
 
-        append_event(store, "$alpha-message", "!alpha:example.org",
-                     R"({"type":"m.room.message","content":{"body":"alpha"}})", 4U);
-        append_event(store, "$beta-message-1", "!beta:example.org",
-                     R"({"type":"m.room.message","content":{"body":"beta-1"}})", 5U);
-        append_event(store, "$beta-message-2", "!beta:example.org",
-                     R"({"type":"m.room.message","content":{"body":"beta-2"}})", 6U);
-        append_event(store, "$gamma-encrypted", "!gamma:example.org",
-                     R"({"type":"m.room.encrypted","content":{"ciphertext":"..."}})", 7U);
+        append_event_from(store, "@bob:example.org", "$alpha-message", "!alpha:example.org",
+                          R"({"type":"m.room.message","content":{"body":"alpha"}})", 4U);
+        append_event_from(store, "@bob:example.org", "$beta-message-1", "!beta:example.org",
+                          R"({"type":"m.room.message","content":{"body":"beta-1"}})", 5U);
+        append_event_from(store, "@bob:example.org", "$beta-message-2", "!beta:example.org",
+                          R"({"type":"m.room.message","content":{"body":"beta-2"}})", 6U);
+        append_event_from(store, "@bob:example.org", "$gamma-encrypted", "!gamma:example.org",
+                          R"({"type":"m.room.encrypted","content":{"ciphertext":"..."}})", 7U);
 
         auto list = merovingian::sync::SlidingSyncList{};
         list.ranges = {

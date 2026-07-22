@@ -536,6 +536,14 @@ SCENARIO("Inbound federation accepted-transaction dedup ring is bounded, not unb
             {
                 REQUIRE(runtime.accepted_transactions.size() <= 10'000U);
                 REQUIRE(runtime.accepted_transactions.size() < transactions);
+
+                // Regression for #423: every federation decision also appends
+                // an audit event, so the audit log must be bounded by the same
+                // sustained-traffic reasoning (kMaxAuditEvents, FIFO eviction)
+                // and the safety check must stay accurate across evictions.
+                REQUIRE(runtime.audit_events.size() <= 10'000U);
+                REQUIRE(runtime.audit_events.size() < transactions);
+                REQUIRE(merovingian::federation::federation_audit_is_safe(runtime));
             }
         }
     }

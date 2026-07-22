@@ -111,12 +111,24 @@ namespace
         return "blob_" + std::string{digest} + "_" + std::to_string(size_bytes);
     }
 
+    // Saturating multiply for decode budgets (#429): with extreme operator
+    // config (e.g. a 1 TiB upload cap and ratio 64) the product would wrap
+    // uint64_t to a small value and silently collapse the budget check.
+    [[nodiscard]] auto saturating_scale(std::uint64_t value, std::uint64_t ratio) noexcept -> std::uint64_t
+    {
+        if (ratio != 0U && value > std::numeric_limits<std::uint64_t>::max() / ratio)
+        {
+            return std::numeric_limits<std::uint64_t>::max();
+        }
+        return value * ratio;
+    }
+
     [[nodiscard]] auto decoder_policy(RuntimeMediaConfig const& config) -> DecoderSafetyPolicy
     {
         auto const max_input =
             config.max_decode_input_bytes == 0U ? config.max_upload_bytes : config.max_decode_input_bytes;
         auto const max_output = config.max_decode_output_bytes == 0U
-                                    ? config.max_upload_bytes * config.max_decompression_ratio
+                                    ? saturating_scale(config.max_upload_bytes, config.max_decompression_ratio)
                                     : config.max_decode_output_bytes;
         return {max_input,
                 max_output,
@@ -149,10 +161,7 @@ namespace
         plan.decode_timeout_seconds = 10U;
         if (config.max_decode_output_bytes == 0U)
         {
-            // Saturating multiply: prevent uint64_t wrap when max_upload_bytes is extreme.
-            constexpr auto max_safe = std::numeric_limits<std::uint64_t>::max() / 64U;
-            auto const scaled = config.max_upload_bytes > max_safe ? std::numeric_limits<std::uint64_t>::max()
-                                                                   : config.max_upload_bytes * 64U;
+            auto const scaled = saturating_scale(config.max_upload_bytes, 64U);
             plan.memory_limit_bytes = std::max<std::uint64_t>(268435456U, scaled);
         }
         else

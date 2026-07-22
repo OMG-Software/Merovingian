@@ -47,7 +47,8 @@ namespace
             "expires_at TEXT NOT NULL DEFAULT ''"                                                               },
         SchemaTableDefinition{"server_signing_keys",
                               "server_name TEXT NOT NULL, key_id TEXT NOT NULL, public_key TEXT NOT NULL, "
-                              "valid_until_ts TEXT NOT NULL, secret_key TEXT, PRIMARY KEY (server_name, key_id)"                                               },
+                              "valid_until_ts TEXT NOT NULL, secret_key BLOB NOT NULL DEFAULT '', "
+                              "PRIMARY KEY (server_name, key_id)"                                                                                              },
         SchemaTableDefinition{"rooms",                   "room_id TEXT PRIMARY KEY, creator_user_id TEXT NOT NULL"                                             },
         SchemaTableDefinition{"room_aliases",            "room_alias TEXT PRIMARY KEY, room_id TEXT NOT NULL"                                                  },
         SchemaTableDefinition{"room_versions",           "room_id TEXT PRIMARY KEY, version TEXT NOT NULL"                                                     },
@@ -110,7 +111,7 @@ namespace
                                        "NULL, quarantined TEXT NOT NULL, removed TEXT NOT NULL"                          },
         SchemaTableDefinition{"media_blobs",
                               "storage_id TEXT PRIMARY KEY, hash_algorithm TEXT NOT NULL, digest TEXT NOT NULL, "
-                              "size_bytes TEXT NOT NULL, bytes TEXT NOT NULL, ref_count TEXT NOT NULL"                                                         },
+                              "size_bytes TEXT NOT NULL, bytes BLOB NOT NULL, ref_count TEXT NOT NULL"                                                         },
         SchemaTableDefinition{
                               "remote_media",            "server_name TEXT NOT NULL, media_id TEXT NOT NULL, content_type TEXT NOT NULL, size_bytes "
                             "TEXT NOT NULL, quarantined TEXT NOT NULL, PRIMARY KEY (server_name, media_id)"       },

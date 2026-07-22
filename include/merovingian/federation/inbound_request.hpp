@@ -215,7 +215,13 @@ struct FederationRuntimeState final
     // on a deque) is enough to keep this bounded.
     std::deque<FederationAcceptedTransaction> accepted_transactions{};
     std::vector<FederationRateLimitBucket> rate_limit_buckets{};
-    std::vector<observability::AuditLogEvent> audit_events{};
+    // Bounded audit ring (#423): capped at kMaxAuditEvents
+    // (inbound_request.cpp) with FIFO eviction, mirroring
+    // accepted_transactions above. unsafe_audit_events counts retained
+    // entries whose reason_code carries signature/token material so
+    // federation_audit_is_safe stays O(1).
+    std::deque<observability::AuditLogEvent> audit_events{};
+    std::size_t unsafe_audit_events{0U};
     RemoteKeyResolver remote_key_resolver{};
     // Optional ingestion hooks. When set, accepted PDUs are appended to the
     // event graph via pdu_sink and accepted EDUs are routed to runtime

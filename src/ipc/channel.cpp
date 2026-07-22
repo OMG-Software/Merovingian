@@ -273,8 +273,11 @@ auto IpcChannel::build_frame(std::uint64_t id, std::optional<std::uint64_t> repl
         frame += ",\"reply_to\":";
         frame += std::to_string(*reply_to);
     }
-    // Append body fields after the opening '{'.
-    if (body.size() > 1U)
+    // Append body fields after the opening '{'. A body of exactly "{}" has
+    // no fields — appending it naively would emit a trailing comma
+    // ("{\"id\":1,}"), invalid JSON that makes the peer mark the channel
+    // unhealthy and tear it down (#451).
+    if (body.size() > 2U)
     {
         frame += ',';
         frame.append(body.data() + 1U, body.size() - 1U);

@@ -52,9 +52,12 @@ Implemented now:
 - room creator is implicitly treated as joined with power level 100 when
   no sender_member or power_levels event exists, enabling correct
   authorization of initial state events during room bootstrapping
-- v2 state resolution algorithm: conflicted/unconflicted partition, reverse
-  topological power sort, mainline ordering for power-level event ties,
-  iterative auth-based conflict resolution
+- v2 state resolution algorithm: conflicted/unconflicted partition, power
+  events (spec definition) sorted by reverse topological power ordering and
+  auth-checked first, remaining events ordered by the mainline of the
+  partially resolved power levels (transitive power-levels walk with the
+  spec's ∞ sentinel for events with no mainline ancestor), iterative
+  auth-based conflict resolution
 - helper functions for power-level extraction, membership parsing, sender
   domain extraction
 - restricted-room join auth accepts a valid
@@ -169,7 +172,8 @@ Runtime events store their immediate `prev_events`, current-state-derived
 `auth_events`, and attached server signatures in the persistent store.
 Auth-event maps are built from current room state for authorization checking.
 The v2 state resolution algorithm resolves conflicting state using reverse
-topological power ordering and mainline depth.
+topological power ordering for power events and the mainline ordering (based
+on the partially resolved power levels) for the remaining events.
 
 Event depth is persisted alongside the event row so ordering metadata survives
 a server restart.

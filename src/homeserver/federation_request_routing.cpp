@@ -157,7 +157,12 @@ namespace
 
     [[nodiscard]] auto is_federation_send_target(std::string_view target) noexcept -> bool
     {
-        return target.find("/_matrix/federation/v1/send/") != std::string_view::npos;
+        // Match against the path component only (#453): a substring scan over
+        // the whole target let a query string like ?x=/_matrix/federation/v1/send/y
+        // misclassify an unrelated endpoint as an EDU-only /send and bypass
+        // the worker.
+        auto const path = target.substr(0U, target.find('?'));
+        return path.starts_with("/_matrix/federation/v1/send/");
     }
 
 } // namespace

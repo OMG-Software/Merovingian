@@ -8,6 +8,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -467,6 +468,148 @@ SCENARIO("Sliding sync room builder resolves \"$LAZY\" and \"$ME\" together, mat
                 });
                 REQUIRE(has_alice);
                 REQUIRE(has_bob);
+            }
+        }
+    }
+}
+
+// ── notification / highlight counts vs read receipts (#417) ──────────────────
+
+SCENARIO("Sliding sync notification counts are baselined on the user's read receipt, not the sync position",
+         "[sync][sliding-sync][room-builder][receipts]")
+{
+    GIVEN("a room with three messages from bob and alice's read receipt on the second")
+    {
+        auto runtime = merovingian::homeserver::HomeserverRuntime{};
+        auto store = merovingian::database::PersistentStore{};
+
+        auto const message_json = R"({"type":"m.room.message","sender":"@bob:example.org",)"
+                                  R"("content":{"body":"hi"}})";
+        store.events.push_back({"$m1", "!room:example.org", "@bob:example.org", message_json, 1U, 10U, {}, {}, {}});
+        store.events.push_back({"$m2", "!room:example.org", "@bob:example.org", message_json, 1U, 20U, {}, {}, {}});
+        store.events.push_back({"$m3", "!room:example.org", "@bob:example.org", message_json, 1U, 30U, {}, {}, {}});
+
+        auto receipt = merovingian::homeserver::InboundReceipt{};
+        receipt.room_id = "!room:example.org";
+        receipt.receipt_type = "m.read";
+        receipt.user_id = "@alice:example.org";
+        receipt.event_id = "$m2";
+        receipt.stream_id = 1U;
+        runtime.receipts.push_back(receipt);
+
+        auto sub = merovingian::sync::SlidingSyncRoomSubscription{};
+        sub.timeline_limit = 20U;
+
+        WHEN("alice's initial sync response is built (since ordering 0)")
+        {
+            auto const resp = merovingian::sync::build_room_response(runtime, "!room:example.org", "@alice:example.org",
+                                                                     sub, 0U, true, store);
+
+            THEN("only the message after the read receipt counts as unread")
+            {
+                // Regression for #417: the count previously used the sync
+                // position, so an initial sync reported every message ever
+                // sent in the room as unread.
+                REQUIRE(resp.notification_count.value_or(99U) == 1U);
+            }
+        }
+
+        WHEN("the read-receipt baseline is computed directly")
+        {
+            auto const ordering =
+                merovingian::sync::read_receipt_ordering(runtime, store, "!room:example.org", "@alice:example.org");
+
+            THEN("it is the stream ordering of the receipted event")
+            {
+                REQUIRE(ordering == 20U);
+            }
+
+            THEN("a user with no receipt has a zero baseline")
+            {
+                REQUIRE(merovingian::sync::read_receipt_ordering(runtime, store, "!room:example.org",
+                                                                 "@carol:example.org") == 0U);
+            }
+        }
+    }
+}
+
+SCENARIO("Sliding sync notification counts exclude the user's own messages",
+         "[sync][sliding-sync][room-builder][receipts]")
+{
+    GIVEN("a room where alice has sent the only message and has no read receipt")
+    {
+        auto runtime = merovingian::homeserver::HomeserverRuntime{};
+        auto store = merovingian::database::PersistentStore{};
+
+        store.events.push_back({"$own",
+                                "!room:example.org",
+                                "@alice:example.org",
+                                R"({"type":"m.room.message","sender":"@alice:example.org",)"
+                                R"("content":{"body":"mine"}})",
+                                1U,
+                                10U,
+                                {},
+                                {},
+                                {}});
+
+        auto sub = merovingian::sync::SlidingSyncRoomSubscription{};
+        sub.timeline_limit = 20U;
+
+        WHEN("alice's response is built")
+        {
+            auto const resp = merovingian::sync::build_room_response(runtime, "!room:example.org", "@alice:example.org",
+                                                                     sub, 0U, true, store);
+
+            THEN("her own message is not reported as an unread notification")
+            {
+                REQUIRE(resp.notification_count.value_or(99U) == 0U);
+            }
+        }
+    }
+}
+
+// ── duplicate event_id keys in client-facing JSON (#457) ─────────────────────
+
+SCENARIO("Sliding sync timeline events never carry a duplicate event_id key",
+         "[sync][sliding-sync][room-builder][canonical-json]")
+{
+    GIVEN("a stored event whose JSON already contains an event_id field (v1-v3 room format)")
+    {
+        auto runtime = merovingian::homeserver::HomeserverRuntime{};
+        auto store = merovingian::database::PersistentStore{};
+
+        store.events.push_back({"$legacy",
+                                "!room:example.org",
+                                "@bob:example.org",
+                                R"({"event_id":"$legacy","type":"m.room.message",)"
+                                R"("content":{"body":"old format"}})",
+                                1U,
+                                10U,
+                                {},
+                                {},
+                                {}});
+
+        auto sub = merovingian::sync::SlidingSyncRoomSubscription{};
+        sub.timeline_limit = 20U;
+
+        WHEN("the room response is built")
+        {
+            auto const resp = merovingian::sync::build_room_response(runtime, "!room:example.org", "@alice:example.org",
+                                                                     sub, 0U, true, store);
+
+            THEN("the timeline event contains exactly one event_id key")
+            {
+                REQUIRE(resp.timeline_json.size() == 1U);
+                auto const& json = resp.timeline_json.front();
+                auto count = std::size_t{0U};
+                auto pos = json.find("\"event_id\"");
+                while (pos != std::string::npos)
+                {
+                    ++count;
+                    pos = json.find("\"event_id\"", pos + 1U);
+                }
+                REQUIRE(count == 1U);
+                REQUIRE(json.find("$legacy") != std::string::npos);
             }
         }
     }

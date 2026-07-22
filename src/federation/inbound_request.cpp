@@ -3,6 +3,7 @@
 
 #include "merovingian/federation/inbound_request.hpp"
 
+#include "merovingian/auth/identity.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
@@ -43,6 +44,10 @@ namespace
     // aging out; a sustained flood of distinct transaction ids evicts the
     // oldest entries instead of growing memory without bound.
     constexpr auto kMaxAcceptedTransactions = std::size_t{10'000U};
+    // Cap for the federation audit ring (#423) — same rationale as the
+    // accepted-transaction dedup ring: sustained traffic must not grow
+    // main-process memory without bound.
+    constexpr auto kMaxAuditEvents = std::size_t{10'000U};
 
     auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields,
                         observability::LogEventSeverity severity = observability::LogEventSeverity::debug) -> void
@@ -191,12 +196,11 @@ namespace
 
     [[nodiscard]] auto sender_domain(std::string_view sender) noexcept -> std::string_view
     {
-        auto const colon = sender.rfind(':');
-        if (colon == std::string_view::npos || colon + 1U >= sender.size())
-        {
-            return {};
-        }
-        return sender.substr(colon + 1U);
+        // A sender's server name may carry an explicit port (host:port), so
+        // the user id must be split on the FIRST colon — splitting on the
+        // last would yield just the port and break signature lookup for any
+        // homeserver on a non-standard port (#414).
+        return auth::user_id_server_name(sender);
     }
 
     [[nodiscard]] auto transaction_id_from_send_target(std::string_view target) -> std::string
@@ -359,10 +363,34 @@ namespace
         };
     }
 
+    // Reason codes that would indicate signature/token material leaked into
+    // the audit log. Tracked incrementally so federation_audit_is_safe is
+    // O(1) instead of a scan over the whole log (#423).
+    [[nodiscard]] auto audit_reason_is_unsafe(std::string_view reason) noexcept -> bool
+    {
+        return reason.find("sig:v1:") != std::string_view::npos ||
+               reason.find("verify_token") != std::string_view::npos;
+    }
+
     auto audit_federation(FederationRuntimeState& runtime, std::string_view event_type, std::string_view origin,
                           std::string_view target, std::string_view reason) -> void
     {
         auto guard = federation_guard(runtime);
+        // Bounded ring (#423): a remote sending sustained traffic (accepted or
+        // rejected) must not grow the audit log without bound. Entries are
+        // appended in order, so FIFO eviction drops the oldest first.
+        if (runtime.audit_events.size() >= kMaxAuditEvents)
+        {
+            if (audit_reason_is_unsafe(runtime.audit_events.front().reason_code) && runtime.unsafe_audit_events > 0U)
+            {
+                --runtime.unsafe_audit_events;
+            }
+            runtime.audit_events.pop_front();
+        }
+        if (audit_reason_is_unsafe(reason))
+        {
+            ++runtime.unsafe_audit_events;
+        }
         runtime.audit_events.push_back(observability::make_audit_event(observability::AuditCategory::policy, event_type,
                                                                        origin, target, reason, "federation"));
     }
@@ -2278,10 +2306,9 @@ auto federation_runtime_summary(FederationRuntimeState const& runtime) -> std::s
 auto federation_audit_is_safe(FederationRuntimeState const& runtime) -> bool
 {
     auto guard = federation_guard(runtime);
-    return std::ranges::all_of(runtime.audit_events, [](observability::AuditLogEvent const& event) {
-        return event.reason_code.find("sig:v1:") == std::string::npos &&
-               event.reason_code.find("verify_token") == std::string::npos;
-    });
+    // Maintained incrementally by audit_federation — O(1) instead of a full
+    // scan per safety check (#423).
+    return runtime.unsafe_audit_events == 0U;
 }
 
 } // namespace merovingian::federation

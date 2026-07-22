@@ -163,7 +163,17 @@ auto match_client_auth_route(std::string_view method, std::string_view target) -
         if (candidate.path_template == "/_matrix/client/v3/devices/{deviceId}" &&
             starts_with(target, "/_matrix/client/v3/devices/"))
         {
-            return {true, candidate, {}};
+            // #438: require a real deviceId — reject an empty id and extra
+            // path segments, consistent with the key_api matcher.
+            auto suffix = target.substr(std::string_view{"/_matrix/client/v3/devices/"}.size());
+            if (auto const query = suffix.find('?'); query != std::string_view::npos)
+            {
+                suffix = suffix.substr(0U, query);
+            }
+            if (!suffix.empty() && suffix.find('/') == std::string_view::npos)
+            {
+                return {true, candidate, {}};
+            }
         }
     }
 
