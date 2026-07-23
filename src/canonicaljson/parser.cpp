@@ -100,7 +100,7 @@ namespace
         }
         if (token[index] == '0')
         {
-            // Spec: Matrix v1.18 Appendices § Canonical JSON —
+            // Spec: Matrix v1.19 Appendices § Canonical JSON —
             // "Numbers that are negative zero MUST NOT appear in canonical JSON."
             // "-0" would reach here with has_minus == true; reject it.
             if (has_minus)

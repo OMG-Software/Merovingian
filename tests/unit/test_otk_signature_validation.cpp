@@ -3,10 +3,10 @@
 // +-------------------------------------------------------------------------+
 // |  MATRIX END-TO-END ENCRYPTION OTK SIGNATURE VALIDATION (REGRESSION)     |
 // |                                                                         |
-// |  Spec: ../../docs/matrix-v1.18-spec/client-server-api.md                 |
+// |  Spec: ../../docs/matrix-v1.19-spec/client-server-api.md                 |
 // |        #post_matrixclientv3keysupload                                   |
 // |                                                                         |
-// |  Every REQUIRE in this file encodes a Matrix v1.18 MUST for /keys/upload |
+// |  Every REQUIRE in this file encodes a Matrix v1.19 MUST for /keys/upload |
 // |  signature validation. A failure here means the server accepted (and    |
 // |  therefore returned via /keys/claim) a one-time key whose signature     |
 // |  cannot be verified against the device's own published identity,        |
@@ -151,8 +151,8 @@ namespace
 
 // --- Bug reproducer: OTK signed by wrong key MUST be rejected ----------------
 //
-// Spec: Matrix Client-Server API v1.18
-// URL:  ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3keysupload
+// Spec: Matrix Client-Server API v1.19
+// URL:  ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3keysupload
 //
 // A one-time key is a SignedKey: the `signatures` map must contain a signature
 // from the device's own ed25519 identity key. If the server stores a key whose
@@ -218,8 +218,8 @@ SCENARIO("E2EE /keys/upload rejects one-time keys signed by a different ed25519 
 
 // --- Regression guard: OTK signed by own key MUST still be accepted ----------
 //
-// Spec: Matrix Client-Server API v1.18
-// URL:  ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3keysupload
+// Spec: Matrix Client-Server API v1.19
+// URL:  ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3keysupload
 //
 // The OTK signature validator must not regress the happy path: a one-time
 // key signed by the device's own ed25519 identity key MUST be accepted.
@@ -286,8 +286,8 @@ SCENARIO("E2EE /keys/upload accepts one-time keys signed by the device's own ed2
 
 // --- Finding 4: garbage signature bytes under correct key ID MUST be rejected -
 //
-// Spec: Matrix Client-Server API v1.18
-// URL:  ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3keysupload
+// Spec: Matrix Client-Server API v1.19
+// URL:  ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3keysupload
 //
 // The server MUST perform real Ed25519 signature verification, not just check
 // that the correct key ID is present. An OTK with a syntactically valid
@@ -358,8 +358,8 @@ SCENARIO("E2EE /keys/upload rejects one-time keys with garbage signature bytes u
 
 // --- Fallback key parity -----------------------------------------------------
 //
-// Spec: Matrix Client-Server API v1.18
-// URL:  ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3keysupload
+// Spec: Matrix Client-Server API v1.19
+// URL:  ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3keysupload
 //
 // Fallback keys (signed_curve25519 with `fallback: true`) follow the same
 // rules as one-time keys: they MUST be SignedKey objects whose signature is
@@ -420,8 +420,8 @@ SCENARIO("E2EE /keys/upload rejects fallback keys signed by a different ed25519 
 
 // --- No prior device_keys MUST NOT block first /keys/upload with OTK ---------
 //
-// Spec: Matrix Client-Server API v1.18
-// URL:  ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3keysupload
+// Spec: Matrix Client-Server API v1.19
+// URL:  ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3keysupload
 //
 // Bug 11 fix: signed_curve25519 OTKs must be verifiable against the device's
 // own ed25519 identity key. When no device_keys have been uploaded, the server

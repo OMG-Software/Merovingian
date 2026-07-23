@@ -3,8 +3,8 @@
 // +-------------------------------------------------------------------------+
 // |         MATRIX CLIENT-SERVER API CONFORMANCE TESTS                      |
 // |                                                                         |
-// |  Spec: Matrix Client-Server API v1.18                                   |
-// |  URL:  ../../docs/matrix-v1.18-spec/client-server-api.md                 |
+// |  Spec: Matrix Client-Server API v1.19                                   |
+// |  URL:  ../../docs/matrix-v1.19-spec/client-server-api.md                 |
 // |                                                                         |
 // |  !! IMPORTANT - FOR HUMANS AND LLMs ALIKE !!                            |
 // |                                                                         |
@@ -142,7 +142,7 @@ using namespace merovingian::tests;
 // Bootstraps a server administrator (with the given localpart) and logs them
 // in, returning the admin access token. Used by the account moderation
 // (lock/suspend) conformance scenarios, whose endpoints require a server admin
-// caller per spec v1.18. The localpart lets a scenario create a second, distinct
+// caller per spec v1.19. The localpart lets a scenario create a second, distinct
 // administrator to exercise the "target is another administrator" guard.
 [[nodiscard]] auto admin_token(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& localpart)
     -> std::string
@@ -387,7 +387,7 @@ auto deliver_federated_direct_to_device(merovingian::homeserver::ClientServerRun
 } // namespace
 
 // --- GET /_matrix/client/versions --------------------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientversions
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientversions
 //
 // MUST return a JSON object with:
 //   versions         - non-empty array of supported spec version strings
@@ -427,7 +427,7 @@ SCENARIO("GET /versions returns required spec fields", "[conformance][client-ser
 }
 
 // --- POST /_matrix/client/v3/register ----------------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3register
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3register
 //
 // Matrix clients send an empty registration probe first when the homeserver
 // requires interactive authentication for registration.
@@ -583,7 +583,7 @@ SCENARIO("POST /register success response contains required spec fields", "[conf
     }
 }
 
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3register
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3register
 //
 // §5.5.1: If a device_id is specified in the request body the server MUST include
 // that exact device_id in the response.
@@ -617,7 +617,7 @@ SCENARIO("POST /register with device_id in request returns matching device_id in
     }
 }
 
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3register
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3register
 //
 // §5.5.1: If inhibit_login is true the server MUST NOT return an access_token
 // or device_id in the response body; only user_id is present.
@@ -654,7 +654,7 @@ SCENARIO("POST /register with inhibit_login:true returns only user_id", "[confor
     }
 }
 
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3register
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3register
 //
 // The device created by registration is a real session and MUST appear in
 // GET /devices so the client can manage it.
@@ -707,7 +707,7 @@ SCENARIO("POST /register device is visible via GET /devices", "[conformance][cli
     }
 }
 
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3register
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3register
 //
 // initial_device_display_name from the registration request MUST be stored as
 // the device's display name.
@@ -766,7 +766,7 @@ SCENARIO("POST /register with initial_device_display_name stores it as the devic
 }
 
 // --- GET /_matrix/client/v3/login --------------------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3login
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3login
 //
 // MUST return a JSON object with:
 //   flows - array of login flow objects, each with a "type" string field
@@ -813,7 +813,7 @@ SCENARIO("GET /login returns flows array with at least m.login.password", "[conf
 }
 
 // --- POST /_matrix/client/v3/login -------------------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3login
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3login
 //
 // Success MUST return a JSON object with:
 //   user_id      - fully-qualified Matrix ID
@@ -869,7 +869,7 @@ SCENARIO("POST /login success response contains required spec fields", "[conform
     }
 }
 
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3login
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3login
 //
 // initial_device_display_name in the login request MUST be stored as the
 // device display name and appear in GET /devices.
@@ -933,7 +933,7 @@ SCENARIO("POST /login with initial_device_display_name stores it as the device d
 }
 
 // --- POST /_matrix/client/v3/logout ------------------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3logout
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3logout
 //
 // Success MUST return HTTP 200 with an empty JSON object {}.
 SCENARIO("POST /logout returns 200 with empty JSON object", "[conformance][client-server][logout]")
@@ -965,7 +965,7 @@ SCENARIO("POST /logout returns 200 with empty JSON object", "[conformance][clien
 }
 
 // --- GET /_matrix/client/v3/account/whoami -----------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3accountwhoami
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3accountwhoami
 //
 // MUST return a JSON object with:
 //   user_id   - fully-qualified Matrix ID of the authenticated user
@@ -1055,7 +1055,7 @@ SCENARIO("Registration-issued session reports its device and can upload device k
 }
 
 // --- POST /_matrix/client/v3/keys/upload -------------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3keysupload
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3keysupload
 //
 // MUST return a JSON object with:
 //   one_time_key_counts - object mapping key algorithm to remaining count
@@ -1090,9 +1090,9 @@ SCENARIO("POST /keys/upload response contains one_time_key_counts object", "[con
     }
 }
 
-// Spec: Matrix Client-Server API v1.18
+// Spec: Matrix Client-Server API v1.19
 // Endpoint: POST /_matrix/client/v3/keys/upload
-// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3keysupload
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3keysupload
 //
 // MUST reject a one-time key that carries the correct key_id in its
 // signatures object but whose signature bytes do not cryptographically
@@ -1150,7 +1150,7 @@ SCENARIO("POST /keys/upload rejects a one-time key whose signature bytes fail Ed
 }
 
 // --- POST /_matrix/client/v3/keys/query --------------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3keysquery
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3keysquery
 //
 // MUST return a JSON object with:
 //   device_keys - object mapping user IDs to device key maps
@@ -1190,7 +1190,7 @@ SCENARIO("POST /keys/query response contains device_keys and failures objects",
 }
 
 // --- POST /_matrix/client/v3/keys/claim --------------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3keysclaim
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3keysclaim
 //
 // MUST return a JSON object with:
 //   one_time_keys - object mapping user IDs to claimed one-time keys
@@ -1228,7 +1228,7 @@ SCENARIO("POST /keys/claim response contains one_time_keys and failures objects"
 }
 
 // --- keys/upload → keys/query round-trip -------------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3keysquery
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3keysquery
 //
 // After uploading device keys, POST /keys/query MUST return those keys for
 // that user.  This round-trip verifies that the upload is actually stored and
@@ -1271,7 +1271,7 @@ SCENARIO("POST /keys/upload then POST /keys/query returns the uploaded device ke
 }
 
 // --- keys/upload (OTKs) → keys/claim round-trip -----------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3keysclaim
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3keysclaim
 //
 // After uploading one-time keys, POST /keys/claim MUST return one key for the
 // claimed device and algorithm, and the key MUST be consumed (subsequent claim
@@ -1341,7 +1341,7 @@ SCENARIO("POST /keys/upload with OTKs then POST /keys/claim returns and consumes
 }
 
 // --- POST /_matrix/client/v3/keys/device_signing/upload ----------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3keysdevice_signingupload
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3keysdevice_signingupload
 //
 // This endpoint uses the User-Interactive Authentication API (UIA).
 // A request without auth MUST return 401 with the UIA flows challenge.
@@ -1449,7 +1449,7 @@ SCENARIO("POST /keys/device_signing/upload then POST /keys/query returns publish
 }
 
 // --- POST /_matrix/client/v3/keys/signatures/upload --------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3keyssignaturesupload
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3keyssignaturesupload
 //
 // MUST return a JSON object with:
 //   failures - object mapping user IDs to failed key IDs (may be empty)
@@ -1553,7 +1553,7 @@ SCENARIO("POST /keys/signatures/upload then POST /keys/query returns the uploade
 }
 
 // --- POST /_matrix/client/v3/keys/query — user_signing_key visibility --------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3keysquery
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3keysquery
 //
 // §11.11.3: The user_signing_key MUST only be returned to the user themselves;
 // it MUST NOT be disclosed to other users querying that user's keys.
@@ -1612,7 +1612,7 @@ SCENARIO("POST /keys/query does not expose user_signing_key to non-owners",
 }
 
 // --- PUT /_matrix/client/v3/sendToDevice — wildcard device delivery ----------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#put_matrixclientv3sendtoeventtypetxnid
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3sendtoeventtypetxnid
 //
 // A device_id of "*" MUST deliver the to-device event to every device belonging
 // to the target user, not just the first or a literal device named "*".
@@ -1663,7 +1663,7 @@ SCENARIO("PUT /sendToDevice with \"*\" delivers to all target user devices",
 }
 
 // --- POST /keys/device_signing/upload → device_lists.changed in /sync --------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3sync
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3sync
 //
 // §11.11.1: When a user's cross-signing keys change the server MUST include
 // that user's ID in device_lists.changed in the next /sync for all observers,
@@ -1722,7 +1722,7 @@ SCENARIO("POST /keys/device_signing/upload emits device_lists.changed in /sync",
 }
 
 // --- POST /keys/signatures/upload → device_lists.changed in /sync ------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3sync
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3sync
 //
 // §11.11.1: A signature upload changes the user's verified key graph; the server
 // MUST include the user's ID in device_lists.changed in subsequent syncs so that
@@ -1790,7 +1790,7 @@ SCENARIO("POST /keys/signatures/upload emits device_lists.changed in /sync",
 }
 
 // --- GET /_matrix/client/v3/room_keys/version (no backup) --------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3room_keysversion
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3room_keysversion
 //
 // If no backup exists: MUST return 404 with errcode M_NOT_FOUND.
 SCENARIO("GET /room_keys/version returns M_NOT_FOUND when no backup exists", "[conformance][client-server][key-backup]")
@@ -1824,7 +1824,7 @@ SCENARIO("GET /room_keys/version returns M_NOT_FOUND when no backup exists", "[c
 }
 
 // --- POST /_matrix/client/v3/room_keys/version --------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3room_keysversion
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3room_keysversion
 //
 // MUST return a JSON object with:
 //   version - non-empty string identifier for the newly created backup
@@ -1861,7 +1861,7 @@ SCENARIO("POST /room_keys/version returns a non-empty version string", "[conform
 }
 
 // --- GET /_matrix/client/v3/room_keys/version (backup exists) ----------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3room_keysversion
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3room_keysversion
 //
 // MUST return a JSON object with:
 //   algorithm - string naming the backup algorithm (e.g. "m.megolm_backup.v1")
@@ -1930,7 +1930,7 @@ SCENARIO("GET /room_keys/version returns backup metadata including count and eta
 }
 
 // --- DELETE /_matrix/client/v3/room_keys/version/{version} -------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#delete_matrixclientv3room_keysversion
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#delete_matrixclientv3room_keysversion
 //
 // After a successful DELETE the backup MUST be gone: a subsequent GET
 // MUST return 404 M_NOT_FOUND. Element polls GET immediately after DELETE;
@@ -1975,7 +1975,7 @@ SCENARIO("DELETE /room_keys/version removes the backup so a subsequent GET retur
 }
 
 // --- GET /_matrix/client/v3/sync ---------------------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3sync
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3sync
 //
 // MUST return a JSON object with:
 //   next_batch - opaque string token for the next incremental sync
@@ -2015,7 +2015,7 @@ SCENARIO("GET /sync returns required spec fields", "[conformance][client-server]
 }
 
 // --- GET /_matrix/client/v3/sync (timeline.limited / prev_batch) -------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3sync
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3sync
 //
 // Timeline object fields:
 //   limited    - "True if the number of events returned was limited by the
@@ -2088,7 +2088,7 @@ SCENARIO("GET /sync incremental timeline reports limited=false when no events ar
     }
 }
 
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3sync
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3sync
 //
 // When more events exist in the window than the filter limit, the server MUST
 // return the MOST RECENT events (clients render newest history first), set
@@ -2178,7 +2178,7 @@ SCENARIO("GET /sync truncated timeline returns the most recent events with a bac
 }
 
 // --- CORS preflight for /_matrix/ resources ---------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#web-browser-clients
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#web-browser-clients
 //
 // "Servers MUST expose the following CORS headers ... in response to OPTIONS
 // requests ... Access-Control-Allow-Origin: *". This applies to ALL /_matrix/
@@ -2222,7 +2222,7 @@ SCENARIO("OPTIONS preflight on a media endpoint returns 200 with CORS headers", 
 }
 
 // --- GET /_matrix/client/v3/sync (room state & timeline content) -------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3sync
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3sync
 //
 // MUST: timeline events include full event content (type, content, sender,
 //       event_id, origin_server_ts) — not just event_id and sender.
@@ -2230,7 +2230,7 @@ SCENARIO("OPTIONS preflight on a media endpoint returns 200 with CORS headers", 
 //       so clients can determine the room version.
 // MUST: rooms created without an explicit room_version default to the server's
 //       latest supported version (currently "12").
-SCENARIO("GET /sync returns the full top-level v1.18 sync envelope", "[conformance][client-server][sync][surfaces]")
+SCENARIO("GET /sync returns the full top-level v1.19 sync envelope", "[conformance][client-server][sync][surfaces]")
 {
     GIVEN("a logged-in user with populated sync surfaces")
     {
@@ -2303,9 +2303,9 @@ SCENARIO("GET /sync returns the full top-level v1.18 sync envelope", "[conforman
     }
 }
 
-// Spec: Matrix Client-Server API v1.18
+// Spec: Matrix Client-Server API v1.19
 // Endpoint / Section: GET /sync — LeftRoom
-// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3sync
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3sync
 //
 // Spec MUST: rooms.leave.<room_id>.timeline is "the timeline of messages and
 // state changes in the room up to the point when the user left" — not merely
@@ -2551,7 +2551,7 @@ SCENARIO("GET /sync returns full event content and correct room version in state
 }
 
 // --- GET /_matrix/client/v3/rooms/{roomId}/members ---------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3roomsroomidmembers
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3roomsroomidmembers
 //
 // MUST return a JSON object with:
 //   chunk - array of m.room.member state events (may be empty; filtered by membership param)
@@ -2611,7 +2611,7 @@ SCENARIO("GET /rooms/{roomId}/members returns chunk array with creator membershi
 }
 
 // --- GET /_matrix/client/v3/rooms/{roomId}/members (after local join) ---------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3roomsroomidmembers
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3roomsroomidmembers
 //
 // A second user joining a local room must appear in the /members response.
 // The join path must persist both the membership record AND a corresponding
@@ -2658,7 +2658,7 @@ SCENARIO("GET /rooms/{roomId}/members includes joined user after local join",
 }
 
 // --- GET /_matrix/client/v3/rooms/{roomId}/members (invite -> local join) ----
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3roomsroomidmembers
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3roomsroomidmembers
 //
 // An invited local user who joins must replace the invite state with a
 // `m.room.member` event whose `content.membership` is `join`.
@@ -2732,7 +2732,7 @@ SCENARIO("GET /rooms/{roomId}/members reports join membership after invited loca
 }
 
 // --- GET /_matrix/client/v3/rooms/{roomId}/members (unknown room) ------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3roomsroomidmembers
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3roomsroomidmembers
 //
 // MUST return 404 M_NOT_FOUND for a room that does not exist.
 SCENARIO("GET /rooms/{roomId}/members returns 404 for an unknown room", "[conformance][client-server][rooms][members]")
@@ -2762,7 +2762,7 @@ SCENARIO("GET /rooms/{roomId}/members returns 404 for an unknown room", "[confor
 }
 
 // --- Matrix error shape (unauthenticated requests) ---------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#standard-error-response
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#standard-error-response
 //
 // All 4xx/5xx responses MUST contain a JSON object with:
 //   errcode - a string error code (e.g. "M_MISSING_TOKEN")
@@ -2810,7 +2810,7 @@ SCENARIO("Unauthenticated requests return 401 with a Matrix error object", "[con
 // =============================================================================
 
 // --- POST /_matrix/client/v3/refresh ------------------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3refresh
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3refresh
 //
 // MUST return:
 //   access_token  - new bearer token string
@@ -2876,7 +2876,7 @@ SCENARIO("POST /refresh returns a new access_token and refresh_token", "[conform
 }
 
 // --- POST /_matrix/client/v3/refresh — advertised TTL matches enforced TTL ---
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3refresh
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3refresh
 //
 // The expires_in_ms the server advertises MUST be the lifetime it actually
 // enforces server-side, so a client can refresh before the access token stops
@@ -2922,7 +2922,7 @@ SCENARIO("POST /refresh advertises the configured access-token lifetime",
 }
 
 // --- POST /_matrix/client/v3/refresh — expired refresh tokens are rejected ---
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3refresh
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3refresh
 //
 // A refresh token past its TTL MUST NOT rotate into a new access token; the
 // client MUST re-authenticate. Guards #275 server-side refresh-token expiry.
@@ -2976,7 +2976,7 @@ SCENARIO("POST /refresh rejects an expired refresh token", "[conformance][client
 }
 
 // --- POST /_matrix/client/v3/logout/all ---------------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3logoutall
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3logoutall
 //
 // MUST return 200 with an empty JSON object.
 SCENARIO("POST /logout/all returns 200 with empty JSON object", "[conformance][client-server][session]")
@@ -3005,7 +3005,7 @@ SCENARIO("POST /logout/all returns 200 with empty JSON object", "[conformance][c
 }
 
 // --- GET /_matrix/client/v1/auth_metadata ------------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv1auth_metadata
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv1auth_metadata
 // OIDC discovery is optional; unsupported servers should answer this
 // unauthenticated probe cleanly so clients do not mistake lack of OIDC for an
 // authentication failure.
@@ -3035,7 +3035,7 @@ SCENARIO("GET /v1/auth_metadata returns an unauthenticated 404 M_UNRECOGNIZED wh
 }
 
 // --- POST /_matrix/client/v1/login/get_token ----------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv1loginget_token
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv1loginget_token
 // IMPLEMENTATION GAP: login token generation not yet implemented.
 SCENARIO("POST /v1/login/get_token returns 404 M_UNRECOGNIZED (implementation gap)",
          "[conformance][client-server][session]")
@@ -3065,7 +3065,7 @@ SCENARIO("POST /v1/login/get_token returns 404 M_UNRECOGNIZED (implementation ga
 }
 
 // --- GET /_matrix/client/v3/login/sso/redirect --------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3loginssoredirect
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3loginssoredirect
 // IMPLEMENTATION GAP: SSO login not yet implemented.
 SCENARIO("GET /login/sso/redirect returns 404 M_UNRECOGNIZED (implementation gap)",
          "[conformance][client-server][session]")
@@ -3096,7 +3096,7 @@ SCENARIO("GET /login/sso/redirect returns 404 M_UNRECOGNIZED (implementation gap
 }
 
 // --- GET /_matrix/client/v3/login/sso/redirect/{idpId} ------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3loginssoredirectidpid
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3loginssoredirectidpid
 // IMPLEMENTATION GAP: per-IdP SSO redirect not yet implemented.
 SCENARIO("GET /login/sso/redirect/{idpId} returns 404 M_UNRECOGNIZED (implementation gap)",
          "[conformance][client-server][session]")
@@ -3131,7 +3131,7 @@ SCENARIO("GET /login/sso/redirect/{idpId} returns 404 M_UNRECOGNIZED (implementa
 // =============================================================================
 
 // --- GET /.well-known/matrix/client -------------------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_well-knownmatrixclient
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_well-knownmatrixclient
 //
 // MUST return:
 //   m.homeserver        - object with at least base_url string field
@@ -3168,7 +3168,7 @@ SCENARIO("GET /.well-known/matrix/client returns homeserver discovery info",
 }
 
 // --- GET /.well-known/matrix/policy_server ------------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_well-knownmatrixpolicy_server
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_well-knownmatrixpolicy_server
 // IMPLEMENTATION GAP: policy server discovery not yet implemented.
 SCENARIO("GET /.well-known/matrix/policy_server returns 404 M_UNRECOGNIZED (implementation gap)",
          "[conformance][client-server][server-admin]")
@@ -3198,7 +3198,7 @@ SCENARIO("GET /.well-known/matrix/policy_server returns 404 M_UNRECOGNIZED (impl
 }
 
 // --- GET /.well-known/matrix/support ------------------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_well-knownmatrixsupport
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_well-knownmatrixsupport
 // IMPLEMENTATION GAP: support contact discovery not yet implemented.
 SCENARIO("GET /.well-known/matrix/support returns 404 M_UNRECOGNIZED (implementation gap)",
          "[conformance][client-server][server-admin]")
@@ -3228,7 +3228,7 @@ SCENARIO("GET /.well-known/matrix/support returns 404 M_UNRECOGNIZED (implementa
 }
 
 // --- GET /_matrix/client/v3/admin/whois/{userId} ------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3adminwhoisuserid
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3adminwhoisuserid
 // IMPLEMENTATION GAP: admin whois not yet implemented.
 SCENARIO("GET /admin/whois/{userId} returns 404 M_UNRECOGNIZED (implementation gap)",
          "[conformance][client-server][server-admin]")
@@ -3258,9 +3258,9 @@ SCENARIO("GET /admin/whois/{userId} returns 404 M_UNRECOGNIZED (implementation g
 }
 
 // --- GET /_matrix/client/v1/admin/lock/{userId} -------------------------------
-// Spec: Matrix Client-Server API v1.18
+// Spec: Matrix Client-Server API v1.19
 // Endpoint: GET /_matrix/client/v1/admin/lock/{userId}
-// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv1adminlockuserid
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv1adminlockuserid
 //
 // The caller MUST be a server admin. To prevent user enumeration, authorization
 // MUST be checked before any account lookup. Responses: 200 {"locked":bool},
@@ -3362,9 +3362,9 @@ SCENARIO("GET /v1/admin/lock/{userId} enforces admin auth and anti-enumeration",
 }
 
 // --- PUT /_matrix/client/v1/admin/lock/{userId} -------------------------------
-// Spec: Matrix Client-Server API v1.18
+// Spec: Matrix Client-Server API v1.19
 // Endpoint: PUT /_matrix/client/v1/admin/lock/{userId}
-// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#put_matrixclientv1adminlockuserid
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv1adminlockuserid
 //
 // Sets the locked status of a server-local user. The caller MUST be a server
 // admin and MUST NOT lock their own account or another administrator's account
@@ -3462,9 +3462,9 @@ SCENARIO("PUT /v1/admin/lock/{userId} locks and unlocks a target account", "[con
 }
 
 // --- GET /_matrix/client/v1/admin/suspend/{userId} ----------------------------
-// Spec: Matrix Client-Server API v1.18
+// Spec: Matrix Client-Server API v1.19
 // Endpoint: GET /_matrix/client/v1/admin/suspend/{userId}
-// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv1adminsuspenduserid
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv1adminsuspenduserid
 //
 // Gets the suspended status of a server-local user. Same admin-auth and
 // anti-enumeration rules as the lock endpoint. 200 {"suspended":bool}.
@@ -3525,9 +3525,9 @@ SCENARIO("GET /v1/admin/suspend/{userId} enforces admin auth and returns status"
 }
 
 // --- PUT /_matrix/client/v1/admin/suspend/{userId} ----------------------------
-// Spec: Matrix Client-Server API v1.18
+// Spec: Matrix Client-Server API v1.19
 // Endpoint: PUT /_matrix/client/v1/admin/suspend/{userId}
-// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#put_matrixclientv1adminsuspenduserid
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv1adminsuspenduserid
 //
 // Sets the suspended status of a server-local user. The caller MUST be a server
 // admin and MUST NOT suspend their own account or another administrator's
@@ -3588,9 +3588,9 @@ SCENARIO("PUT /v1/admin/suspend/{userId} suspends and unsuspends a target accoun
 }
 
 // --- Account locking: request-path enforcement (M_USER_LOCKED) ----------------
-// Spec: Matrix Client-Server API v1.18
+// Spec: Matrix Client-Server API v1.19
 // Section: Account locking
-// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#account-locking
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#account-locking
 //
 // When an account is locked, servers MUST return 401 M_USER_LOCKED with
 // soft_logout:true on all Client-Server APIs except POST /logout and
@@ -3641,9 +3641,9 @@ SCENARIO("A locked account receives M_USER_LOCKED on all APIs except logout",
 }
 
 // --- Account suspension: request-path enforcement (M_USER_SUSPENDED) ----------
-// Spec: Matrix Client-Server API v1.18
+// Spec: Matrix Client-Server API v1.19
 // Section: Account suspension
-// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#account-suspension
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#account-suspension
 //
 // Suspended users MUST receive 403 M_USER_SUSPENDED on disallowed actions
 // (sending messages, joining rooms, etc.) but SHOULD still be able to /sync,
@@ -3702,9 +3702,9 @@ SCENARIO("A suspended account receives M_USER_SUSPENDED on disallowed actions on
 }
 
 // --- Account suspension: login still permitted --------------------------------
-// Spec: Matrix Client-Server API v1.18
+// Spec: Matrix Client-Server API v1.19
 // Section: Account suspension
-// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#account-suspension
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#account-suspension
 //
 // Suspended users SHOULD be permitted to log in and create additional sessions
 // (which are themselves suspended). The request-path gate enforces suspension
@@ -3752,7 +3752,7 @@ SCENARIO("A suspended account may still log in and create a new session",
 // =============================================================================
 
 // --- POST /_matrix/client/v3/account/password ---------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3accountpassword
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3accountpassword
 //
 // Uses User-Interactive Authentication (UIA). The only mandatory stage is
 // m.login.password. A request without an auth field MUST receive 401 with
@@ -3785,7 +3785,7 @@ SCENARIO("POST /account/password without auth returns 401 UIA challenge", "[conf
     }
 }
 
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3accountpassword
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3accountpassword
 //
 // When auth.type is m.login.password but the supplied password is wrong,
 // the server MUST return 401 (re-issue the UIA challenge).
@@ -3816,7 +3816,7 @@ SCENARIO("POST /account/password with wrong current password returns 401", "[con
     }
 }
 
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3accountpassword
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3accountpassword
 //
 // MUST return 200 with an empty JSON object on success.
 SCENARIO("POST /account/password returns 200 with empty JSON object", "[conformance][client-server][account]")
@@ -3845,7 +3845,7 @@ SCENARIO("POST /account/password returns 200 with empty JSON object", "[conforma
     }
 }
 
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3accountpassword
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3accountpassword
 //
 // logout_devices defaults to true. When a user changes their password the server
 // MUST revoke the access tokens of all OTHER devices/sessions; the caller's own
@@ -3889,7 +3889,7 @@ SCENARIO("POST /account/password with logout_devices true revokes other devices'
     }
 }
 
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3accountpassword
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3accountpassword
 //
 // When logout_devices is explicitly false the server MUST NOT revoke other
 // devices' tokens — only the password changes.
@@ -3925,7 +3925,7 @@ SCENARIO("POST /account/password with logout_devices false keeps other devices' 
     }
 }
 
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3accountpassword
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3accountpassword
 //
 // When logout_devices is omitted it defaults to true, so other devices' tokens
 // are revoked exactly as if it had been set explicitly.
@@ -3962,7 +3962,7 @@ SCENARIO("POST /account/password with logout_devices omitted defaults to revokin
 }
 
 // --- POST /_matrix/client/v3/account/deactivate -------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3accountdeactivate
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3accountdeactivate
 // IMPLEMENTATION GAP: account deactivation not yet implemented.
 SCENARIO("POST /account/deactivate returns 404 M_UNRECOGNIZED (implementation gap)",
          "[conformance][client-server][account]")
@@ -3992,7 +3992,7 @@ SCENARIO("POST /account/deactivate returns 404 M_UNRECOGNIZED (implementation ga
     }
 }
 // --- GET /_matrix/client/v3/account/3pid -------------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3account3pid
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3account3pid
 // Spec MUST: return the third-party identifiers associated with the account.
 SCENARIO("GET /account/3pid returns associated identifiers with required fields",
          "[conformance][client-server][account][3pid]")
@@ -4043,7 +4043,7 @@ SCENARIO("GET /account/3pid returns associated identifiers with required fields"
 }
 
 // --- POST /_matrix/client/v3/account/3pid/add ---------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3account3pidadd
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3account3pidadd
 // Spec MUST: incomplete UIA returns 401; successful UIA returns 200.
 SCENARIO("POST /account/3pid/add enforces UIA and accepts the validated identifier",
          "[conformance][client-server][account][3pid]")
@@ -4085,7 +4085,7 @@ SCENARIO("POST /account/3pid/add enforces UIA and accepts the validated identifi
 }
 
 // --- POST /_matrix/client/v3/account/3pid/email/requestToken -----------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3account3pidemailrequesttoken
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3account3pidemailrequesttoken
 // Spec MUST: this endpoint is unauthenticated and returns a sid.
 SCENARIO("POST /account/3pid/email/requestToken is unauthenticated and returns a validation sid",
          "[conformance][client-server][account][3pid]")
@@ -4116,7 +4116,7 @@ SCENARIO("POST /account/3pid/email/requestToken is unauthenticated and returns a
 }
 
 // --- POST /_matrix/client/v3/account/3pid/msisdn/requestToken ----------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3account3pidmsisdnrequesttoken
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3account3pidmsisdnrequesttoken
 // Spec MUST: this endpoint is unauthenticated and returns a sid.
 SCENARIO("POST /account/3pid/msisdn/requestToken is unauthenticated and returns a validation sid",
          "[conformance][client-server][account][3pid]")
@@ -4148,7 +4148,7 @@ SCENARIO("POST /account/3pid/msisdn/requestToken is unauthenticated and returns 
 }
 
 // --- POST /_matrix/client/v3/account/password/msisdn/requestToken ------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3accountpasswordmsisdnrequesttoken
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3accountpasswordmsisdnrequesttoken
 // IMPLEMENTATION GAP: password reset MSISDN token not yet implemented.
 SCENARIO("POST /account/password/msisdn/requestToken returns 404 M_UNRECOGNIZED (implementation gap)",
          "[conformance][client-server][account]")
@@ -4180,7 +4180,7 @@ SCENARIO("POST /account/password/msisdn/requestToken returns 404 M_UNRECOGNIZED 
 }
 
 // --- GET /_matrix/client/v3/register/available --------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3registeravailable
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3registeravailable
 //
 // MUST return 200 with:
 //   available - boolean true when the username can be registered
@@ -4248,7 +4248,7 @@ SCENARIO("GET /register/available reports spec-shaped availability and validatio
 }
 
 // --- GET /_matrix/client/v1/register/m.login.registration_token/validity -----
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv1registermloginregistration_tokenvalidity
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv1registermloginregistration_tokenvalidity
 //
 // MUST return 200 with:
 //   valid - boolean indicating whether the supplied token can be used
@@ -4299,7 +4299,7 @@ SCENARIO("GET /v1/register/m.login.registration_token/validity reports token val
 }
 
 // --- POST /_matrix/client/v3/register/email/requestToken --------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3registeremailrequesttoken
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3registeremailrequesttoken
 //
 // MUST return 200 with:
 //   sid - opaque validation session identifier
@@ -4342,7 +4342,7 @@ SCENARIO("POST /register/email/requestToken returns a spec-shaped validation ses
 }
 
 // --- POST /_matrix/client/v3/register/msisdn/requestToken -------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3registermsisdnrequesttoken
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3registermsisdnrequesttoken
 //
 // MUST return 200 with:
 //   sid - opaque validation session identifier
@@ -4386,7 +4386,7 @@ SCENARIO("POST /register/msisdn/requestToken returns a spec-shaped validation se
 // =============================================================================
 
 // --- GET /_matrix/client/v3/capabilities --------------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3capabilities
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3capabilities
 //
 // MUST return:
 //   capabilities - object containing server capability flags
@@ -4429,7 +4429,7 @@ SCENARIO("GET /capabilities returns the server capabilities object", "[conforman
 // =============================================================================
 
 // --- GET /_matrix/client/v3/devices -------------------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3devices
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3devices
 //
 // MUST return:
 //   devices - array of device objects
@@ -4461,7 +4461,7 @@ SCENARIO("GET /devices returns the devices array for the authenticated user", "[
 }
 
 // --- GET /_matrix/client/v3/devices/{deviceId} --------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3devicesdeviceid
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3devicesdeviceid
 //
 // MUST return:
 //   device_id - string identifier of the device
@@ -4495,7 +4495,7 @@ SCENARIO("GET /devices/{deviceId} returns the device object for a known device",
 }
 
 // --- PUT /_matrix/client/v3/devices/{deviceId} --------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#put_matrixclientv3devicesdeviceid
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3devicesdeviceid
 //
 // MUST return 200 with an empty JSON object on success.
 SCENARIO("PUT /devices/{deviceId} returns 200 with empty JSON object", "[conformance][client-server][devices]")
@@ -4524,7 +4524,7 @@ SCENARIO("PUT /devices/{deviceId} returns 200 with empty JSON object", "[conform
 }
 
 // --- DELETE /_matrix/client/v3/devices/{deviceId} ----------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#delete_matrixclientv3devicesdeviceid
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#delete_matrixclientv3devicesdeviceid
 //
 // MUST return 200 with an empty JSON object on success.
 SCENARIO("DELETE /devices/{deviceId} returns 200 with empty JSON object", "[conformance][client-server][devices]")
@@ -4579,7 +4579,7 @@ SCENARIO("DELETE /devices/{deviceId} returns 200 with empty JSON object", "[conf
 }
 
 // --- POST /_matrix/client/v3/delete_devices -----------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3delete_devices
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3delete_devices
 //
 // The server MUST require UIA before deleting devices in bulk and MUST return
 // 200 {} once the requested devices have been removed. Devices already removed
@@ -4719,7 +4719,7 @@ SCENARIO("POST /delete_devices requires UIA and deletes listed devices", "[confo
 // =============================================================================
 
 // --- GET /_matrix/client/v3/keys/changes --------------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3keyschanges
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3keyschanges
 // Returns users whose device lists changed between two sync stream positions.
 // Element requests this on startup to avoid redundant /keys/query calls.
 SCENARIO("GET /keys/changes returns 200 with changed and left arrays", "[conformance][client-server][e2ee][keys]")
@@ -5070,7 +5070,7 @@ SCENARIO("Encrypted invite join completes the local query claim sendToDevice boo
                 REQUIRE(sender != nullptr);
                 REQUIRE(*sender == "@alice:example.org");
 
-                // Spec (CS API v1.18, Send-to-Device messaging): deletion is keyed on
+                // Spec (CS API v1.19, Send-to-Device messaging): deletion is keyed on
                 // acknowledgement via the next_batch token, so the "exactly once" re-sync
                 // must acknowledge with that token rather than starting a fresh sync (an
                 // un-advanced token MUST redeliver — covered in the sync unit test).
@@ -5091,7 +5091,7 @@ SCENARIO("Encrypted invite join completes the local query claim sendToDevice boo
 }
 
 // --- GET /_matrix/client/v3/room_keys/version/{version} ----------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3room_keysversionversion
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3room_keysversionversion
 //
 // MUST return algorithm, auth_data, count, etag, and version for the requested backup version.
 SCENARIO("GET /room_keys/version/{version} returns backup metadata for a specific version",
@@ -5144,7 +5144,7 @@ SCENARIO("GET /room_keys/version/{version} returns backup metadata for a specifi
     }
 }
 
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3room_keysversionversion
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3room_keysversionversion
 //
 // MUST return 404 M_NOT_FOUND for a version that does not exist.
 SCENARIO("GET /room_keys/version/{version} returns 404 for an unknown version", "[conformance][client-server][e2ee]")
@@ -5173,7 +5173,7 @@ SCENARIO("GET /room_keys/version/{version} returns 404 for an unknown version", 
 }
 
 // --- PUT /_matrix/client/v3/room_keys/version/{version} ----------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#put_matrixclientv3room_keysversionversion
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3room_keysversionversion
 //
 // MUST return 200 with an empty JSON object on success.
 SCENARIO("PUT /room_keys/version/{version} returns 200 after updating backup metadata",
@@ -5211,7 +5211,7 @@ SCENARIO("PUT /room_keys/version/{version} returns 200 after updating backup met
 }
 
 // --- DELETE /_matrix/client/v3/room_keys/version/{version} -------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#delete_matrixclientv3room_keysversionversion
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#delete_matrixclientv3room_keysversionversion
 //
 // MUST return 200 with an empty JSON object on success.
 SCENARIO("DELETE /room_keys/version/{version} returns 200 after deleting a backup version",
@@ -5247,7 +5247,7 @@ SCENARIO("DELETE /room_keys/version/{version} returns 200 after deleting a backu
 }
 
 // --- PUT /_matrix/client/v3/room_keys/keys/{roomId}/{sessionId} --------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#put_matrixclientv3room_keyskeysroomidsessionid
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3room_keyskeysroomidsessionid
 //
 // MUST return RoomKeysUpdateResponse on success.
 SCENARIO("PUT /room_keys/keys/{roomId}/{sessionId} stores a session key backup", "[conformance][client-server][e2ee]")
@@ -5288,7 +5288,7 @@ SCENARIO("PUT /room_keys/keys/{roomId}/{sessionId} stores a session key backup",
     }
 }
 
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#put_matrixclientv3room_keyskeysroomidsessionid
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3room_keyskeysroomidsessionid
 //
 // Updating an existing backed-up session changes the stored backup state while
 // leaving the total session count unchanged, so the returned etag MUST change
@@ -5346,7 +5346,7 @@ SCENARIO("PUT /room_keys/keys/{roomId}/{sessionId} changes etag when an existing
 }
 
 // --- GET /_matrix/client/v3/room_keys/keys/{roomId}/{sessionId} --------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3room_keyskeysroomidsessionid
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3room_keyskeysroomidsessionid
 //
 // MUST return 200 with the backed-up session data on success.
 SCENARIO("GET /room_keys/keys/{roomId}/{sessionId} retrieves a backed-up session key",
@@ -5388,7 +5388,7 @@ SCENARIO("GET /room_keys/keys/{roomId}/{sessionId} retrieves a backed-up session
 }
 
 // --- GET /_matrix/client/v3/room_keys/keys/{roomId}/{sessionId} (data fields) -
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3room_keyskeysroomidsessionid
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3room_keyskeysroomidsessionid
 //
 // MUST return the stored KeyBackupData fields, not an empty placeholder.
 SCENARIO("GET /room_keys/keys/{roomId}/{sessionId} returns stored session data fields",
@@ -5431,7 +5431,7 @@ SCENARIO("GET /room_keys/keys/{roomId}/{sessionId} returns stored session data f
     }
 }
 
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3room_keyskeysroomidsessionid
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3room_keyskeysroomidsessionid
 //
 // MUST return 404 M_NOT_FOUND when the session does not exist in the backup.
 SCENARIO("GET /room_keys/keys/{roomId}/{sessionId} returns 404 for unknown session",
@@ -5470,7 +5470,7 @@ SCENARIO("GET /room_keys/keys/{roomId}/{sessionId} returns 404 for unknown sessi
 }
 
 // --- DELETE /_matrix/client/v3/room_keys/keys/{roomId}/{sessionId} -----------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#delete_matrixclientv3room_keyskeysroomidsessionid
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#delete_matrixclientv3room_keyskeysroomidsessionid
 //
 // MUST return RoomKeysUpdateResponse on success.
 SCENARIO("DELETE /room_keys/keys/{roomId}/{sessionId} removes a backed-up session key",
@@ -5518,7 +5518,7 @@ SCENARIO("DELETE /room_keys/keys/{roomId}/{sessionId} removes a backed-up sessio
 }
 
 // --- GET /_matrix/client/v3/room_keys/keys ------------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3room_keyskeys
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3room_keyskeys
 //
 // MUST return 200 with {"rooms":{}} when no sessions are backed up.
 SCENARIO("GET /room_keys/keys returns 200 with rooms object", "[conformance][client-server][e2ee]")
@@ -5545,7 +5545,7 @@ SCENARIO("GET /room_keys/keys returns 200 with rooms object", "[conformance][cli
     }
 }
 
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3room_keyskeys
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3room_keyskeys
 //
 // After uploading sessions via batch PUT, GET /room_keys/keys MUST return the
 // sessions nested under their room in the rooms object.
@@ -5592,7 +5592,7 @@ SCENARIO("GET /room_keys/keys returns stored sessions grouped by room", "[confor
 }
 
 // --- PUT /_matrix/client/v3/room_keys/keys ------------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#put_matrixclientv3room_keyskeys
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3room_keyskeys
 // MUST return RoomKeysUpdateResponse with count and etag.
 SCENARIO("PUT /room_keys/keys returns count and etag for the stored backup state", "[conformance][client-server][e2ee]")
 {
@@ -5630,7 +5630,7 @@ SCENARIO("PUT /room_keys/keys returns count and etag for the stored backup state
     }
 }
 
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#put_matrixclientv3room_keyskeys
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3room_keyskeys
 // MUST store session data and return RoomKeysUpdateResponse with count and etag.
 SCENARIO("PUT /room_keys/keys with session data stores and returns count and etag",
          "[conformance][client-server][e2ee]")
@@ -5671,7 +5671,7 @@ SCENARIO("PUT /room_keys/keys with session data stores and returns count and eta
     }
 }
 
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#put_matrixclientv3room_keyskeys
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3room_keyskeys
 //
 // Real clients (Element, Hydrogen) append ?version=N to the path.  The router
 // MUST match the route on the path portion only, ignoring the query string.
@@ -5706,7 +5706,7 @@ SCENARIO("PUT /room_keys/keys with ?version query param is routed correctly", "[
     }
 }
 
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3room_keyskeysroomidsessionid
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3room_keyskeysroomidsessionid
 //
 // Real Megolm session IDs can contain `/`, so clients percent-encode the path
 // component on GET. The server MUST decode the room_id/session_id path
@@ -5753,7 +5753,7 @@ SCENARIO("GET /room_keys/keys/{roomId}/{sessionId}?version=1 decodes encoded ses
     }
 }
 
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3room_keyskeysroomid
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3room_keyskeysroomid
 //
 // Room-level backup retrieval also uses an encoded roomId path component and a
 // required version query parameter. Sessions uploaded via batch PUT use decoded
@@ -5799,8 +5799,8 @@ SCENARIO("GET /room_keys/keys/{roomId}?version=1 decodes encoded room ids from b
     }
 }
 
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#put_matrixclientv3room_keyskeysroomidsessionid
-//       ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3room_keyskeysroomidsessionid
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3room_keyskeysroomidsessionid
+//       ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3room_keyskeysroomidsessionid
 //
 // Direct per-session PUT and GET must round-trip through encoded roomId and
 // sessionId path components. This ensures the path parser is spec-conformant
@@ -5864,7 +5864,7 @@ SCENARIO("PUT and GET /room_keys/keys/{roomId}/{sessionId}?version=1 round-trip 
 }
 
 // --- DELETE /_matrix/client/v3/room_keys/keys ---------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#delete_matrixclientv3room_keyskeys
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#delete_matrixclientv3room_keyskeys
 //
 // MUST return 200 with count and etag.  After deletion GET /room_keys/keys
 // MUST return an empty rooms object.
@@ -5919,7 +5919,7 @@ SCENARIO("DELETE /room_keys/keys removes all sessions and returns count", "[conf
 }
 
 // --- GET /_matrix/client/v3/room_keys/keys/{roomId} --------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3room_keyskeysroomid
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3room_keyskeysroomid
 //
 // MUST return {"sessions":{...}} — NOT a "rooms" wrapper.
 SCENARIO("GET /room_keys/keys/{roomId} returns a sessions object", "[conformance][client-server][e2ee]")
@@ -5946,7 +5946,7 @@ SCENARIO("GET /room_keys/keys/{roomId} returns a sessions object", "[conformance
     }
 }
 
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3room_keyskeysroomid
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3room_keyskeysroomid
 //
 // After uploading sessions, GET /room_keys/keys/{roomId} MUST include those
 // sessions keyed by session ID under "sessions".
@@ -5989,7 +5989,7 @@ SCENARIO("GET /room_keys/keys/{roomId} returns uploaded sessions for that room",
 }
 
 // --- PUT /_matrix/client/v3/room_keys/keys/{roomId} --------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#put_matrixclientv3room_keyskeysroomid
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3room_keyskeysroomid
 SCENARIO("PUT /room_keys/keys/{roomId} stores that room's sessions and returns count and etag",
          "[conformance][client-server][e2ee]")
 {
@@ -6038,7 +6038,7 @@ SCENARIO("PUT /room_keys/keys/{roomId} stores that room's sessions and returns c
 }
 
 // --- DELETE /_matrix/client/v3/room_keys/keys/{roomId} -----------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#delete_matrixclientv3room_keyskeysroomid
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#delete_matrixclientv3room_keyskeysroomid
 SCENARIO("DELETE /room_keys/keys/{roomId} removes only that room's sessions and returns count and etag",
          "[conformance][client-server][e2ee]")
 {
@@ -6104,7 +6104,7 @@ SCENARIO("DELETE /room_keys/keys/{roomId} removes only that room's sessions and 
 // =============================================================================
 
 // --- GET /_matrix/media/v3/config ---------------------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixmediav3config
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixmediav3config
 //
 // MUST return:
 //   m.upload.size - integer maximum upload size in bytes
@@ -6137,7 +6137,7 @@ SCENARIO("GET /media/v3/config returns the maximum upload size", "[conformance][
 }
 
 // --- POST /_matrix/media/v3/upload --------------------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixmediav3upload
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixmediav3upload
 SCENARIO("POST /media/v3/upload stores media and returns content_uri", "[conformance][client-server][media]")
 {
     GIVEN("a running client-server and a logged-in user")
@@ -6175,7 +6175,7 @@ SCENARIO("POST /media/v3/upload stores media and returns content_uri", "[conform
     }
 }
 
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixmediav3downloadservernamemediaid
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixmediav3downloadservernamemediaid
 // MUST return 200 with media content when the media ID exists.
 SCENARIO("GET /media/v3/download/{serverName}/{mediaId} returns uploaded media", "[conformance][client-server][media]")
 {
@@ -6222,7 +6222,7 @@ SCENARIO("GET /media/v3/download/{serverName}/{mediaId} returns uploaded media",
 }
 
 // --- GET /_matrix/media/v3/download/{serverName}/{mediaId} (missing media) ---
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixmediav3downloadservernamemediaid
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixmediav3downloadservernamemediaid
 //
 // Route is recognised (no auth required). Non-existent media returns 404
 // M_NOT_FOUND rather than M_UNRECOGNIZED, confirming the route is wired up.
@@ -6253,7 +6253,7 @@ SCENARIO("GET /media/v3/download/{serverName}/{mediaId} route is recognised", "[
 }
 
 // --- GET /_matrix/media/v3/download/{serverName}/{mediaId}/{fileName} --------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixmediav3downloadservernamemediaidfilename
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixmediav3downloadservernamemediaidfilename
 // The media download endpoint is implemented but returns 404 M_NOT_FOUND for
 // non-existent media (the named variant is a download with a filename hint).
 SCENARIO("GET /media/v3/download/{serverName}/{mediaId}/{fileName} returns 404 M_NOT_FOUND for missing media",
@@ -6282,7 +6282,7 @@ SCENARIO("GET /media/v3/download/{serverName}/{mediaId}/{fileName} returns 404 M
 }
 
 // --- GET /_matrix/media/v3/preview_url ----------------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixmediav3preview_url
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixmediav3preview_url
 // IMPLEMENTATION GAP: URL preview not yet implemented.
 SCENARIO("GET /media/v3/preview_url returns 404 M_UNRECOGNIZED (implementation gap)",
          "[conformance][client-server][media]")
@@ -6311,7 +6311,7 @@ SCENARIO("GET /media/v3/preview_url returns 404 M_UNRECOGNIZED (implementation g
     }
 }
 
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixmediav3thumbnailservernamemediaid
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixmediav3thumbnailservernamemediaid
 // MUST return 200 with thumbnail content when a thumbnail exists for the media ID.
 SCENARIO("GET /media/v3/thumbnail/{serverName}/{mediaId} returns thumbnail for uploaded media",
          "[conformance][client-server][media]")
@@ -6360,7 +6360,7 @@ SCENARIO("GET /media/v3/thumbnail/{serverName}/{mediaId} returns thumbnail for u
     }
 }
 
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixmediav3thumbnailservernamemediaid
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixmediav3thumbnailservernamemediaid
 // Non-existent media ID returns 404 M_NOT_FOUND.
 SCENARIO("GET /media/v3/thumbnail/{serverName}/{mediaId} returns 404 for missing thumbnail",
          "[conformance][client-server][media]")
@@ -6385,7 +6385,7 @@ SCENARIO("GET /media/v3/thumbnail/{serverName}/{mediaId} returns 404 for missing
 }
 
 // --- PUT /_matrix/media/v3/upload/{serverName}/{mediaId} ---------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#put_matrixmediav3uploadservernamemediaid
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixmediav3uploadservernamemediaid
 // IMPLEMENTATION GAP: asynchronous media upload by MXC not yet implemented.
 SCENARIO("PUT /media/v3/upload/{serverName}/{mediaId} returns 404 M_UNRECOGNIZED (implementation gap)",
          "[conformance][client-server][media]")
@@ -6415,7 +6415,7 @@ SCENARIO("PUT /media/v3/upload/{serverName}/{mediaId} returns 404 M_UNRECOGNIZED
 }
 
 // --- POST /_matrix/media/v1/create --------------------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixmediav1create
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixmediav1create
 // IMPLEMENTATION GAP: async media reservation not yet implemented.
 SCENARIO("POST /media/v1/create returns 404 M_UNRECOGNIZED (implementation gap)", "[conformance][client-server][media]")
 {
@@ -6444,7 +6444,7 @@ SCENARIO("POST /media/v1/create returns 404 M_UNRECOGNIZED (implementation gap)"
 }
 
 // --- GET /_matrix/client/v1/media/config --------------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv1mediaconfig
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv1mediaconfig
 // Summary: The authenticated v1 media config endpoint returns the media upload limits.
 SCENARIO("GET /v1/media/config returns upload limits", "[conformance][client-server][media]")
 {
@@ -6470,7 +6470,7 @@ SCENARIO("GET /v1/media/config returns upload limits", "[conformance][client-ser
     }
 }
 
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv1mediadownloadservernamemediaid
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv1mediadownloadservernamemediaid
 // MUST return 200 with media content when the media ID exists (authenticated variant).
 SCENARIO("GET /v1/media/download/{serverName}/{mediaId} returns uploaded media", "[conformance][client-server][media]")
 {
@@ -6516,7 +6516,7 @@ SCENARIO("GET /v1/media/download/{serverName}/{mediaId} returns uploaded media",
 }
 
 // --- GET /_matrix/client/v1/media/download/{serverName}/{mediaId} (missing media)
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv1mediadownloadservernamemediaid
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv1mediadownloadservernamemediaid
 SCENARIO("GET /v1/media/download/{serverName}/{mediaId} returns 404 for missing media",
          "[conformance][client-server][media]")
 {
@@ -6540,7 +6540,7 @@ SCENARIO("GET /v1/media/download/{serverName}/{mediaId} returns 404 for missing 
 }
 
 // --- GET /_matrix/client/v1/media/download/{serverName}/{mediaId}/{fileName} -
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv1mediadownloadservernamemediaidfilename
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv1mediadownloadservernamemediaidfilename
 SCENARIO("GET /v1/media/download/{serverName}/{mediaId}/{fileName} returns 404 for missing media",
          "[conformance][client-server][media]")
 {
@@ -6564,7 +6564,7 @@ SCENARIO("GET /v1/media/download/{serverName}/{mediaId}/{fileName} returns 404 f
 }
 
 // --- GET /_matrix/client/v1/media/preview_url ---------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv1mediapreview_url
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv1mediapreview_url
 // IMPLEMENTATION GAP: authenticated URL preview not yet implemented.
 SCENARIO("GET /v1/media/preview_url returns 404 M_UNRECOGNIZED (implementation gap)",
          "[conformance][client-server][media]")
@@ -6594,7 +6594,7 @@ SCENARIO("GET /v1/media/preview_url returns 404 M_UNRECOGNIZED (implementation g
 }
 
 // --- GET /_matrix/client/v1/media/thumbnail/{serverName}/{mediaId} -----------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv1mediathumbnailservernamemediaid
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv1mediathumbnailservernamemediaid
 // MUST return 200 with thumbnail content when a thumbnail exists (authenticated variant).
 SCENARIO("GET /v1/media/thumbnail/{serverName}/{mediaId} returns thumbnail for uploaded media",
          "[conformance][client-server][media]")
@@ -6641,7 +6641,7 @@ SCENARIO("GET /v1/media/thumbnail/{serverName}/{mediaId} returns thumbnail for u
     }
 }
 
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv1mediathumbnailservernamemediaid
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv1mediathumbnailservernamemediaid
 // Non-existent media ID returns 404 (authenticated variant).
 SCENARIO("GET /v1/media/thumbnail/{serverName}/{mediaId} returns 404 for missing thumbnail",
          "[conformance][client-server][media]")
@@ -6671,7 +6671,7 @@ SCENARIO("GET /v1/media/thumbnail/{serverName}/{mediaId} returns 404 for missing
 // =============================================================================
 
 // --- PUT /_matrix/client/v3/directory/list/appservice/{networkId}/{roomId} ---
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#put_matrixclientv3directorylistappservicenetworkidroomid
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3directorylistappservicenetworkidroomid
 // IMPLEMENTATION GAP: appservice directory visibility management not yet implemented.
 SCENARIO("PUT /directory/list/appservice/{networkId}/{roomId} returns 404 M_UNRECOGNIZED (implementation gap)",
          "[conformance][client-server][appservice]")
@@ -6706,7 +6706,7 @@ SCENARIO("PUT /directory/list/appservice/{networkId}/{roomId} returns 404 M_UNRE
 // =============================================================================
 
 // --- POST /_matrix/client/v3/createRoom ---------------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3createroom
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3createroom
 SCENARIO("POST /createRoom returns a room_id", "[conformance][client-server][rooms]")
 {
     GIVEN("a running client-server and a logged-in user")
@@ -6733,7 +6733,7 @@ SCENARIO("POST /createRoom returns a room_id", "[conformance][client-server][roo
     }
 }
 
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3createroom
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3createroom
 // "If the preset is private_chat or trusted_private_chat, the server SHOULD
 // enable end-to-end encryption in the room."
 // Verified via GET /rooms/{roomId}/state/m.room.encryption/ — a spec-defined
@@ -6832,7 +6832,7 @@ SCENARIO("POST /createRoom with public_chat preset does not produce an encrypted
 // =============================================================================
 
 // --- GET /_matrix/client/v3/directory/room/{roomAlias} -----------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3directoryroomroomalias
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3directoryroomroomalias
 SCENARIO("GET /directory/room/{alias} returns a recognisable error for unknown aliases",
          "[conformance][client-server][room-directory]")
 {
@@ -6859,7 +6859,7 @@ SCENARIO("GET /directory/room/{alias} returns a recognisable error for unknown a
 }
 
 // --- PUT /_matrix/client/v3/directory/room/{roomAlias} -----------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#put_matrixclientv3directoryroomroomalias
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3directoryroomroomalias
 SCENARIO("PUT /directory/room/{alias} maps an alias to a room", "[conformance][client-server][room-directory]")
 {
     GIVEN("a running client-server and a logged-in user with a room")
@@ -6887,7 +6887,7 @@ SCENARIO("PUT /directory/room/{alias} maps an alias to a room", "[conformance][c
 }
 
 // --- DELETE /_matrix/client/v3/directory/room/{roomAlias} --------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#delete_matrixclientv3directoryroomroomalias
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#delete_matrixclientv3directoryroomroomalias
 // IMPLEMENTATION GAP: alias deletion not yet implemented.
 SCENARIO("DELETE /directory/room/{alias} returns 404 M_UNRECOGNIZED (implementation gap)",
          "[conformance][client-server][room-directory]")
@@ -6917,7 +6917,7 @@ SCENARIO("DELETE /directory/room/{alias} returns 404 M_UNRECOGNIZED (implementat
 }
 
 // --- GET /_matrix/client/v3/rooms/{roomId}/aliases ---------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3roomsroomidaliases
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3roomsroomidaliases
 // Summary: The server returns an `aliases` array for joined room members.
 SCENARIO("GET /rooms/{roomId}/aliases returns alias array", "[conformance][client-server][room-directory]")
 {
@@ -6949,7 +6949,7 @@ SCENARIO("GET /rooms/{roomId}/aliases returns alias array", "[conformance][clien
 // =============================================================================
 
 // --- GET /_matrix/client/v3/publicRooms --------------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3publicrooms
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3publicrooms
 SCENARIO("GET /publicRooms returns chunk and total_room_count_estimate", "[conformance][client-server][room-discovery]")
 {
     GIVEN("a running client-server")
@@ -6977,8 +6977,8 @@ SCENARIO("GET /publicRooms returns chunk and total_room_count_estimate", "[confo
 }
 
 // --- POST /_matrix/client/v3/publicRooms -------------------------------------
-// Spec: Matrix Client-Server API v1.18
-// URL:  ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3publicrooms
+// Spec: Matrix Client-Server API v1.19
+// URL:  ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3publicrooms
 //
 // POST /publicRooms accepts an optional JSON body with filter and pagination
 // parameters and returns 200 with chunk (array) and total_room_count_estimate.
@@ -7041,8 +7041,8 @@ SCENARIO("POST /publicRooms returns 200 with chunk and total_room_count_estimate
 }
 
 // --- GET/POST /_matrix/client/v3/publicRooms?server= (remote proxy) ----------
-// Spec: Matrix Client-Server API v1.18
-// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3publicrooms
+// Spec: Matrix Client-Server API v1.19
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3publicrooms
 //
 // When the optional `server` query parameter names a different homeserver the
 // local server MUST proxy the request to that server's federation public-rooms
@@ -7099,7 +7099,7 @@ SCENARIO("GET /publicRooms?server= proxies to remote or serves locally", "[confo
 }
 
 // --- GET /_matrix/client/v3/directory/list/room/{roomId} ---------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3directorylistroomroomid
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3directorylistroomroomid
 // The server MUST return {"visibility":"public"|"private"} for a known room.
 // Rooms default to private (not listed in the public directory).
 SCENARIO("GET /directory/list/room/{roomId} returns room visibility", "[conformance][client-server][room-discovery]")
@@ -7147,7 +7147,7 @@ SCENARIO("GET /directory/list/room/{roomId} returns room visibility", "[conforma
 }
 
 // --- PUT /_matrix/client/v3/directory/list/room/{roomId} ---------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#put_matrixclientv3directorylistroomroomid
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3directorylistroomroomid
 // The server MUST update the room's public-directory visibility for a joined
 // member, returning {} on success. Missing or invalid visibility MUST be 400.
 SCENARIO("PUT /directory/list/room/{roomId} sets room visibility", "[conformance][client-server][room-discovery]")
@@ -7220,7 +7220,7 @@ SCENARIO("PUT /directory/list/room/{roomId} sets room visibility", "[conformance
 // =============================================================================
 
 // --- GET /_matrix/client/v3/joined_rooms -------------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3joined_rooms
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3joined_rooms
 SCENARIO("GET /joined_rooms returns a joined_rooms array", "[conformance][client-server][room-membership]")
 {
     GIVEN("a running client-server and a logged-in user")
@@ -7247,7 +7247,7 @@ SCENARIO("GET /joined_rooms returns a joined_rooms array", "[conformance][client
 }
 
 // --- POST /_matrix/client/v3/join/{roomIdOrAlias} ----------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3joinroomidoralias
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3joinroomidoralias
 SCENARIO("POST /join/{roomIdOrAlias} returns room_id on success", "[conformance][client-server][room-membership]")
 {
     GIVEN("a running client-server with two users, alice has a public room")
@@ -7277,7 +7277,7 @@ SCENARIO("POST /join/{roomIdOrAlias} returns room_id on success", "[conformance]
 }
 
 // --- POST /_matrix/client/v3/rooms/{roomId}/join -----------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3roomsroomidmembership
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3roomsroomidmembership
 SCENARIO("POST /rooms/{roomId}/join returns room_id on success", "[conformance][client-server][room-membership]")
 {
     GIVEN("a running client-server with two users, alice owns a room")
@@ -7400,7 +7400,7 @@ SCENARIO("Local invites appear in /sync invite_state for the invitee", "[conform
 }
 
 // --- POST /_matrix/client/v3/rooms/{roomId}/leave ----------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3roomsroomidleave
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3roomsroomidleave
 SCENARIO("POST /rooms/{roomId}/leave returns 200 empty object", "[conformance][client-server][room-membership]")
 {
     GIVEN("a running client-server with a user who is in a room")
@@ -7595,7 +7595,7 @@ SCENARIO("POST /rooms/{roomId}/leave persists a leave membership state event for
 }
 
 // --- POST /_matrix/client/v3/rooms/{roomId}/ban ------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3roomsroomidban
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3roomsroomidban
 SCENARIO("POST /rooms/{roomId}/ban returns 200 and bans the target user",
          "[conformance][client-server][room-membership]")
 {
@@ -7649,7 +7649,7 @@ SCENARIO("POST /rooms/{roomId}/ban returns 200 and bans the target user",
 }
 
 // --- POST /_matrix/client/v3/rooms/{roomId}/kick -----------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3roomsroomidkick
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3roomsroomidkick
 SCENARIO("POST /rooms/{roomId}/kick returns 200 and removes the target user from the room",
          "[conformance][client-server][room-membership]")
 {
@@ -7708,7 +7708,7 @@ SCENARIO("POST /rooms/{roomId}/kick returns 200 and removes the target user from
 }
 
 // --- POST /_matrix/client/v3/rooms/{roomId}/unban ----------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3roomsroomidunban
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3roomsroomidunban
 SCENARIO("POST /rooms/{roomId}/unban returns 200 and allows the user to rejoin a public room",
          "[conformance][client-server][room-membership]")
 {
@@ -7760,7 +7760,7 @@ SCENARIO("POST /rooms/{roomId}/unban returns 200 and allows the user to rejoin a
 }
 
 // --- POST /_matrix/client/v3/rooms/{roomId}/invite ---------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3roomsroomidinvite
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3roomsroomidinvite
 SCENARIO("POST /rooms/{roomId}/invite returns 200 and publishes an invite to /sync",
          "[conformance][client-server][room-membership]")
 {
@@ -7810,9 +7810,9 @@ SCENARIO("POST /rooms/{roomId}/invite returns 200 and publishes an invite to /sy
     }
 }
 
-// Spec: Matrix Client-Server API v1.18
+// Spec: Matrix Client-Server API v1.19
 // Endpoint: POST /_matrix/client/v3/rooms/{roomId}/invite
-// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3roomsroomidmembersidinvite
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3roomsroomidmembersidinvite
 //
 // MUST return 200 for a remote invitee and persist the invite event so that
 // the federation outbound layer can dispatch it to the remote homeserver.
@@ -7870,7 +7870,7 @@ SCENARIO("POST /rooms/{roomId}/invite for a remote user returns 200 and persists
 }
 
 // --- POST /_matrix/client/v3/rooms/{roomId}/forget ---------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3roomsroomidforget
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3roomsroomidforget
 SCENARIO("POST /rooms/{roomId}/forget returns 200 after leave and removes the room from rooms.leave",
          "[conformance][client-server][room-membership]")
 {
@@ -7911,7 +7911,7 @@ SCENARIO("POST /rooms/{roomId}/forget returns 200 after leave and removes the ro
 }
 
 // --- POST /_matrix/client/v3/knock/{roomIdOrAlias} ---------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3knockroomidoralias
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3knockroomidoralias
 SCENARIO("POST /knock/{roomIdOrAlias} returns room_id and surfaces the room under rooms.knock",
          "[conformance][client-server][room-membership]")
 {
@@ -7960,7 +7960,7 @@ SCENARIO("POST /knock/{roomIdOrAlias} returns room_id and surfaces the room unde
 // =============================================================================
 
 // --- PUT /_matrix/client/v3/rooms/{roomId}/send/{eventType}/{txnId} ----------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#put_matrixclientv3roomsroomidsendeventtypetxnid
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3roomsroomidsendeventtypetxnid
 SCENARIO("PUT /rooms/{roomId}/send/{eventType}/{txnId} returns event_id",
          "[conformance][client-server][room-participation]")
 {
@@ -7992,7 +7992,7 @@ SCENARIO("PUT /rooms/{roomId}/send/{eventType}/{txnId} returns event_id",
 
 // --- PUT /_matrix/client/v3/rooms/{roomId}/state/{eventType}/{stateKey} ------
 // Spec:
-// ../../docs/matrix-v1.18-spec/client-server-api.md#put_matrixclientv3roomsroomidstateeventtypestatekeystateeventtype
+// ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3roomsroomidstateeventtypestatekeystateeventtype
 SCENARIO("PUT /rooms/{roomId}/state/{eventType}/{stateKey} returns event_id",
          "[conformance][client-server][room-participation]")
 {
@@ -8023,7 +8023,7 @@ SCENARIO("PUT /rooms/{roomId}/state/{eventType}/{stateKey} returns event_id",
 }
 
 // --- PUT /_matrix/client/v3/rooms/{roomId}/state/{eventType} -----------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#put_matrixclientv3roomsroomidstateeventtype
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3roomsroomidstateeventtype
 // (implicit empty state key — separate endpoint from the {stateKey} variant)
 SCENARIO("PUT /rooms/{roomId}/state/{eventType} (no state key) returns event_id",
          "[conformance][client-server][room-participation]")
@@ -8055,7 +8055,7 @@ SCENARIO("PUT /rooms/{roomId}/state/{eventType} (no state key) returns event_id"
 }
 
 // --- GET /_matrix/client/v3/rooms/{roomId}/state -----------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3roomsroomidstate
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3roomsroomidstate
 SCENARIO("GET /rooms/{roomId}/state returns an array of state events",
          "[conformance][client-server][room-participation]")
 {
@@ -8086,7 +8086,7 @@ SCENARIO("GET /rooms/{roomId}/state returns an array of state events",
 
 // --- GET /_matrix/client/v3/rooms/{roomId}/state/{eventType}/{stateKey} ------
 // Spec:
-// ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3roomsroomidstateeventtypestatekeystateeventtype
+// ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3roomsroomidstateeventtypestatekeystateeventtype
 SCENARIO("GET /rooms/{roomId}/state/{eventType}/{stateKey} returns the state event content",
          "[conformance][client-server][room-participation]")
 {
@@ -8116,7 +8116,7 @@ SCENARIO("GET /rooms/{roomId}/state/{eventType}/{stateKey} returns the state eve
 }
 
 // --- GET /_matrix/client/v3/rooms/{roomId}/state/{eventType} -----------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3roomsroomidstateeventtype
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3roomsroomidstateeventtype
 SCENARIO("GET /rooms/{roomId}/state/{eventType} (no state key) returns the state event content",
          "[conformance][client-server][room-participation]")
 {
@@ -8147,7 +8147,7 @@ SCENARIO("GET /rooms/{roomId}/state/{eventType} (no state key) returns the state
 }
 
 // --- GET /_matrix/client/v3/rooms/{roomId}/messages --------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3roomsroomidmessages
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3roomsroomidmessages
 SCENARIO("GET /rooms/{roomId}/messages returns chunk array", "[conformance][client-server][room-participation]")
 {
     GIVEN("a running client-server and a logged-in user with a room and a message")
@@ -8200,7 +8200,7 @@ SCENARIO("GET /rooms/{roomId}/messages returns chunk array", "[conformance][clie
 }
 
 // --- PUT /_matrix/client/v3/rooms/{roomId}/typing/{userId} -------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#put_matrixclientv3roomsroomidtypinguserid
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3roomsroomidtypinguserid
 SCENARIO("PUT /rooms/{roomId}/typing/{userId} returns 200 empty object",
          "[conformance][client-server][room-participation]")
 {
@@ -8229,7 +8229,7 @@ SCENARIO("PUT /rooms/{roomId}/typing/{userId} returns 200 empty object",
 }
 
 // --- POST /_matrix/client/v3/rooms/{roomId}/read_markers ---------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3roomsroomidread_markers
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3roomsroomidread_markers
 SCENARIO("POST /rooms/{roomId}/read_markers returns 200 empty object",
          "[conformance][client-server][room-participation]")
 {
@@ -8259,7 +8259,7 @@ SCENARIO("POST /rooms/{roomId}/read_markers returns 200 empty object",
 }
 
 // --- POST /_matrix/client/v3/rooms/{roomId}/receipt/{receiptType}/{eventId} --
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3roomsroomidreceiptreceipttypeeventid
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3roomsroomidreceiptreceipttypeeventid
 SCENARIO("POST /rooms/{roomId}/receipt/{receiptType}/{eventId} stores receipt and returns 200",
          "[conformance][client-server][room-participation]")
 {
@@ -8380,9 +8380,9 @@ SCENARIO("Incremental /sync surfaces room read receipts inside ephemeral events"
     }
 }
 
-// Spec: Matrix Client-Server API v1.18
+// Spec: Matrix Client-Server API v1.19
 // Endpoint / Section: GET /_matrix/client/v3/sync — Joined Room / Unread Notification Counts
-// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3sync
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3sync
 //
 // Each Joined Room in `rooms.join` MUST carry `unread_notifications` with
 // `notification_count`/`highlight_count` computed relative to the user's last
@@ -8471,9 +8471,9 @@ SCENARIO("/sync reports unread_notifications.notification_count and clears it af
     }
 }
 
-// Spec: Matrix Client-Server API v1.18
+// Spec: Matrix Client-Server API v1.19
 // Endpoint / Section: GET /_matrix/client/v3/sync — Joined Room / Unread Notification Counts
-// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3sync
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3sync
 //
 // m.read.private is a private variant of m.read (not federated, not visible to
 // other members) but MUST advance the read baseline identically for the
@@ -8538,9 +8538,9 @@ SCENARIO("/sync clears notification_count after an m.read.private receipt",
     }
 }
 
-// Spec: Matrix Client-Server API v1.18
+// Spec: Matrix Client-Server API v1.19
 // Endpoint / Section: GET /_matrix/client/v3/sync — Joined Room / Unread Notification Counts
-// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3sync
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3sync
 //
 // "Receiving notifications" excludes the user's own sent events from their own
 // unread counts.
@@ -8581,9 +8581,9 @@ SCENARIO("/sync notification_count excludes the sender's own messages", "[confor
     }
 }
 
-// Spec: Matrix Client-Server API v1.18
+// Spec: Matrix Client-Server API v1.19
 // Endpoint / Section: GET /_matrix/client/v3/sync — Joined Room / Unread Notification Counts
-// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3sync
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3sync
 //
 // A receipt only advances the baseline up to the receipted event; later,
 // still-unread events must remain counted.
@@ -8645,7 +8645,7 @@ SCENARIO("/sync notification_count still reflects messages sent after the receip
 }
 
 // --- GET /_matrix/client/v3/rooms/{roomId}/members ---------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3roomsroomidmembers
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3roomsroomidmembers
 // IMPLEMENTATION GAP: room member list not yet implemented.
 SCENARIO("GET /rooms/{roomId}/members returns the room membership", "[conformance][client-server][room-participation]")
 {
@@ -8673,7 +8673,7 @@ SCENARIO("GET /rooms/{roomId}/members returns the room membership", "[conformanc
 }
 
 // --- GET /_matrix/client/v3/rooms/{roomId}/joined_members --------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3roomsroomidjoined_members
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3roomsroomidjoined_members
 // Summary: The current user must be in the room, and a successful response
 // contains a `joined` map keyed by MXID.
 SCENARIO("GET /rooms/{roomId}/joined_members returns joined member map",
@@ -8706,7 +8706,7 @@ SCENARIO("GET /rooms/{roomId}/joined_members returns joined member map",
 }
 
 // --- GET /_matrix/client/v3/rooms/{roomId}/event/{eventId} -------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3roomsroomideventeventid
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3roomsroomideventeventid
 // Summary: The server returns the requested room event to a joined member.
 SCENARIO("GET /rooms/{roomId}/event/{eventId} returns the requested event",
          "[conformance][client-server][room-participation]")
@@ -8741,7 +8741,7 @@ SCENARIO("GET /rooms/{roomId}/event/{eventId} returns the requested event",
 }
 
 // --- GET /_matrix/client/v3/rooms/{roomId}/context/{eventId} -----------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3roomsroomidcontexteventid
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3roomsroomidcontexteventid
 // IMPLEMENTATION GAP: event context not yet implemented.
 SCENARIO("GET /rooms/{roomId}/context/{eventId} returns 404 M_UNRECOGNIZED (implementation gap)",
          "[conformance][client-server][room-participation]")
@@ -8773,7 +8773,7 @@ SCENARIO("GET /rooms/{roomId}/context/{eventId} returns 404 M_UNRECOGNIZED (impl
 }
 
 // --- GET /_matrix/client/v3/rooms/{roomId}/initialSync -----------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3roomsroomidinitialsync
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3roomsroomidinitialsync
 // Returns RoomInfo for the requesting user: room_id, membership, messages,
 // state, visibility, and account_data.
 SCENARIO("GET /rooms/{roomId}/initialSync returns RoomInfo for a joined user",
@@ -8821,7 +8821,7 @@ SCENARIO("GET /rooms/{roomId}/initialSync returns RoomInfo for a joined user",
 }
 
 // --- GET /_matrix/client/v3/initialSync --------------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3initialsync
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3initialsync
 // IMPLEMENTATION GAP: global initial sync not yet implemented.
 SCENARIO("GET /initialSync returns 404 M_UNRECOGNIZED (implementation gap)",
          "[conformance][client-server][room-participation]")
@@ -8851,7 +8851,7 @@ SCENARIO("GET /initialSync returns 404 M_UNRECOGNIZED (implementation gap)",
 }
 
 // --- POST /_matrix/client/v3/rooms/{roomId}/upgrade --------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3roomsroomidupgrade
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3roomsroomidupgrade
 // The server MUST create a replacement room, send m.room.tombstone to the old
 // room, and return {"replacement_room":"!newid:server"} on success.
 SCENARIO("POST /rooms/{roomId}/upgrade creates a replacement room", "[conformance][client-server][room-participation]")
@@ -8941,7 +8941,7 @@ SCENARIO("POST /rooms/{roomId}/upgrade creates a replacement room", "[conformanc
 }
 
 // --- GET /_matrix/client/v1/rooms/{roomId}/timestamp_to_event ----------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv1roomsroomidtimestamp_to_event
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv1roomsroomidtimestamp_to_event
 // IMPLEMENTATION GAP: timestamp-to-event lookup not yet implemented.
 SCENARIO("GET /rooms/{roomId}/timestamp_to_event returns 404 M_UNRECOGNIZED (implementation gap)",
          "[conformance][client-server][room-participation]")
@@ -8973,7 +8973,7 @@ SCENARIO("GET /rooms/{roomId}/timestamp_to_event returns 404 M_UNRECOGNIZED (imp
 }
 
 // --- GET /_matrix/client/v3/events -------------------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3events
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3events
 // IMPLEMENTATION GAP: server-sent events (long-poll) not yet implemented.
 SCENARIO("GET /events returns 404 M_UNRECOGNIZED (implementation gap)",
          "[conformance][client-server][room-participation]")
@@ -9003,7 +9003,7 @@ SCENARIO("GET /events returns 404 M_UNRECOGNIZED (implementation gap)",
 }
 
 // --- GET /_matrix/client/v3/events/{eventId} ---------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3eventseventid
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3eventseventid
 // IMPLEMENTATION GAP: global event fetch not yet implemented.
 SCENARIO("GET /events/{eventId} returns 404 M_UNRECOGNIZED (implementation gap)",
          "[conformance][client-server][room-participation]")
@@ -9037,7 +9037,7 @@ SCENARIO("GET /events/{eventId} returns 404 M_UNRECOGNIZED (implementation gap)"
 // =============================================================================
 
 // --- GET /_matrix/client/v3/profile/{userId} ---------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3profileuserid
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3profileuserid
 SCENARIO("GET /profile/{userId} returns a JSON object (unauthenticated)", "[conformance][client-server][profile]")
 {
     GIVEN("a running client-server with a registered user")
@@ -9064,7 +9064,7 @@ SCENARIO("GET /profile/{userId} returns a JSON object (unauthenticated)", "[conf
 }
 
 // --- GET /_matrix/client/v3/profile/{userId}/displayname ---------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3profileuseriddisplayname
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3profileuseriddisplayname
 SCENARIO("GET /profile/{userId}/displayname returns a JSON object", "[conformance][client-server][profile]")
 {
     GIVEN("a running client-server with a registered user")
@@ -9094,7 +9094,7 @@ SCENARIO("GET /profile/{userId}/displayname returns a JSON object", "[conformanc
 }
 
 // --- GET /_matrix/client/v3/profile/{userId}/avatar_url ----------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3profileuseridavatar_url
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3profileuseridavatar_url
 SCENARIO("GET /profile/{userId}/avatar_url returns a JSON object", "[conformance][client-server][profile]")
 {
     GIVEN("a running client-server with a registered user")
@@ -9123,7 +9123,7 @@ SCENARIO("GET /profile/{userId}/avatar_url returns a JSON object", "[conformance
 }
 
 // --- PUT /_matrix/client/v3/profile/{userId}/displayname ---------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#put_matrixclientv3profileuseriddisplayname
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3profileuseriddisplayname
 SCENARIO("PUT /profile/{userId}/displayname updates the display name", "[conformance][client-server][profile]")
 {
     GIVEN("a running client-server and a logged-in user")
@@ -9150,7 +9150,7 @@ SCENARIO("PUT /profile/{userId}/displayname updates the display name", "[conform
 }
 
 // --- PUT /_matrix/client/v3/profile/{userId}/avatar_url ----------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#put_matrixclientv3profileuseridavatar_url
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3profileuseridavatar_url
 SCENARIO("PUT /profile/{userId}/avatar_url updates the avatar URL", "[conformance][client-server][profile]")
 {
     GIVEN("a running client-server and a logged-in user")
@@ -9181,7 +9181,7 @@ SCENARIO("PUT /profile/{userId}/avatar_url updates the avatar URL", "[conformanc
 // =============================================================================
 
 // --- POST /_matrix/client/v3/user/{userId}/filter ----------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3useruseridffilter
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3useruseridffilter
 SCENARIO("POST /user/{userId}/filter returns a filter_id", "[conformance][client-server][filtering]")
 {
     GIVEN("a running client-server and a logged-in user")
@@ -9209,7 +9209,7 @@ SCENARIO("POST /user/{userId}/filter returns a filter_id", "[conformance][client
 }
 
 // --- GET /_matrix/client/v3/user/{userId}/filter/{filterId} ------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3useruseridffilterfilterid
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3useruseridffilterfilterid
 SCENARIO("GET /user/{userId}/filter/{filterId} returns the stored filter", "[conformance][client-server][filtering]")
 {
     GIVEN("a running client-server and a logged-in user who has created a filter")
@@ -9247,7 +9247,7 @@ SCENARIO("GET /user/{userId}/filter/{filterId} returns the stored filter", "[con
 // =============================================================================
 
 // --- PUT /_matrix/client/v3/user/{userId}/account_data/{type} ----------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#put_matrixclientv3useruseridaccount_datatype
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3useruseridaccount_datatype
 SCENARIO("PUT /user/{userId}/account_data/{type} stores account data", "[conformance][client-server][account-data]")
 {
     GIVEN("a running client-server and a logged-in user")
@@ -9274,7 +9274,7 @@ SCENARIO("PUT /user/{userId}/account_data/{type} stores account data", "[conform
 }
 
 // --- GET /_matrix/client/v3/user/{userId}/account_data/{type} ----------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3useruseridaccount_datatype
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3useruseridaccount_datatype
 SCENARIO("GET /user/{userId}/account_data/{type} retrieves stored account data",
          "[conformance][client-server][account-data]")
 {
@@ -9348,7 +9348,7 @@ SCENARIO("PUT and GET /user/{userId}/account_data/{type} percent-decode the type
 }
 
 // --- PUT /_matrix/client/v3/user/{userId}/rooms/{roomId}/account_data/{type} --
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#put_matrixclientv3useruseridrooms roomidaccount_datatype
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3useruseridrooms roomidaccount_datatype
 // IMPLEMENTATION GAP: per-room account data not yet implemented.
 SCENARIO("PUT /user/{userId}/rooms/{roomId}/account_data/{type} returns 404 M_UNRECOGNIZED (implementation gap)",
          "[conformance][client-server][account-data]")
@@ -9381,7 +9381,7 @@ SCENARIO("PUT /user/{userId}/rooms/{roomId}/account_data/{type} returns 404 M_UN
 }
 
 // --- GET /_matrix/client/v3/user/{userId}/rooms/{roomId}/account_data/{type} --
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3useruseridrooms roomidaccount_datatype
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3useruseridrooms roomidaccount_datatype
 // IMPLEMENTATION GAP: per-room account data retrieval not yet implemented.
 SCENARIO("GET /user/{userId}/rooms/{roomId}/account_data/{type} returns 404 M_UNRECOGNIZED (implementation gap)",
          "[conformance][client-server][account-data]")
@@ -9420,7 +9420,7 @@ SCENARIO("GET /user/{userId}/rooms/{roomId}/account_data/{type} returns 404 M_UN
 // =============================================================================
 
 // --- GET /_matrix/client/v3/user/{userId}/rooms/{roomId}/tags ----------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3useruseridrooms roomidtags
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3useruseridrooms roomidtags
 SCENARIO("GET /user/{userId}/rooms/{roomId}/tags returns the room tag list",
          "[conformance][client-server][room-tagging]")
 {
@@ -9450,7 +9450,7 @@ SCENARIO("GET /user/{userId}/rooms/{roomId}/tags returns the room tag list",
 }
 
 // --- PUT /_matrix/client/v3/user/{userId}/rooms/{roomId}/tags/{tag} ----------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#put_matrixclientv3useruseridrooms roomidtagstag
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3useruseridrooms roomidtagstag
 SCENARIO("PUT /user/{userId}/rooms/{roomId}/tags/{tag} stores a room tag", "[conformance][client-server][room-tagging]")
 {
     GIVEN("a running client-server and a logged-in user with a room")
@@ -9477,7 +9477,7 @@ SCENARIO("PUT /user/{userId}/rooms/{roomId}/tags/{tag} stores a room tag", "[con
 }
 
 // --- DELETE /_matrix/client/v3/user/{userId}/rooms/{roomId}/tags/{tag} -------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#delete_matrixclientv3useruseridrooms roomidtagstag
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#delete_matrixclientv3useruseridrooms roomidtagstag
 SCENARIO("DELETE /user/{userId}/rooms/{roomId}/tags/{tag} removes a room tag",
          "[conformance][client-server][room-tagging]")
 {
@@ -9510,7 +9510,7 @@ SCENARIO("DELETE /user/{userId}/rooms/{roomId}/tags/{tag} removes a room tag",
 // =============================================================================
 
 // --- PUT /_matrix/client/v3/presence/{userId}/status -------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#put_matrixclientv3presenceuseridstatus
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3presenceuseridstatus
 SCENARIO("PUT /presence/{userId}/status sets the presence state", "[conformance][client-server][presence]")
 {
     GIVEN("a running client-server and a logged-in user")
@@ -9537,7 +9537,7 @@ SCENARIO("PUT /presence/{userId}/status sets the presence state", "[conformance]
 }
 
 // --- GET /_matrix/client/v3/presence/{userId}/status -------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3presenceuseridstatus
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3presenceuseridstatus
 // IMPLEMENTATION GAP: presence retrieval not yet implemented.
 SCENARIO("GET /presence/{userId}/status returns 404 M_UNRECOGNIZED (implementation gap)",
          "[conformance][client-server][presence]")
@@ -9571,7 +9571,7 @@ SCENARIO("GET /presence/{userId}/status returns 404 M_UNRECOGNIZED (implementati
 // =============================================================================
 
 // --- GET /_matrix/client/v3/pushrules/ ---------------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3pushrules
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3pushrules
 SCENARIO("GET /pushrules/ returns a global push rules object", "[conformance][client-server][push]")
 {
     GIVEN("a running client-server and a logged-in user")
@@ -9628,7 +9628,7 @@ SCENARIO("GET /pushrules/ returns a global push rules object", "[conformance][cl
 }
 
 // --- GET /_matrix/client/v3/pushrules/{scope}/{kind}/{ruleId} ----------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3pushrulesscopekindruleid
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3pushrulesscopekindruleid
 SCENARIO("GET /pushrules/{scope}/{kind}/{ruleId} returns a server-default push rule",
          "[conformance][client-server][push]")
 {
@@ -9666,7 +9666,7 @@ SCENARIO("GET /pushrules/{scope}/{kind}/{ruleId} returns a server-default push r
 }
 
 // --- PUT /_matrix/client/v3/pushrules/{scope}/{kind}/{ruleId} ----------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#put_matrixclientv3pushrulesscopekindruleid
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3pushrulesscopekindruleid
 // IMPLEMENTATION GAP: push rule creation not yet implemented.
 SCENARIO("PUT /pushrules/{scope}/{kind}/{ruleId} returns 404 M_UNRECOGNIZED (implementation gap)",
          "[conformance][client-server][push]")
@@ -9697,7 +9697,7 @@ SCENARIO("PUT /pushrules/{scope}/{kind}/{ruleId} returns 404 M_UNRECOGNIZED (imp
 }
 
 // --- DELETE /_matrix/client/v3/pushrules/{scope}/{kind}/{ruleId} -------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#delete_matrixclientv3pushrulesscopekindruleid
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#delete_matrixclientv3pushrulesscopekindruleid
 // IMPLEMENTATION GAP: push rule deletion not yet implemented.
 SCENARIO("DELETE /pushrules/{scope}/{kind}/{ruleId} returns 404 M_UNRECOGNIZED (implementation gap)",
          "[conformance][client-server][push]")
@@ -9727,7 +9727,7 @@ SCENARIO("DELETE /pushrules/{scope}/{kind}/{ruleId} returns 404 M_UNRECOGNIZED (
 }
 
 // --- GET /_matrix/client/v3/pushrules/{scope}/{kind}/{ruleId}/actions ---------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3pushrulesscopekindruleidactions
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3pushrulesscopekindruleidactions
 SCENARIO("GET /pushrules/{scope}/{kind}/{ruleId}/actions returns the rule actions",
          "[conformance][client-server][push]")
 {
@@ -9756,7 +9756,7 @@ SCENARIO("GET /pushrules/{scope}/{kind}/{ruleId}/actions returns the rule action
 }
 
 // --- PUT /_matrix/client/v3/pushrules/{scope}/{kind}/{ruleId}/actions ---------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#put_matrixclientv3pushrulesscopekindruleidactions
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3pushrulesscopekindruleidactions
 // IMPLEMENTATION GAP: push rule actions update not yet implemented.
 SCENARIO("PUT /pushrules/{scope}/{kind}/{ruleId}/actions returns 404 M_UNRECOGNIZED (implementation gap)",
          "[conformance][client-server][push]")
@@ -9788,7 +9788,7 @@ SCENARIO("PUT /pushrules/{scope}/{kind}/{ruleId}/actions returns 404 M_UNRECOGNI
 }
 
 // --- GET /_matrix/client/v3/pushrules/{scope}/{kind}/{ruleId}/enabled ---------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3pushrulesscopekindruleidenabled
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3pushrulesscopekindruleidenabled
 SCENARIO("GET /pushrules/{scope}/{kind}/{ruleId}/enabled returns the rule enabled state",
          "[conformance][client-server][push]")
 {
@@ -9817,7 +9817,7 @@ SCENARIO("GET /pushrules/{scope}/{kind}/{ruleId}/enabled returns the rule enable
 }
 
 // --- PUT /_matrix/client/v3/pushrules/{scope}/{kind}/{ruleId}/enabled ---------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#put_matrixclientv3pushrulesscopekindruleidenabled
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3pushrulesscopekindruleidenabled
 // IMPLEMENTATION GAP: push rule enable/disable not yet implemented.
 SCENARIO("PUT /pushrules/{scope}/{kind}/{ruleId}/enabled returns 404 M_UNRECOGNIZED (implementation gap)",
          "[conformance][client-server][push]")
@@ -9849,7 +9849,7 @@ SCENARIO("PUT /pushrules/{scope}/{kind}/{ruleId}/enabled returns 404 M_UNRECOGNI
 }
 
 // --- GET /_matrix/client/v3/notifications ------------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3notifications
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3notifications
 // IMPLEMENTATION GAP: notification list not yet implemented.
 SCENARIO("GET /notifications returns 404 M_UNRECOGNIZED (implementation gap)", "[conformance][client-server][push]")
 {
@@ -9878,7 +9878,7 @@ SCENARIO("GET /notifications returns 404 M_UNRECOGNIZED (implementation gap)", "
 }
 
 // --- GET /_matrix/client/v3/pushers ------------------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3pushers
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3pushers
 SCENARIO("GET /pushers returns 200 with empty pushers array", "[conformance][client-server][push]")
 {
     GIVEN("a running client-server and a logged-in user")
@@ -9908,7 +9908,7 @@ SCENARIO("GET /pushers returns 200 with empty pushers array", "[conformance][cli
 // =============================================================================
 
 // --- POST /_matrix/client/v3/rooms/{roomId}/report/{eventId} -----------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3roomsroomidreporteventid
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3roomsroomidreporteventid
 SCENARIO("POST /rooms/{roomId}/report/{eventId} accepts a report", "[conformance][client-server][reporting]")
 {
     GIVEN("a running client-server and a logged-in user with a room and a message")
@@ -9937,7 +9937,7 @@ SCENARIO("POST /rooms/{roomId}/report/{eventId} accepts a report", "[conformance
 }
 
 // --- POST /_matrix/client/v3/rooms/{roomId}/report ---------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3roomsroomidreport
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3roomsroomidreport
 // IMPLEMENTATION GAP: room-level reporting (without eventId) not yet implemented.
 SCENARIO("POST /rooms/{roomId}/report returns 404 M_UNRECOGNIZED (implementation gap)",
          "[conformance][client-server][reporting]")
@@ -9969,7 +9969,7 @@ SCENARIO("POST /rooms/{roomId}/report returns 404 M_UNRECOGNIZED (implementation
 }
 
 // --- POST /_matrix/client/v3/users/{userId}/report ---------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3usersuseridreport
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3usersuseridreport
 // IMPLEMENTATION GAP: user reporting not yet implemented.
 SCENARIO("POST /users/{userId}/report returns 404 M_UNRECOGNIZED (implementation gap)",
          "[conformance][client-server][reporting]")
@@ -10004,7 +10004,7 @@ SCENARIO("POST /users/{userId}/report returns 404 M_UNRECOGNIZED (implementation
 // =============================================================================
 
 // --- GET /_matrix/client/v3/voip/turnServer ----------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3voipturnserver
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3voipturnserver
 SCENARIO("GET /voip/turnServer returns a JSON object", "[conformance][client-server][voip]")
 {
     GIVEN("a running client-server and a logged-in user")
@@ -10031,7 +10031,7 @@ SCENARIO("GET /voip/turnServer returns a JSON object", "[conformance][client-ser
 }
 
 // --- GET /voip/turnServer: authentication required ----------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3voipturnserver
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3voipturnserver
 //
 // Spec: "Requires authentication: Yes"
 // A request without a valid access token MUST be rejected with 401 M_MISSING_TOKEN.
@@ -10063,7 +10063,7 @@ SCENARIO("GET /voip/turnServer rejects unauthenticated requests", "[conformance]
 // ============================================================================
 // 13.20  Presence — GET /presence/{userId}/status
 // ============================================================================
-// Spec: Matrix v1.18 §13.20.2 GET /_matrix/client/v3/presence/{userId}/status
+// Spec: Matrix v1.19 §13.20.2 GET /_matrix/client/v3/presence/{userId}/status
 //       Returns the presence state of a user.
 //       IMPLEMENTATION GAP: not yet implemented. Must return 404 M_UNRECOGNIZED.
 
@@ -10095,7 +10095,7 @@ SCENARIO("GET /presence/{userId}/status conformance")
 // ============================================================================
 // 13.7   Push notifications — GET /notifications
 // ============================================================================
-// Spec: Matrix v1.18 §13.7 GET /_matrix/client/v3/notifications
+// Spec: Matrix v1.19 §13.7 GET /_matrix/client/v3/notifications
 //       IMPLEMENTATION GAP: not yet implemented. Must return 404 M_UNRECOGNIZED.
 
 SCENARIO("GET /notifications conformance")
@@ -10126,7 +10126,7 @@ SCENARIO("GET /notifications conformance")
 // ============================================================================
 // 13.8   Push notifications — GET/POST /pushers
 // ============================================================================
-// Spec: Matrix v1.18 §13.8 GET/POST /_matrix/client/v3/pushers
+// Spec: Matrix v1.19 §13.8 GET/POST /_matrix/client/v3/pushers
 
 SCENARIO("GET /pushers conformance")
 {
@@ -10192,7 +10192,7 @@ SCENARIO("POST /pushers/set conformance")
 // ============================================================================
 // 13.9   Push rules — /pushrules/global/{kind}/{ruleId}
 // ============================================================================
-// Spec: Matrix v1.18 §13.9 push rules CRUD.
+// Spec: Matrix v1.19 §13.9 push rules CRUD.
 //       IMPLEMENTATION GAP: only GET /pushrules/ is implemented.
 //       All specific-rule endpoints must return 404 M_UNRECOGNIZED.
 
@@ -10406,7 +10406,7 @@ SCENARIO("PUT /pushrules/global/{kind}/{ruleId}/enabled conformance")
 // ============================================================================
 // 13.10  Reporting content — POST /rooms/{roomId}/report/{eventId}
 // ============================================================================
-// Spec: Matrix v1.18 §13.10 POST /_matrix/client/v3/rooms/{roomId}/report/{eventId}
+// Spec: Matrix v1.19 §13.10 POST /_matrix/client/v3/rooms/{roomId}/report/{eventId}
 //       Report an event as inappropriate.
 
 SCENARIO("POST /rooms/{roomId}/report/{eventId} conformance")
@@ -10496,7 +10496,7 @@ SCENARIO("POST /users/{userId}/report conformance")
 // ============================================================================
 // 14     User data — Profile
 // ============================================================================
-// Spec: Matrix v1.18 §14 GET/PUT profile
+// Spec: Matrix v1.19 §14 GET/PUT profile
 
 SCENARIO("GET /profile/{userId} conformance")
 {
@@ -10633,7 +10633,7 @@ SCENARIO("PUT /profile/{userId}/avatar_url conformance")
 // ============================================================================
 // 14     User data — Filter
 // ============================================================================
-// Spec: Matrix v1.18 §14 POST/GET filter
+// Spec: Matrix v1.19 §14 POST/GET filter
 
 SCENARIO("GET /user/{userId}/filter/{filterId} conformance")
 {
@@ -10663,7 +10663,7 @@ SCENARIO("GET /user/{userId}/filter/{filterId} conformance")
 // ============================================================================
 // 14     User data — Account data
 // ============================================================================
-// Spec: Matrix v1.18 §14 PUT/GET per-room account data and tags
+// Spec: Matrix v1.19 §14 PUT/GET per-room account data and tags
 //       IMPLEMENTATION GAP: room-level account data and tags not implemented.
 
 SCENARIO("PUT /user/{userId}/rooms/{roomId}/account_data/{type} conformance")
@@ -10807,7 +10807,7 @@ SCENARIO("DELETE /user/{userId}/rooms/{roomId}/tags/{tag} conformance")
 // ============================================================================
 // 15     Event relationships — GET /v1/rooms/{roomId}/relations/{eventId}
 // ============================================================================
-// Spec: Matrix v1.18 §15 GET /_matrix/client/v1/rooms/{roomId}/relations/{eventId}[/{relType}[/{eventType}]]
+// Spec: Matrix v1.19 §15 GET /_matrix/client/v1/rooms/{roomId}/relations/{eventId}[/{relType}[/{eventType}]]
 
 SCENARIO("GET /v1/rooms/{roomId}/relations/{eventId} conformance")
 {
@@ -10895,7 +10895,7 @@ SCENARIO("GET /v1/rooms/{roomId}/relations/{eventId}/{relType}/{eventType} confo
 // ============================================================================
 // 16     Search — POST /search
 // ============================================================================
-// Spec: Matrix v1.18 §16 POST /_matrix/client/v3/search
+// Spec: Matrix v1.19 §16 POST /_matrix/client/v3/search
 //       IMPLEMENTATION GAP: not yet implemented. Must return 404 M_UNRECOGNIZED.
 
 SCENARIO("POST /search conformance")
@@ -10928,7 +10928,7 @@ SCENARIO("POST /search conformance")
 // ============================================================================
 // 17     Send-to-device — PUT /sendToDevice/{eventType}/{txnId}
 // ============================================================================
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#put_matrixclientv3sendtoeventtypetxnid
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3sendtoeventtypetxnid
 // Sends a to-device message to specific device(s). Used by Element to deliver
 // Olm-encrypted room keys before a Megolm session can begin.
 
@@ -11051,7 +11051,7 @@ SCENARIO("PUT /sendToDevice targets only the addressed local device and drains o
                 REQUIRE(device_two_events != nullptr);
                 REQUIRE(device_two_events->empty());
 
-                // Spec (CS API v1.18, Send-to-Device messaging): the server deletes a
+                // Spec (CS API v1.19, Send-to-Device messaging): the server deletes a
                 // to-device message only once the client acknowledges it by syncing
                 // with the next_batch token from the response that delivered it. A sync
                 // with the SAME/un-advanced token MUST redeliver, so the acknowledged
@@ -11130,8 +11130,8 @@ SCENARIO("PUT /sendToDevice/m.room.encrypted preserves the nested Olm ciphertext
     }
 }
 
-// Spec: ../../docs/matrix-v1.18-spec/server-server-api.md#sending-to-device-messages
-// and ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3sync
+// Spec: ../../docs/matrix-v1.19-spec/server-server-api.md#sending-to-device-messages
+// and ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3sync
 SCENARIO("Federated m.direct_to_device with nested encrypted content reaches /sync to_device.events",
          "[conformance][client-server][federation][e2ee][send-to-device]")
 {
@@ -11180,7 +11180,7 @@ SCENARIO("Federated m.direct_to_device with nested encrypted content reaches /sy
     }
 }
 
-// Spec: ../../docs/matrix-v1.18-spec/server-server-api.md#sending-to-device-messages
+// Spec: ../../docs/matrix-v1.19-spec/server-server-api.md#sending-to-device-messages
 SCENARIO("Federated m.direct_to_device fans out to every targeted local device",
          "[conformance][client-server][federation][e2ee][send-to-device]")
 {
@@ -11386,7 +11386,7 @@ SCENARIO("POST /keys/claim reuses the matching fallback key when one-time keys a
 // ============================================================================
 // 18     Server administration
 // ============================================================================
-// Spec: Matrix v1.18 §18
+// Spec: Matrix v1.19 §18
 //       IMPLEMENTATION GAP: admin endpoints not yet implemented.
 
 SCENARIO("GET /admin/whois/{userId} conformance")
@@ -11467,7 +11467,7 @@ SCENARIO("POST /admin/lock/{userId} conformance")
 // ============================================================================
 // 19     Well-known
 // ============================================================================
-// Spec: Matrix v1.18 §19 /.well-known/matrix/policy_server and /support
+// Spec: Matrix v1.19 §19 /.well-known/matrix/policy_server and /support
 //       IMPLEMENTATION GAP: not yet implemented. Must return 404.
 
 SCENARIO("GET /.well-known/matrix/policy_server conformance")
@@ -11515,7 +11515,7 @@ SCENARIO("GET /.well-known/matrix/support conformance")
 // ============================================================================
 // 20     Spaces — GET /v1/rooms/{roomId}/hierarchy
 // ============================================================================
-// Spec: Matrix v1.18 §20 GET /_matrix/client/v1/rooms/{roomId}/hierarchy
+// Spec: Matrix v1.19 §20 GET /_matrix/client/v1/rooms/{roomId}/hierarchy
 //       Implemented: returns 200 with a SpaceHierarchyRoomsChunk list. A room
 //       with no children still includes itself, so the list contains exactly the
 //       requested room and no next_batch.
@@ -11556,12 +11556,12 @@ SCENARIO("GET /v1/rooms/{roomId}/hierarchy conformance")
 // ============================================================================
 // 21     Third-party lookup
 // ============================================================================
-// Spec: Matrix v1.18 §third party networks
+// Spec: Matrix v1.19 §third party networks
 //       GET /thirdparty/protocols is implemented and returns a (possibly empty)
 //       protocol map. The location/{protocol} and user/{protocol} lookups remain
 //       unimplemented and return 404 M_UNRECOGNIZED.
 
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3thirdpartyprotocols
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3thirdpartyprotocols
 //
 // MUST return 200 with a JSON object mapping protocol identifiers to metadata. A
 // server with no application services returns an empty object — NOT a 404. The
@@ -11646,7 +11646,7 @@ SCENARIO("GET /thirdparty/user/{protocol} conformance")
 // ============================================================================
 // 22     Threads — GET /v1/rooms/{roomId}/threads
 // ============================================================================
-// Spec: Matrix v1.18 §22 GET /_matrix/client/v1/rooms/{roomId}/threads
+// Spec: Matrix v1.19 §22 GET /_matrix/client/v1/rooms/{roomId}/threads
 //       IMPLEMENTATION GAP: not yet implemented. Must return 404 M_UNRECOGNIZED.
 
 SCENARIO("GET /v1/rooms/{roomId}/threads conformance")
@@ -11678,7 +11678,7 @@ SCENARIO("GET /v1/rooms/{roomId}/threads conformance")
 // ============================================================================
 // 23     OpenID — POST /user/{userId}/openid/request_token
 // ============================================================================
-// Spec: Matrix v1.18 §23 POST /_matrix/client/v3/user/{userId}/openid/request_token
+// Spec: Matrix v1.19 §23 POST /_matrix/client/v3/user/{userId}/openid/request_token
 //       IMPLEMENTATION GAP: not yet implemented. Must return 404 M_UNRECOGNIZED.
 
 SCENARIO("POST /user/{userId}/openid/request_token conformance")
@@ -11710,7 +11710,7 @@ SCENARIO("POST /user/{userId}/openid/request_token conformance")
 // ============================================================================
 // 24     User directory — POST /user_directory/search
 // ============================================================================
-// Spec: Matrix v1.18 §24 POST /_matrix/client/v3/user_directory/search
+// Spec: Matrix v1.19 §24 POST /_matrix/client/v3/user_directory/search
 //       MUST return 200 with results matching the search term.
 
 SCENARIO("POST /user_directory/search returns matching users", "[conformance][client-server][account-management]")
@@ -11755,7 +11755,7 @@ SCENARIO("POST /user_directory/search returns matching users", "[conformance][cl
 // ============================================================================
 // 25     Room upgrade — POST /rooms/{roomId}/upgrade
 // ============================================================================
-// Spec: Matrix v1.18 §10.7 POST /_matrix/client/v3/rooms/{roomId}/upgrade
+// Spec: Matrix v1.19 §10.7 POST /_matrix/client/v3/rooms/{roomId}/upgrade
 // The server MUST create a replacement room and return {"replacement_room":...}.
 
 SCENARIO("POST /rooms/{roomId}/upgrade returns 200 with replacement_room",
@@ -11912,7 +11912,7 @@ SCENARIO("GET /initialSync conformance")
 
             THEN("the server returns 404 M_UNRECOGNIZED")
             {
-                // Deprecated in v1.18
+                // Deprecated in v1.19
                 REQUIRE(response.response.status == 404);
                 auto const body = parse_object(response.response.body);
                 auto const* err = string_member(body, "errcode");
@@ -11938,7 +11938,7 @@ SCENARIO("GET /events conformance")
 
             THEN("the server returns 404 M_UNRECOGNIZED")
             {
-                // Deprecated in v1.18
+                // Deprecated in v1.19
                 REQUIRE(response.response.status == 404);
                 auto const body = parse_object(response.response.body);
                 auto const* err = string_member(body, "errcode");
@@ -11964,7 +11964,7 @@ SCENARIO("GET /events/{eventId} conformance")
 
             THEN("the server returns 404 M_UNRECOGNIZED")
             {
-                // Deprecated in v1.18
+                // Deprecated in v1.19
                 REQUIRE(response.response.status == 404);
                 auto const body = parse_object(response.response.body);
                 auto const* err = string_member(body, "errcode");
@@ -12171,8 +12171,8 @@ SCENARIO("GET /rooms/{roomId}/aliases conformance")
     }
 }
 
-// Spec: Matrix Client-Server API v1.18
-// URL:  ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3publicrooms
+// Spec: Matrix Client-Server API v1.19
+// URL:  ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3publicrooms
 //
 // POST /publicRooms with filter.generic_search_term and limit must return 200
 // with chunk (array) and total_room_count_estimate; chunk size must not exceed limit.
@@ -12267,9 +12267,9 @@ SCENARIO("PUT /directory/list/room/{roomId} returns 404 for unknown room",
 // Joined Rooms, Push Rules, Error Semantics
 // =============================================================================
 
-// Spec: Matrix Client-Server API v1.18
+// Spec: Matrix Client-Server API v1.19
 // Section: GET /_matrix/client/v3/devices
-// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3devices
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3devices
 //
 // The server MUST return a "devices" array. Each entry MUST include "device_id".
 SCENARIO("GET /devices returns a devices array containing the authenticated device",
@@ -12323,9 +12323,9 @@ SCENARIO("GET /devices returns a devices array containing the authenticated devi
     }
 }
 
-// Spec: Matrix Client-Server API v1.18
+// Spec: Matrix Client-Server API v1.19
 // Section: GET /_matrix/client/v3/devices/{deviceId}
-// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3devicesdeviceid
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3devicesdeviceid
 //
 // Known device_id MUST return 200 with device object. Unknown MUST return 404 M_NOT_FOUND.
 SCENARIO("GET /devices/{deviceId} returns the device or 404 for unknown", "[conformance][client-server][devices]")
@@ -12371,9 +12371,9 @@ SCENARIO("GET /devices/{deviceId} returns the device or 404 for unknown", "[conf
     }
 }
 
-// Spec: Matrix Client-Server API v1.18
+// Spec: Matrix Client-Server API v1.19
 // Section: GET /_matrix/client/v3/capabilities
-// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3capabilities
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3capabilities
 //
 // MUST return a "capabilities" object with "m.room_versions" containing a non-empty
 // "default" string and a non-empty "available" version-to-stability map.
@@ -12414,9 +12414,9 @@ SCENARIO("GET /capabilities returns required capability fields including m.room_
     }
 }
 
-// Spec: Matrix Client-Server API v1.18
+// Spec: Matrix Client-Server API v1.19
 // Section: GET /_matrix/client/v3/joined_rooms
-// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3joined_rooms
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3joined_rooms
 //
 // MUST return "joined_rooms" array of room IDs the caller is currently joined to.
 SCENARIO("GET /joined_rooms lists all rooms the authenticated user is joined to",
@@ -12462,9 +12462,9 @@ SCENARIO("GET /joined_rooms lists all rooms the authenticated user is joined to"
     }
 }
 
-// Spec: Matrix Client-Server API v1.18
+// Spec: Matrix Client-Server API v1.19
 // Section: GET /_matrix/client/v3/publicRooms
-// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3publicrooms
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3publicrooms
 //
 // MUST return "chunk" (array of public room summaries) and "total_room_count_estimate"
 // (integer). Each chunk entry MUST have "room_id".
@@ -12515,9 +12515,9 @@ SCENARIO("GET /publicRooms returns chunk array and total_room_count_estimate",
     }
 }
 
-// Spec: Matrix Client-Server API v1.18
+// Spec: Matrix Client-Server API v1.19
 // Section: GET /_matrix/client/v3/directory/room/{roomAlias}
-// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3directoryroomroomalias
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3directoryroomroomalias
 //
 // Known alias MUST return {"room_id": "...", "servers": [...]}. Unknown MUST return 404.
 SCENARIO("GET /directory/room resolves a known alias and 404s for unknown", "[conformance][client-server][directory]")
@@ -12572,9 +12572,9 @@ SCENARIO("GET /directory/room resolves a known alias and 404s for unknown", "[co
     }
 }
 
-// Spec: Matrix Client-Server API v1.18
+// Spec: Matrix Client-Server API v1.19
 // Section: GET /_matrix/client/v3/register/available
-// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3registeravailable
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3registeravailable
 //
 // Free username MUST return {"available": true}. Taken MUST return 400 M_USER_IN_USE.
 // Invalid localpart MUST return 400 M_INVALID_USERNAME.
@@ -12640,11 +12640,11 @@ SCENARIO("GET /register/available reports username availability correctly", "[co
     }
 }
 
-// Spec: Matrix Client-Server API v1.18
+// Spec: Matrix Client-Server API v1.19
 // Section: PUT /_matrix/client/v3/user/{userId}/account_data/{type}
-// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#put_matrixclientv3useruseridaccount_datatype
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3useruseridaccount_datatype
 // Section: GET /_matrix/client/v3/user/{userId}/account_data/{type}
-// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3useruseridaccount_datatype
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3useruseridaccount_datatype
 //
 // PUT MUST store arbitrary JSON and return 200 {}. GET MUST return it verbatim.
 // GET on an unset type MUST return 404 M_NOT_FOUND.
@@ -12697,11 +12697,11 @@ SCENARIO("PUT/GET /user/{userId}/account_data/{type} stores and retrieves user a
     }
 }
 
-// Spec: Matrix Client-Server API v1.18
+// Spec: Matrix Client-Server API v1.19
 // Section: PUT /_matrix/client/v3/profile/{userId}/displayname
-// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#put_matrixclientv3profileuseriddisplayname
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3profileuseriddisplayname
 // Section: GET /_matrix/client/v3/profile/{userId}/displayname
-// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3profileuseriddisplayname
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3profileuseriddisplayname
 //
 // PUT MUST update the displayname and return 200. GET MUST return the current value.
 SCENARIO("PUT /profile/{userId}/displayname updates and GET retrieves it", "[conformance][client-server][profile]")
@@ -12738,9 +12738,9 @@ SCENARIO("PUT /profile/{userId}/displayname updates and GET retrieves it", "[con
     }
 }
 
-// Spec: Matrix Client-Server API v1.18
+// Spec: Matrix Client-Server API v1.19
 // Section: GET /_matrix/client/v3/profile/{userId}
-// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3profileuserid
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3profileuserid
 //
 // Full profile GET is unauthenticated per spec. MUST include "displayname" and
 // "avatar_url". Unknown user MUST return 404 M_NOT_FOUND.
@@ -12788,9 +12788,9 @@ SCENARIO("GET /profile/{userId} is unauthenticated and returns displayname and a
     }
 }
 
-// Spec: Matrix Client-Server API v1.18
+// Spec: Matrix Client-Server API v1.19
 // Section: GET /_matrix/client/v3/pushrules/
-// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3pushrules
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3pushrules
 //
 // MUST return a "global" ruleset. "global" MUST contain all five standard
 // push rule category keys: override, content, room, sender, underride.
@@ -12828,9 +12828,9 @@ SCENARIO("GET /pushrules/ returns a global ruleset with all five push rule categ
     }
 }
 
-// Spec: Matrix Client-Server API v1.18
+// Spec: Matrix Client-Server API v1.19
 // Section: Standard error response
-// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#standard-error-response
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#standard-error-response
 //
 // Every error response MUST be a JSON object with "errcode" (string) and "error"
 // (human-readable string). HTTP status code MUST reflect the error class.
@@ -12881,9 +12881,9 @@ SCENARIO("Matrix error responses always carry errcode and error fields", "[confo
     }
 }
 
-// Spec: Matrix Client-Server API v1.18
+// Spec: Matrix Client-Server API v1.19
 // Endpoint / Section: DELETE /_matrix/client/v3/devices/{deviceId}
-// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#delete_matrixclientv3devicesdeviceid
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#delete_matrixclientv3devicesdeviceid
 //
 // The server MUST require User-Interactive Authentication (UIA) before deleting
 // a device.  A request without an auth block MUST receive 401 with the UIA
@@ -12943,9 +12943,9 @@ SCENARIO("DELETE /devices/{deviceId} MUST require UIA before deleting a device",
     }
 }
 
-// Spec: Matrix Client-Server API v1.18
+// Spec: Matrix Client-Server API v1.19
 // Endpoint / Section: POST /_matrix/client/v3/room_keys/version
-// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3room_keysversion
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3room_keysversion
 //
 // The server MUST return {"version":"<id>"} where <id> is a unique string that
 // can be used in subsequent calls.  Two sequential POSTs MUST return different
@@ -12989,9 +12989,9 @@ SCENARIO("POST /room_keys/version MUST return a unique version string for each n
     }
 }
 
-// Spec: Matrix Client-Server API v1.18
+// Spec: Matrix Client-Server API v1.19
 // Endpoint / Section: PUT /_matrix/client/v3/rooms/{roomId}/typing/{userId}
-// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#put_matrixclientv3roomsroomiidtypinguserid
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3roomsroomiidtypinguserid
 //
 // The server MUST return 403 if the user is not a current member of the room.
 // The typing EDU sent to remote servers MUST encode `typing` as a JSON boolean,
@@ -13065,9 +13065,9 @@ SCENARIO("PUT /typing MUST reject non-members with 403 and use a boolean typing 
     }
 }
 
-// Spec: Matrix Client-Server API v1.18
+// Spec: Matrix Client-Server API v1.19
 // Endpoint / Section: POST /_matrix/client/v3/rooms/{roomId}/read_markers
-// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3roomsroomidread_markers
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3roomsroomidread_markers
 //
 // The server MUST return 403 if the user is not currently a member of the room.
 // The request body MAY contain m.fully_read, m.read, and m.read.private.
@@ -13139,9 +13139,9 @@ SCENARIO("POST /read_markers MUST reject non-members with 403",
     }
 }
 
-// Spec: Matrix Client-Server API v1.18
+// Spec: Matrix Client-Server API v1.19
 // Endpoint / Section: POST /_matrix/client/v3/rooms/{roomId}/receipt/{receiptType}/{eventId}
-// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3roomsroomidreceiptreceipttypeeventid
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3roomsroomidreceiptreceipttypeeventid
 //
 // The server MUST return 403 if the user is not currently a member of the room.
 SCENARIO("POST /receipt/{type}/{eventId} MUST reject non-members with 403",
@@ -13211,9 +13211,9 @@ SCENARIO("POST /receipt/{type}/{eventId} MUST reject non-members with 403",
     }
 }
 
-// Spec: Matrix Client-Server API v1.18
+// Spec: Matrix Client-Server API v1.19
 // Endpoint / Section: Typing Notifications
-// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#typing-notifications
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#typing-notifications
 //
 // "The server MUST send stop typing events to remove typing notifications if a
 // user sends a message."  Sending a message while typing=true MUST result in
@@ -13285,9 +13285,9 @@ SCENARIO("sending a message implicitly clears the sender's typing state per spec
     }
 }
 
-// Spec: Matrix Client-Server API v1.18
+// Spec: Matrix Client-Server API v1.19
 // Endpoint / Section: POST /keys/upload — one-time key signature requirements
-// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3keysupload
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3keysupload
 //
 // signed_curve25519 one-time keys MUST be signed by the device's ed25519 key.
 // When no device identity exists (no device_keys in the body and no prior upload),
@@ -13334,9 +13334,9 @@ SCENARIO("keys/upload rejects signed_curve25519 OTKs when no device identity has
     }
 }
 
-// Spec: Matrix Client-Server API v1.18
+// Spec: Matrix Client-Server API v1.19
 // Endpoint / Section: Rate limiting
-// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#rate-limiting
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#rate-limiting
 //
 // Rate limits are defined per endpoint (path), not per full URL. Varying query
 // parameters on the same endpoint path MUST NOT allow a client to bypass a rate cap.
@@ -13397,9 +13397,9 @@ SCENARIO("rate limiting uses the path without query parameters as the bucket key
     }
 }
 
-// Spec: Matrix Client-Server API v1.18
+// Spec: Matrix Client-Server API v1.19
 // Endpoint / Section: PUT /rooms/{roomId}/send/{eventType}/{txnId}
-// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#put_matrixclientv3roomsroomidsendeventtypetxnid
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3roomsroomidsendeventtypetxnid
 //
 // The server MUST reject a send request whose body is not a valid JSON object.
 // It MUST NOT silently invent a fallback event such as m.room.message.
@@ -13458,9 +13458,9 @@ SCENARIO("room send rejects non-object bodies and does not create a fallback eve
     }
 }
 
-// Spec: Matrix Client-Server API v1.18
+// Spec: Matrix Client-Server API v1.19
 // Endpoint / Section: PUT /rooms/{roomId}/send/{eventType}/{txnId} — idempotency
-// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#put_matrixclientv3roomsroomidsendeventtypetxnid
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3roomsroomidsendeventtypetxnid
 //
 // "The transaction ID allows the server to ensure that the same event is not sent
 // twice. The server MUST only send the event once for a given transaction ID."
@@ -13538,9 +13538,9 @@ SCENARIO("room send PUT replays the original event_id when the same transaction 
     }
 }
 
-// Spec: Matrix Client-Server API v1.18
+// Spec: Matrix Client-Server API v1.19
 // Endpoint / Section: PUT /sendToDevice/{eventType}/{txnId} — idempotency
-// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#put_matrixclientv3sendtodeviceeventtypetxnid
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3sendtodeviceeventtypetxnid
 //
 // "Servers MUST NOT queue messages more than once for a given transaction ID."
 SCENARIO("send-to-device PUT is idempotent: retrying the same txn_id does not re-queue the message",
@@ -13589,9 +13589,9 @@ SCENARIO("send-to-device PUT is idempotent: retrying the same txn_id does not re
 }
 
 // --- POST /rooms/{roomId}/receipt/{receiptType}/{eventId} --------------------
-// Spec: Matrix Client-Server API v1.18
+// Spec: Matrix Client-Server API v1.19
 // Endpoint: POST /rooms/{roomId}/receipt/{receiptType}/{eventId}
-// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3roomsroomidreceiptreceipttypeeventid
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3roomsroomidreceiptreceipttypeeventid
 //
 // MUST return 200 {} when a joined user submits a valid receipt type.
 // MUST return 400 M_INVALID_PARAM when receiptType is not one of m.read,
@@ -13744,9 +13744,9 @@ SCENARIO("POST /receipt returns 400 M_INVALID_PARAM for an unrecognized receipt 
 }
 
 // --- POST /user_directory/search --------------------------------------------
-// Spec: Matrix Client-Server API v1.18
+// Spec: Matrix Client-Server API v1.19
 // Endpoint: POST /user_directory/search
-// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3user_directorysearch
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3user_directorysearch
 //
 // MUST return 200 with a "results" array and a "limited" boolean.
 // Each entry in "results" MUST contain a non-empty "user_id".
@@ -13893,8 +13893,8 @@ SCENARIO("POST /user_directory/search result entries each contain a non-empty us
 // OIDC DISCOVERY (MSC2965)
 // =============================================================================
 
-// Spec: Matrix Client-Server API v1.18 — GET /auth_metadata (MSC2965)
-// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#openid-connect-discovery
+// Spec: Matrix Client-Server API v1.19 — GET /auth_metadata (MSC2965)
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#openid-connect-discovery
 //
 // Servers that do not support OIDC MUST return 404 M_UNRECOGNIZED so that
 // clients (Element, Cindy, etc.) can detect the absence of OIDC support and
@@ -13933,8 +13933,8 @@ SCENARIO("GET /v1/auth_metadata returns 404 M_UNRECOGNIZED for non-OIDC servers"
 // SYNC FILTER ID
 // =============================================================================
 
-// Spec: Matrix Client-Server API v1.18 — GET /sync
-// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3sync
+// Spec: Matrix Client-Server API v1.19 — GET /sync
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3sync
 //
 // "filter: The ID of a filter created using the filter API or a filter
 // definition. The server will detect whether it is an ID or a definition."
@@ -13979,8 +13979,8 @@ SCENARIO("GET /sync with a stored filter_id applies the stored filter", "[confor
     }
 }
 
-// Spec: Matrix Client-Server API v1.18 — GET /sync
-// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3sync
+// Spec: Matrix Client-Server API v1.19 — GET /sync
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3sync
 //
 // When the ?filter= parameter is a token that does not correspond to any stored
 // filter, the server MUST return 400 so that clients can detect the stale
@@ -14014,7 +14014,7 @@ SCENARIO("GET /sync with an unknown filter_id returns 400", "[conformance][clien
 }
 
 // --- POST /_matrix/client/v3/pushers/set --------------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3pushersset
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3pushersset
 //
 // MUST return HTTP 200 with an empty JSON object {} when the pusher is set.
 // Merovingian does not yet deliver push notifications, but the endpoint must be

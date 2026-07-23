@@ -23,7 +23,7 @@ called by it rather than directly.
 | `reject-unsafe.sh` | Grep-based check for banned patterns (raw `new`, `delete`, `malloc`, `free`) |
 | `install-hooks.sh` | Installs the tracked Git hook templates into `.git/hooks` |
 | `setup-dev-env.sh` | Installs build dependencies on a fresh Linux dev machine |
-| `fetch_matrix_spec.py` | Downloads and unpacks the Matrix spec into `docs/matrix-v1.18-spec/` |
+| `fetch_matrix_spec.py` | Downloads and unpacks the Matrix spec into `docs/matrix-v1.19-spec/` |
 
 ## Rules
 

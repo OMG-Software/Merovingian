@@ -3,8 +3,8 @@
 // +-------------------------------------------------------------------------+
 // |         LIVE FEDERATED join_room INTEGRATION TEST                       |
 // |                                                                         |
-// |  Spec: Server-Server API v1.18 — Joining Rooms                          |
-// |  URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#joining-rooms   |
+// |  Spec: Server-Server API v1.19 — Joining Rooms                          |
+// |  URL:  ../../docs/matrix-v1.19-spec/server-server-api.md#joining-rooms   |
 // |                                                                         |
 // |  Drives merovingian::homeserver::join_room() through a REAL make_join / |
 // |  send_join round trip against a local TLS server, exercising the fast- |

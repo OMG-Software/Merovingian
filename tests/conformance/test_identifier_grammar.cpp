@@ -3,8 +3,8 @@
 // +-------------------------------------------------------------------------+
 // |              MATRIX IDENTIFIER GRAMMAR CONFORMANCE TESTS               |
 // |                                                                         |
-// |  Spec: Matrix v1.18 Appendices — Identifier Grammar                    |
-// |  URL:  ../../docs/matrix-v1.18-spec/appendices.md#identifier-grammar    |
+// |  Spec: Matrix v1.19 Appendices — Identifier Grammar                    |
+// |  URL:  ../../docs/matrix-v1.19-spec/appendices.md#identifier-grammar    |
 // |                                                                         |
 // |  !! IMPORTANT - FOR HUMANS AND LLMs ALIKE !!                            |
 // |                                                                         |
@@ -30,8 +30,8 @@
 #include <vector>
 
 // ---------------------------------------------------------------------------
-// Spec: Matrix v1.18 Appendices — Server Name
-// URL:  ../../docs/matrix-v1.18-spec/appendices.md#server-name
+// Spec: Matrix v1.19 Appendices — Server Name
+// URL:  ../../docs/matrix-v1.19-spec/appendices.md#server-name
 //
 // server_name = hostname [ ":" port ]
 // hostname    = IPv4address / "[" IPv6address "]" / dns_name
@@ -163,8 +163,8 @@ SCENARIO("Server name grammar: invalid server names are rejected", "[conformance
 }
 
 // ---------------------------------------------------------------------------
-// Spec: Matrix v1.18 Appendices — User Identifiers
-// URL:  ../../docs/matrix-v1.18-spec/appendices.md#user-identifiers
+// Spec: Matrix v1.19 Appendices — User Identifiers
+// URL:  ../../docs/matrix-v1.19-spec/appendices.md#user-identifiers
 //
 // user_id     = "@" localpart ":" server_name
 // localpart   = 1*user_id_char
@@ -269,8 +269,8 @@ SCENARIO("User ID grammar: user ID exceeding 255 bytes is rejected", "[conforman
 }
 
 // ---------------------------------------------------------------------------
-// Spec: Matrix CS API v1.18 Appendices § User Identifiers
-// URL: ../../docs/matrix-v1.18-spec/appendices.md#user-identifiers
+// Spec: Matrix CS API v1.19 Appendices § User Identifiers
+// URL: ../../docs/matrix-v1.19-spec/appendices.md#user-identifiers
 //
 // NEW localpart (used at registration / local paths):
 //   MUST contain only: a-z, 0-9, ., _, =, -, /, +
@@ -283,7 +283,7 @@ SCENARIO("User ID grammar: user ID exceeding 255 bytes is rejected", "[conforman
 
 SCENARIO("New user ID localpart: normative character set is accepted", "[conformance][identifiers][user-id][localpart]")
 {
-    GIVEN("localparts using the normative v1.18 character set (lowercase only)")
+    GIVEN("localparts using the normative v1.19 character set (lowercase only)")
     {
         auto const normative_valid = std::vector<std::string_view>{
             "alice", "alice123", "alice.bob", "alice-bob", "alice_bob", "alice=bob", "alice/bob", "alice+bob",
@@ -291,7 +291,7 @@ SCENARIO("New user ID localpart: normative character set is accepted", "[conform
 
         WHEN("each localpart is validated as a new user ID localpart")
         {
-            THEN("all normative v1.18 localpart characters are accepted")
+            THEN("all normative v1.19 localpart characters are accepted")
             {
                 for (auto const& lp : normative_valid)
                 {
@@ -359,8 +359,8 @@ SCENARIO("New user ID localpart: forbidden characters are rejected", "[conforman
 }
 
 // ---------------------------------------------------------------------------
-// Spec: Matrix CS API v1.18 Appendices § User Identifiers (historical)
-// URL: ../../docs/matrix-v1.18-spec/appendices.md#user-identifiers
+// Spec: Matrix CS API v1.19 Appendices § User Identifiers (historical)
+// URL: ../../docs/matrix-v1.19-spec/appendices.md#user-identifiers
 //
 // HISTORICAL localpart (federation / inbound paths):
 //   Older servers issued user IDs with characters outside the normative set.
@@ -467,8 +467,8 @@ SCENARIO("Federated user ID localpart: structurally forbidden characters are rej
 }
 
 // ---------------------------------------------------------------------------
-// Spec: Matrix v1.18 Appendices — User Identifiers (federated user_id)
-// URL:  ../../docs/matrix-v1.18-spec/appendices.md#user-identifiers
+// Spec: Matrix v1.19 Appendices — User Identifiers (federated user_id)
+// URL:  ../../docs/matrix-v1.19-spec/appendices.md#user-identifiers
 //
 // user_id_is_valid_federated() applies the same structural constraints as
 // user_id_is_valid() (255-byte limit, '@' sigil, ':' separator, valid
@@ -520,9 +520,9 @@ SCENARIO("Federated user ID: structural grammar is enforced with historical loca
 }
 
 // ---------------------------------------------------------------------------
-// Spec: Matrix v1.18 Appendices — Event IDs (room version 4+)
-// URL:  ../../docs/matrix-v1.18-spec/appendices.md#event-ids
-//       ../../docs/matrix-v1.18-spec/rooms/v4.md
+// Spec: Matrix v1.19 Appendices — Event IDs (room version 4+)
+// URL:  ../../docs/matrix-v1.19-spec/appendices.md#event-ids
+//       ../../docs/matrix-v1.19-spec/rooms/v4.md
 //
 // event_id  = "$" base64url
 // base64url = *( ALPHA / DIGIT / "-" / "_" )
@@ -604,9 +604,9 @@ SCENARIO("Event ID grammar: SHA-256 length event ID matches spec dimensions", "[
     }
 }
 
-// Spec: Matrix Appendices v1.18 — Event IDs (room version 4+)
-// URL:  ../../docs/matrix-v1.18-spec/rooms/v4.md
-//       ../../docs/matrix-v1.18-spec/appendices.md#event-ids
+// Spec: Matrix Appendices v1.19 — Event IDs (room version 4+)
+// URL:  ../../docs/matrix-v1.19-spec/rooms/v4.md
+//       ../../docs/matrix-v1.19-spec/appendices.md#event-ids
 //
 // The grammar for event IDs is: '$' followed by one or more URL-safe base64
 // characters. This is a SYNTACTIC rule only.
@@ -654,8 +654,8 @@ SCENARIO("Event ID grammar vs semantics: short IDs are syntactically valid but n
 }
 
 // ---------------------------------------------------------------------------
-// Spec: Matrix v1.18 Appendices — User Identifiers
-// URL:  ../../docs/matrix-v1.18-spec/appendices.md#user-identifiers
+// Spec: Matrix v1.19 Appendices — User Identifiers
+// URL:  ../../docs/matrix-v1.19-spec/appendices.md#user-identifiers
 //
 // user_id = "@" user_id_localpart ":" server_name
 // server_name may itself include a port (host:port), so the server name is

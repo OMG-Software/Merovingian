@@ -1,7 +1,7 @@
 # src/auth/ — Authentication Module
 
 Handles user registration, login, session tokens, access tokens, and the client-facing key API.
-Spec authority: ../../docs/matrix-v1.18-spec/client-server-api.md
+Spec authority: ../../docs/matrix-v1.19-spec/client-server-api.md
 
 ## Key files
 
@@ -40,8 +40,8 @@ Some endpoints require UIAA. The flow is stateless across requests; session stat
 
 ## Key spec sections
 
-- [Client Authentication](../../docs/matrix-v1.18-spec/client-server-api.md#client-authentication)
-- [Registration](../../docs/matrix-v1.18-spec/client-server-api.md#account-registration-and-management)
-- [Login](../../docs/matrix-v1.18-spec/client-server-api.md#login)
-- [Key management](../../docs/matrix-v1.18-spec/client-server-api.md#end-to-end-encryption)
-- [Identifier Grammar](../../docs/matrix-v1.18-spec/appendices.md#identifier-grammar)
+- [Client Authentication](../../docs/matrix-v1.19-spec/client-server-api.md#client-authentication)
+- [Registration](../../docs/matrix-v1.19-spec/client-server-api.md#account-registration-and-management)
+- [Login](../../docs/matrix-v1.19-spec/client-server-api.md#login)
+- [Key management](../../docs/matrix-v1.19-spec/client-server-api.md#end-to-end-encryption)
+- [Identifier Grammar](../../docs/matrix-v1.19-spec/appendices.md#identifier-grammar)

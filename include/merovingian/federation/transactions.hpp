@@ -10,8 +10,8 @@
 namespace merovingian::federation
 {
 
-inline constexpr auto max_federation_transaction_pdus_v1_18 = std::uint32_t{50U};
-inline constexpr auto max_federation_transaction_edus_v1_18 = std::uint32_t{100U};
+inline constexpr auto max_federation_transaction_pdus = std::uint32_t{50U};
+inline constexpr auto max_federation_transaction_edus = std::uint32_t{100U};
 
 enum class FederationEndpoint
 {
@@ -91,8 +91,8 @@ struct FederationEdu final
 [[nodiscard]] auto match_federation_route(std::string_view method, std::string_view target) -> FederationRouteMatch;
 [[nodiscard]] auto validate_federation_transaction(
     FederationTransaction const& transaction, std::size_t max_transaction_bytes,
-    std::uint32_t max_transaction_pdus = max_federation_transaction_pdus_v1_18,
-    std::uint32_t max_transaction_edus = max_federation_transaction_edus_v1_18) -> FederationTransactionDecision;
+    std::uint32_t max_transaction_pdus = max_federation_transaction_pdus,
+    std::uint32_t max_transaction_edus = max_federation_transaction_edus) -> FederationTransactionDecision;
 [[nodiscard]] auto edu_is_allowed(FederationEdu const& edu) -> FederationTransactionDecision;
 [[nodiscard]] auto federation_route_audit_event(FederationRoute const& route, std::string_view origin) -> std::string;
 

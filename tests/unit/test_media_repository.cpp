@@ -340,7 +340,7 @@ SCENARIO("Federation media download body is a valid multipart/mixed envelope", "
         auto const content_type = std::string{"image/png"};
         auto const bytes = std::string{"png-bytes"};
 
-        WHEN("the v1.18 federation download body is built")
+        WHEN("the v1.19 federation download body is built")
         {
             auto const envelope = merovingian::media::build_federation_media_download_body(content_type, bytes);
 

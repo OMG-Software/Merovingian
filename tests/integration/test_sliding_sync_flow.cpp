@@ -1418,7 +1418,7 @@ SCENARIO("Sliding sync receipts/typing extensions wrap content in a type-tagged 
 //
 // Stored event JSON is the signed PDU wire format, which does not carry
 // event_id (it is derived from a reference hash). Client-facing events MUST
-// carry event_id (docs/matrix-v1.18-spec/client-server-api.md#room-event-format).
+// carry event_id (docs/matrix-v1.19-spec/client-server-api.md#room-event-format).
 // A prior regression sent the raw stored PDU JSON straight through for both
 // timeline and required_state entries: no event_id, plus federation-only
 // fields (auth_events, prev_events, hashes, signatures, depth) that must

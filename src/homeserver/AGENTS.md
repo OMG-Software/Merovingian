@@ -39,7 +39,7 @@ is `declared_mime|sniffed_mime|scanner_clean|bytes` — the pipe-delimited wrapp
 2. Build the response using `dispatch_resp()` or `dispatch_err()`
 3. Add a conformance test in `tests/conformance/test_client_server_conformance.cpp`
 4. Add a unit test in `tests/unit/test_client_server.cpp`
-5. Update `docs/matrix-v1.18-client-server-api.md` with the new endpoint
+5. Update `docs/matrix-v1.19-client-server-api.md` with the new endpoint
 
 ## Body size limits
 

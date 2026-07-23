@@ -170,9 +170,9 @@ SCENARIO("X-Matrix Authorization header is parsed into credentials", "[federatio
     }
 }
 
-// Spec: Matrix Server-Server API v1.18
+// Spec: Matrix Server-Server API v1.19
 // Endpoint / Section: Request Authentication (X-Matrix)
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#request-authentication
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#request-authentication
 //
 // The X-Matrix Authorization header uses RFC 7230 quoted-string values. A
 // backslash escapes the next character, so a value containing `\"` must NOT

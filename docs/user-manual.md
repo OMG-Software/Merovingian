@@ -596,8 +596,8 @@ events for many users and an abusive remote can rotate sender IDs.
 
 | Key | Default | When to change |
 |---|---|---|
-| `security.federation.max_transaction_pdus` | `50` | Hard cap on PDUs per inbound `/send` transaction. Matrix v1.18 caps this at `50`; higher values are rejected. |
-| `security.federation.max_transaction_edus` | `100` | Hard cap on EDUs per inbound `/send` transaction. Matrix v1.18 caps this at `100`; higher values are rejected. |
+| `security.federation.max_transaction_pdus` | `50` | Hard cap on PDUs per inbound `/send` transaction. Matrix v1.19 caps this at `50`; higher values are rejected. |
+| `security.federation.max_transaction_edus` | `100` | Hard cap on EDUs per inbound `/send` transaction. Matrix v1.19 caps this at `100`; higher values are rejected. |
 | `security.federation.per_origin_transaction_rate` | `120/60s` | Maximum accepted `/send` transactions per verified remote origin per window. |
 | `security.federation.per_origin_pdu_rate` | `600/60s` | Weighted PDU budget per verified remote origin per window — a transaction with 40 PDUs consumes 40 units. |
 | `security.federation.per_origin_edu_rate` | `1200/60s` | Weighted EDU budget per verified remote origin per window. |
@@ -1749,7 +1749,7 @@ available to remote homeservers through
 `GET /_matrix/federation/v1/media/download/{mediaId}`. The endpoint is
 authenticated with `X-Matrix` request signatures, bypasses the federation worker
 because the worker has no access to the local media store, and returns a
-`multipart/mixed` response per Matrix v1.18 (an empty JSON metadata part
+`multipart/mixed` response per Matrix v1.19 (an empty JSON metadata part
 followed by the media bytes). No extra configuration is required.
 
 ### Sandbox

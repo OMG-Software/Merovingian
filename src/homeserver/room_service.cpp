@@ -791,7 +791,7 @@ namespace
         return make_operation_result(true, std::string{room_id});
     }
 
-    // Per the Matrix spec v1.18 Sec. 4.4 auth_events, only specific event types
+    // Per the Matrix spec v1.19 Sec. 4.4 auth_events, only specific event types
     // belong in auth_events depending on the event being composed:
     //   m.room.create:  none
     //   m.room.member:  {create, power_levels, join_rules, sender_member, target_member}

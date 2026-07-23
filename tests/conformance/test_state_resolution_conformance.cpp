@@ -3,11 +3,11 @@
 // +-------------------------------------------------------------------------+
 // |         MATRIX STATE RESOLUTION CONFORMANCE TESTS                       |
 // |                                                                         |
-// |  Spec: Matrix v1.18 — State Resolution                                  |
-// |  URL:  ../../docs/matrix-v1.18-spec/server-server-api.md                 |
+// |  Spec: Matrix v1.19 — State Resolution                                  |
+// |  URL:  ../../docs/matrix-v1.19-spec/server-server-api.md                 |
 // |          #room-state-resolution                                          |
 // |  v2 algorithm:                                                           |
-// |    ../../docs/matrix-v1.18-spec/server-server-api.md                     |
+// |    ../../docs/matrix-v1.19-spec/server-server-api.md                     |
 // |          #state-resolution-algorithm-for-room-versions-2-through-10     |
 // |                                                                         |
 // |  !! IMPORTANT - FOR HUMANS AND LLMs ALIKE !!                            |
@@ -151,8 +151,8 @@ using merovingian::events::StateResolutionRequest;
 
 } // namespace
 
-// Spec: Matrix v1.18 — State Resolution
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#room-state-resolution
+// Spec: Matrix v1.19 — State Resolution
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#room-state-resolution
 //
 // When a single state group is provided (no fork), the resolved state is that
 // group's state — there is nothing to conflict on. This is the common case
@@ -200,8 +200,8 @@ SCENARIO("State resolution v1: single state group is returned unchanged", "[stat
     }
 }
 
-// Spec: Matrix v1.18 — State Resolution
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#room-state-resolution
+// Spec: Matrix v1.19 — State Resolution
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#room-state-resolution
 //
 // When two state groups agree on every (type, state_key) pair, the resolved
 // state is identical to both groups — there is no conflict to resolve.
@@ -244,8 +244,8 @@ SCENARIO("State resolution v1: identical state groups produce no conflict", "[st
     }
 }
 
-// Spec: Matrix v1.18 — State Resolution
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#room-state-resolution
+// Spec: Matrix v1.19 — State Resolution
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#room-state-resolution
 //
 // When two forks have different events for the same (type, state_key), the
 // event with the greater depth wins. On a depth tie the lexicographically
@@ -301,8 +301,8 @@ SCENARIO("State resolution v1: conflicting events — greater depth wins", "[sta
     }
 }
 
-// Spec: Matrix v1.18 — State Resolution
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#room-state-resolution
+// Spec: Matrix v1.19 — State Resolution
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#room-state-resolution
 //
 // On equal depth, the lexicographically smaller event ID wins (v1 tiebreak).
 // The spec says: "If two events are at the same depth the event with the
@@ -349,8 +349,8 @@ SCENARIO("State resolution v1: depth tie broken by lexicographically smaller eve
     }
 }
 
-// Spec: Matrix v1.18 — State Resolution (v2 / SDSS)
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md
+// Spec: Matrix v1.19 — State Resolution (v2 / SDSS)
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md
 //       #state-resolution-algorithm-for-room-versions-2-through-10
 //
 // resolve_state_v2 requires a room version policy. For a single state group
@@ -395,8 +395,8 @@ SCENARIO("State resolution v2 (SDSS): single state group is returned unchanged",
     }
 }
 
-// Spec: Matrix v1.18 — State Resolution (v2 / SDSS)
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md
+// Spec: Matrix v1.19 — State Resolution (v2 / SDSS)
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md
 //       #state-resolution-algorithm-for-room-versions-2-through-10
 //
 // Non-conflicted state (events that agree across all forks) is taken
@@ -461,8 +461,8 @@ SCENARIO("State resolution v2 (SDSS): non-conflicted state passes through unchan
     }
 }
 
-// Spec: Matrix v1.18 — State Resolution (v2 / SDSS)
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md
+// Spec: Matrix v1.19 — State Resolution (v2 / SDSS)
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md
 //       #state-resolution-algorithm-for-room-versions-2-through-10
 //
 // The resolved state must not contain duplicate (event_type, state_key) pairs.
@@ -521,7 +521,7 @@ SCENARIO("State resolution result never contains duplicate (type, state_key) pai
 
 // ---------------------------------------------------------------------------
 // Spec: State resolution v2 — conflicting events resolved by depth
-// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md
+// URL:  ../../docs/matrix-v1.19-spec/server-server-api.md
 //         #state-resolution-algorithm-for-room-versions-2-through-10
 //
 // When two state groups conflict on the same (type, state_key) pair, the v2
@@ -769,8 +769,8 @@ auto const power_levels_content =
 
 } // namespace
 
-// Spec: Matrix v1.18 — Room v2 state resolution, Mainline ordering
-// URL: ../../docs/matrix-v1.18-spec/rooms/v10.md (Definitions — Mainline ordering)
+// Spec: Matrix v1.19 — Room v2 state resolution, Mainline ordering
+// URL: ../../docs/matrix-v1.19-spec/rooms/v10.md (Definitions — Mainline ordering)
 //
 // The mainline of the resolved power-levels event P0 is [P0, P1, …, Pn] where
 // P(i+1) is the m.room.power_levels event in Pi's auth_events, walked
@@ -839,8 +839,8 @@ SCENARIO("Mainline ordering walks power-levels ancestry transitively with an inf
     }
 }
 
-// Spec: Matrix v1.18 — Room v2 state resolution, Algorithm steps 1-4
-// URL: ../../docs/matrix-v1.18-spec/rooms/v10.md (Definitions — Algorithm)
+// Spec: Matrix v1.19 — Room v2 state resolution, Algorithm steps 1-4
+// URL: ../../docs/matrix-v1.19-spec/rooms/v10.md (Definitions — Algorithm)
 //
 // Step 1/2: power events from the conflicted set are sorted by reverse
 // topological power ordering and auth-checked FIRST against the unconflicted
@@ -915,8 +915,8 @@ SCENARIO("State resolution v2 orders non-power events by mainline of the partial
     }
 }
 
-// Spec: Matrix v1.18 — Room v2 state resolution, Definitions — Power events
-// URL: ../../docs/matrix-v1.18-spec/rooms/v10.md (Definitions — Power events)
+// Spec: Matrix v1.19 — Room v2 state resolution, Definitions — Power events
+// URL: ../../docs/matrix-v1.19-spec/rooms/v10.md (Definitions — Power events)
 //
 // A power event is a state event with type m.room.power_levels or
 // m.room.join_rules, or an m.room.member event with membership leave or ban

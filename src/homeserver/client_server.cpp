@@ -235,7 +235,7 @@ namespace
                                           {}};
         if (retry_after_ms > 0U)
         {
-            // Matrix v1.18: 429 responses SHOULD include a Retry-After header.
+            // Matrix v1.19: 429 responses SHOULD include a Retry-After header.
             // The deprecated retry_after_ms body field is also included for
             // older clients. Both values are in milliseconds / seconds respectively.
             auto const retry_after_seconds = (retry_after_ms + 999U) / 1000U;
@@ -371,7 +371,7 @@ namespace
     // Send m.device_list_update EDUs for every device the user owns to each
     // server in destinations. Called after key upload or room join so remote
     // servers learn about the local user's devices and can establish Olm
-    // sessions (Matrix spec v1.18 device-list-updates-between-servers).
+    // sessions (Matrix spec v1.19 device-list-updates-between-servers).
     auto broadcast_device_list_updates(ClientServerRuntime& rt, std::string_view user_id,
                                        std::vector<std::string> const& destinations) -> void
     {
@@ -390,7 +390,7 @@ namespace
             {
                 continue;
             }
-            // Build EDU content per spec v1.18 device-list-updates-between-servers.
+            // Build EDU content per spec v1.19 device-list-updates-between-servers.
             auto content_obj = canonicaljson::Object{};
             content_obj.push_back(canonicaljson::make_member("device_id", canonicaljson::Value{device.device_id}));
             // Include device identity keys so the receiving server (e.g. Synapse)
@@ -398,7 +398,7 @@ namespace
             // fetch.  Without this field there is a race window between the EDU
             // and the async refetch: if the remote client encrypts during that
             // window it uses stale keys, producing OlmError::MissingCiphertext on
-            // the Merovingian-side recipient (Matrix spec v1.18 §m.device_list_update).
+            // the Merovingian-side recipient (Matrix spec v1.19 §m.device_list_update).
             auto const dk_it =
                 std::ranges::find_if(store.device_keys, [&device, user_id](database::PersistentDeviceKey const& dk) {
                     return dk.user_id == user_id && dk.device_id == device.device_id;
@@ -436,7 +436,7 @@ namespace
     }
 
     // Generate a server-side opaque device_id for clients that omit
-    // `device_id` from the login body. The spec (Matrix v1.18 §5.3.2
+    // `device_id` from the login body. The spec (Matrix v1.19 §5.3.2
     // login) requires the server to mint a unique opaque id; the
     // previous "MEROVINGIAN" literal caused every device_id-less login
     // to collide on a single shared device record.
@@ -597,7 +597,7 @@ namespace
         });
     }
 
-    // Spec: CS API v1.18 §m.rule.contains_display_name — condition kind that matches when
+    // Spec: CS API v1.19 §m.rule.contains_display_name — condition kind that matches when
     // the event body contains the receiving user's current display name (case-insensitive).
     // No additional fields required beyond "kind".
     [[nodiscard]] auto push_condition_contains_display_name() -> canonicaljson::Value
@@ -678,7 +678,7 @@ namespace
                                            canonicaljson::Array{push_condition_event_property_is(
                                                "content.m\\.relates_to.rel_type", std::string_view{"m.replace"})},
                                            {}));
-        // Spec: CS API v1.18 §.m.rule.contains_display_name — legacy rule for clients that do
+        // Spec: CS API v1.19 §.m.rule.contains_display_name — legacy rule for clients that do
         // not use m.mentions; matches messages whose body contains the user's display name.
         override_rules.push_back(push_rule(".m.rule.contains_display_name", true,
                                            canonicaljson::Array{push_condition_contains_display_name()},
@@ -687,7 +687,7 @@ namespace
                                                push_action_set_tweak("sound", std::string_view{"default"}),
                                                push_action_set_tweak("highlight"),
                                            }));
-        // Spec: CS API v1.18 §.m.rule.roomnotif — matches messages containing "@room" when
+        // Spec: CS API v1.19 §.m.rule.roomnotif — matches messages containing "@room" when
         // the sender has permission to notify the whole room.
         override_rules.push_back(push_rule(".m.rule.roomnotif", true,
                                            canonicaljson::Array{
@@ -1015,7 +1015,7 @@ namespace
         return std::get_if<bool>(&value->storage());
     }
 
-    // Spec v1.18 §"Account suspension": the actions a suspended user MAY
+    // Spec v1.19 §"Account suspension": the actions a suspended user MAY
     // perform is an implementation detail, but servers SHOULD permit at least:
     // login + new sessions, /sync and /messages, key verification/cross-signing,
     // key backup, leaving rooms / rejecting invites, redacting their own events,
@@ -1358,7 +1358,7 @@ namespace
     }
 
     // Handles GET/PUT /_matrix/client/v1/admin/lock/{userId} and
-    // /_matrix/client/v1/admin/suspend/{userId} (spec v1.18 §"Account locking"
+    // /_matrix/client/v1/admin/suspend/{userId} (spec v1.19 §"Account locking"
     // and §"Account suspension"). `is_lock` selects the lock endpoint (and the
     // "locked" body/response field); otherwise the suspend endpoint is handled.
     // Authorization (caller MUST be a server admin) is checked before any target
@@ -2129,7 +2129,7 @@ namespace
         return MatrixDeviceUpdateBody{*display_name};
     }
 
-    // Spec: Matrix v1.18 CS API §push-notifications — POST /pushers/set
+    // Spec: Matrix v1.19 CS API §push-notifications — POST /pushers/set
     // Validates the body. A kind:null request deletes the pusher and only
     // requires app_id and pushkey. Non-null kinds require the full set of
     // display-name, data, and lang fields; http pushers additionally require a
@@ -2217,7 +2217,7 @@ namespace
         }
         else if (*kind_string != "email")
         {
-            // Only "http" and "email" are defined by Matrix v1.18.
+            // Only "http" and "email" are defined by Matrix v1.19.
             return std::nullopt;
         }
 
@@ -2507,7 +2507,7 @@ namespace
         std::string user_key;
         if (!req.access_token.empty())
         {
-            // Matrix v1.18 rate-limiting: per-user buckets MUST be keyed by the
+            // Matrix v1.19 rate-limiting: per-user buckets MUST be keyed by the
             // authenticated user_id, not by the access_token. A bearer token can
             // be rotated; the user_id is the stable identity. Unauthenticated or
             // unknown-token requests skip the per-user tier and fall back to the
@@ -2728,7 +2728,7 @@ namespace
     }
 
     // Spec: GET/POST /_matrix/client/v3/publicRooms
-    // ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3publicrooms
+    // ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3publicrooms
     [[nodiscard]] auto public_rooms_filtered_json(ClientServerRuntime const& rt, std::string const& filter_term,
                                                   std::optional<std::size_t> limit, std::size_t since_offset)
         -> std::string
@@ -4626,7 +4626,7 @@ namespace
     };
 
     // Extract the device's own ed25519 key id AND public key (base64) from a
-    // parsed `device_keys` object. The Matrix v1.18 spec requires the device
+    // parsed `device_keys` object. The Matrix v1.19 spec requires the device
     // to publish a `keys` map whose ed25519 member is the device's own
     // identity key; every SignedKey (OTK, fallback key) MUST be signed by it.
     // Returns empty strings when the object has no ed25519 member; the caller
@@ -4913,11 +4913,11 @@ namespace
                 }
             }
             // Notify remote servers so they can fetch the updated keys and
-            // deliver room keys to this device (spec v1.18 SS4.1).
+            // deliver room keys to this device (spec v1.19 SS4.1).
             broadcast_device_list_updates(rt, user, remote_servers_for_user(rt.homeserver, user));
         }
         // Reject any one-time / fallback key that is not signed by the
-        // device's own ed25519 identity. The Matrix v1.18 spec requires
+        // device's own ed25519 identity. The Matrix v1.19 spec requires
         // every SignedKey to be signed by the device's signing key; an
         // unverifiable key is useless to a peer (it will fail
         // NoSignatureFound at /keys/claim time, blocking the Olm session
@@ -7171,7 +7171,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     {
         auto versions = canonicaljson::Array{};
         for (auto const& spec : {"v1.1", "v1.2", "v1.3", "v1.4", "v1.5", "v1.6", "v1.7", "v1.8", "v1.9", "v1.10",
-                                 "v1.11", "v1.12", "v1.13", "v1.14", "v1.15", "v1.16", "v1.17", "v1.18"})
+                                 "v1.11", "v1.12", "v1.13", "v1.14", "v1.15", "v1.16", "v1.17", "v1.18", "v1.19"})
         {
             versions.push_back(json_str(spec));
         }
@@ -7188,7 +7188,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
 
     auto const request_path = std::string_view{req.target}.substr(0U, std::string_view{req.target}.find('?'));
     // Spec: GET /_matrix/client/v3/publicRooms
-    // ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3publicrooms
+    // ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3publicrooms
     // When ?server= names a remote homeserver the request must be proxied to
     // GET /_matrix/federation/v1/publicRooms on that server.
     if (req.method == "GET" && request_path == "/_matrix/client/v3/publicRooms")
@@ -7224,7 +7224,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         return dispatch_resp(req, rt, 200U, public_rooms_json(rt));
     }
     // Spec: POST /_matrix/client/v3/publicRooms
-    // ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3publicrooms
+    // ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3publicrooms
     if (req.method == "POST" && request_path == "/_matrix/client/v3/publicRooms")
     {
         auto filter_term = std::string{};
@@ -7417,7 +7417,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             // Validation-session back-pressure: limit the number of concurrent
             // uncompleted sessions per transport endpoint. Advise the client to
-            // retry after one session TTL window (60 seconds) per Matrix v1.18.
+            // retry after one session TTL window (60 seconds) per Matrix v1.19.
             return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", "too many outstanding validation sessions", 60000U);
         }
         return dispatch_resp(req, rt, 200U, json_serialize(json_obj({json_member("sid", json_str(session->sid))})));
@@ -7451,7 +7451,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             // Validation-session back-pressure: limit the number of concurrent
             // uncompleted sessions per transport endpoint. Advise the client to
-            // retry after one session TTL window (60 seconds) per Matrix v1.18.
+            // retry after one session TTL window (60 seconds) per Matrix v1.19.
             return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", "too many outstanding validation sessions", 60000U);
         }
         return dispatch_resp(req, rt, 200U, json_serialize(json_obj({json_member("sid", json_str(session->sid))})));
@@ -7470,7 +7470,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         auto const require_token = rt.homeserver.config.security().registration.require_token;
         if (require_token)
         {
-            // Per spec v1.18 §5.5.1, incomplete credentials MUST receive 401
+            // Per spec v1.19 §5.5.1, incomplete credentials MUST receive 401
             // with the challenge — not proceed to registration and fail 403.
             auto const uia_challenge = json_obj({
                 json_member(
@@ -7730,7 +7730,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             // Validation-session back-pressure: limit the number of concurrent
             // uncompleted sessions per transport endpoint. Advise the client to
-            // retry after one session TTL window (60 seconds) per Matrix v1.18.
+            // retry after one session TTL window (60 seconds) per Matrix v1.19.
             return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", "too many outstanding validation sessions", 60000U);
         }
         return dispatch_resp(req, rt, 200U, json_serialize(json_obj({json_member("sid", json_str(session->sid))})));
@@ -7770,7 +7770,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             // Validation-session back-pressure: limit the number of concurrent
             // uncompleted sessions per transport endpoint. Advise the client to
-            // retry after one session TTL window (60 seconds) per Matrix v1.18.
+            // retry after one session TTL window (60 seconds) per Matrix v1.19.
             return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", "too many outstanding validation sessions", 60000U);
         }
         return dispatch_resp(req, rt, 200U, json_serialize(json_obj({json_member("sid", json_str(session->sid))})));
@@ -7801,7 +7801,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                                 {"target", observability::sanitized_http_target(req.target), false},
                                                 {"actor",  *user,                                            false}
     });
-    // Account moderation request-path gate (spec v1.18 §"Account locking" /
+    // Account moderation request-path gate (spec v1.19 §"Account locking" /
     // §"Account suspension"). Enforced after authentication succeeds and before
     // route dispatch. Tokens are NOT revoked — the spec says locking/suspending
     // keep existing sessions intact; enforcement is per-request.
@@ -7849,7 +7849,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     // GET /_matrix/client/v1/media/download/{serverName}/{mediaId}
     // GET /_matrix/client/v1/media/thumbnail/{serverName}/{mediaId}
     // Authenticated media endpoints (MSC3860 / Matrix v1.11). The v1 routes
-    // require an access token per spec v1.18 §13.8, so they are dispatched after
+    // require an access token per spec v1.19 §13.8, so they are dispatched after
     // the auth gate above. The unauthenticated v3 routes remain pre-auth.
     auto constexpr media_v1_download_prefix = std::string_view{"/_matrix/client/v1/media/download/"};
     if (req.method == "GET" && starts_with(req.target, media_v1_download_prefix))
@@ -8207,7 +8207,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                              }))})));
     }
     // GET /_matrix/client/v3/thirdparty/protocols
-    // Spec: CS API v1.18 §third party networks — returns the third-party
+    // Spec: CS API v1.19 §third party networks — returns the third-party
     // protocols the server supports as a (possibly empty) JSON object. Merovingian
     // runs no application services, so the map is empty. Returning 404 here made
     // clients (Element) log repeated "Failed to check for protocol support"
@@ -8217,7 +8217,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         return dispatch_resp(req, rt, 200U, "{}");
     }
     // Clients fetch /pushrules immediately after login to load the
-    // server-default rules defined by Matrix v1.18.
+    // server-default rules defined by Matrix v1.19.
     if (req.method == "GET" && request_path == "/_matrix/client/v3/pushrules/")
     {
         auto const ruleset = default_push_ruleset(*user);
@@ -8399,7 +8399,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     }
 
     // GET /_matrix/client/v3/voip/turnServer
-    // Spec v1.18 §10.5: returns TURN server credentials. When no TURN server
+    // Spec v1.19 §10.5: returns TURN server credentials. When no TURN server
     // is configured we return an empty object so clients disable relay support
     // gracefully rather than treating a 404 as an error.
     if (req.method == "GET" && req.target == "/_matrix/client/v3/voip/turnServer")
@@ -8546,7 +8546,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                                           : handle_safety_report(rt, *user, req));
     }
     // PUT /_matrix/client/v3/sendToDevice/{eventType}/{txnId}
-    // Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#put_matrixclientv3sendtoeventtypetxnid
+    // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3sendtoeventtypetxnid
     if (req.method == "PUT")
     {
         if (auto const path = send_to_device_path_parts(req.target); path.has_value())
@@ -8555,7 +8555,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         }
     }
     // GET /_matrix/client/v3/keys/changes[?from=...&to=...]
-    // Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3keyschanges
+    // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3keyschanges
     {
         auto constexpr keys_changes_base = std::string_view{"/_matrix/client/v3/keys/changes"};
         if (req.method == "GET" && starts_with(std::string_view{req.target}, keys_changes_base))
@@ -8708,8 +8708,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         auto const device_id = session.has_value() ? session->device_id : std::string{};
         auto sync_request = merovingian::core::parse_query_params(req.target);
 
-        // Spec: Matrix Client-Server API v1.18 — GET /sync
-        // URL: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3sync
+        // Spec: Matrix Client-Server API v1.19 — GET /sync
+        // URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3sync
         //
         // The ?filter= parameter is either an inline JSON object (starts with '{')
         // or a stored filter ID. Inline JSON is validated immediately; a filter ID
@@ -8985,7 +8985,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                {"reason",  result.status == 200U ? std::string{"ok"} : result.body, false}
             });
             // Notify remote servers that this user's devices now share the room
-            // so they can fetch keys and deliver encrypted room keys (spec v1.18).
+            // so they can fetch keys and deliver encrypted room keys (spec v1.19).
             if (result.status == 200U)
             {
                 broadcast_device_list_updates(rt, *user, remote_servers_for_user(rt.homeserver, *user));
@@ -9042,7 +9042,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
         }
         // GET /rooms/{roomId}/state/{eventType}/{stateKey}
-        // Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3roomsroomidstateeventtypestatekey
+        // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3roomsroomidstateeventtypestatekey
         // Returns the content object of a single named state event.
         if (req.method == "GET")
         {
@@ -9186,7 +9186,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
         }
         // GET /_matrix/client/v3/rooms/{roomId}/members
-        // Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3roomsroomidmembers
+        // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3roomsroomidmembers
         // Returns the current state of the room membership as a chunk of
         // m.room.member events. Optional query params:
         //   membership     - include only this type (join/leave/invite/ban/knock)
@@ -9443,7 +9443,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
         }
         // GET /_matrix/client/v3/rooms/{roomId}/initialSync
-        // Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3roomsroomidinitialsync
+        // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3roomsroomidinitialsync
         // Returns RoomInfo for members (or previous members) and allows
         // non-member peeking when the room is world_readable.
         if (req.method == "GET")
@@ -9458,7 +9458,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                          }) != store.rooms.end();
                 if (!room_exists)
                 {
-                    // Spec v1.18 only defines 200 and 403 for this endpoint. A room
+                    // Spec v1.19 only defines 200 and 403 for this endpoint. A room
                     // that is not resident locally (e.g. a remote public room the
                     // client discovered via the directory) is treated the same as a
                     // non-member request so the client can fall back to joining.
@@ -10148,7 +10148,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                            {"reason",           result.status == 200U ? std::string{"ok"} : result.body, false}
         });
         // Notify remote servers that this user's devices now share the room
-        // so they can fetch keys and deliver encrypted room keys (spec v1.18).
+        // so they can fetch keys and deliver encrypted room keys (spec v1.19).
         if (result.status == 200U)
         {
             broadcast_device_list_updates(rt, *user, remote_servers_for_user(rt.homeserver, *user));
@@ -10504,7 +10504,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         }
     }
 
-    // Account moderation endpoints (spec v1.18 §"Account locking" / §"Account
+    // Account moderation endpoints (spec v1.19 §"Account locking" / §"Account
     // suspension"). Matched after all other routes; the handler enforces admin
     // auth, anti-enumeration, and lookup rules.
     if (starts_with(request_path, "/_matrix/client/v1/admin/lock/") ||
@@ -10523,7 +10523,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     return dispatch_err(req, rt, 404U, "M_UNRECOGNIZED", "route not found");
 }
 
-// Matrix spec §web-browser-clients (v1.18):
+// Matrix spec §web-browser-clients (v1.19):
 //   "The server MUST add Access-Control-Allow-Origin: * to every response."
 //
 // This is the single public entry point. The impl above has multiple code paths

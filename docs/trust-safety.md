@@ -38,7 +38,7 @@ event content.
 
 ## Deliberately not included
 
-- Full Matrix v1.18 trust-and-safety conformance fixtures.
+- Full Matrix v1.19 trust-and-safety conformance fixtures.
 - Moderator queues beyond the current audit/admin action summaries.
 - Multipart or streaming moderation inputs beyond the current request-local
   transport contract.

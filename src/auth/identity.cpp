@@ -48,7 +48,7 @@ namespace
         return byte > 0x20U && byte < 0x7FU;
     }
 
-    // Spec: Matrix v1.18 § Identifier Grammar — new user ID localpart character set.
+    // Spec: Matrix v1.19 § Identifier Grammar — new user ID localpart character set.
     // Only lowercase ASCII, digits, and the listed punctuation are permitted for
     // new user IDs. Uppercase is NOT allowed; it was removed from the spec to
     // allow future case-folding without ambiguity.
@@ -60,8 +60,8 @@ namespace
 
     // Validates a byte sequence as a federated localpart.
     //
-    // Spec: Matrix v1.18 § User Identifiers (historical note)
-    // URL:  ../../docs/matrix-v1.18-spec/appendices.md#user-identifiers
+    // Spec: Matrix v1.19 § User Identifiers (historical note)
+    // URL:  ../../docs/matrix-v1.19-spec/appendices.md#user-identifiers
     //
     // Historical deployments issued user IDs with characters outside the normative
     // set (uppercase, punctuation such as '#', Unicode). Servers SHOULD accept these
@@ -276,8 +276,8 @@ auto server_name_is_valid(std::string_view server_name) noexcept -> bool
     return hostname_is_valid(hostname) && port_is_valid(port);
 }
 
-// Spec: Matrix v1.18 § Identifier Grammar
-// URL:  ../../docs/matrix-v1.18-spec/appendices.md#user-identifiers
+// Spec: Matrix v1.19 § Identifier Grammar
+// URL:  ../../docs/matrix-v1.19-spec/appendices.md#user-identifiers
 //
 // New localparts MUST use only: a-z, 0-9, '.', '_', '-', '=', '/', '+'.
 // Uppercase is not permitted for new user IDs.
@@ -287,8 +287,8 @@ auto localpart_is_valid_new(std::string_view localpart) noexcept -> bool
     return !localpart.empty() && localpart.size() <= 255U && std::ranges::all_of(localpart, is_new_localpart_character);
 }
 
-// Spec: Matrix v1.18 § User Identifiers (historical compatibility)
-// URL:  ../../docs/matrix-v1.18-spec/appendices.md#user-identifiers
+// Spec: Matrix v1.19 § User Identifiers (historical compatibility)
+// URL:  ../../docs/matrix-v1.19-spec/appendices.md#user-identifiers
 //
 // Historical user IDs may contain characters outside the normative set.
 // Servers SHOULD accept them when received over federation.
@@ -398,7 +398,7 @@ auto login_policy(UserIdentity const& user) -> LoginPolicyDecision
             return {false, "account locked"};
         }
         // Suspended accounts MAY still log in and create additional sessions per
-        // spec v1.18 §"Account suspension"; the new session is itself suspended
+        // spec v1.19 §"Account suspension"; the new session is itself suspended
         // and enforced by the request-path M_USER_SUSPENDED gate. Only locked
         // accounts are denied a new login.
         return {true, {}};

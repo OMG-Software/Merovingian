@@ -1,7 +1,7 @@
 # src/rooms/ — Rooms Module
 
 Room creation, membership, power levels, and room version policy enforcement.
-Spec authority: ../../docs/matrix-v1.18-spec/client-server-api.md#rooms
+Spec authority: ../../docs/matrix-v1.19-spec/client-server-api.md#rooms
 
 ## Key files
 
@@ -23,8 +23,8 @@ Do not hard-code version-specific logic outside this module.
 
 ## Supported room versions
 
-Support for v1–v12 per Matrix spec v1.18. Room v12 adds `via` servers for join routing (MSC4291).
-See `docs/matrix-v1.18-spec/rooms/index.md` for the feature matrix.
+Support for v1–v12 per Matrix spec v1.19. Room v12 adds `via` servers for join routing (MSC4291).
+See `docs/matrix-v1.19-spec/rooms/index.md` for the feature matrix.
 
 ## Encryption policy
 
@@ -34,6 +34,6 @@ Rooms with `m.room.encryption` state require all messages to be encrypted.
 
 ## Key spec sections
 
-- [Room Versions](../../docs/matrix-v1.18-spec/rooms/index.md)
-- [Room Events](../../docs/matrix-v1.18-spec/client-server-api.md#room-event-format)
-- [Power Levels](../../docs/matrix-v1.18-spec/client-server-api.md#mroompower_levels)
+- [Room Versions](../../docs/matrix-v1.19-spec/rooms/index.md)
+- [Room Events](../../docs/matrix-v1.19-spec/client-server-api.md#room-event-format)
+- [Power Levels](../../docs/matrix-v1.19-spec/client-server-api.md#mroompower_levels)

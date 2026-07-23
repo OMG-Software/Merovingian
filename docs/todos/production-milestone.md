@@ -9,7 +9,7 @@ be published as production releases while any blocking gate remains open.
 - ~~Require configured TLS with validated certificate and private-key files for
   public listeners; keep loopback cleartext available for reverse-proxy
   deployments.~~ Implemented with explicit `reverse_proxy` declaration.
-- Complete full Matrix v1.18 conformance, persistence, endpoint coverage, and
+- Complete full Matrix v1.19 conformance, persistence, endpoint coverage, and
   production-grade rate limiting for client-server routes.
 - ~~Store access tokens only as versioned cryptographic hashes generated from
   LibSodium CSPRNG output.~~ Implemented: access and refresh tokens are

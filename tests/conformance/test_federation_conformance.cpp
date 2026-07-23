@@ -3,8 +3,8 @@
 // +-------------------------------------------------------------------------+
 // |              MATRIX FEDERATION CONFORMANCE TESTS                        |
 // |                                                                         |
-// |  Spec: Matrix Server-Server API v1.18                                   |
-// |  URL:  ../../docs/matrix-v1.18-spec/server-server-api.md                 |
+// |  Spec: Matrix Server-Server API v1.19                                   |
+// |  URL:  ../../docs/matrix-v1.19-spec/server-server-api.md                 |
 // |                                                                         |
 // |  !! IMPORTANT - FOR HUMANS AND LLMs ALIKE !!                            |
 // |                                                                         |
@@ -191,9 +191,9 @@ auto const key_seed = std::string{"conformance-test-seed"};
 } // namespace
 
 // --- make_join ---------------------------------------------------------------
-// Spec: Matrix Server-Server API v1.18
+// Spec: Matrix Server-Server API v1.19
 // Endpoint: GET /_matrix/federation/v1/make_join/{roomId}/{userId}
-// ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixfederationv1make_joinroomiduserid
+// ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1make_joinroomiduserid
 //
 // The resident server MUST respond 200 with a JSON object containing:
 //   room_version  - the version of the room
@@ -266,9 +266,9 @@ SCENARIO("make_join returns room version and event template for a remote user", 
 }
 
 // --- send_join ---------------------------------------------------------------
-// Spec: Matrix Server-Server API v1.18
+// Spec: Matrix Server-Server API v1.19
 // Endpoint: PUT /_matrix/federation/v2/send_join/{roomId}/{eventId}
-// ../../docs/matrix-v1.18-spec/server-server-api.md#put_matrixfederationv2send_joinroomideventid
+// ../../docs/matrix-v1.19-spec/server-server-api.md#put_matrixfederationv2send_joinroomideventid
 //
 // The resident server MUST respond 200 with a JSON object containing:
 //   room_version  - the version of the room
@@ -361,9 +361,9 @@ SCENARIO("send_join persists membership and returns auth chain and state", "[fed
     }
 }
 
-// Spec: Matrix Server-Server API v1.18
+// Spec: Matrix Server-Server API v1.19
 // Endpoint: PUT /_matrix/federation/v2/send_join/{roomId}/{eventId}
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#put_matrixfederationv2send_joinroomideventiid
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#put_matrixfederationv2send_joinroomideventiid
 //
 // The send_join handler MUST resolve the room version via room_version_resolver
 // and pass it to parse_inbound_pdu_envelope so event-ID computation uses the
@@ -423,9 +423,9 @@ SCENARIO("send_join passes the resolved room version to the membership acceptor 
 }
 
 // --- make_leave --------------------------------------------------------------
-// Spec: Matrix Server-Server API v1.18
+// Spec: Matrix Server-Server API v1.19
 // Endpoint: GET /_matrix/federation/v1/make_leave/{roomId}/{userId}
-// ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixfederationv1make_leaveroomiduserid
+// ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1make_leaveroomiduserid
 //
 // The resident server MUST respond 200 with a JSON object containing:
 //   room_version  - the version of the room
@@ -469,9 +469,9 @@ SCENARIO("make_leave returns event template for a leaving user", "[federation][c
 }
 
 // --- send_leave --------------------------------------------------------------
-// Spec: Matrix Server-Server API v1.18
+// Spec: Matrix Server-Server API v1.19
 // Endpoint: PUT /_matrix/federation/v2/send_leave/{roomId}/{eventId}
-// ../../docs/matrix-v1.18-spec/server-server-api.md#put_matrixfederationv2send_leaveroomideventid
+// ../../docs/matrix-v1.19-spec/server-server-api.md#put_matrixfederationv2send_leaveroomideventid
 //
 // The resident server MUST respond 200. The v2 response body is an empty
 // object {}. The "event" field MUST NOT appear (it is send_join-only).
@@ -518,9 +518,9 @@ SCENARIO("send_leave processes departure and returns 200", "[federation][conform
 }
 
 // --- invite v2 ---------------------------------------------------------------
-// Spec: Matrix Server-Server API v1.18
+// Spec: Matrix Server-Server API v1.19
 // Endpoint: PUT /_matrix/federation/v2/invite/{roomId}/{eventId}
-// ../../docs/matrix-v1.18-spec/server-server-api.md#put_matrixfederationv2inviteroomideventid
+// ../../docs/matrix-v1.19-spec/server-server-api.md#put_matrixfederationv2inviteroomideventid
 //
 // The resident server MUST respond 200 with a JSON object containing:
 //   event  - the invite event signed by the resident server
@@ -559,9 +559,9 @@ SCENARIO("invite v2 processes inbound invite and returns signed event", "[federa
 }
 
 // --- invite v1 ---------------------------------------------------------------
-// Spec: Matrix Server-Server API v1.18
+// Spec: Matrix Server-Server API v1.19
 // Endpoint: PUT /_matrix/federation/v1/invite/{roomId}/{eventId}
-// ../../docs/matrix-v1.18-spec/server-server-api.md#put_matrixfederationv1inviteroomideventid
+// ../../docs/matrix-v1.19-spec/server-server-api.md#put_matrixfederationv1inviteroomideventid
 //
 // Legacy path. The resident server MUST respond 200. Response format differs
 // from v2: the event is returned as a bare JSON value, not wrapped in an object.
@@ -605,9 +605,9 @@ SCENARIO("invite v1 processes inbound invite and returns signed event", "[federa
 }
 
 // --- backfill ----------------------------------------------------------------
-// Spec: Matrix Server-Server API v1.18
+// Spec: Matrix Server-Server API v1.19
 // Endpoint: GET /_matrix/federation/v1/backfill/{roomId}
-// ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixfederationv1backfillroomid
+// ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1backfillroomid
 //
 // The resident server MUST respond 200 with a JSON object containing:
 //   pdus  - array of PDUs from the room's history, oldest first
@@ -644,9 +644,9 @@ SCENARIO("backfill returns room event history as PDU array", "[federation][confo
 }
 
 // --- key publishing ----------------------------------------------------------
-// Spec: Matrix Server-Server API v1.18
+// Spec: Matrix Server-Server API v1.19
 // Endpoint: GET /_matrix/key/v2/server
-// ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixkeyv2server
+// ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixkeyv2server
 //
 // Key publication is served by the local HTTP router, NOT the federation
 // request handler. Verifying the separation prevents a regression where the
@@ -675,9 +675,9 @@ SCENARIO("key publishing is served via the local HTTP router, not federation han
 }
 
 // --- user/keys/query --------------------------------------------------------
-// Spec: Matrix Server-Server API v1.18
+// Spec: Matrix Server-Server API v1.19
 // Endpoint: POST /_matrix/federation/v1/user/keys/query
-// ../../docs/matrix-v1.18-spec/server-server-api.md#post_matrixfederationv1userkeysquery
+// ../../docs/matrix-v1.19-spec/server-server-api.md#post_matrixfederationv1userkeysquery
 SCENARIO("signed federation user/keys/query returns device and cross-signing maps",
          "[federation][conformance][e2ee_keys]")
 {
@@ -731,9 +731,9 @@ SCENARIO("signed federation user/keys/query returns device and cross-signing map
 }
 
 // --- user/keys/claim --------------------------------------------------------
-// Spec: Matrix Server-Server API v1.18
+// Spec: Matrix Server-Server API v1.19
 // Endpoint: POST /_matrix/federation/v1/user/keys/claim
-// ../../docs/matrix-v1.18-spec/server-server-api.md#post_matrixfederationv1userkeysclaim
+// ../../docs/matrix-v1.19-spec/server-server-api.md#post_matrixfederationv1userkeysclaim
 SCENARIO("signed federation user/keys/claim returns the claimed nested one-time key map",
          "[federation][conformance][e2ee_keys]")
 {
@@ -790,9 +790,9 @@ SCENARIO("signed federation user/keys/claim returns the claimed nested one-time 
 }
 
 // --- user/devices -----------------------------------------------------------
-// Spec: Matrix Server-Server API v1.18
+// Spec: Matrix Server-Server API v1.19
 // Endpoint: GET /_matrix/federation/v1/user/devices/{userId}
-// ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixfederationv1userdevicesuserid
+// ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1userdevicesuserid
 SCENARIO("signed federation user/devices percent-decodes the user id and returns published devices",
          "[federation][conformance][e2ee_keys]")
 {
@@ -846,7 +846,7 @@ SCENARIO("signed federation user/devices percent-decodes the user id and returns
 }
 
 // --- unwired endpoints -------------------------------------------------------
-// Spec: Matrix Server-Server API v1.18 (general error handling)
+// Spec: Matrix Server-Server API v1.19 (general error handling)
 //
 // If a handler is not wired the server MUST respond 501 Not Implemented
 // rather than 404 or 500, so the remote can distinguish "not supported" from
@@ -916,9 +916,9 @@ SCENARIO("unwired endpoints return 501 Not Implemented", "[federation][conforman
 }
 
 // --- query/event -------------------------------------------------------------
-// Spec: Matrix Server-Server API v1.18
+// Spec: Matrix Server-Server API v1.19
 // Endpoint: GET /_matrix/federation/v1/event/{eventId}
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixfederationv1eventeventid
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1eventeventid
 //
 // The resident server MUST return the PDU for a known event_id as a JSON object
 // whose 'pdus' array contains exactly that event. An unknown event_id MUST
@@ -993,9 +993,9 @@ SCENARIO("GET /event/{eventId} returns the PDU when the event_query_provider is 
 }
 
 // --- query/state -------------------------------------------------------------
-// Spec: Matrix Server-Server API v1.18
+// Spec: Matrix Server-Server API v1.19
 // Endpoint: GET /_matrix/federation/v1/state/{roomId}
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixfederationv1stateroomid
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1stateroomid
 //
 // The resident server MUST return 200 with the current state for a known room.
 // An unknown room MUST return 404 M_NOT_FOUND. Missing provider → 501.
@@ -1082,9 +1082,9 @@ SCENARIO("GET /state/{roomId} returns room state when the state_query_provider i
 }
 
 // --- state_ids ---------------------------------------------------------------
-// Spec: Matrix Server-Server API v1.18
+// Spec: Matrix Server-Server API v1.19
 // Endpoint: GET /_matrix/federation/v1/state_ids/{roomId}
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixfederationv1state_idsroomid
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1state_idsroomid
 //
 // The resident server MUST return 200 with pdu_ids and auth_chain_ids arrays for
 // a known room. An unknown room MUST return 404. Missing provider → 501.
@@ -1163,9 +1163,9 @@ SCENARIO("GET /state_ids/{roomId} returns event-ID lists when the state_ids_quer
 }
 
 // --- get_missing_events ------------------------------------------------------
-// Spec: Matrix Server-Server API v1.18
+// Spec: Matrix Server-Server API v1.19
 // Endpoint: POST /_matrix/federation/v1/get_missing_events/{roomId}
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#post_matrixfederationv1get_missing_eventsroomid
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#post_matrixfederationv1get_missing_eventsroomid
 //
 // The resident server MUST return 200 with an 'events' array of PDUs that the
 // requesting server is missing. Missing provider → 501.
@@ -1227,9 +1227,9 @@ SCENARIO("POST /get_missing_events/{roomId} returns missing PDUs when the provid
 }
 
 // --- query/profile -----------------------------------------------------------
-// Spec: Matrix Server-Server API v1.18
+// Spec: Matrix Server-Server API v1.19
 // Endpoint: GET /_matrix/federation/v1/query/profile
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixfederationv1queryprofile
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1queryprofile
 //
 // The resident server MUST return 200 with displayname and avatar_url for a
 // known local user. Unknown users MUST return 404 M_NOT_FOUND. An invalid
@@ -1344,9 +1344,9 @@ SCENARIO("GET /query/profile returns user profile fields when the profile_query_
 }
 
 // --- make_knock --------------------------------------------------------------
-// Spec: Matrix Server-Server API v1.18
+// Spec: Matrix Server-Server API v1.19
 // Endpoint: GET /_matrix/federation/v1/make_knock/{roomId}/{userId}
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixfederationv1make_knockroomiduserid
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1make_knockroomiduserid
 //
 // The resident server MUST respond 200 with:
 //   room_version  - the version string of the room
@@ -1430,9 +1430,9 @@ SCENARIO("GET /make_knock returns knock template when membership_template_provid
 }
 
 // --- send_knock --------------------------------------------------------------
-// Spec: Matrix Server-Server API v1.18
+// Spec: Matrix Server-Server API v1.19
 // Endpoint: PUT /_matrix/federation/v1/send_knock/{roomId}/{eventId}
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#put_matrixfederationv1send_knockroomideventid
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#put_matrixfederationv1send_knockroomideventid
 //
 // The resident server MUST respond 200 when the knock event is accepted.
 // The response body MUST NOT include 'event' (that field is send_join-only).
@@ -1510,8 +1510,8 @@ SCENARIO("PUT /send_knock processes the knock and returns 200 when the acceptor 
 // =============================================================================
 // GET /_matrix/federation/v1/query/directory
 // =============================================================================
-// Spec: Matrix Server-Server API v1.18
-// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixfederationv1querydirectory
+// Spec: Matrix Server-Server API v1.19
+// URL:  ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1querydirectory
 //
 // Resolves a room alias to a room ID + list of resident homeservers.
 // Spec MUST: 200 with room_id (string) and servers (array of strings) when alias is known.
@@ -1569,8 +1569,8 @@ SCENARIO("GET /query/directory returns room_id and servers when the alias is kno
 }
 
 // --- query/directory: alias not found ----------------------------------------
-// Spec: Matrix Server-Server API v1.18
-// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixfederationv1querydirectory
+// Spec: Matrix Server-Server API v1.19
+// URL:  ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1querydirectory
 //
 // Spec MUST: 404 when the alias is unknown to this server.
 SCENARIO("GET /query/directory returns 404 when the alias is unknown", "[federation][conformance][query_directory]")
@@ -1602,8 +1602,8 @@ SCENARIO("GET /query/directory returns 404 when the alias is unknown", "[federat
 }
 
 // --- query/directory: provider not installed (501) ----------------------------
-// Spec: Matrix Server-Server API v1.18
-// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixfederationv1querydirectory
+// Spec: Matrix Server-Server API v1.19
+// URL:  ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1querydirectory
 SCENARIO("GET /query/directory returns 501 when no directory_query_provider is installed",
          "[federation][conformance][query_directory]")
 {
@@ -1631,8 +1631,8 @@ SCENARIO("GET /query/directory returns 501 when no directory_query_provider is i
 // =============================================================================
 // make_join — M_INCOMPATIBLE_ROOM_VERSION
 // =============================================================================
-// Spec: Matrix Server-Server API v1.18
-// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixfederationv1make_joinroomiduserid
+// Spec: Matrix Server-Server API v1.19
+// URL:  ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1make_joinroomiduserid
 //
 // Spec: 400 with errcode M_INCOMPATIBLE_ROOM_VERSION when the room's actual
 // version is not listed in the joining server's `ver` query parameter.
@@ -1694,8 +1694,8 @@ SCENARIO("make_join returns 400 M_INCOMPATIBLE_ROOM_VERSION when room version is
 // =============================================================================
 // make_join — provider returns nullopt → 404 M_NOT_FOUND
 // =============================================================================
-// Spec: Matrix Server-Server API v1.18
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixfederationv1make_joinroomiduserid
+// Spec: Matrix Server-Server API v1.19
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1make_joinroomiduserid
 //
 // Spec MUST: respond 404 M_NOT_FOUND when the room is unknown to this server
 // or the requesting user is not permitted to join.
@@ -1734,8 +1734,8 @@ SCENARIO("make_join returns 404 M_NOT_FOUND when the template provider has no ro
 // =============================================================================
 // make_join — event template field structure
 // =============================================================================
-// Spec: Matrix Server-Server API v1.18
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixfederationv1make_joinroomiduserid
+// Spec: Matrix Server-Server API v1.19
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1make_joinroomiduserid
 //
 // Spec MUST: the event template contains type=m.room.member, state_key set to
 // the joining user's MXID, and content.membership=join.
@@ -1804,8 +1804,8 @@ SCENARIO("make_join event template contains required type and content.membership
 // =============================================================================
 // make_join — multiple ver= values accepted
 // =============================================================================
-// Spec: Matrix Server-Server API v1.18
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixfederationv1make_joinroomiduserid
+// Spec: Matrix Server-Server API v1.19
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1make_joinroomiduserid
 //
 // The ?ver= parameter is a repeated query param. Spec MUST: when the room
 // version appears anywhere in the ver list the request MUST be accepted.
@@ -1862,8 +1862,8 @@ SCENARIO("make_join accepts a join when room version is among multiple ver= quer
 // =============================================================================
 // make_leave — provider returns nullopt → 404 M_NOT_FOUND
 // =============================================================================
-// Spec: Matrix Server-Server API v1.18
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixfederationv1make_leaveroomiduserid
+// Spec: Matrix Server-Server API v1.19
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1make_leaveroomiduserid
 //
 // Spec MUST: 403 M_FORBIDDEN when the user is not permitted to leave (e.g. not
 // a member). 404 M_NOT_FOUND when the room does not exist on this server.
@@ -1901,8 +1901,8 @@ SCENARIO("make_leave returns 404 M_NOT_FOUND when the template provider has no r
 // =============================================================================
 // make_leave — response structure
 // =============================================================================
-// Spec: Matrix Server-Server API v1.18
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixfederationv1make_leaveroomiduserid
+// Spec: Matrix Server-Server API v1.19
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1make_leaveroomiduserid
 //
 // Spec MUST: 200 with {room_version: string, event: object}.
 SCENARIO("make_leave response contains room_version and a leave event template",
@@ -1972,8 +1972,8 @@ SCENARIO("make_leave response contains room_version and a leave event template",
 // =============================================================================
 // make_leave / send_leave — 501 when unwired
 // =============================================================================
-// Spec: Matrix Server-Server API v1.18 (general error handling)
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixfederationv1make_leaveroomiduserid
+// Spec: Matrix Server-Server API v1.19 (general error handling)
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1make_leaveroomiduserid
 //
 // Spec: a server that does not implement an endpoint MUST return 501 so the
 // remote can distinguish "not supported" from routing errors.
@@ -2023,8 +2023,8 @@ SCENARIO("make_leave and send_leave return 501 Not Implemented when handlers are
 // =============================================================================
 // make_knock — M_INCOMPATIBLE_ROOM_VERSION
 // =============================================================================
-// Spec: Matrix Server-Server API v1.18
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixfederationv1make_knockroomiduserid
+// Spec: Matrix Server-Server API v1.19
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1make_knockroomiduserid
 //
 // Spec MUST: 400 M_INCOMPATIBLE_ROOM_VERSION when the room's version is not
 // listed in the knocking server's ?ver= parameter. Response MUST include
@@ -2084,8 +2084,8 @@ SCENARIO("make_knock returns 400 M_INCOMPATIBLE_ROOM_VERSION when room version n
 // =============================================================================
 // make_knock — provider returns nullopt → 404 M_NOT_FOUND
 // =============================================================================
-// Spec: Matrix Server-Server API v1.18
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixfederationv1make_knockroomiduserid
+// Spec: Matrix Server-Server API v1.19
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1make_knockroomiduserid
 //
 // Spec MUST: 404 when the room is unknown or the user is not allowed to knock.
 SCENARIO("make_knock returns 404 M_NOT_FOUND when the template provider has no room",
@@ -2122,8 +2122,8 @@ SCENARIO("make_knock returns 404 M_NOT_FOUND when the template provider has no r
 // =============================================================================
 // send_join — v1 endpoint
 // =============================================================================
-// Spec: Matrix Server-Server API v1.18
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#put_matrixfederationv1send_joinroomideventid
+// Spec: Matrix Server-Server API v1.19
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#put_matrixfederationv1send_joinroomideventid
 //
 // The v1 path /_matrix/federation/v1/send_join/... MUST be supported alongside
 // v2. The response shape (room_version, auth_chain, state, event) is identical
@@ -2185,8 +2185,8 @@ SCENARIO("send_join v1 endpoint returns 200 with the required response fields", 
 // =============================================================================
 // send_leave — v1 path does not include event field
 // =============================================================================
-// Spec: Matrix Server-Server API v1.18
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#put_matrixfederationv1send_leaveroomideventid
+// Spec: Matrix Server-Server API v1.19
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#put_matrixfederationv1send_leaveroomideventid
 //
 // Spec: v1 path MUST be supported. "event" MUST NOT appear in the response
 // (it is send_join-only). The response body for send_leave carries no
@@ -2229,8 +2229,8 @@ SCENARIO("send_leave v1 endpoint returns 200 without event field", "[federation]
 // =============================================================================
 // send_knock — response MUST contain knock_room_state
 // =============================================================================
-// Spec: Matrix Server-Server API v1.18
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#put_matrixfederationv1send_knockroomideventid
+// Spec: Matrix Server-Server API v1.19
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#put_matrixfederationv1send_knockroomideventid
 //
 // Spec MUST: 200 response body is {"knock_room_state": [<StrippedStateEvent>]}.
 // knock_room_state carries the stripped room state events the knocking server
@@ -2287,8 +2287,8 @@ SCENARIO("send_knock response contains the knock_room_state array", "[federation
 // =============================================================================
 // invite v2 — response wraps event under "event" key
 // =============================================================================
-// Spec: Matrix Server-Server API v1.18
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#put_matrixfederationv2inviteroomideventid
+// Spec: Matrix Server-Server API v1.19
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#put_matrixfederationv2inviteroomideventid
 //
 // Spec MUST: v2 response is {"event": <signed-event-object>}. The "event" key
 // MUST be a JSON object, not a string, array, or null.
@@ -2341,8 +2341,8 @@ SCENARIO("invite v2 response body contains the event key as a JSON object", "[fe
 // =============================================================================
 // backfill — response structure: origin, origin_server_ts, pdus
 // =============================================================================
-// Spec: Matrix Server-Server API v1.18
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixfederationv1backfillroomid
+// Spec: Matrix Server-Server API v1.19
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1backfillroomid
 //
 // Spec MUST: 200 response body is a Transaction object:
 //   origin          - the server_name of the responding server
@@ -2405,8 +2405,8 @@ SCENARIO("backfill response contains origin, origin_server_ts, and pdus fields",
 // =============================================================================
 // backfill — query parameter parsing
 // =============================================================================
-// Spec: Matrix Server-Server API v1.18
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixfederationv1backfillroomid
+// Spec: Matrix Server-Server API v1.19
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1backfillroomid
 //
 // Spec: query string carries:
 //   v=<event_id>   (repeated, one or more event IDs to backfill from)
@@ -2455,8 +2455,8 @@ SCENARIO("backfill provider receives room_id, event_ids, and limit parsed from t
 // =============================================================================
 // backfill — URI decoding
 // =============================================================================
-// Spec: Matrix Server-Server API v1.18
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixfederationv1backfillroomid
+// Spec: Matrix Server-Server API v1.19
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1backfillroomid
 //
 // Spec MUST: `roomId` identifies the room to backfill, and each `v` query
 // parameter identifies an event to backfill from. These are URI path/query

@@ -4,7 +4,7 @@ Implements `/sync` (CS API v3), MSC4186 Simplified Sliding Sync (`/sync/v3` unst
 sync filtering, stream tokens, and the sync notifier.
 
 Spec authority:
-- `/sync`: ../../docs/matrix-v1.18-spec/client-server-api.md#syncing
+- `/sync`: ../../docs/matrix-v1.19-spec/client-server-api.md#syncing
 - Sliding sync: MSC4186 (unstable, `/_matrix/client/unstable/org.matrix.simplified_msc3575/sync`)
 
 ## Key files
@@ -42,6 +42,6 @@ a delta (empty rooms, same pos) rather than re-sending the full initial sync.
 
 ## Key spec sections
 
-- [Syncing](../../docs/matrix-v1.18-spec/client-server-api.md#syncing)
-- [Filtering](../../docs/matrix-v1.18-spec/client-server-api.md#filtering)
-- [MSC4186 Simplified Sliding Sync](../../docs/matrix-v1.18-spec/client-server-api.md)
+- [Syncing](../../docs/matrix-v1.19-spec/client-server-api.md#syncing)
+- [Filtering](../../docs/matrix-v1.19-spec/client-server-api.md#filtering)
+- [MSC4186 Simplified Sliding Sync](../../docs/matrix-v1.19-spec/client-server-api.md)

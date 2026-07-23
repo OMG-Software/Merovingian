@@ -3,7 +3,7 @@
 // +-------------------------------------------------------------------------+
 // |         MSC4186 SIMPLIFIED SLIDING SYNC CONFORMANCE TESTS               |
 // |                                                                         |
-// |  Spec: MSC4186 Simplified Sliding Sync (proposal, not in v1.18 stable)  |
+// |  Spec: MSC4186 Simplified Sliding Sync (proposal, not in v1.19 stable)  |
 // |  URL:  https://github.com/matrix-org/matrix-spec-proposals/blob/main/   |
 // |          proposals/4186-simplified-sliding-sync.md                       |
 // |                                                                         |

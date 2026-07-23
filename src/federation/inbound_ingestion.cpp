@@ -249,7 +249,7 @@ auto edu_content_is_valid(EduType type, std::string_view content_json) -> bool
     switch (type)
     {
     case EduType::typing:
-        // Spec: SS API v1.18 §m.typing — content: { room_id: string, user_id: string, typing: bool }.
+        // Spec: SS API v1.19 §m.typing — content: { room_id: string, user_id: string, typing: bool }.
         // Note: the CS API uses user_ids (array); the SS API uses user_id (singular) per-user.
         return find_member(*root, "room_id") != nullptr && find_member(*root, "user_id") != nullptr &&
                find_member(*root, "typing") != nullptr;

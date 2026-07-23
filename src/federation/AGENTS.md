@@ -1,7 +1,7 @@
 # src/federation/ — Federation Module
 
-Implements the Matrix Server-Server API v1.18.
-Spec authority: ../../docs/matrix-v1.18-spec/server-server-api.md
+Implements the Matrix Server-Server API v1.19.
+Spec authority: ../../docs/matrix-v1.19-spec/server-server-api.md
 
 Federation is the highest-risk surface: **all input comes from untrusted remote servers.**
 
@@ -45,10 +45,10 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
 
 ## Key spec sections
 
-- [Request authentication (X-Matrix)](../../docs/matrix-v1.18-spec/server-server-api.md#request-authentication)
-- [PDUs](../../docs/matrix-v1.18-spec/server-server-api.md#pdus)
-- [Authorization rules](../../docs/matrix-v1.18-spec/server-server-api.md#authorization-rules)
-- [Resolving server names](../../docs/matrix-v1.18-spec/server-server-api.md#resolving-server-names)
-- [Transactions](../../docs/matrix-v1.18-spec/server-server-api.md#transactions)
-- [Joining rooms](../../docs/matrix-v1.18-spec/server-server-api.md#joining-rooms)
-- [Key publication](../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixkeyv2server)
+- [Request authentication (X-Matrix)](../../docs/matrix-v1.19-spec/server-server-api.md#request-authentication)
+- [PDUs](../../docs/matrix-v1.19-spec/server-server-api.md#pdus)
+- [Authorization rules](../../docs/matrix-v1.19-spec/server-server-api.md#authorization-rules)
+- [Resolving server names](../../docs/matrix-v1.19-spec/server-server-api.md#resolving-server-names)
+- [Transactions](../../docs/matrix-v1.19-spec/server-server-api.md#transactions)
+- [Joining rooms](../../docs/matrix-v1.19-spec/server-server-api.md#joining-rooms)
+- [Key publication](../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixkeyv2server)

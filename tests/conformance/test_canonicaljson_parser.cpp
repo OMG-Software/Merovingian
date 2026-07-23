@@ -3,10 +3,10 @@
 // +-------------------------------------------------------------------------+
 // |              MATRIX CANONICAL JSON PARSER CONFORMANCE TESTS            |
 // |                                                                         |
-// |  Spec: Matrix v1.18 Appendices — Canonical JSON                        |
-// |  URL:  ../../docs/matrix-v1.18-spec/appendices.md#canonical-json        |
-// |        ../../docs/matrix-v1.18-spec/appendices.md#grammar               |
-// |        ../../docs/matrix-v1.18-spec/appendices.md#examples              |
+// |  Spec: Matrix v1.19 Appendices — Canonical JSON                        |
+// |  URL:  ../../docs/matrix-v1.19-spec/appendices.md#canonical-json        |
+// |        ../../docs/matrix-v1.19-spec/appendices.md#grammar               |
+// |        ../../docs/matrix-v1.19-spec/appendices.md#examples              |
 // |                                                                         |
 // |  !! IMPORTANT - FOR HUMANS AND LLMs ALIKE !!                            |
 // |                                                                         |
@@ -126,7 +126,7 @@ SCENARIO("Canonical JSON parser rejects leading zeros, explicit positive signs, 
         auto constexpr leading_zero_long = "007";
         auto constexpr explicit_positive = "+5";
         auto constexpr leading_positive_negative = "+-1";
-        // Spec: Matrix v1.18 Appendices § Canonical JSON:
+        // Spec: Matrix v1.19 Appendices § Canonical JSON:
         // "Numbers that are negative zero MUST NOT appear in canonical JSON."
         auto constexpr signed_zero = "-0";
 
@@ -153,8 +153,8 @@ SCENARIO("Canonical JSON parser rejects leading zeros, explicit positive signs, 
     }
 }
 
-// Spec: Matrix v1.18 Appendices — Canonical JSON — Grammar
-// URL:  ../../docs/matrix-v1.18-spec/appendices.md#grammar
+// Spec: Matrix v1.19 Appendices — Canonical JSON — Grammar
+// URL:  ../../docs/matrix-v1.19-spec/appendices.md#grammar
 //
 // "Value MUST be an integer in the range -(2^53)+1 to (2^53)-1 inclusive."
 // -(2^53)+1 = -9007199254740991
@@ -196,8 +196,8 @@ SCENARIO("Canonical JSON parser accepts integers within the spec's safe integer 
     }
 }
 
-// Spec: Matrix v1.18 Appendices — Canonical JSON — Grammar
-// URL:  ../../docs/matrix-v1.18-spec/appendices.md#grammar
+// Spec: Matrix v1.19 Appendices — Canonical JSON — Grammar
+// URL:  ../../docs/matrix-v1.19-spec/appendices.md#grammar
 //
 // Numbers outside the safe integer range MUST be rejected because they cannot be
 // represented exactly in IEEE 754 double-precision and would produce different
@@ -325,8 +325,8 @@ SCENARIO("Canonical JSON signable object view serializes deterministically", "[c
     }
 }
 
-// Spec: Matrix v1.18 Appendices — Signing JSON
-// URL:  ../../docs/matrix-v1.18-spec/appendices.md#signing-json
+// Spec: Matrix v1.19 Appendices — Signing JSON
+// URL:  ../../docs/matrix-v1.19-spec/appendices.md#signing-json
 //
 // "First, the object is signed with the `signatures` and `unsigned` keys
 // removed" — the signable view MUST elide both top-level keys so a signature
@@ -355,8 +355,8 @@ SCENARIO("Canonical JSON signable object view strips signatures and unsigned",
     }
 }
 
-// Spec: Matrix v1.18 Appendices — Canonical JSON — Examples
-// URL:  ../../docs/matrix-v1.18-spec/appendices.md#examples
+// Spec: Matrix v1.19 Appendices — Canonical JSON — Examples
+// URL:  ../../docs/matrix-v1.19-spec/appendices.md#examples
 //
 // The specification provides these exact input/output pairs as canonical JSON
 // test vectors. Every implementation MUST produce these exact outputs.
@@ -372,7 +372,7 @@ SCENARIO("Canonical JSON spec test vectors produce the exact expected output",
             char const* expected;
         };
 
-        // Vectors from ../../docs/matrix-v1.18-spec/appendices.md#examples
+        // Vectors from ../../docs/matrix-v1.19-spec/appendices.md#examples
         auto const vectors = std::vector<TestVector>{
             // Empty object
             {"{}", "{}"},
@@ -408,8 +408,8 @@ SCENARIO("Canonical JSON spec test vectors produce the exact expected output",
     }
 }
 
-// Spec: Matrix v1.18 Appendices — Canonical JSON — Grammar
-// URL:  ../../docs/matrix-v1.18-spec/appendices.md#grammar
+// Spec: Matrix v1.19 Appendices — Canonical JSON — Grammar
+// URL:  ../../docs/matrix-v1.19-spec/appendices.md#grammar
 //
 // Strings MUST NOT use \uXXXX escape sequences for characters above U+001F.
 // Unicode escapes for printable characters (A for 'A') MUST be decoded

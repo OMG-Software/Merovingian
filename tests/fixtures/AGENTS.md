@@ -7,7 +7,7 @@ Static fixtures used by the integration and complement test runners.
 | Path | Purpose |
 |---|---|
 | `complement/` | JSON fixture files driving `test_sync_complement_fixture.cpp` |
-| `complement/client_server_v1_18.json` | Client-server API flow tests: register, login, send, sync, media |
+| `complement/client_server_v1_19.json` | Client-server API flow tests: register, login, send, sync, media |
 
 ## Complement fixture format
 

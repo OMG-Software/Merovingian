@@ -304,7 +304,7 @@ SCENARIO("Integrated client-server flow rejects invalid and duplicate account 3P
     }
 }
 
-SCENARIO("Integrated Matrix v1.18 interop flow covers login join key exchange messaging receipts and leave",
+SCENARIO("Integrated Matrix v1.19 interop flow covers login join key exchange messaging receipts and leave",
          "[homeserver][client-server][integration][conformance][e2ee]")
 {
     GIVEN("two users using a normal encrypted private-room flow")
@@ -517,7 +517,7 @@ SCENARIO("Integrated Matrix v1.18 interop flow covers login join key exchange me
     }
 }
 
-SCENARIO("Integrated Matrix v1.18 interop flow works with registration-issued sessions and joined-room bootstrap",
+SCENARIO("Integrated Matrix v1.19 interop flow works with registration-issued sessions and joined-room bootstrap",
          "[homeserver][client-server][integration][conformance][e2ee][registration]")
 {
     GIVEN("two users relying on the access tokens and device ids returned by registration")

@@ -43,6 +43,6 @@ Do **not** bypass this interface by calling libsodium functions directly.
 
 ## Key spec sections
 
-- [Signing JSON](../../docs/matrix-v1.18-spec/appendices.md#signing-json)
-- [Cryptographic key representation](../../docs/matrix-v1.18-spec/appendices.md#cryptographic-key-representation)
-- [Event signing](../../docs/matrix-v1.18-spec/server-server-api.md#signing-events)
+- [Signing JSON](../../docs/matrix-v1.19-spec/appendices.md#signing-json)
+- [Cryptographic key representation](../../docs/matrix-v1.19-spec/appendices.md#cryptographic-key-representation)
+- [Event signing](../../docs/matrix-v1.19-spec/server-server-api.md#signing-events)

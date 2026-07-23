@@ -11,7 +11,7 @@ production-gated.
 - Device ID validation.
 - Password policy shape for future local-password authentication.
 - Account state model for active, locked, and suspended users.
-- Login policy decisions that fail closed for invalid, locked, or password-disabled accounts; suspended accounts MAY still log in per spec v1.18 §"Account suspension" (the new session is itself suspended and enforced by the request-path gate).
+- Login policy decisions that fail closed for invalid, locked, or password-disabled accounts; suspended accounts MAY still log in per spec v1.19 §"Account suspension" (the new session is itself suspended and enforced by the request-path gate).
 - Access-token record shape bound to user and device identity.
 - Token hash persistence validation.
 - Token expiry and revocation policy decisions.

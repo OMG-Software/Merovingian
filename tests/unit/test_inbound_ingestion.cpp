@@ -118,7 +118,7 @@ SCENARIO("EDU content validators enforce per-type shape", "[federation][inbound-
 {
     GIVEN("a valid m.typing content object")
     {
-        // Spec: SS API v1.18 §m.typing — content is { room_id, user_id, typing }.
+        // Spec: SS API v1.19 §m.typing — content is { room_id, user_id, typing }.
         // (CS API uses user_ids array; SS API uses per-user user_id + bool.)
         auto const content =
             std::string{R"({"room_id":"!room:example.org","user_id":"@alice:example.org","typing":true})"};
@@ -168,7 +168,7 @@ SCENARIO("EDU envelope parser rejects unknown types and malformed content", "[fe
 {
     WHEN("a known type with valid content is parsed")
     {
-        // Spec: SS API v1.18 §m.typing — content is { room_id, user_id, typing }.
+        // Spec: SS API v1.19 §m.typing — content is { room_id, user_id, typing }.
         auto const content =
             std::string{R"({"room_id":"!room:example.org","user_id":"@alice:example.org","typing":true})"};
         auto const envelope =

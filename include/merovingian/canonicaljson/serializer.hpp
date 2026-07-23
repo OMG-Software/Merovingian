@@ -37,7 +37,7 @@ struct SerializeResult final
 // except a Value tree containing any double fails closed with
 // CanonicalJsonError::float_not_allowed instead of being serialized —
 // canonical JSON MUST NOT contain floats in signed/hashed data
-// (docs/matrix-v1.18-spec/appendices.md#canonical-json). Use this from
+// (docs/matrix-v1.19-spec/appendices.md#canonical-json). Use this from
 // event_signer.cpp, event_id.cpp, and any other code producing bytes that
 // will be hashed or Ed25519-signed.
 [[nodiscard]] auto serialize_canonical_strict(Value const& value) -> SerializeResult;

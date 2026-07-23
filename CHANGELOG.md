@@ -1,3 +1,14 @@
+## 0.11.1
+
+Maintenance: migrate repository documentation and tooling from Matrix spec v1.18 to v1.19. This is a mechanical update only; no v1.19 behaviour changes are implemented in this release.
+
+- Regenerated local spec docs under `docs/matrix-v1.19-spec/` from docs/matrix-v1.19-spec/index.md
+- Added generated `docs/matrix-v1.19-client-server-api.md` (+ appendix) from the v1.19 OpenAPI definition.
+- Updated `scripts/fetch_matrix_spec.py`, `scripts/generate-matrix-v119-spec-doc.mjs` (renamed from v118), `scripts/repoint_spec_links.py`, and `scripts/check-conformance-gate.sh` to v1.19.
+- Repointed all internal Markdown/source spec links to the v1.19 local docs.
+- Renamed test Complement fixtures from `*_v1_18.json` to `*_v1_19.json`.
+- v1.18 spec docs remain in place for comparison.
+
 ## 0.10.63
 
 Fix: legacy `/sync` never reported unread notification counts, so read receipts appeared to do nothing.

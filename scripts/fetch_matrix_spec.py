@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Downloads all Matrix v1.18 spec pages and converts them to Markdown.
-# Output: docs/matrix-v1.18-spec/
+# Downloads all Matrix v1.19 spec pages and converts them to Markdown.
+# Output: docs/matrix-v1.19-spec/
 
 import urllib.request
 import re
@@ -302,30 +302,30 @@ def save(path, content):
 
 BASE = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "docs", "matrix-v1.18-spec",
+    "docs", "matrix-v1.19-spec",
 )
 
 PAGES = [
-    ("https://spec.matrix.org/v1.18/",                         "index.md"),
-    ("https://spec.matrix.org/v1.18/client-server-api/",       "client-server-api.md"),
-    ("https://spec.matrix.org/v1.18/server-server-api/",       "server-server-api.md"),
-    ("https://spec.matrix.org/v1.18/application-service-api/", "application-service-api.md"),
-    ("https://spec.matrix.org/v1.18/identity-service-api/",    "identity-service-api.md"),
-    ("https://spec.matrix.org/v1.18/push-gateway-api/",        "push-gateway-api.md"),
-    ("https://spec.matrix.org/v1.18/rooms/",                   "rooms/index.md"),
-    ("https://spec.matrix.org/v1.18/rooms/v1/",                "rooms/v1.md"),
-    ("https://spec.matrix.org/v1.18/rooms/v2/",                "rooms/v2.md"),
-    ("https://spec.matrix.org/v1.18/rooms/v3/",                "rooms/v3.md"),
-    ("https://spec.matrix.org/v1.18/rooms/v4/",                "rooms/v4.md"),
-    ("https://spec.matrix.org/v1.18/rooms/v5/",                "rooms/v5.md"),
-    ("https://spec.matrix.org/v1.18/rooms/v6/",                "rooms/v6.md"),
-    ("https://spec.matrix.org/v1.18/rooms/v7/",                "rooms/v7.md"),
-    ("https://spec.matrix.org/v1.18/rooms/v8/",                "rooms/v8.md"),
-    ("https://spec.matrix.org/v1.18/rooms/v9/",                "rooms/v9.md"),
-    ("https://spec.matrix.org/v1.18/rooms/v10/",               "rooms/v10.md"),
-    ("https://spec.matrix.org/v1.18/rooms/v11/",               "rooms/v11.md"),
-    ("https://spec.matrix.org/v1.18/rooms/v12/",               "rooms/v12.md"),
-    ("https://spec.matrix.org/v1.18/appendices/",              "appendices.md"),
+    ("https://spec.matrix.org/v1.19/",                         "index.md"),
+    ("https://spec.matrix.org/v1.19/client-server-api/",       "client-server-api.md"),
+    ("https://spec.matrix.org/v1.19/server-server-api/",       "server-server-api.md"),
+    ("https://spec.matrix.org/v1.19/application-service-api/", "application-service-api.md"),
+    ("https://spec.matrix.org/v1.19/identity-service-api/",    "identity-service-api.md"),
+    ("https://spec.matrix.org/v1.19/push-gateway-api/",        "push-gateway-api.md"),
+    ("https://spec.matrix.org/v1.19/rooms/",                   "rooms/index.md"),
+    ("https://spec.matrix.org/v1.19/rooms/v1/",                "rooms/v1.md"),
+    ("https://spec.matrix.org/v1.19/rooms/v2/",                "rooms/v2.md"),
+    ("https://spec.matrix.org/v1.19/rooms/v3/",                "rooms/v3.md"),
+    ("https://spec.matrix.org/v1.19/rooms/v4/",                "rooms/v4.md"),
+    ("https://spec.matrix.org/v1.19/rooms/v5/",                "rooms/v5.md"),
+    ("https://spec.matrix.org/v1.19/rooms/v6/",                "rooms/v6.md"),
+    ("https://spec.matrix.org/v1.19/rooms/v7/",                "rooms/v7.md"),
+    ("https://spec.matrix.org/v1.19/rooms/v8/",                "rooms/v8.md"),
+    ("https://spec.matrix.org/v1.19/rooms/v9/",                "rooms/v9.md"),
+    ("https://spec.matrix.org/v1.19/rooms/v10/",               "rooms/v10.md"),
+    ("https://spec.matrix.org/v1.19/rooms/v11/",               "rooms/v11.md"),
+    ("https://spec.matrix.org/v1.19/rooms/v12/",               "rooms/v12.md"),
+    ("https://spec.matrix.org/v1.19/appendices/",              "appendices.md"),
 ]
 
 errors = []
@@ -350,4 +350,4 @@ if errors:
         print(f"  {e}")
     sys.exit(1)
 else:
-    print(f"All {len(PAGES)} pages saved to docs/matrix-v1.18-spec/")
+    print(f"All {len(PAGES)} pages saved to docs/matrix-v1.19-spec/")

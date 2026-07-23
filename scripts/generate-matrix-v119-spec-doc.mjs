@@ -6,8 +6,8 @@ import fs from "node:fs";
 import https from "node:https";
 import path from "node:path";
 
-const DEFAULT_SOURCE_URL = "https://spec.matrix.org/v1.18/client-server-api/api.json";
-const DEFAULT_OUTPUT = "docs/matrix-v1.18-client-server-api.md";
+const DEFAULT_SOURCE_URL = "https://spec.matrix.org/v1.19/client-server-api/api.json";
+const DEFAULT_OUTPUT = "docs/matrix-v1.19-client-server-api.md";
 
 function argValue(name, fallback) {
   const prefix = `${name}=`;
@@ -130,14 +130,14 @@ for (const operation of operations) {
 }
 
 const lines = [
-  "# Matrix v1.18 Client-Server API Reference",
+  "# Matrix v1.19 Client-Server API Reference",
   "",
-  "> Generated file. Do not edit endpoint rows by hand; regenerate with `node scripts/generate-matrix-v118-spec-doc.mjs`.",
+  "> Generated file. Do not edit endpoint rows by hand; regenerate with `node scripts/generate-matrix-v119-spec-doc.mjs`.",
   "",
   "## Source",
   "",
   `- Official OpenAPI document: ${source}`,
-  "- Human-readable reference: https://spec.matrix.org/v1.18/client-server-api/",
+  "- Human-readable reference: https://spec.matrix.org/v1.19/client-server-api/",
   `- OpenAPI: ${api.openapi ?? "unknown"}`,
   `- Title: ${api.info?.title ?? "unknown"}`,
   `- Version: ${api.info?.version ?? "unknown"}`,

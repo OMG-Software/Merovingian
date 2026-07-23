@@ -3,8 +3,8 @@
 // +-------------------------------------------------------------------------+
 // |              FEDERATION EVENT-GRAPH QUERY CONFORMANCE TESTS              |
 // |                                                                         |
-// |  Spec: Matrix Server-Server API v1.18, Sec. Retrieving state for a room |
-// |  URL:  ../../docs/matrix-v1.18-spec/server-server-api.md                |
+// |  Spec: Matrix Server-Server API v1.19, Sec. Retrieving state for a room |
+// |  URL:  ../../docs/matrix-v1.19-spec/server-server-api.md                |
 // |        #get_matrixfederationv1stateroomid                               |
 // |                                                                         |
 // |  !! IMPORTANT - FOR HUMANS AND LLMs ALIKE !!                            |
@@ -116,8 +116,8 @@ namespace
 } // namespace
 
 // --- Auth chain reconstruction for /state_ids --------------------------------
-// Spec: Matrix Server-Server API v1.18, GET /_matrix/federation/v1/state_ids/{roomId}
-// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixfederationv1state_idsroomid
+// Spec: Matrix Server-Server API v1.19, GET /_matrix/federation/v1/state_ids/{roomId}
+// URL:  ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1state_idsroomid
 //
 // The response MUST carry `auth_chain_ids`: the IDs of every event in the auth
 // chains of the returned state events. A receiving server relies on this set to
@@ -164,8 +164,8 @@ SCENARIO("state_ids response reconstructs the transitive auth chain", "[federati
 }
 
 // --- Backfill event graph walk ------------------------------------------------
-// Spec: Matrix Server-Server API v1.18, GET /_matrix/federation/v1/backfill/{roomId}
-// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixfederationv1backfillroomid
+// Spec: Matrix Server-Server API v1.19, GET /_matrix/federation/v1/backfill/{roomId}
+// URL:  ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1backfillroomid
 //
 // The 200 response contains "the PDUs that preceded the given event(s),
 // including the given event(s), up to the given limit." Backfill therefore
@@ -205,8 +205,8 @@ SCENARIO("backfill PDU collection includes requested events and predecessors",
 }
 
 // --- Auth chain reconstruction for /state ------------------------------------
-// Spec: Matrix Server-Server API v1.18, GET /_matrix/federation/v1/state/{roomId}
-// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixfederationv1stateroomid
+// Spec: Matrix Server-Server API v1.19, GET /_matrix/federation/v1/state/{roomId}
+// URL:  ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1stateroomid
 //
 // The full-event `/state` response MUST carry `auth_chain`: the complete events
 // (not just IDs) for every event in the auth chains of the returned state.
@@ -253,8 +253,8 @@ SCENARIO("state response embeds the auth chain events", "[federation][conformanc
 }
 
 // --- State-at-event reconstruction -------------------------------------------
-// Spec: Matrix Server-Server API v1.18, GET /_matrix/federation/v1/state_ids/{roomId}
-// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixfederationv1state_idsroomid
+// Spec: Matrix Server-Server API v1.19, GET /_matrix/federation/v1/state_ids/{roomId}
+// URL:  ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1state_idsroomid
 //
 // The response is "the fully resolved state for the room, prior to considering
 // any state changes induced by the requested event." So when a (type, state_key)

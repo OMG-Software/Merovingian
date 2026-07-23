@@ -192,7 +192,7 @@ auto restore_local_media_repository(LocalMediaRepository& repository, std::vecto
 [[nodiscard]] auto fetch_remote_media(LocalMediaRepository& repository, RemoteMediaDownloadRequest const& request)
     -> RemoteMediaDownloadResult;
 
-// Body and outer Content-Type for a v1.18 federation media download response.
+// Body and outer Content-Type for a v1.19 federation media download response.
 // The body is a multipart/mixed envelope with an empty JSON metadata part and
 // a second part carrying the media bytes.
 struct FederationMediaDownloadBody final
@@ -201,7 +201,7 @@ struct FederationMediaDownloadBody final
     std::string content_type{};
 };
 
-// Builds a Matrix v1.18 federation media download response body. Returns an
+// Builds a Matrix v1.19 federation media download response body. Returns an
 // empty result if the multipart envelope could not be assembled.
 [[nodiscard]] auto build_federation_media_download_body(std::string_view media_content_type, std::string_view bytes)
     -> FederationMediaDownloadBody;

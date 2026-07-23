@@ -348,9 +348,9 @@ SCENARIO("forget_room rejects an unauthenticated caller", "[homeserver][rooms][f
 
 SCENARIO("forget_room rejects forgetting a room the user is still joined to", "[homeserver][rooms][forget][error]")
 {
-    // Spec: Matrix Client-Server API v1.18
+    // Spec: Matrix Client-Server API v1.19
     // A joined user cannot forget a room they are still a member of.
-    // URL: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3roomsroomidforget
+    // URL: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3roomsroomidforget
     GIVEN("a started runtime with alice still joined to a room")
     {
         REQUIRE(sodium_init() >= 0);

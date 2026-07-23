@@ -141,8 +141,8 @@ SCENARIO("server_name_is_valid rejects server names containing whitespace or con
 SCENARIO("federation_discovery_policy rejects a remote with an empty resolved_host",
          "[federation][security][discovery][error]")
 {
-    // Spec: Matrix Server-Server API v1.18
-    // URL: ../../docs/matrix-v1.18-spec/server-server-api.md#resolving-server-names
+    // Spec: Matrix Server-Server API v1.19
+    // URL: ../../docs/matrix-v1.19-spec/server-server-api.md#resolving-server-names
     //
     // A remote whose resolved_host is empty has not been resolved through the
     // well-known + SRV + direct lookup chain. The discovery policy MUST reject
@@ -172,8 +172,8 @@ SCENARIO("federation_discovery_policy rejects a remote with an empty resolved_ho
 SCENARIO("federation_discovery_policy rejects a remote with an empty resolved address set",
          "[federation][security][discovery][error]")
 {
-    // Spec: Matrix Server-Server API v1.18
-    // URL: ../../docs/matrix-v1.18-spec/server-server-api.md#resolving-server-names
+    // Spec: Matrix Server-Server API v1.19
+    // URL: ../../docs/matrix-v1.19-spec/server-server-api.md#resolving-server-names
     //
     // DNS resolution must have produced at least one IP address before any
     // connection attempt. Empty addresses mean DNS failed or returned no records;
@@ -247,9 +247,9 @@ SCENARIO("federation_discovery_policy rejects a remote whose server_name is inva
 SCENARIO("federation_discovery_policy rejects remotes that do not require TLS",
          "[federation][security][discovery][tls]")
 {
-    // Spec: Matrix Server-Server API v1.18
+    // Spec: Matrix Server-Server API v1.19
     // Federation MUST use TLS for all connections.
-    // URL: ../../docs/matrix-v1.18-spec/server-server-api.md#transport
+    // URL: ../../docs/matrix-v1.19-spec/server-server-api.md#transport
     GIVEN("a remote record with a public address but TLS not required")
     {
         auto remote = merovingian::federation::RemoteServerRecord{};

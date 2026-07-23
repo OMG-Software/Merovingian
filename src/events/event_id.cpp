@@ -158,8 +158,8 @@ auto make_reference_hash_event_id(canonicaljson::Value const& event, rooms::Room
 
 auto verify_pdu_content_hash(canonicaljson::Value const& event) -> bool
 {
-    // Spec: Matrix Server-Server API v1.18 — Calculating the Content Hash for an Event
-    // URL: ../../docs/matrix-v1.18-spec/server-server-api.md#calculating-the-content-hash-for-an-event
+    // Spec: Matrix Server-Server API v1.19 — Calculating the Content Hash for an Event
+    // URL: ../../docs/matrix-v1.19-spec/server-server-api.md#calculating-the-content-hash-for-an-event
     //
     // Servers MUST check that hashes.sha256 matches the SHA-256 of the canonical
     // JSON of the event with unsigned, signatures, and hashes stripped.
