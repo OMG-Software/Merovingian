@@ -705,24 +705,38 @@ namespace
         return !user_id.empty() && server_name_from_user_id(user_id) == origin;
     }
 
-    auto enqueue_direct_to_device_messages(HomeserverRuntime& runtime, std::string_view content_json) -> void
+    // Outcome of a direct_to_device enqueue attempt. `targeted` counts every
+    // per-device entry that was well-formed enough to attempt a store;
+    // `stored` counts how many of those actually persisted. The two can
+    // diverge on a store-layer rejection (e.g. an empty sender/device id) or
+    // a backend write failure — callers must not treat targeted > 0 as proof
+    // that the key share reached the recipient's queue (#464).
+    struct DirectToDeviceEnqueueResult final
     {
+        std::size_t targeted{0U};
+        std::size_t stored{0U};
+    };
+
+    auto enqueue_direct_to_device_messages(HomeserverRuntime& runtime, std::string_view content_json)
+        -> DirectToDeviceEnqueueResult
+    {
+        auto result = DirectToDeviceEnqueueResult{};
         auto const parsed = canonicaljson::parse_lossless(std::string{content_json});
         if (parsed.error != canonicaljson::ParseError::none)
         {
-            return;
+            return result;
         }
         auto const* root = std::get_if<canonicaljson::Object>(&parsed.value.storage());
         if (root == nullptr)
         {
-            return;
+            return result;
         }
         auto const* sender = object_member_as_string(*root, "sender");
         auto const* message_type = object_member_as_string(*root, "type");
         auto const* messages = object_member_as_object(*root, "messages");
         if (sender == nullptr || message_type == nullptr || messages == nullptr)
         {
-            return;
+            return result;
         }
 
         for (auto const& user_entry : *messages)
@@ -743,16 +757,20 @@ namespace
                 {
                     continue;
                 }
+                ++result.targeted;
                 auto message = database::PersistentToDeviceMessage{};
                 message.sender_user_id = *sender;
                 message.target_user_id = user_entry.key;
                 message.target_device_id = device_entry.key;
                 message.message_type = *message_type;
                 message.content_json = serialized.output;
-                std::ignore =
-                    database::enqueue_to_device_message(runtime.database.persistent_store, std::move(message));
+                if (database::enqueue_to_device_message(runtime.database.persistent_store, std::move(message)))
+                {
+                    ++result.stored;
+                }
             }
         }
+        return result;
     }
 
     [[nodiscard]] auto local_media_download_parts(std::string_view suffix)
@@ -1035,11 +1053,31 @@ namespace
                 return {federation::EduDispositionStatus::accepted, {}};
             }
             case federation::EduType::direct_to_device: {
-                enqueue_direct_to_device_messages(*rt, envelope.content_json);
+                auto const enqueue_result = enqueue_direct_to_device_messages(*rt, envelope.content_json);
                 if (rt->sync_notifier != nullptr)
                 {
                     rt->sync_notifier->publish(rt->database.next_stream_ordering - 1U,
                                                rt->database.persistent_store.next_sync_stream_id);
+                }
+                // A targeted device whose message did not persist is a lost
+                // E2EE room-key share, not a benign no-op. Reporting
+                // "accepted" regardless used to hide store failures
+                // entirely: edu_dispatched still incremented, edu_dropped
+                // never did, and nothing in any log said a share was lost
+                // (#464). targeted == 0 (an empty/no-op messages map) still
+                // reports accepted — there was nothing to fail.
+                if (enqueue_result.stored < enqueue_result.targeted)
+                {
+                    log_diagnostic("federation.edu.direct_to_device.store_incomplete",
+                                   {
+                                       {"origin",   envelope.origin,                         false},
+                                       {"targeted", std::to_string(enqueue_result.targeted), false},
+                                       {"stored",   std::to_string(enqueue_result.stored),   false},
+                    },
+                                   observability::LogEventSeverity::warning);
+                    return {federation::EduDispositionStatus::rejected_invalid,
+                            "direct_to_device store incomplete: " + std::to_string(enqueue_result.stored) + "/" +
+                                std::to_string(enqueue_result.targeted) + " devices stored"};
                 }
                 return {federation::EduDispositionStatus::accepted, {}};
             }
@@ -1397,6 +1435,14 @@ namespace
                 !local_user_exists(rt->database, *target_user))
             {
                 return {false, 404U, "invited local user not found", {}};
+            }
+            // Defense-in-depth (#462): the event sender's server name must match
+            // the X-Matrix-authenticated origin. handle_invite already enforces
+            // this via authorize_federation_pdu, but the handler asserts it too
+            // so a direct caller of invite_handler cannot bypass the check.
+            if (!invite.origin.empty() && server_name_from_user_id(*sender) != invite.origin)
+            {
+                return {false, 400U, "invite event sender is not on the origin server", {}};
             }
             auto signed_event = sign_invite_event(*rt, parsed.value, invite.room_version);
             if (!signed_event.has_value())

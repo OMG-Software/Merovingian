@@ -703,7 +703,8 @@ namespace
     }
 
     [[nodiscard]] auto handle_send_membership(FederationRuntimeState& runtime, SignedFederationRequest const& request,
-                                              FederationRoute const& route) -> FederationResponse
+                                              FederationRoute const& route, FederationRemoteRuntime& remote)
+        -> FederationResponse
     {
         if (!runtime.membership_acceptor)
         {
@@ -726,6 +727,77 @@ namespace
         if (envelope->room_id != params->room_id)
         {
             return {400U, "membership event room_id does not match path"};
+        }
+        // Security (#461): verify the PDU's own Ed25519 signature, content hash,
+        // and sender/origin consistency before accepting it. This mirrors the
+        // transaction/PDU path (lines ~2064-2169) and closes the forge-by-relay
+        // gap where X-Matrix transport auth only proves the HTTP request came
+        // from server A — not that the event's claimed sender is from server A.
+        // Spec: src/federation/AGENTS.md rule 2 — "Verify every inbound PDU's
+        // signature against the sending server's published key before allowing
+        // it to enter the event graph. Unverified events must be silently dropped."
+        {
+            // Build a FederationPdu from the envelope for authorize_federation_pdu.
+            auto pdu = FederationPdu{};
+            pdu.event_id = envelope->event_id;
+            pdu.room_id = envelope->room_id;
+            pdu.event_type = envelope->event_type;
+            pdu.sender = envelope->sender;
+            pdu.signatures = envelope->signatures;
+            pdu.json = envelope->json;
+            pdu.room_version = send_room_ver.empty() ? std::string{"12"} : send_room_ver;
+
+            // Resolve the sender domain's signing key. For the direct case
+            // (sender_domain == request.origin) use the remote's key; for the
+            // relayed case resolve via remote_key_resolver.
+            auto const pdu_sender_dom = sender_domain(pdu.sender);
+            auto key_for_pdu = std::optional<FederationKeyRecord>{remote.signing_key};
+            if (!pdu_sender_dom.empty() && pdu_sender_dom != request.origin && runtime.remote_key_resolver)
+            {
+                // Relayed PDU: resolve the sender domain's key separately.
+                auto key_id = std::string{};
+                for (auto const& sig : pdu.signatures)
+                {
+                    if (sig.server_name == pdu_sender_dom)
+                    {
+                        key_id = sig.key_id;
+                        break;
+                    }
+                }
+                if (!key_id.empty())
+                {
+                    auto const resolved = runtime.remote_key_resolver(pdu_sender_dom, key_id);
+                    key_for_pdu =
+                        resolved.has_value() ? std::optional<FederationKeyRecord>{resolved->signing_key} : std::nullopt;
+                }
+                else
+                {
+                    key_for_pdu = std::nullopt;
+                }
+            }
+
+            // Signature verification (Ed25519 + key validity).
+            auto const pdu_decision = authorize_federation_pdu(pdu, request.origin, key_for_pdu, request.now_ts);
+            if (!pdu_decision.accepted)
+            {
+                audit_federation(runtime, "federation.membership_rejected", request.origin, request.target,
+                                 pdu_decision.reason);
+                return {pdu_decision.status == 0U ? std::uint16_t{403U} : pdu_decision.status,
+                        homeserver::matrix_error("M_FORBIDDEN", pdu_decision.reason)};
+            }
+
+            // Content hash verification (spec: servers MUST verify content hash
+            // before processing the event).
+            {
+                auto const parsed_for_hash = canonicaljson::parse_lossless(envelope->json);
+                if (parsed_for_hash.error != canonicaljson::ParseError::none ||
+                    !events::verify_pdu_content_hash(parsed_for_hash.value))
+                {
+                    audit_federation(runtime, "federation.membership_hash_rejected", request.origin, request.target,
+                                     "content-hash-mismatch");
+                    return {403U, homeserver::matrix_error("M_FORBIDDEN", "PDU content hash verification failed")};
+                }
+            }
         }
         auto const acceptance =
             runtime.membership_acceptor(route.endpoint, params->room_id, params->subject, *envelope);
@@ -781,7 +853,7 @@ namespace
     }
 
     [[nodiscard]] auto handle_invite(FederationRuntimeState& runtime, SignedFederationRequest const& request,
-                                     FederationRoute const& route) -> FederationResponse
+                                     FederationRoute const& route, FederationRemoteRuntime& remote) -> FederationResponse
     {
         if (!runtime.invite_handler)
         {
@@ -798,6 +870,89 @@ namespace
         {
             return {400U, "invite body is malformed"};
         }
+        // Security (#462): verify the invite event's Ed25519 signature, content
+        // hash, and sender/origin consistency before dispatching to the invite
+        // handler. Without this, a federated server with valid X-Matrix
+        // credentials can forge an invite claiming a different sender's server,
+        // and the victim re-signs and persists it. Spec §4217-4225: reject with
+        // M_INVALID_PARAM when the signature fails or the sender is not on the
+        // origin server.
+        {
+            // Parse the invite event to build a FederationPdu for verification.
+            auto const parsed_event = canonicaljson::parse_lossless(invite_request->invite_event_json);
+            if (parsed_event.error != canonicaljson::ParseError::none)
+            {
+                return {400U, homeserver::matrix_error("M_BAD_JSON", "invite event is not valid JSON")};
+            }
+            auto const event_envelope = events::parse_event_envelope(parsed_event.value);
+            if (!event_envelope.error.empty())
+            {
+                return {400U, homeserver::matrix_error("M_BAD_JSON", event_envelope.error)};
+            }
+            auto const room_ver =
+                invite_request->room_version.empty() ? std::string{"12"} : invite_request->room_version;
+            auto const* room_version = rooms::find_room_version_policy(room_ver);
+            if (room_version == nullptr)
+            {
+                return {500U, homeserver::matrix_error("M_UNKNOWN", "room version policy is unavailable")};
+            }
+            auto const event_id = events::make_reference_hash_event_id(parsed_event.value, *room_version);
+            auto pdu = FederationPdu{};
+            pdu.event_id = event_id.event_id;
+            pdu.room_id = event_envelope.event.room_id;
+            pdu.event_type = event_envelope.event.event_type;
+            pdu.sender = event_envelope.event.sender;
+            pdu.signatures = event_envelope.event.signatures;
+            pdu.json = invite_request->invite_event_json;
+            pdu.room_version = room_ver;
+
+            // Resolve the sender domain's signing key.
+            auto const pdu_sender_dom = sender_domain(pdu.sender);
+            auto key_for_pdu = std::optional<FederationKeyRecord>{remote.signing_key};
+            if (!pdu_sender_dom.empty() && pdu_sender_dom != request.origin && runtime.remote_key_resolver)
+            {
+                auto key_id = std::string{};
+                for (auto const& sig : pdu.signatures)
+                {
+                    if (sig.server_name == pdu_sender_dom)
+                    {
+                        key_id = sig.key_id;
+                        break;
+                    }
+                }
+                if (!key_id.empty())
+                {
+                    auto const resolved = runtime.remote_key_resolver(pdu_sender_dom, key_id);
+                    key_for_pdu =
+                        resolved.has_value() ? std::optional<FederationKeyRecord>{resolved->signing_key} : std::nullopt;
+                }
+                else
+                {
+                    key_for_pdu = std::nullopt;
+                }
+            }
+
+            // Signature verification.
+            auto const pdu_decision = authorize_federation_pdu(pdu, request.origin, key_for_pdu, request.now_ts);
+            if (!pdu_decision.accepted)
+            {
+                audit_federation(runtime, "federation.invite_rejected", request.origin, request.target,
+                                 pdu_decision.reason);
+                return {pdu_decision.status == 0U ? std::uint16_t{400U} : pdu_decision.status,
+                        homeserver::matrix_error("M_INVALID_PARAM", pdu_decision.reason)};
+            }
+
+            // Content hash verification.
+            if (!events::verify_pdu_content_hash(parsed_event.value))
+            {
+                audit_federation(runtime, "federation.invite_hash_rejected", request.origin, request.target,
+                                 "content-hash-mismatch");
+                return {400U, homeserver::matrix_error("M_INVALID_PARAM", "invite event content hash verification failed")};
+            }
+        }
+        // Forward the X-Matrix origin so the invite_handler can enforce the
+        // sender/origin match (spec §4223).
+        invite_request->origin = request.origin;
         auto const result = runtime.invite_handler(*invite_request);
         if (!result.accepted)
         {
@@ -1203,9 +1358,9 @@ namespace
         case FederationEndpoint::send_join:
         case FederationEndpoint::send_leave:
         case FederationEndpoint::send_knock:
-            return handle_send_membership(runtime, request, route);
+            return handle_send_membership(runtime, request, route, remote);
         case FederationEndpoint::invite:
-            return handle_invite(runtime, request, route);
+            return handle_invite(runtime, request, route, remote);
         case FederationEndpoint::backfill:
             return handle_backfill(runtime, request);
         case FederationEndpoint::query_directory:

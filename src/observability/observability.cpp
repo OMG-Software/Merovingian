@@ -72,6 +72,14 @@ namespace
     [[nodiscard]] auto contains_sensitive_marker(std::string_view key) -> bool
     {
         auto const lowered = lower_ascii(key);
+        // "actor" is deliberately NOT in this list: src/observability/AGENTS.md
+        // requires logging user_id/device_id for authenticated request traces,
+        // and a blanket key-based rule would redact every legitimate actor
+        // value (e.g. "@alice:test"), not just the raw-token misuse #463
+        // fixed. That misuse was a handful of call sites passing
+        // req.access_token as the actor argument; the fix is those call sites
+        // now passing "<unknown>" instead (see audit_events.actor tests in
+        // test_security_issues_460_463.cpp), not blinding this field globally.
         if (lowered == "body" || lowered.ends_with("_body") || lowered == "authorization" || lowered == "password" ||
             lowered == "secret" || lowered == "session" || lowered == "token")
         {

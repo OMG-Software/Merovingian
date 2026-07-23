@@ -451,12 +451,21 @@ SCENARIO("Inbound invite handler accepts a v2 invite through the path parser",
             return result;
         };
 
-        auto const body =
-            std::string{R"({"room_version":"10","event":{"type":"m.room.member","room_id":"!room:example.org",)"
+        // #462 requires a genuine content hash and Ed25519 signature on the
+        // invite event before it reaches invite_handler — a hand-written
+        // "hashes":{"sha256":"x"} placeholder with no signatures field no
+        // longer passes verify_pdu_content_hash/authorize_federation_pdu.
+        auto const invite_event_unsigned_json =
+            std::string{R"({"type":"m.room.member","room_id":"!room:example.org",)"
                         R"("sender":"@alice:remote.example.org","state_key":"@bob:local.example.org",)"
-                        R"("content":{"membership":"invite"},"depth":1,"hashes":{"sha256":"x"},)"
-                        R"("origin_server_ts":1,"prev_events":[],"auth_events":[]},)"
-                        R"("invite_room_state":[]})"};
+                        R"("content":{"membership":"invite"},"depth":1,)"
+                        R"("origin_server_ts":1,"prev_events":[],"auth_events":[]})"};
+        auto const invite_event_json = merovingian::federation::test::make_signed_event_json(
+            invite_event_unsigned_json, origin, key_id, token, "10");
+        REQUIRE_FALSE(invite_event_json.empty());
+
+        auto const body =
+            std::string{R"({"room_version":"10","event":)"} + invite_event_json + R"(,"invite_room_state":[]})";
 
         WHEN("a v2 invite request is handled")
         {
@@ -624,8 +633,19 @@ SCENARIO("Send_join auth_chain must not include message events", "[federation][m
 
         auto const create_event_json = std::string{
             R"({"type":"m.room.create","state_key":"","content":{"creator":"@alice:local.example.org","room_version":"12"},"event_id":"$create:local.example.org","room_id":"!room:local.example.org","sender":"@alice:local.example.org","origin_server_ts":1000000,"depth":1,"prev_events":[],"auth_events":[]})"};
-        auto const member_event_json = std::string{
-            R"({"type":"m.room.member","state_key":"@alice:local.example.org","content":{"membership":"join"},"event_id":"$member:local.example.org","room_id":"!room:local.example.org","sender":"@alice:local.example.org","origin_server_ts":1000001,"depth":2,"prev_events":["$create:local.example.org"],"auth_events":["$create:local.example.org"]})"};
+        // #461 requires the send_join *request body* (the join event below) to
+        // carry a genuine content hash and Ed25519 signature from the sender's
+        // domain — sender must therefore be on `origin` (remote.example.org,
+        // whose key remote_for() registered), not local.example.org, and the
+        // event is run through make_signed_event_json instead of being a bare
+        // JSON literal. auth_chain_json/state_json entries the acceptor hands
+        // back are not independently re-verified as PDUs, so they stay as
+        // plain literals.
+        auto const member_event_unsigned_json = std::string{
+            R"({"type":"m.room.member","state_key":"@alice:remote.example.org","content":{"membership":"join"},"event_id":"$member:local.example.org","room_id":"!room:local.example.org","sender":"@alice:remote.example.org","origin_server_ts":1000001,"depth":2,"prev_events":["$create:local.example.org"],"auth_events":["$create:local.example.org"]})"};
+        auto const member_event_json = merovingian::federation::test::make_signed_event_json(
+            member_event_unsigned_json, origin, key_id, token, "12");
+        REQUIRE_FALSE(member_event_json.empty());
         auto const message_event_json = std::string{
             R"({"type":"m.room.message","content":{"body":"hello"},"event_id":"$msg:local.example.org","room_id":"!room:local.example.org","sender":"@alice:local.example.org","origin_server_ts":1000003,"depth":4,"prev_events":[],"auth_events":["$create:local.example.org","$member:local.example.org"]})"};
 
@@ -701,8 +721,19 @@ SCENARIO("Send_join auth_chain contains only state events", "[federation][member
         // only contain state events (those with state_key).
         auto const create_event_json = std::string{
             R"({"type":"m.room.create","state_key":"","content":{"creator":"@alice:local.example.org","room_version":"12"},"event_id":"$create:local.example.org","room_id":"!room:local.example.org","sender":"@alice:local.example.org","origin_server_ts":1000000,"depth":1,"prev_events":[],"auth_events":[]})"};
-        auto const member_event_json = std::string{
-            R"({"type":"m.room.member","state_key":"@alice:local.example.org","content":{"membership":"join"},"event_id":"$member:local.example.org","room_id":"!room:local.example.org","sender":"@alice:local.example.org","origin_server_ts":1000001,"depth":2,"prev_events":["$create:local.example.org"],"auth_events":["$create:local.example.org"]})"};
+        // #461 requires the send_join *request body* (the join event below) to
+        // carry a genuine content hash and Ed25519 signature from the sender's
+        // domain — sender must therefore be on `origin` (remote.example.org,
+        // whose key remote_for() registered), not local.example.org, and the
+        // event is run through make_signed_event_json instead of being a bare
+        // JSON literal. The other canned events below are only ever handed
+        // back by the acceptor test double and are not independently
+        // re-verified as PDUs, so they stay as plain literals.
+        auto const member_event_unsigned_json = std::string{
+            R"({"type":"m.room.member","state_key":"@alice:remote.example.org","content":{"membership":"join"},"event_id":"$member:local.example.org","room_id":"!room:local.example.org","sender":"@alice:remote.example.org","origin_server_ts":1000001,"depth":2,"prev_events":["$create:local.example.org"],"auth_events":["$create:local.example.org"]})"};
+        auto const member_event_json = merovingian::federation::test::make_signed_event_json(
+            member_event_unsigned_json, origin, key_id, token, "12");
+        REQUIRE_FALSE(member_event_json.empty());
         auto const power_levels_json = std::string{
             R"({"type":"m.room.power_levels","state_key":"","content":{"users":{"@alice:local.example.org":100}},"event_id":"$pl:local.example.org","room_id":"!room:local.example.org","sender":"@alice:local.example.org","origin_server_ts":1000002,"depth":3,"prev_events":["$member:local.example.org"],"auth_events":["$create:local.example.org","$member:local.example.org"]})"};
         auto const message_event_json = std::string{

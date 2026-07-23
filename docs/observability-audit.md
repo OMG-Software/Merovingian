@@ -32,6 +32,15 @@ This capability note describes runtime-wired observability and audit behavior.
   suspended (`M_USER_SUSPENDED`), keyed by actor, target path, and reason.
 - `auth.password_changed` (auth category) records a password change and notes
   when `logout_devices: true` revoked the user's other device tokens/sessions.
+- `federation.edu.direct_to_device.store_incomplete` (warning severity, via
+  `log_diagnostic`) fires whenever an inbound `m.direct_to_device` EDU targets
+  one or more devices but fewer messages persist to `to_device_messages` than
+  were targeted (malformed per-device field, store rejection, or backend write
+  failure). Fields: `origin`, `targeted`, `stored` — never the message content
+  or ciphertext. Previously this failure mode was silent: the sink always
+  returned `EduDispositionStatus::accepted` regardless of what actually
+  persisted, so a lost megolm room-key share left no trace anywhere in the
+  logs (issue #464).
 
 ## Failure routing (0.5.0)
 

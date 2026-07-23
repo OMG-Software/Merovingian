@@ -120,6 +120,7 @@ if get_option ('build_tests')
       'unit/test_outbound_dispatch.cpp',
       'unit/test_federation_security.cpp',
       'unit/test_federation_transactions.cpp',
+      'unit/test_security_issues_460_463.cpp',
       'unit/test_file_descriptor.cpp',
       'unit/test_file_metadata.cpp',
       'unit/test_elf_probe.cpp',
