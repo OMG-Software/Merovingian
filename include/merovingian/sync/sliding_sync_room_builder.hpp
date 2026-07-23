@@ -50,4 +50,16 @@ namespace merovingian::sync
                                          database::PersistentStore const& store, std::string_view room_id,
                                          std::string_view user) -> std::uint64_t;
 
+// Number of `m.room.message` / `m.room.encrypted` events in the room strictly
+// after `read_ordering`, excluding the user's own events. Used for both
+// sliding sync and the legacy /sync `unread_notifications.notification_count`.
+[[nodiscard]] auto count_notifications(database::PersistentStore const& store, std::string_view room_id,
+                                       std::string_view user, std::uint64_t read_ordering) noexcept -> std::uint64_t;
+
+// Subset of count_notifications() whose content mentions `user` via
+// `m.mentions.user_ids` (MSC3952 / Matrix v1.7+). Used for both sliding sync
+// and the legacy /sync `unread_notifications.highlight_count`.
+[[nodiscard]] auto count_highlights(database::PersistentStore const& store, std::string_view room_id,
+                                    std::string_view user, std::uint64_t read_ordering) noexcept -> std::uint64_t;
+
 } // namespace merovingian::sync

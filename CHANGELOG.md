@@ -1,3 +1,9 @@
+## 0.10.63
+
+Fix: legacy `/sync` never reported unread notification counts, so read receipts appeared to do nothing.
+
+- Sync: the classic `GET /_matrix/client/v3/sync` response's `rooms.join.{roomId}` object never included the spec-required `unread_notifications` block (`notification_count`/`highlight_count`). Receipts posted via `POST /rooms/{roomId}/receipt/{receiptType}/{eventId}` and `POST /rooms/{roomId}/read_markers` were correctly stored and echoed back as ephemeral `m.receipt` events, but nothing in the legacy sync path recomputed or surfaced the notification counts those receipts should have cleared. Clients that poll `/sync` (rather than the unstable MSC4186 sliding-sync endpoint) — including Element — therefore had no server-authoritative signal that reading a message cleared its unread state, and the client's unread badge only cleared via its own local heuristic (e.g. sending a reply). `count_notifications`/`count_highlights`, previously local helpers in `sliding_sync_room_builder.cpp` used only by sliding sync, are now shared (declared in `include/merovingian/sync/sliding_sync_room_builder.hpp`) and used by both sync paths; the legacy `/sync` room builder now computes the same receipt-baselined counts via `sync::read_receipt_ordering` and includes them in every `rooms.join` entry.
+
 ## 0.10.62
 
 Security fixes for issues #460-#463 (4 findings from a security review of the codebase), plus a live-incident fix (issue #464).
