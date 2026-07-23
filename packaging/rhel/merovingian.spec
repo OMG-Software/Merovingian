@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.10.62
+Version:        0.10.63
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -97,6 +97,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Thu Jul 23 2026 James Chapman <claude@ping.me.uk> - 0.10.63-1
+- Fix legacy /sync missing unread_notifications counts (issue: Element unread indicator stuck after reading)
+
 * Wed Jul 22 2026 James Chapman <claude@ping.me.uk> - 0.10.62-1
 - Security fixes for issues #460-#463
 

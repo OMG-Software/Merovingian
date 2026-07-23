@@ -3374,6 +3374,15 @@ namespace
             auto ephemeral_events = build_room_ephemeral_events_array(rt.homeserver, room.room_id, since_sync_stream_id,
                                                                       max_observed_sync_stream_id);
 
+            // unread_notifications: counts are relative to the user's last
+            // m.read/m.read.private receipt, not the sync position (#417,
+            // ported from the sliding-sync path). Without this, clients that
+            // poll legacy /sync (e.g. Element) never learn a receipt cleared
+            // the room's unread state until their own next message arrives.
+            auto const read_ordering = sync::read_receipt_ordering(rt.homeserver, store, room.room_id, user);
+            auto const notification_count = sync::count_notifications(store, room.room_id, user, read_ordering);
+            auto const highlight_count = sync::count_highlights(store, room.room_id, user, read_ordering);
+
             // Incremental sync: suppress rooms that have nothing new to report.
             // Without this check, re-dispatches after a long-poll timeout emit
             // the full membership state of every joined room on every 5-second
@@ -3400,6 +3409,12 @@ namespace
                     json_member("account_data",
                                 json_obj({json_member("events", json_arr(std::move(room_account_data)))})),
                     json_member("ephemeral", json_obj({json_member("events", json_arr(std::move(ephemeral_events)))})),
+                    json_member(
+                        "unread_notifications",
+                        json_obj({
+                            json_member("notification_count", json_int(static_cast<std::int64_t>(notification_count))),
+                            json_member("highlight_count", json_int(static_cast<std::int64_t>(highlight_count))),
+                        })),
                 })));
         }
 

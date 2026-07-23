@@ -346,97 +346,6 @@ namespace
         return heroes;
     }
 
-    // ── Notification / highlight counts ─────────────────────────────────────
-
-    // Counts events strictly after `read_ordering` — the user's last read
-    // receipt position, NOT the sync position (#417). The user's own events
-    // never count as unread.
-    [[nodiscard]] auto count_notifications(database::PersistentStore const& store, std::string_view room_id,
-                                           std::string_view user, std::uint64_t read_ordering) noexcept -> std::uint64_t
-    {
-        auto count = std::uint64_t{0U};
-        for (auto const& ev : store.events)
-        {
-            if (ev.room_id != room_id || ev.stream_ordering <= read_ordering || ev.sender_user_id == user)
-            {
-                continue;
-            }
-            auto const parsed = canonicaljson::parse_lossless(ev.json);
-            if (parsed.error != canonicaljson::ParseError::none)
-            {
-                continue;
-            }
-            auto const* root = as_object(parsed.value);
-            if (root == nullptr)
-            {
-                continue;
-            }
-            auto const* type_val = find_member(*root, "type");
-            auto const* type_s = type_val != nullptr ? as_string(*type_val) : nullptr;
-            if (type_s == nullptr)
-            {
-                continue;
-            }
-            if (*type_s == "m.room.message" || *type_s == "m.room.encrypted")
-            {
-                ++count;
-            }
-        }
-        return count;
-    }
-
-    [[nodiscard]] auto count_highlights(database::PersistentStore const& store, std::string_view room_id,
-                                        std::string_view user, std::uint64_t read_ordering) noexcept -> std::uint64_t
-    {
-        // Simple mention scan: check m.mentions.user_ids or body for @user_id.
-        auto count = std::uint64_t{0U};
-        for (auto const& ev : store.events)
-        {
-            if (ev.room_id != room_id || ev.stream_ordering <= read_ordering || ev.sender_user_id == user)
-            {
-                continue;
-            }
-            auto const parsed = canonicaljson::parse_lossless(ev.json);
-            if (parsed.error != canonicaljson::ParseError::none)
-            {
-                continue;
-            }
-            auto const* root = as_object(parsed.value);
-            if (root == nullptr)
-            {
-                continue;
-            }
-            auto const* content_val = find_member(*root, "content");
-            auto const* content = content_val != nullptr ? as_object(*content_val) : nullptr;
-            if (content == nullptr)
-            {
-                continue;
-            }
-            // Check m.mentions.user_ids (MSC3952 / Matrix v1.7+).
-            if (auto const* mentions_val = find_member(*content, "m.mentions"); mentions_val != nullptr)
-            {
-                if (auto const* mentions = as_object(*mentions_val); mentions != nullptr)
-                {
-                    if (auto const* uids_val = find_member(*mentions, "user_ids"); uids_val != nullptr)
-                    {
-                        if (auto const* arr = std::get_if<canonicaljson::Array>(&uids_val->storage()); arr != nullptr)
-                        {
-                            for (auto const& uid_val : *arr)
-                            {
-                                auto const* uid = as_string(uid_val);
-                                if (uid != nullptr && *uid == user)
-                                {
-                                    ++count;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        return count;
-    }
-
     // Latest origin_server_ts in the room's timeline.
     [[nodiscard]] auto latest_timestamp(database::PersistentStore const& store, std::string_view room_id) noexcept
         -> std::uint64_t
@@ -478,6 +387,96 @@ namespace
 } // namespace
 
 // ── Public API ───────────────────────────────────────────────────────────────
+
+// Counts events strictly after `read_ordering` — the user's last read
+// receipt position, NOT the sync position (#417). The user's own events
+// never count as unread. Shared by sliding sync and the legacy /sync
+// unread_notifications block.
+auto count_notifications(database::PersistentStore const& store, std::string_view room_id, std::string_view user,
+                         std::uint64_t read_ordering) noexcept -> std::uint64_t
+{
+    auto count = std::uint64_t{0U};
+    for (auto const& ev : store.events)
+    {
+        if (ev.room_id != room_id || ev.stream_ordering <= read_ordering || ev.sender_user_id == user)
+        {
+            continue;
+        }
+        auto const parsed = canonicaljson::parse_lossless(ev.json);
+        if (parsed.error != canonicaljson::ParseError::none)
+        {
+            continue;
+        }
+        auto const* root = as_object(parsed.value);
+        if (root == nullptr)
+        {
+            continue;
+        }
+        auto const* type_val = find_member(*root, "type");
+        auto const* type_s = type_val != nullptr ? as_string(*type_val) : nullptr;
+        if (type_s == nullptr)
+        {
+            continue;
+        }
+        if (*type_s == "m.room.message" || *type_s == "m.room.encrypted")
+        {
+            ++count;
+        }
+    }
+    return count;
+}
+
+auto count_highlights(database::PersistentStore const& store, std::string_view room_id, std::string_view user,
+                      std::uint64_t read_ordering) noexcept -> std::uint64_t
+{
+    // Simple mention scan: check m.mentions.user_ids or body for @user_id.
+    auto count = std::uint64_t{0U};
+    for (auto const& ev : store.events)
+    {
+        if (ev.room_id != room_id || ev.stream_ordering <= read_ordering || ev.sender_user_id == user)
+        {
+            continue;
+        }
+        auto const parsed = canonicaljson::parse_lossless(ev.json);
+        if (parsed.error != canonicaljson::ParseError::none)
+        {
+            continue;
+        }
+        auto const* root = as_object(parsed.value);
+        if (root == nullptr)
+        {
+            continue;
+        }
+        auto const* content_val = find_member(*root, "content");
+        auto const* content = content_val != nullptr ? as_object(*content_val) : nullptr;
+        if (content == nullptr)
+        {
+            continue;
+        }
+        // Check m.mentions.user_ids (MSC3952 / Matrix v1.7+).
+        if (auto const* mentions_val = find_member(*content, "m.mentions"); mentions_val != nullptr)
+        {
+            if (auto const* mentions = as_object(*mentions_val); mentions != nullptr)
+            {
+                if (auto const* uids_val = find_member(*mentions, "user_ids"); uids_val != nullptr)
+                {
+                    if (auto const* arr = std::get_if<canonicaljson::Array>(&uids_val->storage()); arr != nullptr)
+                    {
+                        for (auto const& uid_val : *arr)
+                        {
+                            auto const* uid = as_string(uid_val);
+                            if (uid != nullptr && *uid == user)
+                            {
+                                ++count;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return count;
+}
 
 auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_view room_id, std::string_view user,
                          SlidingSyncRoomSubscription const& sub, std::uint64_t room_since_event_ordering,
