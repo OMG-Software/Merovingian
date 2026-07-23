@@ -3,12 +3,12 @@
 // +-------------------------------------------------------------------------+
 // |              MATRIX EVENT CONFORMANCE TESTS                             |
 // |                                                                         |
-// |  Spec: Matrix Server-Server API v1.18                                   |
-// |  URL:  ../../docs/matrix-v1.18-spec/server-server-api.md                 |
+// |  Spec: Matrix Server-Server API v1.19                                   |
+// |  URL:  ../../docs/matrix-v1.19-spec/server-server-api.md                 |
 // |                                                                         |
 // |  Also covers:                                                           |
-// |    Matrix Client-Server API v1.18 (redactions)                          |
-// |    ../../docs/matrix-v1.18-spec/client-server-api.md#redactions          |
+// |    Matrix Client-Server API v1.19 (redactions)                          |
+// |    ../../docs/matrix-v1.19-spec/client-server-api.md#redactions          |
 // |                                                                         |
 // |  !! IMPORTANT - FOR HUMANS AND LLMs ALIKE !!                            |
 // |                                                                         |
@@ -95,9 +95,9 @@ public:
 } // namespace
 
 // --- Event ID determinism (canonical JSON) -----------------------------------
-// Spec: Matrix Server-Server API v1.18
+// Spec: Matrix Server-Server API v1.19
 // Section: Room Version 4 - Event IDs
-// URL: ../../docs/matrix-v1.18-spec/rooms/v4.md
+// URL: ../../docs/matrix-v1.19-spec/rooms/v4.md
 //
 // Event IDs in room version 4+ are a URL-safe unpadded base64 encoding of the
 // SHA-256 reference hash of the event. Because the hash is computed over the
@@ -132,9 +132,9 @@ SCENARIO("Event IDs are deterministic over canonical JSON", "[events]")
 }
 
 // --- Content hash and reference hash computation -----------------------------
-// Spec: Matrix Server-Server API v1.18
+// Spec: Matrix Server-Server API v1.19
 // Section: Calculating the content hash for an event
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#calculating-the-content-hash-for-an-event
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#calculating-the-content-hash-for-an-event
 //
 // The hashes.sha256 field is the URL-safe unpadded base64 of the SHA-256 digest
 // of the canonical JSON of the event with the "unsigned", "signatures", and
@@ -189,9 +189,9 @@ SCENARIO("Matrix event hashes follow content and reference hash rules", "[events
 }
 
 // --- Event envelope parsing ---------------------------------------------------
-// Spec: Matrix Server-Server API v1.18
+// Spec: Matrix Server-Server API v1.19
 // Section: PDU Fields
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#pdus
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#pdus
 //
 // Every PDU MUST contain the fields room_id, type, sender, and origin_server_ts.
 // Parsing MUST fail (or report an error) if any of these mandatory fields are
@@ -245,9 +245,9 @@ SCENARIO("Event envelope parser validates core Matrix fields", "[events]")
 }
 
 // --- Event signing payload - field exclusion ---------------------------------
-// Spec: Matrix Server-Server API v1.18
+// Spec: Matrix Server-Server API v1.19
 // Section: Signing Events
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#signing-events
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#signing-events
 //
 // The signing payload is the canonical JSON of the event with the "unsigned"
 // and "signatures" fields removed. Signing over those fields is explicitly
@@ -284,9 +284,9 @@ SCENARIO("Event signing payload excludes unsigned and signatures", "[events][sig
 }
 
 // --- Event signing payload - content and hashes preservation -----------------
-// Spec: Matrix Server-Server API v1.18
+// Spec: Matrix Server-Server API v1.19
 // Section: Signing Events
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#signing-events
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#signing-events
 //
 // The signing payload strips only "unsigned" and "signatures". All other fields,
 // including "content" and "hashes", MUST remain in the payload exactly as they
@@ -332,10 +332,10 @@ SCENARIO("Event signing payload removes unsigned metadata but keeps event conten
 }
 
 // --- Signing payload strips event_id for room v4+ PDUs -----------------------
-// Spec: Matrix Server-Server API v1.18
+// Spec: Matrix Server-Server API v1.19
 // Section: Room Version 4 - Event IDs / Signing Events
-// URL: ../../docs/matrix-v1.18-spec/rooms/v4.md
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#signing-events
+// URL: ../../docs/matrix-v1.19-spec/rooms/v4.md
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#signing-events
 //
 // In room versions 4+, event_id is NOT part of the canonical event body - it is
 // derived from the content. Federation senders (e.g. Synapse) may include it as
@@ -448,9 +448,9 @@ SCENARIO("Signing payload for room v4+ PDUs strips event_id included by federati
 }
 
 // --- Signing payload prunes event content (Synapse parity) --------------------
-// Spec: Matrix Server-Server API v1.18
+// Spec: Matrix Server-Server API v1.19
 // Section: Signing Events
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#signing-events
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#signing-events
 //
 // Synapse signs the PRUNED (redacted) form of the event, not the full event.
 // For m.room.member events, the pruned content keeps only "membership" —
@@ -513,9 +513,9 @@ SCENARIO("Signing payload for m.room.member prunes content to membership only", 
 }
 
 // --- Event signature attachment and presence detection -----------------------
-// Spec: Matrix Server-Server API v1.18
+// Spec: Matrix Server-Server API v1.19
 // Section: Signing Events
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#signing-events
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#signing-events
 //
 // After signing, the Ed25519 signature MUST be stored under
 // event["signatures"][<server_name>][<key_id>] as a URL-safe unpadded base64
@@ -552,9 +552,9 @@ SCENARIO("Event signature scaffold attaches and detects signatures", "[events][s
 }
 
 // --- Full sign-and-verify round trip -----------------------------------------
-// Spec: Matrix Server-Server API v1.18
+// Spec: Matrix Server-Server API v1.19
 // Section: Signing Events
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#signing-events
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#signing-events
 //
 // Events MUST be signed with the server's active Ed25519 key before being sent
 // to federation peers. The resulting signature MUST be stored as URL-safe
@@ -610,10 +610,10 @@ SCENARIO("Event signing stores Matrix base64 Ed25519 signatures and verifies the
 }
 
 // --- Signing payload prunes member profile fields (Synapse parity) ------------
-// Spec: Matrix Server-Server API v1.18
+// Spec: Matrix Server-Server API v1.19
 // Section: Signing Events / m.room.member redaction rules
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#signing-events
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#redactions
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#signing-events
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#redactions
 //
 // For m.room.member events, only "membership" survives redaction in the
 // content. Profile fields like "displayname" and "avatar_url" are stripped
@@ -656,9 +656,9 @@ SCENARIO("Event signing prunes member profile fields from the signed payload", "
 }
 
 // --- Signature accumulation (multi-server signing) ---------------------------
-// Spec: Matrix Server-Server API v1.18
+// Spec: Matrix Server-Server API v1.19
 // Section: Signing Events
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#signing-events
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#signing-events
 //
 // An event may carry signatures from multiple servers under separate entries in
 // the "signatures" object. Attaching a new signature MUST NOT remove or alter
@@ -702,12 +702,12 @@ SCENARIO("Event signature scaffold preserves existing signatures", "[events][sig
 }
 
 // --- Event redaction - non-auth field stripping -------------------------------
-// Spec: Matrix Client-Server API v1.18
+// Spec: Matrix Client-Server API v1.19
 // Section: Redactions
-// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#redactions
-// Spec: Matrix Server-Server API v1.18
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#redactions
+// Spec: Matrix Server-Server API v1.19
 // Section: Redactions
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#redactions
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#redactions
 //
 // A redacted event MUST retain only the top-level fields defined by the room
 // version's redaction rules (e.g. room_id, type, sender, state_key, depth,
@@ -749,9 +749,9 @@ SCENARIO("Event redaction keeps only allowed keys", "[events][redaction]")
 }
 
 // --- Room-version-specific redaction rules ------------------------------------
-// Spec: Matrix Server-Server API v1.18
+// Spec: Matrix Server-Server API v1.19
 // Section: Redactions
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#redactions
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#redactions
 //
 // Room versions 1-10 preserve additional legacy top-level fields ("origin",
 // "prev_state", "membership") that were removed in room version 11. The redaction
@@ -877,9 +877,9 @@ SCENARIO("Room version 12 redaction drops room_id only from the create event (MS
 }
 
 // --- Join event hashes.sha256 required for send_join -------------------------
-// Spec: Matrix Server-Server API v1.18, Sec. 11.5.1
+// Spec: Matrix Server-Server API v1.19, Sec. 11.5.1
 // Section: PUT /_matrix/federation/v2/send_join/{roomId}/{eventId}
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#put_matrixfederationv2send_joinroomideventid
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#put_matrixfederationv2send_joinroomideventid
 //
 // Every PDU sent to the send_join endpoint MUST carry a valid hashes.sha256
 // field computed before the event is signed. Remote servers (including Synapse)
@@ -973,9 +973,9 @@ SCENARIO("Join event prepared for send_join must carry a content hash", "[events
 }
 
 // --- Room version registry ----------------------------------------------------
-// Spec: Matrix Server-Server API v1.18
+// Spec: Matrix Server-Server API v1.19
 // Section: Room Versions
-// URL: ../../docs/matrix-v1.18-spec/rooms/index.md
+// URL: ../../docs/matrix-v1.19-spec/rooms/index.md
 //
 // A conformant server MUST support the stable room versions it advertises in its
 // server capabilities. Versions 10, 11, and 12 are the stable modern versions;
@@ -996,7 +996,7 @@ SCENARIO("Room version registry exposes stable modern room versions", "[rooms]")
 
             THEN("stable versions are supported and unknown versions are rejected")
             {
-                // Spec MUST: room versions 1 through 12 are stable in Matrix v1.18.
+                // Spec MUST: room versions 1 through 12 are stable in Matrix v1.19.
                 REQUIRE(merovingian::rooms::room_version_is_supported("10"));
                 REQUIRE(merovingian::rooms::room_version_is_supported("11"));
                 REQUIRE(known_supported);
@@ -1008,11 +1008,11 @@ SCENARIO("Room version registry exposes stable modern room versions", "[rooms]")
 }
 
 // --- Room version policy fixture pin -----------------------------------------
-// Spec: Matrix Server-Server API v1.18
+// Spec: Matrix Server-Server API v1.19
 // Section: Room Versions - v10, v11, v12
-// URL: ../../docs/matrix-v1.18-spec/rooms/v10.md
-// URL: ../../docs/matrix-v1.18-spec/rooms/v11.md
-// URL: ../../docs/matrix-v1.18-spec/rooms/v12.md (draft)
+// URL: ../../docs/matrix-v1.19-spec/rooms/v10.md
+// URL: ../../docs/matrix-v1.19-spec/rooms/v11.md
+// URL: ../../docs/matrix-v1.19-spec/rooms/v12.md (draft)
 //
 // All three modern stable room versions use reference-hash event IDs (room v4+
 // format). Room versions 1-10 use the legacy redaction rule set; versions 11+
@@ -1077,11 +1077,11 @@ SCENARIO("Room-version fixtures pin Matrix v10 v11 and v12 policy differences", 
 }
 
 // --- Signing payload matches Synapse's expected canonical JSON -----------------
-// Spec: Matrix Server-Server API v1.18
+// Spec: Matrix Server-Server API v1.19
 // Section: Signing Events / Redactions / Calculating hashes
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#signing-events
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#redactions
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#calculating-the-content-hash-for-an-event
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#signing-events
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#redactions
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#calculating-the-content-hash-for-an-event
 //
 // Federation signature verification fails with BadSignatureError when two
 // homeservers compute different signing payloads for the same event.  The
@@ -1331,9 +1331,9 @@ SCENARIO("Signing payload for v11+ event matches Synapse byte-for-byte", "[event
 }
 
 // --- Spec test vectors for JSON signing and event signing ---------------------
-// Spec: Matrix v1.18 Appendices — Signing JSON / Event Signing
-// URL: ../../docs/matrix-v1.18-spec/appendices.md#signing-json
-// URL: ../../docs/matrix-v1.18-spec/appendices.md#event-signing
+// Spec: Matrix v1.19 Appendices — Signing JSON / Event Signing
+// URL: ../../docs/matrix-v1.19-spec/appendices.md#signing-json
+// URL: ../../docs/matrix-v1.19-spec/appendices.md#event-signing
 //
 // These tests verify Merovingian's canonical JSON and signing pipeline against
 // the exact test vectors published in the Matrix specification.  The spec is
@@ -1342,8 +1342,8 @@ SCENARIO("Signing payload for v11+ event matches Synapse byte-for-byte", "[event
 
 SCENARIO("Canonical JSON matches spec test vectors", "[events][signing][spec]")
 {
-    // Spec: Matrix v1.18 Appendices — Canonical JSON
-    // URL: ../../docs/matrix-v1.18-spec/appendices.md#canonical-json
+    // Spec: Matrix v1.19 Appendices — Canonical JSON
+    // URL: ../../docs/matrix-v1.19-spec/appendices.md#canonical-json
     GIVEN("the spec canonical JSON test vectors")
     {
         WHEN("canonical JSON is produced for each input")
@@ -1411,7 +1411,7 @@ SCENARIO("Canonical JSON matches spec test vectors", "[events][signing][spec]")
                 auto const null_out = merovingian::canonicaljson::serialize_canonical(null_val.value);
                 REQUIRE(null_out.output == "{\"a\":null}");
 
-                // Spec: Matrix v1.18 Appendices § Canonical JSON:
+                // Spec: Matrix v1.19 Appendices § Canonical JSON:
                 // "Numbers that are negative zero MUST NOT appear in canonical JSON."
                 // -0 is therefore not valid canonical JSON and the parser MUST reject it.
                 // (A previous version of this test incorrectly accepted -0 and normalised
@@ -1432,8 +1432,8 @@ SCENARIO("Canonical JSON matches spec test vectors", "[events][signing][spec]")
 
 SCENARIO("Spec event signing test vectors verify correctly", "[events][signing][spec]")
 {
-    // Spec: Matrix v1.18 Appendices — Event Signing
-    // URL: ../../docs/matrix-v1.18-spec/appendices.md#event-signing
+    // Spec: Matrix v1.19 Appendices — Event Signing
+    // URL: ../../docs/matrix-v1.19-spec/appendices.md#event-signing
     //
     // Uses the Ed25519 key derived from seed YJDBA9Xnr2sVqXD9Vj7XVUnmFZcZrlw8Md7kMW+3XA1
     // Server name: "domain", Key ID: "ed25519:1"

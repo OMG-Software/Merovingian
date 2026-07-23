@@ -3,9 +3,9 @@
 // +-------------------------------------------------------------------------+
 // |              MATRIX SIGNING JSON CONFORMANCE TESTS                     |
 // |                                                                         |
-// |  Spec: Matrix v1.18 Appendices — Signing JSON                          |
-// |  URL:  ../../docs/matrix-v1.18-spec/appendices.md#signing-json          |
-// |        ../../docs/matrix-v1.18-spec/appendices.md#cryptographic-test-vectors |
+// |  Spec: Matrix v1.19 Appendices — Signing JSON                          |
+// |  URL:  ../../docs/matrix-v1.19-spec/appendices.md#signing-json          |
+// |        ../../docs/matrix-v1.19-spec/appendices.md#cryptographic-test-vectors |
 // |                                                                         |
 // |  !! IMPORTANT - FOR HUMANS AND LLMs ALIKE !!                            |
 // |                                                                         |
@@ -40,8 +40,8 @@
 #include <sodium.h>
 
 // ---------------------------------------------------------------------------
-// Spec: Matrix v1.18 Appendices — Signing JSON
-// URL:  ../../docs/matrix-v1.18-spec/appendices.md#signing-json
+// Spec: Matrix v1.19 Appendices — Signing JSON
+// URL:  ../../docs/matrix-v1.19-spec/appendices.md#signing-json
 //
 // To sign a JSON object:
 //  1. Remove the "signatures" key if present
@@ -127,8 +127,8 @@ private:
 
 } // namespace
 
-// Spec: Matrix v1.18 Appendices — Signing JSON
-// URL:  ../../docs/matrix-v1.18-spec/appendices.md#signing-json
+// Spec: Matrix v1.19 Appendices — Signing JSON
+// URL:  ../../docs/matrix-v1.19-spec/appendices.md#signing-json
 //
 // The signing payload MUST NOT contain the "signatures" or "unsigned" fields.
 SCENARIO("Signing payload excludes signatures and unsigned fields per spec", "[conformance][signing][payload]")
@@ -163,8 +163,8 @@ SCENARIO("Signing payload excludes signatures and unsigned fields per spec", "[c
     }
 }
 
-// Spec: Matrix v1.18 Appendices — Signing JSON
-// URL:  ../../docs/matrix-v1.18-spec/appendices.md#signing-json
+// Spec: Matrix v1.19 Appendices — Signing JSON
+// URL:  ../../docs/matrix-v1.19-spec/appendices.md#signing-json
 //
 // The signing payload is canonical JSON: keys are sorted, no whitespace.
 SCENARIO("Signing payload is canonical JSON (sorted keys, no whitespace)",
@@ -201,8 +201,8 @@ SCENARIO("Signing payload is canonical JSON (sorted keys, no whitespace)",
     }
 }
 
-// Spec: Matrix v1.18 Appendices — Signing JSON
-// URL:  ../../docs/matrix-v1.18-spec/appendices.md#signing-json
+// Spec: Matrix v1.19 Appendices — Signing JSON
+// URL:  ../../docs/matrix-v1.19-spec/appendices.md#signing-json
 //
 // The signature is placed at signatures.{server_name}.{key_id} in the result.
 SCENARIO("Signed event contains the signature at the correct path per spec", "[conformance][signing][structure]")
@@ -250,8 +250,8 @@ SCENARIO("Signed event contains the signature at the correct path per spec", "[c
     }
 }
 
-// Spec: Matrix v1.18 Appendices — Checking for a Signature
-// URL:  ../../docs/matrix-v1.18-spec/appendices.md#checking-for-a-signature
+// Spec: Matrix v1.19 Appendices — Checking for a Signature
+// URL:  ../../docs/matrix-v1.19-spec/appendices.md#checking-for-a-signature
 //
 // To verify a signature:
 //  1. Remove the "signatures" key from the object
@@ -307,8 +307,8 @@ SCENARIO("Signature verification round-trip succeeds for a correctly signed even
     }
 }
 
-// Spec: Matrix v1.18 Appendices — Checking for a Signature
-// URL:  ../../docs/matrix-v1.18-spec/appendices.md#checking-for-a-signature
+// Spec: Matrix v1.19 Appendices — Checking for a Signature
+// URL:  ../../docs/matrix-v1.19-spec/appendices.md#checking-for-a-signature
 //
 // A signature produced by one key MUST NOT verify against a different key.
 SCENARIO("Signature verification fails when a different key is used", "[conformance][signing][verify][security]")
@@ -361,8 +361,8 @@ SCENARIO("Signature verification fails when a different key is used", "[conforma
     }
 }
 
-// Spec: Matrix v1.18 Appendices — Signing JSON
-// URL:  ../../docs/matrix-v1.18-spec/appendices.md#signing-json
+// Spec: Matrix v1.19 Appendices — Signing JSON
+// URL:  ../../docs/matrix-v1.19-spec/appendices.md#signing-json
 //
 // Signing an already-signed event adds to signatures without disturbing existing
 // signatures from other servers.
@@ -410,8 +410,8 @@ SCENARIO("Signing an already-signed event preserves existing signatures", "[conf
     }
 }
 
-// Spec: Matrix v1.18 Appendices — Checking for a Signature
-// URL:  ../../docs/matrix-v1.18-spec/appendices.md#checking-for-a-signature
+// Spec: Matrix v1.19 Appendices — Checking for a Signature
+// URL:  ../../docs/matrix-v1.19-spec/appendices.md#checking-for-a-signature
 //
 // verify_event_signature_presence returns an error when the expected
 // server name or key ID is missing from the signatures object.
@@ -461,8 +461,8 @@ SCENARIO("Signature presence check returns error when server or key is absent",
 }
 
 // ===========================================================================
-// Spec: Matrix v1.18 Appendices — Cryptographic Test Vectors
-// URL:  ../../docs/matrix-v1.18-spec/appendices.md#cryptographic-test-vectors
+// Spec: Matrix v1.19 Appendices — Cryptographic Test Vectors
+// URL:  ../../docs/matrix-v1.19-spec/appendices.md#cryptographic-test-vectors
 //
 // These tests use the EXACT seed, inputs, and expected outputs from the spec.
 // Any deviation means the implementation produces output incompatible with

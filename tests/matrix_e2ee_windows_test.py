@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Windows-native Matrix v1.18 E2EE two-user smoke test.
+Windows-native Matrix v1.19 E2EE two-user smoke test.
 
 Why this exists:
     Native Python Matrix E2EE commonly depends on python-olm/libolm, which is
@@ -614,7 +614,7 @@ main().catch((e) => {
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Windows-native Matrix v1.18 two-user E2EE smoke test client",
+        description="Windows-native Matrix v1.19 two-user E2EE smoke test client",
     )
     parser.add_argument("--homeserver", required=True, help="Homeserver URL, e.g. http://127.0.0.1:8008")
     parser.add_argument("--registration-token", help="Registration token for token-protected registration")

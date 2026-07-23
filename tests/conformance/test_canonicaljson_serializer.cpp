@@ -3,9 +3,9 @@
 // +-------------------------------------------------------------------------+
 // |          MATRIX CANONICAL JSON SERIALIZER CONFORMANCE TESTS            |
 // |                                                                         |
-// |  Spec: Matrix v1.18 Appendices — Canonical JSON                        |
-// |  URL:  ../../docs/matrix-v1.18-spec/appendices.md#canonical-json        |
-// |        ../../docs/matrix-v1.18-spec/appendices.md#grammar               |
+// |  Spec: Matrix v1.19 Appendices — Canonical JSON                        |
+// |  URL:  ../../docs/matrix-v1.19-spec/appendices.md#canonical-json        |
+// |        ../../docs/matrix-v1.19-spec/appendices.md#grammar               |
 // |                                                                         |
 // |  !! IMPORTANT - FOR HUMANS AND LLMs ALIKE !!                            |
 // |                                                                         |
@@ -221,8 +221,8 @@ SCENARIO("Canonical JSON error names are stable", "[canonicaljson]")
     }
 }
 
-// Spec: Matrix v1.18 Appendices — Canonical JSON
-// URL:  ../../docs/matrix-v1.18-spec/appendices.md#canonical-json
+// Spec: Matrix v1.19 Appendices — Canonical JSON
+// URL:  ../../docs/matrix-v1.19-spec/appendices.md#canonical-json
 //
 // "Integers in the range [-(2^53)+1, (2^53)-1]... no floats in signed/hashed
 // data." serialize_canonical_strict is the entry point event_signer.cpp and
@@ -274,8 +274,8 @@ SCENARIO("Canonical JSON strict serialization rejects floats at every nesting de
     }
 }
 
-// Spec: Matrix v1.18 Appendices — Canonical JSON
-// URL:  ../../docs/matrix-v1.18-spec/appendices.md#canonical-json
+// Spec: Matrix v1.19 Appendices — Canonical JSON
+// URL:  ../../docs/matrix-v1.19-spec/appendices.md#canonical-json
 //
 // serialize_canonical's float formatting must round-trip exactly (parse the
 // output back and get the same double), not silently corrupt small
@@ -346,8 +346,8 @@ SCENARIO("Canonical JSON escapes all control characters U+0000 through U+001F as
     }
 }
 
-// Spec: Matrix v1.18 Appendices — Canonical JSON — Grammar
-// URL:  ../../docs/matrix-v1.18-spec/appendices.md#grammar
+// Spec: Matrix v1.19 Appendices — Canonical JSON — Grammar
+// URL:  ../../docs/matrix-v1.19-spec/appendices.md#grammar
 //
 // Object keys MUST be sorted by their Unicode code points. For UTF-8 strings
 // this is equivalent to byte-by-byte lexicographic order, because UTF-8 encodes
@@ -400,8 +400,8 @@ SCENARIO("Canonical JSON sorts object keys by Unicode code point (byte order)",
     }
 }
 
-// Spec: Matrix v1.18 Appendices — Canonical JSON — Grammar
-// URL:  ../../docs/matrix-v1.18-spec/appendices.md#grammar
+// Spec: Matrix v1.19 Appendices — Canonical JSON — Grammar
+// URL:  ../../docs/matrix-v1.19-spec/appendices.md#grammar
 //
 // No insignificant whitespace: no spaces or newlines around ':' or ','
 // in the output. The output MUST be the most compact valid JSON.
@@ -436,8 +436,8 @@ SCENARIO("Canonical JSON output contains no insignificant whitespace", "[conform
     }
 }
 
-// Spec: Matrix v1.18 Appendices — Canonical JSON (grammar)
-// URL:  ../../docs/matrix-v1.18-spec/appendices.md#canonical-json
+// Spec: Matrix v1.19 Appendices — Canonical JSON (grammar)
+// URL:  ../../docs/matrix-v1.19-spec/appendices.md#canonical-json
 //
 // JSON numbers use '.' as the decimal separator. Regression for #435:
 // format_double used snprintf/strtod, both of which consult LC_NUMERIC — a

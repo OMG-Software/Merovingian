@@ -149,7 +149,7 @@ auto constexpr remote_key_seed = "security-test-remote-seed";
 // ===========================================================================
 // Issue #460: Unauthenticated media download/thumbnail via v1 endpoints
 // ===========================================================================
-// Spec: Matrix v1.18 §13.8 — GET /_matrix/client/v1/media/download and
+// Spec: Matrix v1.19 §13.8 — GET /_matrix/client/v1/media/download and
 // /_matrix/client/v1/media/thumbnail require an access token.
 //
 // GIVEN a locally-stored media blob
@@ -365,7 +365,7 @@ SCENARIO("send_join with sender domain mismatch is rejected", "[security][federa
 // Issue #462: Forged invite events — invite path skips signature verification
 //             and origin/sender check
 // ===========================================================================
-// Spec: Matrix v1.18 §server-server-api:4217-4225 — reject with M_INVALID_PARAM
+// Spec: Matrix v1.19 §server-server-api:4217-4225 — reject with M_INVALID_PARAM
 // when the signature fails or the sender is not on the origin server.
 //
 // GIVEN an invite event whose signature does not verify

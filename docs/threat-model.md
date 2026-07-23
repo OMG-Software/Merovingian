@@ -195,7 +195,7 @@ threat it closes; the controls above are the standing defences these reinforce.
 - **Account lock/suspend did not gate already-issued tokens (#271):** suspending
   or locking a user had no effect on access tokens already issued, so a
   moderated user retained full API access until token expiry. Fixed per spec
-  v1.18 by gating the request path rather than revoking sessions: locked
+  v1.19 by gating the request path rather than revoking sessions: locked
   accounts get `M_USER_LOCKED` (`soft_logout:true`) on all endpoints except
   `/logout` and `/logout/all`, and suspended accounts get `M_USER_SUSPENDED`
   on actions outside the spec allowlist. New admin endpoints

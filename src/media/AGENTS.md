@@ -1,7 +1,7 @@
 # src/media/ — Media Repository Module
 
 Handles media upload, download, URL preview, and thumbnail generation.
-Spec authority: ../../docs/matrix-v1.18-spec/client-server-api.md#content-repository
+Spec authority: ../../docs/matrix-v1.19-spec/client-server-api.md#content-repository
 
 ## Key files
 
@@ -45,5 +45,5 @@ Communication is via pipes. Do not load image decoding libraries in the main ser
 
 ## Key spec section
 
-- [Content Repository](../../docs/matrix-v1.18-spec/client-server-api.md#content-repository)
+- [Content Repository](../../docs/matrix-v1.19-spec/client-server-api.md#content-repository)
 - `docs/media-repository.md`

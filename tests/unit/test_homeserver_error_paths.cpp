@@ -204,9 +204,9 @@ SCENARIO("verify_local_user_password returns false for a wrong password", "[home
 SCENARIO("handle_local_http_request returns a 4xx error for a completely unknown route",
          "[homeserver][http][router][error]")
 {
-    // Spec: Matrix Client-Server API v1.18
+    // Spec: Matrix Client-Server API v1.19
     // Unknown paths should return 404 M_NOT_FOUND.
-    // URL: ../../docs/matrix-v1.18-spec/client-server-api.md#api-standards
+    // URL: ../../docs/matrix-v1.19-spec/client-server-api.md#api-standards
     GIVEN("a started runtime")
     {
         REQUIRE(sodium_init() >= 0);

@@ -241,7 +241,7 @@ namespace
         if (auto const* number = std::get_if<double>(&storage); number != nullptr)
         {
             // Canonical JSON MUST NOT contain floats in signed/hashed data
-            // (docs/matrix-v1.18-spec/appendices.md#canonical-json). The
+            // (docs/matrix-v1.19-spec/appendices.md#canonical-json). The
             // strict signing/hashing path (serialize_canonical_strict, used by
             // event_signer.cpp and event_id.cpp) fails closed here instead of
             // producing a plausible-looking bad hash. The general-purpose path

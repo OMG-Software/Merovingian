@@ -86,7 +86,7 @@ auto make_outbound_make_membership(FederationEndpoint endpoint, std::string_view
     target.append(core::percent_encode_path_component(room_id));
     target.push_back('/');
     target.append(core::percent_encode_path_component(user_id));
-    // Matrix v1.18 only advertises supported room versions on make_join and
+    // Matrix v1.19 only advertises supported room versions on make_join and
     // make_knock; make_leave carries no ver= query parameters.
     if (endpoint != FederationEndpoint::make_leave)
     {

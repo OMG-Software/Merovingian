@@ -3,8 +3,8 @@
 // +-------------------------------------------------------------------------+
 // |              MATRIX REMOTE KEY CACHE CONFORMANCE TESTS                  |
 // |                                                                         |
-// |  Spec: Matrix Server-Server API v1.18, Sec. 3 Retrieving server keys        |
-// |  URL:  ../../docs/matrix-v1.18-spec/server-server-api.md                 |
+// |  Spec: Matrix Server-Server API v1.19, Sec. 3 Retrieving server keys        |
+// |  URL:  ../../docs/matrix-v1.19-spec/server-server-api.md                 |
 // |        #retrieving-server-keys                                           |
 // |                                                                         |
 // |  !! IMPORTANT - FOR HUMANS AND LLMs ALIKE !!                            |
@@ -130,8 +130,8 @@ struct SignedKeyResponse final
 } // namespace
 
 // --- Valid self-signed key response accepted ----------------------------------
-// Spec: Matrix Server-Server API v1.18, Sec. 3 GET /_matrix/key/v2/server
-// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixkeyv2server
+// Spec: Matrix Server-Server API v1.19, Sec. 3 GET /_matrix/key/v2/server
+// URL:  ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixkeyv2server
 //
 // The key response MUST be self-signed by the server being queried using one
 // of the keys listed in verify_keys. Parsing MUST succeed when the signature
@@ -174,8 +174,8 @@ SCENARIO("Remote key response parser accepts a valid self-signed payload", "[fed
 }
 
 // --- Verify key without matching self-signature rejected ---------------------
-// Spec: Matrix Server-Server API v1.18, Sec. 3 GET /_matrix/key/v2/server
-// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixkeyv2server
+// Spec: Matrix Server-Server API v1.19, Sec. 3 GET /_matrix/key/v2/server
+// URL:  ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixkeyv2server
 //
 // Every key listed in verify_keys MUST have a corresponding valid signature
 // in the signatures object, signed by that key itself. A key that is
@@ -207,8 +207,8 @@ SCENARIO("Remote key response parser rejects verify keys without matching self-s
 }
 
 // --- Mismatched server_name rejected -----------------------------------------
-// Spec: Matrix Server-Server API v1.18, Sec. 3 GET /_matrix/key/v2/server
-// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixkeyv2server
+// Spec: Matrix Server-Server API v1.19, Sec. 3 GET /_matrix/key/v2/server
+// URL:  ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixkeyv2server
 //
 // The server_name field in the response MUST match the server that was
 // queried. A mismatch indicates either a misconfigured server or an active
@@ -239,8 +239,8 @@ SCENARIO("Remote key response parser rejects mismatched server name", "[federati
 }
 
 // --- Tampered signature rejected ---------------------------------------------
-// Spec: Matrix Server-Server API v1.18, Sec. 3 GET /_matrix/key/v2/server
-// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixkeyv2server
+// Spec: Matrix Server-Server API v1.19, Sec. 3 GET /_matrix/key/v2/server
+// URL:  ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixkeyv2server
 //
 // The key response MUST be self-signed and the signature MUST be verified
 // against the canonical JSON of the response body. Any modification to the
@@ -276,8 +276,8 @@ SCENARIO("Remote key response parser rejects a tampered signature", "[federation
 }
 
 // --- Cache persistence and retrieval -----------------------------------------
-// Spec: Matrix Server-Server API v1.18, Sec. 3 Retrieving server keys
-// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#retrieving-server-keys
+// Spec: Matrix Server-Server API v1.19, Sec. 3 Retrieving server keys
+// URL:  ../../docs/matrix-v1.19-spec/server-server-api.md#retrieving-server-keys
 //
 // Servers MUST cache retrieved keys for up to the valid_until_ts timestamp.
 // The cache entry MUST preserve the server_name, key_id, raw public key
@@ -359,8 +359,8 @@ SCENARIO("Remote key cache persists and retrieves verified keys", "[federation][
 }
 
 // --- Key refresh threshold (valid_until_ts and slack window) ------------------
-// Spec: Matrix Server-Server API v1.18, Sec. 3 Retrieving server keys
-// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#retrieving-server-keys
+// Spec: Matrix Server-Server API v1.19, Sec. 3 Retrieving server keys
+// URL:  ../../docs/matrix-v1.19-spec/server-server-api.md#retrieving-server-keys
 //
 // Keys past their valid_until_ts MUST be treated as expired and MUST be
 // refreshed before use. Servers SHOULD refresh proactively before expiry
@@ -432,8 +432,8 @@ SCENARIO("Remote key refresh threshold respects expiry and slack", "[federation]
 }
 
 // --- Resolver cache short-circuit --------------------------------------------
-// Spec: Matrix Server-Server API v1.18, Sec. 3 Retrieving server keys
-// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#retrieving-server-keys
+// Spec: Matrix Server-Server API v1.19, Sec. 3 Retrieving server keys
+// URL:  ../../docs/matrix-v1.19-spec/server-server-api.md#retrieving-server-keys
 //
 // Servers MUST cache retrieved keys and MUST serve subsequent requests for
 // the same server/key pair from the cache without performing another network
@@ -695,8 +695,8 @@ SCENARIO("CachedServerDiscovery is safe under concurrent access", "[federation][
 }
 
 // --- fetch_remote_server_keys(CachedServerDiscovery&) -------------------------
-// Spec: Matrix Server-Server API v1.18, Sec. 3 Retrieving server keys
-// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#retrieving-server-keys
+// Spec: Matrix Server-Server API v1.19, Sec. 3 Retrieving server keys
+// URL:  ../../docs/matrix-v1.19-spec/server-server-api.md#retrieving-server-keys
 //
 // fetch_remote_server_keys has a CachedServerDiscovery overload so a key fetch's
 // internal discovery lookup shares the same TTL cache as the resolver's own
@@ -736,8 +736,8 @@ SCENARIO("fetch_remote_server_keys via CachedServerDiscovery fails closed on dis
 }
 
 // --- make_persistent_remote_key_resolver(CachedServerDiscovery&) --------------
-// Spec: Matrix Server-Server API v1.18, Sec. 3 Retrieving server keys
-// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#retrieving-server-keys
+// Spec: Matrix Server-Server API v1.19, Sec. 3 Retrieving server keys
+// URL:  ../../docs/matrix-v1.19-spec/server-server-api.md#retrieving-server-keys
 //
 // This is the resolver overload wired by the homeserver in production whenever
 // `cached_discovery` is available (see local_http_router.cpp). Both the

@@ -1,9 +1,9 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Build an RPM package for merovingian 0.10.63 using rpmbuild.
+# Build an RPM package for merovingian 0.11.1 using rpmbuild.
 set -e
 
-VERSION="0.10.63"
+VERSION="0.11.1"
 
 # 1. Create rpmbuild directory tree
 mkdir -p "${HOME}/rpmbuild/BUILD"

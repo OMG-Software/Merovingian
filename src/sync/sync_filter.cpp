@@ -209,8 +209,8 @@ auto parse_filter_argument(std::string_view filter_argument) -> SyncFilter
     return out;
 }
 
-// Spec: Matrix CS API v1.18 § Filtering
-// URL:  ../../docs/matrix-v1.18-spec/client-server-api.md#filtering
+// Spec: Matrix CS API v1.19 § Filtering
+// URL:  ../../docs/matrix-v1.19-spec/client-server-api.md#filtering
 //
 // Type entries in types/not_types support two wildcard forms:
 //   "*"        — matches every event type

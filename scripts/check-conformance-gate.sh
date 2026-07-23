@@ -1,7 +1,7 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Explicit conformance capability gate. Run after a full build to verify
-# that all Matrix v1.18 conformance tests pass before continuing.
+# that all Matrix v1.19 conformance tests pass before continuing.
 
 set -eu
 

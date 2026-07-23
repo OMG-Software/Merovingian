@@ -32,8 +32,8 @@ struct EventHashResult final
                                                 rooms::RoomVersionPolicy const& policy) -> EventIdResult;
 [[nodiscard]] auto make_content_hash_id(canonicaljson::Value const& event) -> EventIdResult;
 
-// Spec: Matrix Server-Server API v1.18 — Calculating the Content Hash for an Event
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#calculating-the-content-hash-for-an-event
+// Spec: Matrix Server-Server API v1.19 — Calculating the Content Hash for an Event
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#calculating-the-content-hash-for-an-event
 //
 // Returns true when the event's hashes.sha256 field matches the computed
 // SHA-256 content hash. Returns false when the field is absent or incorrect.

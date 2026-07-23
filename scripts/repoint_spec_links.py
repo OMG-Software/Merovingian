@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Replaces spec.matrix.org/v1.18 URLs in docs and source comments with
-# relative paths to the local copy in docs/matrix-v1.18-spec/.
+# Replaces spec.matrix.org/v1.19 URLs in docs and source comments with
+# relative paths to the local copy in docs/matrix-v1.19-spec/.
 #
 # Run from project root:  python3 scripts/repoint_spec_links.py
 
@@ -10,7 +10,7 @@ import re
 import sys
 
 # ---------------------------------------------------------------------------
-# URL → local file mapping (relative to docs/matrix-v1.18-spec/)
+# URL → local file mapping (relative to docs/matrix-v1.19-spec/)
 # ---------------------------------------------------------------------------
 # Ordered longest-prefix-first for unambiguous matching.
 URL_PATH_MAP = [
@@ -36,8 +36,8 @@ URL_PATH_MAP = [
     ("",                         "index.md"),          # bare base URL
 ]
 
-SPEC_BASE = "https://spec.matrix.org/v1.18/"
-LOCAL_SPEC_DIR = "docs/matrix-v1.18-spec"   # relative to project root
+SPEC_BASE = "https://spec.matrix.org/v1.19/"
+LOCAL_SPEC_DIR = "docs/matrix-v1.19-spec"   # relative to project root
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -76,18 +76,18 @@ def rewrite_url(url: str, source_file: str) -> str:
 # Substitution
 # ---------------------------------------------------------------------------
 # Matches:
-#   [some text](https://spec.matrix.org/v1.18/...)  — markdown link
-#   https://spec.matrix.org/v1.18/...               — bare URL (not inside a link)
+#   [some text](https://spec.matrix.org/v1.19/...)  — markdown link
+#   https://spec.matrix.org/v1.19/...               — bare URL (not inside a link)
 #
 # The regex captures the optional [text]( ... ) wrapper so we can preserve
 # the link text while replacing only the URL part.
 
 SPEC_URL_RE = re.compile(
     r"(\[([^\]]*)\]\()"            # group 1: [text]( prefix; group 2: link text
-    r"(https://spec\.matrix\.org/v1\.18/[^\s)\">]*)"  # group 3: URL
+    r"(https://spec\.matrix\.org/v1\.19/[^\s)\">]*)"  # group 3: URL
     r"(\))"                        # group 4: closing )
     r"|"
-    r"(https://spec\.matrix\.org/v1\.18/[^\s\)\">\']*)"  # group 5: bare URL
+    r"(https://spec\.matrix\.org/v1\.19/[^\s\)\">\']*)"  # group 5: bare URL
 )
 
 
@@ -111,7 +111,7 @@ def rewrite_content(text: str, source_file: str) -> str:
 # File selection
 # ---------------------------------------------------------------------------
 EXCLUDE_PREFIXES = [
-    os.path.join(PROJECT_ROOT, "docs", "matrix-v1.18-spec"),
+    os.path.join(PROJECT_ROOT, "docs", "matrix-v1.19-spec"),
     os.path.join(PROJECT_ROOT, ".claude"),
     os.path.join(PROJECT_ROOT, "build"),
 ]
@@ -160,7 +160,7 @@ def main():
         with open(path, encoding="utf-8", errors="replace") as f:
             original = f.read()
 
-        if "spec.matrix.org/v1.18" not in original:
+        if "spec.matrix.org/v1.19" not in original:
             continue
 
         rewritten = rewrite_content(original, path)

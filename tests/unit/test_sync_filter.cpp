@@ -3,8 +3,8 @@
 // +-------------------------------------------------------------------------+
 // |              MATRIX SYNC FILTER CONFORMANCE TESTS                       |
 // |                                                                         |
-// |  Spec: Matrix Client-Server API v1.18, Sec. 8.4.2 Filtering                 |
-// |  URL:  ../../docs/matrix-v1.18-spec/client-server-api.md#filtering       |
+// |  Spec: Matrix Client-Server API v1.19, Sec. 8.4.2 Filtering                 |
+// |  URL:  ../../docs/matrix-v1.19-spec/client-server-api.md#filtering       |
 // |                                                                         |
 // |  !! IMPORTANT - FOR HUMANS AND LLMs ALIKE !!                            |
 // |                                                                         |
@@ -27,8 +27,8 @@
 #include <string>
 
 // --- filter parsing -----------------------------------------------------------
-// Spec: Matrix Client-Server API v1.18, Sec. 8.4.2 Filtering
-// URL:  ../../docs/matrix-v1.18-spec/client-server-api.md#filtering
+// Spec: Matrix Client-Server API v1.19, Sec. 8.4.2 Filtering
+// URL:  ../../docs/matrix-v1.19-spec/client-server-api.md#filtering
 //
 // A client may pass an inline JSON filter object as the `filter` query
 // parameter on /sync. The server MUST parse it and apply each sub-filter
@@ -99,8 +99,8 @@ SCENARIO("Sync filter parser accepts JSON filters and tolerates filter ids", "[s
 }
 
 // --- event filtering ----------------------------------------------------------
-// Spec: Matrix Client-Server API v1.18, Sec. 8.4.2 EventFilter
-// URL:  ../../docs/matrix-v1.18-spec/client-server-api.md#filtering
+// Spec: Matrix Client-Server API v1.19, Sec. 8.4.2 EventFilter
+// URL:  ../../docs/matrix-v1.19-spec/client-server-api.md#filtering
 //
 // "types"     - include only events whose type matches (MUST be respected).
 // "not_senders" - exclude events from these senders (MUST be respected).
@@ -141,8 +141,8 @@ SCENARIO("Event passes filter respects include and exclude lists for types and s
 }
 
 // --- room filtering -----------------------------------------------------------
-// Spec: Matrix Client-Server API v1.18, Sec. 8.4.2 RoomFilter
-// URL:  ../../docs/matrix-v1.18-spec/client-server-api.md#filtering
+// Spec: Matrix Client-Server API v1.19, Sec. 8.4.2 RoomFilter
+// URL:  ../../docs/matrix-v1.19-spec/client-server-api.md#filtering
 //
 // "rooms"     - include only these room IDs (MUST be respected when non-empty).
 // "not_rooms" - exclude these room IDs (MUST be respected when non-empty).

@@ -3,8 +3,8 @@
 // +-------------------------------------------------------------------------+
 // |       MATRIX /SYNC COMPLEMENT CONFORMANCE INTEGRATION TESTS             |
 // |                                                                         |
-// |  Spec: Matrix Client-Server API v1.18, Sec. 9.4 /sync                      |
-// |  URL:  ../../docs/matrix-v1.18-spec/client-server-api.md                |
+// |  Spec: Matrix Client-Server API v1.19, Sec. 9.4 /sync                      |
+// |  URL:  ../../docs/matrix-v1.19-spec/client-server-api.md                |
 // |        #get_matrixclientv3sync                                          |
 // |                                                                         |
 // |  Complement: https://github.com/matrix-org/complement                   |
@@ -332,19 +332,19 @@ auto run_complement_fixture(std::string_view filename, merovingian::homeserver::
 
 } // namespace
 
-// --- Sync Complement fixture - v1.18 /sync contract --------------------------
-// Spec: Matrix Client-Server API v1.18, Sec. 9.4 /sync
-// URL:  ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3sync
+// --- Sync Complement fixture - v1.19 /sync contract --------------------------
+// Spec: Matrix Client-Server API v1.19, Sec. 9.4 /sync
+// URL:  ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3sync
 // Complement: https://github.com/matrix-org/complement
 //
-// Drives the bundled sync_v1_18 Complement-style fixture against the runtime.
+// Drives the bundled sync_v1_19 Complement-style fixture against the runtime.
 // Each step validates that the /sync response structure matches the Matrix spec
 // exactly: next_batch presence, rooms.join structure, timeline.events array,
 // state.events array, timeline.limited bool, and prev_batch token when limited.
-SCENARIO("Sync conformance fixture (Complement-style) drives /sync against the v1.18 contract",
+SCENARIO("Sync conformance fixture (Complement-style) drives /sync against the v1.19 contract",
          "[sync][complement][integration]")
 {
-    GIVEN("the bundled sync_v1_18 fixture")
+    GIVEN("the bundled sync_v1_19 fixture")
     {
         auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
         REQUIRE(started.started);
@@ -353,7 +353,7 @@ SCENARIO("Sync conformance fixture (Complement-style) drives /sync against the v
 
         WHEN("each fixture step runs against the runtime")
         {
-            run_complement_fixture("sync_v1_18.json", rt, bindings);
+            run_complement_fixture("sync_v1_19.json", rt, bindings);
 
             THEN("every fixture step satisfied its predicates")
             {
@@ -366,19 +366,19 @@ SCENARIO("Sync conformance fixture (Complement-style) drives /sync against the v
     }
 }
 
-// --- Client-server v1.18 conformance - full endpoint family coverage ----------
-// Spec: Matrix Client-Server API v1.18, Sec. 9.4 /sync and related endpoint families
-// URL:  ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3sync
+// --- Client-server v1.19 conformance - full endpoint family coverage ----------
+// Spec: Matrix Client-Server API v1.19, Sec. 9.4 /sync and related endpoint families
+// URL:  ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3sync
 // Complement: https://github.com/matrix-org/complement
 //
-// Drives the bundled client_server_v1_18 fixture which covers auth, devices,
+// Drives the bundled client_server_v1_19 fixture which covers auth, devices,
 // rooms, sync, media, reports, and E2EE key endpoints in a single fixture run.
 // Validates that all required response bindings (auth tokens, room IDs, event
 // IDs) are populated, proving end-to-end conformance across endpoint families.
-SCENARIO("Client-server v1.18 conformance fixture covers beta endpoint families",
+SCENARIO("Client-server v1.19 conformance fixture covers beta endpoint families",
          "[client-server][complement][integration]")
 {
-    GIVEN("the bundled client_server_v1_18 fixture")
+    GIVEN("the bundled client_server_v1_19 fixture")
     {
         auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
         REQUIRE(started.started);
@@ -398,7 +398,7 @@ SCENARIO("Client-server v1.18 conformance fixture covers beta endpoint families"
             bindings["fixture_fallback_sig"] = merovingian::federation::test::sign_payload_b64(
                 R"({"fallback":true,"key":"fallback-key"})", fix_kp.secret_key);
 
-            run_complement_fixture("client_server_v1_18.json", rt, bindings);
+            run_complement_fixture("client_server_v1_19.json", rt, bindings);
 
             THEN("auth, devices, rooms, sync, media, reports, and E2EE keys have fixture coverage")
             {

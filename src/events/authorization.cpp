@@ -612,8 +612,8 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
     // Step 3: For v6+ and v12, only reject cross-domain senders when the room
     // explicitly disables federation via content.m.federate = false. When m.federate
     // is absent or true the check does not apply and cross-domain senders are permitted.
-    // Spec: Matrix Server-Server API v1.18 — Authorization Rules, Step 3.
-    // URL: ../../docs/matrix-v1.18-spec/server-server-api.md#authorization-rules
+    // Spec: Matrix Server-Server API v1.19 — Authorization Rules, Step 3.
+    // URL: ../../docs/matrix-v1.19-spec/server-server-api.md#authorization-rules
     if (policy.auth_rules == rooms::AuthRules::room_v6_plus || policy.auth_rules == rooms::AuthRules::room_v12)
     {
         auto const* create_obj = value_is_object(auth_events.create);
@@ -809,7 +809,7 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
         }
 
         // Step 5: knock membership — Spec § Authorization Rules, rule 5.
-        // ../../docs/matrix-v1.18-spec/server-server-api.md#authorization-rules
+        // ../../docs/matrix-v1.19-spec/server-server-api.md#authorization-rules
         // A knock event is only valid when:
         //   • sender == state_key (cannot knock for someone else)
         //   • sender is not banned
@@ -1032,7 +1032,7 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
         // expressed as an integer in content.users. Any m.room.power_levels event that
         // lists a creator (the create-event sender or any additional_creators member)
         // in content.users MUST be rejected.
-        // Spec: ../../docs/matrix-v1.18-spec/rooms/v12.md
+        // Spec: ../../docs/matrix-v1.19-spec/rooms/v12.md
         if (policy.privilege_room_creators && new_users != nullptr)
         {
             for (auto const& user_entry : *new_users)
@@ -1053,7 +1053,7 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
                 old_event_obj == nullptr ? nullptr : object_member_as_object(*old_event_obj, "content");
             auto const old_users = old_content == nullptr ? nullptr : object_member_as_object(*old_content, "users");
 
-            // Spec v1.18 authorization rules 9.8 and 9.9 (room v12):
+            // Spec v1.19 authorization rules 9.8 and 9.9 (room v12):
             //   9.9 — For each entry added to or changed in content.users: if the new
             //         value is greater than the sender's current power level, reject.
             //         Unlike 9.8 there is NO "other than the sender's own entry"
@@ -1123,7 +1123,7 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
 
     // m.room.redaction is NOT authorized against the "redact" or "ban" power
     // levels — that pair only governs whether an *already-authorized* redaction
-    // is applied to its target (see docs/matrix-v1.18-spec/server-server-api.md
+    // is applied to its target (see docs/matrix-v1.19-spec/server-server-api.md
     // #redactions). Authorization-wise a redaction is just another non-state
     // message event, so it falls through to the generic events[type]/events_default
     // check at step 14 below (rule 14 keys on event_type, "m.room.redaction"
@@ -1206,7 +1206,7 @@ auto select_auth_events(EventAuthorizationRequest const& request) -> AuthEventSe
 
     // v12 (MSC4291): the create event is implicit in the room ID and MUST NOT be
     // listed in auth_events. For all earlier room versions create is always required.
-    // Spec: ../../docs/matrix-v1.18-spec/rooms/v12.md
+    // Spec: ../../docs/matrix-v1.19-spec/rooms/v12.md
     auto const* policy = rooms::find_room_version_policy(request.room_version);
     auto const create_is_implicit = (policy != nullptr && policy->create_event_is_room_id);
 

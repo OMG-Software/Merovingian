@@ -3,7 +3,7 @@
 // +-------------------------------------------------------------------------+
 // |         FEDERATED JOIN ROUTING (via / server_name) TESTS                |
 // |                                                                         |
-// |  Spec: Matrix Client-Server API v1.18 — POST /join/{roomIdOrAlias}      |
+// |  Spec: Matrix Client-Server API v1.19 — POST /join/{roomIdOrAlias}      |
 // |  Spec: Matrix room version 12 (MSC4291) — room IDs as create hashes     |
 // |                                                                         |
 // |  To join a room over federation the server must know which resident     |

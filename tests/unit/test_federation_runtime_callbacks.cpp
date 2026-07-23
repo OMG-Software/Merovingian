@@ -1356,9 +1356,9 @@ SCENARIO("Typing EDU parses a user_id containing an escaped quote correctly inst
 }
 
 // --- send_join / send_leave response shape -----------------------------------
-// Spec: Matrix Server-Server API v1.18, Sec. 10 Joining Rooms
-// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#put_matrixfederationv2send_joinroomideventid
-// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#put_matrixfederationv2send_leaveroomideventid
+// Spec: Matrix Server-Server API v1.19, Sec. 10 Joining Rooms
+// URL:  ../../docs/matrix-v1.19-spec/server-server-api.md#put_matrixfederationv2send_joinroomideventid
+// URL:  ../../docs/matrix-v1.19-spec/server-server-api.md#put_matrixfederationv2send_leaveroomideventid
 //
 // The resident server MUST echo the accepted join event back under "event" for
 // v2 send_join responses. send_leave does not define that field. If this test

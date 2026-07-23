@@ -116,8 +116,8 @@ SCENARIO("Auth user ID validator enforces lowercase-only localparts for new IDs"
     }
 }
 
-// Spec: Matrix Client-Server API v1.18 §"Account suspension"
-// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#account-suspension
+// Spec: Matrix Client-Server API v1.19 §"Account suspension"
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#account-suspension
 // Suspended users SHOULD be permitted to log in and create additional sessions
 // (which are themselves suspended); only locked accounts are denied a new login.
 SCENARIO("Auth login policy blocks locked accounts but permits suspended login", "[auth]")

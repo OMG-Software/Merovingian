@@ -32,7 +32,7 @@ namespace merovingian::homeserver
 // Returns the account state (active/locked/suspended) of a server-local user,
 // or std::nullopt if the user is unknown. Used by the request-path moderation
 // gate in the client-server dispatcher to enforce M_USER_LOCKED / M_USER_SUSPENDED
-// per spec v1.18 without revoking the user's access tokens.
+// per spec v1.19 without revoking the user's access tokens.
 [[nodiscard]] auto account_state_for_user(HomeserverRuntime const& runtime, std::string_view user_id)
     -> std::optional<auth::AccountState>;
 [[nodiscard]] auto logout_local_user(HomeserverRuntime& runtime, std::string_view access_token) -> OperationResult;

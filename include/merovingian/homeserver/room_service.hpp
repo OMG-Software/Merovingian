@@ -192,7 +192,7 @@ struct FetchRelationsRequest final
 
 // Retrieve child events that relate to a given parent event, optionally
 // filtered by rel_type and event_type. Implements the three GET
-// /_matrix/client/v1/rooms/{roomId}/relations/... endpoints from Matrix v1.18.
+// /_matrix/client/v1/rooms/{roomId}/relations/... endpoints from Matrix v1.19.
 [[nodiscard]] auto fetch_relations(HomeserverRuntime const& runtime, std::string_view access_token,
                                    FetchRelationsRequest const& request) -> OperationResult;
 

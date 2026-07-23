@@ -1037,7 +1037,7 @@ namespace
     }
 
     // Spec: GET /_matrix/federation/v1/query/directory
-    // ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixfederationv1querydirectory
+    // ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1querydirectory
     //
     // Resolves a room alias to a room_id + list of resident servers.
     // The room_alias query parameter is percent-decoded before dispatch.
@@ -1302,8 +1302,8 @@ namespace
         return {200U, std::move(body)};
     }
 
-    // Spec: Matrix Server-Server API v1.18 — GET /_matrix/federation/v1/media/download/{mediaId}
-    // URL: ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixfederationv1mediadownloadmediaid
+    // Spec: Matrix Server-Server API v1.19 — GET /_matrix/federation/v1/media/download/{mediaId}
+    // URL: ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1mediadownloadmediaid
     //
     // Returns local media to an authenticated remote homeserver as a
     // multipart/mixed response. The first part is empty application/json metadata;
@@ -2305,8 +2305,8 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
         {
             continue;
         }
-        // Spec: Matrix Server-Server API v1.18 — Calculating the Content Hash for an Event
-        // URL: ../../docs/matrix-v1.18-spec/server-server-api.md#calculating-the-content-hash-for-an-event
+        // Spec: Matrix Server-Server API v1.19 — Calculating the Content Hash for an Event
+        // URL: ../../docs/matrix-v1.19-spec/server-server-api.md#calculating-the-content-hash-for-an-event
         // Servers MUST verify the content hash of the event before processing it.
         {
             auto const parsed_for_hash = canonicaljson::parse_lossless(encoded_pdu);

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Matrix v1.18 E2EE two-user smoke-test client.
+Matrix v1.19 E2EE two-user smoke-test client.
 
 Registers two users, obtains authenticated device sessions, creates an encrypted
 DM room, sends encrypted messages both ways, verifies that each recipient
@@ -131,7 +131,7 @@ class MessageRecorder:
 
 
 def valid_localpart(prefix: str) -> str:
-    # Matrix v1.18 new user localparts are lowercase a-z, digits, and selected
+    # Matrix v1.19 new user localparts are lowercase a-z, digits, and selected
     # punctuation. Keep this deliberately conservative for broad server support.
     suffix = secrets.token_hex(5)
     cleaned = "".join(ch for ch in prefix.lower() if ch in string.ascii_lowercase + string.digits + "._=-/+")
@@ -610,7 +610,7 @@ async def run(args: argparse.Namespace) -> None:
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Matrix v1.18 two-user E2EE automated test client")
+    parser = argparse.ArgumentParser(description="Matrix v1.19 two-user E2EE automated test client")
     parser.add_argument("--homeserver", required=True, help="Homeserver base URL, e.g. http://127.0.0.1:8008")
     parser.add_argument("--registration-token", help="Registration token for m.login.registration_token, if required")
     parser.add_argument("--username-prefix", default="e2ee_test", help="Prefix used for generated localparts")

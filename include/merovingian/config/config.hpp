@@ -132,7 +132,7 @@ struct FederationSecurityConfig final
         "127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "::1/128", "fc00::/7",
     };
     std::string max_transaction_size{"10MiB"};
-    // Matrix Server-Server API v1.18 caps /send transactions at 50 PDUs
+    // Matrix Server-Server API v1.19 caps /send transactions at 50 PDUs
     // and 100 EDUs. Operators may lower these caps but validation rejects
     // values above the spec maximum.
     std::uint32_t max_transaction_pdus{50U};

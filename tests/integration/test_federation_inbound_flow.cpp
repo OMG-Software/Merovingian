@@ -3,8 +3,8 @@
 // +-------------------------------------------------------------------------+
 // |         MATRIX FEDERATION INBOUND FLOW CONFORMANCE TESTS                |
 // |                                                                         |
-// |  Spec: Matrix Server-Server API v1.18                                   |
-// |  URL:  ../../docs/matrix-v1.18-spec/server-server-api.md                 |
+// |  Spec: Matrix Server-Server API v1.19                                   |
+// |  URL:  ../../docs/matrix-v1.19-spec/server-server-api.md                 |
 // |                                                                         |
 // |  !! IMPORTANT - FOR HUMANS AND LLMs ALIKE !!                            |
 // |                                                                         |
@@ -263,8 +263,8 @@ private:
 } // namespace
 
 // --- Federation key publishing ------------------------------------------------
-// Spec: Matrix Server-Server API v1.18, Sec. 3 Retrieving server keys
-// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixkeyv2server
+// Spec: Matrix Server-Server API v1.19, Sec. 3 Retrieving server keys
+// URL:  ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixkeyv2server
 //
 // The GET /_matrix/key/v2/server endpoint MUST be served without requiring
 // request authentication. The response MUST contain server_name, valid_until_ts,
@@ -358,8 +358,8 @@ SCENARIO("Homeserver publishes its persisted self-signed federation key without 
 }
 
 // --- Superseded key publication -----------------------------------------------
-// Spec: Matrix Server-Server API v1.18, Sec. 3 Retrieving server keys
-// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixkeyv2server
+// Spec: Matrix Server-Server API v1.19, Sec. 3 Retrieving server keys
+// URL:  ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixkeyv2server
 //
 // Keys that are no longer active MUST appear in old_verify_keys with an
 // expired_ts field. expired_ts MUST be a past timestamp - it MUST NOT be
@@ -438,8 +438,8 @@ SCENARIO("Homeserver publishes superseded signing keys in old_verify_keys", "[in
 }
 
 // --- Inbound transaction routing ----------------------------------------------
-// Spec: Matrix Server-Server API v1.18, Sec. 7 Transactions
-// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#put_matrixfederationv1sendtxnid
+// Spec: Matrix Server-Server API v1.19, Sec. 7 Transactions
+// URL:  ../../docs/matrix-v1.19-spec/server-server-api.md#put_matrixfederationv1sendtxnid
 //
 // The PUT /_matrix/federation/v1/send/{txnId} endpoint MUST return HTTP 200
 // for any transaction that passes authentication, even if individual PDUs are
@@ -654,8 +654,8 @@ SCENARIO("An m.direct_to_device EDU that fails to persist is not silently report
 }
 
 // --- Destination binding (relay / replay prevention) --------------------------
-// Spec: Matrix Server-Server API v1.18, Request Authentication (X-Matrix).
-// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#request-authentication
+// Spec: Matrix Server-Server API v1.19, Request Authentication (X-Matrix).
+// URL:  ../../docs/matrix-v1.19-spec/server-server-api.md#request-authentication
 //
 // The signed X-Matrix payload binds {origin, destination, method, uri, content}.
 // The receiving server MUST rebuild that payload using its OWN name as the
@@ -707,8 +707,8 @@ SCENARIO("Homeserver rejects an inbound federation request signed for a foreign 
 }
 
 // --- Malformed request rejection ----------------------------------------------
-// Spec: Matrix Server-Server API v1.18, general error handling
-// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md
+// Spec: Matrix Server-Server API v1.19, general error handling
+// URL:  ../../docs/matrix-v1.19-spec/server-server-api.md
 //
 // Requests with a malformed or missing Authorization header MUST be rejected
 // before any transaction processing occurs. Requests originating from private

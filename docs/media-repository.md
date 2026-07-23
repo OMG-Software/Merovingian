@@ -105,7 +105,7 @@ current in-process runtime path.
   demand (see below), so a client requesting one always receives a freshly
   resampled image rather than the stored placeholder.
 - The media repository is runtime-wired; multipart upload handling remains the
-  main outstanding Matrix v1.18 gap.
+  main outstanding Matrix v1.19 gap.
 
 ## Encrypted media is never scannable
 

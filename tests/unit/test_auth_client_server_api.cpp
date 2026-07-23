@@ -3,11 +3,11 @@
 // +-------------------------------------------------------------------------+
 // |         MATRIX CLIENT-SERVER AUTH API CONFORMANCE TESTS                 |
 // |                                                                         |
-// |  Spec: Matrix Client-Server API v1.18, Sec. 5 Client Authentication         |
-// |  Login:        ../../docs/matrix-v1.18-spec/client-server-api.md#login   |
-// |  Registration: ../../docs/matrix-v1.18-spec/client-server-api.md         |
+// |  Spec: Matrix Client-Server API v1.19, Sec. 5 Client Authentication         |
+// |  Login:        ../../docs/matrix-v1.19-spec/client-server-api.md#login   |
+// |  Registration: ../../docs/matrix-v1.19-spec/client-server-api.md         |
 // |                #account-registration-and-management                      |
-// |  Devices:      ../../docs/matrix-v1.18-spec/client-server-api.md         |
+// |  Devices:      ../../docs/matrix-v1.19-spec/client-server-api.md         |
 // |                #device-management                                         |
 // |                                                                         |
 // |  !! IMPORTANT - FOR HUMANS AND LLMs ALIKE !!                            |
@@ -31,15 +31,15 @@
 #include <string>
 
 // --- auth route coverage ------------------------------------------------------
-// Spec: Matrix Client-Server API v1.18
+// Spec: Matrix Client-Server API v1.19
 // Login:        POST /_matrix/client/v3/login
 // Logout:       POST /_matrix/client/v3/logout
 // Registration: POST /_matrix/client/v3/register
 // Refresh:      POST /_matrix/client/v3/refresh
 // Devices:      GET/PUT/DELETE /_matrix/client/v3/devices/{deviceId}
-// URLs: ../../docs/matrix-v1.18-spec/client-server-api.md#login
-//       ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3register
-//       ../../docs/matrix-v1.18-spec/client-server-api.md#device-management
+// URLs: ../../docs/matrix-v1.19-spec/client-server-api.md#login
+//       ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3register
+//       ../../docs/matrix-v1.19-spec/client-server-api.md#device-management
 //
 // All listed endpoints MUST be routable - missing routes cause 404s that
 // break standard Matrix clients.
@@ -84,9 +84,9 @@ SCENARIO("Client-server auth route scaffold covers Milestone 9 endpoints", "[aut
 }
 
 // --- token requirements and rate limits --------------------------------------
-// Spec: Matrix Client-Server API v1.18
-// URL:  ../../docs/matrix-v1.18-spec/client-server-api.md#using-access-tokens
-//       ../../docs/matrix-v1.18-spec/client-server-api.md#rate-limiting
+// Spec: Matrix Client-Server API v1.19
+// URL:  ../../docs/matrix-v1.19-spec/client-server-api.md#using-access-tokens
+//       ../../docs/matrix-v1.19-spec/client-server-api.md#rate-limiting
 //
 // Login and registration MUST NOT require an access token (they are how
 // tokens are obtained). Logout and device management MUST require a token.
@@ -188,11 +188,11 @@ SCENARIO("Client-server auth boundary plan persists only token hashes", "[auth][
 }
 
 // --- logout and device deletion database actions -------------------------------
-// Spec: Matrix Client-Server API v1.18
+// Spec: Matrix Client-Server API v1.19
 // Logout:        POST /_matrix/client/v3/logout
 // Logout all:    POST /_matrix/client/v3/logout/all
 // Delete device: DELETE /_matrix/client/v3/devices/{deviceId}
-// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3logout
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3logout
 //
 // Each operation MUST revoke the correct token scope: single-device for logout
 // and delete-device, all-device for logout/all.

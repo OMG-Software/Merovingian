@@ -30,7 +30,7 @@ struct SpaceHierarchyResult final
 };
 
 // Client-Server API: GET /_matrix/client/v1/rooms/{roomId}/hierarchy
-// Spec: Matrix v1.18 Client-Server API §Spaces / Discovering rooms within spaces
+// Spec: Matrix v1.19 Client-Server API §Spaces / Discovering rooms within spaces
 [[nodiscard]] auto handle_client_space_hierarchy(HomeserverRuntime& runtime, std::string_view user_id,
                                                  SpaceHierarchyRequest const& request) -> SpaceHierarchyResult;
 

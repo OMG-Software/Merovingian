@@ -3,8 +3,8 @@
 // +-------------------------------------------------------------------------+
 // |         MATRIX SYNC FILTER CONFORMANCE TESTS                            |
 // |                                                                         |
-// |  Spec: Matrix Client-Server API v1.18 — Filtering                       |
-// |  URL:  ../../docs/matrix-v1.18-spec/client-server-api.md#filtering       |
+// |  Spec: Matrix Client-Server API v1.19 — Filtering                       |
+// |  URL:  ../../docs/matrix-v1.19-spec/client-server-api.md#filtering       |
 // |                                                                         |
 // |  !! IMPORTANT - FOR HUMANS AND LLMs ALIKE !!                            |
 // |                                                                         |
@@ -29,8 +29,8 @@
 
 #include <string>
 
-// Spec: Matrix Client-Server API v1.18 — Filtering
-// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#filtering
+// Spec: Matrix Client-Server API v1.19 — Filtering
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#filtering
 //
 // When no filter is applied (filter argument is empty or absent), all events
 // pass. The SyncFilter.present flag must be false when no filter was given.
@@ -58,8 +58,8 @@ SCENARIO("An absent filter allows all events through", "[sync][filter][conforman
     }
 }
 
-// Spec: Matrix Client-Server API v1.18 — Filtering
-// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#filtering
+// Spec: Matrix Client-Server API v1.19 — Filtering
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#filtering
 //
 // "types": A list of event types to include. If this list is absent then all
 // event types are included. If the list is present, only events whose type
@@ -99,8 +99,8 @@ SCENARIO("Filter with 'types' list includes only matching event types", "[sync][
     }
 }
 
-// Spec: Matrix Client-Server API v1.18 — Filtering
-// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#filtering
+// Spec: Matrix Client-Server API v1.19 — Filtering
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#filtering
 //
 // "not_types": A list of event types to exclude. Events whose type matches
 // any entry in not_types are excluded regardless of the types list.
@@ -127,8 +127,8 @@ SCENARIO("Filter with 'not_types' list excludes matching event types", "[sync][f
     }
 }
 
-// Spec: Matrix Client-Server API v1.18 — Filtering
-// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#filtering
+// Spec: Matrix Client-Server API v1.19 — Filtering
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#filtering
 //
 // "not_types" takes precedence over "types". If an event type appears in
 // both lists it MUST be excluded.
@@ -150,8 +150,8 @@ SCENARIO("Filter not_types takes precedence over types", "[sync][filter][conform
     }
 }
 
-// Spec: Matrix Client-Server API v1.18 — Filtering
-// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#filtering
+// Spec: Matrix Client-Server API v1.19 — Filtering
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#filtering
 //
 // "senders": A list of senders to include. When present, only events from
 // a sender in this list are included.
@@ -178,8 +178,8 @@ SCENARIO("Filter with 'senders' list includes only events from listed senders", 
     }
 }
 
-// Spec: Matrix Client-Server API v1.18 — Filtering
-// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#filtering
+// Spec: Matrix Client-Server API v1.19 — Filtering
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#filtering
 //
 // "not_senders": A list of senders to exclude. Takes precedence over "senders".
 // Events from a sender in not_senders are excluded regardless of senders.
@@ -205,8 +205,8 @@ SCENARIO("Filter with 'not_senders' excludes events from listed senders", "[sync
     }
 }
 
-// Spec: Matrix Client-Server API v1.18 — Filtering
-// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#filtering
+// Spec: Matrix Client-Server API v1.19 — Filtering
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#filtering
 //
 // not_senders takes precedence over senders — a sender in both lists is excluded.
 SCENARIO("Filter not_senders takes precedence over senders", "[sync][filter][conformance]")
@@ -225,8 +225,8 @@ SCENARIO("Filter not_senders takes precedence over senders", "[sync][filter][con
     }
 }
 
-// Spec: Matrix Client-Server API v1.18 — Filtering
-// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#filtering
+// Spec: Matrix Client-Server API v1.19 — Filtering
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#filtering
 //
 // A filter JSON object with no nested restriction fields is valid. The
 // SyncFilter.present flag must be true when a filter was supplied.
@@ -252,8 +252,8 @@ SCENARIO("An empty JSON filter object {} is present but unrestricted", "[sync][f
     }
 }
 
-// Spec: Matrix Client-Server API v1.18 — Filtering
-// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#filtering
+// Spec: Matrix Client-Server API v1.19 — Filtering
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#filtering
 //
 // Multiple filter criteria are AND-combined: an event must satisfy both the
 // type filter and the sender filter to pass.
@@ -287,8 +287,8 @@ SCENARIO("Filter combines type and sender restrictions with AND logic", "[sync][
     }
 }
 
-// Spec: Matrix Client-Server API v1.18 — Filtering
-// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#filtering
+// Spec: Matrix Client-Server API v1.19 — Filtering
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#filtering
 //
 // Filters are stored server-side via POST /user/{userId}/filter and retrieved
 // via GET /user/{userId}/filter/{filterId}. The parsed filter representation
@@ -325,8 +325,8 @@ SCENARIO("parse_filter_argument handles invalid JSON gracefully", "[sync][filter
     }
 }
 
-// Spec: Matrix Client-Server API v1.18 — GET /sync
-// URL:  ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3sync
+// Spec: Matrix Client-Server API v1.19 — GET /sync
+// URL:  ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3sync
 //
 // The ?filter= query parameter may be either a stored filter ID (opaque string)
 // or an inline JSON object (starts with '{'). When the value starts with '{'
@@ -376,8 +376,8 @@ SCENARIO("Sync API route: invalid inline JSON filter is identified as a parse er
 
 // ---------------------------------------------------------------------------
 // rooms / not_rooms — room-level allowlist and denylist
-// Spec: Matrix Client-Server API v1.18 — Filtering
-// URL:  ../../docs/matrix-v1.18-spec/client-server-api.md#filtering
+// Spec: Matrix Client-Server API v1.19 — Filtering
+// URL:  ../../docs/matrix-v1.19-spec/client-server-api.md#filtering
 // ---------------------------------------------------------------------------
 
 // Spec: "rooms": A list of room IDs to include. If absent all rooms are included.
@@ -439,8 +439,8 @@ SCENARIO("Filter not_rooms takes precedence over rooms", "[sync][filter][conform
 
 // ---------------------------------------------------------------------------
 // Subfilters: state, ephemeral, account_data (room-level)
-// Spec: Matrix Client-Server API v1.18 — Filtering
-// URL:  ../../docs/matrix-v1.18-spec/client-server-api.md#filtering
+// Spec: Matrix Client-Server API v1.19 — Filtering
+// URL:  ../../docs/matrix-v1.19-spec/client-server-api.md#filtering
 // ---------------------------------------------------------------------------
 
 // Spec: room.state — filter applied to the state events included in the /sync response.
@@ -512,8 +512,8 @@ SCENARIO("Filter room.account_data subfilter restricts room-level account data e
 
 // ---------------------------------------------------------------------------
 // Top-level presence and account_data filters
-// Spec: Matrix Client-Server API v1.18 — Filtering
-// URL:  ../../docs/matrix-v1.18-spec/client-server-api.md#filtering
+// Spec: Matrix Client-Server API v1.19 — Filtering
+// URL:  ../../docs/matrix-v1.19-spec/client-server-api.md#filtering
 // ---------------------------------------------------------------------------
 
 // Spec: presence — filter applied to presence events in the /sync response.
@@ -559,12 +559,12 @@ SCENARIO("Top-level account_data filter restricts global account data events", "
 
 // ---------------------------------------------------------------------------
 // limit and include_leave
-// Spec: Matrix Client-Server API v1.18 — Filtering
-// URL:  ../../docs/matrix-v1.18-spec/client-server-api.md#filtering
+// Spec: Matrix Client-Server API v1.19 — Filtering
+// URL:  ../../docs/matrix-v1.19-spec/client-server-api.md#filtering
 // ---------------------------------------------------------------------------
 
 // Spec: "limit" caps the number of timeline events returned per room in /sync.
-// URL:  ../../docs/matrix-v1.18-spec/client-server-api.md#filtering
+// URL:  ../../docs/matrix-v1.19-spec/client-server-api.md#filtering
 //
 // When a filter supplies a "limit" field, parse_filter_argument must carry the
 // value through so the sync route can honour it.
@@ -639,8 +639,8 @@ SCENARIO("Filter include_leave defaults to false and is set correctly when prese
 }
 
 // ---------------------------------------------------------------------------
-// Spec: Matrix CS API v1.18 § Filtering — type wildcard patterns
-// URL:  ../../docs/matrix-v1.18-spec/client-server-api.md#filtering
+// Spec: Matrix CS API v1.19 § Filtering — type wildcard patterns
+// URL:  ../../docs/matrix-v1.19-spec/client-server-api.md#filtering
 //
 // "Entries can be specified as patterns where the wildcard * will match all
 //  types or a prefix of event type followed by * will match events whose type

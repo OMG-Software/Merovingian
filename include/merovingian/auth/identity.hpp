@@ -40,7 +40,7 @@ struct LoginPolicyDecision final
 
 // Validates a localpart for a NEW user ID (registration / local auth paths).
 // Accepts: a-z, 0-9, '.', '_', '-', '=', '/', '+'. Non-empty required.
-// Rejects uppercase — new IDs must be lowercase per Matrix v1.18 spec.
+// Rejects uppercase — new IDs must be lowercase per Matrix v1.19 spec.
 [[nodiscard]] auto localpart_is_valid_new(std::string_view localpart) noexcept -> bool;
 
 // Validates a localpart received over FEDERATION from a historical deployment.

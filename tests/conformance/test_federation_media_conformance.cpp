@@ -6,9 +6,9 @@
 
 #include <string>
 
-// Spec: Matrix Server-Server API v1.18
+// Spec: Matrix Server-Server API v1.19
 // Endpoint / Section: Content Repository — GET /_matrix/federation/v1/media/download/{mediaId}
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixfederationv1mediadownloadmediaid
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1mediadownloadmediaid
 //
 // Summary: "Changed in v1.11: Servers were previously advised to use the
 // /_matrix/media/* endpoints ... however, those endpoints have been
@@ -36,9 +36,9 @@ SCENARIO("remote_federation_media_download_url targets the mandatory authenticat
     }
 }
 
-// Spec: Matrix Server-Server API v1.18
+// Spec: Matrix Server-Server API v1.19
 // Endpoint / Section: Content Repository — GET /_matrix/federation/v1/media/download/{mediaId}, 200 response
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixfederationv1mediadownloadmediaid
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1mediadownloadmediaid
 //
 // Summary: "Content-Type: Must be multipart/mixed ... MUST contain a boundary
 // ... delineating exactly two parts: The first part has a Content-Type header

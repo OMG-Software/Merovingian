@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// Matrix Server-Server API v1.18 conformance for:
+// Matrix Server-Server API v1.19 conformance for:
 //   GET /_matrix/key/v2/server
 
 #include "../support/registration_token.hpp"
@@ -59,9 +59,9 @@ namespace
 
 } // namespace
 
-// Spec: Matrix Server-Server API v1.18
+// Spec: Matrix Server-Server API v1.19
 // Endpoint: GET /_matrix/key/v2/server
-// ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixkeyv2server
+// ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixkeyv2server
 SCENARIO("GET /_matrix/key/v2/server returns the spec-required published signing fields",
          "[federation][conformance][key_publishing]")
 {
@@ -136,13 +136,13 @@ SCENARIO("GET /_matrix/key/v2/server returns the spec-required published signing
     }
 }
 
-// Spec: Matrix Server-Server API v1.18
+// Spec: Matrix Server-Server API v1.19
 // Endpoint: GET /_matrix/key/v2/server
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#publishing-keys
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#publishing-keys
 //
 // All key IDs in verify_keys MUST follow the "algorithm:version" convention
 // (e.g. "ed25519:1"). Ed25519 is the only defined algorithm for server
-// signing keys in Matrix v1.18.
+// signing keys in Matrix v1.19.
 SCENARIO("GET /_matrix/key/v2/server verify_keys entries have ed25519:version key IDs",
          "[federation][conformance][key_publishing][key_rotation]")
 {
@@ -173,7 +173,7 @@ SCENARIO("GET /_matrix/key/v2/server verify_keys entries have ed25519:version ke
                 for (auto const& entry : *verify_keys)
                 {
                     // Spec appendix: key IDs use "algorithm:version" format.
-                    // Ed25519 is the only signing algorithm defined in Matrix v1.18.
+                    // Ed25519 is the only signing algorithm defined in Matrix v1.19.
                     REQUIRE(entry.key.rfind("ed25519:", 0) == 0U);
                     // Spec MUST: the "version" component must be non-empty.
                     REQUIRE(entry.key.size() > std::string{"ed25519:"}.size());
@@ -183,9 +183,9 @@ SCENARIO("GET /_matrix/key/v2/server verify_keys entries have ed25519:version ke
     }
 }
 
-// Spec: Matrix Server-Server API v1.18
+// Spec: Matrix Server-Server API v1.19
 // Endpoint: GET /_matrix/key/v2/server
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#publishing-keys
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#publishing-keys
 //
 // "valid_until_ts: UNIX timestamp in milliseconds for when the server MUST
 // generate a new signing key. Servers MUST NOT return a valid_until_ts that
@@ -227,9 +227,9 @@ SCENARIO("GET /_matrix/key/v2/server valid_until_ts is strictly in the future",
     }
 }
 
-// Spec: Matrix Server-Server API v1.18
+// Spec: Matrix Server-Server API v1.19
 // Endpoint: GET /_matrix/key/v2/server
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#publishing-keys
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#publishing-keys
 //
 // "old_verify_keys: The public keys that the server used to use, and when it
 // stopped using them." Each entry MUST contain a "key" (base64 public key)
@@ -291,9 +291,9 @@ SCENARIO("GET /_matrix/key/v2/server old_verify_keys entries contain key and exp
     }
 }
 
-// Spec: Matrix Server-Server API v1.18
+// Spec: Matrix Server-Server API v1.19
 // Endpoint: GET /_matrix/key/v2/server
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#publishing-keys
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#publishing-keys
 //
 // "old_verify_keys: The public keys that the server used to use, and when it
 // stopped using them." After rotating its signing key, the server MUST publish
@@ -379,9 +379,9 @@ SCENARIO("GET /_matrix/key/v2/server reflects a signing key rotation",
     }
 }
 
-// Spec: Matrix Server-Server API v1.18
+// Spec: Matrix Server-Server API v1.19
 // Endpoint: GET /_matrix/key/v2/server
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#publishing-keys
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#publishing-keys
 //
 // End-to-end rotation: the published key document MUST be signed by the server's
 // current (post-rotation) key, and the retired key's republished public key MUST
@@ -458,9 +458,9 @@ SCENARIO("GET /_matrix/key/v2/server after rotation is signed by the new key and
     }
 }
 
-// Spec: Matrix Server-Server API v1.18
+// Spec: Matrix Server-Server API v1.19
 // Endpoint: GET /_matrix/key/v2/server
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#publishing-keys
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#publishing-keys
 //
 // "old_verify_keys: The public keys that the server used to use..." Across multiple
 // rotations every superseded key MUST remain in old_verify_keys (peers verify old

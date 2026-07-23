@@ -3,9 +3,9 @@
 // +-------------------------------------------------------------------------+
 // |       OUTBOUND FEDERATION DELIVERY CONFORMANCE TESTS                    |
 // |                                                                         |
-// |  Spec: Matrix Server-Server API v1.18                                   |
+// |  Spec: Matrix Server-Server API v1.19                                   |
 // |  Endpoint: PUT /_matrix/federation/v1/send/{txnId}  (outbound)          |
-// |  URL: ../../docs/matrix-v1.18-spec/server-server-api.md                  |
+// |  URL: ../../docs/matrix-v1.19-spec/server-server-api.md                  |
 // |         #put_matrixfederationv1sendtxnid                                |
 // |                                                                         |
 // |  !! IMPORTANT - FOR HUMANS AND LLMs ALIKE !!                            |
@@ -94,8 +94,8 @@ auto const test_key_id = std::string{"ed25519:auto"};
 // =============================================================================
 // EDU transaction body — required top-level fields
 // =============================================================================
-// Spec: Matrix Server-Server API v1.18
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#put_matrixfederationv1sendtxnid
+// Spec: Matrix Server-Server API v1.19
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#put_matrixfederationv1sendtxnid
 //
 // Spec MUST: a federation transaction body sent in PUT /send/{txnId} MUST
 // contain "origin" (the sending server), "origin_server_ts" (millisecond
@@ -192,8 +192,8 @@ SCENARIO("build_edu_transaction_body produces required top-level fields", "[fede
 // =============================================================================
 // EDU key name: edu_type not type
 // =============================================================================
-// Spec: Matrix Server-Server API v1.18
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#edus
+// Spec: Matrix Server-Server API v1.19
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#edus
 //
 // Spec MUST: EDU objects inside the "edus" array MUST use the key "edu_type"
 // for the type discriminator. Using "type" instead causes Synapse and other
@@ -251,7 +251,7 @@ SCENARIO("EDU object in built transaction uses edu_type key not type", "[federat
 // =============================================================================
 // build_edu_transaction_body — invalid content returns nullopt
 // =============================================================================
-// Spec: Matrix Server-Server API v1.18 (general error handling)
+// Spec: Matrix Server-Server API v1.19 (general error handling)
 //
 // When the EDU content is not valid JSON the builder MUST NOT produce a
 // malformed transaction body. Returning nullopt lets callers skip the send
@@ -278,8 +278,8 @@ SCENARIO("build_edu_transaction_body returns nullopt for non-JSON content", "[fe
 // =============================================================================
 // m.receipt EDU content structure
 // =============================================================================
-// Spec: Matrix Server-Server API v1.18
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#receipts
+// Spec: Matrix Server-Server API v1.19
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#receipts
 //
 // Spec MUST: the m.receipt EDU content follows the nested structure:
 //   { roomId: { receiptType: { userId: { event_ids: [eventId], data: { ts: N } } } } }
@@ -360,8 +360,8 @@ SCENARIO("build_receipt_edu_content produces the spec-required nested structure"
 // =============================================================================
 // Transaction ID — uniqueness across calls
 // =============================================================================
-// Spec: Matrix Server-Server API v1.18
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#put_matrixfederationv1sendtxnid
+// Spec: Matrix Server-Server API v1.19
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#put_matrixfederationv1sendtxnid
 //
 // The transaction ID in the URL path uniquely identifies this delivery attempt
 // to the remote server. Receivers deduplicate on (origin, txnId); a repeated
@@ -404,8 +404,8 @@ SCENARIO("make_federation_transaction_id produces unique identifiers across call
 // =============================================================================
 // Outbound request — PUT method and correct URL path
 // =============================================================================
-// Spec: Matrix Server-Server API v1.18
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#put_matrixfederationv1sendtxnid
+// Spec: Matrix Server-Server API v1.19
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#put_matrixfederationv1sendtxnid
 //
 // Spec MUST: the outbound request MUST use HTTP PUT and MUST target the path
 // /_matrix/federation/v1/send/{txnId} at the remote server.
@@ -456,8 +456,8 @@ SCENARIO("build_outbound_request produces a PUT request to the correct federatio
 // =============================================================================
 // Outbound request — X-Matrix Authorization header presence
 // =============================================================================
-// Spec: Matrix Server-Server API v1.18
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#request-authentication
+// Spec: Matrix Server-Server API v1.19
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#request-authentication
 //
 // Spec MUST: every outbound federation request MUST carry an
 // "Authorization: X-Matrix ..." header signed with the sending server's
@@ -499,8 +499,8 @@ SCENARIO("build_outbound_request carries an Authorization X-Matrix header", "[fe
 // =============================================================================
 // Outbound request — X-Matrix header field structure
 // =============================================================================
-// Spec: Matrix Server-Server API v1.18
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#request-authentication
+// Spec: Matrix Server-Server API v1.19
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#request-authentication
 //
 // Spec MUST: the X-Matrix Authorization header MUST contain the fields
 // origin=, destination=, key=, sig= so the receiving server can verify
@@ -556,8 +556,8 @@ SCENARIO("X-Matrix Authorization header contains origin, destination, key, and s
 // =============================================================================
 // Backoff — positive base interval
 // =============================================================================
-// Spec: Matrix Server-Server API v1.18 (retry semantics)
-// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#put_matrixfederationv1sendtxnid
+// Spec: Matrix Server-Server API v1.19 (retry semantics)
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#put_matrixfederationv1sendtxnid
 //
 // The spec requires exponential backoff on delivery failure. The base interval
 // (retry_count == 0) MUST be positive so there is always a pause between the
@@ -583,7 +583,7 @@ SCENARIO("compute_backoff returns a positive interval for retry_count 0", "[fede
 // =============================================================================
 // Backoff — exponential growth
 // =============================================================================
-// Spec: Matrix Server-Server API v1.18 (retry semantics)
+// Spec: Matrix Server-Server API v1.19 (retry semantics)
 //
 // Spec: the backoff interval MUST grow as retry_count increases so that a
 // repeatedly-failing destination does not saturate the network or the remote.
@@ -620,7 +620,7 @@ SCENARIO("compute_backoff interval grows monotonically with retry count", "[fede
 // =============================================================================
 // Backoff — capped at a maximum interval
 // =============================================================================
-// Spec: Matrix Server-Server API v1.18 (retry semantics)
+// Spec: Matrix Server-Server API v1.19 (retry semantics)
 //
 // Uncapped exponential backoff would delay delivery indefinitely. The
 // implementation MUST cap the backoff at a reasonable maximum so that a
@@ -655,7 +655,7 @@ SCENARIO("compute_backoff is capped and does not grow without bound", "[federati
 // =============================================================================
 // Circuit breaker — open when no prior failures
 // =============================================================================
-// Spec: Matrix Server-Server API v1.18 (retry semantics)
+// Spec: Matrix Server-Server API v1.19 (retry semantics)
 //
 // A fresh destination (retry_after_ts == 0) MUST be retryable. The circuit
 // breaker must not block delivery attempts to servers that have not failed.
@@ -686,7 +686,7 @@ SCENARIO("destination_should_retry returns true when no backoff is scheduled",
 // =============================================================================
 // Circuit breaker — closed before backoff window expires
 // =============================================================================
-// Spec: Matrix Server-Server API v1.18 (retry semantics)
+// Spec: Matrix Server-Server API v1.19 (retry semantics)
 //
 // Spec MUST: the sender MUST NOT retry before the backoff window expires.
 // Retrying too early wastes resources and can trigger rate-limiting by the remote.
@@ -731,7 +731,7 @@ SCENARIO("destination_should_retry returns false while backoff window is active"
 // =============================================================================
 // apply_outbound_result — 2xx success clears failure state
 // =============================================================================
-// Spec: Matrix Server-Server API v1.18 (retry semantics)
+// Spec: Matrix Server-Server API v1.19 (retry semantics)
 //
 // Spec MUST: on a successful delivery (2xx response) the sender MUST clear
 // its failure state so subsequent transactions are not unnecessarily delayed.
@@ -777,7 +777,7 @@ SCENARIO("apply_outbound_result clears consecutive_failures on a 2xx response",
 // =============================================================================
 // apply_outbound_result — non-2xx failure sets backoff
 // =============================================================================
-// Spec: Matrix Server-Server API v1.18 (retry semantics)
+// Spec: Matrix Server-Server API v1.19 (retry semantics)
 //
 // Spec: on delivery failure (non-2xx, network error, timeout) the sender MUST
 // apply exponential backoff before the next attempt. The retry state must be

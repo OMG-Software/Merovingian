@@ -1,7 +1,7 @@
 # src/canonicaljson/ — Canonical JSON Module
 
 Implements the Matrix canonical JSON encoding used for signing and hashing.
-Spec authority: ../../docs/matrix-v1.18-spec/appendices.md#canonical-json
+Spec authority: ../../docs/matrix-v1.19-spec/appendices.md#canonical-json
 
 ## Key files
 
@@ -30,5 +30,5 @@ Spec authority: ../../docs/matrix-v1.18-spec/appendices.md#canonical-json
 
 ## Key spec sections
 
-- [Canonical JSON](../../docs/matrix-v1.18-spec/appendices.md#canonical-json)
-- [Signing JSON](../../docs/matrix-v1.18-spec/appendices.md#signing-json)
+- [Canonical JSON](../../docs/matrix-v1.19-spec/appendices.md#canonical-json)
+- [Signing JSON](../../docs/matrix-v1.19-spec/appendices.md#signing-json)

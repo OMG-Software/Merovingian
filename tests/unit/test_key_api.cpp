@@ -3,16 +3,16 @@
 // +-------------------------------------------------------------------------+
 // |         MATRIX END-TO-END ENCRYPTION KEY API CONFORMANCE TESTS          |
 // |                                                                         |
-// |  Spec: Matrix Client-Server API v1.18, Sec. 12 End-to-end encryption        |
-// |  Key upload:    ../../docs/matrix-v1.18-spec/client-server-api.md        |
+// |  Spec: Matrix Client-Server API v1.19, Sec. 12 End-to-end encryption        |
+// |  Key upload:    ../../docs/matrix-v1.19-spec/client-server-api.md        |
 // |                 #post_matrixclientv3keysupload                           |
-// |  Key query:     ../../docs/matrix-v1.18-spec/client-server-api.md        |
+// |  Key query:     ../../docs/matrix-v1.19-spec/client-server-api.md        |
 // |                 #post_matrixclientv3keysquery                            |
-// |  Key claim:     ../../docs/matrix-v1.18-spec/client-server-api.md        |
+// |  Key claim:     ../../docs/matrix-v1.19-spec/client-server-api.md        |
 // |                 #post_matrixclientv3keysclaim                            |
-// |  Cross-signing: ../../docs/matrix-v1.18-spec/client-server-api.md        |
+// |  Cross-signing: ../../docs/matrix-v1.19-spec/client-server-api.md        |
 // |                 #cross-signing                                            |
-// |  Key backup:    ../../docs/matrix-v1.18-spec/client-server-api.md        |
+// |  Key backup:    ../../docs/matrix-v1.19-spec/client-server-api.md        |
 // |                 #server-side-key-backups                                 |
 // |                                                                         |
 // |  !! IMPORTANT - FOR HUMANS AND LLMs ALIKE !!                            |
@@ -36,7 +36,7 @@
 #include <string>
 
 // --- key API route coverage ---------------------------------------------------
-// Spec: Matrix Client-Server API v1.18, Sec. 12 End-to-end encryption
+// Spec: Matrix Client-Server API v1.19, Sec. 12 End-to-end encryption
 // Endpoints covered:
 //   POST /_matrix/client/v3/keys/upload               - device keys + OTKs
 //   POST /_matrix/client/v3/keys/query                - query device keys
@@ -91,9 +91,9 @@ SCENARIO("Key API route scaffold covers device key and backup endpoints", "[auth
 }
 
 // --- token protection and rate limits -----------------------------------------
-// Spec: Matrix Client-Server API v1.18
-// URL:  ../../docs/matrix-v1.18-spec/client-server-api.md#using-access-tokens
-//       ../../docs/matrix-v1.18-spec/client-server-api.md#rate-limiting
+// Spec: Matrix Client-Server API v1.19
+// URL:  ../../docs/matrix-v1.19-spec/client-server-api.md#using-access-tokens
+//       ../../docs/matrix-v1.19-spec/client-server-api.md#rate-limiting
 //
 // All key API endpoints MUST require a valid access token - key material
 // belongs to authenticated users only. Rate limiting MUST be applied to
@@ -129,8 +129,8 @@ SCENARIO("Key API routes require access tokens and explicit rate limits", "[auth
 }
 
 // --- one-time and fallback key storage ----------------------------------------
-// Spec: Matrix Client-Server API v1.18, Sec. 12.1 One-time keys
-// URL:  ../../docs/matrix-v1.18-spec/client-server-api.md
+// Spec: Matrix Client-Server API v1.19, Sec. 12.1 One-time keys
+// URL:  ../../docs/matrix-v1.19-spec/client-server-api.md
 //       #post_matrixclientv3keysupload
 //
 // The server MUST store one-time keys and fallback keys as opaque, sensitive
@@ -170,9 +170,9 @@ SCENARIO("Key API database scaffold covers one-time keys and fallback keys", "[a
 }
 
 // --- cross-signing and key backup storage -------------------------------------
-// Spec: Matrix Client-Server API v1.18
-// Cross-signing: ../../docs/matrix-v1.18-spec/client-server-api.md#cross-signing
-// Key backup:    ../../docs/matrix-v1.18-spec/client-server-api.md
+// Spec: Matrix Client-Server API v1.19
+// Cross-signing: ../../docs/matrix-v1.19-spec/client-server-api.md#cross-signing
+// Key backup:    ../../docs/matrix-v1.19-spec/client-server-api.md
 //                #server-side-key-backups
 //
 // Cross-signing keys and room key backups MUST be stored as server-blind,
@@ -268,7 +268,7 @@ SCENARIO("Key API INSERT statements use valid SQL syntax with parenthesised colu
 
 // --- server-blind key payload log redaction ------------------------------------
 // Spec: Merovingian security policy - no key material in logs
-// Ref:  Matrix Client-Server API v1.18, Sec. 12 End-to-end encryption
+// Ref:  Matrix Client-Server API v1.19, Sec. 12 End-to-end encryption
 //
 // Server-blind key payloads (one-time keys, cross-signing keys, backups) MUST
 // NOT appear in diagnostic logs. The server stores them opaquely; logging them
@@ -371,7 +371,7 @@ SCENARIO("key_api_endpoint_name returns a unique non-empty label for every endpo
 }
 
 // --- match_key_api_route — unmatched and additional path patterns -------------
-// Spec: Matrix Client-Server API v1.18, Sec. 12 End-to-end encryption
+// Spec: Matrix Client-Server API v1.19, Sec. 12 End-to-end encryption
 //
 // The router MUST return a no-match result for paths that do not correspond
 // to any registered key-API endpoint. Incorrectly matching unrelated paths
