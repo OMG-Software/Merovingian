@@ -8471,6 +8471,179 @@ SCENARIO("/sync reports unread_notifications.notification_count and clears it af
     }
 }
 
+// Spec: Matrix Client-Server API v1.18
+// Endpoint / Section: GET /_matrix/client/v3/sync — Joined Room / Unread Notification Counts
+// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3sync
+//
+// m.read.private is a private variant of m.read (not federated, not visible to
+// other members) but MUST advance the read baseline identically for the
+// receipt's own owner, per "Receiving notifications".
+SCENARIO("/sync clears notification_count after an m.read.private receipt",
+         "[conformance][client-server][sync][receipts]")
+{
+    GIVEN("two joined users where alice sends a message bob has not yet read")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const alice = logged_in_token(started.runtime);
+        auto const bob = register_and_login(started.runtime, "bob");
+
+        auto const create = merovingian::homeserver::handle_client_server_request(
+            started.runtime, {"POST", "/_matrix/client/v3/createRoom", alice, R"({"preset":"public_chat"})"});
+        REQUIRE(create.response.status == 200U);
+        auto const create_body = parse_object(create.response.body);
+        auto const* room_id = string_member(create_body, "room_id");
+        REQUIRE(room_id != nullptr);
+
+        auto const join = merovingian::homeserver::handle_client_server_request(
+            started.runtime, {"POST", "/_matrix/client/v3/rooms/" + *room_id + "/join", bob, "{}"});
+        REQUIRE(join.response.status == 200U);
+
+        auto const event_id = send_message(started.runtime, alice, *room_id);
+
+        auto const initial = merovingian::homeserver::handle_client_server_request(
+            started.runtime, {"GET", "/_matrix/client/v3/sync", bob, {}});
+        REQUIRE(initial.response.status == 200U);
+        auto const bob_from = sync_next_batch(initial.response.body);
+
+        WHEN("bob posts an m.read.private receipt for the message and syncs again")
+        {
+            auto const receipt = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/rooms/" + *room_id + "/receipt/m.read.private/" + event_id, bob, "{}"});
+            REQUIRE(receipt.response.status == 200U);
+
+            auto const follow_up = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v3/sync?since=" + bob_from, bob, {}});
+            REQUIRE(follow_up.response.status == 200U);
+            auto const follow_up_body = parse_object(follow_up.response.body);
+            auto const* rooms = object_member_as_object(follow_up_body, "rooms");
+            REQUIRE(rooms != nullptr);
+            auto const* joins = object_member_as_object(*rooms, "join");
+            REQUIRE(joins != nullptr);
+            auto const* room_entry = object_member_as_object(*joins, *room_id);
+            REQUIRE(room_entry != nullptr);
+            auto const* unread = object_member_as_object(*room_entry, "unread_notifications");
+
+            THEN("notification_count drops to 0")
+            {
+                // Spec MUST: m.read.private advances the read baseline for its
+                // owner just like m.read.
+                REQUIRE(unread != nullptr);
+                auto const* notification_count = int_member(*unread, "notification_count");
+                REQUIRE(notification_count != nullptr);
+                REQUIRE(*notification_count == 0);
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.18
+// Endpoint / Section: GET /_matrix/client/v3/sync — Joined Room / Unread Notification Counts
+// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3sync
+//
+// "Receiving notifications" excludes the user's own sent events from their own
+// unread counts.
+SCENARIO("/sync notification_count excludes the sender's own messages", "[conformance][client-server][sync][receipts]")
+{
+    GIVEN("alice sends a message into her own room and never posts a receipt")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const alice = logged_in_token(started.runtime);
+        auto const room_id = create_room(started.runtime, alice);
+        std::ignore = send_message(started.runtime, alice, room_id);
+
+        WHEN("alice performs an initial sync")
+        {
+            auto const sync = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v3/sync", alice, {}});
+            REQUIRE(sync.response.status == 200U);
+            auto const body = parse_object(sync.response.body);
+            auto const* rooms = object_member_as_object(body, "rooms");
+            REQUIRE(rooms != nullptr);
+            auto const* joins = object_member_as_object(*rooms, "join");
+            REQUIRE(joins != nullptr);
+            auto const* room_entry = object_member_as_object(*joins, room_id);
+            REQUIRE(room_entry != nullptr);
+            auto const* unread = object_member_as_object(*room_entry, "unread_notifications");
+
+            THEN("her own message is not reported as unread")
+            {
+                // Spec MUST: the user's own events are not counted as unread
+                // notifications for that same user.
+                REQUIRE(unread != nullptr);
+                auto const* notification_count = int_member(*unread, "notification_count");
+                REQUIRE(notification_count != nullptr);
+                REQUIRE(*notification_count == 0);
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.18
+// Endpoint / Section: GET /_matrix/client/v3/sync — Joined Room / Unread Notification Counts
+// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3sync
+//
+// A receipt only advances the baseline up to the receipted event; later,
+// still-unread events must remain counted.
+SCENARIO("/sync notification_count still reflects messages sent after the receipted event",
+         "[conformance][client-server][sync][receipts]")
+{
+    GIVEN("alice sends two messages and bob reads only the first")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const alice = logged_in_token(started.runtime);
+        auto const bob = register_and_login(started.runtime, "bob");
+
+        auto const create = merovingian::homeserver::handle_client_server_request(
+            started.runtime, {"POST", "/_matrix/client/v3/createRoom", alice, R"({"preset":"public_chat"})"});
+        REQUIRE(create.response.status == 200U);
+        auto const create_body = parse_object(create.response.body);
+        auto const* room_id = string_member(create_body, "room_id");
+        REQUIRE(room_id != nullptr);
+
+        auto const join = merovingian::homeserver::handle_client_server_request(
+            started.runtime, {"POST", "/_matrix/client/v3/rooms/" + *room_id + "/join", bob, "{}"});
+        REQUIRE(join.response.status == 200U);
+
+        auto const first_event_id = send_text(started.runtime, alice, *room_id, "txn-partial-1", "first");
+        auto const second_event_id = send_text(started.runtime, alice, *room_id, "txn-partial-2", "second");
+
+        WHEN("bob posts a receipt for the first message only, then syncs")
+        {
+            auto const receipt = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/rooms/" + *room_id + "/receipt/m.read/" + first_event_id, bob, "{}"});
+            REQUIRE(receipt.response.status == 200U);
+            std::ignore = second_event_id;
+
+            auto const sync = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v3/sync", bob, {}});
+            REQUIRE(sync.response.status == 200U);
+            auto const body = parse_object(sync.response.body);
+            auto const* rooms = object_member_as_object(body, "rooms");
+            REQUIRE(rooms != nullptr);
+            auto const* joins = object_member_as_object(*rooms, "join");
+            REQUIRE(joins != nullptr);
+            auto const* room_entry = object_member_as_object(*joins, *room_id);
+            REQUIRE(room_entry != nullptr);
+            auto const* unread = object_member_as_object(*room_entry, "unread_notifications");
+
+            THEN("only the second, still-unread message counts")
+            {
+                // Spec MUST: notification_count reflects events after the
+                // receipted event, not a full reset to zero for the room.
+                REQUIRE(unread != nullptr);
+                auto const* notification_count = int_member(*unread, "notification_count");
+                REQUIRE(notification_count != nullptr);
+                REQUIRE(*notification_count == 1);
+            }
+        }
+    }
+}
+
 // --- GET /_matrix/client/v3/rooms/{roomId}/members ---------------------------
 // Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3roomsroomidmembers
 // IMPLEMENTATION GAP: room member list not yet implemented.

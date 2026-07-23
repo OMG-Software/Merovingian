@@ -568,6 +568,94 @@ SCENARIO("Sliding sync notification counts exclude the user's own messages",
     }
 }
 
+SCENARIO("count_notifications counts m.room.message and m.room.encrypted after read_ordering, excluding earlier "
+         "events, other event types, and the user's own events",
+         "[sync][sliding-sync][room-builder][receipts]")
+{
+    GIVEN("a room with messages before and after a read baseline, from both bob and alice, plus a state event")
+    {
+        auto store = merovingian::database::PersistentStore{};
+
+        auto const bob_message = R"({"type":"m.room.message","sender":"@bob:example.org",)"
+                                 R"("content":{"body":"before"}})";
+        auto const bob_encrypted = R"({"type":"m.room.encrypted","sender":"@bob:example.org",)"
+                                   R"("content":{"algorithm":"m.megolm.v1.aes-sha2"}})";
+        auto const bob_name_change = R"({"type":"m.room.name","sender":"@bob:example.org",)"
+                                     R"("content":{"name":"New name"}})";
+        auto const alice_message = R"({"type":"m.room.message","sender":"@alice:example.org",)"
+                                   R"("content":{"body":"mine"}})";
+
+        store.events.push_back({"$before", "!room:example.org", "@bob:example.org", bob_message, 1U, 10U, {}, {}, {}});
+        store.events.push_back(
+            {"$after_message", "!room:example.org", "@bob:example.org", bob_message, 1U, 30U, {}, {}, {}});
+        store.events.push_back(
+            {"$after_encrypted", "!room:example.org", "@bob:example.org", bob_encrypted, 1U, 40U, {}, {}, {}});
+        store.events.push_back(
+            {"$after_state", "!room:example.org", "@bob:example.org", bob_name_change, 1U, 50U, {}, {}, {}});
+        store.events.push_back(
+            {"$after_own", "!room:example.org", "@alice:example.org", alice_message, 1U, 60U, {}, {}, {}});
+
+        WHEN("count_notifications is called for alice with read_ordering 20")
+        {
+            auto const count =
+                merovingian::sync::count_notifications(store, "!room:example.org", "@alice:example.org", 20U);
+
+            THEN("only the after-baseline message and encrypted event from bob count")
+            {
+                // $before is at/before the baseline, $after_state is not a
+                // message/encrypted type, and $after_own is alice's own event.
+                REQUIRE(count == 2U);
+            }
+        }
+    }
+}
+
+SCENARIO("count_highlights counts only after-baseline events mentioning the user, excluding the user's own events",
+         "[sync][sliding-sync][room-builder][receipts]")
+{
+    GIVEN("a room with mentions before and after a read baseline, a non-mention, and a self-mention")
+    {
+        auto store = merovingian::database::PersistentStore{};
+
+        auto const mentions_alice =
+            R"({"type":"m.room.message","sender":"@bob:example.org",)"
+            R"("content":{"body":"hi alice","m.mentions":{"user_ids":["@alice:example.org"]}}})";
+        auto const mentions_carol =
+            R"({"type":"m.room.message","sender":"@bob:example.org",)"
+            R"("content":{"body":"hi carol","m.mentions":{"user_ids":["@carol:example.org"]}}})";
+        auto const no_mention = R"({"type":"m.room.message","sender":"@bob:example.org",)"
+                                R"("content":{"body":"no mentions here"}})";
+        auto const alice_self_mention =
+            R"({"type":"m.room.message","sender":"@alice:example.org",)"
+            R"("content":{"body":"noting myself","m.mentions":{"user_ids":["@alice:example.org"]}}})";
+
+        store.events.push_back(
+            {"$before_mention", "!room:example.org", "@bob:example.org", mentions_alice, 1U, 10U, {}, {}, {}});
+        store.events.push_back(
+            {"$after_mention", "!room:example.org", "@bob:example.org", mentions_alice, 1U, 30U, {}, {}, {}});
+        store.events.push_back(
+            {"$after_other_mention", "!room:example.org", "@bob:example.org", mentions_carol, 1U, 40U, {}, {}, {}});
+        store.events.push_back(
+            {"$after_no_mention", "!room:example.org", "@bob:example.org", no_mention, 1U, 50U, {}, {}, {}});
+        store.events.push_back(
+            {"$after_own_mention", "!room:example.org", "@alice:example.org", alice_self_mention, 1U, 60U, {}, {}, {}});
+
+        WHEN("count_highlights is called for alice with read_ordering 20")
+        {
+            auto const count =
+                merovingian::sync::count_highlights(store, "!room:example.org", "@alice:example.org", 20U);
+
+            THEN("only the after-baseline event mentioning alice by another sender counts")
+            {
+                // $before_mention is at/before the baseline, $after_other_mention
+                // mentions someone else, $after_no_mention has no m.mentions, and
+                // $after_own_mention is alice's own event.
+                REQUIRE(count == 1U);
+            }
+        }
+    }
+}
+
 // ── duplicate event_id keys in client-facing JSON (#457) ─────────────────────
 
 SCENARIO("Sliding sync timeline events never carry a duplicate event_id key",
