@@ -223,3 +223,10 @@ python build.py
 - **Migrations**: `migrations/<NNN>_<description>.sql` — zero-padded sequential number
 - **Includes**: Use `#include "merovingian/module/name.hpp"` (quotes for project headers; angle brackets for STL and third-party)
 - **Test macros**: `TEST_CASE`, `SCENARIO`, `GIVEN`, `WHEN`, `THEN` from Catch2 v3
+
+## Pull Requests
+Pull request descriptions should have the following headings:
+Summary: A short change summary.
+What changed: Bullet point list of what changed.
+Why it changed: Describe why the change was needed.
+CI tests: Bullet point list of all modified tests, and a bullet point list of all new tests.
