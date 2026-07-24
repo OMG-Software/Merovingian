@@ -4414,6 +4414,8 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
     }
 
     // Build a JSON array of the current state events for this room.
+    // Spec v1.19: GET /rooms/{roomId}/state returns an array of ClientEvent,
+    // so each entry must carry event_id and unsigned.replaces_state.
     auto state_array = canonicaljson::Array{};
     for (auto const& state : runtime.database.persistent_store.state)
     {
@@ -4421,10 +4423,18 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
         {
             continue;
         }
-        auto event_value = find_event_json(runtime.database.persistent_store, state.event_id);
-        if (!std::holds_alternative<std::nullptr_t>(event_value.storage()))
+        auto const* event = static_cast<database::PersistentEvent const*>(nullptr);
+        for (auto const& candidate : runtime.database.persistent_store.events)
         {
-            state_array.push_back(std::move(event_value));
+            if (candidate.event_id == state.event_id)
+            {
+                event = &candidate;
+                break;
+            }
+        }
+        if (event != nullptr)
+        {
+            state_array.push_back(client_event_with_id(runtime.database.persistent_store, *event));
         }
     }
     auto serialized = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(state_array)});
@@ -4435,23 +4445,97 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
     return make_operation_result(true, std::move(serialized.output));
 }
 
-namespace
+// Converts a stored persistent event into a client-facing event value,
+// injecting server-generated fields: event_id and, for state events,
+// unsigned.replaces_state (Matrix v1.19). Shared by /messages, GET
+// /rooms/{roomId}/state, and the client_server.cpp event serializer.
+[[nodiscard]] auto client_event_with_id(database::PersistentStore const& store, database::PersistentEvent const& event)
+    -> canonicaljson::Value
 {
-    [[nodiscard]] auto client_event_with_id(database::PersistentEvent const& event) -> canonicaljson::Value
+    auto const parsed = canonicaljson::parse_lossless(event.json);
+    if (parsed.error != canonicaljson::ParseError::none)
     {
-        auto const parsed = canonicaljson::parse_lossless(event.json);
-        if (parsed.error == canonicaljson::ParseError::none)
-        {
-            if (auto const* obj = std::get_if<canonicaljson::Object>(&parsed.value.storage()))
-            {
-                auto client_obj = *obj;
-                client_obj.push_back(canonicaljson::make_member("event_id", canonicaljson::Value{event.event_id}));
-                return canonicaljson::Value{std::move(client_obj)};
-            }
-        }
         return canonicaljson::Value{canonicaljson::Object{}};
     }
+    auto const* obj = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+    if (obj == nullptr)
+    {
+        return canonicaljson::Value{canonicaljson::Object{}};
+    }
+    auto client_obj = *obj;
+    client_obj.push_back(canonicaljson::make_member("event_id", canonicaljson::Value{event.event_id}));
 
+    auto const find_string = [](canonicaljson::Object const& object, std::string_view key) {
+        for (auto const& member : object)
+        {
+            if (member.key == key)
+            {
+                return std::get_if<std::string>(&member.value->storage());
+            }
+        }
+        return static_cast<std::string const*>(nullptr);
+    };
+    auto const* state_key = find_string(*obj, "state_key");
+    auto const* event_type = find_string(*obj, "type");
+    if (state_key != nullptr && event_type != nullptr)
+    {
+        auto const* transition = static_cast<database::PersistentStateTransition const*>(nullptr);
+        for (auto const& t : store.state_transitions)
+        {
+            if (t.room_id == event.room_id && t.event_type == *event_type && t.state_key == *state_key &&
+                t.event_id == event.event_id)
+            {
+                transition = &t;
+                break;
+            }
+        }
+        if (transition != nullptr && !transition->previous_event_id.empty())
+        {
+            auto unsigned_object = canonicaljson::Object{};
+            for (auto const& member : *obj)
+            {
+                if (member.key == "unsigned")
+                {
+                    if (auto const* existing = std::get_if<canonicaljson::Object>(&member.value->storage());
+                        existing != nullptr)
+                    {
+                        for (auto const& unsigned_member : *existing)
+                        {
+                            if (unsigned_member.key != "replaces_state")
+                            {
+                                unsigned_object.push_back(unsigned_member);
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+            unsigned_object.push_back(
+                canonicaljson::make_member("replaces_state", canonicaljson::Value{transition->previous_event_id}));
+
+            auto unsigned_replaced = false;
+            for (auto& member : client_obj)
+            {
+                if (member.key == "unsigned")
+                {
+                    member.value =
+                        std::make_unique<canonicaljson::Value>(canonicaljson::Value{std::move(unsigned_object)});
+                    unsigned_replaced = true;
+                    break;
+                }
+            }
+            if (!unsigned_replaced)
+            {
+                client_obj.push_back(
+                    canonicaljson::make_member("unsigned", canonicaljson::Value{std::move(unsigned_object)}));
+            }
+        }
+    }
+    return canonicaljson::Value{std::move(client_obj)};
+}
+
+namespace
+{
     [[nodiscard]] auto parse_stream_ordering_token(std::optional<std::string> const& token)
         -> std::optional<std::uint64_t>
     {
@@ -4638,7 +4722,7 @@ namespace
     chunk.reserve(end - start);
     for (auto index = start; index < end; ++index)
     {
-        chunk.push_back(client_event_with_id(*matches[index]));
+        chunk.push_back(client_event_with_id(runtime.database.persistent_store, *matches[index]));
     }
 
     auto response = canonicaljson::Object{};

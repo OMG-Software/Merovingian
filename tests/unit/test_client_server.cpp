@@ -224,8 +224,8 @@ using namespace merovingian::tests;
 }
 
 [[nodiscard]] auto content_for_state(merovingian::database::PersistentStore const& store, std::string_view room_id,
-                                     std::string_view event_type,
-                                     std::string_view state_key = {}) -> merovingian::canonicaljson::Object
+                                     std::string_view event_type, std::string_view state_key = {})
+    -> merovingian::canonicaljson::Object
 {
     auto const event = parse_object(event_json_for_state(store, room_id, event_type, state_key));
     auto const* content = object_member_as_object(event, "content");
@@ -868,6 +868,18 @@ SCENARIO("Client-server mutual_rooms returns only rooms both users are joined to
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 runtime, {"GET", "/_matrix/client/v1/mutual_rooms", alice_token, {}});
+
+            THEN("the server rejects the request with M_INVALID_PARAM")
+            {
+                REQUIRE(response.response.status == 400U);
+                REQUIRE(response.response.body.find("M_INVALID_PARAM") != std::string::npos);
+            }
+        }
+
+        WHEN("alice queries mutual_rooms with a non-compliant user_id")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v1/mutual_rooms?user_id=not-an-mxid", alice_token, {}});
 
             THEN("the server rejects the request with M_INVALID_PARAM")
             {
@@ -3517,8 +3529,8 @@ namespace
 // Lookup helper for LocalHttpResponse::headers (added in 0.4.60). Returns the
 // header value or empty string when the header is absent. Case-sensitive
 // because the wire emitter writes the canonical header name.
-[[nodiscard]] auto response_header(merovingian::homeserver::LocalHttpResponse const& response,
-                                   std::string_view name) -> std::string
+[[nodiscard]] auto response_header(merovingian::homeserver::LocalHttpResponse const& response, std::string_view name)
+    -> std::string
 {
     for (auto const& [key, value] : response.headers)
     {
@@ -5133,22 +5145,21 @@ SCENARIO("Account data endpoint stores and retrieves m.key_backup account data",
         auto const token = login_token(login.response.body);
 
         auto constexpr account_data_url = "/_matrix/client/v3/user/%40alice%3Aexample.org/account_data/m.key_backup";
-        auto constexpr body =
-            R"({"algorithm":"m.megolm_backup.v1.curve25519-aes-sha2","auth_data":{"public_key":"abc123"}})";
+        auto constexpr body = R"({"enabled":true})";
 
         WHEN("PUT /account_data/m.key_backup is called")
         {
             auto const put =
                 merovingian::homeserver::handle_client_server_request(runtime, {"PUT", account_data_url, token, body});
 
-            THEN("the response is 200 and GET returns the stored backup descriptor")
+            THEN("the response is 200 and GET returns the stored backup preference")
             {
                 REQUIRE(put.response.status == 200U);
 
                 auto const get = merovingian::homeserver::handle_client_server_request(
                     runtime, {"GET", account_data_url, token, {}});
                 REQUIRE(get.response.status == 200U);
-                REQUIRE(get.response.body.find("m.megolm_backup.v1.curve25519-aes-sha2") != std::string::npos);
+                REQUIRE(get.response.body.find("\"enabled\":true") != std::string::npos);
             }
         }
     }
@@ -5180,7 +5191,7 @@ SCENARIO("Account data endpoint stores and retrieves m.image_pack.rooms account 
 
         auto constexpr account_data_url =
             "/_matrix/client/v3/user/%40alice%3Aexample.org/account_data/m.image_pack.rooms";
-        auto constexpr body = R"({"rooms":{"!room:example.org":["cats"]}})";
+        auto constexpr body = R"({"rooms":{"!room:example.org":{"cats":{}}}})";
 
         WHEN("PUT /account_data/m.image_pack.rooms is called")
         {
@@ -5792,7 +5803,9 @@ SCENARIO("PUT /rooms/{roomId}/state/m.room.image_pack/{packName} stores an image
 
         WHEN("the client sends an m.room.image_pack state event")
         {
-            auto constexpr body = R"({"pack":{"display_name":"Cat emojis","avatar_url":"mxc://example.com/cats"}})";
+            auto constexpr body = "{\"images\":{\"cat_nap\":{\"body\":\"a sleeping "
+                                  "cat\",\"url\":\"mxc://example.org/def456\"}},\"pack\":{\"display_name\":\"Cat "
+                                  "emojis\",\"avatar_url\":\"mxc://example.com/cats\",\"usage\":[\"emoticon\"]}}";
             auto const put = merovingian::homeserver::handle_client_server_request(
                 runtime,
                 {"PUT", "/_matrix/client/v3/rooms/" + created_room_id + "/state/m.room.image_pack/cats", token, body});
