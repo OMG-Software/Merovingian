@@ -495,6 +495,13 @@ namespace
                              store.state.push_back(
                                  {column_text(row, 0), column_text(row, 1), column_text(row, 2), column_text(row, 3)});
                          }) &&
+               load_rows(connection,
+                         "SELECT room_id, event_type, state_key, event_id, previous_event_id FROM state_transitions",
+                         [&store](sqlite3_stmt& row) {
+                             store.state_transitions.push_back({column_text(row, 0), column_text(row, 1),
+                                                                column_text(row, 2), column_text(row, 3),
+                                                                column_text(row, 4)});
+                         }) &&
                load_rows(connection, "SELECT user_id, device_id, json FROM device_keys",
                          [&store](sqlite3_stmt& row) {
                              store.device_keys.push_back(
@@ -713,8 +720,8 @@ namespace
         return result;
     }
 
-    [[nodiscard]] auto load_room_snapshot_impl(sqlite3& connection, std::string_view room_id)
-        -> std::optional<RoomReloadSnapshot>
+    [[nodiscard]] auto load_room_snapshot_impl(sqlite3& connection,
+                                               std::string_view room_id) -> std::optional<RoomReloadSnapshot>
     {
         auto const room_id_str = std::string{room_id};
         auto snapshot = RoomReloadSnapshot{};
@@ -848,8 +855,8 @@ namespace
         return bind_statement_parameters(*statement->get(), prepared) && sqlite3_step(statement->get()) == SQLITE_DONE;
     }
 
-    [[nodiscard]] auto execute_transaction(sqlite3& connection, std::vector<PreparedStatement> const& statements)
-        -> bool
+    [[nodiscard]] auto execute_transaction(sqlite3& connection,
+                                           std::vector<PreparedStatement> const& statements) -> bool
     {
         auto transaction = SqliteTransaction{connection};
         if (!transaction.active())
@@ -973,8 +980,8 @@ namespace detail
         return persist_transaction_to_backend(store, {statement});
     }
 
-    auto persist_transaction_to_backend(PersistentStore const& store, std::vector<PreparedStatement> const& statements)
-        -> bool
+    auto persist_transaction_to_backend(PersistentStore const& store,
+                                        std::vector<PreparedStatement> const& statements) -> bool
     {
         if (store.backend == PersistentStoreBackend::memory)
         {
@@ -993,8 +1000,8 @@ namespace detail
                execute_transaction(**connection, statements);
     }
 
-    auto load_room_snapshot_from_backend(PersistentStore const& store, std::string_view room_id)
-        -> std::optional<RoomReloadSnapshot>
+    auto load_room_snapshot_from_backend(PersistentStore const& store,
+                                         std::string_view room_id) -> std::optional<RoomReloadSnapshot>
     {
         if (store.backend == PersistentStoreBackend::postgresql)
         {
@@ -1007,8 +1014,8 @@ namespace detail
         return load_room_snapshot_from_sqlite(store.sqlite_path, room_id);
     }
 
-    auto load_room_snapshot_from_sqlite(std::string const& path, std::string_view room_id)
-        -> std::optional<RoomReloadSnapshot>
+    auto load_room_snapshot_from_sqlite(std::string const& path,
+                                        std::string_view room_id) -> std::optional<RoomReloadSnapshot>
     {
         if (path.empty())
         {

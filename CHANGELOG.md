@@ -1,3 +1,12 @@
+## 0.11.2
+
+Matrix spec v1.19 behaviour changes (Phase 2).
+
+- Client-server: `GET /_matrix/client/v3/publicRooms` order is now server-defined per Matrix v1.19 (MSC4423). The implementation already returned rooms in insertion order; a conformance test now documents and protects that server-defined order.
+- Client-server: `m.key_backup` account data (MSC4287) is now accepted, stored, and retrievable via the existing `PUT/GET /_matrix/client/v3/user/{userId}/account_data/{type}` endpoints.
+- Client-server: custom emoji / image packs (MSC2545) are now accepted: `m.room.image_pack` state events and `m.image_pack.rooms` global account data round-trip through the existing event and account-data paths.
+- Database: schema version 4 adds a `state_transitions` table (via `migrations/004_state_transitions.sql`) so the server can record the previous state event for every `(room_id, event_type, state_key)` tuple. The client event builder uses this to inject `unsigned.replaces_state` into state events returned by `/sync`, `/rooms/{roomId}/messages`, `/rooms/{roomId}/members`, and other state-event paths, matching the Matrix v1.19 client event format.
+
 ## 0.11.1
 
 Maintenance: migrate repository documentation and tooling from Matrix spec v1.18 to v1.19. This is a mechanical update only; no v1.19 behaviour changes are implemented in this release.

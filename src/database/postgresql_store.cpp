@@ -622,6 +622,21 @@ namespace
             }
         }
 
+        auto transitions = query_rows(connection, "postgresql_load_state_transitions",
+                                      "SELECT room_id, event_type, state_key, event_id, previous_event_id FROM "
+                                      "state_transitions ORDER BY room_id, event_type, state_key, event_id");
+        if (!transitions.ok)
+        {
+            return false;
+        }
+        for (auto const& row : transitions.rows)
+        {
+            if (row.size() >= 5U)
+            {
+                store.state_transitions.push_back({row[0], row[1], row[2], row[3], row[4]});
+            }
+        }
+
         auto device_keys = query_rows(connection, "postgresql_load_device_keys",
                                       "SELECT user_id, device_id, json FROM device_keys ORDER BY user_id, device_id");
         if (!device_keys.ok)
@@ -1038,8 +1053,8 @@ namespace
         return state;
     }
 
-    [[nodiscard]] auto apply_pending_migrations(PostgresqlConnection& connection, SchemaState state)
-        -> std::optional<SchemaState>
+    [[nodiscard]] auto apply_pending_migrations(PostgresqlConnection& connection,
+                                                SchemaState state) -> std::optional<SchemaState>
     {
         auto const plan = migration_plan_for(state);
         auto const validation = migration_plan_is_valid(plan);
@@ -1396,8 +1411,8 @@ namespace
         return result;
     }
 
-    [[nodiscard]] auto load_room_snapshot_impl(PostgresqlConnection& connection, std::string_view room_id)
-        -> std::optional<RoomReloadSnapshot>
+    [[nodiscard]] auto load_room_snapshot_impl(PostgresqlConnection& connection,
+                                               std::string_view room_id) -> std::optional<RoomReloadSnapshot>
     {
         auto const room_id_str = std::string{room_id};
         auto snapshot = RoomReloadSnapshot{};
@@ -1567,8 +1582,8 @@ namespace detail
         return opened.ok && opened.connection.execute_transaction(statements);
     }
 
-    auto load_room_snapshot_from_postgresql(std::string_view conninfo, std::string_view room_id)
-        -> std::optional<RoomReloadSnapshot>
+    auto load_room_snapshot_from_postgresql(std::string_view conninfo,
+                                            std::string_view room_id) -> std::optional<RoomReloadSnapshot>
     {
         if (conninfo.empty())
         {

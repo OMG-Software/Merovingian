@@ -22,8 +22,10 @@ remaining work before PostgreSQL-backed production operation.
   pre-production deployments existed, subsequent schema changes started
   receiving their own numbered migration files; schema version `2` adds the
   `sync_stream_watermark` table via `migrations/002_sync_stream_watermark.sql`,
-  and schema version `3` adds the `event_stream_watermark` table via
-  `migrations/003_event_stream_watermark.sql`.
+  schema version `3` adds the `event_stream_watermark` table via
+  `migrations/003_event_stream_watermark.sql`, and schema version `4` adds the
+  `state_transitions` table via `migrations/004_state_transitions.sql` so the
+  server can populate `unsigned.replaces_state` for state events.
   After the project reaches production-ready `v1.0.0`, every schema change
   must add a forward migration and keep deployed databases compatible.
 - SQLite RAII wrappers around database connections and prepared statements.
@@ -104,6 +106,12 @@ remaining work before PostgreSQL-backed production operation.
   every restart. Hydration takes the maximum of the persisted watermark and the
   highest event `stream_ordering`, then persists the merged floor so the row
   exists even on fresh upgrades.
+- `state_transitions` table (schema version `4`) records the previous
+  `event_id` for every state-event tuple replacement. It is populated by
+  `database::store_state()` and the split `prepare_store_event_with_state()` /
+  `apply_store_event_with_state()` helpers, and is read by the client-server
+  response builder to inject `unsigned.replaces_state` into the client event
+  format per Matrix v1.19.
 - `/sync` calls `database::ensure_sync_stream_id_ahead_of()` when the client's
   `since` token is ahead of the server's counter. This recovers live deployments
   whose counter rolled back below a stored token (for example, when the watermark

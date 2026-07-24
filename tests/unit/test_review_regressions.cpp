@@ -120,8 +120,8 @@ private:
     return body.substr(value_start, value_end - value_start);
 }
 
-[[nodiscard]] auto remote_runtime(std::string const& origin, std::string const& key_id, std::string const& key_seed)
-    -> merovingian::federation::FederationRemoteRuntime
+[[nodiscard]] auto remote_runtime(std::string const& origin, std::string const& key_id,
+                                  std::string const& key_seed) -> merovingian::federation::FederationRemoteRuntime
 {
     auto remote = merovingian::federation::FederationRemoteRuntime{};
     remote.server_name = origin;
@@ -155,8 +155,8 @@ public:
     {
     }
 
-    [[nodiscard]] auto fetch_well_known(std::string_view, std::uint32_t)
-        -> merovingian::federation::WellKnownServerResult override
+    [[nodiscard]] auto fetch_well_known(std::string_view,
+                                        std::uint32_t) -> merovingian::federation::WellKnownServerResult override
     {
         {
             auto lock = std::scoped_lock<std::mutex>{mutex_};
@@ -172,8 +172,8 @@ public:
         return {};
     }
 
-    [[nodiscard]] auto lookup_addresses(std::string_view, std::uint16_t)
-        -> merovingian::federation::ResolvedAddressSet override
+    [[nodiscard]] auto lookup_addresses(std::string_view,
+                                        std::uint16_t) -> merovingian::federation::ResolvedAddressSet override
     {
         return {false, {}, "address lookup blocked for regression test"};
     }
@@ -854,7 +854,9 @@ SCENARIO("Persistent store commits room and state-event rows atomically",
                 REQUIRE(store.memberships.size() == 1U);
                 REQUIRE(store.events.size() == 1U);
                 REQUIRE(store.state.size() == 1U);
-                REQUIRE(store.prepared_statements.size() == 4U);
+                REQUIRE(store.state_transitions.size() == 1U);
+                // State-event storage now records both current_state and state_transitions.
+                REQUIRE(store.prepared_statements.size() == 5U);
             }
         }
     }
@@ -959,7 +961,10 @@ SCENARIO("Persistent store matches state event JSON with whitespace and upserts 
                 REQUIRE(second_state);
                 REQUIRE(store.state.size() == 1U);
                 REQUIRE(store.state.front().event_id == "$event2:example.org");
-                REQUIRE(store.prepared_statements.back().name == "upsert_state");
+                REQUIRE(store.state_transitions.size() == 2U);
+                // The final statement records the second state transition; the
+                // current_state row is updated via the preceding upsert_state.
+                REQUIRE(store.prepared_statements.back().name == "insert_state_transition");
             }
         }
     }
