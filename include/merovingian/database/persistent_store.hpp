@@ -14,6 +14,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace merovingian::database
@@ -496,6 +497,10 @@ struct PersistentStore final
     std::vector<PersistentEvent> events{};
     std::vector<PersistentStateEvent> state{};
     std::vector<PersistentStateTransition> state_transitions{};
+    // In-memory index over state_transitions keyed by (room_id, event_type, state_key, event_id)
+    // and mapping to the vector offset. Rebuilt after hydration and updated on every insert so
+    // client event serialization can look up unsigned.replaces_state in O(1).
+    std::unordered_map<std::string, std::size_t> state_transition_index{};
     std::vector<PersistentEventEdge> event_edges{};
     std::vector<PersistentEventAuth> event_auth{};
     std::vector<PersistentEventSignature> event_signatures{};
@@ -577,15 +582,15 @@ struct RoomReloadSnapshot final
 [[nodiscard]] auto commit_persistent_transaction(PersistentStore& store,
                                                  std::vector<PreparedStatement> const& statements) -> bool;
 [[nodiscard]] auto store_user(PersistentStore& store, PersistentUser user) -> bool;
-[[nodiscard]] auto update_user_password(PersistentStore& store, std::string_view user_id,
-                                        std::string_view new_hash) -> bool;
+[[nodiscard]] auto update_user_password(PersistentStore& store, std::string_view user_id, std::string_view new_hash)
+    -> bool;
 // Sets the locked/suspended flags of a server-local user. Used by the admin
 // account-moderation endpoints (PUT /v1/admin/lock and /suspend). Persists the
 // change and mirrors it into the in-memory store. Returns false if the user is
 // not found. Does NOT revoke access tokens — per spec v1.19, locking and
 // suspending keep existing sessions intact and enforce via request-path gates.
-[[nodiscard]] auto set_user_account_state(PersistentStore& store, std::string_view user_id, bool suspended,
-                                          bool locked) -> bool;
+[[nodiscard]] auto set_user_account_state(PersistentStore& store, std::string_view user_id, bool suspended, bool locked)
+    -> bool;
 [[nodiscard]] auto store_device(PersistentStore& store, PersistentDevice device) -> bool;
 [[nodiscard]] auto store_access_token(PersistentStore& store, PersistentAccessToken token) -> bool;
 [[nodiscard]] auto store_refresh_token(PersistentStore& store, PersistentRefreshToken token) -> bool;
@@ -610,10 +615,10 @@ struct RoomReloadSnapshot final
 [[nodiscard]] auto store_server_signing_key(PersistentStore& store, PersistentServerSigningKey key) -> bool;
 [[nodiscard]] auto find_server_signing_key(PersistentStore const& store, std::string_view server_name,
                                            std::string_view key_id) -> std::optional<PersistentServerSigningKey>;
-[[nodiscard]] auto store_federation_destination(PersistentStore& store,
-                                                PersistentFederationDestination destination) -> bool;
-[[nodiscard]] auto store_federation_transaction(PersistentStore& store,
-                                                PersistentFederationTransaction transaction) -> bool;
+[[nodiscard]] auto store_federation_destination(PersistentStore& store, PersistentFederationDestination destination)
+    -> bool;
+[[nodiscard]] auto store_federation_transaction(PersistentStore& store, PersistentFederationTransaction transaction)
+    -> bool;
 [[nodiscard]] auto delete_federation_transaction(PersistentStore& store, std::string_view transaction_id) -> bool;
 enum class MembershipStoreResult
 {
@@ -648,18 +653,29 @@ auto reconstruct_event_relations(PersistentStore& store) -> void;
 [[nodiscard]] auto store_membership(PersistentStore& store, PersistentMembership membership) -> MembershipStoreResult;
 [[nodiscard]] auto update_membership(PersistentStore& store, std::string_view room_id, std::string_view user_id,
                                      std::string_view new_membership, std::uint64_t stream_ordering) -> bool;
-[[nodiscard]] auto delete_membership(PersistentStore& store, std::string_view room_id,
-                                     std::string_view user_id) -> bool;
+[[nodiscard]] auto delete_membership(PersistentStore& store, std::string_view room_id, std::string_view user_id)
+    -> bool;
 [[nodiscard]] auto upsert_invite(PersistentStore& store, PersistentInvite invite) -> bool;
 [[nodiscard]] auto delete_invite(PersistentStore& store, std::string_view room_id, std::string_view user_id) -> bool;
-[[nodiscard]] auto find_invite(PersistentStore const& store, std::string_view room_id,
-                               std::string_view user_id) -> std::optional<PersistentInvite>;
+[[nodiscard]] auto find_invite(PersistentStore const& store, std::string_view room_id, std::string_view user_id)
+    -> std::optional<PersistentInvite>;
 [[nodiscard]] auto store_room_with_membership(PersistentStore& store, PersistentRoom room,
                                               PersistentMembership membership) -> bool;
 [[nodiscard]] auto store_event(PersistentStore& store, PersistentEvent event) -> bool;
 [[nodiscard]] auto store_state(PersistentStore& store, PersistentStateEvent state) -> bool;
 [[nodiscard]] auto store_event_with_state(PersistentStore& store, PersistentEvent event,
                                           std::optional<PersistentStateEvent> state) -> bool;
+
+// Rebuilds the in-memory state_transitions index from scratch. Called after
+// SQLite/PostgreSQL hydration and after any direct backfill of the vector.
+auto rebuild_state_transition_index(PersistentStore& store) -> void;
+
+// Looks up a state transition by its primary tuple. Requires the index to be
+// current; callers that modify the vector directly must call
+// rebuild_state_transition_index() first.
+[[nodiscard]] auto find_state_transition(PersistentStore const& store, std::string_view room_id,
+                                         std::string_view event_type, std::string_view state_key,
+                                         std::string_view event_id) -> PersistentStateTransition const*;
 
 // Split version of store_event_with_state for callers that need to release locks
 // around the backend commit. `prepare` validates in-memory pre-conditions and
@@ -688,11 +704,11 @@ auto apply_store_event_with_state(PersistentStore& store, PreparedStateUpdate co
 // m.room.create, m.room.join_rules, and m.room.power_levels.
 [[nodiscard]] auto repair_missing_state_entries(PersistentStore& store) -> std::size_t;
 [[nodiscard]] auto store_room_alias(PersistentStore& store, PersistentRoomAlias alias) -> bool;
-[[nodiscard]] auto find_room_alias(PersistentStore const& store,
-                                   std::string_view room_alias) -> std::optional<PersistentRoomAlias>;
+[[nodiscard]] auto find_room_alias(PersistentStore const& store, std::string_view room_alias)
+    -> std::optional<PersistentRoomAlias>;
 [[nodiscard]] auto store_device_key(PersistentStore& store, PersistentDeviceKey key) -> bool;
-[[nodiscard]] auto find_device_key(PersistentStore const& store, std::string_view user_id,
-                                   std::string_view device_id) -> std::optional<PersistentDeviceKey>;
+[[nodiscard]] auto find_device_key(PersistentStore const& store, std::string_view user_id, std::string_view device_id)
+    -> std::optional<PersistentDeviceKey>;
 [[nodiscard]] auto store_one_time_key(PersistentStore& store, PersistentOneTimeKey key) -> bool;
 [[nodiscard]] auto claim_one_time_key(PersistentStore& store, std::string_view user_id, std::string_view device_id,
                                       std::string_view algorithm = {}) -> std::optional<PersistentOneTimeKey>;
@@ -702,8 +718,8 @@ auto apply_store_event_with_state(PersistentStore& store, PreparedStateUpdate co
 [[nodiscard]] auto store_cross_signing_key(PersistentStore& store, PersistentCrossSigningKey key) -> bool;
 [[nodiscard]] auto store_key_signature(PersistentStore& store, PersistentKeySignature signature) -> bool;
 [[nodiscard]] auto store_key_backup_version(PersistentStore& store, PersistentKeyBackupVersion version) -> bool;
-[[nodiscard]] auto delete_key_backup_version(PersistentStore& store, std::string_view user_id,
-                                             std::string_view version) -> bool;
+[[nodiscard]] auto delete_key_backup_version(PersistentStore& store, std::string_view user_id, std::string_view version)
+    -> bool;
 [[nodiscard]] auto store_key_backup_session(PersistentStore& store, PersistentKeyBackupSession session) -> bool;
 [[nodiscard]] auto delete_key_backup_room_sessions(PersistentStore& store, std::string_view user_id,
                                                    std::string_view version, std::string_view room_id) -> bool;
@@ -730,13 +746,13 @@ auto apply_store_event_with_state(PersistentStore& store, PreparedStateUpdate co
 // Store a sync filter uploaded by a client. On conflict the JSON is replaced.
 [[nodiscard]] auto store_filter(PersistentStore& store, PersistentFilter filter) -> bool;
 // Return the filter for (user_id, filter_id), or nullopt when not found.
-[[nodiscard]] auto find_filter(PersistentStore const& store, std::string_view user_id,
-                               std::string_view filter_id) -> std::optional<PersistentFilter>;
+[[nodiscard]] auto find_filter(PersistentStore const& store, std::string_view user_id, std::string_view filter_id)
+    -> std::optional<PersistentFilter>;
 // Create or replace a user profile row.
 [[nodiscard]] auto store_profile(PersistentStore& store, PersistentProfile profile) -> bool;
 // Return the profile for user_id, or nullopt when not found.
-[[nodiscard]] auto find_profile(PersistentStore const& store,
-                                std::string_view user_id) -> std::optional<PersistentProfile>;
+[[nodiscard]] auto find_profile(PersistentStore const& store, std::string_view user_id)
+    -> std::optional<PersistentProfile>;
 // Update only displayname for an existing profile row.
 [[nodiscard]] auto update_profile_displayname(PersistentStore& store, std::string_view user_id,
                                               std::string_view displayname) -> bool;
@@ -784,8 +800,8 @@ auto restore_sync_stream_id(PersistentStore& store) -> void;
 namespace detail
 {
 
-    [[nodiscard]] auto persist_statement_to_backend(PersistentStore const& store,
-                                                    PreparedStatement const& statement) -> bool;
+    [[nodiscard]] auto persist_statement_to_backend(PersistentStore const& store, PreparedStatement const& statement)
+        -> bool;
     [[nodiscard]] auto persist_transaction_to_backend(PersistentStore const& store,
                                                       std::vector<PreparedStatement> const& statements) -> bool;
     [[nodiscard]] auto persist_transaction_to_postgresql(PersistentStore const& store,
@@ -796,10 +812,10 @@ namespace detail
     // relation fields already reconstructed. Returns nullopt on a
     // connection/query failure; a room that no longer exists is a successful
     // result with `room == nullopt` inside the snapshot, not a nullopt return.
-    [[nodiscard]] auto load_room_snapshot_from_backend(PersistentStore const& store,
-                                                       std::string_view room_id) -> std::optional<RoomReloadSnapshot>;
-    [[nodiscard]] auto load_room_snapshot_from_sqlite(std::string const& path,
-                                                      std::string_view room_id) -> std::optional<RoomReloadSnapshot>;
+    [[nodiscard]] auto load_room_snapshot_from_backend(PersistentStore const& store, std::string_view room_id)
+        -> std::optional<RoomReloadSnapshot>;
+    [[nodiscard]] auto load_room_snapshot_from_sqlite(std::string const& path, std::string_view room_id)
+        -> std::optional<RoomReloadSnapshot>;
     [[nodiscard]] auto load_room_snapshot_from_postgresql(std::string_view conninfo, std::string_view room_id)
         -> std::optional<RoomReloadSnapshot>;
 

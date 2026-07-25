@@ -2830,14 +2830,61 @@ namespace
         return json_serialize(json_obj({json_member("joined_rooms", json_arr(std::move(rooms)))}));
     }
 
+    [[nodiscard]] auto mutual_rooms_token_key(ClientServerRuntime const& rt) -> std::span<std::uint8_t const>
+    {
+        if (!rt.homeserver.database.mutual_rooms_token_key.has_value())
+        {
+            return {};
+        }
+        return rt.homeserver.database.mutual_rooms_token_key->bytes();
+    }
+
+    [[nodiscard]] auto encode_mutual_rooms_token(std::string_view caller, std::string_view target_user,
+                                                 std::size_t offset, std::span<std::uint8_t const> key)
+        -> std::optional<std::string>
+    {
+        if (key.empty())
+        {
+            return std::nullopt;
+        }
+        auto const offset_str = std::to_string(offset);
+        auto const pieces = std::array<std::string_view, 3U>{caller, target_user, offset_str};
+        return crypto::generic_hash(pieces, key);
+    }
+
+    [[nodiscard]] auto decode_mutual_rooms_token(std::string_view caller, std::string_view target_user,
+                                                 std::string_view token, std::span<std::uint8_t const> key,
+                                                 std::size_t total) -> std::optional<std::size_t>
+    {
+        if (key.empty() || token.empty())
+        {
+            return std::nullopt;
+        }
+        auto constexpr max_overrun = std::size_t{1000U};
+        auto const upper_bound = total + max_overrun;
+        for (auto offset = std::size_t{0U}; offset <= upper_bound; ++offset)
+        {
+            auto const candidate = encode_mutual_rooms_token(caller, target_user, offset, key);
+            if (!candidate.has_value())
+            {
+                return std::nullopt;
+            }
+            if (*candidate == token)
+            {
+                return offset;
+            }
+        }
+        return std::nullopt;
+    }
+
     // Spec: Matrix Client-Server API v1.19 — GET /_matrix/client/v1/mutual_rooms
     // URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv1mutual_rooms
     // Returns room IDs where both the caller and the supplied user_id have a
-    // membership of type "join". Supports simple integer-offset pagination via
-    // the ?from= query parameter; an invalid token produces M_INVALID_PARAM.
+    // membership of type "join". Pagination uses opaque server-issued tokens
+    // keyed to this deployment; an invalid token produces M_INVALID_PARAM.
     [[nodiscard]] auto mutual_rooms_json(ClientServerRuntime const& rt, std::string_view caller,
-                                         std::string_view target_user, std::optional<std::size_t> from,
-                                         std::size_t limit) -> std::string
+                                         std::string_view target_user, std::size_t offset, std::size_t limit)
+        -> std::string
     {
         auto mutual = std::vector<std::string>{};
         for (auto const& room : rt.homeserver.database.rooms)
@@ -2849,7 +2896,6 @@ namespace
         }
 
         auto const total = mutual.size();
-        auto const offset = from.value_or(0U);
         auto const end = std::min(offset + limit, total);
         auto page = canonicaljson::Array{};
         for (auto i = offset; i < end; ++i)
@@ -2862,7 +2908,15 @@ namespace
         response.push_back(json_member("joined", json_arr(std::move(page))));
         if (end < total)
         {
-            response.push_back(json_member("next_batch", json_str(std::to_string(end))));
+            auto const next_token = encode_mutual_rooms_token(caller, target_user, end, mutual_rooms_token_key(rt));
+            if (next_token.has_value())
+            {
+                response.push_back(json_member("next_batch", json_str(*next_token)));
+            }
+            else
+            {
+                response.push_back(json_member("next_batch", json_str(std::to_string(end))));
+            }
         }
         return json_serialize(json_obj(std::move(response)));
     }
@@ -8729,17 +8783,19 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "user_id must not be the requesting user");
         }
 
-        auto from = std::optional<std::size_t>{};
-        if (auto const from_param = query_param_value(req.target, "from");
-            from_param.has_value() && !from_param->empty())
+        auto const from_param = query_param_value(req.target, "from");
+        auto const from_supplied = from_param.has_value() && !from_param->empty();
+        auto from = std::size_t{0U};
+        if (from_supplied)
         {
-            auto parsed = std::size_t{0U};
-            auto const [ptr, ec] = std::from_chars(from_param->data(), from_param->data() + from_param->size(), parsed);
-            if (ec != std::errc{} || ptr != from_param->data() + from_param->size())
+            auto const decoded =
+                decode_mutual_rooms_token(*user, *target_user_param, *from_param, mutual_rooms_token_key(rt),
+                                          rt.homeserver.database.rooms.size());
+            if (!decoded.has_value())
             {
                 return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "invalid from pagination token");
             }
-            from = parsed;
+            from = *decoded;
         }
 
         auto limit = std::size_t{20U};
@@ -8755,11 +8811,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
         }
 
-        log_diagnostic("room.mutual_rooms.response",
-                       {
-                           {"actor",         *user,                               false},
-                           {"target_user",   *target_user_param,                  false},
-                           {"from_supplied", from.has_value() ? "true" : "false", false}
+        log_diagnostic("room.mutual_rooms.response", {
+                                                         {"actor",         *user,                            false},
+                                                         {"target_user",   *target_user_param,               false},
+                                                         {"from_supplied", from_supplied ? "true" : "false", false}
         });
         return dispatch_resp(req, rt, 200U, mutual_rooms_json(rt, *user, *target_user_param, from, limit));
     }

@@ -720,8 +720,8 @@ namespace
         return result;
     }
 
-    [[nodiscard]] auto load_room_snapshot_impl(sqlite3& connection,
-                                               std::string_view room_id) -> std::optional<RoomReloadSnapshot>
+    [[nodiscard]] auto load_room_snapshot_impl(sqlite3& connection, std::string_view room_id)
+        -> std::optional<RoomReloadSnapshot>
     {
         auto const room_id_str = std::string{room_id};
         auto snapshot = RoomReloadSnapshot{};
@@ -855,8 +855,8 @@ namespace
         return bind_statement_parameters(*statement->get(), prepared) && sqlite3_step(statement->get()) == SQLITE_DONE;
     }
 
-    [[nodiscard]] auto execute_transaction(sqlite3& connection,
-                                           std::vector<PreparedStatement> const& statements) -> bool
+    [[nodiscard]] auto execute_transaction(sqlite3& connection, std::vector<PreparedStatement> const& statements)
+        -> bool
     {
         auto transaction = SqliteTransaction{connection};
         if (!transaction.active())
@@ -954,6 +954,7 @@ auto open_sqlite_persistent_store(std::string const& path) -> PersistentStoreOpe
         return {false, "unable to hydrate SQLite rows", {}};
     }
     reconstruct_event_relations(store);
+    rebuild_state_transition_index(store);
     restore_sync_stream_id(store);
 
     auto compatibility = validate_persistent_store(store);
@@ -980,8 +981,8 @@ namespace detail
         return persist_transaction_to_backend(store, {statement});
     }
 
-    auto persist_transaction_to_backend(PersistentStore const& store,
-                                        std::vector<PreparedStatement> const& statements) -> bool
+    auto persist_transaction_to_backend(PersistentStore const& store, std::vector<PreparedStatement> const& statements)
+        -> bool
     {
         if (store.backend == PersistentStoreBackend::memory)
         {
@@ -1000,8 +1001,8 @@ namespace detail
                execute_transaction(**connection, statements);
     }
 
-    auto load_room_snapshot_from_backend(PersistentStore const& store,
-                                         std::string_view room_id) -> std::optional<RoomReloadSnapshot>
+    auto load_room_snapshot_from_backend(PersistentStore const& store, std::string_view room_id)
+        -> std::optional<RoomReloadSnapshot>
     {
         if (store.backend == PersistentStoreBackend::postgresql)
         {
@@ -1014,8 +1015,8 @@ namespace detail
         return load_room_snapshot_from_sqlite(store.sqlite_path, room_id);
     }
 
-    auto load_room_snapshot_from_sqlite(std::string const& path,
-                                        std::string_view room_id) -> std::optional<RoomReloadSnapshot>
+    auto load_room_snapshot_from_sqlite(std::string const& path, std::string_view room_id)
+        -> std::optional<RoomReloadSnapshot>
     {
         if (path.empty())
         {

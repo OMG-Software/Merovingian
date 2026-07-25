@@ -116,6 +116,10 @@ struct LocalDatabase final
     std::vector<observability::AuditLogEvent> audit_events{};
     database::PersistentStore persistent_store{};
     core::SecretBuffer signing_secret_key{};
+    // Keyed secret used to sign opaque pagination tokens issued by endpoints such
+    // as GET /_matrix/client/v1/mutual_rooms. Derived once at runtime start from
+    // the server signing key so tokens are server-scoped and survive restarts.
+    std::optional<core::SecretBuffer> mutual_rooms_token_key{};
     // Cache of the signed /_matrix/key/v2/server response, protected by its own
     // internal mutex so the federation key endpoint can be served without acquiring
     // the global runtime mutex. Wrapped in unique_ptr so LocalDatabase remains

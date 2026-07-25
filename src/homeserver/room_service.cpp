@@ -4479,16 +4479,8 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
     auto const* event_type = find_string(*obj, "type");
     if (state_key != nullptr && event_type != nullptr)
     {
-        auto const* transition = static_cast<database::PersistentStateTransition const*>(nullptr);
-        for (auto const& t : store.state_transitions)
-        {
-            if (t.room_id == event.room_id && t.event_type == *event_type && t.state_key == *state_key &&
-                t.event_id == event.event_id)
-            {
-                transition = &t;
-                break;
-            }
-        }
+        auto const* transition =
+            database::find_state_transition(store, event.room_id, *event_type, *state_key, event.event_id);
         if (transition != nullptr && !transition->previous_event_id.empty())
         {
             auto unsigned_object = canonicaljson::Object{};

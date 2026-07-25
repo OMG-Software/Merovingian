@@ -1053,8 +1053,8 @@ namespace
         return state;
     }
 
-    [[nodiscard]] auto apply_pending_migrations(PostgresqlConnection& connection,
-                                                SchemaState state) -> std::optional<SchemaState>
+    [[nodiscard]] auto apply_pending_migrations(PostgresqlConnection& connection, SchemaState state)
+        -> std::optional<SchemaState>
     {
         auto const plan = migration_plan_for(state);
         auto const validation = migration_plan_is_valid(plan);
@@ -1300,6 +1300,7 @@ auto open_postgresql_persistent_store(std::string_view conninfo) -> PersistentSt
         return {false, "unable to hydrate PostgreSQL persistent rows", {}};
     }
     reconstruct_event_relations(store);
+    rebuild_state_transition_index(store);
     restore_sync_stream_id(store);
 
     auto compatibility = validate_persistent_store(store);
@@ -1411,8 +1412,8 @@ namespace
         return result;
     }
 
-    [[nodiscard]] auto load_room_snapshot_impl(PostgresqlConnection& connection,
-                                               std::string_view room_id) -> std::optional<RoomReloadSnapshot>
+    [[nodiscard]] auto load_room_snapshot_impl(PostgresqlConnection& connection, std::string_view room_id)
+        -> std::optional<RoomReloadSnapshot>
     {
         auto const room_id_str = std::string{room_id};
         auto snapshot = RoomReloadSnapshot{};
@@ -1582,8 +1583,8 @@ namespace detail
         return opened.ok && opened.connection.execute_transaction(statements);
     }
 
-    auto load_room_snapshot_from_postgresql(std::string_view conninfo,
-                                            std::string_view room_id) -> std::optional<RoomReloadSnapshot>
+    auto load_room_snapshot_from_postgresql(std::string_view conninfo, std::string_view room_id)
+        -> std::optional<RoomReloadSnapshot>
     {
         if (conninfo.empty())
         {
