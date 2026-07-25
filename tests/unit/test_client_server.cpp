@@ -782,6 +782,220 @@ SCENARIO("Client-server runtime room state joined rooms and sync endpoints compo
     }
 }
 
+// --- GET /_matrix/client/v1/mutual_rooms -------------------------------------
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv1mutual_rooms
+SCENARIO("Client-server mutual_rooms returns only rooms both users are joined to",
+         "[homeserver][client-server][room-membership][msc2666]")
+{
+    GIVEN("a started runtime with two users and a shared public room")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("bob", "CorrectHorse7!")})
+                    .response.status == 200U);
+
+        auto const alice_login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"ALICE_DEV"})"});
+        REQUIRE(alice_login.response.status == 200U);
+        auto const alice_token = login_token(alice_login.response.body);
+
+        auto const bob_login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@bob:example.org"},"password":"CorrectHorse7!","device_id":"BOB_DEV"})"});
+        REQUIRE(bob_login.response.status == 200U);
+        auto const bob_token = login_token(bob_login.response.body);
+
+        auto const create = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", alice_token, R"({"preset":"public_chat"})"});
+        REQUIRE(create.response.status == 200U);
+        auto const shared_room_id = room_id(create.response.body);
+
+        auto const join = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/join/" + shared_room_id, bob_token, "{}"});
+        REQUIRE(join.response.status == 200U);
+
+        auto const private_create = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", alice_token, "{}"});
+        REQUIRE(private_create.response.status == 200U);
+        auto const private_room_id = room_id(private_create.response.body);
+
+        WHEN("alice queries mutual_rooms with bob")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v1/mutual_rooms?user_id=@bob:example.org", alice_token, {}});
+
+            THEN("the response contains only the shared room and a total count")
+            {
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(response.response.body.find(shared_room_id) != std::string::npos);
+                REQUIRE(response.response.body.find(private_room_id) == std::string::npos);
+                REQUIRE(response.response.body.find("\"count\":1") != std::string::npos);
+            }
+        }
+
+        WHEN("alice queries mutual_rooms with her own user_id")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v1/mutual_rooms?user_id=@alice:example.org", alice_token, {}});
+
+            THEN("the server rejects the request with M_INVALID_PARAM")
+            {
+                REQUIRE(response.response.status == 400U);
+                REQUIRE(response.response.body.find("M_INVALID_PARAM") != std::string::npos);
+            }
+        }
+
+        WHEN("alice queries mutual_rooms without user_id")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v1/mutual_rooms", alice_token, {}});
+
+            THEN("the server rejects the request with M_INVALID_PARAM")
+            {
+                REQUIRE(response.response.status == 400U);
+                REQUIRE(response.response.body.find("M_INVALID_PARAM") != std::string::npos);
+            }
+        }
+
+        WHEN("alice queries mutual_rooms with a non-compliant user_id")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v1/mutual_rooms?user_id=not-an-mxid", alice_token, {}});
+
+            THEN("the server rejects the request with M_INVALID_PARAM")
+            {
+                REQUIRE(response.response.status == 400U);
+                REQUIRE(response.response.body.find("M_INVALID_PARAM") != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("Client-server mutual_rooms pagination uses opaque verified tokens",
+         "[homeserver][client-server][room-membership][msc2666]")
+{
+    GIVEN("a started runtime with two shared public rooms and one private room")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("bob", "CorrectHorse7!")})
+                    .response.status == 200U);
+
+        auto const alice_login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"ALICE_DEV"})"});
+        REQUIRE(alice_login.response.status == 200U);
+        auto const alice_token = login_token(alice_login.response.body);
+
+        auto const bob_login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@bob:example.org"},"password":"CorrectHorse7!","device_id":"BOB_DEV"})"});
+        REQUIRE(bob_login.response.status == 200U);
+        auto const bob_token = login_token(bob_login.response.body);
+
+        auto const create1 = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", alice_token, R"({"preset":"public_chat"})"});
+        REQUIRE(create1.response.status == 200U);
+        auto const shared1 = room_id(create1.response.body);
+
+        auto const join1 = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/join/" + shared1, bob_token, "{}"});
+        REQUIRE(join1.response.status == 200U);
+
+        auto const create2 = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", alice_token, R"({"preset":"public_chat"})"});
+        REQUIRE(create2.response.status == 200U);
+        auto const shared2 = room_id(create2.response.body);
+
+        auto const join2 = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/join/" + shared2, bob_token, "{}"});
+        REQUIRE(join2.response.status == 200U);
+
+        WHEN("alice paginates mutual_rooms with a limit of one")
+        {
+            auto const first = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v1/mutual_rooms?user_id=@bob:example.org&limit=1", alice_token, {}});
+
+            THEN("the first page has one room, count two, and an opaque next_batch token")
+            {
+                REQUIRE(first.response.status == 200U);
+                REQUIRE(first.response.body.find("\"count\":2") != std::string::npos);
+                REQUIRE(first.response.body.find("\"next_batch\":\"") != std::string::npos);
+                REQUIRE(first.response.body.find("\"next_batch\":\"1\"") == std::string::npos);
+            }
+
+            auto const next_batch_pos = first.response.body.find("\"next_batch\":\"");
+            REQUIRE(next_batch_pos != std::string::npos);
+            auto const token_start = next_batch_pos + std::string{"\"next_batch\":\""}.size();
+            auto const token_end = first.response.body.find('\"', token_start);
+            REQUIRE(token_end != std::string::npos);
+            auto const next_batch = first.response.body.substr(token_start, token_end - token_start);
+
+            auto const second = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET",
+                          "/_matrix/client/v1/mutual_rooms?user_id=@bob:example.org&limit=1&from=" + next_batch,
+                          alice_token,
+                          {}});
+
+            THEN("the second page has the remaining room and no next_batch")
+            {
+                REQUIRE(second.response.status == 200U);
+                REQUIRE(second.response.body.find("\"count\":2") != std::string::npos);
+                REQUIRE(second.response.body.find("\"next_batch\"") == std::string::npos);
+            }
+        }
+
+        WHEN("alice supplies a forged integer from token")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v1/mutual_rooms?user_id=@bob:example.org&from=1", alice_token, {}});
+
+            THEN("the server rejects the request with M_INVALID_PARAM")
+            {
+                REQUIRE(response.response.status == 400U);
+                REQUIRE(response.response.body.find("M_INVALID_PARAM") != std::string::npos);
+            }
+        }
+    }
+}
+
 SCENARIO("Client-server publicRooms handles the server query parameter", "[homeserver][client-server][public-rooms]")
 {
     GIVEN("a started runtime with one private room and one public room")
@@ -5012,6 +5226,97 @@ SCENARIO("Account data endpoint stores and retrieves global account data", "[hom
     }
 }
 
+SCENARIO("Account data endpoint stores and retrieves m.key_backup account data",
+         "[homeserver][client-server][account-data][key-backup]")
+{
+    GIVEN("a logged-in client-server user")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+
+        auto constexpr account_data_url = "/_matrix/client/v3/user/%40alice%3Aexample.org/account_data/m.key_backup";
+        auto constexpr body = R"({"enabled":true})";
+
+        WHEN("PUT /account_data/m.key_backup is called")
+        {
+            auto const put =
+                merovingian::homeserver::handle_client_server_request(runtime, {"PUT", account_data_url, token, body});
+
+            THEN("the response is 200 and GET returns the stored backup preference")
+            {
+                REQUIRE(put.response.status == 200U);
+
+                auto const get = merovingian::homeserver::handle_client_server_request(
+                    runtime, {"GET", account_data_url, token, {}});
+                REQUIRE(get.response.status == 200U);
+                REQUIRE(get.response.body.find("\"enabled\":true") != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("Account data endpoint stores and retrieves m.image_pack.rooms account data",
+         "[homeserver][client-server][account-data][msc2545]")
+{
+    GIVEN("a logged-in client-server user")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+
+        auto constexpr account_data_url =
+            "/_matrix/client/v3/user/%40alice%3Aexample.org/account_data/m.image_pack.rooms";
+        auto constexpr body = R"({"rooms":{"!room:example.org":{"cats":{}}}})";
+
+        WHEN("PUT /account_data/m.image_pack.rooms is called")
+        {
+            auto const put =
+                merovingian::homeserver::handle_client_server_request(runtime, {"PUT", account_data_url, token, body});
+
+            THEN("the response is 200 and GET returns the stored rooms mapping")
+            {
+                REQUIRE(put.response.status == 200U);
+
+                auto const get = merovingian::homeserver::handle_client_server_request(
+                    runtime, {"GET", account_data_url, token, {}});
+                REQUIRE(get.response.status == 200U);
+                REQUIRE(get.response.body.find("!room:example.org") != std::string::npos);
+            }
+        }
+    }
+}
+
 SCENARIO("Account data endpoint percent-decodes the type path segment for secret storage keys",
          "[homeserver][client-server][account-data][secret-storage]")
 {
@@ -5569,6 +5874,58 @@ SCENARIO("createRoom does not duplicate preset events when client provides them 
                 REQUIRE(*string_member(rules, "join_rule") == "public");
                 REQUIRE(string_member(history, "history_visibility") != nullptr);
                 REQUIRE(*string_member(history, "history_visibility") == "world_readable");
+            }
+        }
+    }
+}
+
+SCENARIO("PUT /rooms/{roomId}/state/m.room.image_pack/{packName} stores an image pack",
+         "[homeserver][client-server][state][msc2545]")
+{
+    GIVEN("a logged-in user with a room")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+        auto const create_response = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", token, "{}"});
+        REQUIRE(create_response.response.status == 200U);
+        auto const created_room_id = room_id(create_response.response.body);
+
+        WHEN("the client sends an m.room.image_pack state event")
+        {
+            auto constexpr body = "{\"images\":{\"cat_nap\":{\"body\":\"a sleeping "
+                                  "cat\",\"url\":\"mxc://example.org/def456\"}},\"pack\":{\"display_name\":\"Cat "
+                                  "emojis\",\"avatar_url\":\"mxc://example.com/cats\",\"usage\":[\"emoticon\"]}}";
+            auto const put = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"PUT", "/_matrix/client/v3/rooms/" + created_room_id + "/state/m.room.image_pack/cats", token, body});
+
+            THEN("the server returns 200 and persists the state event")
+            {
+                REQUIRE(put.response.status == 200U);
+                auto const& store = runtime.homeserver.database.persistent_store;
+                auto const count = std::ranges::count_if(
+                    store.state, [created_room_id](merovingian::database::PersistentStateEvent const& row) {
+                        return row.room_id == created_room_id && row.event_type == "m.room.image_pack" &&
+                               row.state_key == "cats";
+                    });
+                REQUIRE(count == 1);
             }
         }
     }

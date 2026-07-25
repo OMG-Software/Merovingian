@@ -14,6 +14,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace merovingian::database
@@ -138,6 +139,17 @@ struct PersistentStateEvent final
     std::string event_type{};
     std::string state_key{};
     std::string event_id{};
+};
+
+// Tracks the state event that was replaced when a new state event was stored.
+// Used to populate unsigned.replaces_state in the client event format.
+struct PersistentStateTransition final
+{
+    std::string room_id{};
+    std::string event_type{};
+    std::string state_key{};
+    std::string event_id{};
+    std::string previous_event_id{};
 };
 
 struct PersistentEventEdge final
@@ -484,6 +496,11 @@ struct PersistentStore final
     std::vector<PersistentInvite> invites{};
     std::vector<PersistentEvent> events{};
     std::vector<PersistentStateEvent> state{};
+    std::vector<PersistentStateTransition> state_transitions{};
+    // In-memory index over state_transitions keyed by (room_id, event_type, state_key, event_id)
+    // and mapping to the vector offset. Rebuilt after hydration and updated on every insert so
+    // client event serialization can look up unsigned.replaces_state in O(1).
+    std::unordered_map<std::string, std::size_t> state_transition_index{};
     std::vector<PersistentEventEdge> event_edges{};
     std::vector<PersistentEventAuth> event_auth{};
     std::vector<PersistentEventSignature> event_signatures{};
@@ -649,6 +666,17 @@ auto reconstruct_event_relations(PersistentStore& store) -> void;
 [[nodiscard]] auto store_event_with_state(PersistentStore& store, PersistentEvent event,
                                           std::optional<PersistentStateEvent> state) -> bool;
 
+// Rebuilds the in-memory state_transitions index from scratch. Called after
+// SQLite/PostgreSQL hydration and after any direct backfill of the vector.
+auto rebuild_state_transition_index(PersistentStore& store) -> void;
+
+// Looks up a state transition by its primary tuple. Requires the index to be
+// current; callers that modify the vector directly must call
+// rebuild_state_transition_index() first.
+[[nodiscard]] auto find_state_transition(PersistentStore const& store, std::string_view room_id,
+                                         std::string_view event_type, std::string_view state_key,
+                                         std::string_view event_id) -> PersistentStateTransition const*;
+
 // Split version of store_event_with_state for callers that need to release locks
 // around the backend commit. `prepare` validates in-memory pre-conditions and
 // builds the prepared statements. `commit` writes them to the backend. `apply`
@@ -661,6 +689,7 @@ struct PreparedStateUpdate final
     std::optional<PersistentStateEvent> state{};
     std::vector<PreparedStatement> statements{};
     bool state_already_existed{false};
+    std::string previous_event_id{};
 };
 
 [[nodiscard]] auto prepare_store_event_with_state(PersistentStore& store, PersistentEvent event,

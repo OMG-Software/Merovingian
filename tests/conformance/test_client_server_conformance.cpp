@@ -7040,6 +7040,71 @@ SCENARIO("POST /publicRooms returns 200 with chunk and total_room_count_estimate
     }
 }
 
+// --- GET /_matrix/client/v3/publicRooms server-defined order -----------------
+// Spec: Matrix Client-Server API v1.19
+// Endpoint / Section: GET /_matrix/client/v3/publicRooms
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3publicrooms
+//
+// [Changed in v1.19] The server determines the order of rooms returned by this
+// endpoint. A stable order (e.g. insertion order) is recommended, but the spec
+// no longer requires largest joined-member count first.
+SCENARIO("GET /publicRooms returns rooms in a server-defined order", "[conformance][client-server][room-discovery]")
+{
+    GIVEN("a running client-server with two public rooms created in a known order")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+        auto const first_room_id = create_public_room(started.runtime, token);
+        auto const second_room_id = create_public_room(started.runtime, token);
+
+        WHEN("GET /publicRooms is called")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v3/publicRooms", {}, {}});
+
+            THEN("the server returns 200 with both rooms in its chosen order")
+            {
+                // Spec MUST: 200 with chunk (array) and total_room_count_estimate (integer).
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+                auto const* chunk = object_member_as_array(body, "chunk");
+                // Spec MUST: chunk is an array of public room entries.
+                REQUIRE(chunk != nullptr);
+                auto const* estimate = int_member(body, "total_room_count_estimate");
+                // Spec MUST: total_room_count_estimate is an integer.
+                REQUIRE(estimate != nullptr);
+                // Spec MUST: the estimate covers at least the two created rooms.
+                REQUIRE(*estimate >= 2);
+
+                // Both rooms are present; the exact order is server-defined.
+                auto found_first = false;
+                auto found_second = false;
+                for (auto const& entry : *chunk)
+                {
+                    auto const* room_object = std::get_if<merovingian::canonicaljson::Object>(&entry.storage());
+                    // Spec MUST: every chunk entry is a JSON object.
+                    REQUIRE(room_object != nullptr);
+                    auto const* room_id = string_member(*room_object, "room_id");
+                    // Spec MUST: every entry has a room_id field.
+                    REQUIRE(room_id != nullptr);
+                    if (*room_id == first_room_id)
+                    {
+                        found_first = true;
+                    }
+                    if (*room_id == second_room_id)
+                    {
+                        found_second = true;
+                    }
+                }
+                // Spec MUST: both created rooms appear somewhere in the response.
+                REQUIRE(found_first);
+                REQUIRE(found_second);
+            }
+        }
+    }
+}
+
 // --- GET/POST /_matrix/client/v3/publicRooms?server= (remote proxy) ----------
 // Spec: Matrix Client-Server API v1.19
 // URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3publicrooms
@@ -7241,6 +7306,111 @@ SCENARIO("GET /joined_rooms returns a joined_rooms array", "[conformance][client
                 auto const body = parse_object(response.response.body);
                 auto const* rooms = object_member_as_array(body, "joined_rooms");
                 REQUIRE(rooms != nullptr);
+            }
+        }
+    }
+}
+
+// --- GET /_matrix/client/v1/mutual_rooms ---------------------------------------
+// Spec: Matrix Client-Server API v1.19
+// Endpoint / Section: GET /_matrix/client/v1/mutual_rooms
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv1mutual_rooms
+//
+// The server MUST return the list of rooms where both the caller and the
+// target user have membership join. The endpoint MUST reject missing,
+// non-compliant, or self-referential user_id values with 400 M_INVALID_PARAM.
+SCENARIO("GET /mutual_rooms returns rooms shared with another user",
+         "[conformance][client-server][room-membership][msc2666]")
+{
+    GIVEN("a running client-server with two users sharing a public room")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        // Spec MUST: the endpoint requires authentication.
+        REQUIRE(started.started);
+        auto const alice = logged_in_token(started.runtime);
+        auto const room_id = create_public_room(started.runtime, alice);
+        auto const bob = register_and_login(started.runtime, "bob");
+        auto const join = merovingian::homeserver::handle_client_server_request(
+            started.runtime, {"POST", "/_matrix/client/v3/join/" + room_id, bob, "{}"});
+        // Spec MUST: join returns 200 on success so bob is actually joined.
+        REQUIRE(join.response.status == 200U);
+
+        WHEN("alice GETs /mutual_rooms with bob's user_id")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v1/mutual_rooms?user_id=@bob:example.org", alice, {}});
+
+            THEN("the server returns 200 with the shared room in joined and count 1")
+            {
+                // Spec MUST: 200 with joined array and count for a valid, shared user.
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+                auto const* joined = object_member_as_array(body, "joined");
+                // Spec MUST: joined is an array of room IDs.
+                REQUIRE(joined != nullptr);
+                // Spec MUST: exactly one room is shared between alice and bob.
+                REQUIRE(joined->size() == 1);
+                auto const* count = int_member(body, "count");
+                // Spec MUST: count is an integer.
+                REQUIRE(count != nullptr);
+                // Spec MUST: count equals the number of joined mutual rooms.
+                REQUIRE(*count == 1);
+                auto const first = std::get_if<std::string>(&(*joined)[0].storage());
+                // Spec MUST: the lone entry is a room ID.
+                REQUIRE(first != nullptr);
+                // Spec MUST: the shared room is the one both users joined.
+                REQUIRE(*first == room_id);
+            }
+        }
+
+        WHEN("alice GETs /mutual_rooms with her own user_id")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v1/mutual_rooms?user_id=@alice:example.org", alice, {}});
+
+            THEN("the server returns 400 M_INVALID_PARAM")
+            {
+                // Spec MUST: the requesting user's own ID is rejected with 400.
+                REQUIRE(response.response.status == 400U);
+                auto const body = parse_object(response.response.body);
+                auto const* errcode = string_member(body, "errcode");
+                REQUIRE(errcode != nullptr);
+                // Spec MUST: the error code is M_INVALID_PARAM.
+                REQUIRE(*errcode == "M_INVALID_PARAM");
+            }
+        }
+
+        WHEN("alice GETs /mutual_rooms without a user_id")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v1/mutual_rooms", alice, {}});
+
+            THEN("the server returns 400 M_INVALID_PARAM")
+            {
+                // Spec MUST: a missing user_id is rejected with 400.
+                REQUIRE(response.response.status == 400U);
+                auto const body = parse_object(response.response.body);
+                auto const* errcode = string_member(body, "errcode");
+                REQUIRE(errcode != nullptr);
+                // Spec MUST: the error code is M_INVALID_PARAM.
+                REQUIRE(*errcode == "M_INVALID_PARAM");
+            }
+        }
+
+        WHEN("alice GETs /mutual_rooms with a non-compliant user_id")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v1/mutual_rooms?user_id=not-an-mxid", alice, {}});
+
+            THEN("the server returns 400 M_INVALID_PARAM")
+            {
+                // Spec MUST: a non-compliant user_id is rejected with 400.
+                REQUIRE(response.response.status == 400U);
+                auto const body = parse_object(response.response.body);
+                auto const* errcode = string_member(body, "errcode");
+                REQUIRE(errcode != nullptr);
+                // Spec MUST: the error code is M_INVALID_PARAM.
+                REQUIRE(*errcode == "M_INVALID_PARAM");
             }
         }
     }
@@ -8141,6 +8311,64 @@ SCENARIO("GET /rooms/{roomId}/state/{eventType} (no state key) returns the state
                 auto const* room_version = string_member(body, "room_version");
                 REQUIRE(room_version != nullptr);
                 REQUIRE(!room_version->empty());
+            }
+        }
+    }
+}
+
+// --- m.room.image_pack state event (MSC2545) ---------------------------------
+// Spec: Matrix Client-Server API v1.19
+// Endpoint / Section: PUT /_matrix/client/v3/rooms/{roomId}/state/{eventType}/{stateKey}
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3roomsroomidstateeventtypestatekey
+//
+// MSC2545 introduces custom emoji / image packs via the `m.room.image_pack` state
+// event. Servers must accept and store it like any other state event. The content
+// MUST contain an `images` map and a `pack` object.
+SCENARIO("PUT /rooms/{roomId}/state/m.room.image_pack/{packName} stores an image pack",
+         "[conformance][client-server][room-participation][msc2545]")
+{
+    GIVEN("a running client-server and a logged-in user with a room")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+        auto const room_id = create_room(started.runtime, token);
+
+        WHEN("PUT /rooms/{roomId}/state/m.room.image_pack/cats is called")
+        {
+            auto constexpr body = "{\"images\":{\"cat_nap\":{\"body\":\"a sleeping "
+                                  "cat\",\"url\":\"mxc://example.org/def456\"}},\"pack\":{\"display_name\":\"Cat "
+                                  "emojis\",\"avatar_url\":\"mxc://example.com/cats\",\"usage\":[\"emoticon\"]}}";
+            auto const put = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"PUT", "/_matrix/client/v3/rooms/" + room_id + "/state/m.room.image_pack/cats", token, body});
+
+            THEN("the server returns 200 with an event_id and the pack can be retrieved")
+            {
+                // Spec MUST: PUT state returns 200 with an event_id.
+                REQUIRE(put.response.status == 200U);
+                auto const put_body = parse_object(put.response.body);
+                auto const* event_id = string_member(put_body, "event_id");
+                // Spec MUST: the response contains a non-empty event_id.
+                REQUIRE(event_id != nullptr);
+                REQUIRE(!event_id->empty());
+
+                auto const get = merovingian::homeserver::handle_client_server_request(
+                    started.runtime,
+                    {"GET", "/_matrix/client/v3/rooms/" + room_id + "/state/m.room.image_pack/cats", token, {}});
+                // Spec MUST: GET returns the stored state event content.
+                REQUIRE(get.response.status == 200U);
+                auto const get_body = parse_object(get.response.body);
+                auto const* images = object_member_as_object(get_body, "images");
+                // Spec MUST: the content contains the required images map.
+                REQUIRE(images != nullptr);
+                auto const* pack = object_member_as_object(get_body, "pack");
+                // Spec MUST: the content contains the pack object.
+                REQUIRE(pack != nullptr);
+                auto const* display_name = string_member(*pack, "display_name");
+                // Spec MUST: the pack display_name is preserved.
+                REQUIRE(display_name != nullptr);
+                REQUIRE(*display_name == "Cat emojis");
             }
         }
     }
@@ -9342,6 +9570,107 @@ SCENARIO("PUT and GET /user/{userId}/account_data/{type} percent-decode the type
                 REQUIRE(name != nullptr);
                 REQUIRE(*algorithm == "m.secret_storage.v1.aes-hmac-sha2");
                 REQUIRE(*name == "Recovery key");
+            }
+        }
+    }
+}
+
+// --- m.key_backup account data (MSC4287) --------------------------------------
+// Spec: Matrix Client-Server API v1.19
+// Endpoint / Section: PUT /_matrix/client/v3/user/{userId}/account_data/{type}
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3useruseridaccount_datatype
+//
+// MSC4287 introduced `m.key_backup` as a global account-data type. The content
+// MUST contain an `enabled` boolean.
+SCENARIO("PUT and GET /user/{userId}/account_data/m.key_backup round-trips",
+         "[conformance][client-server][account-data]")
+{
+    GIVEN("a running client-server and a logged-in user")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+        auto constexpr body = R"({"enabled":true})";
+
+        WHEN("PUT /user/@alice:example.org/account_data/m.key_backup is called")
+        {
+            auto const put = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"PUT", "/_matrix/client/v3/user/%40alice%3Aexample.org/account_data/m.key_backup", token, body});
+
+            THEN("the server returns 200 and the data can be retrieved unchanged")
+            {
+                // Spec MUST: PUT account data returns 200 on success.
+                REQUIRE(put.response.status == 200U);
+                auto const put_body = parse_object(put.response.body);
+                // Spec MUST: the response body is an empty JSON object.
+                REQUIRE(put_body.empty());
+
+                auto const get = merovingian::homeserver::handle_client_server_request(
+                    started.runtime,
+                    {"GET", "/_matrix/client/v3/user/%40alice%3Aexample.org/account_data/m.key_backup", token, {}});
+                // Spec MUST: GET returns 200 with the stored content.
+                REQUIRE(get.response.status == 200U);
+                auto const get_body = parse_object(get.response.body);
+                auto const* enabled = bool_member(get_body, "enabled");
+                // Spec MUST: the content contains the required enabled boolean.
+                REQUIRE(enabled != nullptr);
+                // Spec MUST: the stored value is returned unchanged.
+                REQUIRE(*enabled == true);
+            }
+        }
+    }
+}
+
+// --- m.image_pack.rooms account data (MSC2545) -------------------------------
+// Spec: Matrix Client-Server API v1.19
+// Endpoint / Section: PUT /_matrix/client/v3/user/{userId}/account_data/{type}
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3useruseridaccount_datatype
+//
+// MSC2545 also introduces `m.image_pack.rooms` global account data to record
+// which rooms contain which image packs. The content MUST contain a `rooms` map
+// from room ID to a map of state_key to empty object.
+SCENARIO("PUT and GET /user/{userId}/account_data/m.image_pack.rooms round-trips",
+         "[conformance][client-server][account-data][msc2545]")
+{
+    GIVEN("a running client-server and a logged-in user")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+        auto constexpr body = R"({"rooms":{"!room:example.org":{"cats":{}}}})";
+
+        WHEN("PUT /user/@alice:example.org/account_data/m.image_pack.rooms is called")
+        {
+            auto const put = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"PUT", "/_matrix/client/v3/user/%40alice%3Aexample.org/account_data/m.image_pack.rooms", token, body});
+
+            THEN("the server returns 200 and the data can be retrieved unchanged")
+            {
+                // Spec MUST: PUT account data returns 200 on success.
+                REQUIRE(put.response.status == 200U);
+                auto const put_body = parse_object(put.response.body);
+                // Spec MUST: the response body is an empty JSON object.
+                REQUIRE(put_body.empty());
+
+                auto const get = merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"GET",
+                                      "/_matrix/client/v3/user/%40alice%3Aexample.org/account_data/m.image_pack.rooms",
+                                      token,
+                                      {}});
+                // Spec MUST: GET returns 200 with the stored content.
+                REQUIRE(get.response.status == 200U);
+                auto const get_body = parse_object(get.response.body);
+                auto const* rooms = object_member_as_object(get_body, "rooms");
+                // Spec MUST: the content contains the required rooms map.
+                REQUIRE(rooms != nullptr);
+                auto const* room_entry = object_member_as_object(*rooms, "!room:example.org");
+                // Spec MUST: each room ID maps to a map of state_key to empty object.
+                REQUIRE(room_entry != nullptr);
+                auto const* pack_ref = object_member_as_object(*room_entry, "cats");
+                // Spec MUST: the referenced state_key exists and is an empty object.
+                REQUIRE(pack_ref != nullptr);
             }
         }
     }

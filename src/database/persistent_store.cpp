@@ -13,6 +13,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cstdlib>
+#include <deque>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -152,6 +153,92 @@ namespace
         return std::ranges::any_of(store.events, [event_id](PersistentEvent const& existing) {
             return existing.event_id == event_id;
         });
+    }
+
+    // Composite key for the in-memory state_transitions index. NUL bytes are safe
+    // separators because Matrix event type/state key/room/event identifiers never
+    // contain embedded NUL.
+    [[nodiscard]] auto state_transition_index_key(std::string_view room_id, std::string_view event_type,
+                                                  std::string_view state_key, std::string_view event_id) -> std::string
+    {
+        auto key = std::string{};
+        key.reserve(room_id.size() + event_type.size() + state_key.size() + event_id.size() + 4U);
+        key.append(room_id);
+        key.push_back('\0');
+        key.append(event_type);
+        key.push_back('\0');
+        key.append(state_key);
+        key.push_back('\0');
+        key.append(event_id);
+        return key;
+    }
+
+    // Walk backwards through the event graph from a state event's prev_events
+    // looking for the first applied state event that matches the same
+    // (room_id, event_type, state_key) tuple. The immediate predecessor is also
+    // checked directly against auth_events first because Matrix requires a state
+    // event's auth_events to contain the previous state event for the same tuple.
+    // This produces the predecessor needed for unsigned.replaces_state on
+    // federated state events, which may not be the same as the local arrival-time
+    // current_state for that tuple when forks exist.
+    [[nodiscard]] auto find_predecessor_state_event_id(PersistentStore const& store, std::string_view room_id,
+                                                       std::string_view event_type, std::string_view state_key,
+                                                       std::vector<std::string> const& prev_event_ids,
+                                                       std::vector<std::string> const& auth_event_ids,
+                                                       std::size_t max_depth = 50U) -> std::string
+    {
+        for (auto const& id : auth_event_ids)
+        {
+            if (find_state_transition(store, room_id, event_type, state_key, id) != nullptr)
+            {
+                return std::string{id};
+            }
+        }
+
+        auto event_index = std::unordered_map<std::string_view, PersistentEvent const*>{};
+        event_index.reserve(store.events.size() * 2U);
+        for (auto const& event : store.events)
+        {
+            event_index[event.event_id] = &event;
+        }
+
+        auto visited = std::unordered_set<std::string>{};
+        auto queue = std::deque<std::string>{};
+        for (auto const& id : prev_event_ids)
+        {
+            if (visited.insert(id).second)
+            {
+                queue.push_back(id);
+            }
+        }
+
+        for (auto depth = std::size_t{0U}; depth < max_depth && !queue.empty(); ++depth)
+        {
+            auto const level_size = queue.size();
+            for (auto index = std::size_t{0U}; index < level_size; ++index)
+            {
+                auto id = std::move(queue.front());
+                queue.pop_front();
+                if (find_state_transition(store, room_id, event_type, state_key, id) != nullptr)
+                {
+                    return std::string{id};
+                }
+                auto const iterator = event_index.find(id);
+                if (iterator == event_index.end())
+                {
+                    continue;
+                }
+                auto const* event = iterator->second;
+                for (auto const& parent : event->prev_event_ids)
+                {
+                    if (visited.insert(parent).second)
+                    {
+                        queue.push_back(parent);
+                    }
+                }
+            }
+        }
+        return {};
     }
 
     [[nodiscard]] auto device_exists(PersistentStore const& store, PersistentDevice const& device) -> bool
@@ -1365,6 +1452,32 @@ auto reconstruct_event_relations(PersistentStore& store) -> void
     return true;
 }
 
+auto rebuild_state_transition_index(PersistentStore& store) -> void
+{
+    store.state_transition_index.clear();
+    store.state_transition_index.reserve(store.state_transitions.size() * 2U);
+    for (auto index = std::size_t{0U}; index < store.state_transitions.size(); ++index)
+    {
+        auto const& transition = store.state_transitions[index];
+        store.state_transition_index.emplace(state_transition_index_key(transition.room_id, transition.event_type,
+                                                                        transition.state_key, transition.event_id),
+                                             index);
+    }
+}
+
+[[nodiscard]] auto find_state_transition(PersistentStore const& store, std::string_view room_id,
+                                         std::string_view event_type, std::string_view state_key,
+                                         std::string_view event_id) -> PersistentStateTransition const*
+{
+    auto const iterator =
+        store.state_transition_index.find(state_transition_index_key(room_id, event_type, state_key, event_id));
+    if (iterator == store.state_transition_index.end())
+    {
+        return nullptr;
+    }
+    return &store.state_transitions[iterator->second];
+}
+
 [[nodiscard]] auto store_event(PersistentStore& store, PersistentEvent event) -> bool
 {
     if (event_exists(store, event.event_id))
@@ -1401,36 +1514,66 @@ auto reconstruct_event_relations(PersistentStore& store) -> void
         return current.room_id == state.room_id && current.event_type == state.event_type &&
                current.state_key == state.state_key;
     });
-    if (existing != store.state.end())
+    // State resolution and repair paths can re-apply a state event that is
+    // already current. Treat that as an idempotent no-op rather than inserting
+    // a duplicate state_transitions row (the primary key is
+    // (room_id, event_type, state_key, event_id)).
+    if (existing != store.state.end() && existing->event_id == state.event_id)
     {
-        if (!record_and_persist(
-                store,
-                record_statement(
-                    "upsert_state",
-                    "UPDATE current_state SET event_id = $4 WHERE room_id = $1 AND event_type = $2 AND state_key = $3",
-                    {
-                        {state.room_id,    false},
-                        {state.event_type, false},
-                        {state.state_key,  false},
-                        {state.event_id,   false}
-        })))
-        {
-            return false;
-        }
-        existing->event_id = state.event_id;
         return true;
     }
-    if (!record_and_persist(store, record_statement("insert_state", "INSERT INTO current_state VALUES ($1, $2, $3, $4)",
-                                                    {
-                                                        {state.room_id,    false},
-                                                        {state.event_type, false},
-                                                        {state.state_key,  false},
-                                                        {state.event_id,   false}
-    })))
+    auto const previous_event_id = existing != store.state.end() ? existing->event_id : std::string{};
+    auto statements = std::vector<PreparedStatement>{};
+    if (!previous_event_id.empty())
+    {
+        statements.push_back(record_statement(
+            "upsert_state",
+            "UPDATE current_state SET event_id = $4 WHERE room_id = $1 AND event_type = $2 AND state_key = $3",
+            {
+                {state.room_id,    false},
+                {state.event_type, false},
+                {state.state_key,  false},
+                {state.event_id,   false}
+        }));
+    }
+    else
+    {
+        statements.push_back(record_statement(
+            "insert_state", "INSERT INTO current_state VALUES ($1, $2, $3, $4)",
+            {
+                {state.room_id,    false},
+                {state.event_type, false},
+                {state.state_key,  false},
+                {state.event_id,   false}
+        }));
+    }
+    statements.push_back(record_statement("insert_state_transition",
+                                          "INSERT INTO state_transitions (room_id, event_type, state_key, event_id, "
+                                          "previous_event_id) VALUES ($1, $2, $3, $4, $5)",
+                                          {
+                                              {state.room_id,     false},
+                                              {state.event_type,  false},
+                                              {state.state_key,   false},
+                                              {state.event_id,    false},
+                                              {previous_event_id, false}
+    }));
+    if (!commit_persistent_transaction(store, statements))
     {
         return false;
     }
-    store.state.push_back(std::move(state));
+    if (existing != store.state.end())
+    {
+        existing->event_id = state.event_id;
+    }
+    else
+    {
+        store.state.push_back(state);
+    }
+    store.state_transitions.push_back(
+        {state.room_id, state.event_type, state.state_key, state.event_id, previous_event_id});
+    store.state_transition_index.emplace(
+        state_transition_index_key(state.room_id, state.event_type, state.state_key, state.event_id),
+        store.state_transitions.size() - 1U);
     return true;
 }
 
@@ -1471,6 +1614,13 @@ auto reconstruct_event_relations(PersistentStore& store) -> void
                    current.state_key == update.state->state_key;
         });
         update.state_already_existed = existing != store.state.end();
+        // Derive the predecessor from the event's own graph rather than assuming the
+        // local arrival-time current_state was the previous event. On forks the two
+        // can diverge, and Matrix v1.19's unsigned.replaces_state must describe the
+        // event's actual predecessor.
+        auto const previous_event_id = find_predecessor_state_event_id(
+            store, update.state->room_id, update.state->event_type, update.state->state_key,
+            update.event.prev_event_ids, update.event.auth_event_ids);
         if (update.state_already_existed)
         {
             update.statements.push_back(record_statement(
@@ -1494,6 +1644,17 @@ auto reconstruct_event_relations(PersistentStore& store) -> void
                                                              {update.state->event_id,   false}
             }));
         }
+        update.statements.push_back(record_statement("insert_state_transition",
+                                                     "INSERT INTO state_transitions (room_id, event_type, state_key, "
+                                                     "event_id, previous_event_id) VALUES ($1, $2, $3, $4, $5)",
+                                                     {
+                                                         {update.state->room_id,    false},
+                                                         {update.state->event_type, false},
+                                                         {update.state->state_key,  false},
+                                                         {update.state->event_id,   false},
+                                                         {previous_event_id,        false}
+        }));
+        update.previous_event_id = previous_event_id;
     }
 
     return update;
@@ -1534,6 +1695,12 @@ auto apply_store_event_with_state(PersistentStore& store, PreparedStateUpdate co
         {
             store.state.push_back(*update.state);
         }
+        store.state_transitions.push_back({update.state->room_id, update.state->event_type, update.state->state_key,
+                                           update.state->event_id, update.previous_event_id});
+        store.state_transition_index.emplace(state_transition_index_key(update.state->room_id, update.state->event_type,
+                                                                        update.state->state_key,
+                                                                        update.state->event_id),
+                                             store.state_transitions.size() - 1U);
     }
 }
 

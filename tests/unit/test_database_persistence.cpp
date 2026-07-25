@@ -927,27 +927,35 @@ SCENARIO("Database migration runner applies the current schema and the matching 
                 REQUIRE(upgrade_plan.direction == merovingian::database::MigrationDirection::upgrade);
                 REQUIRE(upgrade_plan.current_version == 0U);
                 REQUIRE(upgrade_plan.target_version == merovingian::database::current_schema_version());
-                REQUIRE(upgrade_plan.steps.size() == 3U);
+                REQUIRE(upgrade_plan.steps.size() == 5U);
                 REQUIRE(upgrade_plan.steps[0].version == 1U);
                 REQUIRE(upgrade_plan.steps[0].name == "initial_schema");
                 REQUIRE(upgrade_plan.steps[1].version == 2U);
                 REQUIRE(upgrade_plan.steps[1].name == "sync_stream_watermark");
                 REQUIRE(upgrade_plan.steps[2].version == 3U);
                 REQUIRE(upgrade_plan.steps[2].name == "event_stream_watermark");
+                REQUIRE(upgrade_plan.steps[3].version == 4U);
+                REQUIRE(upgrade_plan.steps[3].name == "state_transitions");
+                REQUIRE(upgrade_plan.steps[4].version == 5U);
+                REQUIRE(upgrade_plan.steps[4].name == "backfill_state_transitions");
                 REQUIRE(upgraded.ok);
                 REQUIRE(upgraded.state.version == merovingian::database::current_schema_version());
-                REQUIRE(upgraded.state.applied_migrations.size() == 3U);
+                REQUIRE(upgraded.state.applied_migrations.size() == 5U);
                 REQUIRE(upgraded.state.applied_migrations[0].name == "initial_schema");
                 REQUIRE(upgraded.state.applied_migrations[1].name == "sync_stream_watermark");
                 REQUIRE(upgraded.state.applied_migrations[2].name == "event_stream_watermark");
+                REQUIRE(upgraded.state.applied_migrations[3].name == "state_transitions");
+                REQUIRE(upgraded.state.applied_migrations[4].name == "backfill_state_transitions");
                 REQUIRE(upgraded.state.tables.size() == merovingian::database::current_schema_tables().size());
                 REQUIRE(compatible.valid);
                 REQUIRE(second_plan.steps.empty());
                 REQUIRE(downgrade_plan.direction == merovingian::database::MigrationDirection::downgrade);
-                REQUIRE(downgrade_plan.steps.size() == 3U);
-                REQUIRE(downgrade_plan.steps[0].name == "drop_event_stream_watermark");
-                REQUIRE(downgrade_plan.steps[1].name == "drop_sync_stream_watermark");
-                REQUIRE(downgrade_plan.steps[2].name == "drop_initial_schema");
+                REQUIRE(downgrade_plan.steps.size() == 5U);
+                REQUIRE(downgrade_plan.steps[0].name == "drop_backfill_state_transitions");
+                REQUIRE(downgrade_plan.steps[1].name == "drop_state_transitions");
+                REQUIRE(downgrade_plan.steps[2].name == "drop_event_stream_watermark");
+                REQUIRE(downgrade_plan.steps[3].name == "drop_sync_stream_watermark");
+                REQUIRE(downgrade_plan.steps[4].name == "drop_initial_schema");
                 REQUIRE(downgraded.ok);
                 REQUIRE(downgraded.state.version == 0U);
                 REQUIRE(downgraded.state.tables.empty());
@@ -1129,7 +1137,10 @@ SCENARIO("Persistent store offers atomic helpers for multi-row runtime mutations
                 REQUIRE(store.memberships.size() == 1U);
                 REQUIRE(store.events.size() == 1U);
                 REQUIRE(store.state.size() == 1U);
-                REQUIRE(store.prepared_statements.size() == 4U);
+                REQUIRE(store.state_transitions.size() == 1U);
+                // Storing a state event now records both the current_state row
+                // and the state_transitions replacement row.
+                REQUIRE(store.prepared_statements.size() == 5U);
             }
         }
     }
@@ -1626,10 +1637,10 @@ SCENARIO("Checked-in migrations cover the v1 bootstrap and the v2/v3 stream wate
             REQUIRE_FALSE(directory.empty());
             auto const loaded = merovingian::database::load_migration_files(directory.string());
 
-            THEN("the v1 bootstrap creates the initial schema and numbered migrations add the watermark tables")
+            THEN("the v1 bootstrap creates the initial schema and numbered migrations add post-v1 tables")
             {
                 REQUIRE(loaded.ok);
-                REQUIRE(loaded.steps.size() == 3U);
+                REQUIRE(loaded.steps.size() == 5U);
                 REQUIRE(loaded.steps[0].version == 1U);
                 REQUIRE(loaded.steps[0].name == "initial_schema");
                 REQUIRE(loaded.steps[0].statements.size() == merovingian::database::initial_schema_tables().size());
@@ -1639,6 +1650,12 @@ SCENARIO("Checked-in migrations cover the v1 bootstrap and the v2/v3 stream wate
                 REQUIRE(loaded.steps[2].version == 3U);
                 REQUIRE(loaded.steps[2].name == "event_stream_watermark");
                 REQUIRE(loaded.steps[2].statements.size() == 1U);
+                REQUIRE(loaded.steps[3].version == 4U);
+                REQUIRE(loaded.steps[3].name == "state_transitions");
+                REQUIRE(loaded.steps[3].statements.size() == 1U);
+                REQUIRE(loaded.steps[4].version == 5U);
+                REQUIRE(loaded.steps[4].name == "backfill_state_transitions");
+                REQUIRE(loaded.steps[4].statements.size() == 1U);
 
                 for (auto const& statement : loaded.steps[0].statements)
                 {
@@ -1703,12 +1720,14 @@ SCENARIO("Database schema inventory covers the core Matrix tables", "[database][
                 // plus the durable room-alias registry plus client_txn_ids
                 // (room_account_data, to_device_messages, device_list_changes,
                 // presence_state) folded into the v1 initial schema.
-                // sync_stream_watermark arrives in migration v2 and
-                // event_stream_watermark in migration v3; both are counted in
-                // the current schema inventory instead.
+                // sync_stream_watermark arrives in migration v2,
+                // event_stream_watermark in migration v3, state_transitions
+                // in migration v4, and the state_transitions backfill in
+                // migration v5; the first four are counted in the current schema
+                // inventory, while v5 is data-only and adds no tables.
                 REQUIRE(tables.size() == 45U);
-                REQUIRE(merovingian::database::current_schema_version() == 3U);
-                REQUIRE(merovingian::database::current_schema_tables().size() == 47U);
+                REQUIRE(merovingian::database::current_schema_version() == 5U);
+                REQUIRE(merovingian::database::current_schema_tables().size() == 48U);
                 REQUIRE(users_definition.has_value());
                 REQUIRE(current_state_definition.has_value());
                 REQUIRE(room_aliases_definition.has_value());

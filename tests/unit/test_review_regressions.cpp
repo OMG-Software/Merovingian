@@ -854,7 +854,9 @@ SCENARIO("Persistent store commits room and state-event rows atomically",
                 REQUIRE(store.memberships.size() == 1U);
                 REQUIRE(store.events.size() == 1U);
                 REQUIRE(store.state.size() == 1U);
-                REQUIRE(store.prepared_statements.size() == 4U);
+                REQUIRE(store.state_transitions.size() == 1U);
+                // State-event storage now records both current_state and state_transitions.
+                REQUIRE(store.prepared_statements.size() == 5U);
             }
         }
     }
@@ -959,7 +961,75 @@ SCENARIO("Persistent store matches state event JSON with whitespace and upserts 
                 REQUIRE(second_state);
                 REQUIRE(store.state.size() == 1U);
                 REQUIRE(store.state.front().event_id == "$event2:example.org");
-                REQUIRE(store.prepared_statements.back().name == "upsert_state");
+                REQUIRE(store.state_transitions.size() == 2U);
+                // The final statement records the second state transition; the
+                // current_state row is updated via the preceding upsert_state.
+                REQUIRE(store.prepared_statements.back().name == "insert_state_transition");
+            }
+        }
+    }
+}
+
+SCENARIO("prepare_store_event_with_state derives previous_event_id from the event graph",
+         "[database][persistence][state-transitions]")
+{
+    GIVEN("a room with a chain of m.room.topic state events")
+    {
+        auto opened = merovingian::database::open_persistent_store();
+        REQUIRE(opened.ok);
+        auto& store = opened.store;
+
+        auto const room_stored = merovingian::database::store_room_with_membership(
+            store, {"!room:example.org", "@alice:example.org"}, {"!room:example.org", "@alice:example.org"});
+        REQUIRE(room_stored);
+
+        auto create_event = merovingian::database::PersistentEvent{"$create:example.org",
+                                                                   "!room:example.org",
+                                                                   "@alice:example.org",
+                                                                   R"({"type":"m.room.create","state_key":""})",
+                                                                   0U,
+                                                                   1U};
+        auto const create_stored = merovingian::database::store_event_with_state(
+            store, std::move(create_event),
+            merovingian::database::PersistentStateEvent{"!room:example.org", "m.room.create", "",
+                                                        "$create:example.org"});
+        REQUIRE(create_stored);
+
+        auto first_topic = merovingian::database::PersistentEvent{"$topic1:example.org",
+                                                                  "!room:example.org",
+                                                                  "@alice:example.org",
+                                                                  R"({"type":"m.room.topic","state_key":""})",
+                                                                  1U,
+                                                                  2U,
+                                                                  std::vector<std::string>{"$create:example.org"}};
+        auto const first_stored = merovingian::database::store_event_with_state(
+            store, std::move(first_topic),
+            merovingian::database::PersistentStateEvent{"!room:example.org", "m.room.topic", "",
+                                                        "$topic1:example.org"});
+        REQUIRE(first_stored);
+
+        WHEN("a second topic event names the first as its prev_event")
+        {
+            auto second_topic = merovingian::database::PersistentEvent{"$topic2:example.org",
+                                                                       "!room:example.org",
+                                                                       "@alice:example.org",
+                                                                       R"({"type":"m.room.topic","state_key":""})",
+                                                                       2U,
+                                                                       3U,
+                                                                       std::vector<std::string>{"$topic1:example.org"}};
+            auto const second_stored = merovingian::database::store_event_with_state(
+                store, std::move(second_topic),
+                merovingian::database::PersistentStateEvent{"!room:example.org", "m.room.topic", "",
+                                                            "$topic2:example.org"});
+
+            THEN("the transition records the first topic event as the predecessor")
+            {
+                REQUIRE(second_stored);
+                REQUIRE(store.state_transitions.size() == 3U);
+                auto const* transition = merovingian::database::find_state_transition(
+                    store, "!room:example.org", "m.room.topic", "", "$topic2:example.org");
+                REQUIRE(transition != nullptr);
+                REQUIRE(transition->previous_event_id == "$topic1:example.org");
             }
         }
     }

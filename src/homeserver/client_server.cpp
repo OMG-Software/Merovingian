@@ -793,30 +793,6 @@ namespace
         return nullptr;
     }
 
-    // Convert a stored persistent event to a client-facing event value.
-    // Parses the stored signed event JSON and injects the event_id field
-    // (room v3+ events do not carry event_id in the wire format, but
-    // clients always expect it in /sync responses).
-    [[nodiscard]] auto client_event_value(database::PersistentEvent const& event) -> canonicaljson::Value
-    {
-        auto const parsed = canonicaljson::parse_lossless(event.json);
-        if (parsed.error == canonicaljson::ParseError::none)
-        {
-            auto const* obj = std::get_if<canonicaljson::Object>(&parsed.value.storage());
-            if (obj != nullptr)
-            {
-                auto client_obj = *obj;
-                client_obj.push_back(canonicaljson::make_member("event_id", canonicaljson::Value{event.event_id}));
-                return canonicaljson::Value{std::move(client_obj)};
-            }
-        }
-        // Fallback: minimal event so /sync never emits a bare null.
-        return json_obj({
-            json_member("event_id", json_str(event.event_id)),
-            json_member("sender", json_str(event.sender_user_id)),
-        });
-    }
-
     [[nodiscard]] auto resp(std::uint16_t status, std::string body) -> LocalHttpResponse
     {
         return {status, std::move(body)};
@@ -2854,6 +2830,97 @@ namespace
         return json_serialize(json_obj({json_member("joined_rooms", json_arr(std::move(rooms)))}));
     }
 
+    [[nodiscard]] auto mutual_rooms_token_key(ClientServerRuntime const& rt) -> std::span<std::uint8_t const>
+    {
+        if (!rt.homeserver.database.mutual_rooms_token_key.has_value())
+        {
+            return {};
+        }
+        return rt.homeserver.database.mutual_rooms_token_key->bytes();
+    }
+
+    [[nodiscard]] auto encode_mutual_rooms_token(std::string_view caller, std::string_view target_user,
+                                                 std::size_t offset, std::span<std::uint8_t const> key)
+        -> std::optional<std::string>
+    {
+        if (key.empty())
+        {
+            return std::nullopt;
+        }
+        auto const offset_str = std::to_string(offset);
+        auto const pieces = std::array<std::string_view, 3U>{caller, target_user, offset_str};
+        return crypto::generic_hash(pieces, key);
+    }
+
+    [[nodiscard]] auto decode_mutual_rooms_token(std::string_view caller, std::string_view target_user,
+                                                 std::string_view token, std::span<std::uint8_t const> key,
+                                                 std::size_t total) -> std::optional<std::size_t>
+    {
+        if (key.empty() || token.empty())
+        {
+            return std::nullopt;
+        }
+        auto constexpr max_overrun = std::size_t{1000U};
+        auto const upper_bound = total + max_overrun;
+        for (auto offset = std::size_t{0U}; offset <= upper_bound; ++offset)
+        {
+            auto const candidate = encode_mutual_rooms_token(caller, target_user, offset, key);
+            if (!candidate.has_value())
+            {
+                return std::nullopt;
+            }
+            if (*candidate == token)
+            {
+                return offset;
+            }
+        }
+        return std::nullopt;
+    }
+
+    // Spec: Matrix Client-Server API v1.19 — GET /_matrix/client/v1/mutual_rooms
+    // URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv1mutual_rooms
+    // Returns room IDs where both the caller and the supplied user_id have a
+    // membership of type "join". Pagination uses opaque server-issued tokens
+    // keyed to this deployment; an invalid token produces M_INVALID_PARAM.
+    [[nodiscard]] auto mutual_rooms_json(ClientServerRuntime const& rt, std::string_view caller,
+                                         std::string_view target_user, std::size_t offset, std::size_t limit)
+        -> std::string
+    {
+        auto mutual = std::vector<std::string>{};
+        for (auto const& room : rt.homeserver.database.rooms)
+        {
+            if (joined(room, caller) && joined(room, target_user))
+            {
+                mutual.push_back(room.room_id);
+            }
+        }
+
+        auto const total = mutual.size();
+        auto const end = std::min(offset + limit, total);
+        auto page = canonicaljson::Array{};
+        for (auto i = offset; i < end; ++i)
+        {
+            page.push_back(json_str(mutual[i]));
+        }
+
+        auto response = canonicaljson::Object{};
+        response.push_back(json_member("count", json_int(static_cast<std::int64_t>(total))));
+        response.push_back(json_member("joined", json_arr(std::move(page))));
+        if (end < total)
+        {
+            auto const next_token = encode_mutual_rooms_token(caller, target_user, end, mutual_rooms_token_key(rt));
+            if (next_token.has_value())
+            {
+                response.push_back(json_member("next_batch", json_str(*next_token)));
+            }
+            else
+            {
+                response.push_back(json_member("next_batch", json_str(std::to_string(end))));
+            }
+        }
+        return json_serialize(json_obj(std::move(response)));
+    }
+
     [[nodiscard]] auto otk_algorithm(std::string_view key_id) noexcept -> std::string
     {
         auto const colon = key_id.find(':');
@@ -2940,7 +3007,7 @@ namespace
             {
                 continue;
             }
-            state_events.push_back(client_event_value(*event));
+            state_events.push_back(client_event_with_id(store, *event));
         }
         return state_events;
     }
@@ -3345,7 +3412,7 @@ namespace
             auto timeline_events = canonicaljson::Array{};
             for (auto it = window_begin; it != matched.end(); ++it)
             {
-                timeline_events.push_back(client_event_value(**it));
+                timeline_events.push_back(client_event_with_id(store, **it));
             }
             auto const event_count = timeline_events.size();
 
@@ -5838,6 +5905,7 @@ namespace
     [[nodiscard]] auto messages_json(ClientServerRuntime const& rt, std::string_view room_id, std::string_view target)
         -> std::string
     {
+        auto const& store = rt.homeserver.database.persistent_store;
         auto const dir = messages_query_value(target, "dir");
         auto const backwards = dir != "f"; // both default and "b" walk backward
         auto const from_token = parse_u64(messages_query_value(target, "from"));
@@ -5847,7 +5915,7 @@ namespace
             limit = static_cast<std::size_t>(std::min<std::uint64_t>(*parsed, std::uint64_t{100U}));
         }
         auto entries = std::vector<database::PersistentEvent const*>{};
-        for (auto const& event : rt.homeserver.database.persistent_store.events)
+        for (auto const& event : store.events)
         {
             if (event.room_id == room_id)
             {
@@ -5860,7 +5928,7 @@ namespace
         auto chunk = canonicaljson::Array{};
         auto start_token = std::string{};
         auto end_token = std::string{};
-        auto const append = [&chunk, &start_token, &end_token, limit](database::PersistentEvent const& event) {
+        auto const append = [&chunk, &start_token, &end_token, &store, limit](database::PersistentEvent const& event) {
             if (chunk.size() >= limit)
             {
                 return false;
@@ -5870,7 +5938,7 @@ namespace
                 start_token = std::to_string(event.stream_ordering);
             }
             end_token = std::to_string(event.stream_ordering);
-            chunk.push_back(client_event_value(event));
+            chunk.push_back(client_event_with_id(store, event));
             return true;
         };
         if (backwards)
@@ -5956,7 +6024,7 @@ namespace
                 start_token = std::to_string((*it)->stream_ordering);
             }
             end_token = std::to_string((*it)->stream_ordering);
-            chunk.push_back(client_event_value(**it));
+            chunk.push_back(client_event_with_id(rt.homeserver.database.persistent_store, **it));
         }
         return {std::move(chunk), std::move(start_token), std::move(end_token)};
     }
@@ -8697,6 +8765,59 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         });
         return dispatch_resp(req, rt, 200U, joined_rooms_json(rt, *user));
     }
+    // Spec: Matrix Client-Server API v1.19 — GET /_matrix/client/v1/mutual_rooms
+    // URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv1mutual_rooms
+    if (req.method == "GET" && request_path == "/_matrix/client/v1/mutual_rooms")
+    {
+        auto const target_user_param = query_param_value(req.target, "user_id");
+        if (!target_user_param.has_value() || target_user_param->empty())
+        {
+            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "user_id query parameter is required");
+        }
+        if (!auth::user_id_is_valid(*target_user_param))
+        {
+            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "user_id is not a valid Matrix user ID");
+        }
+        if (*target_user_param == *user)
+        {
+            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "user_id must not be the requesting user");
+        }
+
+        auto const from_param = query_param_value(req.target, "from");
+        auto const from_supplied = from_param.has_value() && !from_param->empty();
+        auto from = std::size_t{0U};
+        if (from_supplied)
+        {
+            auto const decoded =
+                decode_mutual_rooms_token(*user, *target_user_param, *from_param, mutual_rooms_token_key(rt),
+                                          rt.homeserver.database.rooms.size());
+            if (!decoded.has_value())
+            {
+                return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "invalid from pagination token");
+            }
+            from = *decoded;
+        }
+
+        auto limit = std::size_t{20U};
+        if (auto const limit_param = query_param_value(req.target, "limit");
+            limit_param.has_value() && !limit_param->empty())
+        {
+            auto parsed = std::size_t{0U};
+            auto const [ptr, ec] =
+                std::from_chars(limit_param->data(), limit_param->data() + limit_param->size(), parsed);
+            if (ec == std::errc{} && ptr == limit_param->data() + limit_param->size() && parsed > 0U)
+            {
+                limit = std::min(parsed, std::size_t{100U});
+            }
+        }
+
+        log_diagnostic("room.mutual_rooms.response", {
+                                                         {"actor",         *user,                            false},
+                                                         {"target_user",   *target_user_param,               false},
+                                                         {"from_supplied", from_supplied ? "true" : "false", false}
+        });
+        return dispatch_resp(req, rt, 200U, mutual_rooms_json(rt, *user, *target_user_param, from, limit));
+    }
     auto constexpr sync_prefix = std::string_view{"/_matrix/client/v3/sync"};
     if (req.method == "GET" && target_path(req.target) == sync_prefix)
     {
@@ -9033,7 +9154,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 {
                     return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "event not found");
                 }
-                auto const serialized = canonicaljson::serialize_canonical(client_event_value(*event));
+                auto const serialized = canonicaljson::serialize_canonical(client_event_with_id(store, *event));
                 if (serialized.error != canonicaljson::CanonicalJsonError::none)
                 {
                     return dispatch_err(req, rt, 500U, "M_UNKNOWN", "failed to serialize event");
@@ -9300,7 +9421,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     {
                         continue;
                     }
-                    chunk.push_back(client_event_value(*event_it));
+                    chunk.push_back(client_event_with_id(store, *event_it));
                     state_backed_members.push_back(state_entry.state_key);
                 }
                 for (auto const& m : store.memberships)

@@ -1,3 +1,19 @@
+## 0.11.2
+
+Matrix spec v1.19 behaviour changes (Phase 2).
+
+- Client-server: `GET /_matrix/client/v3/publicRooms` order is now server-defined per Matrix v1.19 (MSC4423). The implementation already returned rooms in insertion order; a conformance test now documents and protects that server-defined order.
+- Client-server: `m.key_backup` account data (MSC4287) is now accepted, stored, and retrievable via the existing `PUT/GET /_matrix/client/v3/user/{userId}/account_data/{type}` endpoints.
+- Client-server: custom emoji / image packs (MSC2545) are now accepted: `m.room.image_pack` state events and `m.image_pack.rooms` global account data round-trip through the existing event and account-data paths.
+- Database: schema version 4 adds a `state_transitions` table (via `migrations/004_state_transitions.sql`) so the server can record the previous state event for every `(room_id, event_type, state_key)` tuple. The client event builder uses this to inject `unsigned.replaces_state` into state events returned by `/sync`, `/rooms/{roomId}/messages`, `/rooms/{roomId}/members`, and other state-event paths, matching the Matrix v1.19 client event format.
+- Client-server: centralized the client-event serializer so `/sync`, `/rooms/{roomId}/messages`, `GET /rooms/{roomId}/state`, and `GET /rooms/{roomId}/event/{eventId}` all use the same helper and produce identical `event_id`/`unsigned.replaces_state` handling. Removed the duplicate serializer that previously existed in `client_server.cpp`.
+- Tests: fixed malformed raw-string literal in the `m.room.image_pack` conformance and unit fixtures that caused the PUT-state request body to be invalid JSON.
+- Database: schema version 5 backfills `state_transitions` from existing `current_state` rows via `migrations/005_backfill_state_transitions.sql` so rooms created before the v4 migration do not lack transition history.
+- Database: `state_transitions` now has an in-memory hash index, and `client_event_with_id()` uses it for O(1) lookups instead of scanning the whole vector when injecting `unsigned.replaces_state`.
+- Events: for federated state events, `prepare_store_event_with_state()` now derives `previous_event_id` by walking the event's `prev_events`/`auth_events` graph to find the actual predecessor state event. It no longer assumes the local arrival-time `current_state` entry was the predecessor, which was wrong on forks.
+- Client-server: `GET /_matrix/client/v1/mutual_rooms` now issues opaque server-signed pagination tokens instead of integer `next_batch` values. The tokens are keyed to the deployment and verified on decode, so clients cannot guess or forge pagination positions.
+- Database: the migration runner now accepts data-only migration statements (`INSERT`/`UPDATE`/`DELETE`) as valid no-op schema-state transitions. The v5 `state_transitions` backfill is the first data-only migration; without this fix the runner rejected it and runtime startup failed.
+
 ## 0.11.1
 
 Maintenance: migrate repository documentation and tooling from Matrix spec v1.18 to v1.19. This is a mechanical update only; no v1.19 behaviour changes are implemented in this release.

@@ -14,7 +14,10 @@ remaining work before PostgreSQL-backed production operation.
 - Database executor interface.
 - Validated execution helper that rejects invalid statements before they reach an executor.
 - Migration step and migration plan models.
-- Contiguous upgrade and explicit downgrade migration-plan validation.
+- Contiguous upgrade and explicit downgrade migration-plan validation; data-only
+  migration statements (`INSERT`/`UPDATE`/`DELETE`) are accepted as no-op
+  schema-state transitions, enabling backfill and corrective migrations such
+  as the v5 `state_transitions` backfill.
 - Initial schema deployed at version `1` in its final shape: 45 core
   tables covering every Matrix storage area from the project plan. There
   were no live databases at that time, so historical per-version migrations
@@ -22,8 +25,13 @@ remaining work before PostgreSQL-backed production operation.
   pre-production deployments existed, subsequent schema changes started
   receiving their own numbered migration files; schema version `2` adds the
   `sync_stream_watermark` table via `migrations/002_sync_stream_watermark.sql`,
-  and schema version `3` adds the `event_stream_watermark` table via
-  `migrations/003_event_stream_watermark.sql`.
+  schema version `3` adds the `event_stream_watermark` table via
+  `migrations/003_event_stream_watermark.sql`, schema version `4` adds the
+  `state_transitions` table via `migrations/004_state_transitions.sql` so the
+  server can populate `unsigned.replaces_state` for state events, and schema
+  version `5` backfills `state_transitions` from `current_state` via
+  `migrations/005_backfill_state_transitions.sql` so existing rooms do not lack
+  transition history after the v4 upgrade.
   After the project reaches production-ready `v1.0.0`, every schema change
   must add a forward migration and keep deployed databases compatible.
 - SQLite RAII wrappers around database connections and prepared statements.
@@ -104,6 +112,17 @@ remaining work before PostgreSQL-backed production operation.
   every restart. Hydration takes the maximum of the persisted watermark and the
   highest event `stream_ordering`, then persists the merged floor so the row
   exists even on fresh upgrades.
+- `state_transitions` table (schema version `4`, backfilled at schema version
+  `5`) records the previous `event_id` for every state-event tuple replacement.
+  It is populated by `database::store_state()` and the split
+  `prepare_store_event_with_state()` / `apply_store_event_with_state()` helpers.
+  The in-memory store keeps a hash index over `state_transitions` so that
+  `client_event_with_id()` can inject `unsigned.replaces_state` into the client
+  event format in O(1) rather than scanning the whole vector. For federated
+  state events the previous event ID is derived by walking the event graph
+  (`prev_events` and `auth_events`) to find the predecessor state event of the
+  same `(room_id, event_type, state_key)` tuple, instead of assuming the local
+  arrival-time current state was the predecessor.
 - `/sync` calls `database::ensure_sync_stream_id_ahead_of()` when the client's
   `since` token is ahead of the server's counter. This recovers live deployments
   whose counter rolled back below a stored token (for example, when the watermark

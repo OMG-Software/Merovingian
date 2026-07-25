@@ -129,6 +129,11 @@ namespace
         state.tables.erase(begin, end);
     }
 
+    [[nodiscard]] auto is_data_only_statement(std::string_view sql) noexcept -> bool
+    {
+        return sql.starts_with("INSERT ") || sql.starts_with("UPDATE ") || sql.starts_with("DELETE ");
+    }
+
     auto apply_statement_to_schema_state(SchemaState& state, PreparedStatement const& statement) -> bool
     {
         if (auto table = table_from_create_table(statement.sql); !table.empty())
@@ -141,7 +146,14 @@ namespace
             remove_table(state, table);
             return true;
         }
-        return statement.sql.starts_with("ALTER TABLE ");
+        if (statement.sql.starts_with("ALTER TABLE "))
+        {
+            return true;
+        }
+        // Data-only migrations (backfills, corrective updates) do not change the
+        // table set. They have already passed SQL-shape validation, so accept
+        // them as no-op schema-state transitions.
+        return is_data_only_statement(statement.sql);
     }
 
 } // namespace
@@ -277,10 +289,45 @@ auto downgrade_initial_schema_migration() -> MigrationStep
     return {3U, "event_stream_watermark", std::move(statements), MigrationDirection::upgrade};
 }
 
+[[nodiscard]] auto upgrade_state_transitions_migration() -> MigrationStep
+{
+    auto statements = std::vector<PreparedStatement>{};
+    statements.push_back(make_create_table_statement(schema_table_definition("state_transitions").value()).value());
+    return {4U, "state_transitions", std::move(statements), MigrationDirection::upgrade};
+}
+
+[[nodiscard]] auto upgrade_backfill_state_transitions_migration() -> MigrationStep
+{
+    auto statements = std::vector<PreparedStatement>{};
+    // Populate state_transitions with one row per existing current_state entry so
+    // already-created rooms do not silently lack transition history. Previous
+    // event IDs are left empty because the old deployment did not record them;
+    // only future replacements will have an accurate predecessor.
+    statements.push_back(
+        PreparedStatement{"backfill_state_transitions",
+                          "INSERT INTO state_transitions (room_id, event_type, state_key, event_id, previous_event_id) "
+                          "SELECT c.room_id, c.event_type, c.state_key, c.event_id, '' FROM current_state c "
+                          "LEFT JOIN state_transitions t ON t.room_id = c.room_id AND t.event_type = c.event_type AND "
+                          "t.state_key = c.state_key AND t.event_id = c.event_id "
+                          "WHERE t.room_id IS NULL",
+                          {}});
+    return {5U, "backfill_state_transitions", std::move(statements), MigrationDirection::upgrade};
+}
+
 auto upgrade_migration_catalog() -> std::vector<MigrationStep>
 {
     return {initial_schema_migration(), upgrade_sync_stream_watermark_migration(),
-            upgrade_event_stream_watermark_migration()};
+            upgrade_event_stream_watermark_migration(), upgrade_state_transitions_migration(),
+            upgrade_backfill_state_transitions_migration()};
+}
+
+[[nodiscard]] auto downgrade_backfill_state_transitions_migration() -> MigrationStep
+{
+    auto statements = std::vector<PreparedStatement>{};
+    // Undo the v5 backfill. The state_transitions table itself is owned by the v4
+    // migration and is dropped by the v4 downgrade.
+    statements.push_back(PreparedStatement{"clear_state_transitions", "DELETE FROM state_transitions", {}});
+    return {4U, "drop_backfill_state_transitions", std::move(statements), MigrationDirection::downgrade};
 }
 
 [[nodiscard]] auto downgrade_sync_stream_watermark_migration() -> MigrationStep
@@ -297,9 +344,17 @@ auto upgrade_migration_catalog() -> std::vector<MigrationStep>
     return {2U, "drop_event_stream_watermark", std::move(statements), MigrationDirection::downgrade};
 }
 
+[[nodiscard]] auto downgrade_state_transitions_migration() -> MigrationStep
+{
+    auto statements = std::vector<PreparedStatement>{};
+    statements.push_back(make_drop_table_statement("state_transitions").value());
+    return {3U, "drop_state_transitions", std::move(statements), MigrationDirection::downgrade};
+}
+
 auto downgrade_migration_catalog() -> std::vector<MigrationStep>
 {
-    return {downgrade_event_stream_watermark_migration(), downgrade_sync_stream_watermark_migration(),
+    return {downgrade_backfill_state_transitions_migration(), downgrade_state_transitions_migration(),
+            downgrade_event_stream_watermark_migration(), downgrade_sync_stream_watermark_migration(),
             downgrade_initial_schema_migration()};
 }
 

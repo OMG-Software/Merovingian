@@ -622,6 +622,21 @@ namespace
             }
         }
 
+        auto transitions = query_rows(connection, "postgresql_load_state_transitions",
+                                      "SELECT room_id, event_type, state_key, event_id, previous_event_id FROM "
+                                      "state_transitions ORDER BY room_id, event_type, state_key, event_id");
+        if (!transitions.ok)
+        {
+            return false;
+        }
+        for (auto const& row : transitions.rows)
+        {
+            if (row.size() >= 5U)
+            {
+                store.state_transitions.push_back({row[0], row[1], row[2], row[3], row[4]});
+            }
+        }
+
         auto device_keys = query_rows(connection, "postgresql_load_device_keys",
                                       "SELECT user_id, device_id, json FROM device_keys ORDER BY user_id, device_id");
         if (!device_keys.ok)
@@ -1285,6 +1300,7 @@ auto open_postgresql_persistent_store(std::string_view conninfo) -> PersistentSt
         return {false, "unable to hydrate PostgreSQL persistent rows", {}};
     }
     reconstruct_event_relations(store);
+    rebuild_state_transition_index(store);
     restore_sync_stream_id(store);
 
     auto compatibility = validate_persistent_store(store);

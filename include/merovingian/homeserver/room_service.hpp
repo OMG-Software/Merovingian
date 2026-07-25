@@ -176,6 +176,13 @@ struct SendJoinStateSplit final
                               std::string_view event_json) -> OperationResult;
 [[nodiscard]] auto fetch_room_state(HomeserverRuntime const& runtime, std::string_view access_token,
                                     std::string_view room_id) -> OperationResult;
+// Converts a stored persistent event into a client-facing event value,
+// injecting server-generated fields: event_id and, for state events,
+// unsigned.replaces_state (Matrix v1.19). Used by every client-event path
+// (/sync, /messages, /rooms/{roomId}/state, etc.) so the emitted shape is
+// consistent.
+[[nodiscard]] auto client_event_with_id(database::PersistentStore const& store, database::PersistentEvent const& event)
+    -> canonicaljson::Value;
 
 struct FetchRelationsRequest final
 {

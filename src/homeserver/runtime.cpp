@@ -6,6 +6,7 @@
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/crypto/ed25519.hpp"
+#include "merovingian/crypto/generic_hash.hpp"
 #include "merovingian/crypto/runtime_ed25519_provider.hpp"
 #include "merovingian/database/postgresql_store.hpp"
 #include "merovingian/database/schema.hpp"
@@ -21,6 +22,7 @@
 #include "merovingian/platform/runtime_hardening.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdlib>
 #include <fstream>
@@ -652,6 +654,23 @@ auto start_runtime(RuntimeStartOptions opts) -> RuntimeStartResult
                            {"available", runtime.crypto_provider != nullptr ? "true" : "false", false}
         },
                        observability::LogEventSeverity::info);
+
+        // Derive the server-scoped pagination-token key from the signing secret.
+        // This keeps tokens opaque and tied to this deployment without needing a
+        // persistent token store.
+        auto const key_derivation_pieces =
+            std::array<std::string_view, 1U>{"merovingian.mutual_rooms.pagination_token_key_v1"};
+        auto const token_key_material =
+            crypto::generic_hash_bytes(key_derivation_pieces, runtime.database.signing_secret_key.bytes());
+        if (!token_key_material.has_value() || token_key_material->size() != 32U)
+        {
+            log_diagnostic("start.rejected",
+                           {
+                               {"reason", "unable to derive mutual_rooms pagination token key", false}
+            });
+            return {false, "unable to derive mutual_rooms pagination token key", {}};
+        }
+        runtime.database.mutual_rooms_token_key = core::SecretBuffer{*token_key_material};
     }
 
     runtime.federation = federation::make_federation_runtime_state(federation::make_runtime_federation_config(config));

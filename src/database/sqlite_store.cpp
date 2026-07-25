@@ -495,6 +495,13 @@ namespace
                              store.state.push_back(
                                  {column_text(row, 0), column_text(row, 1), column_text(row, 2), column_text(row, 3)});
                          }) &&
+               load_rows(connection,
+                         "SELECT room_id, event_type, state_key, event_id, previous_event_id FROM state_transitions",
+                         [&store](sqlite3_stmt& row) {
+                             store.state_transitions.push_back({column_text(row, 0), column_text(row, 1),
+                                                                column_text(row, 2), column_text(row, 3),
+                                                                column_text(row, 4)});
+                         }) &&
                load_rows(connection, "SELECT user_id, device_id, json FROM device_keys",
                          [&store](sqlite3_stmt& row) {
                              store.device_keys.push_back(
@@ -947,6 +954,7 @@ auto open_sqlite_persistent_store(std::string const& path) -> PersistentStoreOpe
         return {false, "unable to hydrate SQLite rows", {}};
     }
     reconstruct_event_relations(store);
+    rebuild_state_transition_index(store);
     restore_sync_stream_id(store);
 
     auto compatibility = validate_persistent_store(store);
