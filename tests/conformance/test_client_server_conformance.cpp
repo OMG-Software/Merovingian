@@ -1662,6 +1662,80 @@ SCENARIO("PUT /sendToDevice with \"*\" delivers to all target user devices",
     }
 }
 
+// --- PUT /_matrix/client/v3/sendToDevice — m.room_key_bundle (MSC4268) ------
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3sendtoeventtypetxnid
+//
+// MSC4268: servers MUST accept and deliver the `m.room_key_bundle` to-device
+// type for encrypted history sharing, including `m.history_not_shared` withheld
+// codes in the bundle content.
+SCENARIO("PUT /sendToDevice delivers m.room_key_bundle with m.history_not_shared withholding",
+         "[conformance][client-server][e2ee][to-device][msc4268]")
+{
+    GIVEN("alice and bob are logged in")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const alice_token = logged_in_token(rt);
+        auto const bob_token = register_and_login(rt, "bob");
+
+        WHEN("bob sends an m.room_key_bundle to-device message to alice")
+        {
+            auto const send = merovingian::homeserver::handle_client_server_request(
+                rt, {"PUT", "/_matrix/client/v3/sendToDevice/m.room_key_bundle/txn_msc4268", bob_token,
+                     R"({"messages":{"@alice:example.org":{"DEVICE1":{
+                         "url":"mxc://example.org/history-bundle",
+                         "room_keys":[],
+                         "withheld":[{
+                             "algorithm":"m.megolm.v1.aes-sha2",
+                             "code":"m.history_not_shared",
+                             "reason":"History not shared",
+                             "room_id":"!room:example.org",
+                             "sender_key":"RF3s+E7RkTQTGF2d8Deol0FkQvgII2aJDf3/Jp5mxVU",
+                             "session_id":"X3lUlvLELLYxeTx4yOVu6UDpasGEVO0Jbu+QFnm0cKQ"
+                         }]
+                     }}}})"});
+
+            THEN("alice receives the event with the original type and withheld code via /sync")
+            {
+                REQUIRE(send.response.status == 200U);
+
+                auto const sync = merovingian::homeserver::handle_client_server_request(
+                    rt, {"GET", "/_matrix/client/v3/sync", alice_token, {}});
+                REQUIRE(sync.response.status == 200U);
+                auto const body = parse_object(sync.response.body);
+                auto const* td = object_member_as_object(body, "to_device");
+                auto const* events = td != nullptr ? object_member_as_array(*td, "events") : nullptr;
+                // Spec MUST: the to-device event is delivered.
+                REQUIRE(events != nullptr);
+                REQUIRE(!events->empty());
+
+                auto const& first_event = events->front();
+                auto const* event_object = std::get_if<merovingian::canonicaljson::Object>(&first_event.storage());
+                REQUIRE(event_object != nullptr);
+                auto const* event_type = string_member(*event_object, "type");
+                // Spec MUST: the delivered event retains the m.room_key_bundle type.
+                REQUIRE(event_type != nullptr);
+                REQUIRE(*event_type == "m.room_key_bundle");
+
+                auto const* content = object_member_as_object(*event_object, "content");
+                auto const* withheld = content != nullptr ? object_member_as_array(*content, "withheld") : nullptr;
+                // Spec MUST: the m.history_not_shared withheld code travels inside
+                // the m.room_key_bundle content so the recipient knows why a key
+                // was not shared.
+                REQUIRE(withheld != nullptr);
+                REQUIRE(!withheld->empty());
+                auto const* withheld_object =
+                    std::get_if<merovingian::canonicaljson::Object>(&withheld->front().storage());
+                REQUIRE(withheld_object != nullptr);
+                auto const* code = string_member(*withheld_object, "code");
+                REQUIRE(code != nullptr);
+                REQUIRE(*code == "m.history_not_shared");
+            }
+        }
+    }
+}
+
 // --- POST /keys/device_signing/upload → device_lists.changed in /sync --------
 // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3sync
 //

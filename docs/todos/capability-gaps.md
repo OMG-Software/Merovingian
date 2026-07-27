@@ -66,6 +66,7 @@ Open work per capability area. Status column reflects the current level in the
 | Endpoint | Status | Needs |
 | --- | --- | --- |
 | `PUT /_matrix/federation/v1/send/{txnId}` inbound | `spec-covered` | Richer EDU side-effects. Idempotency, unknown-EDU discard, oversize rejection, and PDU content-hash verification now conformance-covered. |
+| Server ACL enforcement (`m.room.server_acl`, MSC4436) | `spec-covered` | Per-room ACLs applied to protected federation endpoints and per-PDU/room-local EDU in inbound `/send`. Case-insensitive glob matching, IP-literal handling, and port stripping. |
 | `PUT /_matrix/federation/v1/send/{txnId}` outbound | `spec-covered` | Live signed-transaction interop test against a real Synapse peer landed in 0.8.6 (opt-in `build_live_tests`). |
 | Federation join/leave/invite/knock/backfill | `spec-covered` | Richer production leave/knock state semantics (stripped state, knock acceptance flows). |
 | Server discovery | `partial` | TLS-bound origin validation, richer Matrix edge-case fixtures, live network conformance coverage. |

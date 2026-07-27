@@ -1,3 +1,11 @@
+## 0.11.3
+
+Matrix spec v1.19 behaviour changes (Phase 3).
+
+- Federation: per-room server ACL enforcement (MSC4436 / Matrix v1.19). Added `federation/server_acl` evaluator with case-insensitive glob matching, IP-literal handling, and port stripping. Inbound federation requests to protected endpoints (make_* / send_* / invite / backfill / state / state_ids / get_missing_events / space_hierarchy) are now rejected with 403 `M_FORBIDDEN` when the origin server is denied. PDUs inside `PUT /_matrix/federation/v1/send/{txnId}` are checked per-PDU against both the transport origin and the PDU sender's homeserver; room-local EDUs (`m.typing`, `m.receipt`) are checked against the transport origin. Rooms with no `m.room.server_acl` event continue to allow all servers.
+- Client-server: encrypted history sharing conformance coverage (MSC4268). The generic `PUT /_matrix/client/v3/sendToDevice/{eventType}/{txnId}` plumbing already accepted any to-device type; a conformance test now verifies that `m.room_key_bundle` messages carrying the `m.history_not_shared` withheld code are delivered to the target device and retain their event type and content.
+- Tests: added `tests/unit/test_federation_server_acl.cpp` covering glob matching, case-insensitivity, `?` and `*` wildcards, IP-literal denial, port stripping, deny-before-allow ordering, and default `allow_ip_literals` behaviour.
+
 ## 0.11.2
 
 Matrix spec v1.19 behaviour changes (Phase 2).
