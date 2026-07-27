@@ -40,14 +40,16 @@ namespace
             return text_length == 0U;
         }
 
-        auto previous = std::vector<bool>(text_length + 1U, false);
-        auto current = std::vector<bool>(text_length + 1U, false);
-        previous[0U] = true;
+        // Use std::vector<char> instead of std::vector<bool> to avoid GCC 14's
+        // false-positive -Wnull-dereference warnings on the bit-vector proxy.
+        auto previous = std::vector<char>(text_length + 1U, 0);
+        auto current = std::vector<char>(text_length + 1U, 0);
+        previous[0U] = 1;
 
         for (auto pattern_index = std::size_t{1U}; pattern_index <= pattern_length; ++pattern_index)
         {
             auto const pattern_char = pattern[pattern_index - 1U];
-            std::fill(current.begin(), current.end(), false);
+            std::fill(current.begin(), current.end(), 0);
 
             if (pattern_char == '*')
             {
@@ -56,7 +58,7 @@ namespace
                 current[0U] = previous[0U];
                 for (auto text_index = std::size_t{1U}; text_index <= text_length; ++text_index)
                 {
-                    current[text_index] = previous[text_index] || current[text_index - 1U];
+                    current[text_index] = static_cast<char>(previous[text_index] || current[text_index - 1U]);
                 }
             }
             else if (pattern_char == '?')
@@ -79,7 +81,7 @@ namespace
             previous.swap(current);
         }
 
-        return previous[text_length];
+        return previous[text_length] != 0;
     }
 
     [[nodiscard]] auto object_member(canonicaljson::Object const& object, std::string_view key) noexcept
