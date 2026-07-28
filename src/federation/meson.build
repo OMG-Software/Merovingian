@@ -11,6 +11,7 @@ federation_sources = files(
   'remote_key_cache.cpp',
   'runtime_federation.cpp',
   'security.cpp',
+  'server_acl.cpp',
   'server_discovery.cpp',
   'transactions.cpp',
 )

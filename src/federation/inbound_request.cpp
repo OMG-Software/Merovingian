@@ -13,6 +13,7 @@
 #include "merovingian/events/event_id.hpp"
 #include "merovingian/events/event_signer.hpp"
 #include "merovingian/federation/membership_endpoints.hpp"
+#include "merovingian/federation/server_acl.hpp"
 #include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/media/repository.hpp"
 #include "merovingian/observability/logger.hpp"
@@ -853,7 +854,8 @@ namespace
     }
 
     [[nodiscard]] auto handle_invite(FederationRuntimeState& runtime, SignedFederationRequest const& request,
-                                     FederationRoute const& route, FederationRemoteRuntime& remote) -> FederationResponse
+                                     FederationRoute const& route, FederationRemoteRuntime& remote)
+        -> FederationResponse
     {
         if (!runtime.invite_handler)
         {
@@ -947,7 +949,8 @@ namespace
             {
                 audit_federation(runtime, "federation.invite_hash_rejected", request.origin, request.target,
                                  "content-hash-mismatch");
-                return {400U, homeserver::matrix_error("M_INVALID_PARAM", "invite event content hash verification failed")};
+                return {400U,
+                        homeserver::matrix_error("M_INVALID_PARAM", "invite event content hash verification failed")};
             }
         }
         // Forward the X-Matrix origin so the invite_handler can enforce the
@@ -1957,6 +1960,102 @@ namespace
         return std::nullopt;
     }
 
+    // Returns the room_id for federation endpoints that the Matrix v1.19 spec
+    // says MUST be protected by server ACLs. Endpoints without a room scope
+    // (e.g. query/profile, query_keys) are not included here.
+    [[nodiscard]] auto protected_endpoint_room_id(FederationEndpoint endpoint, std::string_view target)
+        -> std::optional<std::string>
+    {
+        switch (endpoint)
+        {
+        case FederationEndpoint::make_join:
+        case FederationEndpoint::make_leave:
+        case FederationEndpoint::make_knock:
+        case FederationEndpoint::send_join:
+        case FederationEndpoint::send_leave:
+        case FederationEndpoint::send_knock:
+        case FederationEndpoint::invite: {
+            auto const params = parse_membership_path(endpoint, target);
+            return params.has_value() ? std::optional<std::string>{std::move(params->room_id)} : std::nullopt;
+        }
+        case FederationEndpoint::backfill: {
+            auto const parsed = parse_backfill_query(target);
+            return parsed.has_value() ? std::optional<std::string>{std::move(parsed->room_id)} : std::nullopt;
+        }
+        case FederationEndpoint::query_state:
+            return extract_path_segment(target, "/_matrix/federation/v1/state/");
+        case FederationEndpoint::query_state_ids:
+            return extract_path_segment(target, "/_matrix/federation/v1/state_ids/");
+        case FederationEndpoint::get_missing_events:
+            return extract_path_segment(target, "/_matrix/federation/v1/get_missing_events/");
+        case FederationEndpoint::space_hierarchy:
+            return extract_path_segment(target, "/_matrix/federation/v1/hierarchy/");
+        default:
+            return std::nullopt;
+        }
+    }
+
+    [[nodiscard]] auto forbidden_acl_response(std::string_view reason) -> FederationResponse
+    {
+        return {403U, homeserver::matrix_error("M_FORBIDDEN", std::string{reason})};
+    }
+
+    // Applies server ACLs to a non-transaction endpoint. Returns the 403
+    // response when the requesting origin is denied access to the room.
+    [[nodiscard]] auto check_room_acl_for_endpoint(FederationRuntimeState const& runtime,
+                                                   SignedFederationRequest const& request, FederationRoute const& route)
+        -> std::optional<FederationResponse>
+    {
+        if (!runtime.room_server_acl_provider)
+        {
+            return std::nullopt;
+        }
+        auto const room_id = protected_endpoint_room_id(route.endpoint, request.target);
+        if (!room_id.has_value() || room_id->empty())
+        {
+            return std::nullopt;
+        }
+        if (runtime.room_server_acl_provider(*room_id, request.origin))
+        {
+            return std::nullopt;
+        }
+        return forbidden_acl_response("server is denied by room ACL");
+    }
+
+    // Extracts the room_id from EDU content for room-local EDU types that the
+    // spec says MUST be ACL-checked (typing and receipts).
+    [[nodiscard]] auto room_id_from_edu_content(EduType type, std::string_view content_json)
+        -> std::optional<std::string>
+    {
+        if (type != EduType::typing && type != EduType::receipt)
+        {
+            return std::nullopt;
+        }
+        auto const parsed = canonicaljson::parse_json(content_json);
+        if (parsed.error != canonicaljson::ParseError::none)
+        {
+            return std::nullopt;
+        }
+        auto const* object = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+        if (object == nullptr)
+        {
+            return std::nullopt;
+        }
+        for (auto const& member : *object)
+        {
+            if (member.key == "room_id")
+            {
+                auto const* text = std::get_if<std::string>(&member.value->storage());
+                if (text != nullptr && !text->empty())
+                {
+                    return std::optional<std::string>{*text};
+                }
+                return std::nullopt;
+            }
+        }
+        return std::nullopt;
+    }
+
 } // namespace
 
 auto verify_inbound_federation_signature(FederationRuntimeState& runtime, SignedFederationRequest const& request)
@@ -2012,6 +2111,14 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
             return *rejection;
         }
     }
+    if (auto const acl_rejection = check_room_acl_for_endpoint(runtime, request, route_match.route);
+        acl_rejection.has_value())
+    {
+        audit_federation(runtime, "federation.rejected", request.origin, request.target,
+                         "server ACL denied access to room");
+        return *acl_rejection;
+    }
+
     if (route_match.route.endpoint != FederationEndpoint::transaction)
     {
         auto const non_transaction_response =
@@ -2229,6 +2336,33 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
         // Ed25519 verification. Fail-closed: if the resolver is wired but returns
         // no key, the PDU is rejected rather than persisted without verification.
         auto const pdu_sender_dom = sender_domain(pdu.sender);
+
+        // Server ACL enforcement (MSC4436): each PDU must come from a server that
+        // is allowed to participate in the room. Both the transport origin and
+        // the PDU sender's homeserver are checked, so a denied server cannot
+        // bypass the ACL by relaying events through an allowed peer.
+        if (!pdu.room_id.empty() && runtime.room_server_acl_provider)
+        {
+            auto const origin_allowed = runtime.room_server_acl_provider(pdu.room_id, request.origin);
+            auto const sender_allowed = runtime.room_server_acl_provider(pdu.room_id, pdu_sender_dom);
+            if (!origin_allowed || !sender_allowed)
+            {
+                auto const reason = std::string{"server is denied by room ACL"};
+                log_diagnostic("pdu.acl_rejected", {
+                                                       {"origin",         request.origin,             false},
+                                                       {"transaction_id", transaction.transaction_id, false},
+                                                       {"event_id",       pdu.event_id,               false},
+                                                       {"room_id",        pdu.room_id,                false},
+                                                       {"reason",         reason,                     false}
+                });
+                audit_federation(runtime, "federation.acl_rejected", request.origin, request.target, reason);
+                pdu_errors.push_back(canonicaljson::make_member(
+                    pdu.event_id, canonicaljson::Value{canonicaljson::Object{
+                                      canonicaljson::make_member("error", canonicaljson::Value{reason})}}));
+                continue;
+            }
+        }
+
         auto key_for_pdu = std::optional<FederationKeyRecord>{remote.signing_key};
         if (!pdu_sender_dom.empty() && pdu_sender_dom != request.origin && runtime.remote_key_resolver)
         {
@@ -2394,6 +2528,28 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
             ++edus_dropped;
             continue;
         }
+
+        // Server ACL enforcement (MSC4436): drop room-local EDUs (typing,
+        // receipts) when the transport origin is denied access to the room.
+        if (auto const edu_room_id = room_id_from_edu_content(envelope->type, edu_content);
+            edu_room_id.has_value() && !edu_room_id->empty() && runtime.room_server_acl_provider)
+        {
+            if (!runtime.room_server_acl_provider(*edu_room_id, request.origin))
+            {
+                auto const reason = std::string{"server is denied by room ACL"};
+                log_diagnostic("edu.acl_rejected", {
+                                                       {"origin",         request.origin,             false},
+                                                       {"transaction_id", transaction.transaction_id, false},
+                                                       {"edu_type",       edu_type,                   false},
+                                                       {"room_id",        *edu_room_id,               false},
+                                                       {"reason",         reason,                     false}
+                });
+                audit_federation(runtime, "federation.acl_rejected", request.origin, request.target, reason);
+                ++edus_dropped;
+                continue;
+            }
+        }
+
         if (!runtime.edu_sink)
         {
             ++edus_dispatched;

@@ -18,6 +18,7 @@
 #include "merovingian/federation/key_query.hpp"
 #include "merovingian/federation/outbound_transaction.hpp"
 #include "merovingian/federation/remote_key_cache.hpp"
+#include "merovingian/federation/server_acl.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/media_service.hpp"
 #include "merovingian/homeserver/room_service.hpp"
@@ -1603,6 +1604,15 @@ namespace
         // it and produces a false signature failure for every inbound event.
         runtime.federation.room_version_resolver = [rt](std::string_view room_id) -> std::string {
             return room_version_from_store(rt->database.persistent_store, room_id);
+        };
+
+        // Provide room server ACL enforcement for inbound federation.  The lambda
+        // inspects the current m.room.server_acl state for the room and applies
+        // MSC4436 rules (deny list, allow list, allow_ip_literals) to the remote
+        // server name. Ports are stripped and matching is case-insensitive.
+        runtime.federation.room_server_acl_provider = [rt](std::string_view room_id,
+                                                           std::string_view server_name) -> bool {
+            return federation::room_server_acl_allows(rt->database.persistent_store, room_id, server_name);
         };
 
         if (outbound && discovery)

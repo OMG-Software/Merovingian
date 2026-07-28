@@ -198,6 +198,10 @@ using MediaDownloadProvider = std::function<media::LocalMediaDownloadResult(std:
 // is unknown the resolver should return the current default ("12").
 // Optional: when unset PDU parsing falls back to "12".
 using RoomVersionResolver = std::function<std::string(std::string_view room_id)>;
+// Optional provider for per-room server ACL enforcement (MSC4436). Returns
+// true when the server is allowed to participate in the room, or when the
+// room has no m.room.server_acl event. When unset, ACL checks are skipped.
+using RoomServerAclProvider = std::function<bool(std::string_view room_id, std::string_view server_name)>;
 using FederationRuntimeMutex = std::shared_ptr<std::recursive_mutex>; // SHARED_PTR: reviewed
 
 struct FederationRuntimeState final
@@ -274,6 +278,9 @@ struct FederationRuntimeState final
     // version string for event-ID computation and signature verification.
     // When unset, both operations fall back to room version "12".
     RoomVersionResolver room_version_resolver{};
+    // Optional provider for per-room server ACL enforcement (MSC4436).
+    // When unset, ACL checks are skipped (e.g. in low-level unit tests).
+    RoomServerAclProvider room_server_acl_provider{};
 };
 
 struct FederationDecision final

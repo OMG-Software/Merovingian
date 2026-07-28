@@ -41,6 +41,12 @@ This capability note describes runtime-wired observability and audit behavior.
   returned `EduDispositionStatus::accepted` regardless of what actually
   persisted, so a lost megolm room-key share left no trace anywhere in the
   logs (issue #464).
+- `federation.acl_rejected` (warning severity, via `audit_federation`) fires
+  when an inbound federation request, PDU, or room-local EDU is denied by the
+  room's `m.room.server_acl` (MSC4436). Diagnostic companions `pdu.acl_rejected`
+  and `edu.acl_rejected` carry `origin`, `room_id`, `event_id`/`edu_type`, and
+  `reason` so operators can trace why a server was blocked without exposing
+  key material.
 
 ## Failure routing (0.5.0)
 
@@ -58,6 +64,7 @@ to `audit_log`:
 | Locked-user request rejected | `client_server` | `auth` | `request.user_locked` |
 | Suspended-user request rejected | `client_server` | `auth` | `request.user_suspended` |
 | Registration policy denied | `auth` | `policy` | `registration_policy.denied` |
+| Federation ACL rejected | `federation` | `federation` | `federation.acl_rejected` |
 
 The `access_token.rejected` row carries a `reason` that distinguishes the
 failure mode: `token hashing failed`, `session not found`, `user not found`,
