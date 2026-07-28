@@ -299,6 +299,8 @@
 | Method | Path | Operation ID | Auth | Request body | Responses |
 | --- | --- | --- | --- | --- | --- |
 | `GET` | `/_matrix/client/v1/auth_metadata` | `getAuthMetadata` | none | - | 200, 404 |
+
+Implemented: returns RFC 8414 metadata when `server.oidc.*` is configured; `404 M_UNRECOGNIZED` otherwise.
 | `POST` | `/_matrix/client/v1/login/get_token` | `generateLoginToken` | access token | required application/json | 200, 400, 401, 429 |
 | `GET` | `/_matrix/client/v3/account/whoami` | `getTokenOwner` | access token | - | 200, 401, 403, 429 |
 | `GET` | `/_matrix/client/v3/login` | `getLoginFlows` | none | - | 200, 404, 429 |

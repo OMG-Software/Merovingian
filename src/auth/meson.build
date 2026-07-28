@@ -2,6 +2,7 @@ auth_sources = files(
   'client_server_api.cpp',
   'identity.cpp',
   'key_api.cpp',
+  'oidc_discovery.cpp',
   'password.cpp',
   'session.cpp',
   'token.cpp',

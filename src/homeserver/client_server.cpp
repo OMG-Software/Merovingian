@@ -11,6 +11,7 @@
 
 #include "merovingian/auth/identity.hpp"
 #include "merovingian/auth/key_api.hpp"
+#include "merovingian/auth/oidc_discovery.hpp"
 #include "merovingian/auth/password.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
@@ -7702,7 +7703,13 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     }
     if (req.method == "GET" && request_path == "/_matrix/client/v1/auth_metadata")
     {
-        return dispatch_err(req, rt, 404U, "M_UNRECOGNIZED", "OIDC not supported");
+        auto const metadata = auth::make_auth_metadata(rt.homeserver.config.server().oidc);
+        if (!metadata.configured)
+        {
+            return dispatch_err(req, rt, 404U, "M_UNRECOGNIZED", "OIDC not supported");
+        }
+        return dispatch_resp(req, rt, 200U,
+                             json_serialize(canonicaljson::Value{canonicaljson::Object{metadata.fields}}));
     }
 
     auto constexpr media_download_prefix = std::string_view{"/_matrix/media/v3/download/"};
