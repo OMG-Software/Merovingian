@@ -6105,13 +6105,18 @@ SCENARIO("E2EE one_time_keys are returned to a peer after upload", "[homeserver]
             REQUIRE(upload.response.status == 200U);
             REQUIRE(upload.response.body.find("one_time_key_counts") != std::string::npos);
 
-            THEN("the one_time_key_counts reports a non-zero count")
+            THEN("the one_time_key_counts reports a per-algorithm count")
             {
-                REQUIRE(upload.response.body.find("signed_curve25519") != std::string::npos);
-                // json_int emits a bare numeric token (not a quoted string), so
-                // we check for the digit '1' in the body to confirm a count
-                // was recorded for the uploaded one_time_key.
-                REQUIRE(upload.response.body.find(":1") != std::string::npos);
+                // The uploaded key ID is "curve25519:OTK1"; the response MUST
+                // report counts grouped by algorithm, not hardcoded to
+                // signed_curve25519. Spec §12.1 /keys/upload response.
+                REQUIRE(upload.response.body.find("curve25519") != std::string::npos);
+                auto const body = parse_object(upload.response.body);
+                auto const* counts = object_member_as_object(body, "one_time_key_counts");
+                REQUIRE(counts != nullptr);
+                auto const* curve_count = int_member(*counts, "curve25519");
+                REQUIRE(curve_count != nullptr);
+                REQUIRE(*curve_count == 1);
             }
         }
     }
@@ -9511,6 +9516,151 @@ SCENARIO("Sliding sync room timeline is a plain [Event] array per MSC4186", "[sy
                     return type != nullptr && *type == "m.room.message";
                 });
                 REQUIRE(message_event != timeline->end());
+            }
+        }
+    }
+}
+
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3keysupload
+SCENARIO("E2EE /keys/upload groups one_time_key_counts by algorithm",
+         "[homeserver][client-server][e2ee][one-time-keys]")
+{
+    GIVEN("a registered and logged-in device")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+
+        WHEN("the device uploads one-time keys with multiple algorithm prefixes")
+        {
+            auto const upload = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/keys/upload", token,
+                          R"({"one_time_keys":{"curve25519:OTK1":"A","curve25519:OTK2":"B","custom_alg:OTK3":"C"}})"});
+
+            THEN("the response counts each algorithm separately")
+            {
+                REQUIRE(upload.response.status == 200U);
+                auto const body = parse_object(upload.response.body);
+                auto const* counts = object_member_as_object(body, "one_time_key_counts");
+                REQUIRE(counts != nullptr);
+                auto const* curve_count = int_member(*counts, "curve25519");
+                REQUIRE(curve_count != nullptr);
+                REQUIRE(*curve_count == 2);
+                auto const* custom_count = int_member(*counts, "custom_alg");
+                REQUIRE(custom_count != nullptr);
+                REQUIRE(*custom_count == 1);
+            }
+        }
+    }
+}
+
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#server-side-key-backups
+SCENARIO("Key backup deletion endpoints remove sessions, rooms, and all keys for the current version",
+         "[homeserver][client-server][key-backup][e2ee]")
+{
+    GIVEN("a registered and logged-in user with a key backup version and stored sessions")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+
+        auto const backup = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST", "/_matrix/client/v3/room_keys/version", token,
+             R"({"algorithm":"m.megolm_backup.v1","auth_data":{"public_key":"base64+public+key","signatures":{}}})"});
+        REQUIRE(backup.response.status == 200U);
+        auto const version = *string_member(parse_object(backup.response.body), "version");
+        REQUIRE_FALSE(version.empty());
+
+        auto constexpr session_body =
+            R"({"first_message_index":0,"forwarded_count":0,"is_verified":false,"session_data":{}})";
+        REQUIRE(
+            merovingian::homeserver::handle_client_server_request(
+                runtime, {"PUT", "/_matrix/client/v3/room_keys/keys/!room1%3Aexample.org/sessionA?version=" + version,
+                          token, session_body})
+                .response.status == 200U);
+        REQUIRE(
+            merovingian::homeserver::handle_client_server_request(
+                runtime, {"PUT", "/_matrix/client/v3/room_keys/keys/!room1%3Aexample.org/sessionB?version=" + version,
+                          token, session_body})
+                .response.status == 200U);
+        REQUIRE(
+            merovingian::homeserver::handle_client_server_request(
+                runtime, {"PUT", "/_matrix/client/v3/room_keys/keys/!room2%3Aexample.org/sessionC?version=" + version,
+                          token, session_body})
+                .response.status == 200U);
+
+        WHEN("sessions are deleted one at a time, then by room, then all remaining keys")
+        {
+            auto const delete_session = merovingian::homeserver::handle_client_server_request(
+                runtime, {"DELETE",
+                          "/_matrix/client/v3/room_keys/keys/!room1%3Aexample.org/sessionA?version=" + version,
+                          token,
+                          {}});
+            auto const delete_room = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"DELETE", "/_matrix/client/v3/room_keys/keys/!room1%3Aexample.org?version=" + version, token, {}});
+            auto const delete_all = merovingian::homeserver::handle_client_server_request(
+                runtime, {"DELETE", "/_matrix/client/v3/room_keys/keys?version=" + version, token, {}});
+
+            THEN("each deletion returns 200 with count/etag/version and the store is empty")
+            {
+                REQUIRE(delete_session.response.status == 200U);
+                REQUIRE(delete_room.response.status == 200U);
+                REQUIRE(delete_all.response.status == 200U);
+
+                auto const after_session = parse_object(delete_session.response.body);
+                REQUIRE(int_member(after_session, "count") != nullptr);
+                REQUIRE(*int_member(after_session, "count") == 2);
+                REQUIRE(string_member(after_session, "etag") != nullptr);
+                REQUIRE(string_member(after_session, "version") != nullptr);
+                REQUIRE(*string_member(after_session, "version") == version);
+
+                auto const after_room = parse_object(delete_room.response.body);
+                REQUIRE(int_member(after_room, "count") != nullptr);
+                REQUIRE(*int_member(after_room, "count") == 1);
+
+                auto const after_all = parse_object(delete_all.response.body);
+                REQUIRE(int_member(after_all, "count") != nullptr);
+                REQUIRE(*int_member(after_all, "count") == 0);
+
+                auto const get_resp = merovingian::homeserver::handle_client_server_request(
+                    runtime, {"GET", "/_matrix/client/v3/room_keys/keys?version=" + version, token, {}});
+                REQUIRE(get_resp.response.status == 200U);
+                auto const body = parse_object(get_resp.response.body);
+                auto const* rooms = object_member_as_object(body, "rooms");
+                REQUIRE(rooms != nullptr);
+                REQUIRE(rooms->empty());
             }
         }
     }

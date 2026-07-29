@@ -4674,14 +4674,24 @@ namespace
                            device_id, auth::redacted_key_payload_summary(payload));
     }
 
-    [[nodiscard]] auto one_time_key_count(ClientServerRuntime const& rt, std::string_view user,
-                                          std::string_view device_id) noexcept -> std::size_t
+    [[nodiscard]] auto one_time_key_counts(ClientServerRuntime const& rt, std::string_view user,
+                                           std::string_view device_id) noexcept -> std::map<std::string, std::size_t>
     {
-        return static_cast<std::size_t>(
-            std::ranges::count_if(rt.homeserver.database.persistent_store.one_time_keys,
-                                  [user, device_id](database::PersistentOneTimeKey const& key) {
-                                      return key.user_id == user && key.device_id == device_id;
-                                  }));
+        auto counts = std::map<std::string, std::size_t>{};
+        for (auto const& key : rt.homeserver.database.persistent_store.one_time_keys)
+        {
+            if (key.user_id != user || key.device_id != device_id)
+            {
+                continue;
+            }
+            // Matrix key IDs are "algorithm:key_id"; the algorithm prefix
+            // determines which counter the client sees in /keys/upload.
+            auto const colon = key.key_id.find(':');
+            auto const algorithm =
+                (colon == std::string_view::npos) ? std::string{"unknown"} : std::string{key.key_id.substr(0U, colon)};
+            ++counts[algorithm];
+        }
+        return counts;
     }
 
     // Holds both the key ID (e.g. "ed25519:DEVICE1") and the base64-encoded
@@ -5026,14 +5036,15 @@ namespace
                 return err(500U, "M_UNKNOWN", "fallback key persistence failed");
             }
         }
-        return resp(200U,
-                    json_serialize(json_obj({
-                        json_member("one_time_key_counts",
-                                    json_obj({
-                                        json_member("signed_curve25519", json_int(static_cast<std::int64_t>(
-                                                                             one_time_key_count(rt, user, device_id)))),
-                                    })),
-                    })));
+        auto const counts = one_time_key_counts(rt, user, device_id);
+        auto counts_members = canonicaljson::Object{};
+        for (auto const& [algorithm, count] : counts)
+        {
+            counts_members.push_back(json_member(algorithm, json_int(static_cast<std::int64_t>(count))));
+        }
+        return resp(200U, json_serialize(json_obj({
+                              json_member("one_time_key_counts", json_obj(std::move(counts_members))),
+                          })));
     }
 
     [[nodiscard]] auto handle_key_query(ClientServerRuntime& rt, std::string_view requesting_user,

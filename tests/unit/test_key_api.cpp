@@ -68,8 +68,14 @@ SCENARIO("Key API route scaffold covers device key and backup endpoints", "[auth
                 "PUT", "/_matrix/client/v3/room_keys/keys/!room:example.org/session");
             auto const device_list_update =
                 merovingian::auth::match_key_api_route("PUT", "/_matrix/client/v3/devices/DEVICE123");
+            auto const delete_room_session = merovingian::auth::match_key_api_route(
+                "DELETE", "/_matrix/client/v3/room_keys/keys/!room:example.org/session");
+            auto const delete_room_keys =
+                merovingian::auth::match_key_api_route("DELETE", "/_matrix/client/v3/room_keys/keys/!room:example.org");
+            auto const delete_all_keys =
+                merovingian::auth::match_key_api_route("DELETE", "/_matrix/client/v3/room_keys/keys");
 
-            THEN("one-time, fallback, cross-signing, signatures, backup, and device-list routes exist")
+            THEN("one-time, fallback, cross-signing, signatures, backup, device-list, and deletion routes exist")
             {
                 // Spec MUST: all key API endpoints must be routable.
                 // Do NOT remove route checks - missing routes break E2EE setup
@@ -82,9 +88,18 @@ SCENARIO("Key API route scaffold covers device key and backup endpoints", "[auth
                 REQUIRE(backup_version.matched);
                 REQUIRE(room_key_backup.matched);
                 REQUIRE(device_list_update.matched);
+                REQUIRE(delete_room_session.matched);
+                REQUIRE(delete_room_keys.matched);
+                REQUIRE(delete_all_keys.matched);
                 REQUIRE(upload.route.endpoint == merovingian::auth::KeyApiEndpoint::upload_keys);
                 REQUIRE(room_key_backup.route.endpoint == merovingian::auth::KeyApiEndpoint::put_room_key_backup);
                 REQUIRE(device_list_update.route.endpoint == merovingian::auth::KeyApiEndpoint::device_list_update);
+                REQUIRE(delete_room_session.route.endpoint ==
+                        merovingian::auth::KeyApiEndpoint::delete_room_key_backup);
+                REQUIRE(delete_room_keys.route.endpoint ==
+                        merovingian::auth::KeyApiEndpoint::delete_room_key_backup_room);
+                REQUIRE(delete_all_keys.route.endpoint ==
+                        merovingian::auth::KeyApiEndpoint::delete_room_key_backup_batch);
             }
         }
     }

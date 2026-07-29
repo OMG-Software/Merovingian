@@ -11697,13 +11697,14 @@ SCENARIO("POST /keys/upload followed by POST /keys/claim returns a one-time key"
                  R"({"one_time_keys":{"curve25519:AAAAA":"otk_payload_1","curve25519:BBBBB":"otk_payload_2"}})"});
             REQUIRE(upload.response.status == 200U);
             // Verify OTK count is reflected immediately.
-            // Server aggregates all OTK types under signed_curve25519 in the count response.
+            // The uploaded key IDs are "curve25519:<id>"; the response MUST
+            // report counts grouped by that algorithm (spec §12.1 /keys/upload).
             auto const up_body = parse_object(upload.response.body);
             auto const* counts = object_member_as_object(up_body, "one_time_key_counts");
             REQUIRE(counts != nullptr);
-            auto const* sc_count = int_member(*counts, "signed_curve25519");
-            REQUIRE(sc_count != nullptr);
-            REQUIRE(*sc_count >= 1);
+            auto const* curve_count = int_member(*counts, "curve25519");
+            REQUIRE(curve_count != nullptr);
+            REQUIRE(*curve_count == 2);
 
             auto const claim = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"POST", "/_matrix/client/v3/keys/claim", alice,
