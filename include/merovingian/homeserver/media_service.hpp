@@ -71,6 +71,25 @@ struct FederationMediaPart final
 // Pure function; performs no I/O. Exposed for unit testing.
 [[nodiscard]] auto parse_federation_media_multipart(std::string_view content_type_header, std::string_view body)
     -> FederationMediaPart;
+
+// Result of resolving a `Location` redirect URL from the authenticated
+// federation media download endpoint. `ok` is true when the URL uses HTTPS,
+// has a resolvable host, and resolves only to non-private/non-loopback
+// addresses. `discovery` carries the pinned addresses when resolution
+// succeeds; `reason` explains the failure when it does not.
+struct MediaRedirectResolutionResult final
+{
+    bool ok{false};
+    std::string reason{};
+    federation::ServerDiscoveryResult discovery{};
+};
+
+// Resolves a media redirect URL in an SSRF-safe way so the caller can fetch
+// it with pinned addresses. `location_url` must be an absolute https:// URL;
+// relative redirects are rejected. Exposed for unit testing.
+[[nodiscard]] auto resolve_media_redirect_url(std::string_view location_url,
+                                              federation::ServerDiscoveryNetwork& network)
+    -> MediaRedirectResolutionResult;
 [[nodiscard]] auto media_metrics_summary(HomeserverRuntime const& runtime) -> std::string;
 
 } // namespace merovingian::homeserver

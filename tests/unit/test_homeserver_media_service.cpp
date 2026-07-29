@@ -1,10 +1,48 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "merovingian/federation/server_discovery.hpp"
 #include "merovingian/homeserver/media_service.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstdint>
 #include <string>
+#include <string_view>
+#include <unordered_map>
+#include <vector>
+
+namespace
+{
+
+class FakeDiscoveryNetwork final : public merovingian::federation::ServerDiscoveryNetwork
+{
+public:
+    [[nodiscard]] auto fetch_well_known(std::string_view, std::uint32_t)
+        -> merovingian::federation::WellKnownServerResult override
+    {
+        return {};
+    }
+
+    [[nodiscard]] auto lookup_srv(std::string_view) -> std::vector<merovingian::federation::SrvRecord> override
+    {
+        return {};
+    }
+
+    [[nodiscard]] auto lookup_addresses(std::string_view host, std::uint16_t)
+        -> merovingian::federation::ResolvedAddressSet override
+    {
+        auto found = addresses.find(std::string{host});
+        if (found == addresses.end())
+        {
+            return {false, {}, "address not found"};
+        }
+        return {true, found->second, {}};
+    }
+
+    std::unordered_map<std::string, std::vector<std::string>> addresses{};
+};
+
+} // namespace
 
 // Security audit finding: fetch_remote_media_live() built the outbound
 // federation media download URL as /_matrix/media/v3/download/{mediaId},
@@ -172,6 +210,151 @@ SCENARIO("parse_federation_media_multipart parses the multipart/mixed body of th
             THEN("parsing fails since the media part is missing")
             {
                 REQUIRE_FALSE(parsed.ok);
+            }
+        }
+    }
+}
+
+// SSRF-safe redirect following for the authenticated federation media endpoint.
+// resolve_media_redirect_url() must only accept absolute https:// URLs and must
+// pin only non-private/non-loopback addresses before the caller connects.
+SCENARIO("resolve_media_redirect_url validates and resolves federation media redirect URLs safely",
+         "[homeserver][media][federation][security]")
+{
+    GIVEN("a fake discovery network that returns controlled addresses")
+    {
+        auto network = FakeDiscoveryNetwork{};
+        network.addresses["cdn.example.org"] = {"203.0.113.10"};
+        network.addresses["v6.example.org"] = {"2001:db8::1"};
+        network.addresses["2001:db8::1"] = {"2001:db8::1"};
+        network.addresses["::1"] = {"::1"};
+        network.addresses["private.example.org"] = {"192.168.1.1"};
+        network.addresses["loopback.example.org"] = {"127.0.0.1"};
+
+        WHEN("the redirect URL is a plain HTTPS URL with a public DNS name")
+        {
+            auto const result =
+                merovingian::homeserver::resolve_media_redirect_url("https://cdn.example.org/media/abc123", network);
+
+            THEN("resolution succeeds and pins the public address at the default port")
+            {
+                REQUIRE(result.ok);
+                REQUIRE(result.discovery.discovery_allowed);
+                REQUIRE(result.discovery.resolved_host == "cdn.example.org");
+                REQUIRE(result.discovery.resolved_port == 443U);
+                REQUIRE(result.discovery.pinned_addresses == std::vector<std::string>{"203.0.113.10"});
+                REQUIRE(result.discovery.tls_required);
+            }
+        }
+
+        WHEN("the redirect URL carries an explicit port")
+        {
+            auto const result = merovingian::homeserver::resolve_media_redirect_url(
+                "https://cdn.example.org:8443/media/abc123", network);
+
+            THEN("the explicit port is preserved and the same address set is pinned")
+            {
+                REQUIRE(result.ok);
+                REQUIRE(result.discovery.resolved_port == 8443U);
+                REQUIRE(result.discovery.pinned_addresses == std::vector<std::string>{"203.0.113.10"});
+            }
+        }
+
+        WHEN("the redirect URL uses an IPv6 literal")
+        {
+            auto const result =
+                merovingian::homeserver::resolve_media_redirect_url("https://[2001:db8::1]:8443/media/abc123", network);
+
+            THEN("resolution succeeds for the public IPv6 literal and pins it directly")
+            {
+                REQUIRE(result.ok);
+                REQUIRE(result.discovery.resolved_host == "2001:db8::1");
+                REQUIRE(result.discovery.resolved_port == 8443U);
+                REQUIRE(result.discovery.pinned_addresses == std::vector<std::string>{"2001:db8::1"});
+            }
+        }
+
+        WHEN("the redirect URL has a query string and fragment")
+        {
+            auto const result = merovingian::homeserver::resolve_media_redirect_url(
+                "https://cdn.example.org/media/abc123?token=secret#section", network);
+
+            THEN("authority parsing ignores the query and fragment while preserving the path")
+            {
+                REQUIRE(result.ok);
+                REQUIRE(result.discovery.resolved_host == "cdn.example.org");
+            }
+        }
+
+        WHEN("the redirect URL uses cleartext http")
+        {
+            auto const result =
+                merovingian::homeserver::resolve_media_redirect_url("http://cdn.example.org/media/abc123", network);
+
+            THEN("resolution fails because federation media redirects must be HTTPS")
+            {
+                REQUIRE_FALSE(result.ok);
+                REQUIRE_FALSE(result.discovery.discovery_allowed);
+            }
+        }
+
+        WHEN("the redirect URL contains userinfo")
+        {
+            auto const result = merovingian::homeserver::resolve_media_redirect_url(
+                "https://user:pass@cdn.example.org/media/abc123", network);
+
+            THEN("resolution fails because the authority is malformed")
+            {
+                REQUIRE_FALSE(result.ok);
+                REQUIRE_FALSE(result.discovery.discovery_allowed);
+            }
+        }
+
+        WHEN("the resolved host points to a private IP")
+        {
+            auto const result = merovingian::homeserver::resolve_media_redirect_url(
+                "https://private.example.org/media/abc123", network);
+
+            THEN("resolution fails to prevent SSRF to internal infrastructure")
+            {
+                REQUIRE_FALSE(result.ok);
+                REQUIRE_FALSE(result.discovery.discovery_allowed);
+            }
+        }
+
+        WHEN("the resolved host points to loopback")
+        {
+            auto const result = merovingian::homeserver::resolve_media_redirect_url(
+                "https://loopback.example.org/media/abc123", network);
+
+            THEN("resolution fails to prevent SSRF to the local host")
+            {
+                REQUIRE_FALSE(result.ok);
+                REQUIRE_FALSE(result.discovery.discovery_allowed);
+            }
+        }
+
+        WHEN("the host cannot be resolved")
+        {
+            auto const result = merovingian::homeserver::resolve_media_redirect_url(
+                "https://missing.example.org/media/abc123", network);
+
+            THEN("resolution fails because there are no pinned addresses")
+            {
+                REQUIRE_FALSE(result.ok);
+                REQUIRE_FALSE(result.discovery.discovery_allowed);
+            }
+        }
+
+        WHEN("the redirect URL uses an IPv6 loopback literal")
+        {
+            auto const result =
+                merovingian::homeserver::resolve_media_redirect_url("https://[::1]/media/abc123", network);
+
+            THEN("resolution fails because the literal is loopback")
+            {
+                REQUIRE_FALSE(result.ok);
+                REQUIRE_FALSE(result.discovery.discovery_allowed);
             }
         }
     }

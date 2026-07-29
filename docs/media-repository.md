@@ -49,10 +49,11 @@ current in-process runtime path.
   Authorization header the same way outbound transactions are signed. The
   response is `multipart/mixed` with exactly two parts — an empty JSON
   metadata part and either the media bytes or a `Location` redirect
-  (`parse_federation_media_multipart()`). A `Location` redirect is not yet
-  followed (no SSRF-safe resolver exists for arbitrary CDN hosts; see
-  `docs/todos/capability-gaps.md`), so that case falls back like a 404 would.
-  Only on a `404` (or an unusable `200`) does the homeserver fall back to the
+  (`parse_federation_media_multipart()`). A `Location` redirect is now followed
+  after SSRF-safe resolution and address pinning via
+  `resolve_media_redirect_url()` and `federation::resolve_federation_destination()`;
+  only when the redirect itself cannot be resolved safely does the homeserver
+  fall back. Only on a `404` (or an unusable `200`) does the homeserver fall back to the
   deprecated, unauthenticated `GET /_matrix/media/v3/download/{serverName}/{mediaId}`
   endpoint with `allow_remote=false` (`remote_media_download_url()`,
   percent-encoding both segments so a reserved character in either cannot be

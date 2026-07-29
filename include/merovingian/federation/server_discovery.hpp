@@ -101,6 +101,15 @@ struct FederationTlsOriginDecision final
                                                   ServerDiscoveryResult const& discovery) noexcept
     -> FederationTlsOriginDecision;
 
+// Resolves a host:port pair for an outbound federation HTTPS request in an
+// SSRF-safe way. Rejects private/loopback IP literals and hosts whose
+// resolved addresses include private/loopback space. The returned
+// ServerDiscoveryResult carries pinned addresses suitable for libcurl's
+// CURLOPT_RESOLVE. Used by callers that need to pin addresses before
+// connecting, such as media redirect following.
+[[nodiscard]] auto resolve_federation_destination(std::string_view host, std::uint16_t port,
+                                                  ServerDiscoveryNetwork& network) -> ServerDiscoveryResult;
+
 // Creates a production ServerDiscoveryNetwork backed by real DNS and
 // HTTP well-known lookups. Used by start_runtime to wire the remote key
 // resolver and outbound membership fetch paths.

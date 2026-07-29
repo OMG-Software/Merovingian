@@ -198,37 +198,9 @@ namespace
     [[nodiscard]] auto resolve_destination(std::string_view server_name, HostPort host_port,
                                            ServerDiscoveryNetwork& network) -> ServerDiscoveryResult
     {
-        auto result = ServerDiscoveryResult{};
-        result.server_name = server_name;
-        result.resolved_host = std::move(host_port.host);
-        result.resolved_port = host_port.port;
-        result.tls_required = result.resolved_port != 8008U;
-
-        if (result.resolved_host.empty())
-        {
-            result.reason = "resolved host is empty";
-            return result;
-        }
-        if (host_is_numeric_ip(result.resolved_host) && ip_address_is_private_or_loopback(result.resolved_host))
-        {
-            result.reason = "resolved address is a private or loopback IP address";
-            return result;
-        }
-
-        auto addresses = network.lookup_addresses(result.resolved_host, result.resolved_port);
-        if (!addresses.ok)
-        {
-            result.reason = addresses.reason.empty() ? "resolved host has no addresses" : addresses.reason;
-            return result;
-        }
-        if (!address_set_allowed(addresses.addresses))
-        {
-            result.reason = "resolved address is a private or loopback IP address";
-            return result;
-        }
-
-        result.pinned_addresses = std::move(addresses.addresses);
-        result.discovery_allowed = true;
+        auto result = resolve_federation_destination(host_port.host, host_port.port, network);
+        result.server_name = std::string{server_name};
+        result.tls_required = host_port.port != 8008U;
         return result;
     }
 
@@ -736,6 +708,42 @@ auto validate_federation_tls_origin(std::string_view server_name, ServerDiscover
     }
 
     return {true, {}};
+}
+
+auto resolve_federation_destination(std::string_view host, std::uint16_t port, ServerDiscoveryNetwork& network)
+    -> ServerDiscoveryResult
+{
+    auto result = ServerDiscoveryResult{};
+    result.resolved_host = std::string{host};
+    result.resolved_port = port;
+    result.tls_required = true;
+
+    if (result.resolved_host.empty())
+    {
+        result.reason = "resolved host is empty";
+        return result;
+    }
+    if (host_is_numeric_ip(result.resolved_host) && ip_address_is_private_or_loopback(result.resolved_host))
+    {
+        result.reason = "resolved address is a private or loopback IP address";
+        return result;
+    }
+
+    auto addresses = network.lookup_addresses(result.resolved_host, result.resolved_port);
+    if (!addresses.ok)
+    {
+        result.reason = addresses.reason.empty() ? "resolved host has no addresses" : addresses.reason;
+        return result;
+    }
+    if (!address_set_allowed(addresses.addresses))
+    {
+        result.reason = "resolved address is a private or loopback IP address";
+        return result;
+    }
+
+    result.pinned_addresses = std::move(addresses.addresses);
+    result.discovery_allowed = true;
+    return result;
 }
 
 } // namespace merovingian::federation
