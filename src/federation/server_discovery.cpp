@@ -684,7 +684,7 @@ auto make_system_server_discovery_network() -> std::unique_ptr<ServerDiscoveryNe
 auto validate_federation_tls_origin(std::string_view server_name, ServerDiscoveryResult const& discovery) noexcept
     -> FederationTlsOriginDecision
 {
-    if (!server_name_is_valid(server_name))
+    if (!server_name_is_valid(server_name) && !host_is_numeric_ip(server_name))
     {
         return {false, "invalid server name"};
     }

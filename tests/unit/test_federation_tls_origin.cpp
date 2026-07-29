@@ -188,3 +188,50 @@ SCENARIO("TLS origin validation rejects invalid server names", "[federation][dis
         }
     }
 }
+
+SCENARIO("TLS origin validation handles IPv6 literals consistently", "[federation][discovery][security]")
+{
+    GIVEN("a numeric IPv6 resolved host")
+    {
+        auto const result = make_result("2001:db8::1", "2001:db8::1", 8448U, true, true);
+
+        WHEN("validated against the same IP literal server name")
+        {
+            auto const decision = merovingian::federation::validate_federation_tls_origin("2001:db8::1", result);
+
+            THEN("the destination is accepted")
+            {
+                REQUIRE(decision.valid);
+            }
+        }
+
+        WHEN("validated against a different DNS name")
+        {
+            auto const decision = merovingian::federation::validate_federation_tls_origin("example.org", result);
+
+            THEN("the destination is rejected")
+            {
+                REQUIRE_FALSE(decision.valid);
+            }
+        }
+    }
+}
+
+SCENARIO("TLS origin validation rejects an empty resolved host", "[federation][discovery][security]")
+{
+    GIVEN("a discovery result with no resolved host")
+    {
+        auto const result = make_result("example.org", "", 8448U, true, true);
+
+        WHEN("validated")
+        {
+            auto const decision = merovingian::federation::validate_federation_tls_origin("example.org", result);
+
+            THEN("it is rejected")
+            {
+                REQUIRE_FALSE(decision.valid);
+                REQUIRE_FALSE(decision.reason.empty());
+            }
+        }
+    }
+}

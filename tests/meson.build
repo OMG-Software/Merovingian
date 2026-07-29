@@ -1,5 +1,5 @@
 if get_option ('build_tests')
-  shell = find_program('sh')
+shell = find_program('sh')
   python = find_program('python3', 'python')
   wrapped_runtime_env = environment()
   wrapped_runtime_env.prepend(
@@ -102,6 +102,7 @@ if get_option ('build_tests')
       'unit/test_config_federation_join.cpp',
       'unit/test_config_client_rate_limits.cpp',
       'unit/test_config_log_modules.cpp',
+      'unit/test_config_oidc_validation.cpp',
       'unit/test_config_parser.cpp',
       'unit/test_config_reload_plan.cpp',
       'unit/test_config_reload_policy.cpp',
@@ -230,21 +231,21 @@ if get_option ('build_tests')
 
   test('conformance-tests', conformance_tests, timeout: 600)
 
-  # The thumbnail integration test spawns the real sandboxed worker; pass its
-  # build-tree path when it was built (system image codecs available).
+#The thumbnail integration test spawns the real sandboxed worker; pass its
+#build - tree path when it was built(system image codecs available).
   thumbnail_test_args = []
   if thumbnail_worker_available
     thumbnail_test_args = ['-DMEROVINGIAN_TEST_THUMBNAIL_WORKER="' + thumbnail_worker_exe.full_path() + '"']
   endif
 
-  # The federation worker integration test spawns the real merovingian-fed-worker;
-  # pass its build-tree path so the test can locate the binary without relying on
-  # libexecdir installation.
+#The federation worker integration test spawns the real merovingian - fed - worker;
+#pass its build - tree path so the test can locate the binary without relying on
+#libexecdir installation.
   federation_worker_test_args = ['-DMEROVINGIAN_TEST_FEDERATION_WORKER="' + federation_worker_exe.full_path() + '"']
 
-  # The binary startup hardening test spawns the real merovingian-server to
-  # confirm that the seccomp filter allows all syscalls needed post-startup
-  # (rseq, membarrier, etc.) on every supported platform.
+#The binary startup hardening test spawns the real merovingian - server to
+#confirm that the seccomp filter allows all syscalls needed post - startup
+#(rseq, membarrier, etc.) on every supported platform.
   server_test_args = ['-DMEROVINGIAN_TEST_SERVER_BINARY="' + server_exe.full_path() + '"']
 
   integration_tests = executable(
@@ -277,9 +278,9 @@ if get_option ('build_tests')
     cpp_args: [thumbnail_test_args, federation_worker_test_args, server_test_args],
   )
 
-  # Integration tests spawn real dependencies (PostgreSQL, SQLite, thumbnail
-  # worker) and can be slow under sanitizers; give them the same headroom as
-  # the unit and conformance suites.
+#Integration tests spawn real dependencies(PostgreSQL, SQLite, thumbnail
+#worker) and can be slow under sanitizers; give them the same headroom as
+#the unit and conformance suites.
   test('integration-tests', integration_tests, timeout: 600)
 
   if get_option('build_live_tests')
