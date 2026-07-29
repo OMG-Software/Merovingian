@@ -692,6 +692,59 @@ namespace
                                            out_result.response.body);
     }
 
+    // Resamples media bytes in the sandboxed worker. Anything the worker cannot
+    // handle (unsupported format, worker not installed, decode failure) degrades
+    // to a 404 so a thumbnail request never hard-fails by serving the original
+    // full-size bytes. Shared by the local and remote thumbnail paths.
+    [[nodiscard]] auto generate_thumbnail_for_media(HomeserverRuntime& runtime, std::string_view media_id,
+                                                    std::string_view content_type, std::string_view bytes,
+                                                    std::uint32_t width, std::uint32_t height,
+                                                    media::ThumbnailMethod method) -> OperationResult
+    {
+        auto const& media_config = runtime.media_repository.config;
+        auto thumbnailer_config = media::ThumbnailerConfig{};
+        thumbnailer_config.worker_path = media_config.thumbnail_worker_path;
+        thumbnailer_config.worker_binary_fd = media_config.thumbnail_worker_fd;
+        thumbnailer_config.timeout_seconds = media_config.thumbnail_timeout_seconds;
+        thumbnailer_config.max_input_bytes = media_config.max_decode_input_bytes;
+        thumbnailer_config.max_output_bytes = media_config.max_decode_output_bytes;
+        thumbnailer_config.max_pixels = static_cast<std::uint32_t>(media_config.max_decode_pixels);
+
+        auto request = media::ThumbnailRequest{};
+        request.source_bytes = bytes;
+        request.source_content_type = std::string{content_type};
+        request.width = width;
+        request.height = height;
+        request.method = method;
+
+        if (media_config.thumbnailing_enabled && !thumbnailer_config.worker_path.empty())
+        {
+            auto const result = media::generate_thumbnail(thumbnailer_config, request);
+            if (result.ok)
+            {
+                ++runtime.media_repository.metrics.thumbnails_served;
+                log_diagnostic("thumbnail.resampled", {
+                                                          {"media_id", std::string{media_id},         false},
+                                                          {"width",    std::to_string(result.width),  false},
+                                                          {"height",   std::to_string(result.height), false}
+                });
+                return make_operation_result(true, result.content_type + "|" + result.bytes, {}, 200U);
+            }
+            log_diagnostic("thumbnail.generation_failed", {
+                                                              {"media_id", std::string{media_id},         false},
+                                                              {"reason",   result.reason,                 false},
+                                                              {"status",   std::to_string(result.status), false}
+            });
+            return make_operation_result(false, {}, "thumbnail generation failed", 404U);
+        }
+
+        log_diagnostic("thumbnail.unavailable", {
+                                                    {"media_id",     std::string{media_id},     false},
+                                                    {"content_type", std::string{content_type}, false}
+        });
+        return make_operation_result(false, {}, "thumbnails unavailable", 404U);
+    }
+
 } // namespace
 
 [[nodiscard]] auto remote_media_download_url(std::string_view resolved_host, std::uint16_t resolved_port,
@@ -874,9 +927,25 @@ namespace
                                                {"origin_server", std::string{server_name}, false},
                                                {"media_id",      std::string{media_id},    false}
         });
-        // Remote thumbnailing is not yet performed locally; serve the fetched
-        // remote media as-is.
-        return fetch_remote_media_live(runtime, server_name, media_id);
+        // Fetch the remote media first, then resample it locally so a thumbnail
+        // request never answers with the full-size original.
+        auto const fetch_result = fetch_remote_media_live(runtime, server_name, media_id);
+        if (!fetch_result.ok || fetch_result.status < 200U || fetch_result.status >= 300U)
+        {
+            return fetch_result;
+        }
+        auto const separator = fetch_result.value.find('|');
+        if (separator == std::string::npos)
+        {
+            log_diagnostic("thumbnail.remote_malformed", {
+                                                             {"origin_server", std::string{server_name}, false},
+                                                             {"media_id",      std::string{media_id},    false}
+            });
+            return make_operation_result(false, {}, "remote media response malformed", 502U);
+        }
+        auto const content_type = std::string_view{fetch_result.value}.substr(0U, separator);
+        auto const bytes = std::string_view{fetch_result.value}.substr(separator + 1U);
+        return generate_thumbnail_for_media(runtime, media_id, content_type, bytes, width, height, method);
     }
 
     auto const* record = media::find_local_media_record(runtime.media_repository, media_id);
@@ -900,56 +969,7 @@ namespace
         return make_operation_result(false, {}, "thumbnail data not found", 404U);
     }
 
-    // Resample in the sandboxed worker. Anything the worker cannot handle
-    // (unsupported format, worker not installed, decode failure) degrades to
-    // serving the original bytes so a thumbnail request never hard-fails.
-    auto const& media_config = runtime.media_repository.config;
-    auto thumbnailer_config = media::ThumbnailerConfig{};
-    thumbnailer_config.worker_path = media_config.thumbnail_worker_path;
-    thumbnailer_config.worker_binary_fd = media_config.thumbnail_worker_fd;
-    thumbnailer_config.timeout_seconds = media_config.thumbnail_timeout_seconds;
-    thumbnailer_config.max_input_bytes = media_config.max_decode_input_bytes;
-    thumbnailer_config.max_output_bytes = media_config.max_decode_output_bytes;
-    thumbnailer_config.max_pixels = static_cast<std::uint32_t>(media_config.max_decode_pixels);
-
-    auto request = media::ThumbnailRequest{};
-    request.source_bytes = blob->bytes;
-    request.source_content_type = record->content_type;
-    request.width = width;
-    request.height = height;
-    request.method = method;
-
-    if (media_config.thumbnailing_enabled && !thumbnailer_config.worker_path.empty())
-    {
-        auto const result = media::generate_thumbnail(thumbnailer_config, request);
-        if (result.ok)
-        {
-            ++runtime.media_repository.metrics.thumbnails_served;
-            log_diagnostic("thumbnail.resampled", {
-                                                      {"media_id", std::string{media_id},         false},
-                                                      {"width",    std::to_string(result.width),  false},
-                                                      {"height",   std::to_string(result.height), false}
-            });
-            return make_operation_result(true, result.content_type + "|" + result.bytes, {}, 200U);
-        }
-        log_diagnostic("thumbnail.generation_failed", {
-                                                          {"media_id", std::string{media_id},         false},
-                                                          {"reason",   result.reason,                 false},
-                                                          {"status",   std::to_string(result.status), false}
-        });
-        return make_operation_result(false, {}, "thumbnail generation failed", 404U);
-    }
-
-    // #446: never fall back to the full-size original. A 32x32 thumbnail
-    // request answered with a multi-megabyte blob is a bandwidth/CPU
-    // amplification vector; when thumbnailing is disabled or the worker is
-    // not installed, the endpoint reports the thumbnail as unavailable.
-    log_diagnostic("thumbnail.unavailable",
-                   {
-                       {"media_id",     std::string{media_id}, false},
-                       {"content_type", record->content_type,  false}
-    });
-    return make_operation_result(false, {}, "thumbnails unavailable", 404U);
+    return generate_thumbnail_for_media(runtime, media_id, record->content_type, blob->bytes, width, height, method);
 }
 
 [[nodiscard]] auto admin_quarantine_local_media(HomeserverRuntime& runtime, std::string_view access_token,

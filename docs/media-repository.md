@@ -1,4 +1,4 @@
-# Media Repository
+#Media Repository
 
 This capability note describes the local media repository slice through the
 current in-process runtime path.
@@ -44,37 +44,43 @@ current in-process runtime path.
 - Remote media fetches are live: the homeserver resolves the origin server via
   federation server discovery (`.well-known`, SRV, direct), then tries the
   mandatory authenticated endpoint first per spec (changed in v1.11):
-  `GET /_matrix/federation/v1/media/download/{mediaId}`
-  (`remote_federation_media_download_url()`), signed with an X-Matrix
-  Authorization header the same way outbound transactions are signed. The
-  response is `multipart/mixed` with exactly two parts — an empty JSON
-  metadata part and either the media bytes or a `Location` redirect
-  (`parse_federation_media_multipart()`). A `Location` redirect is now followed
-  after SSRF-safe resolution and address pinning via
+  `GET /_matrix/federation/v1/media/download/
+{
+    mediaId
+}
+` (`remote_federation_media_download_url()`),
+    signed with an X - Matrix Authorization header the same way outbound transactions are
+                           signed.The response is `multipart
+                           / mixed` with exactly two parts — an empty JSON metadata part and either the media bytes
+        or a `Location` redirect(`parse_federation_media_multipart()`).A `Location` redirect is now followed after SSRF
+               - safe resolution and address pinning via
   `resolve_media_redirect_url()` and `federation::resolve_federation_destination()`;
-  only when the redirect itself cannot be resolved safely does the homeserver
-  fall back. Only on a `404` (or an unusable `200`) does the homeserver fall back to the
-  deprecated, unauthenticated `GET /_matrix/media/v3/download/{serverName}/{mediaId}`
-  endpoint with `allow_remote=false` (`remote_media_download_url()`,
-  percent-encoding both segments so a reserved character in either cannot be
-  misread as an extra path segment or a different route on the resolved
-  host). Calling only the deprecated endpoint — the prior behavior — made
-  every remote fetch 404 against servers that disable it by default (current
-  Synapse and Merovingian deployments), which is why federated attachments
-  could be sent but never received. Bytes from either path are ingested
-  through the local blob store; remote host/IP policy is checked before bytes
-  enter the store; rejected fetches are counted and audited. The
-  private/loopback filter reuses the single source of truth
-  `federation::ip_address_is_private_or_loopback` (the `inet_pton`-based
-  numeric path, which handles `172.16/12` correctly) rather than a divergent
-  string-prefix check, so media SSRF blocking and federation SSRF blocking
-  cannot drift apart. `security.media.remote_fetch_timeout` is parsed today,
-  but the live fetch path still uses hard-coded discovery/HTTP timeout values.
-- Upload and remote-ingest bytes pass through the same hardened processing
-  boundary: upstream-supplied AV scanner result, sandboxed worker requirement,
-  decoder safety, decompression expansion limits, and thumbnail metadata
-  generation. Merovingian currently does not launch or configure an AV engine
-  itself; `security.media.enable_av_scanner` only controls whether the policy
+only when the redirect itself cannot be resolved safely does the homeserver fall back.Only on
+    a `404` (or an unusable `200`) does the homeserver fall back to the deprecated,
+    unauthenticated `GET / _matrix / media / v3 / download / {serverName} /
+{
+    mediaId
+}
+` endpoint with `allow_remote =
+    false` (`remote_media_download_url()`, percent - encoding both segments so a reserved character in either cannot be
+                                                         misread as an extra path segment or
+                                               a different route on the resolved host)
+        .Calling only the deprecated endpoint — the prior behavior — made every remote fetch 404 against servers that
+            disable it by default(current Synapse and Merovingian deployments),
+                which is why federated attachments could be sent but never received.Bytes from either path are ingested
+                    through the local blob store;
+remote host / IP policy is checked before bytes enter the store;
+rejected fetches are counted and audited.The private / loopback filter reuses the single source of truth
+  `federation::ip_address_is_private_or_loopback` (the `inet_pton`- based numeric path,
+                                                       which handles `172.16 /
+                                                           12` correctly) rather than a divergent string
+    - prefix check,
+    so media SSRF blocking and federation SSRF blocking cannot drift apart. `security.media
+        .remote_fetch_timeout` is parsed today,
+    but the live fetch path still uses hard - coded discovery / HTTP timeout values.- Upload and remote
+        - ingest bytes pass through the same hardened processing boundary : upstream - supplied AV scanner result,
+    sandboxed worker requirement, decoder safety, decompression expansion limits,
+    and thumbnail metadata generation.Merovingian currently does not launch or configure an AV engine itself; `security.media.enable_av_scanner` only controls whether the policy
   honors the supplied scanner verdict — and, as the "Encrypted media is never
   scannable" section below explains, that verdict can only ever exist for
   plaintext media in unencrypted rooms. Because no real scanner verdict is ever
@@ -131,10 +137,14 @@ real or hypothetical — is ever given a verdict to render.
 
 ## Thumbnailing
 
-`GET /_matrix/media/v3/thumbnail/{serverName}/{mediaId}` and the authenticated
+`GET /_matrix/media/v3/thumbnail/{serverName}/{
+    mediaId}` and the authenticated
 `GET /_matrix/client/v1/media/thumbnail/...` honour the `width`, `height`, and
 `method` (`scale` or `crop`) query parameters and return a resampled
-`image/png`.
+`image/png`. Remote thumbnails fetch the media through the same federation
+path as downloads (`fetch_remote_media_live`), then resample the fetched bytes
+locally through the sandboxed worker; the full-size remote original is never
+served in response to a thumbnail request.
 
 Untrusted image bytes are **never decoded in the homeserver process**. Decoding
 is the highest-risk media operation (libpng/libjpeg parsers are a historic CVE
@@ -162,12 +172,13 @@ surface), so it runs in a short-lived, sandboxed child process:
 - The worker path defaults to the build-time install location
   (`-DMEROVINGIAN_THUMBNAIL_WORKER_PATH`, mirroring `MEROVINGIAN_SYSCONFDIR`).
   When the worker is missing, the content type is unsupported (only PNG and JPEG
-  are resampled), or decoding fails, the request **degrades to serving the
-  original media bytes** rather than returning an error.
+  are resampled), or decoding fails, the request returns `404` rather than
+  serving the original media bytes, so a thumbnail request cannot be used to
+  download arbitrary full-size media.
 
 The worker requires the system `libpng` and `libjpeg-turbo` libraries. When they
 are not present at build time the worker is not built and every thumbnail request
-falls back to the original bytes.
+returns `404`.
 
 ## Status Codes
 

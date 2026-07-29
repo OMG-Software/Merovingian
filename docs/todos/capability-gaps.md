@@ -17,8 +17,22 @@ Open work per capability area. Status column reflects the current level in the
 | E2EE key APIs | `runtime-wired` | Key backup version management, session retrieval, count, and etag landed. Remaining: backup session deletion endpoint wiring, full OTK key-count algorithms for `keys/upload`, broader Matrix v1.19 semantics, and remaining conformance fixtures. |
 | Rooms, events, and sync | `runtime-wired` | Sync long polling, filters, presence, to-device, account-data, and restricted/restricted_v2 join rule evaluation now wired. Third-party invite auth (rule 4.3.1 signature/token validation on `m.room.member` invites, plus invite-power gating on `m.room.third_party_invite` creation) landed and is wired into the local send path, inbound federation PDU path, and state resolution. Remaining: accepting the shape end-to-end via `POST /invite` (needs an identity-server HTTP client) and `third_party_signed` on `/join` (needs `exchange_third_party_invite` or same-server authority to sign on behalf of the original inviter), and broader Matrix v1.19 room-version conformance fixtures. |
 | Federation | `runtime-wired` | Room-version-specific PDU verification, simultaneously-active multiple signing keys, and broader Matrix federation conformance coverage. Key-rotation publication with `old_verify_keys` landed in 0.8.6. |
-| Media repository | `runtime-wired` | Live remote media transport and server discovery wired in v0.7.2. Real image resampling landed in 0.8.10 via the sandboxed out-of-process `merovingian-thumbnail-worker` (libpng/libjpeg-turbo), generated on demand per requested geometry. Outbound remote fetch now tries the mandatory authenticated `GET /_matrix/federation/v1/media/download/{mediaId}` endpoint first, falling back to the deprecated `/_matrix/media/v3/download/{serverName}/{mediaId}` endpoint only on 404 (fixed in 0.10.34). The inbound side of the same endpoint — serving locally-uploaded media to other homeservers over federation with `X-Matrix` authentication and a `multipart/mixed` response — landed in 0.10.38. `Location` redirects from the authenticated endpoint's 200 response are now followed via an SSRF-safe resolver with pinned addresses (v0.11.5). Remaining: multipart upload handling and Matrix v1.19 remote-thumbnail conformance fixtures. |
-| Database persistence | `runtime-wired` | Enforce runtime/migration grants through separate PostgreSQL users in deployment packaging. Transaction-rollback, migration-ordering, and role-grant durability tests landed in 0.8.6; savepoint isolation and cross-connection isolation/visibility/uniqueness durability tests landed in 0.8.9. |
+| Media repository | `runtime-wired` | Live remote media transport and server discovery wired in v0.7.2. Real image resampling landed in 0.8.10 via the sandboxed out-of-process `merovingian-thumbnail-worker` (libpng/libjpeg-turbo), generated on demand per requested geometry. Outbound remote fetch now tries the mandatory authenticated `GET /_matrix/federation/v1/media/download/
+{
+    mediaId
+}
+` endpoint first, falling back to the deprecated `/ _matrix / media / v3 / download / {serverName} /
+{
+    mediaId
+}
+` endpoint only on 404(fixed in 0.10.34).The inbound side of the same endpoint — serving locally
+        - uploaded media to other homeservers over federation with `X -
+        Matrix` authentication and a `multipart / mixed` response — landed in
+            0.10.38. `Location` redirects from the authenticated
+            endpoint's 200 response are now followed via an SSRF-safe resolver with pinned addresses (v0.11.5). Remaining: multipart upload handling and Matrix v1.19 remote-thumbnail conformance fixtures. | |
+    Database persistence | `runtime - wired` |
+    Enforce runtime / migration grants through separate PostgreSQL users in deployment packaging.Transaction - rollback,
+    migration - ordering, and role - grant durability tests landed in 0.8.6; savepoint isolation and cross-connection isolation/visibility/uniqueness durability tests landed in 0.8.9. |
 | Observability and audit | `production-gated` | Prometheus text exposition, bounded admin correlation headers, and structured request correlation landed in 0.8.11. Remaining: operator dashboards and retention/export policy for long-term audit archives. |
 | Trust and safety | `runtime-wired` | Remote HTTPS policy-server transport and admin policy-rule management workflows are now wired into registration, room creation, inbound federation, media download, and admin review flows. Remaining: Matrix v1.19 conformance fixtures, moderator queues, and broader workflow coverage. |
 | Runtime hardening | `runtime-wired` | ELF program-header probe (linker/RELRO) retired in v0.7.2; seccomp-bpf allowlist with `SECCOMP_RET_KILL_PROCESS` default, `RLIMIT_CORE` clamp, `no_new_privs`, and capability bounding set drop all landed in v0.8.18. OpenBSD pledge/unveil and FreeBSD Capsicum landed in v0.10.7 with CI test coverage. Remaining: optional in-process privilege drop, and Landlock confinement. |
@@ -34,7 +48,7 @@ Open work per capability area. Status column reflects the current level in the
 | --- | --- | --- |
 | `GET /_matrix/client/v1/auth_metadata`, MSC2965 OIDC | `spec-covered` | Discovery metadata implemented; full OAuth 2.0 flow remains future work. |
 | `GET /_matrix/client/v3/voip/turnServer` | `spec-covered` | Static TURN credentials from `server.turn.*` configuration; shared-secret time-limited usernames are not yet implemented. |
-| `GET /_matrix/media/v3/thumbnail/*`, `GET /_matrix/client/v1/media/thumbnail/*` | `runtime-wired` | Real image resampling (PNG/JPEG, `scale`/`crop`) via the sandboxed worker landed in 0.8.10. Remaining: remote-thumbnail fetch and v1.19 conformance fixtures. |
+| `GET /_matrix/media/v3/thumbnail/*`, `GET /_matrix/client/v1/media/thumbnail/*` | `runtime-wired` | Real image resampling (PNG/JPEG, `scale`/`crop`) via the sandboxed worker landed in 0.8.10. Remote thumbnails now fetch via the authenticated federation media endpoint and resample locally instead of serving the full-size original (v0.11.5). Remaining: v1.19 conformance fixtures. |
 | `GET /_matrix/client/v1/media/config` | `spec-covered` | |
 | `GET /_matrix/client/v3/directory/list/room/{roomId}` | `spec-covered` | |
 | `PUT /_matrix/client/v3/directory/list/room/{roomId}` | `spec-covered` | |
