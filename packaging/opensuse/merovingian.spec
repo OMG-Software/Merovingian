@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.11.3
+Version:        0.11.4
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -112,7 +112,7 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
-* Mon Jul 27 2026 James Chapman <claude@ping.me.uk> - 0.11.3-1
+* Mon Jul 27 2026 James Chapman <claude@ping.me.uk> - 0.11.4-1
 - Matrix spec v1.19 behaviour changes (Phase 3): per-room server ACL enforcement (MSC4436) and encrypted history sharing to-device coverage (MSC4268).
 
 * Fri Jul 24 2026 James Chapman <claude@ping.me.uk> - 0.11.2-1

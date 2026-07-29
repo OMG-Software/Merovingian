@@ -256,6 +256,36 @@ auto is_valid_public_baseurl(std::string_view public_baseurl) noexcept -> bool
     return !authority.empty() && authority.find(' ') == std::string_view::npos;
 }
 
+auto is_valid_https_url(std::string_view url) noexcept -> bool
+{
+    constexpr auto https_scheme = std::string_view{"https://"};
+    if (!starts_with(url, https_scheme))
+    {
+        return false;
+    }
+
+    auto const remainder = url.substr(https_scheme.size());
+    return !remainder.empty() && remainder.find(' ') == std::string_view::npos;
+}
+
+auto is_valid_https_origin_url(std::string_view url) noexcept -> bool
+{
+    constexpr auto https_scheme = std::string_view{"https://"};
+    if (!starts_with(url, https_scheme))
+    {
+        return false;
+    }
+
+    auto const remainder = url.substr(https_scheme.size());
+    if (remainder.empty() || remainder.find(' ') != std::string_view::npos)
+    {
+        return false;
+    }
+
+    // RFC 8414: issuer URL has no query or fragment components.
+    return remainder.find('?') == std::string_view::npos && remainder.find('#') == std::string_view::npos;
+}
+
 auto is_valid_federation_policy(std::string_view policy) noexcept -> bool
 {
     return policy == "allow" || policy == "deny";
@@ -546,6 +576,40 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
     else if (!turn.username.empty() || !turn.password.empty())
     {
         findings.push_back({"server.turn.server", "TURN credentials supplied but no server URI is configured"});
+    }
+
+    // OIDC discovery metadata. When enabled, all required Matrix v1.19 / RFC 8414
+    // fields must be present and use HTTPS. Partial configuration is rejected.
+    auto const& oidc = config.server().oidc;
+    if (oidc.enabled)
+    {
+        if (oidc.issuer.empty())
+        {
+            findings.push_back({"server.oidc.issuer", "OIDC enabled but issuer is missing"});
+        }
+        else if (!is_valid_https_origin_url(oidc.issuer))
+        {
+            findings.push_back(
+                {"server.oidc.issuer", "OIDC issuer must be a valid HTTPS URL with no query or fragment"});
+        }
+
+        auto const validate_oidc_endpoint = [&findings](std::string_view field, std::string_view url, bool required) {
+            if (required && url.empty())
+            {
+                findings.push_back({std::string{field}, "OIDC enabled but required endpoint is missing"});
+            }
+            if (!url.empty() && !is_valid_https_url(url))
+            {
+                findings.push_back({std::string{field}, "OIDC endpoint must use HTTPS"});
+            }
+        };
+
+        validate_oidc_endpoint("server.oidc.authorization_endpoint", oidc.authorization_endpoint, true);
+        validate_oidc_endpoint("server.oidc.token_endpoint", oidc.token_endpoint, true);
+        validate_oidc_endpoint("server.oidc.registration_endpoint", oidc.registration_endpoint, true);
+        validate_oidc_endpoint("server.oidc.revocation_endpoint", oidc.revocation_endpoint, true);
+        validate_oidc_endpoint("server.oidc.device_authorization_endpoint", oidc.device_authorization_endpoint, false);
+        validate_oidc_endpoint("server.oidc.account_management_uri", oidc.account_management_uri, false);
     }
 
     if (!is_valid_listener_bind(config.listeners().client.bind))

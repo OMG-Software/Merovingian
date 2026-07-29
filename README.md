@@ -17,6 +17,7 @@
 ## Table of contents
 
 - [What is Merovingian and what makes it special?](#what-is-merovingian-and-what-makes-it-special)
+- [Why C++ and not Rust?](#why-c-and-not-rust)
 - [Release Artifact Verification](#release-artifact-verification)
 - [Installation and Configuration](#installation-and-configuration)
 - [Starting Merovingian for the first time](#starting-merovingian-for-the-first-time)
@@ -46,6 +47,17 @@ That combination — a narrow, memory-safe-by-construction attack surface, proce
 Merovingian has reached **beta** (v0.10.59). Federation, persistence, packaging, and runtime security controls are implemented and covered by CI. The project is suitable for evaluation and testing; it should not be treated as production-ready until the blocking items in [docs/todos/production-milestone.md](docs/todos/production-milestone.md) are closed.
 
 Open work items, capability gaps, and milestone blockers live in [docs/todos/](docs/todos/). See `priorities.md` for the ordered short list, `capability-gaps.md` for per-area gaps, and `beta-milestone.md` / `production-milestone.md` for milestone gates.
+
+## Why C++ and not Rust?
+
+Rust's borrow checker gives a compile-time memory-safety guarantee that C++ doesn't have — that's a real gap, and this project doesn't pretend otherwise. The choice here is to close that gap through enforced discipline and continuous verification rather than to deny it exists:
+
+- **The unsafe primitives Rust rules out at compile time are banned outright and mechanically enforced here instead.** Raw `new`/`delete`, `malloc`/`free`, and raw pointers are forbidden project-wide; `scripts/reject-unsafe.sh` gates every commit on it, RAII and smart pointers are the only ownership model, and shared ownership requires a reviewed justification rather than being a default.
+- **The riskiest boundary is small and isolated regardless of language.** All cryptography goes through libsodium, a C library. A Rust implementation would still cross an `unsafe` FFI boundary to call it — the safety guarantee evaporates exactly at the highest-value target: key handling and signing. Here that boundary is explicit, narrow, and owned by one reviewed module rather than one `unsafe` block among many scattered through a dependency tree.
+- **Platform reach.** Merovingian packages for Linux, FreeBSD, NetBSD, and OpenBSD. C and C++ toolchains have been first-class on all of them for decades; Rust's standard library and crate ecosystem are comparatively thin on NetBSD and OpenBSD, where target support is lower-tier and breakage is more common.
+- **Verification happens continuously instead of once at compile time.** Every change runs through ASan/UBSan/TSan sanitizer builds, fuzzing of every parser that touches untrusted input, static analysis, and secret scanning in CI — the same properties a borrow checker buys statically are instead gated on every merge.
+
+In short: not a claim that C++ is inherently as safe as Rust, but that the specific gap — unchecked memory ownership — is closed here with banned patterns, mechanical enforcement, sanitizers, and fuzzing, in exchange for the platform reach and C-library interop this project's target OS list and crypto boundary need. See [docs/security-coding-rules.md](docs/security-coding-rules.md) and [docs/crypto-boundary.md](docs/crypto-boundary.md) for the enforced rules in full.
 
 ## Release Artifact Verification
 

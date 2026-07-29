@@ -681,4 +681,61 @@ auto make_system_server_discovery_network() -> std::unique_ptr<ServerDiscoveryNe
     return std::make_unique<SystemServerDiscoveryNetwork>();
 }
 
+auto validate_federation_tls_origin(std::string_view server_name, ServerDiscoveryResult const& discovery) noexcept
+    -> FederationTlsOriginDecision
+{
+    if (!server_name_is_valid(server_name) && !host_is_numeric_ip(server_name))
+    {
+        return {false, "invalid server name"};
+    }
+
+    if (!discovery.discovery_allowed)
+    {
+        return {false, "server discovery was not allowed"};
+    }
+
+    if (!discovery.tls_required)
+    {
+        return {false, "federation requires TLS"};
+    }
+
+    if (discovery.resolved_host.empty())
+    {
+        return {false, "resolved host is empty"};
+    }
+
+    // Well-known delegation: the certificate must cover the delegated host.
+    // The discovery code already enforces well_known_host == resolved_host,
+    // so accepting any non-empty well_known_host means the delegation is valid.
+    if (!discovery.well_known_host.empty())
+    {
+        if (discovery.well_known_host != discovery.resolved_host)
+        {
+            return {false, "well-known host does not match resolved host"};
+        }
+        return {true, {}};
+    }
+
+    // Direct resolution: certificate must cover the original server name.
+    // For a DNS name this is an exact match (wildcards in certificates are a
+    // deployment concern outside this logical pre-check). For an IP literal the
+    // server name and resolved host must both be IP literals; operators doing
+    // IP-based federation must arrange matching identity.
+    if (host_is_numeric_ip(discovery.resolved_host))
+    {
+        if (!host_is_numeric_ip(std::string{server_name}) || server_name != discovery.resolved_host)
+        {
+            return {false, "TLS certificate cannot cover an IP literal destination"};
+        }
+        return {true, {}};
+    }
+
+    if (server_name != discovery.resolved_host)
+    {
+        return {false, "resolved host does not match server name"};
+    }
+
+    return {true, {}};
+}
+
 } // namespace merovingian::federation

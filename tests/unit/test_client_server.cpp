@@ -69,6 +69,23 @@ namespace
     };
 }
 
+[[nodiscard]] auto oidc_enabled_config() -> merovingian::config::Config
+{
+    auto security = merovingian::config::SecurityConfig{};
+    merovingian::tests::enable_token_registration(security);
+    auto server = merovingian::config::ServerConfig{};
+    server.oidc.enabled = true;
+    server.oidc.issuer = "https://account.example.com/";
+    server.oidc.authorization_endpoint = "https://account.example.com/oauth2/auth";
+    server.oidc.token_endpoint = "https://account.example.com/oauth2/token";
+    server.oidc.registration_endpoint = "https://account.example.com/oauth2/clients/register";
+    server.oidc.revocation_endpoint = "https://account.example.com/oauth2/revoke";
+    return {
+        std::move(server),   merovingian::config::ListenersConfig{},        merovingian::config::DatabaseConfig{},
+        std::move(security), merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+    };
+}
+
 [[nodiscard]] auto login_token(std::string const& body) -> std::string
 {
     auto const key = std::string{"\"access_token\":\""};
@@ -4391,6 +4408,33 @@ SCENARIO("OIDC discovery endpoints return 404 without authentication", "[homeser
             THEN("the response is 404, not 401")
             {
                 REQUIRE(response.response.status == 404U);
+            }
+        }
+    }
+}
+
+SCENARIO("GET /_matrix/client/v1/auth_metadata returns OIDC metadata when configured",
+         "[homeserver][client-server][oidc]")
+{
+    GIVEN("a started runtime with OIDC discovery configured")
+    {
+        auto started = merovingian::homeserver::start_client_server(oidc_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        WHEN("the endpoint is called without a token")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v1/auth_metadata", {}, {}});
+
+            THEN("the response is 200 and contains the configured issuer")
+            {
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(response.response.body.find("\"issuer\":\"https://account.example.com/\"") !=
+                        std::string::npos);
+                REQUIRE(response.response.body.find(
+                            "\"authorization_endpoint\":\"https://account.example.com/oauth2/auth\"") !=
+                        std::string::npos);
             }
         }
     }

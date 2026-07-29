@@ -941,3 +941,87 @@ SCENARIO("SRV response parsing extracts records and is bounds-safe on untrusted 
         }
     }
 }
+
+// --- TLS-bound origin validation ---------------------------------------------
+// Spec: Matrix Server-Server API v1.19, Sec. 2 Resolving server names
+// URL:  ../../docs/matrix-v1.19-spec/server-server-api.md#resolving-server-names
+//
+// The TLS certificate presented by the resolved host must be valid for the
+// original server name (or the well-known delegated host). These scenarios
+// validate the logical preconditions that callers enforce before connecting.
+
+SCENARIO("TLS origin validation accepts direct server name matches", "[federation][discovery][security]")
+{
+    GIVEN("a discovery result with the same server name and resolved host")
+    {
+        auto const result = merovingian::federation::discover_server("example.org", "https://example.org:8448");
+
+        WHEN("the origin is validated")
+        {
+            auto const decision = merovingian::federation::validate_federation_tls_origin("example.org", result);
+
+            THEN("the destination passes the TLS-origin check")
+            {
+                REQUIRE(decision.valid);
+            }
+        }
+    }
+}
+
+SCENARIO("TLS origin validation accepts matching well-known delegation", "[federation][discovery][security]")
+{
+    GIVEN("a discovery result produced by well-known delegation")
+    {
+        auto const result =
+            merovingian::federation::discover_server("example.org", "https://delegated.example.org:8448");
+
+        WHEN("the origin is validated")
+        {
+            auto const decision = merovingian::federation::validate_federation_tls_origin("example.org", result);
+
+            THEN("the delegated destination passes the TLS-origin check")
+            {
+                REQUIRE(decision.valid);
+            }
+        }
+    }
+}
+
+SCENARIO("TLS origin validation rejects mismatched resolved hosts", "[federation][discovery][security]")
+{
+    GIVEN("a discovery result where the resolved host differs from the server name")
+    {
+        auto network = FakeDiscoveryNetwork{};
+        network.addresses.emplace("other.org", std::vector<std::string>{"203.0.113.42"});
+        auto const result = merovingian::federation::discover_server("example.org", network, 5U);
+
+        WHEN("the origin is validated")
+        {
+            auto const decision = merovingian::federation::validate_federation_tls_origin("example.org", result);
+
+            THEN("the destination fails the TLS-origin check")
+            {
+                REQUIRE_FALSE(decision.valid);
+                REQUIRE_FALSE(decision.reason.empty());
+            }
+        }
+    }
+}
+
+SCENARIO("TLS origin validation rejects disallowed discovery destinations", "[federation][discovery][security]")
+{
+    GIVEN("a discovery result that was rejected for private addresses")
+    {
+        auto const result = merovingian::federation::discover_server("evil.org", "https://127.0.0.1:8448");
+
+        WHEN("the origin is validated")
+        {
+            auto const decision = merovingian::federation::validate_federation_tls_origin("evil.org", result);
+
+            THEN("validation fails closed because discovery was not allowed")
+            {
+                REQUIRE_FALSE(decision.valid);
+            }
+        }
+    }
+}

@@ -52,6 +52,23 @@ struct TurnServerConfig final
     std::uint32_t ttl_seconds{86400U};
 };
 
+// OIDC authorisation server metadata configuration for MSC2965 discovery.
+// When `enabled` is false, GET /_matrix/client/v1/auth_metadata returns
+// 404 M_UNRECOGNIZED. When enabled, the endpoint returns RFC 8414 metadata
+// built from these fields; no actual OAuth flow is implemented here.
+struct OidcConfig final
+{
+    bool enabled{false};
+    std::string issuer{};
+    std::string authorization_endpoint{};
+    std::string token_endpoint{};
+    std::string registration_endpoint{};
+    std::string revocation_endpoint{};
+    std::string device_authorization_endpoint{};
+    std::string account_management_uri{};
+    std::vector<std::string> account_management_actions_supported{};
+};
+
 struct ServerConfig final
 {
     std::string server_name{"example.org"};
@@ -66,6 +83,9 @@ struct ServerConfig final
     // TURN relay configuration for GET /_matrix/client/v3/voip/turnServer.
     // Empty by default; when populated the endpoint returns real credentials.
     TurnServerConfig turn{};
+    // OIDC discovery metadata. Empty by default; when populated the
+    // auth_metadata endpoint advertises the configured OAuth 2.0 server.
+    OidcConfig oidc{};
 };
 
 struct ListenerConfig final
@@ -382,6 +402,8 @@ struct DurationParseResult final
 [[nodiscard]] auto is_public_listener(ListenerConfig const& listener) noexcept -> bool;
 [[nodiscard]] auto is_safe_cleartext_listener(ListenerConfig const& listener) noexcept -> bool;
 [[nodiscard]] auto is_valid_public_baseurl(std::string_view public_baseurl) noexcept -> bool;
+[[nodiscard]] auto is_valid_https_url(std::string_view url) noexcept -> bool;
+[[nodiscard]] auto is_valid_https_origin_url(std::string_view url) noexcept -> bool;
 [[nodiscard]] auto is_valid_federation_policy(std::string_view policy) noexcept -> bool;
 [[nodiscard]] auto is_valid_media_acceptance_policy(std::string_view policy) noexcept -> bool;
 [[nodiscard]] auto is_valid_federation_server_name(std::string_view server_name) noexcept -> bool;

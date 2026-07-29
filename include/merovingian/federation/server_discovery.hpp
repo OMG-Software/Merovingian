@@ -86,6 +86,21 @@ public:
                                    std::uint32_t timeout_seconds) -> ServerDiscoveryResult;
 [[nodiscard]] auto discover_server(std::string_view server_name) -> ServerDiscoveryResult;
 
+// Validates that the resolved federation destination is acceptable for the
+// original server name from a TLS-certificate-identity perspective. This is
+// a logical pre-check, not a live TLS handshake; callers use it before
+// connecting to avoid routing a request to a host whose certificate could not
+// validly cover the server name.
+struct FederationTlsOriginDecision final
+{
+    bool valid{false};
+    std::string reason{};
+};
+
+[[nodiscard]] auto validate_federation_tls_origin(std::string_view server_name,
+                                                  ServerDiscoveryResult const& discovery) noexcept
+    -> FederationTlsOriginDecision;
+
 // Creates a production ServerDiscoveryNetwork backed by real DNS and
 // HTTP well-known lookups. Used by start_runtime to wire the remote key
 // resolver and outbound membership fetch paths.

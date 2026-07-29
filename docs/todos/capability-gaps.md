@@ -12,7 +12,7 @@ Open work per capability area. Status column reflects the current level in the
 | Secure configuration | `runtime-wired` | Replace phase-specific CI naming with capability gates and add production profile enforcement. |
 | Runtime listener | `runtime-wired` | Add per-endpoint rate-limit accounting, multi-listener thread pool, and keep-alive. Per-connection slowloris enforcement landed via `connection_guard`. |
 | HTTP transport | `runtime-wired` | Upgrade to `llhttp` or reviewed parser boundary, add request body streaming, keep-alive, HTTP/2, remote-IP buckets for unauthenticated routes, durable rate-limit state, and operator-tunable policy overrides. Per-connection slowloris policy landed via `connection_guard`. |
-| Client-server API | `runtime-wired` | Sync surfaces (long polling, filters, presence, to-device, account-data, sliding sync) now wired. Static TURN credentials are implemented. Remaining: OIDC support (`auth_metadata`), remote-thumbnail conformance fixtures, and third-party invite auth. |
+| Client-server API | `runtime-wired` | Sync surfaces (long polling, filters, presence, to-device, account-data, sliding sync) now wired. Static TURN credentials and OIDC discovery metadata (`auth_metadata`) are implemented. Remaining: remote-thumbnail conformance fixtures and third-party invite auth. |
 | Authentication and sessions | `runtime-wired` | Server-side access/refresh token expiry with configurable lifetimes, hashed registration-token validity, and constant-time token-hash lookups landed in 0.8.20. Add richer operator bootstrap lifecycle controls, account recovery controls, and Matrix conformance fixtures for remaining auth flows. |
 | E2EE key APIs | `runtime-wired` | Key backup version management, session retrieval, count, and etag landed. Remaining: backup session deletion endpoint wiring, full OTK key-count algorithms for `keys/upload`, broader Matrix v1.19 semantics, and remaining conformance fixtures. |
 | Rooms, events, and sync | `runtime-wired` | Sync long polling, filters, presence, to-device, account-data, and restricted/restricted_v2 join rule evaluation now wired. Third-party invite auth (rule 4.3.1 signature/token validation on `m.room.member` invites, plus invite-power gating on `m.room.third_party_invite` creation) landed and is wired into the local send path, inbound federation PDU path, and state resolution. Remaining: accepting the shape end-to-end via `POST /invite` (needs an identity-server HTTP client) and `third_party_signed` on `/join` (needs `exchange_third_party_invite` or same-server authority to sign on behalf of the original inviter), and broader Matrix v1.19 room-version conformance fixtures. |
@@ -32,7 +32,7 @@ Open work per capability area. Status column reflects the current level in the
 
 | Endpoint | Status | Needs |
 | --- | --- | --- |
-| `GET /_matrix/client/v1/auth_metadata`, MSC2965 OIDC | `partial` | Real OIDC support; currently returns 404 M_UNRECOGNIZED as unsupported signal. |
+| `GET /_matrix/client/v1/auth_metadata`, MSC2965 OIDC | `spec-covered` | Discovery metadata implemented; full OAuth 2.0 flow remains future work. |
 | `GET /_matrix/client/v3/voip/turnServer` | `spec-covered` | Static TURN credentials from `server.turn.*` configuration; shared-secret time-limited usernames are not yet implemented. |
 | `GET /_matrix/media/v3/thumbnail/*`, `GET /_matrix/client/v1/media/thumbnail/*` | `runtime-wired` | Real image resampling (PNG/JPEG, `scale`/`crop`) via the sandboxed worker landed in 0.8.10. Remaining: remote-thumbnail fetch and v1.19 conformance fixtures. |
 | `GET /_matrix/client/v1/media/config` | `spec-covered` | |
@@ -69,7 +69,7 @@ Open work per capability area. Status column reflects the current level in the
 | Server ACL enforcement (`m.room.server_acl`, MSC4436) | `spec-covered` | Per-room ACLs applied to protected federation endpoints and per-PDU/room-local EDU in inbound `/send`. Case-insensitive glob matching, IP-literal handling, and port stripping. |
 | `PUT /_matrix/federation/v1/send/{txnId}` outbound | `spec-covered` | Live signed-transaction interop test against a real Synapse peer landed in 0.8.6 (opt-in `build_live_tests`). |
 | Federation join/leave/invite/knock/backfill | `spec-covered` | Richer production leave/knock state semantics (stripped state, knock acceptance flows). |
-| Server discovery | `partial` | TLS-bound origin validation, richer Matrix edge-case fixtures, live network conformance coverage. |
+| Server discovery | `spec-covered` | TLS-bound origin validation helper and conformance fixtures added; live network conformance coverage remains optional. |
 | Request and event signing/verification | `spec-covered` | Live signed-request interop test against a real Synapse peer landed in 0.8.6 (opt-in). Inbound PDU content-hash verification wired and conformance-covered. |
 | `GET /_matrix/federation/v1/query/profile` | `spec-covered` | |
 | `GET /_matrix/federation/v1/query/directory` | `spec-covered` | |

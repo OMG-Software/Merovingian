@@ -189,6 +189,45 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected positive integer");
             }
         }
+        else if (key == "server.oidc.enabled")
+        {
+            if (!parse_bool_value(value, server.oidc.enabled))
+            {
+                add_parse_finding(findings, std::string{key}, "expected boolean value");
+            }
+        }
+        else if (key == "server.oidc.issuer")
+        {
+            server.oidc.issuer = std::string{value};
+        }
+        else if (key == "server.oidc.authorization_endpoint")
+        {
+            server.oidc.authorization_endpoint = std::string{value};
+        }
+        else if (key == "server.oidc.token_endpoint")
+        {
+            server.oidc.token_endpoint = std::string{value};
+        }
+        else if (key == "server.oidc.registration_endpoint")
+        {
+            server.oidc.registration_endpoint = std::string{value};
+        }
+        else if (key == "server.oidc.revocation_endpoint")
+        {
+            server.oidc.revocation_endpoint = std::string{value};
+        }
+        else if (key == "server.oidc.device_authorization_endpoint")
+        {
+            server.oidc.device_authorization_endpoint = std::string{value};
+        }
+        else if (key == "server.oidc.account_management_uri")
+        {
+            server.oidc.account_management_uri = std::string{value};
+        }
+        else if (key == "server.oidc.account_management_actions_supported")
+        {
+            server.oidc.account_management_actions_supported = parse_string_list(value);
+        }
         else if (key == "listeners.client.bind")
         {
             listeners.client.bind = std::string{value};
