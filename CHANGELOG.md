@@ -5,6 +5,7 @@ Matrix spec v1.19 P1 gap closure.
 - Client-server: `GET /_matrix/client/v1/auth_metadata` now returns RFC 8414 / Matrix v1.19 authorisation server metadata when the operator configures `server.oidc.*`. When OIDC is not configured it continues to return `404 M_UNRECOGNIZED` as the spec requires for unsupported servers. No actual OAuth 2.0 flow is implemented yet; this change covers discovery only.
 - Federation: added `validate_federation_tls_origin()` in `federation/server_discovery` to enforce the TLS-certificate-identity contract from Matrix Server-Server API v1.19 §2. The helper validates direct-name matches, well-known delegation consistency, and rejects IP-literal destinations unless the original server name is the same IP literal.
 - Tests: added `tests/unit/test_auth_oidc_discovery.cpp` and `tests/unit/test_federation_tls_origin.cpp`; extended `tests/conformance/test_server_discovery.cpp` and `tests/unit/test_client_server.cpp` with configured-OIDC and TLS-origin scenarios.
+- Docs: added a "Why C++ and not Rust?" section to `README.md` explaining the memory-safety tradeoff and how it's mitigated (banned unsafe primitives, isolated libsodium boundary, BSD platform reach, continuous sanitizer/fuzz verification).
 
 ## 0.11.3
 
