@@ -1,3 +1,17 @@
+## 0.11.5
+
+Matrix spec v1.19 P2 gap closure.
+
+- Media: remote thumbnails now use the local sandboxed thumbnailing pipeline after fetching the remote file via the authenticated federation media endpoint.
+- Federation media: the authenticated `GET /_matrix/federation/v1/media/download/{mediaId}` endpoint now follows `Location` redirects in an SSRF-safe way instead of immediately falling back to the deprecated v3 endpoint.
+- E2EE keys: `POST /_matrix/client/v3/keys/upload` now reports one-time key counts per advertised algorithm, and backup session/room/batch deletion routes are verified end-to-end.
+- Third-party invites: `POST /_matrix/client/v3/rooms/{roomId}/invite` supports `id_server`/`medium`/`address` invites, and `/join` handles `third_party_signed` tokens by validating them against the room's `m.room.third_party_invite` event.
+- Room v12 / MSC4291: added conformance coverage for implicit create, creator privilege, and v12 event IDs; fixed any remaining edge cases.
+- Sliding Sync: expanded conformance fixtures and fixed subscription `required_state` merging with list-level defaults.
+- Federation membership: `send_leave` and `send_knock` now return stripped state, knock responses include `knock_room_state`, and a local accept-knock path promotes a knock to join.
+- Tests: new unit and conformance tests for each area above.
+- Docs: updated `docs/todos/capability-gaps.md` and relevant spec docs.
+
 ## 0.11.4
 
 Matrix spec v1.19 P1 gap closure.
