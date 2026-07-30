@@ -66,6 +66,7 @@ Open work per capability area. Status column reflects the current level in the
 | `POST /_matrix/client/v3/rooms/{roomId}/report/{eventId}` | `spec-covered` | Accepts a reason, returns 200 `{}`, rejects malformed bodies with `M_BAD_JSON`, and surfaces reports on `GET /_matrix/client/v3/admin/safety/reports`. |
 | `POST /_matrix/client/v3/rooms/{roomId}/read_markers` | `spec-covered` | Accepts `m.read`, `m.read.private`, and `m.fully_read` markers; rejects non-members with 403 `M_FORBIDDEN` and malformed bodies with 400 `M_BAD_JSON`. The `m.read` marker is reflected as an `m.receipt` ephemeral event in the next `/sync`. |
 | `PUT /_matrix/client/v3/presence/{userId}/status` | `spec-covered` | Accepts `presence` and optional `status_msg`; rejects cross-user updates with 403 `M_FORBIDDEN` and malformed bodies with 400 `M_BAD_JSON`. |
+| `POST /_matrix/client/v3/rooms/{roomId}/receipt/{receiptType}/{eventId}` | `spec-covered` | Accepts `m.read`, `m.read.private`, and `m.fully_read`; rejects unknown receipt types with 400 `M_INVALID_PARAM`, non-members with 403 `M_FORBIDDEN`, and malformed bodies with 400 `M_BAD_JSON`. The `m.read` receipt is reflected as an `m.receipt` ephemeral event in `/sync`. |
 
 ### Federation API
 

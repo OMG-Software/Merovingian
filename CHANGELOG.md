@@ -24,6 +24,7 @@ Matrix spec v1.19 P2 gap closure.
 - Trust and safety: added conformance coverage for `POST /_matrix/client/v3/rooms/{roomId}/report/{eventId}` (200 for valid reports, 400 for malformed bodies) and `GET /_matrix/client/v3/admin/safety/reports` in `tests/conformance/test_safety_report_conformance.cpp`.
 - Read markers: `POST /_matrix/client/v3/rooms/{roomId}/read_markers` now rejects malformed bodies with 400 `M_BAD_JSON`. Added `tests/conformance/test_read_markers_conformance.cpp` covering 200 for `m.read` (with the marker appearing as an `m.receipt` ephemeral event in `/sync`), 403 `M_FORBIDDEN` for non-members, and 400 `M_BAD_JSON` for invalid JSON.
 - Presence: added `tests/conformance/test_presence_conformance.cpp` covering `PUT /_matrix/client/v3/presence/{userId}/status` 200 for valid updates, 403 `M_FORBIDDEN` for cross-user updates, and 400 `M_BAD_JSON` for malformed bodies.
+- Receipts: added `tests/conformance/test_receipt_conformance.cpp` covering `POST /_matrix/client/v3/rooms/{roomId}/receipt/{receiptType}/{eventId}` 200 for `m.read` (with the receipt appearing as an `m.receipt` ephemeral event in `/sync`), 400 `M_INVALID_PARAM` for invalid receipt types, 403 `M_FORBIDDEN` for non-members, and 400 `M_BAD_JSON` for malformed bodies.
 - Docs: updated `docs/todos/capability-gaps.md` and relevant spec docs.
 
 ## 0.11.4

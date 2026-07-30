@@ -10098,6 +10098,17 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     auto const event_id = core::percent_decode_path_component(after_receipt.substr(slash_pos + 1U));
                     if (!event_id.empty())
                     {
+                        // The receipt endpoint accepts an empty body, but any
+                        // present body MUST be valid JSON.
+                        if (!req.body.empty())
+                        {
+                            auto const receipt_body = canonicaljson::parse_lossless(req.body);
+                            if (receipt_body.error != canonicaljson::ParseError::none)
+                            {
+                                return dispatch_err(req, rt, 400U, "M_BAD_JSON", "receipt body must be valid JSON");
+                            }
+                        }
+
                         // Bug 10: validate room existence and membership before
                         // storing or federating any receipt state.
                         auto const receipt_room_it =
