@@ -213,6 +213,212 @@ SCENARIO("parse_federation_media_multipart parses the multipart/mixed body of th
             }
         }
     }
+
+    GIVEN("a response whose boundary string also appears inside the media bytes")
+    {
+        auto const content_type = std::string{"multipart/mixed; boundary=abc123"};
+        auto const body = std::string{"--abc123\r\n"
+                                      "Content-Type: application/json\r\n"
+                                      "\r\n"
+                                      "{}\r\n"
+                                      "--abc123\r\n"
+                                      "Content-Type: image/png\r\n"
+                                      "\r\n"
+                                      "--abc123 appears inside PNGDATA\r\n"
+                                      "--abc123--\r\n"};
+
+        WHEN("the response is parsed")
+        {
+            auto const parsed = merovingian::homeserver::parse_federation_media_multipart(content_type, body);
+
+            THEN("the inner boundary string is kept as part of the media bytes")
+            {
+                REQUIRE(parsed.ok);
+                // The trailing CRLF before the next boundary delimiter is RFC
+                // 2046 transport padding, not part of the part body.
+                REQUIRE(parsed.bytes == "--abc123 appears inside PNGDATA");
+            }
+        }
+    }
+
+    GIVEN("a response with a preamble before the first boundary delimiter")
+    {
+        auto const content_type = std::string{"multipart/mixed; boundary=abc123"};
+        auto const body = std::string{"This preamble should be ignored.\r\n"
+                                      "--abc123\r\n"
+                                      "Content-Type: application/json\r\n"
+                                      "\r\n"
+                                      "{}\r\n"
+                                      "--abc123\r\n"
+                                      "Content-Type: image/png\r\n"
+                                      "\r\n"
+                                      "PNGDATA\r\n"
+                                      "--abc123--\r\n"};
+
+        WHEN("the response is parsed")
+        {
+            auto const parsed = merovingian::homeserver::parse_federation_media_multipart(content_type, body);
+
+            THEN("the preamble is skipped and the two spec parts are found")
+            {
+                REQUIRE(parsed.ok);
+                REQUIRE(parsed.content_type == "image/png");
+                REQUIRE(parsed.bytes == "PNGDATA");
+            }
+        }
+    }
+
+    GIVEN("a response using LF-only line endings")
+    {
+        auto const content_type = std::string{"multipart/mixed; boundary=abc123"};
+        auto const body = std::string{"--abc123\n"
+                                      "Content-Type: application/json\n"
+                                      "\n"
+                                      "{}\n"
+                                      "--abc123\n"
+                                      "Content-Type: image/png\n"
+                                      "\n"
+                                      "PNGDATA\n"
+                                      "--abc123--\n"};
+
+        WHEN("the response is parsed")
+        {
+            auto const parsed = merovingian::homeserver::parse_federation_media_multipart(content_type, body);
+
+            THEN("the parser tolerates the single-character transport padding")
+            {
+                REQUIRE(parsed.ok);
+                REQUIRE(parsed.bytes == "PNGDATA");
+            }
+        }
+    }
+
+    GIVEN("a response whose boundary parameter contains punctuation from a quoted value")
+    {
+        auto const content_type = std::string{"multipart/mixed; boundary=\"boundary.with-special\""};
+        auto const body = std::string{"--boundary.with-special\r\n"
+                                      "Content-Type: application/json\r\n"
+                                      "\r\n"
+                                      "{}\r\n"
+                                      "--boundary.with-special\r\n"
+                                      "Content-Type: image/png\r\n"
+                                      "\r\n"
+                                      "PNGDATA\r\n"
+                                      "--boundary.with-special--\r\n"};
+
+        WHEN("the response is parsed")
+        {
+            auto const parsed = merovingian::homeserver::parse_federation_media_multipart(content_type, body);
+
+            THEN("the literal boundary value is matched, not treated as a regex")
+            {
+                REQUIRE(parsed.ok);
+                REQUIRE(parsed.bytes == "PNGDATA");
+            }
+        }
+    }
+
+    GIVEN("a response whose boundary parameter has RFC 2046 whitespace around the equals sign")
+    {
+        auto const content_type = std::string{"multipart/mixed; boundary = \"abc123\""};
+        auto const body = std::string{"--abc123\r\n"
+                                      "Content-Type: application/json\r\n"
+                                      "\r\n"
+                                      "{}\r\n"
+                                      "--abc123\r\n"
+                                      "Content-Type: image/png\r\n"
+                                      "\r\n"
+                                      "PNGDATA\r\n"
+                                      "--abc123--\r\n"};
+
+        WHEN("the response is parsed")
+        {
+            auto const parsed = merovingian::homeserver::parse_federation_media_multipart(content_type, body);
+
+            THEN("the boundary token is extracted and parsing succeeds")
+            {
+                REQUIRE(parsed.ok);
+                REQUIRE(parsed.bytes == "PNGDATA");
+            }
+        }
+    }
+
+    GIVEN("a response whose closing boundary lacks trailing CRLF")
+    {
+        auto const content_type = std::string{"multipart/mixed; boundary=abc123"};
+        auto const body = std::string{"--abc123\r\n"
+                                      "Content-Type: application/json\r\n"
+                                      "\r\n"
+                                      "{}\r\n"
+                                      "--abc123\r\n"
+                                      "Content-Type: image/png\r\n"
+                                      "\r\n"
+                                      "PNGDATA\r\n"
+                                      "--abc123--"};
+
+        WHEN("the response is parsed")
+        {
+            auto const parsed = merovingian::homeserver::parse_federation_media_multipart(content_type, body);
+
+            THEN("parsing still succeeds")
+            {
+                REQUIRE(parsed.ok);
+                REQUIRE(parsed.bytes == "PNGDATA");
+            }
+        }
+    }
+
+    GIVEN("a response with a Location-only second part and no body bytes")
+    {
+        auto const content_type = std::string{"multipart/mixed; boundary=abc123"};
+        auto const body = std::string{"--abc123\r\n"
+                                      "Content-Type: application/json\r\n"
+                                      "\r\n"
+                                      "{}\r\n"
+                                      "--abc123\r\n"
+                                      "Location: https://cdn.example.org/media/abc123\r\n"
+                                      "--abc123--\r\n"};
+
+        WHEN("the response is parsed")
+        {
+            auto const parsed = merovingian::homeserver::parse_federation_media_multipart(content_type, body);
+
+            THEN("the redirect is still detected")
+            {
+                REQUIRE(parsed.ok);
+                REQUIRE(parsed.is_redirect);
+                REQUIRE(parsed.location == "https://cdn.example.org/media/abc123");
+            }
+        }
+    }
+
+    GIVEN("a response containing more than the mandatory two parts")
+    {
+        auto const content_type = std::string{"multipart/mixed; boundary=abc123"};
+        auto const body = std::string{"--abc123\r\n"
+                                      "Content-Type: application/json\r\n"
+                                      "\r\n"
+                                      "{}\r\n"
+                                      "--abc123\r\n"
+                                      "Content-Type: image/png\r\n"
+                                      "\r\n"
+                                      "PNGDATA\r\n"
+                                      "--abc123\r\n"
+                                      "Content-Type: text/plain\r\n"
+                                      "\r\n"
+                                      "EXTRA\r\n"
+                                      "--abc123--\r\n"};
+
+        WHEN("the response is parsed")
+        {
+            auto const parsed = merovingian::homeserver::parse_federation_media_multipart(content_type, body);
+
+            THEN("parsing fails closed because the spec requires exactly two parts")
+            {
+                REQUIRE_FALSE(parsed.ok);
+            }
+        }
+    }
 }
 
 // SSRF-safe redirect following for the authenticated federation media endpoint.

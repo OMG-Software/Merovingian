@@ -17,19 +17,7 @@ Open work per capability area. Status column reflects the current level in the
 | E2EE key APIs | `spec-covered` | Key backup version management, session retrieval, count, etag, and session/room/batch deletion endpoints are wired. `POST /_matrix/client/v3/keys/upload` reports one-time key counts grouped by advertised algorithm. Remaining: broader Matrix v1.19 semantics and additional conformance fixtures. |
 | Rooms, events, and sync | `runtime-wired` | Sync long polling, filters, presence, to-device, account-data, and restricted/restricted_v2 join rule evaluation now wired. Third-party invite auth (rule 4.3.1 signature/token validation on `m.room.member` invites, plus invite-power gating on `m.room.third_party_invite` creation) landed and is wired into the local send path, inbound federation PDU path, and state resolution. Remaining: accepting the shape end-to-end via `POST /invite` (needs an identity-server HTTP client) and `third_party_signed` on `/join` (needs `exchange_third_party_invite` or same-server authority to sign on behalf of the original inviter), and broader Matrix v1.19 room-version conformance fixtures. |
 | Federation | `runtime-wired` | Room-version-specific PDU verification, simultaneously-active multiple signing keys, and broader Matrix federation conformance coverage. Key-rotation publication with `old_verify_keys` landed in 0.8.6. |
-| Media repository | `runtime-wired` | Live remote media transport and server discovery wired in v0.7.2. Real image resampling landed in 0.8.10 via the sandboxed out-of-process `merovingian-thumbnail-worker` (libpng/libjpeg-turbo), generated on demand per requested geometry. Outbound remote fetch now tries the mandatory authenticated `GET /_matrix/federation/v1/media/download/
-{
-    mediaId
-}
-` endpoint first, falling back to the deprecated `/ _matrix / media / v3 / download / {serverName} /
-{
-    mediaId
-}
-` endpoint only on 404(fixed in 0.10.34).The inbound side of the same endpoint — serving locally
-        - uploaded media to other homeservers over federation with `X -
-        Matrix` authentication and a `multipart / mixed` response — landed in
-            0.10.38. `Location` redirects from the authenticated
-            endpoint's 200 response are now followed via an SSRF-safe resolver with pinned addresses (v0.11.5). Remaining: multipart upload handling and Matrix v1.19 remote-thumbnail conformance fixtures. | |
+| Media repository | `spec-covered` | Live remote media transport and server discovery wired in v0.7.2. Real image resampling landed in v0.8.10 via the sandboxed out-of-process `merovingian-thumbnail-worker` (libpng/libjpeg-turbo), generated on demand per requested geometry. Outbound remote fetch tries the mandatory authenticated `GET /_matrix/federation/v1/media/download/{mediaId}` endpoint first, falling back to the deprecated `/_matrix/media/v3/download/{serverName}/{mediaId}` endpoint only on 404 (v0.10.34). The inbound side of the same endpoint — serving locally-uploaded media to other homeservers over federation with `X-Matrix` authentication and a `multipart/mixed` response — landed in v0.10.38. `Location` redirects are followed via an SSRF-safe resolver with pinned addresses (v0.11.5). The `multipart/mixed` parser was hardened to strict RFC 2046 semantics in v0.11.6: boundary delimiters must sit on their own line, quoted/unquoted boundary tokens with optional whitespace are accepted, preambles and LF-only transport padding are tolerated, and the parser fails closed unless exactly two parts are present. Remaining: Matrix v1.19 remote-thumbnail conformance fixtures. | |
     Database persistence | `runtime - wired` |
     Enforce runtime / migration grants through separate PostgreSQL users in deployment packaging.Transaction - rollback,
     migration - ordering, and role - grant durability tests landed in 0.8.6; savepoint isolation and cross-connection isolation/visibility/uniqueness durability tests landed in 0.8.9. |

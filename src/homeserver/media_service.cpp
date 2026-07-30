@@ -208,32 +208,56 @@ namespace
 
     [[nodiscard]] auto extract_multipart_boundary(std::string_view content_type) -> std::string
     {
-        auto constexpr marker = std::string_view{"boundary="};
-        auto const pos = content_type.find(marker);
-        if (pos == std::string_view::npos)
+        // RFC 2046 §5.1.1: parameter names are case-insensitive and the value
+        // may be unquoted or quoted. Parameter names/values are separated by
+        // optional linear whitespace (RFC 822), so "boundary=\"x\"" and
+        // "boundary = x" are both valid. The parameter name is the last token
+        // before the equals sign (e.g. "; boundary=").
+        auto constexpr marker = std::string_view{"boundary"};
+        auto pos = std::size_t{0U};
+        while (pos < content_type.size())
         {
-            return {};
-        }
-        auto value = trim(content_type.substr(pos + marker.size()));
-        if (!value.empty() && value.front() == '"')
-        {
-            value.remove_prefix(1U);
-            auto const end = value.find('"');
-            if (end == std::string_view::npos)
+            auto const eq = content_type.find('=', pos);
+            if (eq == std::string_view::npos)
             {
                 return {};
             }
-            value = value.substr(0U, end);
-        }
-        else
-        {
-            auto const end = value.find_first_of("; \t\r\n");
-            if (end != std::string_view::npos)
+            auto name = trim(content_type.substr(pos, eq - pos));
+            if (!name.empty())
             {
-                value = value.substr(0U, end);
+                // The parameter name is the token after any preceding semicolon.
+                auto const semi = name.rfind(';');
+                if (semi != std::string_view::npos)
+                {
+                    name = trim(name.substr(semi + 1U));
+                }
             }
+            if (equal_ci(name, marker))
+            {
+                auto value = trim(content_type.substr(eq + 1U));
+                if (!value.empty() && value.front() == '"')
+                {
+                    value.remove_prefix(1U);
+                    auto const end = value.find('"');
+                    if (end == std::string_view::npos)
+                    {
+                        return {};
+                    }
+                    value = value.substr(0U, end);
+                }
+                else
+                {
+                    auto const end = value.find_first_of("; \t\r\n");
+                    if (end != std::string_view::npos)
+                    {
+                        value = value.substr(0U, end);
+                    }
+                }
+                return std::string{value};
+            }
+            pos = eq + 1U;
         }
-        return std::string{value};
+        return {};
     }
 
     struct RawMultipartPart final
@@ -255,15 +279,11 @@ namespace
         return std::nullopt;
     }
 
-    // Splits a raw part (the bytes between two boundary delimiters, still
-    // carrying the delimiter's own trailing CRLF) into its header block and
-    // body per RFC 2046 §5.1: headers, a blank line, then the body. The
-    // trailing CRLF is stripped from the body specifically, after the
-    // header/body separator is located — not from the raw part as a whole —
-    // because for a header-only part with an empty body (e.g. a `Location`
-    // redirect) the blank line's own CRLF and the delimiter's CRLF are the
-    // same bytes, and stripping them up front would destroy the blank-line
-    // separator the header/body split depends on.
+    // Splits a raw part (the bytes between two boundary delimiters) into its
+    // header block and body per RFC 2046 §5.1: headers, a blank line, then the
+    // body. A part may legitimately have an empty body (e.g. a `Location` redirect
+    // part), so when no blank line is found the entire content is treated as
+    // headers and the body is left empty.
     [[nodiscard]] auto parse_multipart_part(std::string_view raw) -> RawMultipartPart
     {
         auto part = RawMultipartPart{};
@@ -274,8 +294,10 @@ namespace
             separator = raw.find("\n\n");
             separator_len = 2U;
         }
-        auto header_block = separator == std::string_view::npos ? std::string_view{} : raw.substr(0U, separator);
-        auto body = separator == std::string_view::npos ? raw : raw.substr(separator + separator_len);
+        auto header_block = separator == std::string_view::npos ? raw : raw.substr(0U, separator);
+        auto body = separator == std::string_view::npos ? std::string_view{} : raw.substr(separator + separator_len);
+        // The trailing CRLF/LF belongs to the boundary delimiter's transport
+        // padding, not the part body. Strip it when present.
         if (body.size() >= 2U && body.substr(body.size() - 2U) == "\r\n")
         {
             body.remove_suffix(2U);
@@ -307,7 +329,85 @@ namespace
         return part;
     }
 
+    // Returns true when `body` has a delimiter boundary at `offset`. RFC 2046
+    // §5.1.1 requires the boundary delimiter line to appear on its own line:
+    // it must be preceded by a line break (or start of body) and followed
+    // immediately by either "--" (closing delimiter) or a line break
+    // (transport padding). Without both checks a boundary string appearing
+    // literally inside media bytes would be misinterpreted as the end of the
+    // part.
+    [[nodiscard]] auto boundary_at(std::string_view body, std::string_view boundary, std::size_t offset) -> bool
+    {
+        auto const after = offset + 2U + boundary.size();
+        if (after > body.size())
+        {
+            return false;
+        }
+        if (body.compare(offset, 2U, "--") != 0)
+        {
+            return false;
+        }
+        if (body.compare(offset + 2U, boundary.size(), boundary) != 0)
+        {
+            return false;
+        }
+        // Preceded by start of body or a line break.
+        if (offset != 0U)
+        {
+            if (offset >= 2U && body.compare(offset - 2U, 2U, "\r\n") == 0)
+            {
+                // fall through
+            }
+            else if (offset >= 1U && body[offset - 1U] == '\n')
+            {
+                // fall through
+            }
+            else
+            {
+                return false;
+            }
+        }
+        // Followed by closing "--" or a line break.
+        if (after == body.size())
+        {
+            return true;
+        }
+        if (body.compare(after, 2U, "--") == 0)
+        {
+            return true;
+        }
+        if (body.compare(after, 2U, "\r\n") == 0)
+        {
+            return true;
+        }
+        return body[after] == '\n';
+    }
+
+    // Finds the next real boundary delimiter at or after `start`, using
+    // boundary_at() so inner boundary-like byte sequences are ignored.
+    [[nodiscard]] auto find_next_boundary(std::string_view body, std::string_view boundary, std::size_t start)
+        -> std::size_t
+    {
+        auto const max = body.size();
+        if (start >= max)
+        {
+            return std::string_view::npos;
+        }
+        auto pos = start;
+        while (pos < max)
+        {
+            if (boundary_at(body, boundary, pos))
+            {
+                return pos;
+            }
+            pos += 1U;
+        }
+        return std::string_view::npos;
+    }
+
     // Splits a multipart/mixed body on "--{boundary}" delimiters per RFC 2046.
+    // Requires the opening delimiter to start on a line boundary and ignores
+    // boundary-like strings that are not preceded by a line break.
     [[nodiscard]] auto split_multipart_body(std::string_view body, std::string_view boundary)
         -> std::vector<RawMultipartPart>
     {
@@ -316,19 +416,20 @@ namespace
         {
             return parts;
         }
-        auto const delimiter = "--" + std::string{boundary};
-        auto pos = body.find(delimiter);
+        auto pos = find_next_boundary(body, boundary, 0U);
         if (pos == std::string_view::npos)
         {
             return parts;
         }
-        pos += delimiter.size();
+        pos += 2U + boundary.size();
         while (pos <= body.size())
         {
+            // Closing delimiter "--boundary--".
             if (body.compare(pos, 2U, "--") == 0)
             {
-                break; // closing delimiter — no further parts
+                break;
             }
+            // Transport padding after a delimiter is CRLF or LF.
             if (body.compare(pos, 2U, "\r\n") == 0)
             {
                 pos += 2U;
@@ -337,14 +438,14 @@ namespace
             {
                 pos += 1U;
             }
-            auto const next = body.find(delimiter, pos);
+            auto const next = find_next_boundary(body, boundary, pos);
             if (next == std::string_view::npos)
             {
                 break;
             }
             auto const raw_part = body.substr(pos, next - pos);
             parts.push_back(parse_multipart_part(raw_part));
-            pos = next + delimiter.size();
+            pos = next + 2U + boundary.size();
         }
         return parts;
     }
@@ -767,7 +868,10 @@ namespace
 {
     auto const boundary = extract_multipart_boundary(content_type_header);
     auto const parts = split_multipart_body(body, boundary);
-    if (parts.size() < 2U)
+    // Matrix Server-Server API v1.19 mandates exactly two parts: an
+    // application/json metadata part and either an inline media part or a
+    // Location redirect part. Fail closed if the count differs.
+    if (parts.size() != 2U)
     {
         return {};
     }

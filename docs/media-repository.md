@@ -111,8 +111,14 @@ rejected fetches are counted and audited.The private / loopback filter reuses th
   0×0 because no thumbnail is produced at ingest. Thumbnails are generated on
   demand (see below), so a client requesting one always receives a freshly
   resampled image rather than the stored placeholder.
-- The media repository is runtime-wired; multipart upload handling remains the
-  main outstanding Matrix v1.19 gap.
+- Federation media downloads use the Matrix v1.11+ authenticated endpoint
+  (`GET /_matrix/federation/v1/media/download/{mediaId}`). The `multipart/mixed`
+  200 response is parsed strictly per RFC 2046: the boundary delimiter must sit
+  on its own line, the boundary token may be quoted or unquoted with optional
+  whitespace around `=`, a preamble before the first delimiter is skipped,
+  LF-only transport padding is tolerated, and the parser fails closed unless
+  exactly two parts are present. A `Location` redirect part may carry an empty
+  body.
 
 ## Encrypted media is never scannable
 
