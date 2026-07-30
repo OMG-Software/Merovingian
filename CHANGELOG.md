@@ -16,6 +16,7 @@ Matrix spec v1.19 P2 gap closure.
 - Room v12 / MSC4291: added conformance coverage for implicit create, creator privilege, and v12 event IDs; fixed any remaining edge cases.
 - Sliding Sync: expanded conformance fixtures and fixed subscription `required_state` merging with list-level defaults.
 - Federation membership: `send_leave` and `send_knock` now return stripped state, knock responses include `knock_room_state`, and a local accept-knock path promotes a knock to join.
+- Federation PDU verification: added conformance coverage proving `parse_inbound_pdu_envelope` and `authorize_federation_pdu` honour the room version for every stable version v1 through v12, including v12 create-event room-id derivation and the rejection of auth_events that list the implicit create event.
 - Tests: added unit scenarios `E2EE /keys/upload groups one_time_key_counts by algorithm` and `Key backup deletion endpoints remove sessions, rooms, and all keys for the current version` in `tests/unit/test_client_server.cpp`, extended backup route coverage in `tests/unit/test_key_api.cpp`, plus new unit and conformance tests for the other P2 areas.
 - Docs: updated `docs/todos/capability-gaps.md` and relevant spec docs.
 

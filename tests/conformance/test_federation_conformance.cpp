@@ -136,13 +136,13 @@ auto const key_seed = std::string{"conformance-test-seed"};
 // verify_pdu_content_hash passes. The membership parameter selects
 // "join", "leave", or "knock".
 [[nodiscard]] auto make_signed_member_pdu(std::string const& room_id_arg, std::string const& sender,
-                                           std::string const& membership, std::string_view room_ver = "12")
+                                          std::string const& membership, std::string_view room_ver = "12")
     -> std::string
 {
-    auto const unsigned_json =
-        std::string{"{\"type\":\"m.room.member\",\"room_id\":\""} + room_id_arg + "\",\"sender\":\"" + sender +
-        "\",\"state_key\":\"" + sender + "\",\"content\":{\"membership\":\"" + membership + "\"},\"depth\":1," +
-        "\"origin_server_ts\":1,\"prev_events\":[],\"auth_events\":[]}";
+    auto const unsigned_json = std::string{"{\"type\":\"m.room.member\",\"room_id\":\""} + room_id_arg +
+                               "\",\"sender\":\"" + sender + "\",\"state_key\":\"" + sender +
+                               "\",\"content\":{\"membership\":\"" + membership + "\"},\"depth\":1," +
+                               "\"origin_server_ts\":1,\"prev_events\":[],\"auth_events\":[]}";
     return merovingian::federation::test::make_signed_event_json(unsigned_json, origin, key_id, key_seed,
                                                                  std::string{room_ver});
 }
@@ -150,16 +150,15 @@ auto const key_seed = std::string{"conformance-test-seed"};
 // Build a properly signed v2 invite body wrapping a signed m.room.member
 // invite event from the remote server.
 [[nodiscard]] auto make_signed_v2_invite_body(std::string const& room_id_arg, std::string const& sender,
-                                               std::string const& state_key,
-                                               std::string_view room_ver = "12") -> std::string
+                                              std::string const& state_key, std::string_view room_ver = "12")
+    -> std::string
 {
-    auto const unsigned_json =
-        std::string{"{\"type\":\"m.room.member\",\"room_id\":\""} + room_id_arg + "\",\"sender\":\"" + sender +
-        "\",\"state_key\":\"" + state_key + "\",\"content\":{\"membership\":\"invite\"},\"depth\":1," +
-        "\"origin_server_ts\":1,\"prev_events\":[],\"auth_events\":[]}";
-    auto const signed_event =
-        merovingian::federation::test::make_signed_event_json(unsigned_json, origin, key_id, key_seed,
-                                                              std::string{room_ver});
+    auto const unsigned_json = std::string{"{\"type\":\"m.room.member\",\"room_id\":\""} + room_id_arg +
+                               "\",\"sender\":\"" + sender + "\",\"state_key\":\"" + state_key +
+                               "\",\"content\":{\"membership\":\"invite\"},\"depth\":1," +
+                               "\"origin_server_ts\":1,\"prev_events\":[],\"auth_events\":[]}";
+    auto const signed_event = merovingian::federation::test::make_signed_event_json(unsigned_json, origin, key_id,
+                                                                                    key_seed, std::string{room_ver});
     return std::string{"{\"room_version\":\""} + std::string{room_ver} + "\",\"event\":" + signed_event +
            ",\"invite_room_state\":[]}";
 }
@@ -177,15 +176,32 @@ auto const key_seed = std::string{"conformance-test-seed"};
 [[nodiscard]] auto store_with_alice_e2ee_keys() -> merovingian::database::PersistentStore
 {
     auto store = merovingian::database::PersistentStore{};
-    store.device_keys.push_back(
-        {"@alice:remote.example.org", "DEVICE1", "{\"device_id\":\"DEVICE1\",\"keys\":{\"ed25519:DEVICE1\":\"key-one\"}}"});
-    store.device_keys.push_back(
-        {"@alice:remote.example.org", "DEVICE2", "{\"device_id\":\"DEVICE2\",\"keys\":{\"ed25519:DEVICE2\":\"key-two\"}}"});
+    store.device_keys.push_back({"@alice:remote.example.org", "DEVICE1",
+                                 "{\"device_id\":\"DEVICE1\",\"keys\":{\"ed25519:DEVICE1\":\"key-one\"}}"});
+    store.device_keys.push_back({"@alice:remote.example.org", "DEVICE2",
+                                 "{\"device_id\":\"DEVICE2\",\"keys\":{\"ed25519:DEVICE2\":\"key-two\"}}"});
     store.cross_signing_keys.push_back(
         {"@alice:remote.example.org", "master", "{\"usage\":[\"master\"],\"keys\":{\"ed25519:master\":\"mk\"}}"});
-    store.cross_signing_keys.push_back(
-        {"@alice:remote.example.org", "self_signing", "{\"usage\":[\"self_signing\"],\"keys\":{\"ed25519:ssk\":\"sk\"}}"});
+    store.cross_signing_keys.push_back({"@alice:remote.example.org", "self_signing",
+                                        "{\"usage\":[\"self_signing\"],\"keys\":{\"ed25519:ssk\":\"sk\"}}"});
     return store;
+}
+
+[[nodiscard]] auto make_signed_create_pdu_v12(std::string_view sender) -> std::string
+{
+    auto unsigned_json = std::string{};
+    unsigned_json += "{\"type\":\"m.room.create\",\"sender\":\"";
+    unsigned_json += sender;
+    unsigned_json += "\",\"content\":{\"room_version\":\"12\",\"creator\":\"";
+    unsigned_json += sender;
+    unsigned_json += "\"},\"depth\":1,\"origin_server_ts\":1,\"prev_events\":[],\"auth_events\":[]}";
+    return merovingian::federation::test::make_signed_event_json(unsigned_json, origin, key_id, key_seed, "12");
+}
+
+[[nodiscard]] auto key_record_for_origin() -> merovingian::federation::FederationKeyRecord
+{
+    auto const kp = merovingian::federation::test::keypair_from_seed(key_seed);
+    return {origin, key_id, 2000U, kp.public_key};
 }
 
 } // namespace
@@ -286,8 +302,7 @@ SCENARIO("send_join persists membership and returns auth chain and state", "[fed
         auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
         merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
 
-        auto const join_event_body =
-            make_signed_member_pdu(std::string{room_id}, "@remote:remote.example.org", "join");
+        auto const join_event_body = make_signed_member_pdu(std::string{room_id}, "@remote:remote.example.org", "join");
 
         auto accept_invoked = std::make_shared<bool>(false);
         runtime.membership_acceptor = [accept_invoked, join_event_body](
@@ -588,9 +603,10 @@ SCENARIO("invite v1 processes inbound invite and returns signed event", "[federa
             // Build a properly signed invite event with state_key pointing to a local user.
             auto const unsigned_json =
                 std::string{"{\"type\":\"m.room.member\",\"room_id\":\""} + std::string{room_id} +
-                "\",\"sender\":\"@remote:remote.example.org\",\"state_key\":\"@local:local.example.org\",\"content\":{\"membership\":\"invite\"},\"depth\":1,\"origin_server_ts\":1,\"prev_events\":[],\"auth_events\":[]}";
-            auto const signed_body = merovingian::federation::test::make_signed_event_json(unsigned_json, origin,
-                                                                                            key_id, key_seed, "12");
+                "\",\"sender\":\"@remote:remote.example.org\",\"state_key\":\"@local:local.example.org\",\"content\":{"
+                "\"membership\":\"invite\"},\"depth\":1,\"origin_server_ts\":1,\"prev_events\":[],\"auth_events\":[]}";
+            auto const signed_body =
+                merovingian::federation::test::make_signed_event_json(unsigned_json, origin, key_id, key_seed, "12");
             auto const request = signed_put_request(origin, key_id, key_seed, target, signed_body);
             auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
 
@@ -2136,8 +2152,7 @@ SCENARIO("send_join v1 endpoint returns 200 with the required response fields", 
         auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
         merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
 
-        auto const join_event_body =
-            make_signed_member_pdu(std::string{room_id}, "@remote:remote.example.org", "join");
+        auto const join_event_body = make_signed_member_pdu(std::string{room_id}, "@remote:remote.example.org", "join");
 
         runtime.membership_acceptor =
             [join_event_body](
@@ -2312,8 +2327,8 @@ SCENARIO("invite v2 response body contains the event key as a JSON object", "[fe
         {
             auto const event_id = std::string{"$invite_event:"} + origin;
             auto const target = "/_matrix/federation/v2/invite/" + std::string{room_id} + "/" + event_id;
-            auto const body = make_signed_v2_invite_body(std::string{room_id}, "@alice:remote.example.org",
-                                                         "@bob:local.example.org");
+            auto const body =
+                make_signed_v2_invite_body(std::string{room_id}, "@alice:remote.example.org", "@bob:local.example.org");
             auto const response = merovingian::federation::handle_inbound_federation_request(
                 runtime, signed_put_request(origin, key_id, key_seed, target, body));
 
@@ -2492,6 +2507,157 @@ SCENARIO("backfill provider receives decoded room_id and event_ids from URI comp
                 REQUIRE(captured->event_ids.size() == 1U);
                 REQUIRE(captured->event_ids.front() == "$event_a:local.example.org");
                 REQUIRE(captured->limit == 10U);
+            }
+        }
+    }
+}
+
+// =============================================================================
+// Room-version-specific PDU verification
+// =============================================================================
+// Spec: Matrix Server-Server API v1.19
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#calculating-the-reference-hash-for-an-event
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#room-version-12
+//
+// The federation ingestion layer MUST use the room's actual version when parsing
+// and authorising a PDU. Hardcoding "12" produces the wrong event ID or fails
+// signature verification for rooms on other versions.
+
+SCENARIO("parse_inbound_pdu_envelope accepts a signed member PDU for every stable room version",
+         "[federation][conformance][pdu][room-version]")
+{
+    GIVEN("the set of stable Matrix room versions")
+    {
+        auto const versions = std::array{"1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"};
+
+        for (auto const* version : versions)
+        {
+            WHEN("a member PDU signed for room version " << version << " is parsed with that version")
+            {
+                auto const pdu_json =
+                    make_signed_member_pdu(std::string{room_id}, "@remote:remote.example.org", "join", version);
+
+                auto const envelope = merovingian::federation::parse_inbound_pdu_envelope(pdu_json, version);
+
+                THEN("the envelope is accepted, the event ID is non-empty, and the room version is preserved")
+                {
+                    REQUIRE(envelope.has_value());
+                    REQUIRE(!envelope->event_id.empty());
+                    REQUIRE(envelope->room_id == std::string{room_id});
+                    REQUIRE(envelope->room_version == version);
+                    REQUIRE(!envelope->signatures.empty());
+                }
+            }
+        }
+    }
+}
+
+SCENARIO("authorize_federation_pdu accepts a signed member PDU for every stable room version",
+         "[federation][conformance][pdu][room-version]")
+{
+    GIVEN("a signing key record matching the remote origin")
+    {
+        auto const key_record = key_record_for_origin();
+
+        auto const versions = std::array{"1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"};
+
+        for (auto const* version : versions)
+        {
+            WHEN("a member PDU signed for room version " << version << " is authorised with that version")
+            {
+                auto const pdu_json =
+                    make_signed_member_pdu(std::string{room_id}, "@remote:remote.example.org", "join", version);
+                auto const envelope = merovingian::federation::parse_inbound_pdu_envelope(pdu_json, version);
+                REQUIRE(envelope.has_value());
+
+                auto pdu = merovingian::federation::FederationPdu{};
+                pdu.event_id = envelope->event_id;
+                pdu.room_id = envelope->room_id;
+                pdu.event_type = envelope->event_type;
+                pdu.sender = envelope->sender;
+                pdu.signatures = envelope->signatures;
+                pdu.json = envelope->json;
+                pdu.room_version = envelope->room_version;
+
+                auto const decision = merovingian::federation::authorize_federation_pdu(pdu, origin, key_record, 1000U);
+
+                THEN("the PDU is accepted")
+                {
+                    REQUIRE(decision.accepted);
+                    REQUIRE(decision.status == 200U);
+                }
+            }
+        }
+    }
+}
+
+SCENARIO("v12 create event derives the room_id from its reference hash and carries no room_id field",
+         "[federation][conformance][pdu][room-version][v12]")
+{
+    GIVEN("a signed m.room.create event without a room_id field")
+    {
+        auto const create_json = make_signed_create_pdu_v12("@remote:remote.example.org");
+
+        WHEN("it is parsed as a room version 12 event")
+        {
+            auto const envelope = merovingian::federation::parse_inbound_pdu_envelope(create_json, "12");
+
+            THEN("the room_id is derived from the event_id by swapping the sigil")
+            {
+                REQUIRE(envelope.has_value());
+                REQUIRE(envelope->event_type == "m.room.create");
+                REQUIRE(!envelope->event_id.empty());
+                REQUIRE(envelope->event_id.front() == '$');
+                REQUIRE(envelope->room_id == ("!" + envelope->event_id.substr(1)));
+                REQUIRE(envelope->room_version == "12");
+            }
+        }
+    }
+}
+
+SCENARIO("v12 non-create PDU rejects auth_events that list the implicit create event",
+         "[federation][conformance][pdu][room-version][v12]")
+{
+    GIVEN("a v12 room whose room_id has no server component")
+    {
+        auto const v12_room_id = std::string{"!v12conformanceroom"};
+        auto const create_event_id = std::string{"$"} + v12_room_id.substr(1);
+
+        auto const unsigned_json =
+            std::string{"{\"type\":\"m.room.member\",\"room_id\":\""} + v12_room_id +
+            "\",\"sender\":\"@remote:remote.example.org\",\"state_key\":\"@remote:remote.example.org\","
+            "\"content\":{\"membership\":\"join\"},\"depth\":2,\"origin_server_ts\":2,"
+            "\"prev_events\":[],\"auth_events\":[\"" +
+            create_event_id + "\"]}";
+        auto const pdu_json =
+            merovingian::federation::test::make_signed_event_json(unsigned_json, origin, key_id, key_seed, "12");
+
+        WHEN("the PDU is parsed as room version 12")
+        {
+            auto const envelope = merovingian::federation::parse_inbound_pdu_envelope(pdu_json, "12");
+
+            THEN("the envelope is rejected because the create event must not appear in auth_events")
+            {
+                REQUIRE(!envelope.has_value());
+            }
+        }
+    }
+}
+
+SCENARIO("parse_inbound_pdu_envelope rejects a PDU with an unknown room version",
+         "[federation][conformance][pdu][room-version]")
+{
+    GIVEN("a member PDU signed for room version 12")
+    {
+        auto const pdu_json = make_signed_member_pdu(std::string{room_id}, "@remote:remote.example.org", "join", "12");
+
+        WHEN("it is parsed with an unsupported room version")
+        {
+            auto const envelope = merovingian::federation::parse_inbound_pdu_envelope(pdu_json, "99");
+
+            THEN("the envelope is rejected")
+            {
+                REQUIRE(!envelope.has_value());
             }
         }
     }
