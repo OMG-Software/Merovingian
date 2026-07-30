@@ -6740,13 +6740,18 @@ SCENARIO("Leaving one of two shared rooms does not emit device_lists.left",
         {
             auto const leave = merovingian::homeserver::handle_client_server_request(
                 runtime, {"POST", "/_matrix/client/v3/rooms/" + room_one_id + "/leave", bob_token, "{}"});
+            REQUIRE(leave.response.status == 200U);
+
+            auto const leave_to_sync = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/sync", alice_token, {}});
+            REQUIRE(leave_to_sync.response.status == 200U);
+            auto const leave_to = sync_next_batch(leave_to_sync.response.body);
 
             THEN("alice does not see bob in device_lists.left because they still share room two")
             {
-                REQUIRE(leave.response.status == 200U);
                 auto const changes = merovingian::homeserver::handle_client_server_request(
                     runtime,
-                    {"GET", "/_matrix/client/v3/keys/changes?from=" + from_token + "&to=s999", alice_token, {}});
+                    {"GET", "/_matrix/client/v3/keys/changes?from=" + from_token + "&to=" + leave_to, alice_token, {}});
                 REQUIRE(changes.response.status == 200U);
                 auto const body = parse_object(changes.response.body);
                 auto const* left = object_member_as_array(body, "left");
@@ -6819,8 +6824,14 @@ SCENARIO("Stopping and resuming room sharing emits device_lists.left then change
                 runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id_value + "/leave", bob_token, "{}"});
             REQUIRE(leave.response.status == 200U);
 
+            auto const after_leave_sync = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/sync", alice_token, {}});
+            REQUIRE(after_leave_sync.response.status == 200U);
+            auto const leave_to = sync_next_batch(after_leave_sync.response.body);
+
             auto const left_changes = merovingian::homeserver::handle_client_server_request(
-                runtime, {"GET", "/_matrix/client/v3/keys/changes?from=" + leave_from + "&to=s999", alice_token, {}});
+                runtime,
+                {"GET", "/_matrix/client/v3/keys/changes?from=" + leave_from + "&to=" + leave_to, alice_token, {}});
             REQUIRE(left_changes.response.status == 200U);
             auto const left_body = parse_object(left_changes.response.body);
             auto const* left = object_member_as_array(left_body, "left");
@@ -6830,20 +6841,24 @@ SCENARIO("Stopping and resuming room sharing emits device_lists.left then change
                 return user_id != nullptr && *user_id == "@bob:example.org";
             }));
 
-            auto const after_leave_sync = merovingian::homeserver::handle_client_server_request(
-                runtime, {"GET", "/_matrix/client/v3/sync", alice_token, {}});
-            REQUIRE(after_leave_sync.response.status == 200U);
-            auto const rejoin_from = sync_next_batch(after_leave_sync.response.body);
+            auto const rejoin_from = leave_to;
 
             auto const rejoin = merovingian::homeserver::handle_client_server_request(
                 runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id_value + "/join", bob_token, "{}"});
+            REQUIRE(rejoin.response.status == 200U);
+
+            auto const after_rejoin_sync = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/sync", alice_token, {}});
+            REQUIRE(after_rejoin_sync.response.status == 200U);
+            auto const rejoin_to = sync_next_batch(after_rejoin_sync.response.body);
 
             THEN("alice later sees bob in device_lists.changed again")
             {
-                REQUIRE(rejoin.response.status == 200U);
                 auto const changed_response = merovingian::homeserver::handle_client_server_request(
-                    runtime,
-                    {"GET", "/_matrix/client/v3/keys/changes?from=" + rejoin_from + "&to=s999", alice_token, {}});
+                    runtime, {"GET",
+                              "/_matrix/client/v3/keys/changes?from=" + rejoin_from + "&to=" + rejoin_to,
+                              alice_token,
+                              {}});
                 REQUIRE(changed_response.response.status == 200U);
                 auto const changed_body = parse_object(changed_response.response.body);
                 auto const* changed = object_member_as_array(changed_body, "changed");

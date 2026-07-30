@@ -5582,10 +5582,10 @@ namespace
     // Returns users whose device lists changed between the two sync stream
     // positions. Clients use this to avoid re-querying /keys/query on every
     // /sync; Element requests it on initial load to detect stale key caches.
+    // Spec v1.19: both `from` and `to` are required /sync next_batch tokens.
     [[nodiscard]] auto handle_keys_changes(ClientServerRuntime const& rt, std::string_view user,
                                            std::string_view target) -> LocalHttpResponse
     {
-        // Parse the `from` sync token (may be "s{N}" or plain integer).
         auto const query_start = target.find('?');
         auto const query = query_start != std::string_view::npos ? target.substr(query_start + 1U) : std::string_view{};
         auto const parse_qparam = [&query](std::string_view key) -> std::string_view {
@@ -5600,24 +5600,40 @@ namespace
             return val_end == std::string_view::npos ? query.substr(val_start)
                                                      : query.substr(val_start, val_end - val_start);
         };
+
         auto const raw_from = parse_qparam("from");
-        // The `from` parameter is a /sync next_batch token that encodes
-        // event_ordering, membership_ordering, and sync_stream_id as three
-        // underscore-separated hex components.  We want the sync_stream_id
-        // component because device-list changes are tracked by that counter.
-        // Fall back to 0 (return all changes) if the token cannot be decoded.
-        std::uint64_t from_id = 0U;
-        if (auto const decoded = sync::decode_stream_token(raw_from); decoded.has_value())
+        auto const raw_to = parse_qparam("to");
+        if (raw_from.empty())
         {
-            from_id = decoded->sync_stream_id;
+            return err(400U, "M_MISSING_PARAM", "from query parameter is required");
         }
+        if (raw_to.empty())
+        {
+            return err(400U, "M_MISSING_PARAM", "to query parameter is required");
+        }
+
+        // The sync token encodes event_ordering, membership_ordering, and
+        // sync_stream_id as three underscore-separated hex components. Device-list
+        // changes are tracked by sync_stream_id, so we extract that component.
+        auto const from_decoded = sync::decode_stream_token(raw_from);
+        auto const to_decoded = sync::decode_stream_token(raw_to);
+        if (!from_decoded.has_value())
+        {
+            return err(400U, "M_INVALID_PARAM", "invalid from sync token");
+        }
+        if (!to_decoded.has_value())
+        {
+            return err(400U, "M_INVALID_PARAM", "invalid to sync token");
+        }
+        auto const from_id = from_decoded->sync_stream_id;
+        auto const to_id = to_decoded->sync_stream_id;
 
         auto const& store = rt.homeserver.database.persistent_store;
         auto changed = canonicaljson::Array{};
         auto left = canonicaljson::Array{};
         for (auto const& change : store.device_list_changes)
         {
-            if (change.observer_user_id != user || change.stream_id <= from_id)
+            if (change.observer_user_id != user || change.stream_id <= from_id || change.stream_id > to_id)
             {
                 continue;
             }
