@@ -157,6 +157,7 @@ shell = find_program('sh')
       'unit/test_runtime_federation.cpp',
       'unit/test_runtime_hardening.cpp',
       'unit/test_runtime_listeners.cpp',
+      'unit/test_runtime_signing_key_store.cpp',
       'unit/test_runtime_media.cpp',
       'unit/test_secret_buffer.cpp',
       'unit/test_shutdown_signal.cpp',

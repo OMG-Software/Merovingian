@@ -36,6 +36,11 @@ public:
     virtual ~SigningKeyStore() = default;
 
     [[nodiscard]] virtual auto active_key_for_server(std::string_view server_name) -> SigningKeyLookupResult = 0;
+
+    // Returns every currently-active signing key for the requested server. The
+    // default implementation delegates to active_key_for_server so existing
+    // single-key stores continue to work; multi-key stores should override it.
+    [[nodiscard]] virtual auto active_keys_for_server(std::string_view server_name) -> std::vector<SigningKeyRecord>;
 };
 
 struct ServerSignatureResult final

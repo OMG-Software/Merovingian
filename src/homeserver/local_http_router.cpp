@@ -23,6 +23,7 @@
 #include "merovingian/homeserver/media_service.hpp"
 #include "merovingian/homeserver/room_service.hpp"
 #include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/homeserver/runtime_signing_key_store.hpp"
 #include "merovingian/homeserver/space_hierarchy.hpp"
 #include "merovingian/media/repository.hpp"
 #include "merovingian/observability/logger.hpp"
@@ -161,35 +162,6 @@ namespace
     {
         return response(result.status, result.ok ? result.value : result.reason);
     }
-
-    class RuntimeSigningKeyStore final : public crypto::SigningKeyStore
-    {
-    public:
-        RuntimeSigningKeyStore(std::string server_name, database::PersistentServerSigningKey key)
-            : server_name_{std::move(server_name)}
-            , key_{std::move(key)}
-        {
-        }
-
-        [[nodiscard]] auto active_key_for_server(std::string_view server_name)
-            -> crypto::SigningKeyLookupResult override
-        {
-            if (server_name != server_name_)
-            {
-                return {{}, "signing key not found"};
-            }
-            auto public_key = events::matrix_bytes_from_base64(key_.public_key);
-            return {
-                crypto::SigningKeyRecord{server_name_, key_.key_id, crypto::Ed25519PublicKey{std::move(public_key)},
-                                         true},
-                {}
-            };
-        }
-
-    private:
-        std::string server_name_{};
-        database::PersistentServerSigningKey key_{};
-    };
 
     [[nodiscard]] auto starts_with(std::string_view value, std::string_view prefix) noexcept -> bool
     {

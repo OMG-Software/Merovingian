@@ -116,6 +116,10 @@ struct LocalDatabase final
     std::vector<observability::AuditLogEvent> audit_events{};
     database::PersistentStore persistent_store{};
     core::SecretBuffer signing_secret_key{};
+    // All currently-active server signing secrets loaded into the runtime, keyed
+    // by key_id. Used to build the multi-key Ed25519 provider so events and
+    // federation responses can be signed with any active key.
+    std::vector<std::pair<std::string, core::SecretBuffer>> signing_secret_keys{};
     // Keyed secret used to sign opaque pagination tokens issued by endpoints such
     // as GET /_matrix/client/v1/mutual_rooms. Derived once at runtime start from
     // the server signing key so tokens are server-scoped and survive restarts.
@@ -347,9 +351,23 @@ struct SessionRefreshResult final
 [[nodiscard]] auto start_runtime(config::Config const& config, database::SchemaState existing_state)
     -> RuntimeStartResult;
 [[nodiscard]] auto start_runtime(RuntimeStartOptions opts) -> RuntimeStartResult;
-// Re-creates the runtime's owned signing provider from runtime.database.signing_secret_key.
-// Called by start_runtime after the signing key is ensured and by rotate_server_signing_key
-// after a rotation. This is a no-op when an external provider override is active.
+// Decrypted material for one currently-active server signing key, returned by
+// active_server_signing_key_secrets and consumed by reset_runtime_crypto_provider.
+struct ActiveServerSigningKeySecret final
+{
+    std::string key_id{};
+    core::SecretBuffer secret{};
+};
+
+// Loads and decrypts every currently-active server signing secret from the
+// persistent store. Secrets are sorted with the preferred key first.
+[[nodiscard]] auto active_server_signing_key_secrets(HomeserverRuntime& runtime)
+    -> std::vector<ActiveServerSigningKeySecret>;
+
+// Re-creates the runtime's owned signing provider from all currently-active
+// signing secrets. Called by start_runtime after the signing key is ensured
+// and by rotate_server_signing_key after a rotation. This is a no-op when an
+// external provider override is active.
 auto reset_runtime_crypto_provider(HomeserverRuntime& runtime) -> void;
 [[nodiscard]] auto admin_health(HomeserverRuntime const& runtime) -> observability::HealthCheckSnapshot;
 [[nodiscard]] auto admin_health_summary(HomeserverRuntime const& runtime) -> std::string;

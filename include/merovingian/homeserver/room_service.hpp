@@ -169,10 +169,15 @@ struct SendJoinStateSplit final
 
 [[nodiscard]] auto ensure_runtime_server_signing_key(HomeserverRuntime& runtime)
     -> std::optional<database::PersistentServerSigningKey>;
-// Returns the active server signing-key record (key_id and public_key) without
-// loading or decrypting the secret. Used by federation paths that sign through
-// an external provider (e.g. the out-of-process worker) where the secret must
-// not enter the runtime.
+// Returns every currently-active signing-key record for this server without
+// loading secrets. The vector is sorted with the preferred key (greatest
+// valid_until_ts) first, and is used to publish the server's verify_keys.
+[[nodiscard]] auto collect_active_server_signing_keys(HomeserverRuntime const& runtime)
+    -> std::vector<database::PersistentServerSigningKey>;
+// Returns the preferred active server signing-key record (key_id and public_key)
+// without loading or decrypting the secret. Used by federation paths that sign
+// through an external provider (e.g. the out-of-process worker) where the secret
+// must not enter the runtime.
 [[nodiscard]] auto find_active_server_signing_key(HomeserverRuntime const& runtime)
     -> std::optional<database::PersistentServerSigningKey>;
 [[nodiscard]] auto publish_server_signing_keys(HomeserverRuntime& runtime) -> OperationResult;

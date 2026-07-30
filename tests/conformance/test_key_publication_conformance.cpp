@@ -7,6 +7,8 @@
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/config/config.hpp"
+#include "merovingian/crypto/ed25519.hpp"
+#include "merovingian/events/event_signer.hpp"
 #include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/homeserver/http_server.hpp"
 #include "merovingian/homeserver/room_service.hpp"
@@ -15,6 +17,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <mutex>
 #include <string>
 
 namespace
@@ -521,6 +524,87 @@ SCENARIO("Repeated signing-key rotations accumulate every superseded key in old_
                 REQUIRE(old_keys->size() == 2U);
                 REQUIRE(json_get(*old_keys, first_key_id) != nullptr);
                 REQUIRE(json_get(*old_keys, second_key_id) != nullptr);
+            }
+        }
+    }
+}
+
+// Spec: Matrix Server-Server API v1.19
+// Endpoint: GET /_matrix/key/v2/server
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#publishing-keys
+//
+// Servers MAY publish more than one active signing key at a time. When multiple
+// valid keys exist, each MUST appear in verify_keys and the response MUST still
+// be signed by the preferred (highest valid_until_ts) key.
+SCENARIO("GET /_matrix/key/v2/server advertises multiple simultaneously-active signing keys",
+         "[federation][conformance][key_publishing][multi-key]")
+{
+    GIVEN("a started runtime with an initial active signing key")
+    {
+        auto started = merovingian::homeserver::start_client_server(key_publication_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const initial = merovingian::homeserver::dispatch_local_http_request(
+            runtime, {"GET", "/_matrix/key/v2/server", {}, {}}, merovingian::homeserver::HttpDispatchMode::federation);
+        REQUIRE(initial.status == 200U);
+        auto const initial_parsed = merovingian::canonicaljson::parse_lossless(initial.body);
+        auto const* initial_root = std::get_if<merovingian::canonicaljson::Object>(&initial_parsed.value.storage());
+        REQUIRE(initial_root != nullptr);
+        auto const* initial_verify = get_object(*initial_root, "verify_keys");
+        REQUIRE(initial_verify != nullptr);
+        REQUIRE(initial_verify->size() == 1U);
+        auto const initial_key_id = initial_verify->front().key;
+
+        WHEN("a second valid signing key is added to the persistent store and the provider is rebuilt")
+        {
+            auto const second_keypair = merovingian::crypto::generate_ed25519_keypair().value();
+            auto const public_key_b64 = merovingian::events::matrix_base64_from_bytes(std::string_view{
+                reinterpret_cast<char const*>(second_keypair.public_key.data()), second_keypair.public_key.size()});
+            auto const secret_key_b64 = merovingian::events::matrix_base64_from_bytes(std::string_view{
+                reinterpret_cast<char const*>(second_keypair.secret_key.data()), second_keypair.secret_key.size()});
+            auto constexpr seven_days_ms = std::uint64_t{7U * 24U * 60U * 60U * 1000U};
+            auto const now_ms = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                               std::chrono::system_clock::now().time_since_epoch())
+                                                               .count());
+            auto const second_key = merovingian::database::PersistentServerSigningKey{
+                runtime.homeserver.config.server().server_name,
+                "ed25519:secondkey1",
+                public_key_b64,
+                now_ms + seven_days_ms - 1000U, // active but subordinate to the initial key
+                secret_key_b64,
+            };
+            {
+                auto guard = std::unique_lock{runtime.homeserver.mutex};
+                REQUIRE(merovingian::database::store_server_signing_key(runtime.homeserver.database.persistent_store,
+                                                                        second_key));
+                merovingian::homeserver::reset_runtime_crypto_provider(runtime.homeserver);
+            }
+
+            auto const published = merovingian::homeserver::publish_server_signing_keys(runtime.homeserver);
+
+            THEN("the response advertises both active keys in verify_keys and is signed by the preferred key")
+            {
+                REQUIRE(published.ok);
+                auto const parsed = merovingian::canonicaljson::parse_lossless(published.value);
+                auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                REQUIRE(root != nullptr);
+
+                // Spec MUST: every currently-active key appears in verify_keys.
+                auto const* verify_keys = get_object(*root, "verify_keys");
+                REQUIRE(verify_keys != nullptr);
+                REQUIRE(verify_keys->size() == 2U);
+                REQUIRE(json_get(*verify_keys, initial_key_id) != nullptr);
+                REQUIRE(json_get(*verify_keys, second_key.key_id) != nullptr);
+
+                // Spec MUST: the response is signed by the preferred key (the one with
+                // the greatest valid_until_ts), not by the subordinate active key.
+                auto const* signatures = get_object(*root, "signatures");
+                REQUIRE(signatures != nullptr);
+                auto const* server_signatures = get_object(*signatures, runtime.homeserver.config.server().server_name);
+                REQUIRE(server_signatures != nullptr);
+                REQUIRE(json_get(*server_signatures, initial_key_id) != nullptr);
+                REQUIRE(json_get(*server_signatures, second_key.key_id) == nullptr);
             }
         }
     }

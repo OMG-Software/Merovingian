@@ -2,6 +2,7 @@
 
 Matrix spec v1.19 P2 gap closure.
 
+- Federation keys: the server now supports multiple simultaneously-active Ed25519 signing keys. `GET /_matrix/key/v2/server` publishes every valid key in `verify_keys`, signs the response with the preferred key, and retires superseded keys to `old_verify_keys`. `RuntimeMultiKeyEd25519Provider` and `RuntimeSigningKeyStore` wire the multi-key behaviour through event signing and federation request signing.
 - Media: remote thumbnails now use the local sandboxed thumbnailing pipeline after fetching the remote file via the
           authenticated federation media endpoint.
 - Federation media: the authenticated `GET /_matrix/federation/v1/media/download/{mediaId}` endpoint now follows `Location` redirects in an SSRF-safe way instead of immediately falling back to the deprecated v3 endpoint.

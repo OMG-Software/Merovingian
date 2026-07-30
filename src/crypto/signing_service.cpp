@@ -28,6 +28,16 @@ auto signing_key_record_is_usable(SigningKeyRecord const& key) noexcept -> bool
            ed25519_public_key_shape_is_valid(key.public_key);
 }
 
+auto SigningKeyStore::active_keys_for_server(std::string_view server_name) -> std::vector<SigningKeyRecord>
+{
+    auto result = active_key_for_server(server_name);
+    if (!result.error.empty() || !signing_key_record_is_usable(result.key))
+    {
+        return {};
+    }
+    return {std::move(result.key)};
+}
+
 auto sign_for_server(SigningKeyStore& key_store, Ed25519Provider& provider, std::string_view server_name,
                      std::string_view message) -> ServerSignatureResult
 {
@@ -39,59 +49,59 @@ auto sign_for_server(SigningKeyStore& key_store, Ed25519Provider& provider, std:
         return {{}, {}, {}, "server name is empty"};
     }
 
-    auto key = key_store.active_key_for_server(server_name);
-    if (!key.error.empty())
-    {
-        log_diagnostic("sign.rejected",
-                       {
-                           {"server_name", std::string{server_name}, false},
-                           {"reason",      key.error,                false}
-        });
-        return {{}, {}, {}, key.error};
-    }
-    if (!signing_key_record_is_usable(key.key))
+    auto keys = key_store.active_keys_for_server(server_name);
+    if (keys.empty())
     {
         log_diagnostic("sign.rejected", {
-                                            {"server_name", std::string{server_name},           false},
-                                            {"reason",      "active signing key is not usable", false}
+                                            {"server_name", std::string{server_name}, false},
+                                            {"reason",      "no active signing key",  false}
         });
-        return {{}, {}, {}, "active signing key is not usable"};
-    }
-    if (key.key.server_name != server_name)
-    {
-        log_diagnostic("sign.rejected", {
-                                            {"server_name", std::string{server_name},             false},
-                                            {"reason",      "active signing key server mismatch", false}
-        });
-        return {{}, {}, {}, "active signing key server mismatch"};
+        return {{}, {}, {}, "no active signing key"};
     }
 
-    auto signature = provider.sign(Ed25519SecretKeyHandle{key.key.key_id}, message);
-    if (!signature.error.empty())
+    auto last_error = std::string{};
+    for (auto const& key : keys)
     {
-        log_diagnostic("sign.failed", {
-                                          {"server_name", key.key.server_name, false},
-                                          {"key_id",      key.key.key_id,      false},
-                                          {"reason",      signature.error,     false}
+        if (!signing_key_record_is_usable(key) || key.server_name != server_name)
+        {
+            continue;
+        }
+
+        auto signature = provider.sign(Ed25519SecretKeyHandle{key.key_id}, message);
+        if (!signature.error.empty())
+        {
+            last_error = signature.error;
+            log_diagnostic("sign.failed", {
+                                              {"server_name", key.server_name, false},
+                                              {"key_id",      key.key_id,      false},
+                                              {"reason",      signature.error, false}
+            });
+            continue;
+        }
+        if (!ed25519_signature_shape_is_valid(signature.signature))
+        {
+            last_error = "provider returned invalid Ed25519 signature shape";
+            log_diagnostic("sign.failed", {
+                                              {"server_name", key.server_name,                                     false},
+                                              {"key_id",      key.key_id,                                          false},
+                                              {"reason",      "provider returned invalid Ed25519 signature shape", false}
+            });
+            continue;
+        }
+
+        log_diagnostic("sign.accepted", {
+                                            {"server_name", key.server_name, false},
+                                            {"key_id",      key.key_id,      false}
         });
-        return {key.key.server_name, key.key.key_id, {}, signature.error};
-    }
-    if (!ed25519_signature_shape_is_valid(signature.signature))
-    {
-        log_diagnostic("sign.failed", {
-                                          {"server_name", key.key.server_name,                                 false},
-                                          {"key_id",      key.key.key_id,                                      false},
-                                          {"reason",      "provider returned invalid Ed25519 signature shape", false}
-        });
-        return {key.key.server_name, key.key.key_id, {}, "provider returned invalid Ed25519 signature shape"};
+        return {key.server_name, key.key_id, signature.signature, {}};
     }
 
-    log_diagnostic("sign.accepted",
+    log_diagnostic("sign.rejected",
                    {
-                       {"server_name", key.key.server_name, false},
-                       {"key_id",      key.key.key_id,      false}
+                       {"server_name", std::string{server_name},                                         false},
+                       {"reason",      last_error.empty() ? "no usable active signing key" : last_error, false}
     });
-    return {key.key.server_name, key.key.key_id, signature.signature, {}};
+    return {{}, {}, {}, last_error.empty() ? "no usable active signing key" : last_error};
 }
 
 } // namespace merovingian::crypto

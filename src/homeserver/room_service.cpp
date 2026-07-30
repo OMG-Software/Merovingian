@@ -28,6 +28,7 @@
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/homeserver/runtime_signing_key_store.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
@@ -313,85 +314,6 @@ namespace
         }
         return encode_encrypted_secret_for_storage(*ciphertext);
     }
-
-    // Decrypt a stored signing secret.  Returns nullopt if the value is encrypted
-    // but cannot be decrypted (wrong master key / corrupted).  For legacy plaintext
-    // rows, returns the decoded bytes directly.
-    [[nodiscard]] auto decrypt_stored_signing_secret(HomeserverRuntime const& runtime, std::string_view stored)
-        -> std::optional<std::vector<std::uint8_t>>
-    {
-        if (auto const ciphertext = decode_encrypted_secret_from_storage(stored); ciphertext.has_value())
-        {
-            auto const master_key_material =
-                crypto::load_master_key_material(runtime.config.security().secrets.master_key_file);
-            if (!master_key_material.has_value())
-            {
-                log_diagnostic(
-                    "signing_key.decryption_failed",
-                    {
-                        {"reason", "encrypted signing secret requires security.secrets.master_key_file", false}
-                });
-                return std::nullopt;
-            }
-            auto const key = crypto::derive_secret_box_key(master_key_material->bytes());
-            if (!key.has_value())
-            {
-                return std::nullopt;
-            }
-            auto const plaintext = crypto::secret_box_decrypt(*ciphertext, *key);
-            if (!plaintext.has_value())
-            {
-                log_diagnostic("signing_key.decryption_failed",
-                               {
-                                   {"reason", "master key does not decrypt stored signing secret", false}
-                });
-                return std::nullopt;
-            }
-            return plaintext;
-        }
-
-        // Legacy plaintext base64 secret: decode and return as-is.  A diagnostic
-        // is emitted so operators can rotate to an encrypted secret.
-        auto const decoded = events::matrix_bytes_from_base64(stored);
-        if (!decoded.empty())
-        {
-            log_diagnostic(
-                "signing_key.legacy_plaintext",
-                {
-                    {"reason", "signing secret is stored plaintext; rotate to enable at-rest encryption", false}
-            });
-        }
-        return std::vector<std::uint8_t>{decoded.begin(), decoded.end()};
-    }
-
-    class RuntimeSigningKeyStore final : public crypto::SigningKeyStore
-    {
-    public:
-        RuntimeSigningKeyStore(std::string server_name, database::PersistentServerSigningKey key)
-            : server_name_{std::move(server_name)}
-            , key_{std::move(key)}
-        {
-        }
-
-        [[nodiscard]] auto active_key_for_server(std::string_view server_name)
-            -> crypto::SigningKeyLookupResult override
-        {
-            if (server_name != server_name_)
-            {
-                return {{}, "signing key not found"};
-            }
-            auto public_key = events::matrix_bytes_from_base64(key_.public_key);
-            return {
-                crypto::SigningKeyRecord{server_name_, key_.key_id, crypto::Ed25519PublicKey{std::move(public_key)},
-                                         true},
-                {}
-            };
-        }
-
-    private:
-        std::string server_name_{};
-        database::PersistentServerSigningKey key_{};
-    };
 
     [[nodiscard]] auto object_member(canonicaljson::Object const& object, std::string_view key) noexcept
         -> canonicaljson::Value const*
@@ -1724,25 +1646,68 @@ namespace
     return {true, outcome.response.body};
 }
 
-namespace
+[[nodiscard]] auto derive_ed25519_key_id(std::span<unsigned char const> public_key) -> std::string
 {
-    // Derives an "ed25519:<hex>" key_id from the first four bytes of a public key.
-    // Tying the id to the key material gives every generated key a unique id, so a
-    // stale federation notary cache for a previous id becomes irrelevant after a
-    // rotation. Shared by key generation and key rotation.
-    [[nodiscard]] auto derive_ed25519_key_id(std::span<unsigned char const> public_key) -> std::string
+    static constexpr auto hex_digits = std::string_view{"0123456789abcdef"};
+    auto key_version = std::string{};
+    key_version.reserve(8U);
+    for (auto i = 0U; i < 4U; ++i)
     {
-        static constexpr auto hex_digits = std::string_view{"0123456789abcdef"};
-        auto key_version = std::string{};
-        key_version.reserve(8U);
-        for (auto i = 0U; i < 4U; ++i)
-        {
-            key_version += hex_digits[(public_key[i] >> 4U) & 0x0fU];
-            key_version += hex_digits[public_key[i] & 0x0fU];
-        }
-        return "ed25519:" + key_version;
+        key_version += hex_digits[(public_key[i] >> 4U) & 0x0fU];
+        key_version += hex_digits[public_key[i] & 0x0fU];
     }
-} // namespace
+    return "ed25519:" + key_version;
+}
+
+// Decrypt a stored signing secret.  Returns nullopt if the value is encrypted
+// but cannot be decrypted (wrong master key / corrupted).  For legacy plaintext
+// rows, returns the decoded bytes directly.
+[[nodiscard]] auto decrypt_stored_signing_secret(HomeserverRuntime const& runtime, std::string_view stored)
+    -> std::optional<std::vector<std::uint8_t>>
+{
+    if (auto const ciphertext = decode_encrypted_secret_from_storage(stored); ciphertext.has_value())
+    {
+        auto const master_key_material =
+            crypto::load_master_key_material(runtime.config.security().secrets.master_key_file);
+        if (!master_key_material.has_value())
+        {
+            log_diagnostic(
+                "signing_key.decryption_failed",
+                {
+                    {"reason", "encrypted signing secret requires security.secrets.master_key_file", false}
+            });
+            return std::nullopt;
+        }
+        auto const key = crypto::derive_secret_box_key(master_key_material->bytes());
+        if (!key.has_value())
+        {
+            return std::nullopt;
+        }
+        auto const plaintext = crypto::secret_box_decrypt(*ciphertext, *key);
+        if (!plaintext.has_value())
+        {
+            log_diagnostic("signing_key.decryption_failed",
+                           {
+                               {"reason", "master key does not decrypt stored signing secret", false}
+            });
+            return std::nullopt;
+        }
+        return plaintext;
+    }
+
+    // Legacy plaintext base64 secret: decode and return as-is.  A diagnostic
+    // is emitted so operators can rotate to an encrypted secret.
+    auto const decoded = events::matrix_bytes_from_base64(stored);
+    if (!decoded.empty())
+    {
+        log_diagnostic(
+            "signing_key.legacy_plaintext",
+            {
+                {"reason", "signing secret is stored plaintext; rotate to enable at-rest encryption", false}
+        });
+    }
+    return std::vector<std::uint8_t>{decoded.begin(), decoded.end()};
+}
 
 [[nodiscard]] auto ensure_runtime_server_signing_key(HomeserverRuntime& runtime)
     -> std::optional<database::PersistentServerSigningKey>
@@ -1895,6 +1860,68 @@ namespace
     return key;
 }
 
+// Collect every currently-active signing-key record for this server. A key is
+// active when it is not the legacy "ed25519:auto" sentinel, has a non-empty
+// public key and secret, and its valid_until_ts is still in the future. The
+// returned vector is sorted by valid_until_ts descending so the preferred key
+// (the one used for new signatures) is always front().
+[[nodiscard]] auto collect_active_server_signing_keys(HomeserverRuntime const& runtime)
+    -> std::vector<database::PersistentServerSigningKey>
+{
+    auto const& server_name = runtime.config.server().server_name;
+    auto const& all_keys = runtime.database.persistent_store.server_signing_keys;
+
+    auto const now_ms = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+            .count());
+
+    auto active = std::vector<database::PersistentServerSigningKey>{};
+    for (auto const& candidate : all_keys)
+    {
+        if (candidate.server_name != server_name || candidate.key_id == "ed25519:auto" ||
+            candidate.secret_key.empty() || candidate.public_key.empty() || candidate.valid_until_ts <= now_ms)
+        {
+            continue;
+        }
+        active.push_back(candidate);
+    }
+    std::ranges::sort(active,
+                      [](database::PersistentServerSigningKey const& a, database::PersistentServerSigningKey const& b) {
+                          return a.valid_until_ts > b.valid_until_ts;
+                      });
+    return active;
+}
+
+// Load and decrypt every currently-active signing secret. The vector follows the
+// same order as collect_active_server_signing_keys (preferred key first) so the
+// multi-key provider and legacy single-secret callers agree on which key is
+// active. Secrets that fail decryption or have the wrong size are skipped.
+[[nodiscard]] auto active_server_signing_key_secrets(HomeserverRuntime& runtime)
+    -> std::vector<ActiveServerSigningKeySecret>
+{
+    auto const active_records = collect_active_server_signing_keys(runtime);
+    if (active_records.empty())
+    {
+        return {};
+    }
+
+    auto constexpr expected_secret_bytes = crypto::Ed25519Keypair{}.secret_key.size();
+    auto result = std::vector<ActiveServerSigningKeySecret>{};
+    result.reserve(active_records.size());
+    for (auto const& record : active_records)
+    {
+        auto raw_secret = decrypt_stored_signing_secret(runtime, record.secret_key);
+        if (!raw_secret.has_value() || raw_secret->size() != expected_secret_bytes)
+        {
+            continue;
+        }
+        auto secret = core::SecretBuffer{raw_secret->size()};
+        std::copy(raw_secret->begin(), raw_secret->end(), secret.bytes().begin());
+        result.push_back(ActiveServerSigningKeySecret{record.key_id, std::move(secret)});
+    }
+    return result;
+}
+
 [[nodiscard]] auto find_active_server_signing_key(HomeserverRuntime const& runtime)
     -> std::optional<database::PersistentServerSigningKey>
 {
@@ -1923,8 +1950,8 @@ namespace
 
 [[nodiscard]] auto publish_server_signing_keys(HomeserverRuntime& runtime) -> OperationResult
 {
-    auto key = ensure_runtime_server_signing_key(runtime);
-    if (!key.has_value())
+    auto preferred = ensure_runtime_server_signing_key(runtime);
+    if (!preferred.has_value())
     {
         return make_operation_result(false, {}, "server signing key unavailable", 500U);
     }
@@ -1943,21 +1970,39 @@ namespace
             .count());
     auto const rolling_valid_until_ts = now_ms + seven_days_ms;
 
-    auto verify_key = canonicaljson::Object{};
-    verify_key.push_back(canonicaljson::make_member("key", canonicaljson::Value{key->public_key}));
+    // Advertise every currently-active key in verify_keys. Multiple active keys are
+    // supported during rotation windows or when the operator has pre-staged keys.
+    auto active_keys = collect_active_server_signing_keys(runtime);
+    if (active_keys.empty())
+    {
+        return make_operation_result(false, {}, "no active server signing keys", 500U);
+    }
+
     auto verify_keys = canonicaljson::Object{};
-    verify_keys.push_back(canonicaljson::make_member(key->key_id, canonicaljson::Value{std::move(verify_key)}));
+    for (auto const& active : active_keys)
+    {
+        auto verify_key = canonicaljson::Object{};
+        verify_key.push_back(canonicaljson::make_member("key", canonicaljson::Value{active.public_key}));
+        verify_keys.push_back(canonicaljson::make_member(active.key_id, canonicaljson::Value{std::move(verify_key)}));
+    }
 
     // Build old_verify_keys from every stored signing key for this server that is not
-    // the currently active key. Per the Matrix spec each entry is:
+    // currently active. Per the Matrix spec each entry is:
     //   "<key_id>": { "expired_ts": <ms>, "key": "<base64 public key>" }
     // expired_ts is capped at now_ms so that superseded keys with a far-future
     // valid_until_ts (e.g. the legacy year-2999 sentinel) are never published with
     // a future expiry, which would cause peers to treat them as still valid.
+    auto active_ids = std::set<std::string>{};
+    for (auto const& active : active_keys)
+    {
+        active_ids.insert(active.key_id);
+    }
+
     auto old_verify_keys_obj = canonicaljson::Object{};
     for (auto const& old_key : runtime.database.persistent_store.server_signing_keys)
     {
-        if (old_key.server_name != key->server_name || old_key.key_id == key->key_id || old_key.public_key.empty())
+        if (old_key.server_name != preferred->server_name || active_ids.contains(old_key.key_id) ||
+            old_key.public_key.empty())
         {
             continue;
         }
@@ -1973,7 +2018,7 @@ namespace
     auto response = canonicaljson::Object{};
     response.push_back(
         canonicaljson::make_member("old_verify_keys", canonicaljson::Value{std::move(old_verify_keys_obj)}));
-    response.push_back(canonicaljson::make_member("server_name", canonicaljson::Value{key->server_name}));
+    response.push_back(canonicaljson::make_member("server_name", canonicaljson::Value{preferred->server_name}));
     response.push_back(canonicaljson::make_member(
         "valid_until_ts", canonicaljson::Value{static_cast<std::int64_t>(rolling_valid_until_ts)}));
     response.push_back(canonicaljson::make_member("verify_keys", canonicaljson::Value{std::move(verify_keys)}));
@@ -1984,7 +2029,8 @@ namespace
         return make_operation_result(false, {}, canonicaljson::canonical_json_error_name(payload.error), 500U);
     }
 
-    auto const sign_result = runtime.crypto_provider->sign(crypto::Ed25519SecretKeyHandle{key->key_id}, payload.output);
+    auto const sign_result =
+        runtime.crypto_provider->sign(crypto::Ed25519SecretKeyHandle{preferred->key_id}, payload.output);
     if (!sign_result.error.empty())
     {
         return make_operation_result(false, {}, "server key response signing failed: " + sign_result.error, 500U);
@@ -1992,10 +2038,10 @@ namespace
 
     auto server_signatures = canonicaljson::Object{};
     server_signatures.push_back(canonicaljson::make_member(
-        key->key_id, canonicaljson::Value{events::matrix_base64_from_bytes(sign_result.signature.bytes)}));
+        preferred->key_id, canonicaljson::Value{events::matrix_base64_from_bytes(sign_result.signature.bytes)}));
     auto signatures = canonicaljson::Object{};
     signatures.push_back(
-        canonicaljson::make_member(key->server_name, canonicaljson::Value{std::move(server_signatures)}));
+        canonicaljson::make_member(preferred->server_name, canonicaljson::Value{std::move(server_signatures)}));
     response.push_back(canonicaljson::make_member("signatures", canonicaljson::Value{std::move(signatures)}));
 
     auto signed_response = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(response)});

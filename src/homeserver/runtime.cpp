@@ -8,6 +8,7 @@
 #include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/crypto/generic_hash.hpp"
 #include "merovingian/crypto/runtime_ed25519_provider.hpp"
+#include "merovingian/crypto/runtime_multikey_ed25519_provider.hpp"
 #include "merovingian/database/postgresql_store.hpp"
 #include "merovingian/database/schema.hpp"
 #include "merovingian/federation/runtime_federation.hpp"
@@ -249,26 +250,50 @@ namespace
 
 } // namespace
 
-// Rebuilds crypto_provider_owned from runtime.database.signing_secret_key.
-// Called after startup and after every key rotation so the active provider
-// always matches the currently persisted key. Exposed to room_service.cpp for
+// Rebuilds crypto_provider_owned from all currently-active persisted signing
+// keys. Called after startup, after every key rotation, and after any other
+// change that adds or removes an active key. Exposed to room_service.cpp for
 // use by rotate_server_signing_key.
 auto reset_runtime_crypto_provider(HomeserverRuntime& runtime) -> void
 {
-    auto constexpr expected_secret_bytes = crypto::Ed25519Keypair{}.secret_key.size();
-    if (runtime.database.signing_secret_key.bytes().size() == expected_secret_bytes)
+    auto secrets = active_server_signing_key_secrets(runtime);
+    if (secrets.empty())
     {
-        auto secret_key = std::array<unsigned char, expected_secret_bytes>{};
-        std::copy(runtime.database.signing_secret_key.bytes().begin(),
-                  runtime.database.signing_secret_key.bytes().end(), secret_key.begin());
-        runtime.crypto_provider_owned = std::make_unique<crypto::RuntimeEd25519Provider>(std::move(secret_key));
-        runtime.crypto_provider = runtime.crypto_provider_owned.get();
-    }
-    else
-    {
+        runtime.database.signing_secret_keys.clear();
+        runtime.database.signing_secret_key = core::SecretBuffer{};
         runtime.crypto_provider_owned.reset();
         runtime.crypto_provider = nullptr;
+        return;
     }
+
+    auto constexpr expected_secret_bytes = crypto::Ed25519Keypair{}.secret_key.size();
+    auto key_entries = std::vector<std::pair<std::string, std::array<unsigned char, expected_secret_bytes>>>{};
+    key_entries.reserve(secrets.size());
+    for (auto&& entry : secrets)
+    {
+        auto array = std::array<unsigned char, expected_secret_bytes>{};
+        std::copy(entry.secret.bytes().begin(), entry.secret.bytes().end(), array.begin());
+        key_entries.emplace_back(std::move(entry.key_id), std::move(array));
+    }
+
+    runtime.database.signing_secret_keys.clear();
+    for (auto&& entry : secrets)
+    {
+        runtime.database.signing_secret_keys.emplace_back(std::move(entry.key_id), std::move(entry.secret));
+    }
+
+    // Preserve the preferred single secret for callers that still borrow
+    // runtime.database.signing_secret_key (outbound federation, worker config,
+    // pagination-token derivation). The vector is sorted with the preferred
+    // key first, so front() is the same key the pre-multi-key code chose.
+    runtime.database.signing_secret_key =
+        core::SecretBuffer{runtime.database.signing_secret_keys.front().second.bytes().size()};
+    std::copy(runtime.database.signing_secret_keys.front().second.bytes().begin(),
+              runtime.database.signing_secret_keys.front().second.bytes().end(),
+              runtime.database.signing_secret_key.bytes().begin());
+
+    runtime.crypto_provider_owned = std::make_unique<crypto::RuntimeMultiKeyEd25519Provider>(std::move(key_entries));
+    runtime.crypto_provider = runtime.crypto_provider_owned.get();
 }
 
 HomeserverRuntime::HomeserverRuntime()
