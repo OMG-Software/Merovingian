@@ -72,6 +72,16 @@ struct SendJoinStateSplit final
     -> OperationResult;
 [[nodiscard]] auto invite_user(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id,
                                std::string_view target_user_id, std::string_view reason = {}) -> OperationResult;
+// Creates a local-only third-party identifier invite. Generates a random token
+// and an Ed25519 keypair, then composes and persists an
+// `m.room.third_party_invite` state event whose `state_key` is the token and
+// whose content carries the generated public key. The matching private key is
+// held in memory only long enough to generate the keypair; callers that need
+// to validate a `third_party_signed` join later must look up the public key
+// from the persisted event.
+[[nodiscard]] auto invite_user_by_threepid(HomeserverRuntime& runtime, std::string_view access_token,
+                                           std::string_view room_id, std::string_view id_server,
+                                           std::string_view medium, std::string_view address) -> OperationResult;
 [[nodiscard]] auto ban_user(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id,
                             std::string_view target_user_id, std::string_view reason = {}) -> OperationResult;
 [[nodiscard]] auto kick_user(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id,

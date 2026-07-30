@@ -16,6 +16,7 @@
 //   - create_room with is_direct: m.direct account data is written/appended for
 //     the creator so that a second device can classify the room via sliding sync
 
+#include "../support/json_test_support.hpp"
 #include "../support/registration_token.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/config/config.hpp"
@@ -1352,6 +1353,63 @@ SCENARIO("invite_user notifies the federation worker when an existing room gains
             {
                 REQUIRE(invite.ok);
                 REQUIRE(changed_rooms == std::vector<std::string>{room.value});
+            }
+        }
+    }
+}
+
+SCENARIO("invite_user_by_threepid creates a signed m.room.third_party_invite state event", "[homeserver][rooms][3pid]")
+{
+    GIVEN("a room with alice joined")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const alice_reg = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                            merovingian::tests::registration_token);
+        REQUIRE(alice_reg.ok);
+        auto const alice_login =
+            merovingian::homeserver::login_local_user(runtime, alice_reg.value, "CorrectHorse7!", "ALICE_DEV");
+        REQUIRE(alice_login.ok);
+        auto const room = merovingian::homeserver::create_room(runtime, alice_login.value);
+        REQUIRE(room.ok);
+
+        WHEN("alice invites a third-party email address")
+        {
+            auto const result = merovingian::homeserver::invite_user_by_threepid(
+                runtime, alice_login.value, room.value, "example.org", "email", "bob@example.org");
+
+            THEN("a signed m.room.third_party_invite state event is persisted")
+            {
+                REQUIRE(result.ok);
+
+                auto const& store = runtime.database.persistent_store;
+                auto const state = std::ranges::find_if(
+                    store.state, [&room_id = room.value](merovingian::database::PersistentStateEvent const& s) {
+                        return s.room_id == room_id && s.event_type == "m.room.third_party_invite";
+                    });
+                REQUIRE(state != store.state.end());
+                REQUIRE_FALSE(state->state_key.empty());
+
+                auto const event = std::ranges::find_if(
+                    store.events, [&event_id = state->event_id](merovingian::database::PersistentEvent const& e) {
+                        return e.event_id == event_id;
+                    });
+                REQUIRE(event != store.events.end());
+
+                auto const parsed = merovingian::canonicaljson::parse_lossless(event->json);
+                auto const* obj = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                REQUIRE(obj != nullptr);
+                auto const* content = merovingian::tests::object_member_as_object(*obj, "content");
+                REQUIRE(content != nullptr);
+                auto const* public_key = merovingian::tests::string_member(*content, "public_key");
+                REQUIRE(public_key != nullptr);
+                REQUIRE_FALSE(public_key->empty());
+                auto const* public_keys = merovingian::tests::object_member_as_array(*content, "public_keys");
+                REQUIRE(public_keys != nullptr);
+                REQUIRE_FALSE(public_keys->empty());
             }
         }
     }

@@ -6756,8 +6756,10 @@ SCENARIO("GET /media/v3/thumbnail/{serverName}/{mediaId} for remote media does n
         WHEN("GET /media/v3/thumbnail/remote.example.org/abc is called without federation outbound client")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/media/v3/thumbnail/remote.example.org/abc?width=32&height=32&method=scale", token, {}});
+                started.runtime, {"GET",
+                                  "/_matrix/media/v3/thumbnail/remote.example.org/abc?width=32&height=32&method=scale",
+                                  token,
+                                  {}});
 
             THEN("the response is an error, never 200 with full-size original bytes")
             {
@@ -8136,6 +8138,66 @@ SCENARIO("POST /rooms/{roomId}/invite for a remote user returns 200 and persists
                     });
                 REQUIRE(invite_json != store.events.end());
                 REQUIRE_FALSE(invite_json->json.empty());
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.19
+// Endpoint: POST /_matrix/client/v3/rooms/{roomId}/invite
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3roomsroomidinvite
+//
+// MUST accept a 3PID invite body with id_server, medium, and address, and
+// persist a signed m.room.third_party_invite state event whose state_key is
+// the opaque invite token.
+SCENARIO("POST /rooms/{roomId}/invite with id_server/medium/address creates a third-party invite",
+         "[conformance][client-server][room-membership][3pid]")
+{
+    GIVEN("a room owned by alice on the local server")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const alice = logged_in_token(started.runtime);
+        auto const room_id = create_room(started.runtime, alice);
+
+        WHEN("alice invites a third-party email address")
+        {
+            auto const invite = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/invite", alice,
+                                  R"({"id_server":"example.org","medium":"email","address":"bob@example.org"})"});
+
+            THEN("the server returns 200 with an empty body")
+            {
+                REQUIRE(invite.response.status == 200U);
+                auto const body = parse_object(invite.response.body);
+                REQUIRE(body.empty());
+            }
+
+            THEN("an m.room.third_party_invite state event is persisted with a token state_key")
+            {
+                auto const& store = started.runtime.homeserver.database.persistent_store;
+                auto const tpi_state =
+                    std::ranges::find_if(store.state, [&room_id](merovingian::database::PersistentStateEvent const& s) {
+                        return s.room_id == room_id && s.event_type == "m.room.third_party_invite";
+                    });
+                REQUIRE(tpi_state != store.state.end());
+                REQUIRE_FALSE(tpi_state->state_key.empty());
+
+                auto const event = std::ranges::find_if(
+                    store.events, [&event_id = tpi_state->event_id](merovingian::database::PersistentEvent const& e) {
+                        return e.event_id == event_id;
+                    });
+                REQUIRE(event != store.events.end());
+
+                auto const body = parse_object(event->json);
+                auto const* content = object_member_as_object(body, "content");
+                REQUIRE(content != nullptr);
+                auto const* public_key = string_member(*content, "public_key");
+                REQUIRE(public_key != nullptr);
+                REQUIRE_FALSE(public_key->empty());
+                auto const* public_keys = object_member_as_array(*content, "public_keys");
+                REQUIRE(public_keys != nullptr);
+                REQUIRE_FALSE(public_keys->empty());
             }
         }
     }

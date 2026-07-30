@@ -10,6 +10,7 @@
 #include "merovingian/core/secret_buffer.hpp"
 #include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/crypto/master_key.hpp"
+#include "merovingian/crypto/random.hpp"
 #include "merovingian/crypto/secret_box.hpp"
 #include "merovingian/crypto/signing_service.hpp"
 #include "merovingian/database/persistent_store.hpp"
@@ -486,6 +487,36 @@ namespace
         auto event = canonicaljson::Object{};
         event.push_back(canonicaljson::make_member("type", canonicaljson::Value{std::string{"m.room.member"}}));
         event.push_back(canonicaljson::make_member("state_key", canonicaljson::Value{std::string{user_id}}));
+        event.push_back(canonicaljson::make_member("content", canonicaljson::Value{std::move(content)}));
+        return serialize_canonical_string(canonicaljson::Value{std::move(event)});
+    }
+
+    // Builds the client-supplied `m.room.third_party_invite` event JSON. The
+    // state_key is the opaque invite token, and the content carries the Ed25519
+    // public key used later to validate `third_party_signed` joins.
+    // Spec: Matrix v1.19 rooms/v11.md — Authorization rules for m.room.third_party_invite.
+    [[nodiscard]] auto serialize_third_party_invite_event_json(std::string_view token,
+                                                               std::string_view public_key_base64,
+                                                               std::string_view display_name)
+        -> std::optional<std::string>
+    {
+        auto public_key_entry = canonicaljson::Object{};
+        public_key_entry.push_back(
+            canonicaljson::make_member("public_key", canonicaljson::Value{std::string{public_key_base64}}));
+
+        auto public_keys = canonicaljson::Array{};
+        public_keys.push_back(canonicaljson::Value{std::move(public_key_entry)});
+
+        auto content = canonicaljson::Object{};
+        content.push_back(canonicaljson::make_member("display_name", canonicaljson::Value{std::string{display_name}}));
+        content.push_back(
+            canonicaljson::make_member("public_key", canonicaljson::Value{std::string{public_key_base64}}));
+        content.push_back(canonicaljson::make_member("public_keys", canonicaljson::Value{std::move(public_keys)}));
+
+        auto event = canonicaljson::Object{};
+        event.push_back(
+            canonicaljson::make_member("type", canonicaljson::Value{std::string{"m.room.third_party_invite"}}));
+        event.push_back(canonicaljson::make_member("state_key", canonicaljson::Value{std::string{token}}));
         event.push_back(canonicaljson::make_member("content", canonicaljson::Value{std::move(content)}));
         return serialize_canonical_string(canonicaljson::Value{std::move(event)});
     }
@@ -4051,6 +4082,84 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
     }
     append_local_audit(runtime.database, observability::AuditCategory::admin, "room.invited", *user_id, target_user_id,
                        std::string{room_id});
+    notify_room_changed(runtime, room_id);
+    return make_operation_result(true, std::string{room_id});
+}
+
+[[nodiscard]] auto invite_user_by_threepid(HomeserverRuntime& runtime, std::string_view access_token,
+                                           std::string_view room_id, std::string_view id_server,
+                                           std::string_view medium, std::string_view address) -> OperationResult
+{
+    std::ignore = id_server;
+
+    auto guard = std::unique_lock<std::recursive_mutex>{runtime.mutex};
+    auto const user_id = authenticated_user(runtime, access_token);
+    if (!user_id.has_value())
+    {
+        return make_operation_result(false, {}, "unauthenticated", 401U);
+    }
+    auto* room = find_room(runtime.database, room_id);
+    if (room == nullptr)
+    {
+        return make_operation_result(false, {}, "room not found", 404U);
+    }
+    if (!room_has_member(*room, *user_id))
+    {
+        return make_operation_result(false, {}, "user is not joined", 403U);
+    }
+
+    auto const token = crypto::secure_random_hex(32U);
+    if (!token.has_value())
+    {
+        return make_operation_result(false, {}, "token generation failed", 500U);
+    }
+
+    auto const keypair = crypto::generate_ed25519_keypair();
+    if (!keypair.has_value())
+    {
+        return make_operation_result(false, {}, "keypair generation failed", 500U);
+    }
+
+    auto const public_key_b64 = events::matrix_base64_from_bytes(
+        std::string_view{reinterpret_cast<char const*>(keypair->public_key.data()), keypair->public_key.size()});
+
+    auto const event_json = serialize_third_party_invite_event_json(*token, public_key_b64, address);
+    if (!event_json.has_value())
+    {
+        return make_operation_result(false, {}, "third-party invite event serialization failed", 500U);
+    }
+
+    auto const composed = compose_signed_event(runtime, room_id, *user_id, *event_json);
+    if (!composed.has_value())
+    {
+        return make_operation_result(false, {}, "third-party invite event rejected", 403U);
+    }
+    if (!persist_composed_event(runtime, room_id, *user_id, *composed))
+    {
+        return make_operation_result(false, {}, "third-party invite persistence failed", 500U);
+    }
+
+    if (auto* r = find_room(runtime.database, room_id); r != nullptr)
+    {
+        r->events.push_back(composed->json);
+    }
+
+    auto const sync_stream_id = database::allocate_sync_stream_id(runtime.database.persistent_store);
+    if (runtime.sync_notifier != nullptr)
+    {
+        runtime.sync_notifier->publish(runtime.database.next_stream_ordering - 1U, sync_stream_id);
+    }
+
+    append_local_audit(runtime.database, observability::AuditCategory::admin, "room.third_party_invited", *user_id,
+                       room_id, std::string{address});
+    log_diagnostic("room.third_party_invite.accepted",
+                   {
+                       {"actor",   *user_id,             false},
+                       {"room_id", std::string{room_id}, false},
+                       {"medium",  std::string{medium},  false},
+                       {"address", std::string{address}, false}
+    },
+                   observability::LogEventSeverity::info);
     notify_room_changed(runtime, room_id);
     return make_operation_result(true, std::string{room_id});
 }

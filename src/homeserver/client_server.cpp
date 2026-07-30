@@ -1444,6 +1444,9 @@ namespace
     {
         std::string user_id{};
         std::string reason{};
+        std::optional<std::string> id_server{};
+        std::optional<std::string> medium{};
+        std::optional<std::string> address{};
     };
 
     [[nodiscard]] auto parse_membership_action_body(std::string_view body) -> std::optional<MembershipActionBody>
@@ -1453,13 +1456,43 @@ namespace
         {
             return std::nullopt;
         }
+
         auto const* user_id = string_member(*object, "user_id");
-        if (user_id == nullptr || user_id->empty())
+        auto const* id_server = string_member(*object, "id_server");
+        auto const* medium = string_member(*object, "medium");
+        auto const* address = string_member(*object, "address");
+        auto const* reason = string_member(*object, "reason");
+
+        auto body_out = MembershipActionBody{};
+        body_out.reason = reason == nullptr ? std::string{} : *reason;
+        if (user_id != nullptr && !user_id->empty())
+        {
+            body_out.user_id = *user_id;
+        }
+        if (id_server != nullptr && !id_server->empty())
+        {
+            body_out.id_server = *id_server;
+        }
+        if (medium != nullptr && !medium->empty())
+        {
+            body_out.medium = *medium;
+        }
+        if (address != nullptr && !address->empty())
+        {
+            body_out.address = *address;
+        }
+
+        // The two documented request shapes are mutually exclusive: either a
+        // Matrix user_id or a third-party identifier triple. Reject bodies
+        // that contain neither or an incomplete triple.
+        auto const has_user_id = !body_out.user_id.empty();
+        auto const has_threepid =
+            body_out.id_server.has_value() && body_out.medium.has_value() && body_out.address.has_value();
+        if (!has_user_id && !has_threepid)
         {
             return std::nullopt;
         }
-        auto const* reason = string_member(*object, "reason");
-        return MembershipActionBody{*user_id, reason == nullptr ? std::string{} : *reason};
+        return body_out;
     }
 
     [[nodiscard]] auto object_member_object(canonicaljson::Object const& object, std::string_view key) noexcept
@@ -9714,38 +9747,63 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             auto const body = parse_membership_action_body(req.body);
             if (!body.has_value())
             {
-                return dispatch_err(req, rt, 400U, "M_BAD_JSON", "invite body must contain user_id");
+                return dispatch_err(req, rt, 400U, "M_BAD_JSON",
+                                    "invite body must contain user_id or id_server/medium/address");
             }
-            auto const result = merovingian::homeserver::invite_user(rt.homeserver, req.access_token, room_id,
-                                                                     body->user_id, body->reason);
-            if (!result.ok)
+
+            auto const has_user_id = !body->user_id.empty();
+            auto const has_threepid =
+                body->id_server.has_value() && body->medium.has_value() && body->address.has_value();
+            if (has_user_id && has_threepid)
             {
-                return dispatch_err(req, rt, result.status, error_code_for_status(result.status), result.reason);
+                return dispatch_err(req, rt, 400U, "M_BAD_JSON",
+                                    "invite body must not mix user_id and id_server/medium/address");
             }
-            // For remote invitees dispatch the federation invite so the remote server
-            // learns about the event and can deliver it to the invitee's client.
-            auto const invitee_server = server_name_from_user_id(body->user_id);
-            if (!invitee_server.empty() && invitee_server != rt.homeserver.config.server().server_name)
+
+            if (has_user_id)
             {
-                auto const& store = rt.homeserver.database.persistent_store;
-                auto const invite_state =
-                    std::ranges::find_if(store.state, [&room_id, &body](database::PersistentStateEvent const& s) {
-                        return s.room_id == room_id && s.event_type == "m.room.member" && s.state_key == body->user_id;
-                    });
-                auto const invite_json =
-                    invite_state != store.state.end() ? event_json_for_id(store, invite_state->event_id) : std::nullopt;
-                if (invite_json.has_value())
+                auto const result = merovingian::homeserver::invite_user(rt.homeserver, req.access_token, room_id,
+                                                                         body->user_id, body->reason);
+                if (!result.ok)
                 {
-                    auto const room_version = room_version_from_store(store, room_id);
-                    merovingian::homeserver::wire_federation_callbacks(rt.homeserver);
-                    if (rt.homeserver.dispatch_worker != nullptr)
+                    return dispatch_err(req, rt, result.status, error_code_for_status(result.status), result.reason);
+                }
+                // For remote invitees dispatch the federation invite so the remote server
+                // learns about the event and can deliver it to the invitee's client.
+                auto const invitee_server = server_name_from_user_id(body->user_id);
+                if (!invitee_server.empty() && invitee_server != rt.homeserver.config.server().server_name)
+                {
+                    auto const& store = rt.homeserver.database.persistent_store;
+                    auto const invite_state =
+                        std::ranges::find_if(store.state, [&room_id, &body](database::PersistentStateEvent const& s) {
+                            return s.room_id == room_id && s.event_type == "m.room.member" &&
+                                   s.state_key == body->user_id;
+                        });
+                    auto const invite_json = invite_state != store.state.end()
+                                                 ? event_json_for_id(store, invite_state->event_id)
+                                                 : std::nullopt;
+                    if (invite_json.has_value())
                     {
-                        auto transaction = federation::make_outbound_invite(
-                            invitee_server, rt.homeserver.config.server().server_name, room_id, invite_state->event_id,
-                            room_version, *invite_json, {});
-                        transaction.transaction_id = federation::make_federation_transaction_id();
-                        std::ignore = rt.homeserver.dispatch_worker->enqueue(std::move(transaction));
+                        auto const room_version = room_version_from_store(store, room_id);
+                        merovingian::homeserver::wire_federation_callbacks(rt.homeserver);
+                        if (rt.homeserver.dispatch_worker != nullptr)
+                        {
+                            auto transaction = federation::make_outbound_invite(
+                                invitee_server, rt.homeserver.config.server().server_name, room_id,
+                                invite_state->event_id, room_version, *invite_json, {});
+                            transaction.transaction_id = federation::make_federation_transaction_id();
+                            std::ignore = rt.homeserver.dispatch_worker->enqueue(std::move(transaction));
+                        }
                     }
+                }
+            }
+            else
+            {
+                auto const result = merovingian::homeserver::invite_user_by_threepid(
+                    rt.homeserver, req.access_token, room_id, *body->id_server, *body->medium, *body->address);
+                if (!result.ok)
+                {
+                    return dispatch_err(req, rt, result.status, error_code_for_status(result.status), result.reason);
                 }
             }
             return dispatch_resp(req, rt, 200U, json_serialize(json_obj({})));
