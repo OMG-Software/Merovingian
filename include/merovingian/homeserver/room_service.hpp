@@ -67,7 +67,8 @@ struct SendJoinStateSplit final
 // room, whose room ID is a bare reference hash with no `:server` suffix (MSC4291)
 // and therefore cannot be routed from the room ID alone.
 [[nodiscard]] auto join_room(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id,
-                             std::vector<std::string> const& via_servers = {}) -> OperationResult;
+                             std::vector<std::string> const& via_servers = {},
+                             canonicaljson::Object const* third_party_signed = nullptr) -> OperationResult;
 [[nodiscard]] auto leave_room(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id)
     -> OperationResult;
 [[nodiscard]] auto invite_user(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id,

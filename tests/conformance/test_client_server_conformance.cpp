@@ -27,7 +27,9 @@
 #include "../federation_signing_test_support.hpp"
 #include "../support/json_test_support.hpp"
 #include "../support/registration_token.hpp"
+#include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/config/config.hpp"
+#include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/outbound_transaction.hpp"
 #include "merovingian/federation/runtime_federation.hpp"
@@ -38,6 +40,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <optional>
 #include <string>
@@ -137,6 +140,53 @@ using namespace merovingian::tests;
     REQUIRE(value != nullptr);
     REQUIRE(!value->empty());
     return *value;
+}
+
+// Serialises the content object for an m.room.third_party_invite state event.
+// The state_key is supplied separately in the PUT URL; the caller sends this
+// content to /rooms/{roomId}/state/m.room.third_party_invite/{stateKey}.
+[[nodiscard]] auto make_third_party_invite_content_json(std::string_view public_key_base64,
+                                                        std::string_view display_name) -> std::string
+{
+    return std::string{"{\"display_name\":\""} + std::string{display_name} + "\",\"public_key\":\"" +
+           std::string{public_key_base64} + "\",\"public_keys\":[{\"public_key\":\"" + std::string{public_key_base64} +
+           "\"}]}";
+}
+
+// Builds and signs the third_party_signed object expected by POST /rooms/{roomId}/join.
+// The signature covers the canonical JSON of mxid, sender and token only.
+[[nodiscard]] auto make_signed_third_party_object(std::string_view mxid, std::string_view sender,
+                                                  std::string_view token, std::string const& secret_key_bytes,
+                                                  std::string_view signature_origin)
+    -> merovingian::canonicaljson::Object
+{
+    using merovingian::canonicaljson::make_member;
+    using merovingian::canonicaljson::Object;
+    using merovingian::canonicaljson::Value;
+
+    auto base = Object{};
+    base.push_back(make_member("mxid", Value{std::string{mxid}}));
+    base.push_back(make_member("sender", Value{std::string{sender}}));
+    base.push_back(make_member("token", Value{std::string{token}}));
+
+    auto const payload = merovingian::canonicaljson::serialize_canonical(Value{Object{base}});
+    REQUIRE(payload.error == merovingian::canonicaljson::CanonicalJsonError::none);
+
+    auto signature = std::array<unsigned char, crypto_sign_BYTES>{};
+    crypto_sign_detached(signature.data(), nullptr, reinterpret_cast<unsigned char const*>(payload.output.data()),
+                         payload.output.size(), reinterpret_cast<unsigned char const*>(secret_key_bytes.data()));
+
+    auto const signature_b64 = merovingian::events::matrix_base64_from_bytes(
+        {reinterpret_cast<char const*>(signature.data()), signature.size()});
+
+    auto key_sigs = Object{};
+    key_sigs.push_back(make_member("ed25519:invite", Value{std::string{signature_b64}}));
+
+    auto server_sigs = Object{};
+    server_sigs.push_back(make_member(std::string{signature_origin}, Value{std::move(key_sigs)}));
+
+    base.push_back(make_member("signatures", Value{std::move(server_sigs)}));
+    return base;
 }
 
 // Bootstraps a server administrator (with the given localpart) and logs them
@@ -8198,6 +8248,113 @@ SCENARIO("POST /rooms/{roomId}/invite with id_server/medium/address creates a th
                 auto const* public_keys = object_member_as_array(*content, "public_keys");
                 REQUIRE(public_keys != nullptr);
                 REQUIRE_FALSE(public_keys->empty());
+            }
+        }
+    }
+}
+
+// --- POST /_matrix/client/v3/rooms/{roomId}/join (third_party_signed) ---------
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3roomsroomidmembership
+// Spec MUST: a join request with a valid third_party_signed object from the
+// matching m.room.third_party_invite event must succeed.
+SCENARIO("POST /rooms/{roomId}/join accepts a valid third_party_signed join",
+         "[conformance][client-server][room-membership][3pid]")
+{
+    GIVEN("a room owned by alice with a manually-created m.room.third_party_invite for bob")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const alice = logged_in_token(started.runtime);
+        auto const room_id = create_room(started.runtime, alice);
+
+        auto const keypair = merovingian::crypto::generate_ed25519_keypair();
+        REQUIRE(keypair.has_value());
+        auto const secret_key =
+            std::string{reinterpret_cast<char const*>(keypair->secret_key.data()), keypair->secret_key.size()};
+        auto const public_key_b64 = merovingian::events::matrix_base64_from_bytes(
+            {reinterpret_cast<char const*>(keypair->public_key.data()), keypair->public_key.size()});
+
+        auto constexpr invite_token = "opaque_invite_token";
+        auto const invite_content_json = make_third_party_invite_content_json(public_key_b64, "bob@example.org");
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    started.runtime,
+                    {"PUT", "/_matrix/client/v3/rooms/" + room_id + "/state/m.room.third_party_invite/" + invite_token,
+                     alice, invite_content_json})
+                    .response.status == 200U);
+
+        auto const bob = register_and_login(started.runtime, "bob");
+
+        auto const signed_obj = make_signed_third_party_object("@bob:example.org", "@alice:example.org", invite_token,
+                                                               secret_key, "example.org");
+        auto const signed_json = merovingian::canonicaljson::serialize_canonical(
+            merovingian::canonicaljson::Value{merovingian::canonicaljson::Object{signed_obj}});
+        REQUIRE(signed_json.error == merovingian::canonicaljson::CanonicalJsonError::none);
+        auto const join_body = std::string{"{\"third_party_signed\":"} + signed_json.output + "}";
+
+        WHEN("bob POSTs /rooms/{roomId}/join with the third_party_signed object")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/join", bob, join_body});
+
+            THEN("the server returns 200 with a room_id field")
+            {
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+                auto const* rid = string_member(body, "room_id");
+                REQUIRE(rid != nullptr);
+                REQUIRE(*rid == room_id);
+            }
+        }
+    }
+}
+
+SCENARIO("POST /rooms/{roomId}/join rejects a forged third_party_signed signature",
+         "[conformance][client-server][room-membership][3pid]")
+{
+    GIVEN("a room owned by alice with a manually-created m.room.third_party_invite for bob")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const alice = logged_in_token(started.runtime);
+        auto const room_id = create_room(started.runtime, alice);
+
+        auto const keypair = merovingian::crypto::generate_ed25519_keypair();
+        REQUIRE(keypair.has_value());
+        auto const public_key_b64 = merovingian::events::matrix_base64_from_bytes(
+            {reinterpret_cast<char const*>(keypair->public_key.data()), keypair->public_key.size()});
+
+        auto constexpr invite_token = "opaque_invite_token";
+        auto const invite_content_json = make_third_party_invite_content_json(public_key_b64, "bob@example.org");
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    started.runtime,
+                    {"PUT", "/_matrix/client/v3/rooms/" + room_id + "/state/m.room.third_party_invite/" + invite_token,
+                     alice, invite_content_json})
+                    .response.status == 200U);
+
+        auto const bob = register_and_login(started.runtime, "bob");
+
+        auto const forged_keypair = merovingian::crypto::generate_ed25519_keypair();
+        REQUIRE(forged_keypair.has_value());
+        auto const forged_secret = std::string{reinterpret_cast<char const*>(forged_keypair->secret_key.data()),
+                                               forged_keypair->secret_key.size()};
+        auto const forged_signed_obj = make_signed_third_party_object("@bob:example.org", "@alice:example.org",
+                                                                      invite_token, forged_secret, "example.org");
+        auto const signed_json = merovingian::canonicaljson::serialize_canonical(
+            merovingian::canonicaljson::Value{merovingian::canonicaljson::Object{forged_signed_obj}});
+        REQUIRE(signed_json.error == merovingian::canonicaljson::CanonicalJsonError::none);
+        auto const join_body = std::string{"{\"third_party_signed\":"} + signed_json.output + "}";
+
+        WHEN("bob POSTs /rooms/{roomId}/join with a signature from an unknown key")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/join", bob, join_body});
+
+            THEN("the server rejects the join with 403")
+            {
+                REQUIRE(response.response.status == 403U);
+                auto const body = parse_object(response.response.body);
+                REQUIRE(string_member(body, "errcode") != nullptr);
+                REQUIRE(string_member(body, "error") != nullptr);
             }
         }
     }

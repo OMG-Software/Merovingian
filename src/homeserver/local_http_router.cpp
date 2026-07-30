@@ -2208,13 +2208,46 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
     {
         auto const room_id = core::percent_decode_path_component(suffix.substr(0U, suffix.size() - join_suffix.size()));
         auto const via_servers = parse_join_via_servers(request_query);
+        // Keep a copy of the parsed third_party_signed object alive while
+        // join_room uses it. The lambda below only returns a pointer into this
+        // local storage, so the optional must outlive the join call.
+        auto parsed_signed = std::optional<canonicaljson::Object>{};
+        auto const* third_party_signed = [&]() -> canonicaljson::Object const* {
+            if (request.body.empty())
+            {
+                return nullptr;
+            }
+            auto const parsed = canonicaljson::parse_lossless(request.body);
+            if (parsed.error != canonicaljson::ParseError::none)
+            {
+                return nullptr;
+            }
+            auto const* obj = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+            if (obj == nullptr)
+            {
+                return nullptr;
+            }
+            auto const* tps = object_member(*obj, "third_party_signed");
+            if (tps == nullptr)
+            {
+                return nullptr;
+            }
+            auto const* signed_obj = std::get_if<canonicaljson::Object>(&tps->storage());
+            if (signed_obj == nullptr)
+            {
+                return nullptr;
+            }
+            parsed_signed = *signed_obj;
+            return &*parsed_signed;
+        }();
         log_diagnostic("room.join.dispatch",
                        {
-                           {"room_id",   room_id,                            false},
-                           {"via_count", std::to_string(via_servers.size()), false}
+                           {"room_id",            room_id,                                          false},
+                           {"via_count",          std::to_string(via_servers.size()),               false},
+                           {"third_party_signed", third_party_signed == nullptr ? "false" : "true", false}
         });
         guard.unlock();
-        auto result = join_room(runtime, request.access_token, room_id, via_servers);
+        auto result = join_room(runtime, request.access_token, room_id, via_servers, third_party_signed);
         log_diagnostic(result.ok ? "room.join.accepted" : "room.join.rejected",
                        {
                            {"room_id", room_id,                                                    false},

@@ -521,6 +521,192 @@ namespace
         return serialize_canonical_string(canonicaljson::Value{std::move(event)});
     }
 
+    // Forward declaration: defined later in this anonymous namespace.
+    [[nodiscard]] auto find_event_json(database::PersistentStore const& store, std::string_view event_id)
+        -> canonicaljson::Value;
+
+    // Builds the `m.room.member` event that accepts a third-party invite.
+    // Its content carries `membership: invite` and the client-supplied signed
+    // blob inside `third_party_invite.signed`, satisfying rooms/v11.md rule 4.3.1.
+    // The caller must persist this event before attempting the user's actual join.
+    [[nodiscard]] auto serialize_third_party_invite_member_event_json(std::string_view target_user_id,
+                                                                      canonicaljson::Object const& signed_obj)
+        -> std::optional<std::string>
+    {
+        auto signed_copy = canonicaljson::Object{};
+        signed_copy.reserve(signed_obj.size());
+        for (auto const& member : signed_obj)
+        {
+            signed_copy.push_back(canonicaljson::make_member(member.key, *member.value));
+        }
+
+        auto third_party_invite = canonicaljson::Object{};
+        third_party_invite.push_back(
+            canonicaljson::make_member("signed", canonicaljson::Value{std::move(signed_copy)}));
+
+        auto content = canonicaljson::Object{};
+        content.push_back(canonicaljson::make_member("membership", canonicaljson::Value{std::string{"invite"}}));
+        content.push_back(
+            canonicaljson::make_member("third_party_invite", canonicaljson::Value{std::move(third_party_invite)}));
+
+        auto event = canonicaljson::Object{};
+        event.push_back(canonicaljson::make_member("type", canonicaljson::Value{std::string{"m.room.member"}}));
+        event.push_back(canonicaljson::make_member("state_key", canonicaljson::Value{std::string{target_user_id}}));
+        event.push_back(canonicaljson::make_member("content", canonicaljson::Value{std::move(content)}));
+        return serialize_canonical_string(canonicaljson::Value{std::move(event)});
+    }
+
+    // Collects every public key from an m.room.third_party_invite event content:
+    // the legacy content.public_key plus each entry of content.public_keys[].public_key.
+    // Spec: rooms/v11.md Authorization rules for m.room.member, rule 4.3.1.7.
+    [[nodiscard]] auto collect_third_party_invite_public_keys(canonicaljson::Value const& third_party_invite_event)
+        -> std::vector<std::string>
+    {
+        auto keys = std::vector<std::string>{};
+        auto const* event_obj = std::get_if<canonicaljson::Object>(&third_party_invite_event.storage());
+        if (event_obj == nullptr)
+        {
+            return keys;
+        }
+        auto const* content_value = object_member(*event_obj, "content");
+        auto const* content_obj =
+            content_value == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&content_value->storage());
+        if (content_obj == nullptr)
+        {
+            return keys;
+        }
+        if (auto const* legacy = string_member(*content_obj, "public_key"); legacy != nullptr)
+        {
+            keys.push_back(*legacy);
+        }
+        auto const* public_keys_value = object_member(*content_obj, "public_keys");
+        auto const* public_keys =
+            public_keys_value == nullptr ? nullptr : std::get_if<canonicaljson::Array>(&public_keys_value->storage());
+        if (public_keys == nullptr)
+        {
+            return keys;
+        }
+        for (auto const& entry : *public_keys)
+        {
+            auto const* entry_obj = std::get_if<canonicaljson::Object>(&entry.storage());
+            if (entry_obj == nullptr)
+            {
+                continue;
+            }
+            if (auto const* entry_key = string_member(*entry_obj, "public_key"); entry_key != nullptr)
+            {
+                keys.push_back(*entry_key);
+            }
+        }
+        return keys;
+    }
+
+    // Verifies a client-supplied `third_party_signed` object against the matching
+    // m.room.third_party_invite state event. Returns true if any signature in the
+    // signed blob verifies against any public key carried by the invite event.
+    // Spec: client-server-api.md Third-party Signed; server-server-api.md § Verifying the invite.
+    [[nodiscard]] auto verify_third_party_signed(canonicaljson::Object const& signed_obj,
+                                                 std::string_view expected_mxid, database::PersistentStore const& store,
+                                                 std::string_view room_id) -> bool
+    {
+        auto const* mxid = string_member(signed_obj, "mxid");
+        auto const* sender = string_member(signed_obj, "sender");
+        auto const* token = string_member(signed_obj, "token");
+        auto const* signatures_value = object_member(signed_obj, "signatures");
+        if (mxid == nullptr || sender == nullptr || token == nullptr || signatures_value == nullptr)
+        {
+            return false;
+        }
+        if (*mxid != expected_mxid)
+        {
+            return false;
+        }
+
+        auto const tpi_state = std::ranges::find_if(store.state, [&](database::PersistentStateEvent const& s) {
+            return s.room_id == room_id && s.event_type == "m.room.third_party_invite" && s.state_key == *token;
+        });
+        if (tpi_state == store.state.end())
+        {
+            return false;
+        }
+
+        auto const tpi_event = find_event_json(store, tpi_state->event_id);
+        auto const* tpi_obj = std::get_if<canonicaljson::Object>(&tpi_event.storage());
+        if (tpi_obj == nullptr)
+        {
+            return false;
+        }
+        auto const* tpi_sender = string_member(*tpi_obj, "sender");
+        if (tpi_sender == nullptr || *tpi_sender != *sender)
+        {
+            return false;
+        }
+
+        auto const public_keys = collect_third_party_invite_public_keys(tpi_event);
+        if (public_keys.empty())
+        {
+            return false;
+        }
+
+        auto payload_obj = canonicaljson::Object{};
+        payload_obj.reserve(signed_obj.size());
+        for (auto const& member : signed_obj)
+        {
+            if (member.key != "signatures" && member.key != "unsigned")
+            {
+                payload_obj.push_back(canonicaljson::make_member(member.key, *member.value));
+            }
+        }
+        auto const serialized = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(payload_obj)});
+        if (serialized.error != canonicaljson::CanonicalJsonError::none)
+        {
+            return false;
+        }
+
+        auto const* signatures = std::get_if<canonicaljson::Object>(&signatures_value->storage());
+        if (signatures == nullptr)
+        {
+            return false;
+        }
+        for (auto const& server_signatures : *signatures)
+        {
+            auto const* key_sigs = std::get_if<canonicaljson::Object>(&server_signatures.value->storage());
+            if (key_sigs == nullptr)
+            {
+                continue;
+            }
+            for (auto const& key_sig : *key_sigs)
+            {
+                auto const* sig_b64 = std::get_if<std::string>(&key_sig.value->storage());
+                if (sig_b64 == nullptr)
+                {
+                    continue;
+                }
+                auto const signature_bytes = events::matrix_bytes_from_base64(*sig_b64);
+                if (signature_bytes.empty())
+                {
+                    continue;
+                }
+                for (auto const& pk_b64 : public_keys)
+                {
+                    auto const public_key_bytes = events::matrix_bytes_from_base64(pk_b64);
+                    if (public_key_bytes.size() != 32U) // Ed25519 public keys are 32 bytes
+                    {
+                        continue;
+                    }
+                    auto const verification =
+                        crypto::ed25519_verify(crypto::Ed25519PublicKey{public_key_bytes}, serialized.output,
+                                               crypto::Ed25519Signature{signature_bytes});
+                    if (verification.valid)
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
     [[nodiscard]] auto room_version_number(std::string_view room_version) -> int
     {
         auto parsed = int{0};
@@ -1158,8 +1344,30 @@ namespace
         auto const create_defines_room_id = policy->create_event_is_room_id;
         auto const omit_room_id = event_type == "m.room.create" && create_defines_room_id;
         auto const prev_events = previous_events_for_room(runtime.database.persistent_store, room_id);
-        auto const auth_events = auth_events_for_room(runtime.database.persistent_store, room_id, event_type,
-                                                      event_state_key.value_or(""), sender, create_defines_room_id);
+        auto auth_events = auth_events_for_room(runtime.database.persistent_store, room_id, event_type,
+                                                event_state_key.value_or(""), sender, create_defines_room_id);
+        // 3PID invite member events must list the matching m.room.third_party_invite
+        // event in auth_events. auth_events_for_room does not inspect content, so
+        // add it here when the client event carries a third_party_invite token.
+        if (event_type == "m.room.member")
+        {
+            auto const invite_token = third_party_invite_token(canonicaljson::Value{*input});
+            if (!invite_token.empty())
+            {
+                for (auto const& state : runtime.database.persistent_store.state)
+                {
+                    if (state.room_id == room_id && state.event_type == "m.room.third_party_invite" &&
+                        state.state_key == invite_token)
+                    {
+                        if (std::ranges::find(auth_events, state.event_id) == auth_events.end())
+                        {
+                            auth_events.push_back(state.event_id);
+                        }
+                        break;
+                    }
+                }
+            }
+        }
         auto const depth = next_depth_for_room(runtime.database.persistent_store, room_id);
         auto const now_ms = static_cast<std::int64_t>(
             std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
@@ -2756,7 +2964,8 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
 }
 
 [[nodiscard]] auto join_room(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id,
-                             std::vector<std::string> const& via_servers) -> OperationResult
+                             std::vector<std::string> const& via_servers,
+                             canonicaljson::Object const* third_party_signed) -> OperationResult
 {
     auto guard = std::unique_lock<std::recursive_mutex>{runtime.mutex};
     log_diagnostic("room.join.started", {
@@ -2827,6 +3036,17 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
     }
     if (room == nullptr)
     {
+        if (third_party_signed != nullptr)
+        {
+            log_diagnostic("room.join.rejected",
+                           {
+                               {"actor",   *user_id,                                           false},
+                               {"room_id", std::string{room_id},                               false},
+                               {"status",  "403",                                              false},
+                               {"reason",  "third-party join via federation is not supported", false}
+            });
+            return make_operation_result(false, {}, "third-party join via federation is not supported", 403U);
+        }
         // Remote room: attempt make_join → sign → send_join. The candidate resident
         // servers come from the join endpoint's via/server_name parameters, plus the
         // room ID's domain for room versions < 12 (v12 IDs are domain-less, MSC4291).
@@ -3575,6 +3795,59 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
     }
     if (!room_has_member(*room, *user_id))
     {
+        if (third_party_signed != nullptr)
+        {
+            if (!verify_third_party_signed(*third_party_signed, *user_id, runtime.database.persistent_store, room_id))
+            {
+                log_diagnostic("room.join.rejected", {
+                                                         {"actor",   *user_id,                                 false},
+                                                         {"room_id", std::string{room_id},                     false},
+                                                         {"status",  "403",                                    false},
+                                                         {"reason",  "third_party_signed verification failed", false}
+                });
+                return make_operation_result(false, {}, "third_party_signed verification failed", 403U);
+            }
+
+            auto const* inviter = string_member(*third_party_signed, "sender");
+            auto const inviter_id = inviter == nullptr ? std::string{} : std::string{*inviter};
+            auto const invite_event_json =
+                serialize_third_party_invite_member_event_json(*user_id, *third_party_signed);
+            if (!invite_event_json.has_value())
+            {
+                log_diagnostic("room.join.rejected",
+                               {
+                                   {"actor",   *user_id,                                        false},
+                                   {"room_id", std::string{room_id},                            false},
+                                   {"status",  "500",                                           false},
+                                   {"reason",  "third-party invite event serialization failed", false}
+                });
+                return make_operation_result(false, {}, "third-party invite event serialization failed", 500U);
+            }
+            auto const composed_invite = compose_signed_event(runtime, room_id, inviter_id, *invite_event_json);
+            if (!composed_invite.has_value())
+            {
+                log_diagnostic("room.join.rejected", {
+                                                         {"actor",   *user_id,                            false},
+                                                         {"room_id", std::string{room_id},                false},
+                                                         {"status",  "403",                               false},
+                                                         {"reason",  "third-party invite event rejected", false}
+                });
+                return make_operation_result(false, {}, "third-party invite event rejected", 403U);
+            }
+            if (!persist_composed_event(runtime, room_id, inviter_id, *composed_invite))
+            {
+                log_diagnostic("room.join.rejected",
+                               {
+                                   {"actor",   *user_id,                                      false},
+                                   {"room_id", std::string{room_id},                          false},
+                                   {"status",  "500",                                         false},
+                                   {"reason",  "third-party invite event persistence failed", false}
+                });
+                return make_operation_result(false, {}, "third-party invite event persistence failed", 500U);
+            }
+            room->events.push_back(composed_invite->json);
+        }
+
         auto const join_event_json = serialize_membership_event_json(*user_id, "join");
         if (!join_event_json.has_value())
         {
