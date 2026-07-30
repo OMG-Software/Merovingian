@@ -6740,6 +6740,34 @@ SCENARIO("GET /v1/media/thumbnail/{serverName}/{mediaId} returns 404 for missing
     }
 }
 
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixmediav3thumbnailservernamemediaid
+// A remote thumbnail request must never be answered with the full-size original
+// media bytes. When federation infrastructure is unavailable the server returns
+// an error (502/404) instead of proxying the original file.
+SCENARIO("GET /media/v3/thumbnail/{serverName}/{mediaId} for remote media does not serve the full-size original",
+         "[conformance][client-server][media]")
+{
+    GIVEN("a running client-server, a logged-in user, and a remote server name in the thumbnail path")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+
+        WHEN("GET /media/v3/thumbnail/remote.example.org/abc is called without federation outbound client")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"GET", "/_matrix/media/v3/thumbnail/remote.example.org/abc?width=32&height=32&method=scale", token, {}});
+
+            THEN("the response is an error, never 200 with full-size original bytes")
+            {
+                REQUIRE(response.response.status != 200U);
+                REQUIRE((response.response.status == 404U || response.response.status == 502U));
+            }
+        }
+    }
+}
+
 // =============================================================================
 // APPLICATION SERVICE ROOM DIRECTORY MANAGEMENT
 // =============================================================================

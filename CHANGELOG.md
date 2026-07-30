@@ -6,6 +6,7 @@ Matrix spec v1.19 P2 gap closure.
           authenticated federation media endpoint.
 - Federation media: the authenticated `GET /_matrix/federation/v1/media/download/{mediaId}` endpoint now follows `Location` redirects in an SSRF-safe way instead of immediately falling back to the deprecated v3 endpoint.
 - Federation media: hardened the `multipart/mixed` parser for authenticated download responses to strict RFC 2046 semantics. Boundary delimiters must now sit on their own line, quoted/unquoted boundary tokens with optional whitespace around `=` are accepted, preambles before the first delimiter and LF-only transport padding are tolerated, and the parser fails closed unless exactly two parts are present.
+- Media thumbnails: added conformance coverage verifying that a remote thumbnail request never returns 200 with the full-size original bytes when federation infrastructure is unavailable.
 - E2EE keys: `POST /_matrix/client/v3/keys/upload` now reports one-time key counts per advertised algorithm, and backup session/room/batch deletion routes are verified end-to-end.
 - Tests: updated the existing `POST /keys/upload` conformance test to expect the per-algorithm `curve25519` count instead of the legacy hardcoded `signed_curve25519` aggregate.
 - Third-party invites: `POST /_matrix/client/v3/rooms/{roomId}/invite` supports `id_server`/`medium`/`address` invites, and `/join` handles `third_party_signed` tokens by validating them against the room's `m.room.third_party_invite` event.
