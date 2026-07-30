@@ -76,11 +76,11 @@ Open work per capability area. Status column reflects the current level in the
 | Request and event signing/verification | `spec-covered` | Live signed-request interop test against a real Synapse peer landed in 0.8.6 (opt-in). Inbound PDU content-hash verification wired and conformance-covered. |
 | `GET /_matrix/federation/v1/query/profile` | `spec-covered` | |
 | `GET /_matrix/federation/v1/query/directory` | `spec-covered` | |
-| `GET /_matrix/federation/v1/hierarchy/{roomId}` | `spec-covered` | Space summary for remote servers. |
+| `GET /_matrix/federation/v1/hierarchy/{roomId}` | `spec-covered` | Space summary for remote servers. Conformance coverage added for 200, 404, invalid `suggested_only`, and missing-provider 501. |
 | Event-graph queries | `spec-covered` | `auth_chain`/`auth_chain_ids` transitive-closure reconstruction landed in 0.8.9; historical state-at-event reconstruction for `/state` and `/state_ids` landed in 0.8.10 with conformance fixtures; `resolve_state_v2` with full conflicted/unconflicted partitioning is implemented and conformance-covered. |
 | Outbound federation queues | `spec-covered` | Live federation delivery coverage under realistic load. |
 | Key publication (`GET /_matrix/key/v2/server`) | `spec-covered` | Key-ID format, valid_until_ts expiry, old_verify_keys structural contract, and key-rotation publication (new key active, retired key in old_verify_keys) now covered by conformance fixtures. Multiple simultaneously-active signing keys are published in `verify_keys` and signed by the preferred key, with unit and conformance coverage. |
-| `GET /_matrix/federation/v1/media/download/{mediaId}` inbound (serving our media to remote servers) | `spec-covered` | Authenticated by `X-Matrix` request signatures and served from the main process media repository as a `multipart/mixed` response per Matrix v1.19. The federation worker is bypassed because it has no access to the local media store. |
+| `GET /_matrix/federation/v1/media/download/{mediaId}` inbound (serving our media to remote servers) | `spec-covered` | Authenticated by `X-Matrix` request signatures and served from the main process media repository as a `multipart/mixed` response per Matrix v1.19. Conformance coverage added for 200, 404, 451, missing-provider 501, and percent-decoded `mediaId`. The federation worker is bypassed because it has no access to the local media store. |
 | `GET /_matrix/federation/v1/media/download/{mediaId}` outbound (fetching remote media) | `spec-covered` | Tries the authenticated endpoint first, falls back to the deprecated v3 endpoint on 404, and follows `Location` redirects via an SSRF-safe resolver with pinned addresses (v0.11.5). |
 
 ### Server administration
