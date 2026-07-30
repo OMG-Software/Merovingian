@@ -21,6 +21,7 @@ Matrix spec v1.19 P2 gap closure.
 - Tests: added unit scenarios `E2EE /keys/upload groups one_time_key_counts by algorithm` and `Key backup deletion endpoints remove sessions, rooms, and all keys for the current version` in `tests/unit/test_client_server.cpp`, extended backup route coverage in `tests/unit/test_key_api.cpp`, plus new unit and conformance tests for the other P2 areas.
 - Federation: added conformance coverage for `GET /_matrix/federation/v1/hierarchy/{roomId}` (200, 404, invalid `suggested_only`, missing-provider 501) and `GET /_matrix/federation/v1/media/download/{mediaId}` (200 multipart/mixed, 404, 451, missing-provider 501, percent-decoded `mediaId`) in `tests/conformance/test_federation_space_media_conformance.cpp`.
 - Sync: `GET /_matrix/client/v3/sync` now emits the `summary` object for every joined room with `m.joined_member_count`, `m.invited_member_count`, and `m.heroes`, per Matrix Client-Server API v1.19. Added `tests/conformance/test_sync_summary_conformance.cpp` to cover the new fields.
+- Trust and safety: added conformance coverage for `POST /_matrix/client/v3/rooms/{roomId}/report/{eventId}` (200 for valid reports, 400 for malformed bodies) and `GET /_matrix/client/v3/admin/safety/reports` in `tests/conformance/test_safety_report_conformance.cpp`.
 - Docs: updated `docs/todos/capability-gaps.md` and relevant spec docs.
 
 ## 0.11.4
