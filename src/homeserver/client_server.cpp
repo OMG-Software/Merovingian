@@ -9995,6 +9995,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
 
             auto const receipt_body = canonicaljson::parse_lossless(req.body);
+            if (receipt_body.error != canonicaljson::ParseError::none)
+            {
+                return dispatch_err(req, rt, 400U, "M_BAD_JSON", "read markers body must be valid JSON");
+            }
             auto const* body_obj = std::get_if<canonicaljson::Object>(&receipt_body.value.storage());
 
             auto const now_ts = static_cast<std::int64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
