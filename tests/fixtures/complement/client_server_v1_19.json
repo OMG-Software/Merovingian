@@ -178,6 +178,28 @@
       "expect_keys_present": ["errcode", "error"]
     },
     {
+      "method": "PUT",
+      "path": "/_matrix/client/v3/profile/%40alice%3Aexample.org/avatar_url",
+      "auth_from": "refreshed_token",
+      "body": {"avatar_url": "mxc://example.org/avatar-conformance"},
+      "expect_status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/_matrix/client/v3/profile/%40alice%3Aexample.org/avatar_url",
+      "expect_status": 200,
+      "expect_keys_present": ["avatar_url"],
+      "expect_keys_absent": ["errcode"]
+    },
+    {
+      "method": "PUT",
+      "path": "/_matrix/client/v3/profile/%40bob%3Aexample.org/avatar_url",
+      "auth_from": "refreshed_token",
+      "body": {"avatar_url": "mxc://example.org/bob-avatar"},
+      "expect_status": 403,
+      "expect_keys_present": ["errcode", "error"]
+    },
+    {
       "method": "GET",
       "path": "/_matrix/client/v3/voip/turnServer",
       "auth_from": "refreshed_token",

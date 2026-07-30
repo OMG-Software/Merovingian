@@ -58,7 +58,7 @@ Open work per capability area. Status column reflects the current level in the
 | `PUT /_matrix/client/v3/user/{userId}/account_data/{type}` | `spec-covered` | Room-scoped account data (`/rooms/{roomId}/account_data/{type}`). |
 | `GET/PUT/DELETE /_matrix/client/v3/user/{userId}/rooms/{roomId}/tags[/{tag}]` | `spec-covered` | Room tagging via `m.tag` account data; `order` doubles supported in general JSON parser. |
 | Push rule CRUD | `spec-covered` | Writable push-rule CRUD (PUT/DELETE/enabled/actions). |
-| `PUT /_matrix/client/v3/profile/{userId}/avatar_url` | `spec-covered` | Integration tests only; needs v1.19 conformance fixture. |
+| `PUT /_matrix/client/v3/profile/{userId}/avatar_url` | `spec-covered` | Conformance fixture now covers successful update, cross-user 403 guard, and retrieval via `GET /_matrix/client/v3/profile/{userId}/avatar_url`. |
 | `GET /_matrix/client/v1/rooms/{roomId}/hierarchy` | `spec-covered` | Paginated depth-first space tree with `max_depth`, `suggested_only`, and `limit`. |
 | `GET /_matrix/client/v1/rooms/{roomId}/relations/{eventId}` | `spec-covered` | Direct relation scan with `dir`, `from`, `to`, `limit`, and `recurse` query parameters; supports encrypted poll responses via `m.reference`. |
 | `GET /_matrix/client/v1/rooms/{roomId}/relations/{eventId}/{relType}` | `spec-covered` | Filtered by `rel_type`. |
