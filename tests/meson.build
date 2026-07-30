@@ -217,6 +217,7 @@ shell = find_program('sh')
       'conformance/test_identifier_grammar.cpp',
       'conformance/test_key_publication_conformance.cpp',
       'conformance/test_pdu_format_conformance.cpp',
+      'conformance/test_presence_conformance.cpp',
       'conformance/test_redaction_conformance.cpp',
       'conformance/test_room_version_table_conformance.cpp',
       'conformance/test_read_markers_conformance.cpp',
