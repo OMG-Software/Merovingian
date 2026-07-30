@@ -2737,6 +2737,67 @@ namespace
             }));
     }
 
+    [[nodiscard]] auto invited_member_count(database::PersistentStore const& store, std::string_view room_id)
+        -> std::size_t
+    {
+        return static_cast<std::size_t>(
+            std::ranges::count_if(store.memberships, [&](database::PersistentMembership const& membership) {
+                return membership.room_id == room_id && membership.membership == "invite";
+            }));
+    }
+
+    // Spec: GET /_matrix/client/v3/sync §JoinedRoom summary
+    // ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3sync
+    //
+    // m.heroes is a list of users (excluding the caller) used by clients to
+    // generate a fallback room name. Up to 5 heroes are returned; order is
+    // deterministic (LocalRoom iteration order, then persistent membership
+    // order) so tests can assert exact contents.
+    [[nodiscard]] auto room_heroes(ClientServerRuntime const& rt, std::string_view room_id, std::string_view user)
+        -> canonicaljson::Array
+    {
+        auto heroes = canonicaljson::Array{};
+        auto const add = [&](std::string_view member_id) {
+            if (member_id != user && heroes.size() < 5U)
+            {
+                heroes.push_back(json_str(member_id));
+            }
+        };
+
+        auto const room = std::ranges::find_if(rt.homeserver.database.rooms, [&](LocalRoom const& current) {
+            return current.room_id == room_id;
+        });
+        if (room != rt.homeserver.database.rooms.end())
+        {
+            for (auto const& member : room->members)
+            {
+                add(member);
+            }
+        }
+        else
+        {
+            for (auto const& membership : rt.homeserver.database.persistent_store.memberships)
+            {
+                if (membership.room_id == room_id && membership.membership == "join")
+                {
+                    add(membership.user_id);
+                }
+            }
+        }
+        return heroes;
+    }
+
+    [[nodiscard]] auto room_summary_object(ClientServerRuntime const& rt, database::PersistentStore const& store,
+                                           std::string_view room_id, std::string_view user) -> canonicaljson::Value
+    {
+        return json_obj({
+            json_member("m.joined_member_count", json_int(static_cast<std::int64_t>(joined_member_count(rt, room_id)))),
+            json_member("m.invited_member_count",
+                        json_int(static_cast<std::int64_t>(invited_member_count(store, room_id)))),
+            json_member("m.heroes", json_arr(room_heroes(rt, room_id, user))),
+        });
+    }
+
     // Spec: GET/POST /_matrix/client/v3/publicRooms
     // ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3publicrooms
     [[nodiscard]] auto public_rooms_filtered_json(ClientServerRuntime const& rt, std::string const& filter_term,
@@ -3516,6 +3577,7 @@ namespace
                             json_member("notification_count", json_int(static_cast<std::int64_t>(notification_count))),
                             json_member("highlight_count", json_int(static_cast<std::int64_t>(highlight_count))),
                         })),
+                    json_member("summary", room_summary_object(rt, store, room.room_id, user)),
                 })));
         }
 

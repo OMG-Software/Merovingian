@@ -224,6 +224,7 @@ shell = find_program('sh')
       'conformance/test_state_resolution_conformance.cpp',
       'conformance/test_sliding_sync_conformance.cpp',
       'conformance/test_sync_filter_conformance.cpp',
+      'conformance/test_sync_summary_conformance.cpp',
       'conformance/test_x_matrix_auth_parsing.cpp',
     ),
     include_directories: inc,
