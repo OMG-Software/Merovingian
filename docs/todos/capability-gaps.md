@@ -91,7 +91,7 @@ Open work per capability area. Status column reflects the current level in the
 | --- | --- | --- |
 | `GET /_merovingian/admin/health` | `partial` | Real admin auth model, JSON response shape, deployment checks. |
 | Admin media moderation | `partial` | Richer authorization model, operator docs. |
-| Admin trust and safety review | `runtime-wired` | Matrix v1.19 fixtures, moderator queues, and broader workflow coverage. |
+| Admin trust and safety review | `spec-covered` | `POST /_matrix/client/v3/admin/safety/review/{targetType}/{targetId}` is now conformance-covered for room, media, and federation_server targets, empty review bodies, invalid target types, and non-admin guards. Remaining: moderator queues and broader workflow coverage. |
 | `GET/PUT /_matrix/client/v1/admin/lock/{userId}` | `runtime-wired` | Account lock admin endpoint with anti-enumeration (auth before lookup), locality, and self/other-admin guards; request-path `M_USER_LOCKED` (`soft_logout:true`) enforcement landed in 0.8.19. |
 | `GET/PUT /_matrix/client/v1/admin/suspend/{userId}` | `runtime-wired` | Account suspend admin endpoint; request-path `M_USER_SUSPENDED` enforcement with the spec allowlist of permitted actions landed in 0.8.19. |
 | Exported metrics | `runtime-wired` | Stable Prometheus text exposition contract documented in `docs/observability-audit.md`; `X-Merovingian-Request-Id` and `Traceparent` correlation headers landed in 0.8.11. Remaining: operator dashboards and retention/export policy. |
