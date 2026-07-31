@@ -2,6 +2,7 @@
 
 Matrix spec v1.19 P2 gap closure.
 
+- Admin trust and safety: added `tests/conformance/test_admin_safety_policy_rules_conformance.cpp` covering `GET/PUT/DELETE /_matrix/client/v3/admin/safety/policy_rules/{scope}/{entity}` CRUD, 400 for invalid actions, 404 for missing rules, and 403 non-admin guards.
 - Federation keys: the server now supports multiple simultaneously-active Ed25519 signing keys. `GET /_matrix/key/v2/server` publishes every valid key in `verify_keys`, signs the response with the preferred key, and retires superseded keys to `old_verify_keys`. `RuntimeMultiKeyEd25519Provider` and `RuntimeSigningKeyStore` wire the multi-key behaviour through event signing and federation request signing.
 - Media: remote thumbnails now use the local sandboxed thumbnailing pipeline after fetching the remote file via the
           authenticated federation media endpoint.
