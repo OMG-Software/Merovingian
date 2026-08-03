@@ -1,3 +1,18 @@
+## 0.11.6
+
+Signing key lifecycle and startup hardening.
+
+- Crypto boundary: `ensure_runtime_server_signing_key` now rejects expired derived
+  signing keys and automatically generates a fresh active key. This fixes a startup
+  failure where the main process had a loaded signing secret but no usable active key,
+  leaving `crypto_provider` null and causing `GET /_matrix/key/v2/server` to return 500.
+- Runtime startup: `start_runtime` now fails closed if the key-server response cache
+  cannot be pre-warmed, instead of starting with a broken signing provider.
+- Tests: added unit scenarios covering expired-key rotation and startup recovery in
+  `tests/unit/test_homeserver_vertical_slice.cpp`.
+- Docs: updated `docs/crypto-boundary.md` to describe automatic rotation of expired
+  keys.
+
 ## 0.11.5
 
 Matrix spec v1.19 P2 gap closure.

@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.11.5
+Version:        0.11.6
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -112,6 +112,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Mon Aug 03 2026 James Chapman <claude@ping.me.uk> - 0.11.6-1
+- Signing key lifecycle: reject expired keys on startup, auto-rotate, and fail closed if key server cache cannot be pre-warmed.
+
 * Mon Jul 27 2026 James Chapman <claude@ping.me.uk> - 0.11.5-1
 - Matrix spec v1.19 behaviour changes (Phase 3): per-room server ACL enforcement (MSC4436) and encrypted history sharing to-device coverage (MSC4268).
 

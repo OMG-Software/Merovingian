@@ -106,9 +106,12 @@ deployments and test configurations. An explicit rotation is available via
 `rotate_server_signing_key`: it retires the active key (setting its
 `valid_until_ts` to now so it publishes under `old_verify_keys` with a past
 `expired_ts`) and activates a freshly generated key. `ensure_runtime_server_signing_key`
-selects the key with the greatest `valid_until_ts`, so the rotated-in key becomes
-active while peers can still verify events signed under the retired key. A single
-key is active at a time.
+selects the usable key with the greatest future `valid_until_ts`, skipping both the
+legacy `ed25519:auto` sentinel and any key whose `valid_until_ts` is not in the future.
+This prevents the server from starting with an expired key, which would leave
+`/_matrix/key/v2/server` returning 500 and outbound federation unsigned. If every
+stored key is expired, a fresh key is generated automatically so the runtime always
+has an active provider. A single key is active at a time.
 Comma-delimited PDUs without JSON are rejected when a signing key is available,
 closing the legacy-verification bypass.
 
