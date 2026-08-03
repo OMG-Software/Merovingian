@@ -8,6 +8,7 @@ crypto_sources = files(
   'master_key.cpp',
   'random.cpp',
   'runtime_ed25519_provider.cpp',
+  'runtime_multikey_ed25519_provider.cpp',
   'secret_box.cpp',
   'signing_service.cpp',
   'token_key.cpp',

@@ -18,6 +18,7 @@
 #include "merovingian/trust_safety/policy_engine.hpp"
 
 #include <cctype>
+#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -132,34 +133,131 @@ namespace
         return value;
     }
 
+    [[nodiscard]] auto starts_with(std::string_view value, std::string_view prefix) noexcept -> bool
+    {
+        return value.size() >= prefix.size() && value.substr(0U, prefix.size()) == prefix;
+    }
+
+    struct ParsedHttpsAuthority final
+    {
+        std::string host{};
+        std::uint16_t port{443U};
+    };
+
+    // Extracts host and port from an absolute https:// URL. Rejects URLs with
+    // userinfo, non-HTTPS schemes, or malformed IPv6/port syntax. The default
+    // port is 443. This is a strict parser intended for untrusted redirect
+    // URLs; it stops at the first '/', '?' or '#' so query strings and
+    // fragments do not pollute the authority.
+    [[nodiscard]] auto parse_https_authority(std::string_view url) -> std::optional<ParsedHttpsAuthority>
+    {
+        auto constexpr prefix = std::string_view{"https://"};
+        if (!starts_with(url, prefix))
+        {
+            return std::nullopt;
+        }
+        auto const authority_start = prefix.size();
+        auto const authority_end = url.find_first_of("/?#", authority_start);
+        auto const authority = url.substr(authority_start, authority_end - authority_start);
+        if (authority.empty() || authority.find('@') != std::string_view::npos)
+        {
+            return std::nullopt;
+        }
+
+        if (!authority.empty() && authority.front() == '[')
+        {
+            auto const close = authority.find(']');
+            if (close == std::string_view::npos || close == 1U)
+            {
+                return std::nullopt;
+            }
+            auto port = std::uint16_t{443U};
+            if (close + 1U < authority.size())
+            {
+                if (authority[close + 1U] != ':')
+                {
+                    return std::nullopt;
+                }
+                auto const* begin = authority.data() + close + 2U;
+                auto const* end = authority.data() + authority.size();
+                auto const parsed = std::from_chars(begin, end, port);
+                if (parsed.ec != std::errc{} || parsed.ptr != end || port == 0U)
+                {
+                    return std::nullopt;
+                }
+            }
+            return ParsedHttpsAuthority{std::string{authority.substr(1U, close - 1U)}, port};
+        }
+
+        auto const colon = authority.rfind(':');
+        if (colon != std::string_view::npos && authority.find(':') == colon)
+        {
+            auto const* begin = authority.data() + colon + 1U;
+            auto const* end = authority.data() + authority.size();
+            auto port = std::uint16_t{443U};
+            auto const parsed = std::from_chars(begin, end, port);
+            if (parsed.ec != std::errc{} || parsed.ptr != end || port == 0U)
+            {
+                return std::nullopt;
+            }
+            return ParsedHttpsAuthority{std::string{authority.substr(0U, colon)}, port};
+        }
+
+        return ParsedHttpsAuthority{std::string{authority}, 443U};
+    }
+
     [[nodiscard]] auto extract_multipart_boundary(std::string_view content_type) -> std::string
     {
-        auto constexpr marker = std::string_view{"boundary="};
-        auto const pos = content_type.find(marker);
-        if (pos == std::string_view::npos)
+        // RFC 2046 §5.1.1: parameter names are case-insensitive and the value
+        // may be unquoted or quoted. Parameter names/values are separated by
+        // optional linear whitespace (RFC 822), so "boundary=\"x\"" and
+        // "boundary = x" are both valid. The parameter name is the last token
+        // before the equals sign (e.g. "; boundary=").
+        auto constexpr marker = std::string_view{"boundary"};
+        auto pos = std::size_t{0U};
+        while (pos < content_type.size())
         {
-            return {};
-        }
-        auto value = trim(content_type.substr(pos + marker.size()));
-        if (!value.empty() && value.front() == '"')
-        {
-            value.remove_prefix(1U);
-            auto const end = value.find('"');
-            if (end == std::string_view::npos)
+            auto const eq = content_type.find('=', pos);
+            if (eq == std::string_view::npos)
             {
                 return {};
             }
-            value = value.substr(0U, end);
-        }
-        else
-        {
-            auto const end = value.find_first_of("; \t\r\n");
-            if (end != std::string_view::npos)
+            auto name = trim(content_type.substr(pos, eq - pos));
+            if (!name.empty())
             {
-                value = value.substr(0U, end);
+                // The parameter name is the token after any preceding semicolon.
+                auto const semi = name.rfind(';');
+                if (semi != std::string_view::npos)
+                {
+                    name = trim(name.substr(semi + 1U));
+                }
             }
+            if (equal_ci(name, marker))
+            {
+                auto value = trim(content_type.substr(eq + 1U));
+                if (!value.empty() && value.front() == '"')
+                {
+                    value.remove_prefix(1U);
+                    auto const end = value.find('"');
+                    if (end == std::string_view::npos)
+                    {
+                        return {};
+                    }
+                    value = value.substr(0U, end);
+                }
+                else
+                {
+                    auto const end = value.find_first_of("; \t\r\n");
+                    if (end != std::string_view::npos)
+                    {
+                        value = value.substr(0U, end);
+                    }
+                }
+                return std::string{value};
+            }
+            pos = eq + 1U;
         }
-        return std::string{value};
+        return {};
     }
 
     struct RawMultipartPart final
@@ -181,15 +279,11 @@ namespace
         return std::nullopt;
     }
 
-    // Splits a raw part (the bytes between two boundary delimiters, still
-    // carrying the delimiter's own trailing CRLF) into its header block and
-    // body per RFC 2046 §5.1: headers, a blank line, then the body. The
-    // trailing CRLF is stripped from the body specifically, after the
-    // header/body separator is located — not from the raw part as a whole —
-    // because for a header-only part with an empty body (e.g. a `Location`
-    // redirect) the blank line's own CRLF and the delimiter's CRLF are the
-    // same bytes, and stripping them up front would destroy the blank-line
-    // separator the header/body split depends on.
+    // Splits a raw part (the bytes between two boundary delimiters) into its
+    // header block and body per RFC 2046 §5.1: headers, a blank line, then the
+    // body. A part may legitimately have an empty body (e.g. a `Location` redirect
+    // part), so when no blank line is found the entire content is treated as
+    // headers and the body is left empty.
     [[nodiscard]] auto parse_multipart_part(std::string_view raw) -> RawMultipartPart
     {
         auto part = RawMultipartPart{};
@@ -200,8 +294,10 @@ namespace
             separator = raw.find("\n\n");
             separator_len = 2U;
         }
-        auto header_block = separator == std::string_view::npos ? std::string_view{} : raw.substr(0U, separator);
-        auto body = separator == std::string_view::npos ? raw : raw.substr(separator + separator_len);
+        auto header_block = separator == std::string_view::npos ? raw : raw.substr(0U, separator);
+        auto body = separator == std::string_view::npos ? std::string_view{} : raw.substr(separator + separator_len);
+        // The trailing CRLF/LF belongs to the boundary delimiter's transport
+        // padding, not the part body. Strip it when present.
         if (body.size() >= 2U && body.substr(body.size() - 2U) == "\r\n")
         {
             body.remove_suffix(2U);
@@ -233,7 +329,85 @@ namespace
         return part;
     }
 
+    // Returns true when `body` has a delimiter boundary at `offset`. RFC 2046
+    // §5.1.1 requires the boundary delimiter line to appear on its own line:
+    // it must be preceded by a line break (or start of body) and followed
+    // immediately by either "--" (closing delimiter) or a line break
+    // (transport padding). Without both checks a boundary string appearing
+    // literally inside media bytes would be misinterpreted as the end of the
+    // part.
+    [[nodiscard]] auto boundary_at(std::string_view body, std::string_view boundary, std::size_t offset) -> bool
+    {
+        auto const after = offset + 2U + boundary.size();
+        if (after > body.size())
+        {
+            return false;
+        }
+        if (body.compare(offset, 2U, "--") != 0)
+        {
+            return false;
+        }
+        if (body.compare(offset + 2U, boundary.size(), boundary) != 0)
+        {
+            return false;
+        }
+        // Preceded by start of body or a line break.
+        if (offset != 0U)
+        {
+            if (offset >= 2U && body.compare(offset - 2U, 2U, "\r\n") == 0)
+            {
+                // fall through
+            }
+            else if (offset >= 1U && body[offset - 1U] == '\n')
+            {
+                // fall through
+            }
+            else
+            {
+                return false;
+            }
+        }
+        // Followed by closing "--" or a line break.
+        if (after == body.size())
+        {
+            return true;
+        }
+        if (body.compare(after, 2U, "--") == 0)
+        {
+            return true;
+        }
+        if (body.compare(after, 2U, "\r\n") == 0)
+        {
+            return true;
+        }
+        return body[after] == '\n';
+    }
+
+    // Finds the next real boundary delimiter at or after `start`, using
+    // boundary_at() so inner boundary-like byte sequences are ignored.
+    [[nodiscard]] auto find_next_boundary(std::string_view body, std::string_view boundary, std::size_t start)
+        -> std::size_t
+    {
+        auto const max = body.size();
+        if (start >= max)
+        {
+            return std::string_view::npos;
+        }
+        auto pos = start;
+        while (pos < max)
+        {
+            if (boundary_at(body, boundary, pos))
+            {
+                return pos;
+            }
+            pos += 1U;
+        }
+        return std::string_view::npos;
+    }
+
     // Splits a multipart/mixed body on "--{boundary}" delimiters per RFC 2046.
+    // Requires the opening delimiter to start on a line boundary and ignores
+    // boundary-like strings that are not preceded by a line break.
     [[nodiscard]] auto split_multipart_body(std::string_view body, std::string_view boundary)
         -> std::vector<RawMultipartPart>
     {
@@ -242,19 +416,20 @@ namespace
         {
             return parts;
         }
-        auto const delimiter = "--" + std::string{boundary};
-        auto pos = body.find(delimiter);
+        auto pos = find_next_boundary(body, boundary, 0U);
         if (pos == std::string_view::npos)
         {
             return parts;
         }
-        pos += delimiter.size();
+        pos += 2U + boundary.size();
         while (pos <= body.size())
         {
+            // Closing delimiter "--boundary--".
             if (body.compare(pos, 2U, "--") == 0)
             {
-                break; // closing delimiter — no further parts
+                break;
             }
+            // Transport padding after a delimiter is CRLF or LF.
             if (body.compare(pos, 2U, "\r\n") == 0)
             {
                 pos += 2U;
@@ -263,14 +438,14 @@ namespace
             {
                 pos += 1U;
             }
-            auto const next = body.find(delimiter, pos);
+            auto const next = find_next_boundary(body, boundary, pos);
             if (next == std::string_view::npos)
             {
                 break;
             }
             auto const raw_part = body.substr(pos, next - pos);
             parts.push_back(parse_multipart_part(raw_part));
-            pos = next + delimiter.size();
+            pos = next + 2U + boundary.size();
         }
         return parts;
     }
@@ -331,9 +506,9 @@ namespace
     // in v1.11). Returns std::nullopt when the caller should fall back to the
     // deprecated /_matrix/media/v3/download endpoint per spec: a 404 response,
     // or a 200 response this server cannot use yet (an unparseable multipart
-    // body, or a Location redirect — see the comment below). Any other
-    // outcome — success, or a definitive failure such as 429/502/504 — is
-    // returned directly, since the spec only mandates falling back on 404.
+    // body). Any other outcome — success, a Location redirect (followed
+    // SSRF-safely when possible), or a definitive failure such as 429/502/504 —
+    // is returned directly, since the spec only mandates falling back on 404.
     [[nodiscard]] auto fetch_remote_media_via_federation_endpoint(HomeserverRuntime& runtime,
                                                                   federation::ServerDiscoveryResult const& resolution,
                                                                   std::string_view origin_server,
@@ -432,19 +607,73 @@ namespace
         }
         if (parsed.is_redirect)
         {
-            // Location-redirect responses point at an arbitrary, non-federation
-            // CDN URL. Fetching it would need its own SSRF-safe DNS resolution
-            // and address pinning, which nothing in this codebase provides yet
-            // for arbitrary hosts (see docs/todos/capability-gaps.md). Fall back
-            // to the legacy endpoint rather than failing the whole request.
+            // Location-redirect responses point at an arbitrary CDN URL. Follow
+            // them only after SSRF-safe resolution and address pinning; if the
+            // redirect cannot be resolved safely, fall back to the legacy
+            // endpoint rather than failing the whole request.
             log_diagnostic(
-                "remote_fetch.federation_endpoint.location_unsupported",
+                "remote_fetch.federation_endpoint.location",
                 {
                     {"origin_server", std::string{origin_server}, false},
                     {"location",      parsed.location,            false}
-            },
-                observability::LogEventSeverity::warning);
-            return std::nullopt;
+            });
+            if (runtime.discovery_network == nullptr)
+            {
+                log_diagnostic("remote_fetch.federation_endpoint.location_no_discovery",
+                               {
+                                   {"origin_server", std::string{origin_server}, false}
+                },
+                               observability::LogEventSeverity::warning);
+                return std::nullopt;
+            }
+            auto const redirect_resolution = resolve_media_redirect_url(parsed.location, *runtime.discovery_network);
+            if (!redirect_resolution.ok)
+            {
+                log_diagnostic("remote_fetch.federation_endpoint.location_rejected",
+                               {
+                                   {"origin_server", std::string{origin_server}, false},
+                                   {"location",      parsed.location,            false},
+                                   {"reason",        redirect_resolution.reason, false}
+                },
+                               observability::LogEventSeverity::warning);
+                return std::nullopt;
+            }
+
+            auto redirect_req = http::OutboundRequest{};
+            redirect_req.method = "GET";
+            redirect_req.url = std::string{parsed.location};
+            redirect_req.pinned_addresses = redirect_resolution.discovery.pinned_addresses;
+            redirect_req.trusted_ca_pem = std::string{trusted_ca_pem};
+            redirect_req.connect_timeout_seconds = 30U;
+            redirect_req.total_timeout_seconds = 120U;
+            redirect_req.max_response_body_bytes = static_cast<std::size_t>(max_bytes);
+
+            auto const redirect_result = runtime.outbound_client->perform(redirect_req);
+            if (!redirect_result.ok || redirect_result.response.status < 200U ||
+                redirect_result.response.status >= 300U)
+            {
+                auto const reason = redirect_result.error_detail.empty()
+                                        ? "remote returned " + std::to_string(redirect_result.response.status)
+                                        : redirect_result.error_detail;
+                log_diagnostic("remote_fetch.federation_endpoint.location_http_failed",
+                               {
+                                   {"origin_server", std::string{origin_server}, false},
+                                   {"location",      parsed.location,            false},
+                                   {"reason",        reason,                     false}
+                },
+                               observability::LogEventSeverity::warning);
+                ++runtime.media_repository.metrics.remote_fetch_rejections;
+                append_local_audit(runtime.database, observability::AuditCategory::moderation,
+                                   "media.remote_fetch_rejected", "server",
+                                   std::string{origin_server} + '/' + std::string{media_id}, reason);
+                return make_operation_result(false, {}, reason, 502U);
+            }
+
+            auto const redirect_content_type =
+                strip_mime_parameters(find_header_ci(redirect_result.response.headers, "content-type")
+                                          .value_or(std::string{"application/octet-stream"}));
+            return finalize_remote_media_fetch(runtime, origin_server, media_id, redirect_resolution.discovery,
+                                               std::move(redirect_content_type), redirect_result.response.body);
         }
 
         return finalize_remote_media_fetch(runtime, origin_server, media_id, resolution, parsed.content_type,
@@ -564,6 +793,59 @@ namespace
                                            out_result.response.body);
     }
 
+    // Resamples media bytes in the sandboxed worker. Anything the worker cannot
+    // handle (unsupported format, worker not installed, decode failure) degrades
+    // to a 404 so a thumbnail request never hard-fails by serving the original
+    // full-size bytes. Shared by the local and remote thumbnail paths.
+    [[nodiscard]] auto generate_thumbnail_for_media(HomeserverRuntime& runtime, std::string_view media_id,
+                                                    std::string_view content_type, std::string_view bytes,
+                                                    std::uint32_t width, std::uint32_t height,
+                                                    media::ThumbnailMethod method) -> OperationResult
+    {
+        auto const& media_config = runtime.media_repository.config;
+        auto thumbnailer_config = media::ThumbnailerConfig{};
+        thumbnailer_config.worker_path = media_config.thumbnail_worker_path;
+        thumbnailer_config.worker_binary_fd = media_config.thumbnail_worker_fd;
+        thumbnailer_config.timeout_seconds = media_config.thumbnail_timeout_seconds;
+        thumbnailer_config.max_input_bytes = media_config.max_decode_input_bytes;
+        thumbnailer_config.max_output_bytes = media_config.max_decode_output_bytes;
+        thumbnailer_config.max_pixels = static_cast<std::uint32_t>(media_config.max_decode_pixels);
+
+        auto request = media::ThumbnailRequest{};
+        request.source_bytes = bytes;
+        request.source_content_type = std::string{content_type};
+        request.width = width;
+        request.height = height;
+        request.method = method;
+
+        if (media_config.thumbnailing_enabled && !thumbnailer_config.worker_path.empty())
+        {
+            auto const result = media::generate_thumbnail(thumbnailer_config, request);
+            if (result.ok)
+            {
+                ++runtime.media_repository.metrics.thumbnails_served;
+                log_diagnostic("thumbnail.resampled", {
+                                                          {"media_id", std::string{media_id},         false},
+                                                          {"width",    std::to_string(result.width),  false},
+                                                          {"height",   std::to_string(result.height), false}
+                });
+                return make_operation_result(true, result.content_type + "|" + result.bytes, {}, 200U);
+            }
+            log_diagnostic("thumbnail.generation_failed", {
+                                                              {"media_id", std::string{media_id},         false},
+                                                              {"reason",   result.reason,                 false},
+                                                              {"status",   std::to_string(result.status), false}
+            });
+            return make_operation_result(false, {}, "thumbnail generation failed", 404U);
+        }
+
+        log_diagnostic("thumbnail.unavailable", {
+                                                    {"media_id",     std::string{media_id},     false},
+                                                    {"content_type", std::string{content_type}, false}
+        });
+        return make_operation_result(false, {}, "thumbnails unavailable", 404U);
+    }
+
 } // namespace
 
 [[nodiscard]] auto remote_media_download_url(std::string_view resolved_host, std::uint16_t resolved_port,
@@ -586,7 +868,10 @@ namespace
 {
     auto const boundary = extract_multipart_boundary(content_type_header);
     auto const parts = split_multipart_body(body, boundary);
-    if (parts.size() < 2U)
+    // Matrix Server-Server API v1.19 mandates exactly two parts: an
+    // application/json metadata part and either an inline media part or a
+    // Location redirect part. Fail closed if the count differs.
+    if (parts.size() != 2U)
     {
         return {};
     }
@@ -606,6 +891,30 @@ namespace
     result.content_type = strip_mime_parameters(
         find_raw_header_ci(media_part, "content-type").value_or(std::string{"application/octet-stream"}));
     result.bytes = std::string{media_part.body};
+    return result;
+}
+
+[[nodiscard]] auto resolve_media_redirect_url(std::string_view location_url,
+                                              federation::ServerDiscoveryNetwork& network)
+    -> MediaRedirectResolutionResult
+{
+    auto result = MediaRedirectResolutionResult{};
+    auto const authority = parse_https_authority(location_url);
+    if (!authority.has_value())
+    {
+        result.reason = "redirect URL is not a valid absolute https:// URL";
+        return result;
+    }
+
+    result.discovery = federation::resolve_federation_destination(authority->host, authority->port, network);
+    if (!result.discovery.discovery_allowed)
+    {
+        result.reason = std::move(result.discovery.reason);
+        result.discovery = {};
+        return result;
+    }
+
+    result.ok = true;
     return result;
 }
 
@@ -722,9 +1031,25 @@ namespace
                                                {"origin_server", std::string{server_name}, false},
                                                {"media_id",      std::string{media_id},    false}
         });
-        // Remote thumbnailing is not yet performed locally; serve the fetched
-        // remote media as-is.
-        return fetch_remote_media_live(runtime, server_name, media_id);
+        // Fetch the remote media first, then resample it locally so a thumbnail
+        // request never answers with the full-size original.
+        auto const fetch_result = fetch_remote_media_live(runtime, server_name, media_id);
+        if (!fetch_result.ok || fetch_result.status < 200U || fetch_result.status >= 300U)
+        {
+            return fetch_result;
+        }
+        auto const separator = fetch_result.value.find('|');
+        if (separator == std::string::npos)
+        {
+            log_diagnostic("thumbnail.remote_malformed", {
+                                                             {"origin_server", std::string{server_name}, false},
+                                                             {"media_id",      std::string{media_id},    false}
+            });
+            return make_operation_result(false, {}, "remote media response malformed", 502U);
+        }
+        auto const content_type = std::string_view{fetch_result.value}.substr(0U, separator);
+        auto const bytes = std::string_view{fetch_result.value}.substr(separator + 1U);
+        return generate_thumbnail_for_media(runtime, media_id, content_type, bytes, width, height, method);
     }
 
     auto const* record = media::find_local_media_record(runtime.media_repository, media_id);
@@ -748,56 +1073,7 @@ namespace
         return make_operation_result(false, {}, "thumbnail data not found", 404U);
     }
 
-    // Resample in the sandboxed worker. Anything the worker cannot handle
-    // (unsupported format, worker not installed, decode failure) degrades to
-    // serving the original bytes so a thumbnail request never hard-fails.
-    auto const& media_config = runtime.media_repository.config;
-    auto thumbnailer_config = media::ThumbnailerConfig{};
-    thumbnailer_config.worker_path = media_config.thumbnail_worker_path;
-    thumbnailer_config.worker_binary_fd = media_config.thumbnail_worker_fd;
-    thumbnailer_config.timeout_seconds = media_config.thumbnail_timeout_seconds;
-    thumbnailer_config.max_input_bytes = media_config.max_decode_input_bytes;
-    thumbnailer_config.max_output_bytes = media_config.max_decode_output_bytes;
-    thumbnailer_config.max_pixels = static_cast<std::uint32_t>(media_config.max_decode_pixels);
-
-    auto request = media::ThumbnailRequest{};
-    request.source_bytes = blob->bytes;
-    request.source_content_type = record->content_type;
-    request.width = width;
-    request.height = height;
-    request.method = method;
-
-    if (media_config.thumbnailing_enabled && !thumbnailer_config.worker_path.empty())
-    {
-        auto const result = media::generate_thumbnail(thumbnailer_config, request);
-        if (result.ok)
-        {
-            ++runtime.media_repository.metrics.thumbnails_served;
-            log_diagnostic("thumbnail.resampled", {
-                                                      {"media_id", std::string{media_id},         false},
-                                                      {"width",    std::to_string(result.width),  false},
-                                                      {"height",   std::to_string(result.height), false}
-            });
-            return make_operation_result(true, result.content_type + "|" + result.bytes, {}, 200U);
-        }
-        log_diagnostic("thumbnail.generation_failed", {
-                                                          {"media_id", std::string{media_id},         false},
-                                                          {"reason",   result.reason,                 false},
-                                                          {"status",   std::to_string(result.status), false}
-        });
-        return make_operation_result(false, {}, "thumbnail generation failed", 404U);
-    }
-
-    // #446: never fall back to the full-size original. A 32x32 thumbnail
-    // request answered with a multi-megabyte blob is a bandwidth/CPU
-    // amplification vector; when thumbnailing is disabled or the worker is
-    // not installed, the endpoint reports the thumbnail as unavailable.
-    log_diagnostic("thumbnail.unavailable",
-                   {
-                       {"media_id",     std::string{media_id}, false},
-                       {"content_type", record->content_type,  false}
-    });
-    return make_operation_result(false, {}, "thumbnails unavailable", 404U);
+    return generate_thumbnail_for_media(runtime, media_id, record->content_type, blob->bytes, width, height, method);
 }
 
 [[nodiscard]] auto admin_quarantine_local_media(HomeserverRuntime& runtime, std::string_view access_token,

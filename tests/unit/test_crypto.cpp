@@ -283,7 +283,7 @@ SCENARIO("Crypto signing service fails closed for unusable keys", "[crypto][sign
             THEN("signing is rejected")
             {
                 REQUIRE_FALSE(result.error.empty());
-                REQUIRE(result.error == "active signing key is not usable");
+                REQUIRE(result.error == "no active signing key");
             }
         }
     }
@@ -690,7 +690,8 @@ SCENARIO("Crypto signing service rejects an empty server name", "[crypto][signin
     }
 }
 
-SCENARIO("Crypto signing service propagates key store errors", "[crypto][signing][error]")
+SCENARIO("Crypto signing service reports no active signing key when the store has no matching key",
+         "[crypto][signing][error]")
 {
     GIVEN("a key store that holds a key only for example.org")
     {
@@ -706,10 +707,10 @@ SCENARIO("Crypto signing service propagates key store errors", "[crypto][signing
         {
             auto const result = merovingian::crypto::sign_for_server(store, provider, "other.org", "payload");
 
-            THEN("signing fails with the key store's error message")
+            THEN("signing fails because no usable active key is available for that server")
             {
                 REQUIRE_FALSE(result.error.empty());
-                REQUIRE(result.error == "signing key not found");
+                REQUIRE(result.error == "no active signing key");
             }
         }
     }
@@ -727,10 +728,10 @@ SCENARIO("Crypto signing service rejects a key whose server_name mismatches the 
         {
             auto const result = merovingian::crypto::sign_for_server(store, provider, "example.org", "payload");
 
-            THEN("signing is rejected — server_name in the returned key does not match the request")
+            THEN("signing is rejected because no returned key matches the requested server")
             {
                 REQUIRE_FALSE(result.error.empty());
-                REQUIRE(result.error == "active signing key server mismatch");
+                REQUIRE(result.error == "no usable active signing key");
             }
         }
     }
@@ -752,11 +753,12 @@ SCENARIO("Crypto signing service propagates provider errors", "[crypto][signing]
         {
             auto const result = merovingian::crypto::sign_for_server(store, provider, "example.org", "");
 
-            THEN("signing fails with the provider's error — the message was rejected")
+            THEN("signing fails with the provider's error and no signature is produced")
             {
                 REQUIRE_FALSE(result.error.empty());
-                REQUIRE(result.server_name == "example.org");
-                REQUIRE(result.key_id == "ed25519:auto");
+                REQUIRE(result.error == "message is empty");
+                REQUIRE(result.server_name.empty());
+                REQUIRE(result.key_id.empty());
             }
         }
     }
@@ -783,8 +785,8 @@ SCENARIO("Crypto signing service rejects a provider signature with invalid byte 
             {
                 REQUIRE_FALSE(result.error.empty());
                 REQUIRE(result.error == "provider returned invalid Ed25519 signature shape");
-                REQUIRE(result.server_name == "example.org");
-                REQUIRE(result.key_id == "ed25519:auto");
+                REQUIRE(result.server_name.empty());
+                REQUIRE(result.key_id.empty());
             }
         }
     }

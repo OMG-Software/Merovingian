@@ -1,40 +1,118 @@
+## 0.11.5
+
+Matrix spec v1.19 P2 gap closure.
+
+- Admin trust and safety: added `tests/conformance/test_admin_safety_policy_rules_conformance.cpp` covering `GET/PUT/DELETE /_matrix/client/v3/admin/safety/policy_rules/{scope}/{entity}` CRUD, 400 for invalid actions, 404 for missing rules, and 403 non-admin guards.
+- Federation keys: the server now supports multiple simultaneously-active Ed25519 signing keys. `GET /_matrix/key/v2/server` publishes every valid key in `verify_keys`, signs the response with the preferred key, and retires superseded keys to `old_verify_keys`. `RuntimeMultiKeyEd25519Provider` and `RuntimeSigningKeyStore` wire the multi-key behaviour through event signing and federation request signing.
+- Media: remote thumbnails now use the local sandboxed thumbnailing pipeline after fetching the remote file via the
+          authenticated federation media endpoint.
+- Federation media: the authenticated `GET /_matrix/federation/v1/media/download/{mediaId}` endpoint now follows `Location` redirects in an SSRF-safe way instead of immediately falling back to the deprecated v3 endpoint.
+- Federation media: hardened the `multipart/mixed` parser for authenticated download responses to strict RFC 2046 semantics. Boundary delimiters must now sit on their own line, quoted/unquoted boundary tokens with optional whitespace around `=` are accepted, preambles before the first delimiter and LF-only transport padding are tolerated, and the parser fails closed unless exactly two parts are present.
+- Media thumbnails: added conformance coverage verifying that a remote thumbnail request never returns 200 with the full-size original bytes when federation infrastructure is unavailable.
+- E2EE keys: `POST /_matrix/client/v3/keys/upload` now reports one-time key counts per advertised algorithm, and backup session/room/batch deletion routes are verified end-to-end.
+- E2EE keys: `GET /_matrix/client/v3/keys/changes` now requires and validates both `from` and `to` sync tokens, filters `changed`/`left` results to the requested stream range, and returns `M_MISSING_PARAM`/`M_INVALID_PARAM` for missing or malformed tokens.
+- Profile: the Complement fixture `tests/fixtures/complement/client_server_v1_19.json` now covers `PUT /_matrix/client/v3/profile/{userId}/avatar_url`, its cross-user 403 guard, and a follow-on `GET` that verifies the stored value.
+- Room versions: added a runtime conformance scenario that creates a room for every stable version v1 through v12 and verifies each create event records the requested `room_version` via `GET /rooms/{roomId}/state/m.room.create/`.
+- Tests: updated the existing `POST /keys/upload` conformance test to expect the per-algorithm `curve25519` count instead of the legacy hardcoded `signed_curve25519` aggregate.
+- Third-party invites: `POST /_matrix/client/v3/rooms/{roomId}/invite` accepts same-server `id_server`/`medium`/`address` invites, generates a random token and Ed25519 keypair, and persists a signed `m.room.third_party_invite` state event. `POST /_matrix/client/v3/rooms/{roomId}/join` now accepts `third_party_signed` objects for matching same-server invites, verifies the embedded Ed25519 signature against the public keys in the invite event, creates the intermediate `m.room.member` invite event, and completes the join.
+- Room v12 / MSC4291: added conformance coverage for implicit create, creator privilege, and v12 event IDs; fixed any remaining edge cases.
+- Sliding Sync: expanded conformance fixtures and fixed subscription `required_state` merging with list-level defaults.
+- Federation membership: `send_leave` and `send_knock` now return stripped state, knock responses include `knock_room_state`, and a local accept-knock path promotes a knock to join.
+- Federation PDU verification: added conformance coverage proving `parse_inbound_pdu_envelope` and `authorize_federation_pdu` honour the room version for every stable version v1 through v12, including v12 create-event room-id derivation and the rejection of auth_events that list the implicit create event.
+- Tests: added unit scenarios `E2EE /keys/upload groups one_time_key_counts by algorithm` and `Key backup deletion endpoints remove sessions, rooms, and all keys for the current version` in `tests/unit/test_client_server.cpp`, extended backup route coverage in `tests/unit/test_key_api.cpp`, plus new unit and conformance tests for the other P2 areas.
+- Federation: added conformance coverage for `GET /_matrix/federation/v1/hierarchy/{roomId}` (200, 404, invalid `suggested_only`, missing-provider 501) and `GET /_matrix/federation/v1/media/download/{mediaId}` (200 multipart/mixed, 404, 451, missing-provider 501, percent-decoded `mediaId`) in `tests/conformance/test_federation_space_media_conformance.cpp`.
+- Sync: `GET /_matrix/client/v3/sync` now emits the `summary` object for every joined room with `m.joined_member_count`, `m.invited_member_count`, and `m.heroes`, per Matrix Client-Server API v1.19. Added `tests/conformance/test_sync_summary_conformance.cpp` to cover the new fields.
+- Trust and safety: added conformance coverage for `POST /_matrix/client/v3/rooms/{roomId}/report/{eventId}` (200 for valid reports, 400 for malformed bodies) and `GET /_matrix/client/v3/admin/safety/reports` in `tests/conformance/test_safety_report_conformance.cpp`.
+- Admin trust and safety review: added `tests/conformance/test_admin_safety_review_conformance.cpp` covering `POST /_matrix/client/v3/admin/safety/review/{targetType}/{targetId}` for room, media, and federation_server targets, empty review bodies, invalid target types (400 `M_BAD_JSON`), and non-admin guards (403 `M_FORBIDDEN`).
+- Read markers: `POST /_matrix/client/v3/rooms/{roomId}/read_markers` now rejects malformed bodies with 400 `M_BAD_JSON`. Added `tests/conformance/test_read_markers_conformance.cpp` covering 200 for `m.read` (with the marker appearing as an `m.receipt` ephemeral event in `/sync`), 403 `M_FORBIDDEN` for non-members, and 400 `M_BAD_JSON` for invalid JSON.
+- Presence: added `tests/conformance/test_presence_conformance.cpp` covering `PUT /_matrix/client/v3/presence/{userId}/status` 200 for valid updates, 403 `M_FORBIDDEN` for cross-user updates, and 400 `M_BAD_JSON` for malformed bodies.
+- Receipts: added `tests/conformance/test_receipt_conformance.cpp` covering `POST /_matrix/client/v3/rooms/{roomId}/receipt/{receiptType}/{eventId}` 200 for `m.read` (with the receipt appearing as an `m.receipt` ephemeral event in `/sync`), 400 `M_INVALID_PARAM` for invalid receipt types, 403 `M_FORBIDDEN` for non-members, and 400 `M_BAD_JSON` for malformed bodies.
+- Docs: updated `docs/todos/capability-gaps.md` and relevant spec docs; repaired a corrupted capability-ledger table row for Database persistence.
+
 ## 0.11.4
 
 Matrix spec v1.19 P1 gap closure.
 
-- Client-server: `GET /_matrix/client/v1/auth_metadata` now returns RFC 8414 / Matrix v1.19 authorisation server metadata when the operator configures `server.oidc.*`. When OIDC is not configured it continues to return `404 M_UNRECOGNIZED` as the spec requires for unsupported servers. No actual OAuth 2.0 flow is implemented yet; this change covers discovery only.
+- Client-server: `GET /_matrix/client/v1/auth_metadata` now returns RFC 8414 / Matrix v1.19 authorisation server metadata when the operator configures `server.oidc.*`. When OIDC is not configured it continues to return `404 M_UNRECOGNIZED` as the spec requires for unsupported servers. No actual OAuth 2.0 flow is implemented yet;
+this change covers discovery only.
 - Federation: added `validate_federation_tls_origin()` in `federation/server_discovery` to enforce the TLS-certificate-identity contract from Matrix Server-Server API v1.19 §2. The helper validates direct-name matches, well-known delegation consistency, and rejects IP-literal destinations unless the original server name is the same IP literal (including IPv6 literals).
-- Tests: added `tests/unit/test_auth_oidc_discovery.cpp`, `tests/unit/test_federation_tls_origin.cpp`, and `tests/unit/test_config_oidc_validation.cpp`; extended `tests/conformance/test_server_discovery.cpp` and `tests/unit/test_client_server.cpp` with configured-OIDC, disabled-OIDC, and TLS-origin scenarios.
-- CI: updated `.gitleaks.toml` to allowlist the imported `docs/matrix-v1.19-spec/` copy, matching the existing v1.18 allowlist.
-- Docs: added a "Why C++ and not Rust?" section to `README.md` explaining the memory-safety tradeoff and how it's mitigated (banned unsafe primitives, isolated libsodium boundary, BSD platform reach, continuous sanitizer/fuzz verification).
+- Tests: added `tests/unit/test_auth_oidc_discovery.cpp`, `tests/unit/test_federation_tls_origin.cpp`, and `tests/unit/test_config_oidc_validation.cpp`;
+extended `tests / conformance / test_server_discovery.cpp` and `tests / unit / test_client_server.cpp` with configured -
+    OIDC,
+    disabled - OIDC,
+    and TLS - origin scenarios.- CI : updated `.gitleaks.toml` to allowlist the imported `docs / matrix - v1.19 -
+        spec /` copy,
+    matching the existing v1.18 allowlist.-
+        Docs : added a "Why C++ and not Rust?" section to `README.md` explaining the memory -
+        safety tradeoff and how it's mitigated (banned unsafe primitives, isolated libsodium boundary, BSD platform reach, continuous sanitizer/fuzz verification).
 
-## 0.11.3
+        ##0.11.3
 
-Matrix spec v1.19 behaviour changes (Phase 3).
+        Matrix spec v1.19 behaviour
+        changes(Phase 3)
+            .
 
-- Federation: per-room server ACL enforcement (MSC4436 / Matrix v1.19). Added `federation/server_acl` evaluator with case-insensitive glob matching, IP-literal handling, and port stripping. Inbound federation requests to protected endpoints (make_* / send_* / invite / backfill / state / state_ids / get_missing_events / space_hierarchy) are now rejected with 403 `M_FORBIDDEN` when the origin server is denied. PDUs inside `PUT /_matrix/federation/v1/send/{txnId}` are checked per-PDU against both the transport origin and the PDU sender's homeserver; room-local EDUs (`m.typing`, `m.receipt`) are checked against the transport origin. Rooms with no `m.room.server_acl` event continue to allow all servers.
-- Client-server: encrypted history sharing conformance coverage (MSC4268). The generic `PUT /_matrix/client/v3/sendToDevice/{eventType}/{txnId}` plumbing already accepted any to-device type; a conformance test now verifies that `m.room_key_bundle` messages carrying the `m.history_not_shared` withheld code are delivered to the target device and retain their event type and content.
-- Tests: added `tests/unit/test_federation_server_acl.cpp` covering glob matching, case-insensitivity, `?` and `*` wildcards, IP-literal denial, port stripping, deny-before-allow ordering, and default `allow_ip_literals` behaviour.
+        - Federation : per -
+                       room server ACL enforcement(MSC4436 / Matrix v1.19).Added `federation
+                           / server_acl` evaluator with case -insensitive glob matching,
+    IP - literal handling,
+    and port stripping
+                .Inbound federation requests to
+            protected endpoints(make_* / send_ * / invite / backfill / state / state_ids / get_missing_events /
+                                space_hierarchy) are now rejected with
+            403 `M_FORBIDDEN` when the origin server is denied.PDUs inside `PUT
+            / _matrix / federation / v1 / send / {txnId}` are checked per
+        -
+        PDU against both the transport origin and the PDU
+        sender's homeserver; room-local EDUs (`m.typing`, `m.receipt`) are checked against the transport origin. Rooms with no `m.room.server_acl` event continue to allow all servers. -
+        Client - server:
+encrypted history sharing conformance coverage(MSC4268).The generic `PUT / _matrix / client / v3 / sendToDevice /
+    {eventType} /
+{
+    txnId
+}
+` plumbing already accepted any to - device type;
+a conformance test now verifies that `m.room_key_bundle` messages carrying the `m
+        .history_not_shared` withheld code are delivered to the target device and retain their event type and content.-
+    Tests : added `tests / unit / test_federation_server_acl.cpp` covering glob matching,
+    case -insensitivity, `?` and `*` wildcards, IP - literal denial, port stripping, deny - before - allow ordering,
+    and default `allow_ip_literals` behaviour
+            .
 
-## 0.11.2
+        ##0.11.2
 
-Matrix spec v1.19 behaviour changes (Phase 2).
+        Matrix spec v1.19 behaviour
+        changes(Phase 2)
+            .
 
-- Client-server: `GET /_matrix/client/v3/publicRooms` order is now server-defined per Matrix v1.19 (MSC4423). The implementation already returned rooms in insertion order; a conformance test now documents and protects that server-defined order.
-- Client-server: `m.key_backup` account data (MSC4287) is now accepted, stored, and retrievable via the existing `PUT/GET /_matrix/client/v3/user/{userId}/account_data/{type}` endpoints.
-- Client-server: custom emoji / image packs (MSC2545) are now accepted: `m.room.image_pack` state events and `m.image_pack.rooms` global account data round-trip through the existing event and account-data paths.
+        - Client - server:
+`GET / _matrix / client / v3 / publicRooms` order is now server -
+    defined per Matrix v1.19(MSC4423).The implementation already returned rooms in insertion order;
+a conformance test now documents and protects that server - defined order.- Client -
+    server : `m.key_backup` account data(MSC4287)
+is now accepted, stored,
+    and retrievable via the existing `PUT / GET / _matrix / client / v3 / user / {userId} / account_data /
+{
+    type
+}
+` endpoints.- Client - server : custom emoji / image packs(MSC2545) are now accepted: `m.room.image_pack` state events and `m.image_pack.rooms` global account data round-trip through the existing event and account-data paths.
 - Database: schema version 4 adds a `state_transitions` table (via `migrations/004_state_transitions.sql`) so the server can record the previous state event for every `(room_id, event_type, state_key)` tuple. The client event builder uses this to inject `unsigned.replaces_state` into state events returned by `/sync`, `/rooms/{roomId}/messages`, `/rooms/{roomId}/members`, and other state-event paths, matching the Matrix v1.19 client event format.
-- Client-server: centralized the client-event serializer so `/sync`, `/rooms/{roomId}/messages`, `GET /rooms/{roomId}/state`, and `GET /rooms/{roomId}/event/{eventId}` all use the same helper and produce identical `event_id`/`unsigned.replaces_state` handling. Removed the duplicate serializer that previously existed in `client_server.cpp`.
+- Client-server: centralized the client-event serializer so `/sync`, `/rooms/{roomId}/messages`, `GET /rooms/{roomId}/state`, and `GET /rooms/{roomId}/event/
+{
+    eventId
+}` all use the same helper and produce identical `event_id`/`unsigned.replaces_state` handling. Removed the duplicate serializer that previously existed in `client_server.cpp`.
 - Tests: fixed malformed raw-string literal in the `m.room.image_pack` conformance and unit fixtures that caused the PUT-state request body to be invalid JSON.
 - Database: schema version 5 backfills `state_transitions` from existing `current_state` rows via `migrations/005_backfill_state_transitions.sql` so rooms created before the v4 migration do not lack transition history.
 - Database: `state_transitions` now has an in-memory hash index, and `client_event_with_id()` uses it for O(1) lookups instead of scanning the whole vector when injecting `unsigned.replaces_state`.
 - Events: for federated state events, `prepare_store_event_with_state()` now derives `previous_event_id` by walking the event's `prev_events`/`auth_events` graph to find the actual predecessor state event. It no longer assumes the local arrival-time `current_state` entry was the predecessor, which was wrong on forks.
 - Client-server: `GET /_matrix/client/v1/mutual_rooms` now issues opaque server-signed pagination tokens instead of integer `next_batch` values. The tokens are keyed to the deployment and verified on decode, so clients cannot guess or forge pagination positions.
-- Database: the migration runner now accepts data-only migration statements (`INSERT`/`UPDATE`/`DELETE`) as valid no-op schema-state transitions. The v5 `state_transitions` backfill is the first data-only migration; without this fix the runner rejected it and runtime startup failed.
+- Database: the migration runner now accepts data-only migration statements (`INSERT`/`UPDATE`/`DELETE`) as valid no-op schema-state transitions. The v5 `state_transitions` backfill is the first data-only migration;
+without this fix the runner rejected it and runtime startup failed.
 
-## 0.11.1
+    ##0.11.1
 
-Maintenance: migrate repository documentation and tooling from Matrix spec v1.18 to v1.19. This is a mechanical update only; no v1.19 behaviour changes are implemented in this release.
+    Maintenance
+    : migrate repository documentation and tooling from Matrix spec v1.18 to v1.19. This is a mechanical update only; no v1.19 behaviour changes are implemented in this release.
 
 - Regenerated local spec docs under `docs/matrix-v1.19-spec/` from docs/matrix-v1.19-spec/index.md
 - Added generated `docs/matrix-v1.19-client-server-api.md` (+ appendix) from the v1.19 OpenAPI definition.
@@ -53,7 +131,14 @@ Fix: legacy `/sync` never reported unread notification counts, so read receipts 
 
 Security fixes for issues #460-#463 (4 findings from a security review of the codebase), plus a live-incident fix (issue #464).
 
-- Media (issue #460, HIGH): `GET /_matrix/client/v1/media/download/{serverName}/{mediaId}` and `GET /_matrix/client/v1/media/thumbnail/{serverName}/{mediaId}` were dispatched before the access-token auth gate, allowing unauthenticated media retrieval by media ID. The v1 routes are now matched and dispatched after the auth gate (line 7774), while the unauthenticated v3 routes remain pre-auth as the spec requires.
+- Media (issue #460, HIGH): `GET /_matrix/client/v1/media/download/{serverName}/
+{
+    mediaId
+}
+` and `GET / _matrix / client / v1 / media / thumbnail / {serverName} /
+{
+    mediaId
+}` were dispatched before the access-token auth gate, allowing unauthenticated media retrieval by media ID. The v1 routes are now matched and dispatched after the auth gate (line 7774), while the unauthenticated v3 routes remain pre-auth as the spec requires.
 - Federation (issue #461, HIGH): `handle_send_membership` (send_join/send_leave/send_knock) accepted inbound PDUs with no Ed25519 signature verification, content-hash check, or origin/sender-domain check — a federated server with valid X-Matrix credentials could forge any user's membership. The handler now runs the same verification pipeline as the transaction/PDU path: `authorize_federation_pdu` (signature + key resolution), `verify_pdu_content_hash`, and `sender_domain == request.origin` assertion, rejecting on any failure.
 - Federation (issue #462, HIGH): `handle_invite` accepted invite events with no signature verification and no origin/sender check, then re-signed the forged event with the victim's own key. The handler now verifies the inviting server's signature via `authorize_federation_pdu`, checks `verify_pdu_content_hash`, and asserts `sender_domain == request.origin` before dispatching to the invite handler. `InviteRequest` gained an `origin` field so the handler can enforce the sender/origin match.
 - Observability (issue #463, HIGH): four `log_diagnostic_audit` call sites passed `req.access_token` (the raw bearer token) as the `actor` argument, persisting valid access tokens to the diagnostic log, in-memory audit_events, and the persistent `audit_log` DB table. All four call sites now pass `"<unknown>"` as the actor, mirroring the established pattern in `auth_service.cpp:763`.
@@ -63,7 +148,8 @@ Security fixes for issues #460-#463 (4 findings from a security review of the co
 
 - The #463 fix's first attempt added a blanket rule to `contains_sensitive_marker` redacting every log field literally named `actor`, regardless of value. That breaks `src/observability/AGENTS.md`'s requirement to log `user_id`/`device_id` for authenticated request traces and is unnecessary: the actual vulnerability (raw tokens passed as the `actor` *value*) is already closed at the 4 call sites above, and both #463 regression tests assert on the persisted `audit_events.actor` value, not this redaction rule. Removed the blanket key-based rule; legitimate actor identifiers (e.g. `@alice:test`) now survive `diagnostic_log_summary` again.
 - `tests/federation_signing_test_support.hpp`'s new `make_signed_event_json()` test helper signed events without ever computing/attaching `hashes.sha256` (that step is the caller's responsibility in production code — see `room_service.cpp`'s `compose_event`/`handle_send_join`/`handle_send_leave` — but the helper's own doc comment incorrectly claimed it did this). Every "valid signature" fixture built through it therefore failed `verify_pdu_content_hash`, breaking 9 send_join/invite test scenarios. The helper now computes and attaches the content hash before signing, matching the production sequence exactly.
-- `make_signed_fallback_key_json()` had a typo dropped from a prior edit — `"signatures":"` instead of `"signatures":{"` — producing structurally invalid JSON in every fallback-key fixture built through it, breaking the E2EE key-upload persistence integration test with `M_BAD_JSON`. Restored the missing `{`.
+- `make_signed_fallback_key_json()` had a typo dropped from a prior edit — `"signatures":"` instead of `"signatures":{"` — producing structurally invalid JSON in every fallback-key fixture built through it, breaking the E2EE key-upload persistence integration test with `M_BAD_JSON`. Restored the missing `
+{`.
 - Three pre-existing `test_federation_membership_endpoints.cpp` scenarios (two send_join auth_chain tests, one v2-invite-path-parser test) built their request PDUs as hand-written JSON literals with no real signature and a placeholder `"hashes":{"sha256":"x"}` — valid before #461/#462 added inbound PDU signature/hash verification to send_join and invite, no longer valid after. Updated their fixtures to use the (now-fixed) `make_signed_event_json()` helper and a sender domain consistent with the registered remote signing key, so they exercise the new verification path instead of being rejected by it.
 
 ## 0.10.61
@@ -77,23 +163,78 @@ Fixes for the remaining open issues #411-#457 (29 findings).
 - Sync (issue #417, MEDIUM): sliding-sync `notification_count`/`highlight_count` counted events since the *sync position* (so an initial sync reported every message ever sent as unread) and the `by_notification_count` room-list sort ignored receipts entirely (its receipt scan was dead code). Both now baseline on the user's last `m.read`/`m.read.private` receipt via the new `read_receipt_ordering` helper, and the user's own events no longer count as unread.
 - Sync (issue #456, LOW): stream-token `decode_component` had no length cap, so a 17+-hex-digit component wrapped `uint64_t` — a crafted `pos` token could decode to an arbitrarily small ordering and defeat the pos never-regress guarantee. Components longer than 16 hex digits are now rejected.
 - Sync (issue #457, LOW): `client_event_json` appended `event_id` without checking whether the stored JSON (v1-v3 rooms, foreign-server PDUs) already carried one, producing duplicate keys. Any existing `event_id` member is now replaced.
-- Config (issue #421, MEDIUM): `build_reload_plan` emitted no diff for `server.cors.*`, `server.turn.*`, `security.secrets.master_key_file`, `security.trust_safety.*`, token lifetimes, `federation.worker.*`, `log_modules.*`, or `client_rate_limits.*` — edits to those keys were reported as "no changes" and silently dropped. All blocks now diff (maps entry-by-entry); `security.secrets.master_key_file` and `federation.worker.*` are flagged `restart_required` (loaded/spawned at startup). `http::RateLimitPolicy` gained a defaulted `operator==` for the map diffs.
-- Config (issue #422, MEDIUM): `RuntimeConfigSnapshot::apply_reload` mutated the live `Config` in place with no synchronization while `current()` advertised concurrent-reader safety. The snapshot is now an immutable `shared_ptr<Config const>` swapped under a mutex; `current()` returns the shared snapshot.
+- Config (issue #421, MEDIUM): `build_reload_plan` emitted no diff for `server.cors.*`, `server.turn.*`, `security.secrets.master_key_file`, `security.trust_safety.*`, token lifetimes, `federation.worker.*`, `log_modules.*`, or `client_rate_limits.*` — edits to those keys were reported as "no changes" and silently dropped. All blocks now diff (maps entry-by-entry);
+    `security.secrets.master_key_file` and `federation
+            .worker.*` are flagged `restart_required` (loaded / spawned at startup)
+                         . `http::RateLimitPolicy` gained a defaulted `operator==` for the map diffs.-
+                     Config(issue #422,
+                            MEDIUM) : `RuntimeConfigSnapshot::apply_reload` mutated the live `Config` in place with no
+                                              synchronization while `current()` advertised concurrent -
+                                          reader safety.The snapshot is now an
+                                              immutable `shared_ptr<Config const>` swapped under a mutex; `current()` returns the shared snapshot.
 - Homeserver (issue #431, MEDIUM): `policy_server_timeout` seconds were multiplied by 1000 in `uint32_t`, wrapping for values above ~49.7 days. The millisecond value is now computed in 64 bits and saturated at the `uint32_t` ceiling.
 - Config (issue #455, LOW): `parse_i64_value` accumulated the magnitude in a signed 64-bit value and rejected `INT64_MIN`. The magnitude is now accumulated unsigned with a sign-aware limit, so the full i64 range parses and out-of-range literals are still rejected.
-- Core (issue #426, MEDIUM): the sync `timeout` query-parameter parser had no overflow guard — an overlong decimal wrapped modulo 2^64 into an attacker-chosen effective timeout for the sync pool. Now overflow-checked; overflowing values are discarded.
-- Core (issue #440, LOW): `percent_decode`/`percent_decode_path_component` silently mapped invalid hex (e.g. `%ZZ`) to NUL bytes. Malformed escapes are now kept literal.
-- Core (issue #439, LOW): `close_from_directory` duplicated the walk fd without adding the dup to the keep set — on Linux the dynamic `/proc/self/fd` sweep closed the dup mid-iteration and its RAII owner closed the same fd again. The purposeless dup is removed.
-- Media (issue #429, MEDIUM): `decoder_policy` computed `max_upload_bytes * max_decompression_ratio` unsaturated (its sibling `worker_plan` already saturated); extreme config wrapped the decode budget to a small value. Both now share a `saturating_scale` helper.
-- Media (issue #446, LOW): thumbnail requests fell back to serving the full-size original when thumbnailing was disabled, the worker was missing, or generation failed — a bandwidth-amplification vector (a 32x32 request answered with a multi-megabyte blob). The endpoint now returns 404 (`thumbnails unavailable` / `thumbnail generation failed`) instead.
-- Media (issue #449, LOW): the thumbnail worker's per-axis 4096 cap still admitted a 4096x4096 RGBA output buffer (64 MiB), and a crafted IHDR could stack allocations toward the RLIMIT_AS ceiling. A worker-imposed ~4.1 Mpixel budget now applies to both the decoded frame and the resampled output, and requests cannot raise it.
-- Canonical JSON (issue #430, MEDIUM): `make_signable_object_view` did not strip `signatures`/`unsigned` despite `src/canonicaljson/AGENTS.md` claiming it did. It now elides both top-level keys per the spec's Signing JSON procedure; `docs/canonical-json.md` updated to match.
-- Canonical JSON (issue #435, LOW): `format_double` used `snprintf`/`strtod`, both locale-dependent — under a comma-decimal `LC_NUMERIC` locale floats serialized as `1,5` (invalid JSON). The formatter now normalizes the active locale's decimal separator back to `.` (kept `snprintf`-based because `std::to_chars` for doubles is unavailable on several supported toolchains).
-- Crypto (issue #433, LOW): `IpcStreamCipher::decrypt` ignored the secretstream tag, silently accepting `TAG_FINAL`/`TAG_REKEY` as normal messages. Any tag other than `TAG_MESSAGE` is now rejected.
-- IPC (issue #451, LOW): `IpcChannel::build_frame` emitted `{"id":1,}` (trailing comma — invalid JSON) for a body of exactly `{}`, which would make the peer mark the channel unhealthy. Empty-object bodies now produce a well-formed frame.
-- Auth (issue #438, LOW): the `/devices/{deviceId}` route matcher was a bare prefix check, matching `/devices/` (empty id) and `/devices/foo/bar` (extra segments). It now requires a single non-empty id segment, consistent with the key-API matcher.
-- HTTP (issue #441, LOW): outbound response header values kept trailing optional whitespace; RFC 7230 §3.2.4 trailing OWS is now stripped alongside leading OWS.
-- Homeserver (issue #452, LOW): exact-equality route matches compared the raw target (including the query string) — `POST /logout/all?...` 404'd — and the `/sync` prefix match over-matched `/syncXYZ`. Route matching now compares the path component (`target_path` helper); `/_matrix/key/v2/server` in the local router likewise.
+- Core (issue #426, MEDIUM): the sync `timeout` query-parameter parser had no overflow guard — an overlong decimal wrapped modulo 2^64 into an attacker-chosen effective timeout for the sync pool. Now overflow-checked;
+    overflowing values are discarded.-
+            Core(issue #440, LOW)
+        : `percent_decode`/`percent_decode_path_component` silently mapped invalid hex(e.g. `% ZZ`)
+                               to NUL bytes.Malformed escapes are now kept literal.-
+            Core(issue #439, LOW)
+        : `close_from_directory` duplicated the walk fd without adding the dup to the keep set — on Linux the dynamic `/
+        proc / self / fd` sweep closed the dup mid -
+            iteration and
+        its RAII owner closed the same fd again.The purposeless dup is removed.- Media(issue #429, MEDIUM)
+        : `decoder_policy` computed `max_upload_bytes *
+        max_decompression_ratio` unsaturated(its sibling `worker_plan` already saturated);
+    extreme config wrapped the decode budget to a small value.Both now share a `saturating_scale` helper.-
+        Media(issue #446, LOW)
+        : thumbnail requests fell back to serving the full - size original when thumbnailing was disabled
+    , the worker was missing
+    , or generation failed — a bandwidth -
+              amplification vector(a 32x32 request answered with a multi - megabyte blob)
+                  .The endpoint now returns 404(`thumbnails unavailable` / `thumbnail generation failed`) instead.-
+              Media(issue #449, LOW)
+        : the thumbnail
+              worker's per-axis 4096 cap still admitted a 4096x4096 RGBA output buffer (64 MiB), and a crafted IHDR could stack allocations toward the RLIMIT_AS ceiling. A worker-imposed ~4.1 Mpixel budget now applies to both the decoded frame and the resampled output, and requests cannot raise it. -
+        Canonical JSON(issue #430, MEDIUM)
+        : `make_signable_object_view` did not strip `signatures`/`unsigned` despite `src / canonicaljson /
+        AGENTS.md` claiming it did.It now elides both top -
+        level keys per the spec's Signing JSON procedure; `docs/canonical-json.md` updated to match. -
+        Canonical JSON(issue #435, LOW)
+        : `format_double` used `snprintf`/`strtod`
+    , both locale - dependent — under a comma - decimal `LC_NUMERIC` locale floats serialized as `1
+    , 5` (invalid JSON)
+              .The formatter now normalizes the active
+                  locale's decimal separator back to `.` (kept `snprintf`-based because `std::to_chars` for doubles is unavailable on several supported toolchains). -
+          Crypto(issue #433, LOW)
+        : `IpcStreamCipher::decrypt` ignored the secretstream tag
+    , silently accepting `TAG_FINAL`/`TAG_REKEY` as normal messages.Any tag other than `TAG_MESSAGE` is now rejected.-
+          IPC(issue #451, LOW)
+        : `IpcChannel::build_frame` emitted `
+    {
+        "id" : 1,
+    }` (trailing comma — invalid JSON) for a body of exactly `
+    {
+    }
+    `, which would make the peer mark the channel unhealthy.Empty - object bodies now produce a well - formed frame.-
+           Auth(issue #438, LOW)
+        : the `/ devices /
+    {
+        deviceId
+    }
+    ` route matcher was a bare prefix check,
+        matching `/ devices /` (empty id) and `/ devices / foo /
+                                                  bar` (extra segments)
+                                                      .It now
+                                                      requires a
+                                                  single non - empty id segment, consistent with the key - API matcher.-
+                                                                                     HTTP(issue #441, LOW)
+        : outbound response header values kept trailing optional whitespace;
+    RFC 7230 §3.2.4 trailing OWS is now stripped alongside leading OWS.-
+        Homeserver(issue #452, LOW)
+        : exact - equality route matches compared the raw target(including the query string) — `POST / logout / all
+        ? ...` 404'd — and the `/ sync` prefix match over -
+                               matched `/ syncXYZ`.Route matching now compares the path component(`target_path` helper); `/_matrix/key/v2/server` in the local router likewise.
 - Homeserver (issue #453, LOW): `is_federation_send_target` scanned the whole target (including the query string) for the `/send/` prefix, letting `?x=/_matrix/federation/v1/send/y` misroute a request past the worker. Now matches the path component only.
 - Homeserver (issue #454, LOW): the admin review/policy-rule path parsers kept the query string and never percent-decoded, persisting rules under entities like `@alice:example.org?notify=1` that never match later lookups. Both parsers now strip the query and percent-decode the id segment.
 - Database (issue #447, LOW): SQLite connections now pin `PRAGMA synchronous = FULL` and `PRAGMA journal_mode = DELETE` at open, so environment-level default pragmas cannot silently weaken durability.
@@ -105,8 +246,15 @@ Fixes for the remaining open issues #411-#457 (29 findings).
 Security fixes for issues #409-#450 (21 findings from a security review of the codebase).
 
 - Authorization (issue #409, HIGH): kick/ban/unban in `events/authorization.cpp` only checked the sender's power against the kick/ban level, never `target_power < sender_power` — a power-50 moderator could kick or ban a power-100 admin. Kick/unban now follows spec rule 5 exactly (unban requires meeting both the ban and kick levels, and outranking the target); ban now requires meeting the ban level and outranking the target (rule 6.2).
-- Authorization (issue #410, HIGH): `m.room.redaction` was authorized against `redact`/`ban` power levels (`sender_power >= redact_level || sender_power >= ban_level`) instead of the generic `events["m.room.redaction"]`/`events_default` path every other message event uses — both over- and under-enforcement were possible depending on room config. Redactions now fall through to the standard message-event power check; `redact`/`ban` remain relevant only to *applying* an already-authorized redaction, not authorizing it.
-- HTTP (issue #412, HIGH): `RateLimitEngine::check()` returned `allowed=true` when both the per-IP and per-user policies resolved to `nullopt` (e.g. an operator-configured policy with `window_seconds > 3600`, which fails validation) — a misconfigured policy silently disabled rate limiting. Now fails closed, matching the standalone `request_is_rate_limited()` helper; `config.cpp` also now rejects `window_seconds > 3600` at config-validation time.
+- Authorization (issue #410, HIGH): `m.room.redaction` was authorized against `redact`/`ban` power levels (`sender_power >= redact_level || sender_power >= ban_level`) instead of the generic `events["m.room.redaction"]`/`events_default` path every other message event uses — both over- and under-enforcement were possible depending on room config. Redactions now fall through to the standard message-event power check;
+    `redact`/`ban` remain relevant only to * applying * an already - authorized redaction,
+        not authorizing it.- HTTP(issue #412, HIGH)
+        : `RateLimitEngine::check()` returned `allowed =
+            true` when both the per - IP and
+            per - user policies resolved to `nullopt` (
+                      e.g.an operator- configured policy with `window_seconds> 3600`,
+                      which fails validation) — a misconfigured policy silently disabled rate limiting.Now fails closed
+    , matching the standalone `request_is_rate_limited()` helper; `config.cpp` also now rejects `window_seconds > 3600` at config-validation time.
 - HTTP (issue #427, MEDIUM): rate-limit bucket tables (`m_ip_buckets`/`m_user_buckets`) were unbounded `std::vector`s scanned linearly per request — an attacker rotating a client-supplied `X-Forwarded-For` value could grow the table and the per-check cost without bound. Switched to `std::unordered_map` with a 100,000-entry cap and stale/oldest-entry eviction.
 - HTTP (issue #413, HIGH): `mero_curl_write_header` was `noexcept` but performed unbounded allocation with no cap on header count or size — a hostile federation peer streaming enough response headers could trigger a `bad_alloc` that calls `std::terminate` and takes down the whole process. Header storage is now capped (256 headers / 64 KiB) and wrapped in `try`/`catch`.
 - Homeserver (issue #415, HIGH): `resolve_policy_server_hook()` (a synchronous outbound HTTP call to the configured policy server) was invoked while `handle_federation_http_request` still held `runtime.mutex`, so a slow or unreachable policy server froze every other consumer of that mutex — effectively the whole process — for up to `policy_server_timeout`. The hook now runs after the guard is released.
@@ -159,7 +307,9 @@ Security fixes for issues #409-#450 (21 findings from a security review of the c
 - **test(events): add 10 conformance scenarios for third-party invite authorization** covering: a valid signature (both the legacy `content.public_key` and the `content.public_keys` list forms), a banned target, a missing `signed` property, an `mxid`/`state_key` mismatch, no matching `m.room.third_party_invite` event, a sender mismatch, a forged signature, and the separate invite-power-vs-state_default gating rule for `m.room.third_party_invite` creation. `test_event_auth_rules.cpp`, using real Ed25519 keypairs via `tests/federation_signing_test_support.hpp` (authorization now does real cryptographic verification, not a fake provider double).
 
 ### Notes
-- Accepting this shape end-to-end — `POST /invite` with a 3PID `address`/`id_server`, and `third_party_signed` on `/join` — remains unimplemented. The former needs a real identity-server HTTP client (otherwise there is no real party to source `public_key`/`public_keys` from); the latter needs the `PUT /_matrix/federation/v1/exchange_third_party_invite/{roomId}` endpoint or same-server authority to sign an intermediate invite event on behalf of the original inviter (a different sender than the joining user) — both larger, separate efforts tracked in `docs/todos/capability-gaps.md`. The auth-rule engine above already validates either shape correctly whenever such an invite event exists in room state (e.g. created via the generic `PUT /rooms/{roomId}/state/m.room.third_party_invite/{token}` endpoint, or received over federation).
+- Accepting this shape end-to-end — `POST /invite` with a 3PID `address`/`id_server`, and `third_party_signed` on `/join` — remains unimplemented. The former needs a real identity-server HTTP client (otherwise there is no real party to source `public_key`/`public_keys` from); the latter needs the `PUT /_matrix/federation/v1/exchange_third_party_invite/{
+        roomId}` endpoint or same-server authority to sign an intermediate invite event on behalf of the original inviter (a different sender than the joining user) — both larger, separate efforts tracked in `docs/todos/capability-gaps.md`. The auth-rule engine above already validates either shape correctly whenever such an invite event exists in room state (e.g. created via the generic `PUT /rooms/{roomId}/state/m.room.third_party_invite/{
+        token}` endpoint, or received over federation).
 
 ## 0.10.56
 
@@ -1005,7 +1155,8 @@ Security fixes for issues #409-#450 (21 findings from a security review of the c
 ## 0.9.0
 
 ### Fixed
-- **fix(auth): include `soft_logout: true` in 401 responses for expired access tokens (spec §5.7.2):** when an access token is found-but-expired the server now returns `{"errcode":"M_UNKNOWN_TOKEN","error":"unauthenticated","soft_logout":true}` so Matrix clients use their refresh token rather than performing a full session logout. Revoked tokens continue to return a plain 401 without `soft_logout`, preserving hard-logout semantics for explicit revocations.
+- **fix(auth): include `soft_logout: true` in 401 responses for expired access tokens (spec §5.7.2):** when an access token is found-but-expired the server now returns `{
+        "errcode" : "M_UNKNOWN_TOKEN", "error" : "unauthenticated", "soft_logout" : true}` so Matrix clients use their refresh token rather than performing a full session logout. Revoked tokens continue to return a plain 401 without `soft_logout`, preserving hard-logout semantics for explicit revocations.
 
 ### Changed
 - **chore(release): beta milestone — promote from pre-beta (0.8.x) to beta phase (0.9.0):** version number advanced to 0.9.0 per the versioning scheme phase markers. No functional changes; this commit updates all version strings across `meson.build`, source files, packaging metadata, and build scripts.

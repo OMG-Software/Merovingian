@@ -10,6 +10,7 @@
 #include "merovingian/core/secret_buffer.hpp"
 #include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/crypto/master_key.hpp"
+#include "merovingian/crypto/random.hpp"
 #include "merovingian/crypto/secret_box.hpp"
 #include "merovingian/crypto/signing_service.hpp"
 #include "merovingian/database/persistent_store.hpp"
@@ -27,6 +28,7 @@
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/homeserver/runtime_signing_key_store.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
@@ -313,85 +315,6 @@ namespace
         return encode_encrypted_secret_for_storage(*ciphertext);
     }
 
-    // Decrypt a stored signing secret.  Returns nullopt if the value is encrypted
-    // but cannot be decrypted (wrong master key / corrupted).  For legacy plaintext
-    // rows, returns the decoded bytes directly.
-    [[nodiscard]] auto decrypt_stored_signing_secret(HomeserverRuntime const& runtime, std::string_view stored)
-        -> std::optional<std::vector<std::uint8_t>>
-    {
-        if (auto const ciphertext = decode_encrypted_secret_from_storage(stored); ciphertext.has_value())
-        {
-            auto const master_key_material =
-                crypto::load_master_key_material(runtime.config.security().secrets.master_key_file);
-            if (!master_key_material.has_value())
-            {
-                log_diagnostic(
-                    "signing_key.decryption_failed",
-                    {
-                        {"reason", "encrypted signing secret requires security.secrets.master_key_file", false}
-                });
-                return std::nullopt;
-            }
-            auto const key = crypto::derive_secret_box_key(master_key_material->bytes());
-            if (!key.has_value())
-            {
-                return std::nullopt;
-            }
-            auto const plaintext = crypto::secret_box_decrypt(*ciphertext, *key);
-            if (!plaintext.has_value())
-            {
-                log_diagnostic("signing_key.decryption_failed",
-                               {
-                                   {"reason", "master key does not decrypt stored signing secret", false}
-                });
-                return std::nullopt;
-            }
-            return plaintext;
-        }
-
-        // Legacy plaintext base64 secret: decode and return as-is.  A diagnostic
-        // is emitted so operators can rotate to an encrypted secret.
-        auto const decoded = events::matrix_bytes_from_base64(stored);
-        if (!decoded.empty())
-        {
-            log_diagnostic(
-                "signing_key.legacy_plaintext",
-                {
-                    {"reason", "signing secret is stored plaintext; rotate to enable at-rest encryption", false}
-            });
-        }
-        return std::vector<std::uint8_t>{decoded.begin(), decoded.end()};
-    }
-
-    class RuntimeSigningKeyStore final : public crypto::SigningKeyStore
-    {
-    public:
-        RuntimeSigningKeyStore(std::string server_name, database::PersistentServerSigningKey key)
-            : server_name_{std::move(server_name)}
-            , key_{std::move(key)}
-        {
-        }
-
-        [[nodiscard]] auto active_key_for_server(std::string_view server_name)
-            -> crypto::SigningKeyLookupResult override
-        {
-            if (server_name != server_name_)
-            {
-                return {{}, "signing key not found"};
-            }
-            auto public_key = events::matrix_bytes_from_base64(key_.public_key);
-            return {
-                crypto::SigningKeyRecord{server_name_, key_.key_id, crypto::Ed25519PublicKey{std::move(public_key)},
-                                         true},
-                {}
-            };
-        }
-
-    private:
-        std::string server_name_{};
-        database::PersistentServerSigningKey key_{};
-    };
-
     [[nodiscard]] auto object_member(canonicaljson::Object const& object, std::string_view key) noexcept
         -> canonicaljson::Value const*
     {
@@ -488,6 +411,222 @@ namespace
         event.push_back(canonicaljson::make_member("state_key", canonicaljson::Value{std::string{user_id}}));
         event.push_back(canonicaljson::make_member("content", canonicaljson::Value{std::move(content)}));
         return serialize_canonical_string(canonicaljson::Value{std::move(event)});
+    }
+
+    // Builds the client-supplied `m.room.third_party_invite` event JSON. The
+    // state_key is the opaque invite token, and the content carries the Ed25519
+    // public key used later to validate `third_party_signed` joins.
+    // Spec: Matrix v1.19 rooms/v11.md — Authorization rules for m.room.third_party_invite.
+    [[nodiscard]] auto serialize_third_party_invite_event_json(std::string_view token,
+                                                               std::string_view public_key_base64,
+                                                               std::string_view display_name)
+        -> std::optional<std::string>
+    {
+        auto public_key_entry = canonicaljson::Object{};
+        public_key_entry.push_back(
+            canonicaljson::make_member("public_key", canonicaljson::Value{std::string{public_key_base64}}));
+
+        auto public_keys = canonicaljson::Array{};
+        public_keys.push_back(canonicaljson::Value{std::move(public_key_entry)});
+
+        auto content = canonicaljson::Object{};
+        content.push_back(canonicaljson::make_member("display_name", canonicaljson::Value{std::string{display_name}}));
+        content.push_back(
+            canonicaljson::make_member("public_key", canonicaljson::Value{std::string{public_key_base64}}));
+        content.push_back(canonicaljson::make_member("public_keys", canonicaljson::Value{std::move(public_keys)}));
+
+        auto event = canonicaljson::Object{};
+        event.push_back(
+            canonicaljson::make_member("type", canonicaljson::Value{std::string{"m.room.third_party_invite"}}));
+        event.push_back(canonicaljson::make_member("state_key", canonicaljson::Value{std::string{token}}));
+        event.push_back(canonicaljson::make_member("content", canonicaljson::Value{std::move(content)}));
+        return serialize_canonical_string(canonicaljson::Value{std::move(event)});
+    }
+
+    // Forward declaration: defined later in this anonymous namespace.
+    [[nodiscard]] auto find_event_json(database::PersistentStore const& store, std::string_view event_id)
+        -> canonicaljson::Value;
+
+    // Builds the `m.room.member` event that accepts a third-party invite.
+    // Its content carries `membership: invite` and the client-supplied signed
+    // blob inside `third_party_invite.signed`, satisfying rooms/v11.md rule 4.3.1.
+    // The caller must persist this event before attempting the user's actual join.
+    [[nodiscard]] auto serialize_third_party_invite_member_event_json(std::string_view target_user_id,
+                                                                      canonicaljson::Object const& signed_obj)
+        -> std::optional<std::string>
+    {
+        auto signed_copy = canonicaljson::Object{};
+        signed_copy.reserve(signed_obj.size());
+        for (auto const& member : signed_obj)
+        {
+            signed_copy.push_back(canonicaljson::make_member(member.key, *member.value));
+        }
+
+        auto third_party_invite = canonicaljson::Object{};
+        third_party_invite.push_back(
+            canonicaljson::make_member("signed", canonicaljson::Value{std::move(signed_copy)}));
+
+        auto content = canonicaljson::Object{};
+        content.push_back(canonicaljson::make_member("membership", canonicaljson::Value{std::string{"invite"}}));
+        content.push_back(
+            canonicaljson::make_member("third_party_invite", canonicaljson::Value{std::move(third_party_invite)}));
+
+        auto event = canonicaljson::Object{};
+        event.push_back(canonicaljson::make_member("type", canonicaljson::Value{std::string{"m.room.member"}}));
+        event.push_back(canonicaljson::make_member("state_key", canonicaljson::Value{std::string{target_user_id}}));
+        event.push_back(canonicaljson::make_member("content", canonicaljson::Value{std::move(content)}));
+        return serialize_canonical_string(canonicaljson::Value{std::move(event)});
+    }
+
+    // Collects every public key from an m.room.third_party_invite event content:
+    // the legacy content.public_key plus each entry of content.public_keys[].public_key.
+    // Spec: rooms/v11.md Authorization rules for m.room.member, rule 4.3.1.7.
+    [[nodiscard]] auto collect_third_party_invite_public_keys(canonicaljson::Value const& third_party_invite_event)
+        -> std::vector<std::string>
+    {
+        auto keys = std::vector<std::string>{};
+        auto const* event_obj = std::get_if<canonicaljson::Object>(&third_party_invite_event.storage());
+        if (event_obj == nullptr)
+        {
+            return keys;
+        }
+        auto const* content_value = object_member(*event_obj, "content");
+        auto const* content_obj =
+            content_value == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&content_value->storage());
+        if (content_obj == nullptr)
+        {
+            return keys;
+        }
+        if (auto const* legacy = string_member(*content_obj, "public_key"); legacy != nullptr)
+        {
+            keys.push_back(*legacy);
+        }
+        auto const* public_keys_value = object_member(*content_obj, "public_keys");
+        auto const* public_keys =
+            public_keys_value == nullptr ? nullptr : std::get_if<canonicaljson::Array>(&public_keys_value->storage());
+        if (public_keys == nullptr)
+        {
+            return keys;
+        }
+        for (auto const& entry : *public_keys)
+        {
+            auto const* entry_obj = std::get_if<canonicaljson::Object>(&entry.storage());
+            if (entry_obj == nullptr)
+            {
+                continue;
+            }
+            if (auto const* entry_key = string_member(*entry_obj, "public_key"); entry_key != nullptr)
+            {
+                keys.push_back(*entry_key);
+            }
+        }
+        return keys;
+    }
+
+    // Verifies a client-supplied `third_party_signed` object against the matching
+    // m.room.third_party_invite state event. Returns true if any signature in the
+    // signed blob verifies against any public key carried by the invite event.
+    // Spec: client-server-api.md Third-party Signed; server-server-api.md § Verifying the invite.
+    [[nodiscard]] auto verify_third_party_signed(canonicaljson::Object const& signed_obj,
+                                                 std::string_view expected_mxid, database::PersistentStore const& store,
+                                                 std::string_view room_id) -> bool
+    {
+        auto const* mxid = string_member(signed_obj, "mxid");
+        auto const* sender = string_member(signed_obj, "sender");
+        auto const* token = string_member(signed_obj, "token");
+        auto const* signatures_value = object_member(signed_obj, "signatures");
+        if (mxid == nullptr || sender == nullptr || token == nullptr || signatures_value == nullptr)
+        {
+            return false;
+        }
+        if (*mxid != expected_mxid)
+        {
+            return false;
+        }
+
+        auto const tpi_state = std::ranges::find_if(store.state, [&](database::PersistentStateEvent const& s) {
+            return s.room_id == room_id && s.event_type == "m.room.third_party_invite" && s.state_key == *token;
+        });
+        if (tpi_state == store.state.end())
+        {
+            return false;
+        }
+
+        auto const tpi_event = find_event_json(store, tpi_state->event_id);
+        auto const* tpi_obj = std::get_if<canonicaljson::Object>(&tpi_event.storage());
+        if (tpi_obj == nullptr)
+        {
+            return false;
+        }
+        auto const* tpi_sender = string_member(*tpi_obj, "sender");
+        if (tpi_sender == nullptr || *tpi_sender != *sender)
+        {
+            return false;
+        }
+
+        auto const public_keys = collect_third_party_invite_public_keys(tpi_event);
+        if (public_keys.empty())
+        {
+            return false;
+        }
+
+        auto payload_obj = canonicaljson::Object{};
+        payload_obj.reserve(signed_obj.size());
+        for (auto const& member : signed_obj)
+        {
+            if (member.key != "signatures" && member.key != "unsigned")
+            {
+                payload_obj.push_back(canonicaljson::make_member(member.key, *member.value));
+            }
+        }
+        auto const serialized = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(payload_obj)});
+        if (serialized.error != canonicaljson::CanonicalJsonError::none)
+        {
+            return false;
+        }
+
+        auto const* signatures = std::get_if<canonicaljson::Object>(&signatures_value->storage());
+        if (signatures == nullptr)
+        {
+            return false;
+        }
+        for (auto const& server_signatures : *signatures)
+        {
+            auto const* key_sigs = std::get_if<canonicaljson::Object>(&server_signatures.value->storage());
+            if (key_sigs == nullptr)
+            {
+                continue;
+            }
+            for (auto const& key_sig : *key_sigs)
+            {
+                auto const* sig_b64 = std::get_if<std::string>(&key_sig.value->storage());
+                if (sig_b64 == nullptr)
+                {
+                    continue;
+                }
+                auto const signature_bytes = events::matrix_bytes_from_base64(*sig_b64);
+                if (signature_bytes.empty())
+                {
+                    continue;
+                }
+                for (auto const& pk_b64 : public_keys)
+                {
+                    auto const public_key_bytes = events::matrix_bytes_from_base64(pk_b64);
+                    if (public_key_bytes.size() != 32U) // Ed25519 public keys are 32 bytes
+                    {
+                        continue;
+                    }
+                    auto const verification =
+                        crypto::ed25519_verify(crypto::Ed25519PublicKey{public_key_bytes}, serialized.output,
+                                               crypto::Ed25519Signature{signature_bytes});
+                    if (verification.valid)
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
     }
 
     [[nodiscard]] auto room_version_number(std::string_view room_version) -> int
@@ -1127,8 +1266,30 @@ namespace
         auto const create_defines_room_id = policy->create_event_is_room_id;
         auto const omit_room_id = event_type == "m.room.create" && create_defines_room_id;
         auto const prev_events = previous_events_for_room(runtime.database.persistent_store, room_id);
-        auto const auth_events = auth_events_for_room(runtime.database.persistent_store, room_id, event_type,
-                                                      event_state_key.value_or(""), sender, create_defines_room_id);
+        auto auth_events = auth_events_for_room(runtime.database.persistent_store, room_id, event_type,
+                                                event_state_key.value_or(""), sender, create_defines_room_id);
+        // 3PID invite member events must list the matching m.room.third_party_invite
+        // event in auth_events. auth_events_for_room does not inspect content, so
+        // add it here when the client event carries a third_party_invite token.
+        if (event_type == "m.room.member")
+        {
+            auto const invite_token = third_party_invite_token(canonicaljson::Value{*input});
+            if (!invite_token.empty())
+            {
+                for (auto const& state : runtime.database.persistent_store.state)
+                {
+                    if (state.room_id == room_id && state.event_type == "m.room.third_party_invite" &&
+                        state.state_key == invite_token)
+                    {
+                        if (std::ranges::find(auth_events, state.event_id) == auth_events.end())
+                        {
+                            auth_events.push_back(state.event_id);
+                        }
+                        break;
+                    }
+                }
+            }
+        }
         auto const depth = next_depth_for_room(runtime.database.persistent_store, room_id);
         auto const now_ms = static_cast<std::int64_t>(
             std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
@@ -1485,25 +1646,68 @@ namespace
     return {true, outcome.response.body};
 }
 
-namespace
+[[nodiscard]] auto derive_ed25519_key_id(std::span<unsigned char const> public_key) -> std::string
 {
-    // Derives an "ed25519:<hex>" key_id from the first four bytes of a public key.
-    // Tying the id to the key material gives every generated key a unique id, so a
-    // stale federation notary cache for a previous id becomes irrelevant after a
-    // rotation. Shared by key generation and key rotation.
-    [[nodiscard]] auto derive_ed25519_key_id(std::span<unsigned char const> public_key) -> std::string
+    static constexpr auto hex_digits = std::string_view{"0123456789abcdef"};
+    auto key_version = std::string{};
+    key_version.reserve(8U);
+    for (auto i = 0U; i < 4U; ++i)
     {
-        static constexpr auto hex_digits = std::string_view{"0123456789abcdef"};
-        auto key_version = std::string{};
-        key_version.reserve(8U);
-        for (auto i = 0U; i < 4U; ++i)
-        {
-            key_version += hex_digits[(public_key[i] >> 4U) & 0x0fU];
-            key_version += hex_digits[public_key[i] & 0x0fU];
-        }
-        return "ed25519:" + key_version;
+        key_version += hex_digits[(public_key[i] >> 4U) & 0x0fU];
+        key_version += hex_digits[public_key[i] & 0x0fU];
     }
-} // namespace
+    return "ed25519:" + key_version;
+}
+
+// Decrypt a stored signing secret.  Returns nullopt if the value is encrypted
+// but cannot be decrypted (wrong master key / corrupted).  For legacy plaintext
+// rows, returns the decoded bytes directly.
+[[nodiscard]] auto decrypt_stored_signing_secret(HomeserverRuntime const& runtime, std::string_view stored)
+    -> std::optional<std::vector<std::uint8_t>>
+{
+    if (auto const ciphertext = decode_encrypted_secret_from_storage(stored); ciphertext.has_value())
+    {
+        auto const master_key_material =
+            crypto::load_master_key_material(runtime.config.security().secrets.master_key_file);
+        if (!master_key_material.has_value())
+        {
+            log_diagnostic(
+                "signing_key.decryption_failed",
+                {
+                    {"reason", "encrypted signing secret requires security.secrets.master_key_file", false}
+            });
+            return std::nullopt;
+        }
+        auto const key = crypto::derive_secret_box_key(master_key_material->bytes());
+        if (!key.has_value())
+        {
+            return std::nullopt;
+        }
+        auto const plaintext = crypto::secret_box_decrypt(*ciphertext, *key);
+        if (!plaintext.has_value())
+        {
+            log_diagnostic("signing_key.decryption_failed",
+                           {
+                               {"reason", "master key does not decrypt stored signing secret", false}
+            });
+            return std::nullopt;
+        }
+        return plaintext;
+    }
+
+    // Legacy plaintext base64 secret: decode and return as-is.  A diagnostic
+    // is emitted so operators can rotate to an encrypted secret.
+    auto const decoded = events::matrix_bytes_from_base64(stored);
+    if (!decoded.empty())
+    {
+        log_diagnostic(
+            "signing_key.legacy_plaintext",
+            {
+                {"reason", "signing secret is stored plaintext; rotate to enable at-rest encryption", false}
+        });
+    }
+    return std::vector<std::uint8_t>{decoded.begin(), decoded.end()};
+}
 
 [[nodiscard]] auto ensure_runtime_server_signing_key(HomeserverRuntime& runtime)
     -> std::optional<database::PersistentServerSigningKey>
@@ -1656,6 +1860,68 @@ namespace
     return key;
 }
 
+// Collect every currently-active signing-key record for this server. A key is
+// active when it is not the legacy "ed25519:auto" sentinel, has a non-empty
+// public key and secret, and its valid_until_ts is still in the future. The
+// returned vector is sorted by valid_until_ts descending so the preferred key
+// (the one used for new signatures) is always front().
+[[nodiscard]] auto collect_active_server_signing_keys(HomeserverRuntime const& runtime)
+    -> std::vector<database::PersistentServerSigningKey>
+{
+    auto const& server_name = runtime.config.server().server_name;
+    auto const& all_keys = runtime.database.persistent_store.server_signing_keys;
+
+    auto const now_ms = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+            .count());
+
+    auto active = std::vector<database::PersistentServerSigningKey>{};
+    for (auto const& candidate : all_keys)
+    {
+        if (candidate.server_name != server_name || candidate.key_id == "ed25519:auto" ||
+            candidate.secret_key.empty() || candidate.public_key.empty() || candidate.valid_until_ts <= now_ms)
+        {
+            continue;
+        }
+        active.push_back(candidate);
+    }
+    std::ranges::sort(active,
+                      [](database::PersistentServerSigningKey const& a, database::PersistentServerSigningKey const& b) {
+                          return a.valid_until_ts > b.valid_until_ts;
+                      });
+    return active;
+}
+
+// Load and decrypt every currently-active signing secret. The vector follows the
+// same order as collect_active_server_signing_keys (preferred key first) so the
+// multi-key provider and legacy single-secret callers agree on which key is
+// active. Secrets that fail decryption or have the wrong size are skipped.
+[[nodiscard]] auto active_server_signing_key_secrets(HomeserverRuntime& runtime)
+    -> std::vector<ActiveServerSigningKeySecret>
+{
+    auto const active_records = collect_active_server_signing_keys(runtime);
+    if (active_records.empty())
+    {
+        return {};
+    }
+
+    auto constexpr expected_secret_bytes = crypto::Ed25519Keypair{}.secret_key.size();
+    auto result = std::vector<ActiveServerSigningKeySecret>{};
+    result.reserve(active_records.size());
+    for (auto const& record : active_records)
+    {
+        auto raw_secret = decrypt_stored_signing_secret(runtime, record.secret_key);
+        if (!raw_secret.has_value() || raw_secret->size() != expected_secret_bytes)
+        {
+            continue;
+        }
+        auto secret = core::SecretBuffer{raw_secret->size()};
+        std::copy(raw_secret->begin(), raw_secret->end(), secret.bytes().begin());
+        result.push_back(ActiveServerSigningKeySecret{record.key_id, std::move(secret)});
+    }
+    return result;
+}
+
 [[nodiscard]] auto find_active_server_signing_key(HomeserverRuntime const& runtime)
     -> std::optional<database::PersistentServerSigningKey>
 {
@@ -1684,8 +1950,8 @@ namespace
 
 [[nodiscard]] auto publish_server_signing_keys(HomeserverRuntime& runtime) -> OperationResult
 {
-    auto key = ensure_runtime_server_signing_key(runtime);
-    if (!key.has_value())
+    auto preferred = ensure_runtime_server_signing_key(runtime);
+    if (!preferred.has_value())
     {
         return make_operation_result(false, {}, "server signing key unavailable", 500U);
     }
@@ -1704,21 +1970,39 @@ namespace
             .count());
     auto const rolling_valid_until_ts = now_ms + seven_days_ms;
 
-    auto verify_key = canonicaljson::Object{};
-    verify_key.push_back(canonicaljson::make_member("key", canonicaljson::Value{key->public_key}));
+    // Advertise every currently-active key in verify_keys. Multiple active keys are
+    // supported during rotation windows or when the operator has pre-staged keys.
+    auto active_keys = collect_active_server_signing_keys(runtime);
+    if (active_keys.empty())
+    {
+        return make_operation_result(false, {}, "no active server signing keys", 500U);
+    }
+
     auto verify_keys = canonicaljson::Object{};
-    verify_keys.push_back(canonicaljson::make_member(key->key_id, canonicaljson::Value{std::move(verify_key)}));
+    for (auto const& active : active_keys)
+    {
+        auto verify_key = canonicaljson::Object{};
+        verify_key.push_back(canonicaljson::make_member("key", canonicaljson::Value{active.public_key}));
+        verify_keys.push_back(canonicaljson::make_member(active.key_id, canonicaljson::Value{std::move(verify_key)}));
+    }
 
     // Build old_verify_keys from every stored signing key for this server that is not
-    // the currently active key. Per the Matrix spec each entry is:
+    // currently active. Per the Matrix spec each entry is:
     //   "<key_id>": { "expired_ts": <ms>, "key": "<base64 public key>" }
     // expired_ts is capped at now_ms so that superseded keys with a far-future
     // valid_until_ts (e.g. the legacy year-2999 sentinel) are never published with
     // a future expiry, which would cause peers to treat them as still valid.
+    auto active_ids = std::set<std::string>{};
+    for (auto const& active : active_keys)
+    {
+        active_ids.insert(active.key_id);
+    }
+
     auto old_verify_keys_obj = canonicaljson::Object{};
     for (auto const& old_key : runtime.database.persistent_store.server_signing_keys)
     {
-        if (old_key.server_name != key->server_name || old_key.key_id == key->key_id || old_key.public_key.empty())
+        if (old_key.server_name != preferred->server_name || active_ids.contains(old_key.key_id) ||
+            old_key.public_key.empty())
         {
             continue;
         }
@@ -1734,7 +2018,7 @@ namespace
     auto response = canonicaljson::Object{};
     response.push_back(
         canonicaljson::make_member("old_verify_keys", canonicaljson::Value{std::move(old_verify_keys_obj)}));
-    response.push_back(canonicaljson::make_member("server_name", canonicaljson::Value{key->server_name}));
+    response.push_back(canonicaljson::make_member("server_name", canonicaljson::Value{preferred->server_name}));
     response.push_back(canonicaljson::make_member(
         "valid_until_ts", canonicaljson::Value{static_cast<std::int64_t>(rolling_valid_until_ts)}));
     response.push_back(canonicaljson::make_member("verify_keys", canonicaljson::Value{std::move(verify_keys)}));
@@ -1745,7 +2029,8 @@ namespace
         return make_operation_result(false, {}, canonicaljson::canonical_json_error_name(payload.error), 500U);
     }
 
-    auto const sign_result = runtime.crypto_provider->sign(crypto::Ed25519SecretKeyHandle{key->key_id}, payload.output);
+    auto const sign_result =
+        runtime.crypto_provider->sign(crypto::Ed25519SecretKeyHandle{preferred->key_id}, payload.output);
     if (!sign_result.error.empty())
     {
         return make_operation_result(false, {}, "server key response signing failed: " + sign_result.error, 500U);
@@ -1753,10 +2038,10 @@ namespace
 
     auto server_signatures = canonicaljson::Object{};
     server_signatures.push_back(canonicaljson::make_member(
-        key->key_id, canonicaljson::Value{events::matrix_base64_from_bytes(sign_result.signature.bytes)}));
+        preferred->key_id, canonicaljson::Value{events::matrix_base64_from_bytes(sign_result.signature.bytes)}));
     auto signatures = canonicaljson::Object{};
     signatures.push_back(
-        canonicaljson::make_member(key->server_name, canonicaljson::Value{std::move(server_signatures)}));
+        canonicaljson::make_member(preferred->server_name, canonicaljson::Value{std::move(server_signatures)}));
     response.push_back(canonicaljson::make_member("signatures", canonicaljson::Value{std::move(signatures)}));
 
     auto signed_response = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(response)});
@@ -2725,7 +3010,8 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
 }
 
 [[nodiscard]] auto join_room(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id,
-                             std::vector<std::string> const& via_servers) -> OperationResult
+                             std::vector<std::string> const& via_servers,
+                             canonicaljson::Object const* third_party_signed) -> OperationResult
 {
     auto guard = std::unique_lock<std::recursive_mutex>{runtime.mutex};
     log_diagnostic("room.join.started", {
@@ -2796,6 +3082,17 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
     }
     if (room == nullptr)
     {
+        if (third_party_signed != nullptr)
+        {
+            log_diagnostic("room.join.rejected",
+                           {
+                               {"actor",   *user_id,                                           false},
+                               {"room_id", std::string{room_id},                               false},
+                               {"status",  "403",                                              false},
+                               {"reason",  "third-party join via federation is not supported", false}
+            });
+            return make_operation_result(false, {}, "third-party join via federation is not supported", 403U);
+        }
         // Remote room: attempt make_join → sign → send_join. The candidate resident
         // servers come from the join endpoint's via/server_name parameters, plus the
         // room ID's domain for room versions < 12 (v12 IDs are domain-less, MSC4291).
@@ -3544,6 +3841,59 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
     }
     if (!room_has_member(*room, *user_id))
     {
+        if (third_party_signed != nullptr)
+        {
+            if (!verify_third_party_signed(*third_party_signed, *user_id, runtime.database.persistent_store, room_id))
+            {
+                log_diagnostic("room.join.rejected", {
+                                                         {"actor",   *user_id,                                 false},
+                                                         {"room_id", std::string{room_id},                     false},
+                                                         {"status",  "403",                                    false},
+                                                         {"reason",  "third_party_signed verification failed", false}
+                });
+                return make_operation_result(false, {}, "third_party_signed verification failed", 403U);
+            }
+
+            auto const* inviter = string_member(*third_party_signed, "sender");
+            auto const inviter_id = inviter == nullptr ? std::string{} : std::string{*inviter};
+            auto const invite_event_json =
+                serialize_third_party_invite_member_event_json(*user_id, *third_party_signed);
+            if (!invite_event_json.has_value())
+            {
+                log_diagnostic("room.join.rejected",
+                               {
+                                   {"actor",   *user_id,                                        false},
+                                   {"room_id", std::string{room_id},                            false},
+                                   {"status",  "500",                                           false},
+                                   {"reason",  "third-party invite event serialization failed", false}
+                });
+                return make_operation_result(false, {}, "third-party invite event serialization failed", 500U);
+            }
+            auto const composed_invite = compose_signed_event(runtime, room_id, inviter_id, *invite_event_json);
+            if (!composed_invite.has_value())
+            {
+                log_diagnostic("room.join.rejected", {
+                                                         {"actor",   *user_id,                            false},
+                                                         {"room_id", std::string{room_id},                false},
+                                                         {"status",  "403",                               false},
+                                                         {"reason",  "third-party invite event rejected", false}
+                });
+                return make_operation_result(false, {}, "third-party invite event rejected", 403U);
+            }
+            if (!persist_composed_event(runtime, room_id, inviter_id, *composed_invite))
+            {
+                log_diagnostic("room.join.rejected",
+                               {
+                                   {"actor",   *user_id,                                      false},
+                                   {"room_id", std::string{room_id},                          false},
+                                   {"status",  "500",                                         false},
+                                   {"reason",  "third-party invite event persistence failed", false}
+                });
+                return make_operation_result(false, {}, "third-party invite event persistence failed", 500U);
+            }
+            room->events.push_back(composed_invite->json);
+        }
+
         auto const join_event_json = serialize_membership_event_json(*user_id, "join");
         if (!join_event_json.has_value())
         {
@@ -4051,6 +4401,84 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
     }
     append_local_audit(runtime.database, observability::AuditCategory::admin, "room.invited", *user_id, target_user_id,
                        std::string{room_id});
+    notify_room_changed(runtime, room_id);
+    return make_operation_result(true, std::string{room_id});
+}
+
+[[nodiscard]] auto invite_user_by_threepid(HomeserverRuntime& runtime, std::string_view access_token,
+                                           std::string_view room_id, std::string_view id_server,
+                                           std::string_view medium, std::string_view address) -> OperationResult
+{
+    std::ignore = id_server;
+
+    auto guard = std::unique_lock<std::recursive_mutex>{runtime.mutex};
+    auto const user_id = authenticated_user(runtime, access_token);
+    if (!user_id.has_value())
+    {
+        return make_operation_result(false, {}, "unauthenticated", 401U);
+    }
+    auto* room = find_room(runtime.database, room_id);
+    if (room == nullptr)
+    {
+        return make_operation_result(false, {}, "room not found", 404U);
+    }
+    if (!room_has_member(*room, *user_id))
+    {
+        return make_operation_result(false, {}, "user is not joined", 403U);
+    }
+
+    auto const token = crypto::secure_random_hex(32U);
+    if (!token.has_value())
+    {
+        return make_operation_result(false, {}, "token generation failed", 500U);
+    }
+
+    auto const keypair = crypto::generate_ed25519_keypair();
+    if (!keypair.has_value())
+    {
+        return make_operation_result(false, {}, "keypair generation failed", 500U);
+    }
+
+    auto const public_key_b64 = events::matrix_base64_from_bytes(
+        std::string_view{reinterpret_cast<char const*>(keypair->public_key.data()), keypair->public_key.size()});
+
+    auto const event_json = serialize_third_party_invite_event_json(*token, public_key_b64, address);
+    if (!event_json.has_value())
+    {
+        return make_operation_result(false, {}, "third-party invite event serialization failed", 500U);
+    }
+
+    auto const composed = compose_signed_event(runtime, room_id, *user_id, *event_json);
+    if (!composed.has_value())
+    {
+        return make_operation_result(false, {}, "third-party invite event rejected", 403U);
+    }
+    if (!persist_composed_event(runtime, room_id, *user_id, *composed))
+    {
+        return make_operation_result(false, {}, "third-party invite persistence failed", 500U);
+    }
+
+    if (auto* r = find_room(runtime.database, room_id); r != nullptr)
+    {
+        r->events.push_back(composed->json);
+    }
+
+    auto const sync_stream_id = database::allocate_sync_stream_id(runtime.database.persistent_store);
+    if (runtime.sync_notifier != nullptr)
+    {
+        runtime.sync_notifier->publish(runtime.database.next_stream_ordering - 1U, sync_stream_id);
+    }
+
+    append_local_audit(runtime.database, observability::AuditCategory::admin, "room.third_party_invited", *user_id,
+                       room_id, std::string{address});
+    log_diagnostic("room.third_party_invite.accepted",
+                   {
+                       {"actor",   *user_id,             false},
+                       {"room_id", std::string{room_id}, false},
+                       {"medium",  std::string{medium},  false},
+                       {"address", std::string{address}, false}
+    },
+                   observability::LogEventSeverity::info);
     notify_room_changed(runtime, room_id);
     return make_operation_result(true, std::string{room_id});
 }

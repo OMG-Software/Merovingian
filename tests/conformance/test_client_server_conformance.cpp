@@ -27,7 +27,9 @@
 #include "../federation_signing_test_support.hpp"
 #include "../support/json_test_support.hpp"
 #include "../support/registration_token.hpp"
+#include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/config/config.hpp"
+#include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/outbound_transaction.hpp"
 #include "merovingian/federation/runtime_federation.hpp"
@@ -38,6 +40,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <optional>
 #include <string>
@@ -137,6 +140,53 @@ using namespace merovingian::tests;
     REQUIRE(value != nullptr);
     REQUIRE(!value->empty());
     return *value;
+}
+
+// Serialises the content object for an m.room.third_party_invite state event.
+// The state_key is supplied separately in the PUT URL; the caller sends this
+// content to /rooms/{roomId}/state/m.room.third_party_invite/{stateKey}.
+[[nodiscard]] auto make_third_party_invite_content_json(std::string_view public_key_base64,
+                                                        std::string_view display_name) -> std::string
+{
+    return std::string{"{\"display_name\":\""} + std::string{display_name} + "\",\"public_key\":\"" +
+           std::string{public_key_base64} + "\",\"public_keys\":[{\"public_key\":\"" + std::string{public_key_base64} +
+           "\"}]}";
+}
+
+// Builds and signs the third_party_signed object expected by POST /rooms/{roomId}/join.
+// The signature covers the canonical JSON of mxid, sender and token only.
+[[nodiscard]] auto make_signed_third_party_object(std::string_view mxid, std::string_view sender,
+                                                  std::string_view token, std::string const& secret_key_bytes,
+                                                  std::string_view signature_origin)
+    -> merovingian::canonicaljson::Object
+{
+    using merovingian::canonicaljson::make_member;
+    using merovingian::canonicaljson::Object;
+    using merovingian::canonicaljson::Value;
+
+    auto base = Object{};
+    base.push_back(make_member("mxid", Value{std::string{mxid}}));
+    base.push_back(make_member("sender", Value{std::string{sender}}));
+    base.push_back(make_member("token", Value{std::string{token}}));
+
+    auto const payload = merovingian::canonicaljson::serialize_canonical(Value{Object{base}});
+    REQUIRE(payload.error == merovingian::canonicaljson::CanonicalJsonError::none);
+
+    auto signature = std::array<unsigned char, crypto_sign_BYTES>{};
+    crypto_sign_detached(signature.data(), nullptr, reinterpret_cast<unsigned char const*>(payload.output.data()),
+                         payload.output.size(), reinterpret_cast<unsigned char const*>(secret_key_bytes.data()));
+
+    auto const signature_b64 = merovingian::events::matrix_base64_from_bytes(
+        {reinterpret_cast<char const*>(signature.data()), signature.size()});
+
+    auto key_sigs = Object{};
+    key_sigs.push_back(make_member("ed25519:invite", Value{std::string{signature_b64}}));
+
+    auto server_sigs = Object{};
+    server_sigs.push_back(make_member(std::string{signature_origin}, Value{std::move(key_sigs)}));
+
+    base.push_back(make_member("signatures", Value{std::move(server_sigs)}));
+    return base;
 }
 
 // Bootstraps a server administrator (with the given localpart) and logs them
@@ -4804,10 +4854,15 @@ SCENARIO("GET /keys/changes returns 200 with changed and left arrays", "[conform
         REQUIRE(started.started);
         auto const token = logged_in_token(started.runtime);
 
-        WHEN("GET /keys/changes is called with from and to tokens")
+        WHEN("GET /keys/changes is called with valid from and to tokens")
         {
+            auto const sync = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v3/sync", token, {}});
+            REQUIRE(sync.response.status == 200U);
+            auto const token_str = sync_next_batch(sync.response.body);
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime, {"GET", "/_matrix/client/v3/keys/changes?from=s0&to=s99", token, {}});
+                started.runtime,
+                {"GET", "/_matrix/client/v3/keys/changes?from=" + token_str + "&to=" + token_str, token, {}});
 
             THEN("the server returns 200 with changed and left as arrays")
             {
@@ -4820,6 +4875,77 @@ SCENARIO("GET /keys/changes returns 200 with changed and left arrays", "[conform
                 REQUIRE(changed != nullptr);
                 auto const* left = object_member_as_array(body, "left");
                 REQUIRE(left != nullptr);
+            }
+        }
+    }
+}
+
+SCENARIO("GET /keys/changes rejects requests with missing or invalid query parameters",
+         "[conformance][client-server][e2ee][keys][error]")
+{
+    GIVEN("a running client-server and a logged-in user")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+
+        WHEN("GET /keys/changes is called without a from parameter")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v3/keys/changes?to=s1_1_1", token, {}});
+
+            THEN("the server returns 400 M_MISSING_PARAM")
+            {
+                REQUIRE(response.response.status == 400U);
+                auto const body = parse_object(response.response.body);
+                auto const* errcode = string_member(body, "errcode");
+                REQUIRE(errcode != nullptr);
+                REQUIRE(*errcode == "M_MISSING_PARAM");
+            }
+        }
+
+        WHEN("GET /keys/changes is called without a to parameter")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v3/keys/changes?from=s1_1_1", token, {}});
+
+            THEN("the server returns 400 M_MISSING_PARAM")
+            {
+                REQUIRE(response.response.status == 400U);
+                auto const body = parse_object(response.response.body);
+                auto const* errcode = string_member(body, "errcode");
+                REQUIRE(errcode != nullptr);
+                REQUIRE(*errcode == "M_MISSING_PARAM");
+            }
+        }
+
+        WHEN("GET /keys/changes is called with a malformed from token")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v3/keys/changes?from=notatoken&to=s1_1_1", token, {}});
+
+            THEN("the server returns 400 M_INVALID_PARAM")
+            {
+                REQUIRE(response.response.status == 400U);
+                auto const body = parse_object(response.response.body);
+                auto const* errcode = string_member(body, "errcode");
+                REQUIRE(errcode != nullptr);
+                REQUIRE(*errcode == "M_INVALID_PARAM");
+            }
+        }
+
+        WHEN("GET /keys/changes is called with a malformed to token")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v3/keys/changes?from=s1_1_1&to=notatoken", token, {}});
+
+            THEN("the server returns 400 M_INVALID_PARAM")
+            {
+                REQUIRE(response.response.status == 400U);
+                auto const body = parse_object(response.response.body);
+                auto const* errcode = string_member(body, "errcode");
+                REQUIRE(errcode != nullptr);
+                REQUIRE(*errcode == "M_INVALID_PARAM");
             }
         }
     }
@@ -4867,9 +4993,13 @@ SCENARIO("GET /keys/changes reflects device-key uploads made after the from toke
             {
                 // Spec: any user who uploaded keys after `from` must appear in `changed`.
                 // Element uses this to know which users' key caches need refreshing.
+                auto const to_sync = merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"GET", "/_matrix/client/v3/sync", alice, {}});
+                REQUIRE(to_sync.response.status == 200U);
+                auto const to_token = sync_next_batch(to_sync.response.body);
                 auto const changes = merovingian::homeserver::handle_client_server_request(
                     started.runtime,
-                    {"GET", "/_matrix/client/v3/keys/changes?from=" + from_token + "&to=s999", alice, {}});
+                    {"GET", "/_matrix/client/v3/keys/changes?from=" + from_token + "&to=" + to_token, alice, {}});
                 REQUIRE(changes.response.status == 200U);
                 auto const cbody = parse_object(changes.response.body);
                 auto const* changed_arr = object_member_as_array(cbody, "changed");
@@ -4925,9 +5055,13 @@ SCENARIO("GET /keys/changes reports users as changed when they newly start shari
             {
                 REQUIRE(join.response.status == 200U);
 
+                auto const alice_to_sync = merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"GET", "/_matrix/client/v3/sync", alice, {}});
+                REQUIRE(alice_to_sync.response.status == 200U);
+                auto const alice_to = sync_next_batch(alice_to_sync.response.body);
                 auto const alice_changes = merovingian::homeserver::handle_client_server_request(
                     started.runtime,
-                    {"GET", "/_matrix/client/v3/keys/changes?from=" + alice_from + "&to=s999", alice, {}});
+                    {"GET", "/_matrix/client/v3/keys/changes?from=" + alice_from + "&to=" + alice_to, alice, {}});
                 REQUIRE(alice_changes.response.status == 200U);
                 auto const alice_body = parse_object(alice_changes.response.body);
                 auto const* alice_changed = object_member_as_array(alice_body, "changed");
@@ -4937,8 +5071,13 @@ SCENARIO("GET /keys/changes reports users as changed when they newly start shari
                     return user_id != nullptr && *user_id == "@bob:example.org";
                 }));
 
+                auto const bob_to_sync = merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"GET", "/_matrix/client/v3/sync", bob, {}});
+                REQUIRE(bob_to_sync.response.status == 200U);
+                auto const bob_to = sync_next_batch(bob_to_sync.response.body);
                 auto const bob_changes = merovingian::homeserver::handle_client_server_request(
-                    started.runtime, {"GET", "/_matrix/client/v3/keys/changes?from=" + bob_from + "&to=s999", bob, {}});
+                    started.runtime,
+                    {"GET", "/_matrix/client/v3/keys/changes?from=" + bob_from + "&to=" + bob_to, bob, {}});
                 REQUIRE(bob_changes.response.status == 200U);
                 auto const bob_body = parse_object(bob_changes.response.body);
                 auto const* bob_changed = object_member_as_array(bob_body, "changed");
@@ -4978,9 +5117,13 @@ SCENARIO("GET /keys/changes reports left when users stop sharing any room", "[co
             THEN("alice sees bob in left")
             {
                 REQUIRE(leave.response.status == 200U);
+                auto const to_sync = merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"GET", "/_matrix/client/v3/sync", alice, {}});
+                REQUIRE(to_sync.response.status == 200U);
+                auto const to_token = sync_next_batch(to_sync.response.body);
                 auto const changes = merovingian::homeserver::handle_client_server_request(
                     started.runtime,
-                    {"GET", "/_matrix/client/v3/keys/changes?from=" + from_token + "&to=s999", alice, {}});
+                    {"GET", "/_matrix/client/v3/keys/changes?from=" + from_token + "&to=" + to_token, alice, {}});
                 REQUIRE(changes.response.status == 200U);
                 auto const body = parse_object(changes.response.body);
                 auto const* left = object_member_as_array(body, "left");
@@ -5027,9 +5170,13 @@ SCENARIO("GET /keys/changes does not report left while another shared room still
             THEN("alice does not see bob in left because they still share room two")
             {
                 REQUIRE(leave.response.status == 200U);
+                auto const to_sync = merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"GET", "/_matrix/client/v3/sync", alice, {}});
+                REQUIRE(to_sync.response.status == 200U);
+                auto const to_token = sync_next_batch(to_sync.response.body);
                 auto const changes = merovingian::homeserver::handle_client_server_request(
                     started.runtime,
-                    {"GET", "/_matrix/client/v3/keys/changes?from=" + from_token + "&to=s999", alice, {}});
+                    {"GET", "/_matrix/client/v3/keys/changes?from=" + from_token + "&to=" + to_token, alice, {}});
                 REQUIRE(changes.response.status == 200U);
                 auto const body = parse_object(changes.response.body);
                 auto const* left = object_member_as_array(body, "left");
@@ -5037,6 +5184,72 @@ SCENARIO("GET /keys/changes does not report left while another shared room still
                 REQUIRE_FALSE(std::ranges::any_of(*left, [](merovingian::canonicaljson::Value const& value) {
                     auto const* user_id = std::get_if<std::string>(&value.storage());
                     return user_id != nullptr && *user_id == "@bob:example.org";
+                }));
+            }
+        }
+    }
+}
+
+SCENARIO("GET /keys/changes excludes changes that occur after the to token", "[conformance][client-server][e2ee][keys]")
+{
+    GIVEN("three users sharing a room and a from token captured before any key uploads")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const alice = logged_in_token(started.runtime);
+        auto const bob = register_and_login(started.runtime, "bob");
+        auto const charlie = register_and_login(started.runtime, "charlie");
+
+        auto const room_id = create_public_room(started.runtime, alice);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/join", bob, "{}"})
+                    .response.status == 200U);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/join", charlie, "{}"})
+                    .response.status == 200U);
+
+        auto const before = merovingian::homeserver::handle_client_server_request(
+            started.runtime, {"GET", "/_matrix/client/v3/sync", alice, {}});
+        REQUIRE(before.response.status == 200U);
+        auto const from_token = sync_next_batch(before.response.body);
+
+        WHEN("bob uploads keys before the to token and charlie uploads keys after it")
+        {
+            REQUIRE(
+                merovingian::homeserver::handle_client_server_request(
+                    started.runtime,
+                    {"POST", "/_matrix/client/v3/keys/upload", bob,
+                     R"({"device_keys":{"user_id":"@bob:example.org","device_id":"bob_DEV","algorithms":["m.olm.v1.curve25519-aes-sha2","m.megolm.v1.aes-sha2"],"keys":{"curve25519:bob_DEV":"BOBKEY","ed25519:bob_DEV":"BOB_ED"},"signatures":{}}})"})
+                    .response.status == 200U);
+
+            auto const to_sync = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v3/sync", alice, {}});
+            REQUIRE(to_sync.response.status == 200U);
+            auto const to_token = sync_next_batch(to_sync.response.body);
+
+            REQUIRE(
+                merovingian::homeserver::handle_client_server_request(
+                    started.runtime,
+                    {"POST", "/_matrix/client/v3/keys/upload", charlie,
+                     R"({"device_keys":{"user_id":"@charlie:example.org","device_id":"charlie_DEV","algorithms":["m.olm.v1.curve25519-aes-sha2","m.megolm.v1.aes-sha2"],"keys":{"curve25519:charlie_DEV":"CHARKEY","ed25519:charlie_DEV":"CHAR_ED"},"signatures":{}}})"})
+                    .response.status == 200U);
+
+            THEN("alice sees bob but not charlie in changed")
+            {
+                auto const changes = merovingian::homeserver::handle_client_server_request(
+                    started.runtime,
+                    {"GET", "/_matrix/client/v3/keys/changes?from=" + from_token + "&to=" + to_token, alice, {}});
+                REQUIRE(changes.response.status == 200U);
+                auto const body = parse_object(changes.response.body);
+                auto const* changed = object_member_as_array(body, "changed");
+                REQUIRE(changed != nullptr);
+                REQUIRE(std::ranges::any_of(*changed, [](merovingian::canonicaljson::Value const& value) {
+                    auto const* user_id = std::get_if<std::string>(&value.storage());
+                    return user_id != nullptr && *user_id == "@bob:example.org";
+                }));
+                REQUIRE_FALSE(std::ranges::any_of(*changed, [](merovingian::canonicaljson::Value const& value) {
+                    auto const* user_id = std::get_if<std::string>(&value.storage());
+                    return user_id != nullptr && *user_id == "@charlie:example.org";
                 }));
             }
         }
@@ -5085,8 +5298,13 @@ SCENARIO("Encrypted invite join completes the local query claim sendToDevice boo
             auto const join = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"POST", "/_matrix/client/v3/rooms/" + *room_id + "/join", bob, "{}"});
 
+            auto const alice_to_sync = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v3/sync", alice, {}});
+            REQUIRE(alice_to_sync.response.status == 200U);
+            auto const alice_to = sync_next_batch(alice_to_sync.response.body);
             auto const alice_changes = merovingian::homeserver::handle_client_server_request(
-                started.runtime, {"GET", "/_matrix/client/v3/keys/changes?from=" + alice_from + "&to=s999", alice, {}});
+                started.runtime,
+                {"GET", "/_matrix/client/v3/keys/changes?from=" + alice_from + "&to=" + alice_to, alice, {}});
             auto const query = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"POST", "/_matrix/client/v3/keys/query", alice,
                                   R"({"device_keys":{"@bob:example.org":["bob_DEV"]}})"});
@@ -6740,6 +6958,36 @@ SCENARIO("GET /v1/media/thumbnail/{serverName}/{mediaId} returns 404 for missing
     }
 }
 
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixmediav3thumbnailservernamemediaid
+// A remote thumbnail request must never be answered with the full-size original
+// media bytes. When federation infrastructure is unavailable the server returns
+// an error (502/404) instead of proxying the original file.
+SCENARIO("GET /media/v3/thumbnail/{serverName}/{mediaId} for remote media does not serve the full-size original",
+         "[conformance][client-server][media]")
+{
+    GIVEN("a running client-server, a logged-in user, and a remote server name in the thumbnail path")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+
+        WHEN("GET /media/v3/thumbnail/remote.example.org/abc is called without federation outbound client")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET",
+                                  "/_matrix/media/v3/thumbnail/remote.example.org/abc?width=32&height=32&method=scale",
+                                  token,
+                                  {}});
+
+            THEN("the response is an error, never 200 with full-size original bytes")
+            {
+                REQUIRE(response.response.status != 200U);
+                REQUIRE((response.response.status == 404U || response.response.status == 502U));
+            }
+        }
+    }
+}
+
 // =============================================================================
 // APPLICATION SERVICE ROOM DIRECTORY MANAGEMENT
 // =============================================================================
@@ -6896,6 +7144,50 @@ SCENARIO("POST /createRoom with public_chat preset does not produce an encrypted
                     started.runtime,
                     {"GET", "/_matrix/client/v3/rooms/" + *rid + "/state/m.room.encryption/", token, {}});
                 REQUIRE(enc.response.status != 200U);
+            }
+        }
+    }
+}
+
+// Spec: Matrix v1.19 — Room Versions
+// URL: ../../docs/matrix-v1.19-spec/rooms/index.md
+//
+// A server MUST support all stable room versions v1 through v12. This scenario
+// exercises the runtime path: POST /createRoom with an explicit room_version,
+// followed by GET /rooms/{roomId}/state/m.room.create/ to verify the create
+// event records the requested version.
+SCENARIO("POST /createRoom accepts every stable room version v1 through v12",
+         "[conformance][client-server][rooms][room-versions]")
+{
+    GIVEN("a running client-server and a logged-in user")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+
+        for (auto const* version : {"1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"})
+        {
+            WHEN("POST /createRoom requests room version " + std::string{version})
+            {
+                auto const request_body = std::string{"{\"room_version\":\""} + version + "\"}";
+                auto const create = merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"POST", "/_matrix/client/v3/createRoom", token, request_body});
+                REQUIRE(create.response.status == 200U);
+                auto const create_body = parse_object(create.response.body);
+                auto const* rid = string_member(create_body, "room_id");
+                REQUIRE(rid != nullptr);
+
+                THEN("GET /rooms/{roomId}/state/m.room.create/ returns the requested version")
+                {
+                    auto const state = merovingian::homeserver::handle_client_server_request(
+                        started.runtime,
+                        {"GET", "/_matrix/client/v3/rooms/" + *rid + "/state/m.room.create/", token, {}});
+                    REQUIRE(state.response.status == 200U);
+                    auto const state_body = parse_object(state.response.body);
+                    auto const* room_version = string_member(state_body, "room_version");
+                    REQUIRE(room_version != nullptr);
+                    REQUIRE(*room_version == version);
+                }
             }
         }
     }
@@ -8108,6 +8400,173 @@ SCENARIO("POST /rooms/{roomId}/invite for a remote user returns 200 and persists
                     });
                 REQUIRE(invite_json != store.events.end());
                 REQUIRE_FALSE(invite_json->json.empty());
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.19
+// Endpoint: POST /_matrix/client/v3/rooms/{roomId}/invite
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3roomsroomidinvite
+//
+// MUST accept a 3PID invite body with id_server, medium, and address, and
+// persist a signed m.room.third_party_invite state event whose state_key is
+// the opaque invite token.
+SCENARIO("POST /rooms/{roomId}/invite with id_server/medium/address creates a third-party invite",
+         "[conformance][client-server][room-membership][3pid]")
+{
+    GIVEN("a room owned by alice on the local server")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const alice = logged_in_token(started.runtime);
+        auto const room_id = create_room(started.runtime, alice);
+
+        WHEN("alice invites a third-party email address")
+        {
+            auto const invite = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/invite", alice,
+                                  R"({"id_server":"example.org","medium":"email","address":"bob@example.org"})"});
+
+            THEN("the server returns 200 with an empty body")
+            {
+                REQUIRE(invite.response.status == 200U);
+                auto const body = parse_object(invite.response.body);
+                REQUIRE(body.empty());
+            }
+
+            THEN("an m.room.third_party_invite state event is persisted with a token state_key")
+            {
+                auto const& store = started.runtime.homeserver.database.persistent_store;
+                auto const tpi_state =
+                    std::ranges::find_if(store.state, [&room_id](merovingian::database::PersistentStateEvent const& s) {
+                        return s.room_id == room_id && s.event_type == "m.room.third_party_invite";
+                    });
+                REQUIRE(tpi_state != store.state.end());
+                REQUIRE_FALSE(tpi_state->state_key.empty());
+
+                auto const event = std::ranges::find_if(
+                    store.events, [&event_id = tpi_state->event_id](merovingian::database::PersistentEvent const& e) {
+                        return e.event_id == event_id;
+                    });
+                REQUIRE(event != store.events.end());
+
+                auto const body = parse_object(event->json);
+                auto const* content = object_member_as_object(body, "content");
+                REQUIRE(content != nullptr);
+                auto const* public_key = string_member(*content, "public_key");
+                REQUIRE(public_key != nullptr);
+                REQUIRE_FALSE(public_key->empty());
+                auto const* public_keys = object_member_as_array(*content, "public_keys");
+                REQUIRE(public_keys != nullptr);
+                REQUIRE_FALSE(public_keys->empty());
+            }
+        }
+    }
+}
+
+// --- POST /_matrix/client/v3/rooms/{roomId}/join (third_party_signed) ---------
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3roomsroomidmembership
+// Spec MUST: a join request with a valid third_party_signed object from the
+// matching m.room.third_party_invite event must succeed.
+SCENARIO("POST /rooms/{roomId}/join accepts a valid third_party_signed join",
+         "[conformance][client-server][room-membership][3pid]")
+{
+    GIVEN("a room owned by alice with a manually-created m.room.third_party_invite for bob")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const alice = logged_in_token(started.runtime);
+        auto const room_id = create_room(started.runtime, alice);
+
+        auto const keypair = merovingian::crypto::generate_ed25519_keypair();
+        REQUIRE(keypair.has_value());
+        auto const secret_key =
+            std::string{reinterpret_cast<char const*>(keypair->secret_key.data()), keypair->secret_key.size()};
+        auto const public_key_b64 = merovingian::events::matrix_base64_from_bytes(
+            {reinterpret_cast<char const*>(keypair->public_key.data()), keypair->public_key.size()});
+
+        auto constexpr invite_token = "opaque_invite_token";
+        auto const invite_content_json = make_third_party_invite_content_json(public_key_b64, "bob@example.org");
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    started.runtime,
+                    {"PUT", "/_matrix/client/v3/rooms/" + room_id + "/state/m.room.third_party_invite/" + invite_token,
+                     alice, invite_content_json})
+                    .response.status == 200U);
+
+        auto const bob = register_and_login(started.runtime, "bob");
+
+        auto const signed_obj = make_signed_third_party_object("@bob:example.org", "@alice:example.org", invite_token,
+                                                               secret_key, "example.org");
+        auto const signed_json = merovingian::canonicaljson::serialize_canonical(
+            merovingian::canonicaljson::Value{merovingian::canonicaljson::Object{signed_obj}});
+        REQUIRE(signed_json.error == merovingian::canonicaljson::CanonicalJsonError::none);
+        auto const join_body = std::string{"{\"third_party_signed\":"} + signed_json.output + "}";
+
+        WHEN("bob POSTs /rooms/{roomId}/join with the third_party_signed object")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/join", bob, join_body});
+
+            THEN("the server returns 200 with a room_id field")
+            {
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+                auto const* rid = string_member(body, "room_id");
+                REQUIRE(rid != nullptr);
+                REQUIRE(*rid == room_id);
+            }
+        }
+    }
+}
+
+SCENARIO("POST /rooms/{roomId}/join rejects a forged third_party_signed signature",
+         "[conformance][client-server][room-membership][3pid]")
+{
+    GIVEN("a room owned by alice with a manually-created m.room.third_party_invite for bob")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const alice = logged_in_token(started.runtime);
+        auto const room_id = create_room(started.runtime, alice);
+
+        auto const keypair = merovingian::crypto::generate_ed25519_keypair();
+        REQUIRE(keypair.has_value());
+        auto const public_key_b64 = merovingian::events::matrix_base64_from_bytes(
+            {reinterpret_cast<char const*>(keypair->public_key.data()), keypair->public_key.size()});
+
+        auto constexpr invite_token = "opaque_invite_token";
+        auto const invite_content_json = make_third_party_invite_content_json(public_key_b64, "bob@example.org");
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    started.runtime,
+                    {"PUT", "/_matrix/client/v3/rooms/" + room_id + "/state/m.room.third_party_invite/" + invite_token,
+                     alice, invite_content_json})
+                    .response.status == 200U);
+
+        auto const bob = register_and_login(started.runtime, "bob");
+
+        auto const forged_keypair = merovingian::crypto::generate_ed25519_keypair();
+        REQUIRE(forged_keypair.has_value());
+        auto const forged_secret = std::string{reinterpret_cast<char const*>(forged_keypair->secret_key.data()),
+                                               forged_keypair->secret_key.size()};
+        auto const forged_signed_obj = make_signed_third_party_object("@bob:example.org", "@alice:example.org",
+                                                                      invite_token, forged_secret, "example.org");
+        auto const signed_json = merovingian::canonicaljson::serialize_canonical(
+            merovingian::canonicaljson::Value{merovingian::canonicaljson::Object{forged_signed_obj}});
+        REQUIRE(signed_json.error == merovingian::canonicaljson::CanonicalJsonError::none);
+        auto const join_body = std::string{"{\"third_party_signed\":"} + signed_json.output + "}";
+
+        WHEN("bob POSTs /rooms/{roomId}/join with a signature from an unknown key")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/join", bob, join_body});
+
+            THEN("the server rejects the join with 403")
+            {
+                REQUIRE(response.response.status == 403U);
+                auto const body = parse_object(response.response.body);
+                REQUIRE(string_member(body, "errcode") != nullptr);
+                REQUIRE(string_member(body, "error") != nullptr);
             }
         }
     }
@@ -11697,13 +12156,14 @@ SCENARIO("POST /keys/upload followed by POST /keys/claim returns a one-time key"
                  R"({"one_time_keys":{"curve25519:AAAAA":"otk_payload_1","curve25519:BBBBB":"otk_payload_2"}})"});
             REQUIRE(upload.response.status == 200U);
             // Verify OTK count is reflected immediately.
-            // Server aggregates all OTK types under signed_curve25519 in the count response.
+            // The uploaded key IDs are "curve25519:<id>"; the response MUST
+            // report counts grouped by that algorithm (spec §12.1 /keys/upload).
             auto const up_body = parse_object(upload.response.body);
             auto const* counts = object_member_as_object(up_body, "one_time_key_counts");
             REQUIRE(counts != nullptr);
-            auto const* sc_count = int_member(*counts, "signed_curve25519");
-            REQUIRE(sc_count != nullptr);
-            REQUIRE(*sc_count >= 1);
+            auto const* curve_count = int_member(*counts, "curve25519");
+            REQUIRE(curve_count != nullptr);
+            REQUIRE(*curve_count == 2);
 
             auto const claim = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"POST", "/_matrix/client/v3/keys/claim", alice,

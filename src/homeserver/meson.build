@@ -10,6 +10,7 @@ homeserver_sources = files(
   'media_service.cpp',
   'room_service.cpp',
   'runtime.cpp',
+  'runtime_signing_key_store.cpp',
   'space_hierarchy.cpp',
   'tls.cpp',
   'worker_env.cpp',

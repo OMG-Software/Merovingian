@@ -374,8 +374,14 @@ SCENARIO("Integrated Matrix v1.19 interop flow covers login join key exchange me
                 return type != nullptr && *type == "m.room.encryption";
             }));
 
+            auto const alice_join_to_sync = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/sync", alice, {}});
+            REQUIRE(alice_join_to_sync.response.status == 200U);
+            auto const alice_join_to = sync_next_batch(alice_join_to_sync.response.body);
+
             auto const changes = merovingian::homeserver::handle_client_server_request(
-                runtime, {"GET", "/_matrix/client/v3/keys/changes?from=" + alice_from + "&to=s999", alice, {}});
+                runtime,
+                {"GET", "/_matrix/client/v3/keys/changes?from=" + alice_from + "&to=" + alice_join_to, alice, {}});
             REQUIRE(changes.response.status == 200U);
             auto const changes_body = parse_object(changes.response.body);
             auto const* changed = object_member_as_array(changes_body, "changed");
@@ -633,9 +639,16 @@ SCENARIO("Integrated Matrix v1.19 interop flow works with registration-issued se
                        *type == "m.room.member" && *state_key == bob.user_id && *membership == "join";
             }));
 
+            auto const alice_join_to_sync = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/sync", alice.access_token, {}});
+            REQUIRE(alice_join_to_sync.response.status == 200U);
+            auto const alice_join_to = sync_next_batch(alice_join_to_sync.response.body);
+
             auto const changes = merovingian::homeserver::handle_client_server_request(
-                runtime,
-                {"GET", "/_matrix/client/v3/keys/changes?from=" + alice_from + "&to=s999", alice.access_token, {}});
+                runtime, {"GET",
+                          "/_matrix/client/v3/keys/changes?from=" + alice_from + "&to=" + alice_join_to,
+                          alice.access_token,
+                          {}});
             REQUIRE(changes.response.status == 200U);
             REQUIRE(changes.response.body.find(bob.user_id) != std::string::npos);
 

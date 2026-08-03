@@ -23,6 +23,7 @@
 #include "merovingian/homeserver/media_service.hpp"
 #include "merovingian/homeserver/room_service.hpp"
 #include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/homeserver/runtime_signing_key_store.hpp"
 #include "merovingian/homeserver/space_hierarchy.hpp"
 #include "merovingian/media/repository.hpp"
 #include "merovingian/observability/logger.hpp"
@@ -161,35 +162,6 @@ namespace
     {
         return response(result.status, result.ok ? result.value : result.reason);
     }
-
-    class RuntimeSigningKeyStore final : public crypto::SigningKeyStore
-    {
-    public:
-        RuntimeSigningKeyStore(std::string server_name, database::PersistentServerSigningKey key)
-            : server_name_{std::move(server_name)}
-            , key_{std::move(key)}
-        {
-        }
-
-        [[nodiscard]] auto active_key_for_server(std::string_view server_name)
-            -> crypto::SigningKeyLookupResult override
-        {
-            if (server_name != server_name_)
-            {
-                return {{}, "signing key not found"};
-            }
-            auto public_key = events::matrix_bytes_from_base64(key_.public_key);
-            return {
-                crypto::SigningKeyRecord{server_name_, key_.key_id, crypto::Ed25519PublicKey{std::move(public_key)},
-                                         true},
-                {}
-            };
-        }
-
-    private:
-        std::string server_name_{};
-        database::PersistentServerSigningKey key_{};
-    };
 
     [[nodiscard]] auto starts_with(std::string_view value, std::string_view prefix) noexcept -> bool
     {
@@ -2208,13 +2180,46 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
     {
         auto const room_id = core::percent_decode_path_component(suffix.substr(0U, suffix.size() - join_suffix.size()));
         auto const via_servers = parse_join_via_servers(request_query);
+        // Keep a copy of the parsed third_party_signed object alive while
+        // join_room uses it. The lambda below only returns a pointer into this
+        // local storage, so the optional must outlive the join call.
+        auto parsed_signed = std::optional<canonicaljson::Object>{};
+        auto const* third_party_signed = [&]() -> canonicaljson::Object const* {
+            if (request.body.empty())
+            {
+                return nullptr;
+            }
+            auto const parsed = canonicaljson::parse_lossless(request.body);
+            if (parsed.error != canonicaljson::ParseError::none)
+            {
+                return nullptr;
+            }
+            auto const* obj = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+            if (obj == nullptr)
+            {
+                return nullptr;
+            }
+            auto const* tps = object_member(*obj, "third_party_signed");
+            if (tps == nullptr)
+            {
+                return nullptr;
+            }
+            auto const* signed_obj = std::get_if<canonicaljson::Object>(&tps->storage());
+            if (signed_obj == nullptr)
+            {
+                return nullptr;
+            }
+            parsed_signed = *signed_obj;
+            return &*parsed_signed;
+        }();
         log_diagnostic("room.join.dispatch",
                        {
-                           {"room_id",   room_id,                            false},
-                           {"via_count", std::to_string(via_servers.size()), false}
+                           {"room_id",            room_id,                                          false},
+                           {"via_count",          std::to_string(via_servers.size()),               false},
+                           {"third_party_signed", third_party_signed == nullptr ? "false" : "true", false}
         });
         guard.unlock();
-        auto result = join_room(runtime, request.access_token, room_id, via_servers);
+        auto result = join_room(runtime, request.access_token, room_id, via_servers, third_party_signed);
         log_diagnostic(result.ok ? "room.join.accepted" : "room.join.rejected",
                        {
                            {"room_id", room_id,                                                    false},

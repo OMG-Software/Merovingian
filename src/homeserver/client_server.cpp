@@ -1444,6 +1444,9 @@ namespace
     {
         std::string user_id{};
         std::string reason{};
+        std::optional<std::string> id_server{};
+        std::optional<std::string> medium{};
+        std::optional<std::string> address{};
     };
 
     [[nodiscard]] auto parse_membership_action_body(std::string_view body) -> std::optional<MembershipActionBody>
@@ -1453,13 +1456,43 @@ namespace
         {
             return std::nullopt;
         }
+
         auto const* user_id = string_member(*object, "user_id");
-        if (user_id == nullptr || user_id->empty())
+        auto const* id_server = string_member(*object, "id_server");
+        auto const* medium = string_member(*object, "medium");
+        auto const* address = string_member(*object, "address");
+        auto const* reason = string_member(*object, "reason");
+
+        auto body_out = MembershipActionBody{};
+        body_out.reason = reason == nullptr ? std::string{} : *reason;
+        if (user_id != nullptr && !user_id->empty())
+        {
+            body_out.user_id = *user_id;
+        }
+        if (id_server != nullptr && !id_server->empty())
+        {
+            body_out.id_server = *id_server;
+        }
+        if (medium != nullptr && !medium->empty())
+        {
+            body_out.medium = *medium;
+        }
+        if (address != nullptr && !address->empty())
+        {
+            body_out.address = *address;
+        }
+
+        // The two documented request shapes are mutually exclusive: either a
+        // Matrix user_id or a third-party identifier triple. Reject bodies
+        // that contain neither or an incomplete triple.
+        auto const has_user_id = !body_out.user_id.empty();
+        auto const has_threepid =
+            body_out.id_server.has_value() && body_out.medium.has_value() && body_out.address.has_value();
+        if (!has_user_id && !has_threepid)
         {
             return std::nullopt;
         }
-        auto const* reason = string_member(*object, "reason");
-        return MembershipActionBody{*user_id, reason == nullptr ? std::string{} : *reason};
+        return body_out;
     }
 
     [[nodiscard]] auto object_member_object(canonicaljson::Object const& object, std::string_view key) noexcept
@@ -2704,6 +2737,67 @@ namespace
             }));
     }
 
+    [[nodiscard]] auto invited_member_count(database::PersistentStore const& store, std::string_view room_id)
+        -> std::size_t
+    {
+        return static_cast<std::size_t>(
+            std::ranges::count_if(store.memberships, [&](database::PersistentMembership const& membership) {
+                return membership.room_id == room_id && membership.membership == "invite";
+            }));
+    }
+
+    // Spec: GET /_matrix/client/v3/sync §JoinedRoom summary
+    // ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3sync
+    //
+    // m.heroes is a list of users (excluding the caller) used by clients to
+    // generate a fallback room name. Up to 5 heroes are returned; order is
+    // deterministic (LocalRoom iteration order, then persistent membership
+    // order) so tests can assert exact contents.
+    [[nodiscard]] auto room_heroes(ClientServerRuntime const& rt, std::string_view room_id, std::string_view user)
+        -> canonicaljson::Array
+    {
+        auto heroes = canonicaljson::Array{};
+        auto const add = [&](std::string_view member_id) {
+            if (member_id != user && heroes.size() < 5U)
+            {
+                heroes.push_back(json_str(member_id));
+            }
+        };
+
+        auto const room = std::ranges::find_if(rt.homeserver.database.rooms, [&](LocalRoom const& current) {
+            return current.room_id == room_id;
+        });
+        if (room != rt.homeserver.database.rooms.end())
+        {
+            for (auto const& member : room->members)
+            {
+                add(member);
+            }
+        }
+        else
+        {
+            for (auto const& membership : rt.homeserver.database.persistent_store.memberships)
+            {
+                if (membership.room_id == room_id && membership.membership == "join")
+                {
+                    add(membership.user_id);
+                }
+            }
+        }
+        return heroes;
+    }
+
+    [[nodiscard]] auto room_summary_object(ClientServerRuntime const& rt, database::PersistentStore const& store,
+                                           std::string_view room_id, std::string_view user) -> canonicaljson::Value
+    {
+        return json_obj({
+            json_member("m.joined_member_count", json_int(static_cast<std::int64_t>(joined_member_count(rt, room_id)))),
+            json_member("m.invited_member_count",
+                        json_int(static_cast<std::int64_t>(invited_member_count(store, room_id)))),
+            json_member("m.heroes", json_arr(room_heroes(rt, room_id, user))),
+        });
+    }
+
     // Spec: GET/POST /_matrix/client/v3/publicRooms
     // ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3publicrooms
     [[nodiscard]] auto public_rooms_filtered_json(ClientServerRuntime const& rt, std::string const& filter_term,
@@ -3483,6 +3577,7 @@ namespace
                             json_member("notification_count", json_int(static_cast<std::int64_t>(notification_count))),
                             json_member("highlight_count", json_int(static_cast<std::int64_t>(highlight_count))),
                         })),
+                    json_member("summary", room_summary_object(rt, store, room.room_id, user)),
                 })));
         }
 
@@ -4674,14 +4769,24 @@ namespace
                            device_id, auth::redacted_key_payload_summary(payload));
     }
 
-    [[nodiscard]] auto one_time_key_count(ClientServerRuntime const& rt, std::string_view user,
-                                          std::string_view device_id) noexcept -> std::size_t
+    [[nodiscard]] auto one_time_key_counts(ClientServerRuntime const& rt, std::string_view user,
+                                           std::string_view device_id) noexcept -> std::map<std::string, std::size_t>
     {
-        return static_cast<std::size_t>(
-            std::ranges::count_if(rt.homeserver.database.persistent_store.one_time_keys,
-                                  [user, device_id](database::PersistentOneTimeKey const& key) {
-                                      return key.user_id == user && key.device_id == device_id;
-                                  }));
+        auto counts = std::map<std::string, std::size_t>{};
+        for (auto const& key : rt.homeserver.database.persistent_store.one_time_keys)
+        {
+            if (key.user_id != user || key.device_id != device_id)
+            {
+                continue;
+            }
+            // Matrix key IDs are "algorithm:key_id"; the algorithm prefix
+            // determines which counter the client sees in /keys/upload.
+            auto const colon = key.key_id.find(':');
+            auto const algorithm =
+                (colon == std::string_view::npos) ? std::string{"unknown"} : std::string{key.key_id.substr(0U, colon)};
+            ++counts[algorithm];
+        }
+        return counts;
     }
 
     // Holds both the key ID (e.g. "ed25519:DEVICE1") and the base64-encoded
@@ -5026,14 +5131,15 @@ namespace
                 return err(500U, "M_UNKNOWN", "fallback key persistence failed");
             }
         }
-        return resp(200U,
-                    json_serialize(json_obj({
-                        json_member("one_time_key_counts",
-                                    json_obj({
-                                        json_member("signed_curve25519", json_int(static_cast<std::int64_t>(
-                                                                             one_time_key_count(rt, user, device_id)))),
-                                    })),
-                    })));
+        auto const counts = one_time_key_counts(rt, user, device_id);
+        auto counts_members = canonicaljson::Object{};
+        for (auto const& [algorithm, count] : counts)
+        {
+            counts_members.push_back(json_member(algorithm, json_int(static_cast<std::int64_t>(count))));
+        }
+        return resp(200U, json_serialize(json_obj({
+                              json_member("one_time_key_counts", json_obj(std::move(counts_members))),
+                          })));
     }
 
     [[nodiscard]] auto handle_key_query(ClientServerRuntime& rt, std::string_view requesting_user,
@@ -5538,10 +5644,10 @@ namespace
     // Returns users whose device lists changed between the two sync stream
     // positions. Clients use this to avoid re-querying /keys/query on every
     // /sync; Element requests it on initial load to detect stale key caches.
+    // Spec v1.19: both `from` and `to` are required /sync next_batch tokens.
     [[nodiscard]] auto handle_keys_changes(ClientServerRuntime const& rt, std::string_view user,
                                            std::string_view target) -> LocalHttpResponse
     {
-        // Parse the `from` sync token (may be "s{N}" or plain integer).
         auto const query_start = target.find('?');
         auto const query = query_start != std::string_view::npos ? target.substr(query_start + 1U) : std::string_view{};
         auto const parse_qparam = [&query](std::string_view key) -> std::string_view {
@@ -5556,24 +5662,40 @@ namespace
             return val_end == std::string_view::npos ? query.substr(val_start)
                                                      : query.substr(val_start, val_end - val_start);
         };
+
         auto const raw_from = parse_qparam("from");
-        // The `from` parameter is a /sync next_batch token that encodes
-        // event_ordering, membership_ordering, and sync_stream_id as three
-        // underscore-separated hex components.  We want the sync_stream_id
-        // component because device-list changes are tracked by that counter.
-        // Fall back to 0 (return all changes) if the token cannot be decoded.
-        std::uint64_t from_id = 0U;
-        if (auto const decoded = sync::decode_stream_token(raw_from); decoded.has_value())
+        auto const raw_to = parse_qparam("to");
+        if (raw_from.empty())
         {
-            from_id = decoded->sync_stream_id;
+            return err(400U, "M_MISSING_PARAM", "from query parameter is required");
         }
+        if (raw_to.empty())
+        {
+            return err(400U, "M_MISSING_PARAM", "to query parameter is required");
+        }
+
+        // The sync token encodes event_ordering, membership_ordering, and
+        // sync_stream_id as three underscore-separated hex components. Device-list
+        // changes are tracked by sync_stream_id, so we extract that component.
+        auto const from_decoded = sync::decode_stream_token(raw_from);
+        auto const to_decoded = sync::decode_stream_token(raw_to);
+        if (!from_decoded.has_value())
+        {
+            return err(400U, "M_INVALID_PARAM", "invalid from sync token");
+        }
+        if (!to_decoded.has_value())
+        {
+            return err(400U, "M_INVALID_PARAM", "invalid to sync token");
+        }
+        auto const from_id = from_decoded->sync_stream_id;
+        auto const to_id = to_decoded->sync_stream_id;
 
         auto const& store = rt.homeserver.database.persistent_store;
         auto changed = canonicaljson::Array{};
         auto left = canonicaljson::Array{};
         for (auto const& change : store.device_list_changes)
         {
-            if (change.observer_user_id != user || change.stream_id <= from_id)
+            if (change.observer_user_id != user || change.stream_id <= from_id || change.stream_id > to_id)
             {
                 continue;
             }
@@ -9703,38 +9825,63 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             auto const body = parse_membership_action_body(req.body);
             if (!body.has_value())
             {
-                return dispatch_err(req, rt, 400U, "M_BAD_JSON", "invite body must contain user_id");
+                return dispatch_err(req, rt, 400U, "M_BAD_JSON",
+                                    "invite body must contain user_id or id_server/medium/address");
             }
-            auto const result = merovingian::homeserver::invite_user(rt.homeserver, req.access_token, room_id,
-                                                                     body->user_id, body->reason);
-            if (!result.ok)
+
+            auto const has_user_id = !body->user_id.empty();
+            auto const has_threepid =
+                body->id_server.has_value() && body->medium.has_value() && body->address.has_value();
+            if (has_user_id && has_threepid)
             {
-                return dispatch_err(req, rt, result.status, error_code_for_status(result.status), result.reason);
+                return dispatch_err(req, rt, 400U, "M_BAD_JSON",
+                                    "invite body must not mix user_id and id_server/medium/address");
             }
-            // For remote invitees dispatch the federation invite so the remote server
-            // learns about the event and can deliver it to the invitee's client.
-            auto const invitee_server = server_name_from_user_id(body->user_id);
-            if (!invitee_server.empty() && invitee_server != rt.homeserver.config.server().server_name)
+
+            if (has_user_id)
             {
-                auto const& store = rt.homeserver.database.persistent_store;
-                auto const invite_state =
-                    std::ranges::find_if(store.state, [&room_id, &body](database::PersistentStateEvent const& s) {
-                        return s.room_id == room_id && s.event_type == "m.room.member" && s.state_key == body->user_id;
-                    });
-                auto const invite_json =
-                    invite_state != store.state.end() ? event_json_for_id(store, invite_state->event_id) : std::nullopt;
-                if (invite_json.has_value())
+                auto const result = merovingian::homeserver::invite_user(rt.homeserver, req.access_token, room_id,
+                                                                         body->user_id, body->reason);
+                if (!result.ok)
                 {
-                    auto const room_version = room_version_from_store(store, room_id);
-                    merovingian::homeserver::wire_federation_callbacks(rt.homeserver);
-                    if (rt.homeserver.dispatch_worker != nullptr)
+                    return dispatch_err(req, rt, result.status, error_code_for_status(result.status), result.reason);
+                }
+                // For remote invitees dispatch the federation invite so the remote server
+                // learns about the event and can deliver it to the invitee's client.
+                auto const invitee_server = server_name_from_user_id(body->user_id);
+                if (!invitee_server.empty() && invitee_server != rt.homeserver.config.server().server_name)
+                {
+                    auto const& store = rt.homeserver.database.persistent_store;
+                    auto const invite_state =
+                        std::ranges::find_if(store.state, [&room_id, &body](database::PersistentStateEvent const& s) {
+                            return s.room_id == room_id && s.event_type == "m.room.member" &&
+                                   s.state_key == body->user_id;
+                        });
+                    auto const invite_json = invite_state != store.state.end()
+                                                 ? event_json_for_id(store, invite_state->event_id)
+                                                 : std::nullopt;
+                    if (invite_json.has_value())
                     {
-                        auto transaction = federation::make_outbound_invite(
-                            invitee_server, rt.homeserver.config.server().server_name, room_id, invite_state->event_id,
-                            room_version, *invite_json, {});
-                        transaction.transaction_id = federation::make_federation_transaction_id();
-                        std::ignore = rt.homeserver.dispatch_worker->enqueue(std::move(transaction));
+                        auto const room_version = room_version_from_store(store, room_id);
+                        merovingian::homeserver::wire_federation_callbacks(rt.homeserver);
+                        if (rt.homeserver.dispatch_worker != nullptr)
+                        {
+                            auto transaction = federation::make_outbound_invite(
+                                invitee_server, rt.homeserver.config.server().server_name, room_id,
+                                invite_state->event_id, room_version, *invite_json, {});
+                            transaction.transaction_id = federation::make_federation_transaction_id();
+                            std::ignore = rt.homeserver.dispatch_worker->enqueue(std::move(transaction));
+                        }
                     }
+                }
+            }
+            else
+            {
+                auto const result = merovingian::homeserver::invite_user_by_threepid(
+                    rt.homeserver, req.access_token, room_id, *body->id_server, *body->medium, *body->address);
+                if (!result.ok)
+                {
+                    return dispatch_err(req, rt, result.status, error_code_for_status(result.status), result.reason);
                 }
             }
             return dispatch_resp(req, rt, 200U, json_serialize(json_obj({})));
@@ -9848,6 +9995,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
 
             auto const receipt_body = canonicaljson::parse_lossless(req.body);
+            if (receipt_body.error != canonicaljson::ParseError::none)
+            {
+                return dispatch_err(req, rt, 400U, "M_BAD_JSON", "read markers body must be valid JSON");
+            }
             auto const* body_obj = std::get_if<canonicaljson::Object>(&receipt_body.value.storage());
 
             auto const now_ts = static_cast<std::int64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -9947,6 +10098,17 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     auto const event_id = core::percent_decode_path_component(after_receipt.substr(slash_pos + 1U));
                     if (!event_id.empty())
                     {
+                        // The receipt endpoint accepts an empty body, but any
+                        // present body MUST be valid JSON.
+                        if (!req.body.empty())
+                        {
+                            auto const receipt_body = canonicaljson::parse_lossless(req.body);
+                            if (receipt_body.error != canonicaljson::ParseError::none)
+                            {
+                                return dispatch_err(req, rt, 400U, "M_BAD_JSON", "receipt body must be valid JSON");
+                            }
+                        }
+
                         // Bug 10: validate room existence and membership before
                         // storing or federating any receipt state.
                         auto const receipt_room_it =
