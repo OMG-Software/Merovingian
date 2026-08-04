@@ -14,6 +14,10 @@ Signing key lifecycle and startup hardening.
   `make_federation_worker_config` from in-memory SQLite to a unique on-disk file.
   This matches how production persistence works across separate database connections
   so generated signing keys survive between the runtime and worker processes.
+- Tests: hardened worker seccomp scenario now drops to an unprivileged effective UID
+  on Linux when running as root. This avoids SQLite's `fchown()` syscall, which is
+  intentionally absent from the worker seccomp allowlist and would otherwise kill the
+  worker during on-disk database creation in root CI containers.
 - Docs: updated `docs/crypto-boundary.md` to describe automatic rotation of expired
   keys.
 
