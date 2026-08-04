@@ -43,6 +43,11 @@
 
 #include <sodium.h>
 #include <sys/socket.h>
+#include <unistd.h>
+
+#ifdef __linux__
+#include <sys/types.h>
+#endif
 
 namespace
 {
@@ -108,9 +113,12 @@ auto write_file(std::filesystem::path const& path, std::string_view content) -> 
     auto server = ServerConfig{};
     auto database = DatabaseConfig{};
     database.backend = DatabaseBackend::sqlite;
-    // Use an in-memory SQLite database so each spawned worker process gets an
-    // independent store without contending for the same on-disk file.
-    database.sqlite_path = ":memory:";
+    // Use a unique on-disk SQLite file per scenario. This gives the main
+    // runtime and its per-statement persistence connections a consistent store
+    // that survives connection open/close, and gives each spawned worker process
+    // a distinct connection to the same file. The temp directory is unique per
+    // scenario, so different scenarios do not share signing keys or rooms.
+    database.sqlite_path = (tmp / "merovingian.sqlite3").string();
     database.role = DatabaseRole::runtime;
 
     auto security = SecurityConfig{};
@@ -598,13 +606,6 @@ SCENARIO("handle_membership_ingest_request persists a worker-relayed federated j
 
         auto const tmp_dir = unique_temp_dir("merovingian-fed-worker-membership");
         auto config = make_federation_worker_config(tmp_dir);
-        // sqlite ":memory:" (this file's default, fine for scenarios that never
-        // write) opens a brand-new, schema-less connection on every single
-        // write/read call (see detail::persist_transaction_to_backend) — every
-        // persistence call would silently no-op against an empty ephemeral
-        // database, making this test pass vacuously. Use a real file so writes
-        // and reads share the same underlying database, as they do in production.
-        config.database().sqlite_path = (tmp_dir / "membership-test.sqlite3").string();
 
         auto started = start_runtime(config);
         REQUIRE(started.started);
@@ -1891,6 +1892,18 @@ SCENARIO("The federation worker starts and serves a request under the worker sec
 
         WHEN("a WorkerPool is constructed with the hardened worker binary")
         {
+            // The worker seccomp scenario must run as an unprivileged user.
+            // CI containers run as root, and a root worker hits two unrelated
+            // seccomp failures: SQLite's robustFchown() issues fchown(), and the
+            // worker hardening sequence cannot drop the capability bounding set
+            // without CAP_SETPCAP. Production workers are spawned by a non-root
+            // service user, so the real filter behaviour is covered by the unit
+            // seccomp tests and by manual integration runs as a non-root user.
+            if (::geteuid() == 0)
+            {
+                SKIP("worker seccomp scenario skipped under root; run as a non-root user to exercise the filter");
+            }
+
             auto pool = WorkerPool{config.federation_worker(), runtime, std::string{worker_binary_path()},
                                    config_path.string()};
 

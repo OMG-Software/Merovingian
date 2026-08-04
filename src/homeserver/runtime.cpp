@@ -771,10 +771,12 @@ auto start_runtime(RuntimeStartOptions opts) -> RuntimeStartResult
         auto const key_warm = publish_server_signing_keys(runtime);
         if (!key_warm.ok)
         {
-            log_diagnostic("start.key_server_cache_warn",
-                           {
-                               {"reason", key_warm.reason.empty() ? "key unavailable" : key_warm.reason, false}
+            log_diagnostic(
+                "start.rejected",
+                {
+                    {"reason", key_warm.reason.empty() ? "key server cache unavailable" : key_warm.reason, false}
             });
+            return {false, key_warm.reason.empty() ? "key server cache unavailable" : key_warm.reason, {}};
         }
     }
 

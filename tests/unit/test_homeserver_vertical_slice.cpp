@@ -39,9 +39,11 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <filesystem>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 
 #include <sodium.h>
@@ -81,6 +83,20 @@ namespace
     return {
         merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
         merovingian::config::DatabaseConfig{},         security,
+        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+    };
+}
+
+[[nodiscard]] auto registration_enabled_config_with_sqlite(std::filesystem::path const& sqlite_path)
+    -> merovingian::config::Config
+{
+    auto database = merovingian::config::DatabaseConfig{};
+    database.backend = merovingian::config::DatabaseBackend::sqlite;
+    database.sqlite_path = sqlite_path.string();
+    auto security = merovingian::config::SecurityConfig{};
+    merovingian::tests::enable_token_registration(security);
+    return {
+        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},  database, security,
         merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
     };
 }
@@ -1352,6 +1368,106 @@ SCENARIO("start_runtime pre-warms the key server response cache", "[homeserver][
             REQUIRE(cached->find("\"valid_until_ts\"") != std::string::npos);
             REQUIRE(cached->find("\"signatures\"") != std::string::npos);
         }
+    }
+}
+
+SCENARIO("ensure_runtime_server_signing_key rotates an expired derived signing key and rebuilds the provider",
+         "[homeserver][vertical][signing][rotation]")
+{
+    GIVEN("a runtime whose only derived signing key has expired")
+    {
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const server_name = runtime.config.server().server_name;
+        REQUIRE(runtime.database.persistent_store.server_signing_keys.size() == 1U);
+
+        auto& stored_key = runtime.database.persistent_store.server_signing_keys.front();
+        auto const original_key_id = stored_key.key_id;
+        // Expire the key so that ensure_runtime_server_signing_key cannot select it.
+        stored_key.valid_until_ts = 0U;
+
+        WHEN("the signing key is ensured after clearing the runtime secret")
+        {
+            runtime.database.signing_secret_key = merovingian::core::SecretBuffer{};
+            auto const key = merovingian::homeserver::ensure_runtime_server_signing_key(runtime);
+
+            THEN("a fresh derived-key is generated and the expired key is retired")
+            {
+                REQUIRE(key.has_value());
+                REQUIRE(key->key_id != original_key_id);
+                REQUIRE(key->key_id.starts_with("ed25519:"));
+                REQUIRE(key->valid_until_ts > 0U);
+                // Two keys in the store: the expired original and the fresh active key.
+                REQUIRE(runtime.database.persistent_store.server_signing_keys.size() == 2U);
+                REQUIRE(runtime.database.signing_secret_key.bytes().size() == crypto_sign_SECRETKEYBYTES);
+            }
+
+            AND_THEN("rebuilding the crypto provider from the rotated store creates a usable provider")
+            {
+                merovingian::homeserver::reset_runtime_crypto_provider(runtime);
+                REQUIRE(runtime.crypto_provider != nullptr);
+            }
+        }
+    }
+}
+
+SCENARIO("start_runtime recovers from an expired signing key and pre-warms the cache",
+         "[homeserver][vertical][signing][startup]")
+{
+    GIVEN("a persisted signing key that expired before startup")
+    {
+        auto const sqlite_path =
+            merovingian::tests::temporary_directory() /
+            ("merovingian-signing-rotation-startup-" +
+             std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".sqlite3");
+        auto original_key_id = std::string{};
+        {
+            auto started = merovingian::homeserver::start_runtime(registration_enabled_config_with_sqlite(sqlite_path));
+            REQUIRE(started.started);
+            auto& runtime = started.runtime;
+            REQUIRE(runtime.database.persistent_store.server_signing_keys.size() == 1U);
+
+            // Simulate a clock jump or lapsed 7-day window: mark the only key expired.
+            // Use a past timestamp (not zero, which the store rejects) and persist the
+            // update so the next runtime sees the expired key when it loads from SQLite.
+            auto expired_key = runtime.database.persistent_store.server_signing_keys.front();
+            expired_key.valid_until_ts = 1U;
+            expired_key.secret_key.clear();
+            REQUIRE(merovingian::database::store_server_signing_key(runtime.database.persistent_store, expired_key));
+            original_key_id = expired_key.key_id;
+        }
+
+        WHEN("a new runtime starts against the same on-disk SQLite store")
+        {
+            auto restarted =
+                merovingian::homeserver::start_runtime(registration_enabled_config_with_sqlite(sqlite_path));
+
+            THEN("startup succeeds, the expired key is rotated, and the provider is ready")
+            {
+                REQUIRE(restarted.started);
+                auto& new_runtime = restarted.runtime;
+                REQUIRE(new_runtime.crypto_provider != nullptr);
+                REQUIRE(new_runtime.database.persistent_store.server_signing_keys.size() == 2U);
+
+                auto const active =
+                    std::ranges::max_element(new_runtime.database.persistent_store.server_signing_keys, {},
+                                             &merovingian::database::PersistentServerSigningKey::valid_until_ts);
+                REQUIRE(active != new_runtime.database.persistent_store.server_signing_keys.end());
+                REQUIRE(active->key_id != original_key_id);
+                REQUIRE(active->valid_until_ts > 0U);
+
+                // The key server endpoint must be pre-warmed and publish the new key.
+                REQUIRE(new_runtime.database.key_server_cache != nullptr);
+                auto const cached = new_runtime.database.key_server_cache->load();
+                REQUIRE(cached.has_value());
+                REQUIRE(cached->find("\"verify_keys\"") != std::string::npos);
+                REQUIRE(cached->find(active->key_id) != std::string::npos);
+            }
+        }
+
+        auto ignored = std::error_code{};
+        std::filesystem::remove(sqlite_path, ignored);
     }
 }
 

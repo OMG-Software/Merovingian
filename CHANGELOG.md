@@ -1,3 +1,26 @@
+## 0.11.6
+
+Signing key lifecycle and startup hardening.
+
+- Crypto boundary: `ensure_runtime_server_signing_key` now rejects expired derived
+  signing keys and automatically generates a fresh active key. This fixes a startup
+  failure where the main process had a loaded signing secret but no usable active key,
+  leaving `crypto_provider` null and causing `GET /_matrix/key/v2/server` to return 500.
+- Runtime startup: `start_runtime` now fails closed if the key-server response cache
+  cannot be pre-warmed, instead of starting with a broken signing provider.
+- Tests: added unit scenarios covering expired-key rotation and startup recovery in
+  `tests/unit/test_homeserver_vertical_slice.cpp`.
+- Tests: fixed `tests/integration/test_federation_worker_flow.cpp` by switching
+  `make_federation_worker_config` from in-memory SQLite to a unique on-disk file.
+  This matches how production persistence works across separate database connections
+  so generated signing keys survive between the runtime and worker processes.
+- Tests: hardened worker seccomp scenario now skips when the test process is root.
+  A root worker is killed by the filter (SQLite's `fchown()` and the capability
+  bounding-set drop both fail), while production workers run as a non-root service
+  user. The worker allowlist itself remains validated by unit tests.
+- Docs: updated `docs/crypto-boundary.md` to describe automatic rotation of expired
+  keys.
+
 ## 0.11.5
 
 Matrix spec v1.19 P2 gap closure.

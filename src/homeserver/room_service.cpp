@@ -1715,12 +1715,24 @@ namespace
     auto const& server_name = runtime.config.server().server_name;
     auto const& all_keys = runtime.database.persistent_store.server_signing_keys;
 
+    // A usable key must not have expired. Use the same wall-clock basis as
+    // collect_active_server_signing_keys so the runtime preferred key is always
+    // one that will be published as active.
+    auto const now_ms = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+            .count());
+
     // Find any signing key for this server that uses a derived key_id (not the legacy
     // "ed25519:auto" sentinel). The sentinel was used before key-ids were derived from
     // the public key bytes; federation notary servers (e.g. matrix.org) that cached it
     // with a far-future valid_until_ts will never re-fetch it, causing BadSignatureError
     // on every outbound request. Ignoring "ed25519:auto" forces generation of a new
     // key whose key_id is unknown to any stale notary cache.
+    //
+    // Expired keys are also skipped. Otherwise the runtime would load a key whose
+    // valid_until_ts is in the past, collect_active_server_signing_keys would reject
+    // it as inactive, and reset_runtime_crypto_provider would build no provider. That
+    // leaves /_matrix/key/v2/server returning 500 and outbound federation unsigned.
     // Select the usable key with the greatest valid_until_ts. After a rotation the
     // store holds both the retired key (valid_until_ts == "now") and the freshly
     // activated key (valid_until_ts == now + 7 days); choosing the furthest expiry
@@ -1730,7 +1742,7 @@ namespace
     for (auto candidate = all_keys.begin(); candidate != all_keys.end(); ++candidate)
     {
         if (candidate->server_name != server_name || candidate->key_id == "ed25519:auto" ||
-            candidate->secret_key.empty())
+            candidate->secret_key.empty() || candidate->valid_until_ts <= now_ms)
         {
             continue;
         }
@@ -1774,15 +1786,22 @@ namespace
         return *it;
     }
 
-    // No usable derived-format key found. Log whether a legacy entry exists (for ops
-    // visibility) then generate a fresh Ed25519 keypair with a derived key_id.
+    // No usable derived-format key found. Log whether a legacy or expired entry
+    // exists (for ops visibility) then generate a fresh Ed25519 keypair with a
+    // derived key_id.
     auto const has_legacy =
         std::ranges::any_of(all_keys, [&server_name](database::PersistentServerSigningKey const& k) {
             return k.server_name == server_name && k.key_id == "ed25519:auto";
         });
+    auto const has_expired =
+        std::ranges::any_of(all_keys, [&server_name, now_ms](database::PersistentServerSigningKey const& k) {
+            return k.server_name == server_name && k.key_id != "ed25519:auto" && !k.secret_key.empty() &&
+                   k.valid_until_ts <= now_ms;
+        });
     log_diagnostic("signing_key.generating", {
-                                                 {"server_name",    std::string{server_name},      false},
-                                                 {"has_legacy_key", has_legacy ? "true" : "false", false}
+                                                 {"server_name",    std::string{server_name},       false},
+                                                 {"has_legacy_key", has_legacy ? "true" : "false",  false},
+                                                 {"has_expired",    has_expired ? "true" : "false", false}
     });
 
     auto const keypair = crypto::generate_ed25519_keypair();
@@ -1796,11 +1815,10 @@ namespace
     auto const key_id = derive_ed25519_key_id(keypair->public_key);
 
     // Publish now + 7 days as valid_until_ts so federation peers periodically
-    // re-fetch the key rather than caching it indefinitely.
+    // re-fetch the key rather than caching it indefinitely. The top-level now_ms
+    // was also used to reject any expired stored key, so it is reused here for
+    // consistency.
     auto constexpr seven_days_ms = std::uint64_t{7U * 24U * 60U * 60U * 1000U};
-    auto const now_ms = static_cast<std::uint64_t>(
-        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
-            .count());
 
     // Encrypt the secret at rest when a master key is configured.  For backwards
     // compatibility a server without a configured master key falls back to the
