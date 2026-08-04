@@ -172,6 +172,19 @@ namespace
     return std::move(parsed.value);
 }
 
+// Helper for building JSON request bodies from literal fragments and dynamic
+// values (user IDs, device IDs, stream tokens). Keeps each fragment readable
+// as a raw string while avoiding the pitfalls of `+` inside braced-init-lists.
+[[nodiscard]] auto json_body(std::vector<std::string> parts) -> std::string
+{
+    auto body = std::string{};
+    for (auto const& part : parts)
+    {
+        body += part;
+    }
+    return body;
+}
+
 } // namespace
 
 // --- Sync surfaces (Sec. 9.4: initial /sync response structure) ------------------
@@ -435,7 +448,172 @@ SCENARIO("to_device messages survive a lost sync response and are redelivered on
     }
 }
 
+// --- Cross-device verification request delivery (sendToDevice -> legacy /sync) --
+// Spec: Matrix Client-Server API v1.19, Sec. 10.5.1
+// URL:  ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3sendtoeventtypetxnid
+//
+// A local to-device message sent from one of the user's own devices to another
+// MUST be delivered on the target device's next incremental /sync. This is the
+// path used by interactive verification: device A sends
+// m.key.verification.request to device B, and device B must receive it.
+SCENARIO("Cross-device verification request is delivered by legacy /sync", "[sync][handler][to-device][verification]")
+{
+    GIVEN("Alice has two devices, A and B")
+    {
+        auto started = merovingian::homeserver::start_client_server(sync_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const [alice_id, token_a] = register_and_login(rt);
+        auto const device_a = first_device_id_for(rt, alice_id);
+
+        auto const login_b_body = json_body({
+            R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":")",
+            alice_id,
+            R"("},"password":"CorrectHorse7!","device_id":"DEVICE_B"})"});
+        auto const login_b = merovingian::homeserver::handle_client_server_request(
+            rt, {"POST", "/_matrix/client/v3/login", {}, login_b_body});
+        REQUIRE(login_b.response.status == 200U);
+        auto const token_b = extract(login_b.response.body, "access_token");
+
+        // Capture B's initial sync position before the message is sent.
+        auto const initial_b =
+            merovingian::homeserver::handle_client_server_request(rt, {"GET", "/_matrix/client/v3/sync", token_b, {}});
+        REQUIRE(initial_b.response.status == 200U);
+        auto const initial_body_b = parse_body(initial_b.response.body);
+        auto const* initial_root_b = as_object(initial_body_b);
+        auto const next_batch_b = std::get<std::string>(json_member(*initial_root_b, "next_batch")->storage());
+
+        WHEN("device A sends a verification request to device B via sendToDevice")
+        {
+            auto const send_body = json_body({
+                R"({"messages":{")",
+                alice_id,
+                R"(":{"DEVICE_B":{"transaction_id":"t1","timestamp":1234567890,"from_device":")",
+                device_a,
+                R"(","methods":["m.sas.v2"]}}}})"});
+            auto const send = merovingian::homeserver::handle_client_server_request(
+                rt,
+                {"PUT", "/_matrix/client/v3/sendToDevice/m.key.verification.request/txn-1", token_a, send_body});
+            REQUIRE(send.response.status == 200U);
+
+            THEN("device B's next incremental /sync receives the verification request")
+            {
+                auto const incremental_b = merovingian::homeserver::handle_client_server_request(
+                    rt, {"GET", std::string{"/_matrix/client/v3/sync?since="} + next_batch_b, token_b, {}});
+                REQUIRE(incremental_b.response.status == 200U);
+                auto const body = parse_body(incremental_b.response.body);
+                auto const* root = as_object(body);
+                auto const* to_device = as_object(*json_member(*root, "to_device"));
+                REQUIRE(to_device != nullptr);
+                auto const* events = as_array(*json_member(*to_device, "events"));
+                REQUIRE(events != nullptr);
+                // Spec MUST: the verification request MUST appear exactly once.
+                REQUIRE(events->size() == 1U);
+                auto const* event = as_object(events->front());
+                REQUIRE(event != nullptr);
+                REQUIRE(std::get<std::string>(json_member(*event, "type")->storage()) ==
+                        "m.key.verification.request");
+                REQUIRE(std::get<std::string>(json_member(*event, "sender")->storage()) == alice_id);
+
+                auto const* content = as_object(*json_member(*event, "content"));
+                REQUIRE(content != nullptr);
+                auto const* txn_id = json_member(*content, "transaction_id");
+                REQUIRE(txn_id != nullptr);
+                REQUIRE(std::get<std::string>(txn_id->storage()) == "t1");
+            }
+        }
+    }
+}
+
+// --- Cross-device verification request delivery (sendToDevice -> sliding sync) -----
+// Spec: MSC4186 Simplified Sliding Sync, extensions.to_device
+//
+// Element X uses a dedicated sliding-sync connection with only the to_device
+// and e2ee extensions to receive verification traffic. The server MUST surface
+// a verification request sent to that device in extensions.to_device.events.
+SCENARIO("Cross-device verification request is delivered by sliding sync to_device extension",
+         "[sync][handler][sliding-sync][to-device][verification]")
+{
+    GIVEN("Alice has two devices, A and B")
+    {
+        auto started = merovingian::homeserver::start_client_server(sync_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const [alice_id, token_a] = register_and_login(rt);
+        auto const device_a = first_device_id_for(rt, alice_id);
+
+        auto const login_b_body = json_body({
+            R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":")",
+            alice_id,
+            R"("},"password":"CorrectHorse7!","device_id":"DEVICE_B"})"});
+        auto const login_b = merovingian::homeserver::handle_client_server_request(
+            rt, {"POST", "/_matrix/client/v3/login", {}, login_b_body});
+        REQUIRE(login_b.response.status == 200U);
+        auto const token_b = extract(login_b.response.body, "access_token");
+
+        // Capture B's initial sliding-sync position and to_device next_batch.
+        auto const initial_b = merovingian::homeserver::handle_client_server_request(
+            rt, {"POST", "/_matrix/client/unstable/org.matrix.simplified_msc3575/sync", token_b,
+                 R"({"conn_id":"enc","extensions":{"to_device":{"enabled":true},"e2ee":{"enabled":true}}})"});
+        REQUIRE(initial_b.response.status == 200U);
+        auto const initial_body_b = parse_body(initial_b.response.body);
+        auto const* initial_root_b = as_object(initial_body_b);
+        auto const* initial_extensions = as_object(*json_member(*initial_root_b, "extensions"));
+        REQUIRE(initial_extensions != nullptr);
+        auto const* initial_to_device = as_object(*json_member(*initial_extensions, "to_device"));
+        REQUIRE(initial_to_device != nullptr);
+        auto const next_batch_b = std::get<std::string>(json_member(*initial_to_device, "next_batch")->storage());
+
+        WHEN("device A sends a verification request to device B via sendToDevice")
+        {
+            auto const send_body = json_body({
+                R"({"messages":{")",
+                alice_id,
+                R"(":{"DEVICE_B":{"transaction_id":"t1","timestamp":1234567890,"from_device":")",
+                device_a,
+                R"(","methods":["m.sas.v2"]}}}})"});
+            auto const send = merovingian::homeserver::handle_client_server_request(
+                rt,
+                {"PUT", "/_matrix/client/v3/sendToDevice/m.key.verification.request/txn-1", token_a, send_body});
+            REQUIRE(send.response.status == 200U);
+
+            THEN("device B's next sliding sync receives the verification request in extensions.to_device.events")
+            {
+                auto const request_body = json_body({
+                    R"({"conn_id":"enc","extensions":{"to_device":{"enabled":true,"since":")",
+                    next_batch_b,
+                    R"("},"e2ee":{"enabled":true}}})"});
+                auto const incremental_b = merovingian::homeserver::handle_client_server_request(
+                    rt, {"POST", "/_matrix/client/unstable/org.matrix.simplified_msc3575/sync", token_b, request_body});
+                REQUIRE(incremental_b.response.status == 200U);
+                auto const body = parse_body(incremental_b.response.body);
+                auto const* root = as_object(body);
+                auto const* extensions = as_object(*json_member(*root, "extensions"));
+                REQUIRE(extensions != nullptr);
+                auto const* to_device = as_object(*json_member(*extensions, "to_device"));
+                REQUIRE(to_device != nullptr);
+                auto const* events = as_array(*json_member(*to_device, "events"));
+                REQUIRE(events != nullptr);
+                // Spec MUST: the verification request MUST appear exactly once.
+                REQUIRE(events->size() == 1U);
+                auto const* event = as_object(events->front());
+                REQUIRE(event != nullptr);
+                REQUIRE(std::get<std::string>(json_member(*event, "type")->storage()) ==
+                        "m.key.verification.request");
+                REQUIRE(std::get<std::string>(json_member(*event, "sender")->storage()) == alice_id);
+
+                auto const* content = as_object(*json_member(*event, "content"));
+                REQUIRE(content != nullptr);
+                auto const* txn_id = json_member(*content, "transaction_id");
+                REQUIRE(txn_id != nullptr);
+                REQUIRE(std::get<std::string>(txn_id->storage()) == "t1");
+            }
+        }
+    }
+}
+
 // --- Long-poll wake-up (Sec. 9.4: timeout parameter) -----------------------------
+
 // Spec: Matrix Client-Server API v1.19, Sec. 9.4 /sync
 // URL:  ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3sync
 //

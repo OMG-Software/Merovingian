@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.11.6
+Version:        0.11.7
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -101,6 +101,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Tue Aug 04 2026 James Chapman <claude@ping.me.uk> - 0.11.7-1
+- Improve /sync diagnostics for to-device delivery; add verification-shaped to-device tests for legacy and sliding sync.
+
 * Mon Aug 03 2026 James Chapman <claude@ping.me.uk> - 0.11.6-1
 - Signing key lifecycle: reject expired keys on startup, auto-rotate, and fail closed if key server cache cannot be pre-warmed.
 

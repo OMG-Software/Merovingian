@@ -3647,16 +3647,6 @@ namespace
             }
         }
 
-        log_diagnostic("sync.response",
-                       {
-                           {"user",                 std::string{user},                           false},
-                           {"join_count",           std::to_string(join_count),                  false},
-                           {"invite_count",         std::to_string(invite_count),                false},
-                           {"leave_count",          std::to_string(leave_count),                 false},
-                           {"knock_count",          std::to_string(knock_count),                 false},
-                           {"max_observed_sync_id", std::to_string(max_observed_sync_stream_id), false}
-        });
-
         auto to_device_events = build_to_device_events_array(store, user, device_id, since_sync_stream_id,
                                                              sync_stream_upper_bound, max_observed_sync_stream_id);
         auto [device_changed, device_left] =
@@ -3667,6 +3657,21 @@ namespace
                                                              since_sync_stream_id, max_observed_sync_stream_id);
         auto otk_counts = build_otk_counts(store, user, device_id);
         auto fallback_key_types = build_fallback_key_types(store, user, device_id);
+
+        log_diagnostic("sync.response",
+                       {
+                           {"user",                 std::string{user},                           false},
+                           {"join_count",           std::to_string(join_count),                  false},
+                           {"invite_count",         std::to_string(invite_count),                false},
+                           {"leave_count",          std::to_string(leave_count),                 false},
+                           {"knock_count",          std::to_string(knock_count),                 false},
+                           {"to_device_count",      std::to_string(to_device_events.size()),     false},
+                           {"device_changed_count", std::to_string(device_changed.size()),       false},
+                           {"device_left_count",    std::to_string(device_left.size()),          false},
+                           {"presence_count",       std::to_string(presence_events.size()),      false},
+                           {"account_data_count",   std::to_string(global_account_data.size()),  false},
+                           {"max_observed_sync_id", std::to_string(max_observed_sync_stream_id), false}
+        });
 
         auto const advanced_sync_stream_id = std::max(max_observed_sync_stream_id, sync_stream_upper_bound);
         auto const next_token =
@@ -4192,13 +4197,19 @@ namespace
 
         // ── Extensions ──────────────────────────────────────────────────────
 
+        auto extension_responses = std::optional<sync::SlidingSyncExtensionResponses>{};
         auto ext_obj = canonicaljson::Object{};
         if (ssreq.extensions.has_value())
         {
-            ext_obj = sliding_sync_ext_to_value(
+            extension_responses =
                 sync::build_extensions(rt.homeserver, user, device_id, *ssreq.extensions, since_sync_stream_id,
-                                       store.next_sync_stream_id, store, response_room_ids));
+                                       store.next_sync_stream_id, store, response_room_ids);
+            ext_obj = sliding_sync_ext_to_value(*extension_responses);
         }
+
+        auto const to_device_count = extension_responses && extension_responses->to_device.has_value()
+                                         ? extension_responses->to_device->events_json.size()
+                                         : std::size_t{0U};
 
         // ── pos token and list op responses ─────────────────────────────────
 
@@ -4312,7 +4323,8 @@ namespace
                                                     {"rooms_in_response", std::to_string(rooms_in_response),        false},
                                                     {"rooms_skipped",     std::to_string(rooms_skipped),            false},
                                                     {"rooms_seen",        std::to_string(conn.rooms_seen.size()),   false},
-                                                    {"lists_returned",    std::to_string(list_results.size()),      false}
+                                                    {"lists_returned",    std::to_string(list_results.size()),      false},
+                                                    {"to_device_count",   std::to_string(to_device_count),          false}
         });
 
         // ── Update connection state ──────────────────────────────────────────
