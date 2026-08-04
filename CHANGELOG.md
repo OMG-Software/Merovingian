@@ -1,3 +1,16 @@
+## 0.11.7
+
+Sync to-device delivery observability and verification-request coverage.
+
+- Sync: added unit scenarios in `tests/unit/test_sync_handler.cpp` proving that a
+  same-user `m.key.verification.request` to-device event is delivered to the
+  target device on both legacy `GET /_matrix/client/v3/sync` and MSC4186 Simplified
+  Sliding Sync (`extensions.to_device`).
+- Diagnostics: `sync.response` and `sliding_sync.response` logs now include
+  `to_device_count`, `device_changed_count`, `device_left_count`, `presence_count`,
+  `account_data_count`, and `max_observed_sync_id`, making it possible to verify
+  from server logs whether a to-device message reached the client response.
+
 ## 0.11.6
 
 Signing key lifecycle and startup hardening.
