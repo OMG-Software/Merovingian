@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.11.7
+Version:        0.11.8
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -101,6 +101,8 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Tue Aug 04 2026 James Chapman <claude@ping.me.uk> - 0.11.8-1
+- Notify a user's own devices when any of their devices upload keys, fixing cross-device verification hangs where the receiving device never learned the new device's keys.
 * Tue Aug 04 2026 James Chapman <claude@ping.me.uk> - 0.11.7-1
 - Improve /sync diagnostics for to-device delivery; add verification-shaped to-device tests for legacy and sliding sync.
 
