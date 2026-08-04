@@ -108,9 +108,12 @@ auto write_file(std::filesystem::path const& path, std::string_view content) -> 
     auto server = ServerConfig{};
     auto database = DatabaseConfig{};
     database.backend = DatabaseBackend::sqlite;
-    // Use an in-memory SQLite database so each spawned worker process gets an
-    // independent store without contending for the same on-disk file.
-    database.sqlite_path = ":memory:";
+    // Use a unique on-disk SQLite file per scenario. This gives the main
+    // runtime and its per-statement persistence connections a consistent store
+    // that survives connection open/close, and gives each spawned worker process
+    // a distinct connection to the same file. The temp directory is unique per
+    // scenario, so different scenarios do not share signing keys or rooms.
+    database.sqlite_path = (tmp / "merovingian.sqlite3").string();
     database.role = DatabaseRole::runtime;
 
     auto security = SecurityConfig{};
@@ -598,13 +601,6 @@ SCENARIO("handle_membership_ingest_request persists a worker-relayed federated j
 
         auto const tmp_dir = unique_temp_dir("merovingian-fed-worker-membership");
         auto config = make_federation_worker_config(tmp_dir);
-        // sqlite ":memory:" (this file's default, fine for scenarios that never
-        // write) opens a brand-new, schema-less connection on every single
-        // write/read call (see detail::persist_transaction_to_backend) — every
-        // persistence call would silently no-op against an empty ephemeral
-        // database, making this test pass vacuously. Use a real file so writes
-        // and reads share the same underlying database, as they do in production.
-        config.database().sqlite_path = (tmp_dir / "membership-test.sqlite3").string();
 
         auto started = start_runtime(config);
         REQUIRE(started.started);

@@ -10,6 +10,10 @@ Signing key lifecycle and startup hardening.
   cannot be pre-warmed, instead of starting with a broken signing provider.
 - Tests: added unit scenarios covering expired-key rotation and startup recovery in
   `tests/unit/test_homeserver_vertical_slice.cpp`.
+- Tests: fixed `tests/integration/test_federation_worker_flow.cpp` by switching
+  `make_federation_worker_config` from in-memory SQLite to a unique on-disk file.
+  This matches how production persistence works across separate database connections
+  so generated signing keys survive between the runtime and worker processes.
 - Docs: updated `docs/crypto-boundary.md` to describe automatic rotation of expired
   keys.
 
