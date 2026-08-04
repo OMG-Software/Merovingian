@@ -1,6 +1,6 @@
 # Merovingian
 
-**Latest release: v0.10.59**
+**Latest release: [latest](https://github.com/OMG-Software/Merovingian/releases/tag/latest)**
 
 **Note: Merovingian is now in beta. It is suitable for evaluation and testing, but is not yet ready for production use. Do not deploy it as a production Matrix homeserver.**
 
