@@ -3,7 +3,7 @@
 # Build for merovingian 0.11.6.
 set -e
 
-VERSION="0.11.7"
+VERSION="0.11.8"
 PKG_NAME="merovingian"
 STAGING="staging-deb"
 

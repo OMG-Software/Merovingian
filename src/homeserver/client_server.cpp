@@ -5097,6 +5097,15 @@ namespace
                     std::ignore = record_device_list_change(rt, change);
                 }
             }
+            // Also notify the uploading user's own devices. Cross-device
+            // verification (e.g. Element X verifying a new login from an
+            // existing device) relies on each device learning about new or
+            // updated devices via device_lists.changed and then querying
+            // /keys/query.
+            auto const self_change =
+                database::PersistentDeviceListChange{0U, std::string{user}, std::string{user}, "changed"};
+            std::ignore = record_device_list_change(rt, self_change);
+
             // Notify remote servers so they can fetch the updated keys and
             // deliver room keys to this device (spec v1.19 SS4.1).
             broadcast_device_list_updates(rt, user, remote_servers_for_user(rt.homeserver, user));

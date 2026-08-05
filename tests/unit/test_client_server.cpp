@@ -6426,6 +6426,92 @@ SCENARIO("Joining an encrypted room after both devices uploaded keys advertises 
     }
 }
 
+SCENARIO("Uploading device keys from one of a user's devices notifies the user's other devices",
+         "[homeserver][client-server][e2ee][device-lists][regression]")
+{
+    // Spec: Matrix Client-Server API v1.19
+    // URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3sync
+    // A device key upload MUST create a device_lists.changed notification for
+    // the uploading user's other devices, prompting them to query
+    // /keys/query. This enables cross-device verification such as Element X
+    // verifying a new login from an existing device.
+    GIVEN("a user with two logged-in devices, where device A has done an initial sync")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+
+        auto const dev_a_login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEV_A"})"});
+        REQUIRE(dev_a_login.response.status == 200U);
+        auto const dev_a_token = login_token(dev_a_login.response.body);
+
+        auto const dev_b_login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEV_B"})"});
+        REQUIRE(dev_b_login.response.status == 200U);
+        auto const dev_b_token = login_token(dev_b_login.response.body);
+
+        auto const initial_sync = merovingian::homeserver::handle_client_server_request(
+            runtime, {"GET", "/_matrix/client/v3/sync", dev_a_token, {}});
+        REQUIRE(initial_sync.response.status == 200U);
+        auto const initial_sync_body = parse_object(initial_sync.response.body);
+        auto const* since = string_member(initial_sync_body, "next_batch");
+        REQUIRE(since != nullptr);
+
+        WHEN("device B uploads device keys")
+        {
+            upload_device_keys(runtime, dev_b_token, "@alice:example.org", "DEV_B", "DEV_B_CURVE", "DEV_B_ED");
+
+            THEN("device A's incremental /sync shows the user's device list changed")
+            {
+                auto const incremental = merovingian::homeserver::handle_client_server_request(
+                    runtime, {"GET", "/_matrix/client/v3/sync?since=" + *since, dev_a_token, {}});
+                REQUIRE(incremental.response.status == 200U);
+                auto const sync_body = parse_object(incremental.response.body);
+                auto const* device_lists = object_member_as_object(sync_body, "device_lists");
+                REQUIRE(device_lists != nullptr);
+                auto const* changed = object_member_as_array(*device_lists, "changed");
+                REQUIRE(changed != nullptr);
+                auto const saw_self = std::ranges::any_of(*changed, [](merovingian::canonicaljson::Value const& value) {
+                    auto const* user_id = std::get_if<std::string>(&value.storage());
+                    return user_id != nullptr && *user_id == "@alice:example.org";
+                });
+                REQUIRE(saw_self);
+            }
+
+            AND_THEN("device A can query device B's keys via /keys/query")
+            {
+                auto const query = merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST", "/_matrix/client/v3/keys/query", dev_a_token,
+                              R"({"device_keys":{"@alice:example.org":["DEV_B"]}})"});
+                REQUIRE(query.response.status == 200U);
+                auto const body = query.response.body;
+                INFO("query body = " + body);
+                REQUIRE(body.find("device_keys") != std::string::npos);
+                REQUIRE(body.find("@alice:example.org") != std::string::npos);
+                REQUIRE(body.find("DEV_B") != std::string::npos);
+                REQUIRE(body.find("DEV_B_CURVE") != std::string::npos);
+                REQUIRE(body.find("DEV_B_ED") != std::string::npos);
+            }
+        }
+    }
+}
+
 SCENARIO("First post-join room bootstrap includes encryption state for encrypted rooms",
          "[homeserver][client-server][e2ee][bootstrap][regression]")
 {
@@ -8903,13 +8989,14 @@ SCENARIO("Sliding sync no-pos poll returns delta on second call when nothing cha
 }
 
 // ─── MSC4186 sliding sync spurious-wakeup suppression ────────────────────────
-// handle_key_upload fans out PersistentDeviceListChange rows to all co-members
-// with observer_user_id=<co-member>.  Each write advances next_sync_stream_id
-// and fires the global SyncNotifier, waking ALL parked sliding sync long-polls
-// — including the uploading user's own.  The fix: sliding_sync_json checks
-// whether any new DLC row is addressed to the current user.  If not, it returns
-// needs_wait with since_sync_stream_id advanced to the current counter so the
-// notifier must fire again before the next wakeup attempt.
+// handle_key_upload records PersistentDeviceListChange rows for all co-members
+// with observer_user_id=<co-member>, and also a self-notification with
+// observer_user_id=<uploading-user>. Each write advances next_sync_stream_id
+// and fires the global SyncNotifier, waking parked sliding sync long-polls.
+// The fix for spurious wakeups: sliding_sync_json checks whether any new DLC
+// row is addressed to the current user; if not, it returns needs_wait with
+// since_sync_stream_id advanced to the current counter so the notifier must
+// fire again before the next wakeup attempt.
 
 SCENARIO("Sliding sync with can_wait returns needs_wait when sync_stream_id advanced only for another user's DLC",
          "[sync][sliding-sync][e2ee][notifier]")
@@ -8961,27 +9048,39 @@ SCENARIO("Sliding sync with can_wait returns needs_wait when sync_stream_id adva
         auto const pos_p = init_resp.response.body.substr(pos_value_begin, pos_value_end - pos_value_begin);
         REQUIRE_FALSE(pos_p.empty());
 
-        WHEN("alice uploads device keys (DLCs are recorded for bob as observer, not alice)")
+        WHEN("alice uploads device keys (a DLC is recorded for alice herself as observer)")
         {
             // Short placeholder key material — the server does not validate length
             // for basic key storage; only OTK signature tests need real crypto.
             upload_device_keys(runtime, alice_token, "@alice:example.org", alice_device_id, "ALICE_CURVE", "ALICE_ED");
 
-            THEN("alice's sliding sync (can_wait=true) returns needs_wait with since_sync advanced past the irrelevant "
-                 "bump")
+            THEN("alice's sliding sync (can_wait=true) returns complete with alice in device_lists.changed")
             {
-                // With can_wait=true and timeout>0 the handler checks whether the
-                // sync_stream_id advance contains DLCs addressed to alice.  Alice's
-                // own key upload only creates DLCs with observer_user_id=bob, so
-                // the handler must park rather than respond.
+                // Alice's own key upload now records a self-notification DLC so that
+                // her other devices learn about the new/updated device and query keys.
                 auto const inc_url = "/_matrix/client/unstable/org.matrix.msc4186/sync?pos=" + pos_p + "&timeout=5000";
                 auto const result = merovingian::homeserver::handle_client_server_request(
-                    runtime, {"POST", inc_url, alice_token, R"({"conn_id":"test"})"}, true);
+                    runtime,
+                    {"POST", inc_url, alice_token, R"({"conn_id":"test","extensions":{"e2ee":{"enabled":true}}})"},
+                    true);
 
-                REQUIRE(result.status == merovingian::homeserver::DispatchResult::Status::needs_wait);
-                // The returned wait params must have advanced past the original
-                // since_sync_stream_id so the notifier does not immediately re-fire.
-                REQUIRE(result.wait.since_sync_stream_id > 0U);
+                REQUIRE(result.status == merovingian::homeserver::DispatchResult::Status::complete);
+                REQUIRE(result.response.status == 200U);
+
+                auto const body = parse_object(result.response.body);
+                auto const* ext = object_member_as_object(body, "extensions");
+                REQUIRE(ext != nullptr);
+                auto const* e2ee_obj = object_member_as_object(*ext, "e2ee");
+                REQUIRE(e2ee_obj != nullptr);
+                auto const* dl = object_member_as_object(*e2ee_obj, "device_lists");
+                REQUIRE(dl != nullptr);
+                auto const* changed = object_member_as_array(*dl, "changed");
+                REQUIRE(changed != nullptr);
+                auto const saw_alice = std::ranges::any_of(*changed, [](merovingian::canonicaljson::Value const& v) {
+                    auto const* uid = std::get_if<std::string>(&v.storage());
+                    return uid != nullptr && *uid == "@alice:example.org";
+                });
+                REQUIRE(saw_alice);
             }
         }
 

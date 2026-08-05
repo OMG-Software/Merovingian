@@ -1,3 +1,10 @@
+## 0.11.8
+
+Cross-device verification: notify a user's own devices when one of their devices uploads keys.
+
+- E2EE device keys: `POST /_matrix/client/v3/keys/upload` now records a `device_lists.changed` notification for the uploading user, so the user's other devices learn about new or updated devices and query `/keys/query` for them. This fixes the Element/Web verification hang where the receiving device received the `m.key.verification.request` to-device event but ignored it because it did not have the sender's device keys in its store.
+- Tests: added unit scenarios covering same-user cross-device key upload and the resulting `device_lists.changed` / `/keys/query` round-trip.
+
 ## 0.11.7
 
 Sync to-device delivery observability and verification-request coverage.
