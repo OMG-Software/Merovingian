@@ -7778,6 +7778,23 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             auto const dn = body->display_name.empty() ? body->device_id : body->display_name;
             rt.devices.push_back({body->user_id, body->device_id, dn});
+            // A new login creates a new device identity. Record a self
+            // device-list-change so the user's other devices see the user in
+            // device_lists.changed and re-query /keys/query, AND so this new
+            // device's own first /sync lists the user in device_lists.changed
+            // — prompting it to fetch the user's *existing* devices' keys
+            // before any m.key.verification.request can arrive. Without this,
+            // a new device (e.g. Element X) receives a verification request
+            // from an existing verified device but has not yet fetched the
+            // sender's device keys, so matrix-rust-sdk drops the request
+            // ("Could not retrieve the device data ... ignoring it"). Key
+            // upload alone records a self-DLC, but the new device's initial
+            // sync runs before its own key upload. The spec sanctions the HS
+            // adding a user to device_lists.changed when a device's cached
+            // list may be stale; a brand-new device's cache is empty.
+            auto const self_change = database::PersistentDeviceListChange{0U, std::string{body->user_id},
+                                                                          std::string{body->user_id}, "changed"};
+            std::ignore = record_device_list_change(rt, self_change);
         }
         auto response_body = canonicaljson::Object{
             json_member("access_token", json_str(result.value)),

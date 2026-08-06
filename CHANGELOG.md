@@ -1,9 +1,10 @@
 ## 0.11.8
 
-Cross-device verification: notify a user's own devices when one of their devices uploads keys.
+Cross-device verification: notify a user's own devices when one of their devices uploads keys, and prompt a freshly-logged-in device to discover its own user's existing devices.
 
 - E2EE device keys: `POST /_matrix/client/v3/keys/upload` now records a `device_lists.changed` notification for the uploading user, so the user's other devices learn about new or updated devices and query `/keys/query` for them. This fixes the Element/Web verification hang where the receiving device received the `m.key.verification.request` to-device event but ignored it because it did not have the sender's device keys in its store.
-- Tests: added unit scenarios covering same-user cross-device key upload and the resulting `device_lists.changed` / `/keys/query` round-trip.
+- E2EE device lists: `POST /_matrix/client/v3/login` now records a `device_lists.changed` self-notification when a genuinely new device is created. A new device's initial `/sync` therefore lists its own user in `device_lists.changed`, prompting the client to `/keys/query` and fetch the user's *existing* devices' keys on its very first sync — before the existing verified device even knows the new login exists. This closes the reverse-direction gap left by the key-upload fix: the new device (e.g. Element X) previously received an `m.key.verification.request` from the existing verified session but had not yet fetched the sender's device keys, so matrix-rust-sdk dropped the request ("Could not retrieve the device data ... ignoring it"). The spec sanctions the homeserver adding a user to `device_lists.changed` when a device's cached list may be stale; a brand-new device's cache is empty.
+- Tests: added unit scenarios covering same-user cross-device key upload, login-triggered own-device discovery, and the resulting `device_lists.changed` / `/keys/query` round-trip.
 
 ## 0.11.7
 
