@@ -41,6 +41,14 @@ namespace merovingian::sync
                                        std::unordered_set<std::string> const& lazy_members_already_sent = {})
     -> SlidingSyncRoomResponse;
 
+// Combine a list's room-config fields with a room_subscription's, per MSC4186
+// room-config combination: when a room matches both a list and a
+// room_subscription, required_state is the superset (union with exact-duplicate
+// dedup and wildcard-aware pruning of subsumed pairs), timeline_limit is the
+// maximum of the two, and include_heroes is OR'd.
+[[nodiscard]] auto combine_room_configs(SlidingSyncList const& list, SlidingSyncRoomSubscription const& sub)
+    -> SlidingSyncRoomSubscription;
+
 // Stream ordering of the event named by the user's most recent read receipt
 // (m.read or m.read.private) in the room, or 0 when the user has never sent
 // one. notification_count / highlight_count and the by_notification_count

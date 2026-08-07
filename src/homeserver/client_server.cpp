@@ -4139,25 +4139,40 @@ namespace
         for (auto const& room_id : response_room_ids)
         {
             auto sub = sync::SlidingSyncRoomSubscription{};
+
+            // Find the owning list (if any) for this room among the windowed
+            // lists. The first list whose window contains the room wins; a room
+            // present in multiple lists is not combined across lists (MSC4186
+            // combination is applied for list-vs-room_subscription below).
+            auto list_for_room_it = ssreq.lists.end();
+            for (auto const& [lname, result] : list_results)
+            {
+                if (std::ranges::find(result.windowed_room_ids, room_id) != result.windowed_room_ids.end())
+                {
+                    list_for_room_it = ssreq.lists.find(lname);
+                    break;
+                }
+            }
+
             if (auto const sit = ssreq.room_subscriptions.find(room_id); sit != ssreq.room_subscriptions.end())
             {
                 sub = sit->second;
-            }
-            else
-            {
-                for (auto const& [lname, result] : list_results)
+                // Per MSC4186, when a room matches both a list and a
+                // room_subscription the room configs combine into a superset:
+                // required_state is the union (deduped and wildcard-aware),
+                // timeline_limit is the maximum, and include_heroes is OR'd.
+                if (list_for_room_it != ssreq.lists.end())
                 {
-                    if (std::ranges::find(result.windowed_room_ids, room_id) != result.windowed_room_ids.end())
-                    {
-                        if (auto const lit = ssreq.lists.find(lname); lit != ssreq.lists.end())
-                        {
-                            sub.required_state = lit->second.required_state;
-                            sub.timeline_limit = lit->second.timeline_limit;
-                            sub.include_heroes = lit->second.include_heroes;
-                        }
-                        break;
-                    }
+                    sub = sync::combine_room_configs(list_for_room_it->second, sub);
                 }
+            }
+            else if (list_for_room_it != ssreq.lists.end())
+            {
+                // Room is in a list window but not subscribed: use the owning
+                // list's params verbatim.
+                sub.required_state = list_for_room_it->second.required_state;
+                sub.timeline_limit = list_for_room_it->second.timeline_limit;
+                sub.include_heroes = list_for_room_it->second.include_heroes;
             }
             auto const room_seen_it = conn.rooms_seen.find(room_id);
             auto const is_initial = room_seen_it == conn.rooms_seen.end();

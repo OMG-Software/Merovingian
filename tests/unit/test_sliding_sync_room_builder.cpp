@@ -702,3 +702,108 @@ SCENARIO("Sliding sync timeline events never carry a duplicate event_id key",
         }
     }
 }
+
+// ── MSC4186 list + room_subscription required_state combination ─────────────
+// Per MSC4186, when a room matches both a list and a room_subscription the
+// room configs combine: required_state is the superset, timeline_limit is the
+// maximum, and include_heroes is OR'd.
+
+SCENARIO("MSC4186 combines list and room_subscription required_state into a superset",
+         "[sync][sliding-sync][room-config-combine]")
+{
+    GIVEN("a list and a room_subscription for the same room with disjoint required_state")
+    {
+        auto list = merovingian::sync::SlidingSyncList{};
+        list.required_state = {
+            {"m.room.power_levels", ""}
+        };
+        list.timeline_limit = 1U;
+        list.include_heroes = false;
+
+        auto sub = merovingian::sync::SlidingSyncRoomSubscription{};
+        sub.required_state = {
+            {"m.room.member", "$ME"}
+        };
+        sub.timeline_limit = 5U;
+        sub.include_heroes = true;
+
+        WHEN("the two room configs are combined per MSC4186")
+        {
+            auto const combined = merovingian::sync::combine_room_configs(list, sub);
+
+            THEN("required_state is the union of both sets")
+            {
+                auto const contains = [&](std::string_view t, std::string_view k) {
+                    return std::ranges::any_of(combined.required_state, [&](auto const& p) {
+                        return p.first == t && p.second == k;
+                    });
+                };
+                REQUIRE(contains("m.room.power_levels", ""));
+                REQUIRE(contains("m.room.member", "$ME"));
+                REQUIRE(combined.required_state.size() == 2U);
+            }
+            THEN("timeline_limit is the maximum of the two")
+            {
+                REQUIRE(combined.timeline_limit == 5U);
+            }
+            THEN("include_heroes is OR'd")
+            {
+                REQUIRE(combined.include_heroes == true);
+            }
+        }
+    }
+}
+
+SCENARIO("MSC4186 combine prunes required_state pairs subsumed by a wildcard",
+         "[sync][sliding-sync][room-config-combine][wildcard]")
+{
+    GIVEN("a list requesting all members and a subscription requesting $ME")
+    {
+        auto list = merovingian::sync::SlidingSyncList{};
+        list.required_state = {
+            {"m.room.member", "*"}
+        };
+        auto sub = merovingian::sync::SlidingSyncRoomSubscription{};
+        sub.required_state = {
+            {"m.room.member", "$ME"}
+        };
+
+        WHEN("combined")
+        {
+            auto const combined = merovingian::sync::combine_room_configs(list, sub);
+
+            THEN("the wildcard subsumes the specific member pair")
+            {
+                REQUIRE(combined.required_state.size() == 1U);
+                REQUIRE(combined.required_state.front().first == "m.room.member");
+                REQUIRE(combined.required_state.front().second == "*");
+            }
+        }
+    }
+}
+
+SCENARIO("MSC4186 combine deduplicates exact duplicate required_state pairs",
+         "[sync][sliding-sync][room-config-combine][dedup]")
+{
+    GIVEN("both list and subscription request the same required_state pair")
+    {
+        auto list = merovingian::sync::SlidingSyncList{};
+        list.required_state = {
+            {"m.room.create", ""}
+        };
+        auto sub = merovingian::sync::SlidingSyncRoomSubscription{};
+        sub.required_state = {
+            {"m.room.create", ""}
+        };
+
+        WHEN("combined")
+        {
+            auto const combined = merovingian::sync::combine_room_configs(list, sub);
+
+            THEN("the duplicate is collapsed to one pair")
+            {
+                REQUIRE(combined.required_state.size() == 1U);
+            }
+        }
+    }
+}

@@ -633,6 +633,66 @@ SCENARIO("MSC4186 explicit room_subscriptions include rooms outside the list win
     }
 }
 
+// ── list + room_subscription required_state combination (MSC4186) ──────────────
+
+SCENARIO("MSC4186 combines list and room_subscription required_state for the same room",
+         "[homeserver][sliding-sync][integration][room-config-combine]")
+{
+    GIVEN("a user with a joined room present in a list window")
+    {
+        auto const config = sliding_sync_config();
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const token = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
+        auto const room_id = create_room(rt, token);
+
+        // Helper: does the room's required_state array contain an event of the
+        // given type?
+        auto const has_state_event = [](merovingian::canonicaljson::Object const* rm, std::string_view event_type) {
+            if (rm == nullptr)
+            {
+                return false;
+            }
+            auto const* state = object_member_as_array(*rm, "required_state");
+            if (state == nullptr)
+            {
+                return false;
+            }
+            return std::ranges::any_of(*state, [&](auto const& val) {
+                auto const* ev = std::get_if<merovingian::canonicaljson::Object>(&val.storage());
+                if (ev == nullptr)
+                {
+                    return false;
+                }
+                auto const* type = string_member(*ev, "type");
+                return type != nullptr && *type == event_type;
+            });
+        };
+
+        WHEN("the list requests m.room.power_levels and a subscription to the same room requests m.room.create")
+        {
+            auto const body = std::string{"{\"lists\":{\"rooms\":{\"ranges\":[[0,9]],"
+                                          "\"required_state\":[[\"m.room.power_levels\",\"\"]]}},"
+                                          "\"room_subscriptions\":{\""} +
+                              room_id + std::string{"\":{\"required_state\":[[\"m.room.create\",\"\"]]}}}"};
+            auto const result = sliding_sync(rt, token, body);
+
+            THEN("the room response carries the union: both m.room.power_levels and m.room.create")
+            {
+                REQUIRE(result.response.status == 200U);
+                auto const rooms = rooms_object(result.response.body);
+                auto const* rm = object_member_as_object(rooms, room_id);
+                REQUIRE(rm != nullptr);
+                // Before the merge, the subscription overrode the list and only
+                // m.room.create was returned. Per MSC4186 both must appear.
+                REQUIRE(has_state_event(rm, "m.room.power_levels"));
+                REQUIRE(has_state_event(rm, "m.room.create"));
+            }
+        }
+    }
+}
+
 // ── MSC3575 compatibility alias ───────────────────────────────────────────────
 
 SCENARIO("MSC4186 sliding sync is reachable at the org.matrix.simplified_msc3575 compatibility path",
