@@ -7414,6 +7414,20 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     }
 
     auto const request_path = std::string_view{req.target}.substr(0U, std::string_view{req.target}.find('?'));
+    // /_merovingian/admin/* — operational admin surface (health, metrics,
+    // audit, media moderation). Dispatched to the local router BEFORE the
+    // general user-token gate so require_admin() owns the 401/403 split
+    // (missing/invalid token -> 401, valid non-admin -> 403), matching how
+    // /_matrix/client/v3/logout is dispatched. Rate limiting is inherited
+    // from the allow() gate above: the per-IP /_merovingian/admin/ prefix
+    // policy in default_client_rate_limit_config() applies, so admin routes
+    // are throttled exactly once with no double-count.
+    if (starts_with(request_path, "/_merovingian/admin/"))
+    {
+        auto local = call_local(req);
+        apply_cors_headers(req, local, rt.cors);
+        return DispatchResult{DispatchResult::Status::complete, std::move(local), {}};
+    }
     // Spec: GET /_matrix/client/v3/publicRooms
     // ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3publicrooms
     // When ?server= names a remote homeserver the request must be proxied to

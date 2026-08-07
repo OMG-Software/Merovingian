@@ -309,3 +309,38 @@ SCENARIO("Wall-clock rate limiter: sustained distinct bucket keys do not grow th
         }
     }
 }
+
+SCENARIO("Wall-clock rate limiter: admin route prefix is capped per IP and a second IP is unaffected",
+         "[homeserver][client-server][rate-limit][wall-clock][admin]")
+{
+    GIVEN("a fresh rate-limit engine with the default config and a frozen clock")
+    {
+        auto clock = ManualClock{};
+        auto engine = RateLimitEngine{default_config(), clock};
+        auto const admin_target = std::string_view{"/_merovingian/admin/health"};
+
+        WHEN("30 admin requests from one IP are made in the same wall-clock second")
+        {
+            for (std::uint32_t i = 0U; i < 30U; ++i)
+            {
+                auto const d = engine.check(ip_bucket("10.0.0.1", admin_target), admin_target, std::string_view{});
+                REQUIRE(d.allowed);
+            }
+
+            THEN("the 31st request from that IP is denied with a 30-cap/60s window")
+            {
+                auto const d = engine.check(ip_bucket("10.0.0.1", admin_target), admin_target, std::string_view{});
+                REQUIRE_FALSE(d.allowed);
+                REQUIRE(d.max_requests == 30U);
+                REQUIRE(d.window_seconds == 60U);
+                REQUIRE(d.deny_reason == "per_ip_cap");
+            }
+            AND_THEN("a different IP is unaffected and may still issue admin requests")
+            {
+                auto const other = engine.check(ip_bucket("10.0.0.2", admin_target), admin_target, std::string_view{});
+                REQUIRE(other.allowed);
+                REQUIRE(other.max_requests == 30U);
+            }
+        }
+    }
+}

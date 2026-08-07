@@ -18,10 +18,22 @@ required_state merge, admin-route rate limiting, and admin 401/403 consistency.
   (with dedup and wildcard-aware merge), the combined `timeline_limit` is the
   maximum, and `include_heroes` is OR'd — per MSC4186 room-config combination
   rules. Previously the subscription overrode the list wholesale.
-- Rate limiting: the per-IP/per-user/per-route rate limiter is now applied to
-  `/_merovingian/admin/*` routes (previously unthrottled). Counters remain
+- Admin routes: `/_merovingian/admin/*` (health, metrics, audit, media
+  moderation) were previously unreachable in production — the client listener
+  only dispatches `/_matrix/client/*` and `/_matrix/media/*`, so admin routes
+  404'd on the public port and were only reachable via the test-only local
+  router. They are now wired into `handle_client_server_request` and served on
+  the client listener, dispatched to the local router before the general
+  user-token gate so `require_admin()` owns the 401/403 split. They inherit the
+  existing `allow()` per-IP/per-user/per-route rate limiter (throttled exactly
+  once per request, no double-count); the `/_merovingian/admin/` prefix is
+  capped at 30/min per IP by default and is operator-tunable via
+  `client_rate_limits:`. **Security note:** the admin surface is now exposed on
+  the public client port — it remains auth-gated by `require_admin()` (401 for a
+  missing/invalid token, 403 for a valid non-admin token) and rate-limited, so
+  only operators with a confirmed admin session can use it. Counters remain
   in-memory by design — no per-request database write amplification; the
-  trade-off is documented in `docs/http-transport.md`.
+  trade-off (counters reset on restart) is documented in `docs/http-transport.md`.
 - Admin auth: `/_merovingian/admin/*` routes now return 401 for a missing or
   invalid token and 403 `M_FORBIDDEN` for a valid token belonging to a non-admin
   user, matching the `/_matrix/client/v3/admin/*` surface. Previously both

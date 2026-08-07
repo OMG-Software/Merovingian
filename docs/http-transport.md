@@ -223,6 +223,7 @@ cap applies regardless of which room, device, or media ID appears in the URL:
 | Device and key APIs | 30/60s per IP |
 | Media APIs | 20/60s per IP |
 | Federation APIs | 120/60s per IP |
+| Admin routes (`/_merovingian/admin/*`) | 30/60s per IP |
 | Generic client APIs | 90/60s per IP fallback |
 
 Operators override any class via `client_rate_limits.per_ip.<target>` and
@@ -242,6 +243,34 @@ hash maps capped at 100,000 entries each, with stale-entry and
 least-recently-touched eviction, so a client rotating a spoofable
 `X-Forwarded-For` value (see below) cannot grow the table or the per-check
 cost without bound.
+
+### Admin routes
+
+`/_merovingian/admin/*` (health, metrics, audit, media moderation) is served on
+the public client listener. The client-server dispatcher routes the
+`/_merovingian/admin/` prefix to the local router **before** the general
+user-token gate, so `require_admin()` owns the auth outcome: 401
+`M_MISSING_TOKEN`/`M_UNKNOWN_TOKEN` for a missing or invalid token, 403
+`M_FORBIDDEN` for a valid token belonging to a non-admin user. The routes
+inherit the same `allow()` rate-limit gate as every other client-server
+request — throttled exactly once per request, no double-count — under the
+`/_merovingian/admin/` per-IP prefix policy (30/60s by default, operator-tunable
+via `client_rate_limits.per_ip`). Operator-only and low-volume, but still
+throttled against brute-force token guessing.
+
+### In-memory counter trade-off
+
+Rate-limit counters live entirely in process memory (`m_ip_buckets` /
+`m_user_buckets` on the `RateLimitEngine`). They are **not** persisted: there is
+no per-request database write to update a counter, by design. The trade-off is
+that a restart (or a worker crash under a federated deployment) resets the
+counters, so a client that was being throttled can immediately retry. This is
+an accepted operator sign-off: the cost of a per-request durable write — and
+the latency and contention a shared counter table would add to the hottest path
+in the server — is not worth the marginal benefit, because rate limiting is a
+best-effort abuse throttle rather than a hard correctness invariant. If a
+durable cap is required for a specific route, an operator should front the
+homeserver with a proxy that enforces it.
 
 ### Trusted-proxy client IP resolution
 
