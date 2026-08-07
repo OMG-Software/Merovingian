@@ -1,3 +1,32 @@
+## 0.11.9
+
+Four capability-gap closures: remote 3PID identity-server lookup, MSC4186
+required_state merge, admin-route rate limiting, and admin 401/403 consistency.
+
+- Identity service: a new `identity` module provides an outbound Identity
+  Service API client (`store-invite`, `lookup`, `bind`, `unbind`,
+  `requestToken`) that talks to a remote identity server over the SSRF-safe
+  resolver with pinned addresses. `POST /_matrix/client/v3/rooms/{roomId}/invite`
+  with `id_server`/`medium`/`address` now contacts the identity server instead of
+  minting the invite token locally, and `POST /account/3pid/bind`,
+  `POST /account/3pid/unbind`, and the `requestToken` flows now drive the remote
+  identity server. 3PID bindings are persisted (new `006_account_threepids.sql`
+  migration) instead of held only in memory. A new `identity_server.*` config
+  block selects trusted identity servers, allowed bind domains, and timeouts.
+- Sliding sync (MSC4186): when a room is present in both a list window and a
+  `room_subscriptions` entry, the combined `required_state` is now the superset
+  (with dedup and wildcard-aware merge), the combined `timeline_limit` is the
+  maximum, and `include_heroes` is OR'd — per MSC4186 room-config combination
+  rules. Previously the subscription overrode the list wholesale.
+- Rate limiting: the per-IP/per-user/per-route rate limiter is now applied to
+  `/_merovingian/admin/*` routes (previously unthrottled). Counters remain
+  in-memory by design — no per-request database write amplification; the
+  trade-off is documented in `docs/http-transport.md`.
+- Admin auth: `/_merovingian/admin/*` routes now return 401 for a missing or
+  invalid token and 403 `M_FORBIDDEN` for a valid token belonging to a non-admin
+  user, matching the `/_matrix/client/v3/admin/*` surface. Previously both
+  cases returned 401.
+
 ## 0.11.8
 
 Cross-device verification: notify a user's own devices when one of their devices uploads keys, and prompt a freshly-logged-in device to discover its own user's existing devices.
