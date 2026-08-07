@@ -1823,18 +1823,21 @@ namespace
     }
 
     [[nodiscard]] auto find_account_threepid(ClientServerRuntime& rt, std::string_view user_id, std::string_view medium,
-                                             std::string_view address) -> AccountThreePid*
+                                             std::string_view address) -> database::PersistentThreePidBinding*
     {
-        auto const iterator = std::ranges::find_if(rt.account_threepids, [&](AccountThreePid const& current) {
-            return current.user_id == user_id && current.medium == medium && current.address == address;
-        });
-        return iterator == rt.account_threepids.end() ? nullptr : &(*iterator);
+        auto& store = rt.homeserver.database.persistent_store;
+        auto const iterator =
+            std::ranges::find_if(store.account_threepids, [&](database::PersistentThreePidBinding const& current) {
+                return current.user_id == user_id && current.medium == medium && current.address == address;
+            });
+        return iterator == store.account_threepids.end() ? nullptr : &(*iterator);
     }
 
     [[nodiscard]] auto threepid_in_use(ClientServerRuntime const& rt, std::string_view medium, std::string_view address,
                                        std::optional<std::string_view> except_user_id = std::nullopt) -> bool
     {
-        return std::ranges::any_of(rt.account_threepids, [&](AccountThreePid const& current) {
+        auto const& store = rt.homeserver.database.persistent_store;
+        return std::ranges::any_of(store.account_threepids, [&](database::PersistentThreePidBinding const& current) {
             return current.medium == medium && current.address == address &&
                    (!except_user_id.has_value() || current.user_id != *except_user_id);
         });
@@ -1843,7 +1846,7 @@ namespace
     [[nodiscard]] auto ensure_account_threepid(ClientServerRuntime& rt, std::string_view user_id,
                                                std::string_view medium, std::string_view address,
                                                std::optional<std::string_view> country, std::uint64_t validated_at_ms)
-        -> AccountThreePid&
+        -> database::PersistentThreePidBinding&
     {
         auto const now_ms = wall_clock_milliseconds();
         auto* existing = find_account_threepid(rt, user_id, medium, address);
@@ -1855,10 +1858,13 @@ namespace
             {
                 existing->country = std::string{*country};
             }
+            // Write-through: mirror the in-memory mutation to the backend so the
+            // binding survives restart. store_account_threepid upserts on conflict.
+            std::ignore = database::store_account_threepid(rt.homeserver.database.persistent_store, *existing);
             return *existing;
         }
 
-        rt.account_threepids.push_back(AccountThreePid{
+        auto binding = database::PersistentThreePidBinding{
             std::string{user_id},
             std::string{medium},
             std::string{address},
@@ -1867,11 +1873,22 @@ namespace
             now_ms,
             validated_at_ms,
             false,
-        });
-        return rt.account_threepids.back();
+        };
+        // store_account_threepid owns the in-memory mirror: on success it inserts
+        // the binding into the store vector, so re-find to return a stable
+        // reference. On the rare backend failure the entry is absent; fall back to
+        // an in-memory-only copy so the caller's field mutations stay well-defined.
+        std::ignore = database::store_account_threepid(rt.homeserver.database.persistent_store, binding);
+        auto* stored = find_account_threepid(rt, user_id, medium, address);
+        if (stored != nullptr)
+        {
+            return *stored;
+        }
+        rt.homeserver.database.persistent_store.account_threepids.push_back(std::move(binding));
+        return rt.homeserver.database.persistent_store.account_threepids.back();
     }
 
-    [[nodiscard]] auto threepid_unbind_result(AccountThreePid const* record,
+    [[nodiscard]] auto threepid_unbind_result(database::PersistentThreePidBinding const* record,
                                               std::optional<std::string_view> requested_id_server) -> std::string_view
     {
         if (record == nullptr)
@@ -8273,7 +8290,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     if (req.method == "GET" && req.target == "/_matrix/client/v3/account/3pid")
     {
         auto threepids = canonicaljson::Array{};
-        for (auto const& record : rt.account_threepids)
+        for (auto const& record : rt.homeserver.database.persistent_store.account_threepids)
         {
             if (record.user_id != *user)
             {
@@ -8347,6 +8364,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             session->validated_at_ms);
         record.id_server = body->id_server;
         record.bound = true;
+        // ensure_account_threepid persisted the binding before id_server/bound were
+        // set; re-persist so the bound marker and identity-server reference survive.
+        std::ignore = database::store_account_threepid(rt.homeserver.database.persistent_store, record);
         return dispatch_resp(req, rt, 200U, "{}");
     }
     if (req.method == "POST" && req.target == "/_matrix/client/v3/account/3pid")
@@ -8382,6 +8402,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             session->validated_at_ms);
         record.id_server = *id_server;
         record.bound = true;
+        // ensure_account_threepid persisted the binding before id_server/bound were
+        // set; re-persist so the bound marker and identity-server reference survive.
+        std::ignore = database::store_account_threepid(rt.homeserver.database.persistent_store, record);
         return dispatch_resp(req, rt, 200U, "{}");
     }
     if (req.method == "POST" && req.target == "/_matrix/client/v3/account/3pid/unbind")
@@ -8399,6 +8422,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             record->bound = false;
             record->id_server.reset();
+            // Write-through: persist the cleared bound/id_server state.
+            std::ignore = database::store_account_threepid(rt.homeserver.database.persistent_store, *record);
         }
         return dispatch_resp(req, rt, 200U,
                              json_serialize(json_obj({json_member("id_server_unbind_result", json_str(result))})));
@@ -8414,9 +8439,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         auto* record = find_account_threepid(rt, *user, body->medium, normalized_address);
         auto const result = threepid_unbind_result(
             record, body->id_server.has_value() ? std::optional<std::string_view>{*body->id_server} : std::nullopt);
-        std::erase_if(rt.account_threepids, [&](AccountThreePid const& current) {
-            return current.user_id == *user && current.medium == body->medium && current.address == normalized_address;
-        });
+        // Write-through delete: remove the binding from the backend and the mirror.
+        std::ignore = database::delete_account_threepid(rt.homeserver.database.persistent_store, *user, body->medium,
+                                                        normalized_address);
         return dispatch_resp(req, rt, 200U,
                              json_serialize(json_obj({json_member("id_server_unbind_result", json_str(result))})));
     }

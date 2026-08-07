@@ -2646,6 +2646,73 @@ auto restore_sync_stream_id(PersistentStore& store) -> void
     return it == store.profiles.end() ? std::nullopt : std::optional<PersistentProfile>{*it};
 }
 
+[[nodiscard]] auto store_account_threepid(PersistentStore& store, PersistentThreePidBinding binding) -> bool
+{
+    if (binding.user_id.empty() || binding.medium.empty() || binding.address.empty())
+    {
+        return false;
+    }
+    auto const statement = record_statement(
+        "upsert_account_threepid",
+        "INSERT INTO account_threepids (user_id, medium, address, country, id_server, added_at_ms, "
+        "validated_at_ms, bound) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) "
+        "ON CONFLICT (user_id, medium, address) DO UPDATE SET country = $4, id_server = $5, "
+        "added_at_ms = $6, validated_at_ms = $7, bound = $8",
+        {public_value(binding.user_id), public_value(binding.medium), public_value(binding.address),
+         public_value(binding.country.value_or("")), public_value(binding.id_server.value_or("")),
+         public_value(std::to_string(binding.added_at_ms)), public_value(std::to_string(binding.validated_at_ms)),
+         public_value(binding.bound ? "true" : "false")});
+    if (!record_and_persist(store, statement))
+    {
+        return false;
+    }
+    // Keep the in-memory mirror in sync; replace the existing entry if present.
+    auto const existing =
+        std::ranges::find_if(store.account_threepids, [&binding](PersistentThreePidBinding const& current) {
+            return current.user_id == binding.user_id && current.medium == binding.medium &&
+                   current.address == binding.address;
+        });
+    if (existing != store.account_threepids.end())
+    {
+        *existing = std::move(binding);
+        return true;
+    }
+    store.account_threepids.push_back(std::move(binding));
+    return true;
+}
+
+[[nodiscard]] auto find_account_threepid(PersistentStore const& store, std::string_view user_id,
+                                         std::string_view medium, std::string_view address)
+    -> std::optional<PersistentThreePidBinding>
+{
+    auto const it = std::ranges::find_if(store.account_threepids, [&](PersistentThreePidBinding const& current) {
+        return current.user_id == user_id && current.medium == medium && current.address == address;
+    });
+    return it == store.account_threepids.end() ? std::nullopt : std::optional<PersistentThreePidBinding>{*it};
+}
+
+[[nodiscard]] auto delete_account_threepid(PersistentStore& store, std::string_view user_id, std::string_view medium,
+                                           std::string_view address) -> bool
+{
+    auto const existing = std::ranges::find_if(store.account_threepids, [&](PersistentThreePidBinding const& current) {
+        return current.user_id == user_id && current.medium == medium && current.address == address;
+    });
+    if (existing == store.account_threepids.end())
+    {
+        return false;
+    }
+    if (!record_and_persist(store,
+                            record_statement("delete_account_threepid",
+                                             "DELETE FROM account_threepids WHERE user_id = $1 AND medium = $2 "
+                                             "AND address = $3",
+                                             {public_value(user_id), public_value(medium), public_value(address)})))
+    {
+        return false;
+    }
+    store.account_threepids.erase(existing);
+    return true;
+}
+
 [[nodiscard]] auto update_profile_displayname(PersistentStore& store, std::string_view user_id,
                                               std::string_view displayname) -> bool
 {

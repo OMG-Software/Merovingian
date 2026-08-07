@@ -314,11 +314,21 @@ auto downgrade_initial_schema_migration() -> MigrationStep
     return {5U, "backfill_state_transitions", std::move(statements), MigrationDirection::upgrade};
 }
 
+[[nodiscard]] auto upgrade_account_threepids_migration() -> MigrationStep
+{
+    auto statements = std::vector<PreparedStatement>{};
+    statements.push_back(make_create_table_statement(schema_table_definition("account_threepids").value()).value());
+    return {6U, "account_threepids", std::move(statements), MigrationDirection::upgrade};
+}
+
 auto upgrade_migration_catalog() -> std::vector<MigrationStep>
 {
-    return {initial_schema_migration(), upgrade_sync_stream_watermark_migration(),
-            upgrade_event_stream_watermark_migration(), upgrade_state_transitions_migration(),
-            upgrade_backfill_state_transitions_migration()};
+    return {initial_schema_migration(),
+            upgrade_sync_stream_watermark_migration(),
+            upgrade_event_stream_watermark_migration(),
+            upgrade_state_transitions_migration(),
+            upgrade_backfill_state_transitions_migration(),
+            upgrade_account_threepids_migration()};
 }
 
 [[nodiscard]] auto downgrade_backfill_state_transitions_migration() -> MigrationStep
@@ -328,6 +338,13 @@ auto upgrade_migration_catalog() -> std::vector<MigrationStep>
     // migration and is dropped by the v4 downgrade.
     statements.push_back(PreparedStatement{"clear_state_transitions", "DELETE FROM state_transitions", {}});
     return {4U, "drop_backfill_state_transitions", std::move(statements), MigrationDirection::downgrade};
+}
+
+[[nodiscard]] auto downgrade_account_threepids_migration() -> MigrationStep
+{
+    auto statements = std::vector<PreparedStatement>{};
+    statements.push_back(make_drop_table_statement("account_threepids").value());
+    return {5U, "drop_account_threepids", std::move(statements), MigrationDirection::downgrade};
 }
 
 [[nodiscard]] auto downgrade_sync_stream_watermark_migration() -> MigrationStep
@@ -353,9 +370,9 @@ auto upgrade_migration_catalog() -> std::vector<MigrationStep>
 
 auto downgrade_migration_catalog() -> std::vector<MigrationStep>
 {
-    return {downgrade_backfill_state_transitions_migration(), downgrade_state_transitions_migration(),
-            downgrade_event_stream_watermark_migration(), downgrade_sync_stream_watermark_migration(),
-            downgrade_initial_schema_migration()};
+    return {downgrade_account_threepids_migration(),     downgrade_backfill_state_transitions_migration(),
+            downgrade_state_transitions_migration(),     downgrade_event_stream_watermark_migration(),
+            downgrade_sync_stream_watermark_migration(), downgrade_initial_schema_migration()};
 }
 
 auto migration_plan_between(std::uint32_t current_version, std::uint32_t target_version) -> MigrationPlan

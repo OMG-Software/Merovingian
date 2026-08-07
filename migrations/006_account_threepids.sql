@@ -1,0 +1,3 @@
+-- merovingian-migration version=6 name=account_threepids direction=upgrade
+-- statement create_account_threepids
+CREATE TABLE account_threepids (user_id TEXT NOT NULL, medium TEXT NOT NULL, address TEXT NOT NULL, country TEXT NOT NULL DEFAULT '', id_server TEXT NOT NULL DEFAULT '', added_at_ms TEXT NOT NULL DEFAULT '0', validated_at_ms TEXT NOT NULL DEFAULT '0', bound TEXT NOT NULL DEFAULT '0', PRIMARY KEY (user_id, medium, address))

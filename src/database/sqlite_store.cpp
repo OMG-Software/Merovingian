@@ -660,9 +660,27 @@ namespace
                          [&store](sqlite3_stmt& row) {
                              store.next_sync_stream_id = parse_u64(column_text(row, 0));
                          }) &&
-               load_rows(connection, "SELECT watermark FROM event_stream_watermark", [&store](sqlite3_stmt& row) {
-                   store.event_stream_watermark = parse_u64(column_text(row, 0));
-               });
+               load_rows(connection, "SELECT watermark FROM event_stream_watermark",
+                         [&store](sqlite3_stmt& row) {
+                             store.event_stream_watermark = parse_u64(column_text(row, 0));
+                         }) &&
+               load_rows(connection,
+                         "SELECT user_id, medium, address, country, id_server, added_at_ms, validated_at_ms, bound "
+                         "FROM account_threepids ORDER BY user_id, medium, address",
+                         [&store](sqlite3_stmt& row) {
+                             PersistentThreePidBinding entry{};
+                             entry.user_id = column_text(row, 0);
+                             entry.medium = column_text(row, 1);
+                             entry.address = column_text(row, 2);
+                             auto const country = column_text(row, 3);
+                             entry.country = country.empty() ? std::nullopt : std::optional<std::string>{country};
+                             auto const id_server = column_text(row, 4);
+                             entry.id_server = id_server.empty() ? std::nullopt : std::optional<std::string>{id_server};
+                             entry.added_at_ms = parse_u64(column_text(row, 5));
+                             entry.validated_at_ms = parse_u64(column_text(row, 6));
+                             entry.bound = text_is_true(column_text(row, 7));
+                             store.account_threepids.push_back(std::move(entry));
+                         });
     }
 
     [[nodiscard]] auto bind_text_params(sqlite3_stmt& statement, std::vector<std::string> const& params) -> bool
