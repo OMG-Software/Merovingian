@@ -1447,6 +1447,10 @@ namespace
         std::optional<std::string> id_server{};
         std::optional<std::string> medium{};
         std::optional<std::string> address{};
+        // Bearer token authenticating the inviting user to the identity server.
+        // Required by the spec when `id_server` is supplied; passed through to
+        // the IS store-invite call.
+        std::optional<std::string> id_access_token{};
     };
 
     [[nodiscard]] auto parse_membership_action_body(std::string_view body) -> std::optional<MembershipActionBody>
@@ -1462,6 +1466,7 @@ namespace
         auto const* medium = string_member(*object, "medium");
         auto const* address = string_member(*object, "address");
         auto const* reason = string_member(*object, "reason");
+        auto const* id_access_token = string_member(*object, "id_access_token");
 
         auto body_out = MembershipActionBody{};
         body_out.reason = reason == nullptr ? std::string{} : *reason;
@@ -1480,6 +1485,10 @@ namespace
         if (address != nullptr && !address->empty())
         {
             body_out.address = *address;
+        }
+        if (id_access_token != nullptr && !id_access_token->empty())
+        {
+            body_out.id_access_token = *id_access_token;
         }
 
         // The two documented request shapes are mutually exclusive: either a
@@ -9970,7 +9979,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             else
             {
                 auto const result = merovingian::homeserver::invite_user_by_threepid(
-                    rt.homeserver, req.access_token, room_id, *body->id_server, *body->medium, *body->address);
+                    rt.homeserver, req.access_token, room_id, *body->id_server, *body->medium, *body->address,
+                    body->id_access_token.value_or(""));
                 if (!result.ok)
                 {
                     return dispatch_err(req, rt, result.status, error_code_for_status(result.status), result.reason);

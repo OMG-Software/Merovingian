@@ -1416,9 +1416,10 @@ SCENARIO("invite_user notifies the federation worker when an existing room gains
     }
 }
 
-SCENARIO("invite_user_by_threepid creates a signed m.room.third_party_invite state event", "[homeserver][rooms][3pid]")
+SCENARIO("invite_user_by_threepid refuses a third-party invite without a trusted identity server",
+         "[homeserver][rooms][3pid]")
 {
-    GIVEN("a room with alice joined")
+    GIVEN("a room with alice joined and no trusted identity server configured")
     {
         REQUIRE(sodium_init() >= 0);
         auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
@@ -1437,37 +1438,23 @@ SCENARIO("invite_user_by_threepid creates a signed m.room.third_party_invite sta
         WHEN("alice invites a third-party email address")
         {
             auto const result = merovingian::homeserver::invite_user_by_threepid(
-                runtime, alice_login.value, room.value, "example.org", "email", "bob@example.org");
+                runtime, alice_login.value, room.value, "id.example.org", "email", "bob@example.org", "opaque");
 
-            THEN("a signed m.room.third_party_invite state event is persisted")
+            THEN("the invite is refused and no third-party invite event is persisted")
             {
-                REQUIRE(result.ok);
+                // The identity server — not the homeserver — must mint the
+                // invite token and sign the join-side `signed` blob. With no
+                // operator-trusted IS, the homeserver fails closed (403) rather
+                // than emit a local-only, unverifiable m.room.third_party_invite.
+                REQUIRE_FALSE(result.ok);
+                REQUIRE(result.status == 403U);
 
                 auto const& store = runtime.database.persistent_store;
                 auto const state = std::ranges::find_if(
                     store.state, [&room_id = room.value](merovingian::database::PersistentStateEvent const& s) {
                         return s.room_id == room_id && s.event_type == "m.room.third_party_invite";
                     });
-                REQUIRE(state != store.state.end());
-                REQUIRE_FALSE(state->state_key.empty());
-
-                auto const event = std::ranges::find_if(
-                    store.events, [&event_id = state->event_id](merovingian::database::PersistentEvent const& e) {
-                        return e.event_id == event_id;
-                    });
-                REQUIRE(event != store.events.end());
-
-                auto const parsed = merovingian::canonicaljson::parse_lossless(event->json);
-                auto const* obj = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
-                REQUIRE(obj != nullptr);
-                auto const* content = merovingian::tests::object_member_as_object(*obj, "content");
-                REQUIRE(content != nullptr);
-                auto const* public_key = merovingian::tests::string_member(*content, "public_key");
-                REQUIRE(public_key != nullptr);
-                REQUIRE_FALSE(public_key->empty());
-                auto const* public_keys = merovingian::tests::object_member_as_array(*content, "public_keys");
-                REQUIRE(public_keys != nullptr);
-                REQUIRE_FALSE(public_keys->empty());
+                REQUIRE(state == store.state.end());
             }
         }
     }
