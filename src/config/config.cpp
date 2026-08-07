@@ -5,6 +5,7 @@
 
 #include "merovingian/config/config_parser.hpp"
 
+#include <algorithm>
 #include <limits>
 #include <optional>
 #include <string_view>
@@ -610,6 +611,38 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
         validate_oidc_endpoint("server.oidc.revocation_endpoint", oidc.revocation_endpoint, true);
         validate_oidc_endpoint("server.oidc.device_authorization_endpoint", oidc.device_authorization_endpoint, false);
         validate_oidc_endpoint("server.oidc.account_management_uri", oidc.account_management_uri, false);
+    }
+
+    // Identity Service API: every trusted server and the default server must
+    // be an HTTPS URL; the default server, when set, must also appear in the
+    // trusted list (an untrusted default would let 3PID traffic bypass the
+    // allowlist). An empty trusted list is valid — it means 3PID operations
+    // that need an IS fail closed, which is the secure default.
+    auto const& identity = config.server().identity_server;
+    for (auto const& server_url : identity.trusted_servers)
+    {
+        if (!is_valid_https_url(server_url))
+        {
+            findings.push_back(
+                {"server.identity_server.trusted_servers", "each trusted identity server must use HTTPS"});
+        }
+    }
+    if (!identity.default_server.empty())
+    {
+        if (!is_valid_https_url(identity.default_server))
+        {
+            findings.push_back({"server.identity_server.default_server", "default identity server must use HTTPS"});
+        }
+        else if (std::ranges::find(identity.trusted_servers, identity.default_server) == identity.trusted_servers.end())
+        {
+            findings.push_back(
+                {"server.identity_server.default_server", "default identity server must be listed in trusted_servers"});
+        }
+    }
+    if (identity.total_timeout_seconds < identity.connect_timeout_seconds)
+    {
+        findings.push_back(
+            {"server.identity_server.total_timeout_seconds", "total timeout must be >= connect timeout"});
     }
 
     if (!is_valid_listener_bind(config.listeners().client.bind))
