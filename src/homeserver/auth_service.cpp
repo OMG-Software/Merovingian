@@ -847,6 +847,26 @@ auto authenticated_admin_user(HomeserverRuntime const& runtime, std::string_view
     return user->user_id;
 }
 
+auto require_admin(HomeserverRuntime& runtime, std::string_view access_token) -> AdminAuthResult
+{
+    // Two-step gate so /_merovingian/admin/* routes return 401 for a
+    // missing/expired/unknown token and 403 for a valid token whose user is
+    // not an admin — matching the /_matrix/client/v3/admin/* convention.
+    // authenticated_user already emits the access_token.rejected audit event
+    // for the missing-token case, so no duplicate logging here.
+    auto const user_id = authenticated_user(runtime, access_token);
+    if (!user_id.has_value())
+    {
+        return {std::nullopt, AdminAuthResult::Denial::missing_token};
+    }
+    auto const* user = find_user(runtime.database, *user_id);
+    if (user == nullptr || !user->admin)
+    {
+        return {std::nullopt, AdminAuthResult::Denial::not_admin};
+    }
+    return {user->user_id, AdminAuthResult::Denial::none};
+}
+
 auto logout_local_user(HomeserverRuntime& runtime, std::string_view access_token) -> OperationResult
 {
     auto const token_hashes = lookup_token_hashes(runtime, access_token);

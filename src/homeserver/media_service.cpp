@@ -1079,20 +1079,23 @@ namespace
 [[nodiscard]] auto admin_quarantine_local_media(HomeserverRuntime& runtime, std::string_view access_token,
                                                 std::string_view media_id, std::string_view reason) -> OperationResult
 {
-    auto const admin_user_id = authenticated_admin_user(runtime, access_token);
-    if (!admin_user_id.has_value())
+    auto const admin = require_admin(runtime, access_token);
+    if (!admin.user_id.has_value())
     {
-        return make_operation_result(false, {}, "admin authentication required", 401U);
+        auto const missing = admin.denial == AdminAuthResult::Denial::missing_token;
+        return make_operation_result(false, {}, missing ? "admin authentication required" : "admin privileges required",
+                                     missing ? 401U : 403U);
     }
+    auto const& admin_user_id = *admin.user_id;
 
     auto const result = media::quarantine_local_media(runtime.media_repository, media_id, reason);
     if (result.ok)
     {
         std::ignore = database::update_local_media_state(runtime.database.persistent_store, media_id, true, false);
         std::ignore = database::append_admin_action(runtime.database.persistent_store,
-                                                    {*admin_user_id, "media.quarantine", std::string{media_id}});
+                                                    {admin_user_id, "media.quarantine", std::string{media_id}});
         append_local_audit(runtime.database, observability::AuditCategory::moderation, "media.quarantined",
-                           *admin_user_id, media_id, reason);
+                           admin_user_id, media_id, reason);
     }
     return admin_result_to_operation(result);
 }
@@ -1100,19 +1103,22 @@ namespace
 [[nodiscard]] auto admin_release_local_media(HomeserverRuntime& runtime, std::string_view access_token,
                                              std::string_view media_id) -> OperationResult
 {
-    auto const admin_user_id = authenticated_admin_user(runtime, access_token);
-    if (!admin_user_id.has_value())
+    auto const admin = require_admin(runtime, access_token);
+    if (!admin.user_id.has_value())
     {
-        return make_operation_result(false, {}, "admin authentication required", 401U);
+        auto const missing = admin.denial == AdminAuthResult::Denial::missing_token;
+        return make_operation_result(false, {}, missing ? "admin authentication required" : "admin privileges required",
+                                     missing ? 401U : 403U);
     }
+    auto const& admin_user_id = *admin.user_id;
 
     auto const result = media::release_local_media(runtime.media_repository, media_id);
     if (result.ok)
     {
         std::ignore = database::update_local_media_state(runtime.database.persistent_store, media_id, false, false);
         std::ignore = database::append_admin_action(runtime.database.persistent_store,
-                                                    {*admin_user_id, "media.release", std::string{media_id}});
-        append_local_audit(runtime.database, observability::AuditCategory::moderation, "media.released", *admin_user_id,
+                                                    {admin_user_id, "media.release", std::string{media_id}});
+        append_local_audit(runtime.database, observability::AuditCategory::moderation, "media.released", admin_user_id,
                            media_id, "released");
     }
     return admin_result_to_operation(result);
@@ -1121,11 +1127,14 @@ namespace
 [[nodiscard]] auto admin_remove_local_media(HomeserverRuntime& runtime, std::string_view access_token,
                                             std::string_view media_id, std::string_view reason) -> OperationResult
 {
-    auto const admin_user_id = authenticated_admin_user(runtime, access_token);
-    if (!admin_user_id.has_value())
+    auto const admin = require_admin(runtime, access_token);
+    if (!admin.user_id.has_value())
     {
-        return make_operation_result(false, {}, "admin authentication required", 401U);
+        auto const missing = admin.denial == AdminAuthResult::Denial::missing_token;
+        return make_operation_result(false, {}, missing ? "admin authentication required" : "admin privileges required",
+                                     missing ? 401U : 403U);
     }
+    auto const& admin_user_id = *admin.user_id;
 
     auto const result = media::remove_local_media(runtime.media_repository, media_id, reason);
     if (result.ok)
@@ -1133,8 +1142,8 @@ namespace
         std::ignore = database::update_local_media_state(runtime.database.persistent_store, media_id, false, true);
         persist_blob_for_media(runtime, media_id);
         std::ignore = database::append_admin_action(runtime.database.persistent_store,
-                                                    {*admin_user_id, "media.remove", std::string{media_id}});
-        append_local_audit(runtime.database, observability::AuditCategory::moderation, "media.removed", *admin_user_id,
+                                                    {admin_user_id, "media.remove", std::string{media_id}});
+        append_local_audit(runtime.database, observability::AuditCategory::moderation, "media.removed", admin_user_id,
                            media_id, reason);
     }
     return admin_result_to_operation(result);

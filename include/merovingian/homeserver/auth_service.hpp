@@ -5,6 +5,7 @@
 #include "merovingian/auth/identity.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -29,6 +30,27 @@ namespace merovingian::homeserver
     -> std::optional<LocalSession>;
 [[nodiscard]] auto authenticated_admin_user(HomeserverRuntime const& runtime, std::string_view access_token)
     -> std::optional<std::string>;
+
+// Outcome of an `/_merovingian/admin/*` auth gate. `user_id` is set when the
+// presented token belongs to a confirmed admin; otherwise `denial` identifies
+// which HTTP response applies — `missing_token` for a missing/expired/unknown
+// token (401 M_MISSING_TOKEN/M_UNKNOWN_TOKEN) and `not_admin` for a valid
+// token whose user is not an admin (403 M_FORBIDDEN). This splits the two
+// cases `authenticated_admin_user` collapses, so admin routes match the
+// `/_matrix/client/v3/admin/*` status-code convention (spec v1.19).
+struct AdminAuthResult
+{
+    enum class Denial : std::uint8_t
+    {
+        none,
+        missing_token,
+        not_admin,
+    };
+    std::optional<std::string> user_id{};
+    Denial denial{Denial::none};
+};
+[[nodiscard]] auto require_admin(HomeserverRuntime& runtime, std::string_view access_token) -> AdminAuthResult;
+
 // Returns the account state (active/locked/suspended) of a server-local user,
 // or std::nullopt if the user is unknown. Used by the request-path moderation
 // gate in the client-server dispatcher to enforce M_USER_LOCKED / M_USER_SUSPENDED
