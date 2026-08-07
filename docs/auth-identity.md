@@ -114,6 +114,44 @@ production-gated.
   `delete_room_key_backup_room`, and `delete_room_key_backup_batch`, all reading/writing real
   session rows from `persistent_store.key_backup_sessions`.
 
+## Identity server client (3PID invites)
+
+A dedicated `identity` module (`include/merovingian/identity/identity_client.hpp`,
+`src/identity/identity_client.cpp`) owns the outbound Identity Service API client.
+`IdentityServerClient` exposes `store_invite`, `lookup`, `bind`, `unbind`, and
+`requestToken` methods plus pure helpers (`parse_identity_server_url`,
+`build_*_body`, `parse_store_invite_response`, `parse_lookup_response`). It talks
+to a remote identity server over `http::OutboundClient` combined with
+`federation::CachedServerDiscovery`, and is SSRF-safe: resolved addresses are
+pinned and private/loopback ranges are rejected via `deny_ip_ranges`.
+
+The homeserver is a **client** of the identity server, not a federation peer:
+authentication uses a bearer `id_access_token` supplied by the calling client,
+never `X-Matrix`. See spec v1.19 Identity Service API.
+
+`POST /_matrix/client/v3/rooms/{roomId}/invite` with `id_server`/`medium`/
+`address`/`id_access_token` now delegates token and key generation to the IS via
+`store-invite` and builds the `m.room.third_party_invite` event from the
+IS-issued token (used as the `state_key`) plus the IS's ephemeral public key
+(top-level `public_key`/`key_validity_url`) and the full `public_keys` array.
+Per spec v1.19 client-server-api §"Third-party invites" and the
+`SignedThirdPartyInvite` shape, the token MUST be issued by the identity server
+at `/store-invite`: the join-side `third_party_signed` signature is verified
+against the IS's key, so the previous local-only token minting was
+non-conformant. The HS fails closed with `403 M_FORBIDDEN` when the supplied
+`id_server` is not listed in `server.identity_server.trusted_servers`, and
+returns `502` on transport error or a malformed IS response.
+
+The `server.identity_server.*` config block (`trusted_servers`,
+`default_server`, `allowed_bind_domains`, `connect_timeout_seconds`,
+`total_timeout_seconds`) is hot-reloaded and marked restart-required for
+trust-set changes. 3PID bindings are persisted via migration
+`006_account_threepids.sql` (previously in-memory).
+
+**Deferred follow-on:** the `bind`, `unbind`, and `requestToken` handlers
+persist locally but do not yet drive the remote IS; that sync is deferred pending
+a discovery test-seam for hermetic IS mocking.
+
 ## Security posture
 
 The core auth policy module deliberately stays free of cryptographic password

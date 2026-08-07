@@ -147,6 +147,23 @@ backend drift surfaces in CI rather than at runtime. The
 `subprojects/curl.wrap` fallback is deferred until a known-good WrapDB
 release is pinned.
 
+### Identity Service API client
+
+The `identity` module's `IdentityServerClient` is a client of the Matrix
+Identity Service API, not a federation peer, so it authenticates with a
+bearer `id_access_token` (not `X-Matrix` federation auth). It issues
+`store-invite` (third-party invite issuance), `lookup`, `bind`, `unbind`,
+and `requestToken` calls to a remote identity server over the same
+SSRF-safe `OutboundClient` + `CachedServerDiscovery` resolver used for
+federation: hostnames resolve through `CachedServerDiscovery` with pinned
+addresses, and private/loopback addresses are rejected so a misconfigured
+or hostile IS hostname cannot redirect the homeserver onto an internal
+network. Trusted IS hosts are configured via
+`server.identity_server.trusted_servers`; the homeserver fails closed
+(403) when an `id_server` named in a 3PID invite is not in that list. The
+`store-invite` call is performed outside `runtime.mutex` so an unreachable
+identity server cannot block unrelated room mutations.
+
 ## TLS listener boundary
 
 TLS is a runtime listener boundary, not a replacement for the HTTP parser. The

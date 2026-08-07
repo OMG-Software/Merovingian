@@ -7,12 +7,19 @@ required_state merge, admin-route rate limiting, and admin 401/403 consistency.
   Service API client (`store-invite`, `lookup`, `bind`, `unbind`,
   `requestToken`) that talks to a remote identity server over the SSRF-safe
   resolver with pinned addresses. `POST /_matrix/client/v3/rooms/{roomId}/invite`
-  with `id_server`/`medium`/`address` now contacts the identity server instead of
-  minting the invite token locally, and `POST /account/3pid/bind`,
-  `POST /account/3pid/unbind`, and the `requestToken` flows now drive the remote
+  with `id_server`/`medium`/`address` now contacts the identity server's
+  `store-invite` endpoint and builds the `m.room.third_party_invite` from the
+  IS-issued token and public key, instead of minting them locally (local-only
+  minting produced an unverifiable invite — the join-side `third_party_signed`
+  signature is checked against the IS's key, which the IS never issued). The
+  homeserver fails closed (403) when `id_server` is not an operator-trusted
   identity server. 3PID bindings are persisted (new `006_account_threepids.sql`
   migration) instead of held only in memory. A new `identity_server.*` config
   block selects trusted identity servers, allowed bind domains, and timeouts.
+  **Note:** the `bind`/`unbind`/`requestToken` handlers persist locally but do
+  not yet drive the remote identity server — that IS sync is a documented
+  follow-on (tracked in `docs/todos/capability-gaps.md`) pending a discovery
+  test-seam for hermetic IS mocking.
 - Sliding sync (MSC4186): when a room is present in both a list window and a
   `room_subscriptions` entry, the combined `required_state` is now the superset
   (with dedup and wildcard-aware merge), the combined `timeline_limit` is the

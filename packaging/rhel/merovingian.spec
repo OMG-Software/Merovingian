@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.11.8
+Version:        0.11.9
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -97,6 +97,8 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Fri Aug 07 2026 James Chapman <claude@ping.me.uk> - 0.11.9-1
+- Capability-gap closures: remote 3PID identity-server lookup (store-invite) for third-party invites with durable account_threepids bindings; MSC4186 sliding sync required_state merge for list+subscription; rate-limit /_merovingian/admin/* routes; consistent 401/403 admin authentication.
 * Tue Aug 04 2026 James Chapman <claude@ping.me.uk> - 0.11.8-1
 - Notify a user's own devices when any of their devices upload keys, fixing cross-device verification hangs where the receiving device never learned the new device's keys.
 * Tue Aug 04 2026 James Chapman <claude@ping.me.uk> - 0.11.7-1

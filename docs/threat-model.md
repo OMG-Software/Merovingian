@@ -575,6 +575,30 @@ threat it closes; the controls above are the standing defences these reinforce.
   duplicate copy of the master-key loader is removed in favor of the single
   `src/crypto/` implementation.
 
+- **Outbound identity-server `store-invite` SSRF and trust-bypass surface
+  (v0.11.9):** inviting a user by a 3PID requires the homeserver to call a
+  remote Identity Service API `store-invite` endpoint, introducing a new
+  outbound attack surface: a client-controlled `id_server` could direct the
+  homeserver to an arbitrary or internal host (SSRF), an untrusted IS could
+  be used to mint unverifiable invites, and federation signing-key material
+  could be exposed to the IS. Mitigations, all fail-closed: (1) **SSRF** —
+  every IS outbound call resolves through `federation::CachedServerDiscovery`
+  (`ServerDiscoveryNetwork::lookup_addresses`) with the resolved addresses
+  pinned and `deny_ip_ranges` rejecting private/loopback ranges
+  (`127.0.0.1`, RFC1918, etc.); there is no ad-hoc DNS lookup on the
+  client-supplied host. (2) **Trust gate** — the `id_server` must be listed
+  in `server.identity_server.trusted_servers` or the invite fails closed with
+  `403`, so a client cannot direct the HS to an arbitrary or internal host
+  under an untrusted IS identity. (3) **Auth model** — the HS acts as a
+  client of the IS and authenticates with a bearer `id_access_token`, not an
+  `X-Matrix` federation signature, so no server signing-key material is
+  exposed to the IS. (4) **Fail-closed transport** — an IS transport error,
+  non-200 response, or malformed body returns `502` to the caller with no
+  local-only fallback that would mint an invite the HS cannot later verify.
+  (5) **No lock held across network I/O** — IS network calls are made
+  outside `runtime.mutex` per the codebase convention, so a slow or hostile
+  IS cannot block other runtime work.
+
 ## Security principles
 
 - Fail closed.
