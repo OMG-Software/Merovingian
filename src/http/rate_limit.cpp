@@ -91,7 +91,9 @@ auto default_client_rate_limit_config() noexcept -> RateLimitConfig
 {
     // Design-doc defaults (0.5.0): 20/min per IP for login/register,
     // 5/min per user for login, 30/min for keys/devices, 20/min for media,
-    // 120/min for federation, 90/min for everything else.
+    // 120/min for federation, 90/min for everything else. Admin routes
+    // (/_merovingian/admin/*) get 30/min per IP — operator-only, low-volume,
+    // but still throttled against brute-force token guessing.
     return RateLimitConfig{
         .per_ip =
             {
@@ -102,6 +104,7 @@ auto default_client_rate_limit_config() noexcept -> RateLimitConfig
                      {"/_matrix/media/", {20U, 60U}},
                      {"/_matrix/client/v1/media/", {20U, 60U}},
                      {"/_matrix/federation/", {120U, 60U}},
+                     {"/_merovingian/admin/", {30U, 60U}},
                      },
         .per_user =
             {

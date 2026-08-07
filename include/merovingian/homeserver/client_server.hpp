@@ -55,18 +55,6 @@ struct RegistrationValidationSession final
     std::uint64_t validated_at_ms{0U};
 };
 
-struct AccountThreePid final
-{
-    std::string user_id{};
-    std::string medium{};
-    std::string address{};
-    std::optional<std::string> country{};
-    std::optional<std::string> id_server{};
-    std::uint64_t added_at_ms{0U};
-    std::uint64_t validated_at_ms{0U};
-    bool bound{false};
-};
-
 struct ClientApiLimits final
 {
     // 64 KiB covers real Matrix API calls including keys/upload (device keys +
@@ -95,7 +83,6 @@ struct ClientServerRuntime final
     std::vector<ClientDevice> devices{};
     std::vector<ClientKeyApiRecord> key_api_records{};
     std::vector<RegistrationValidationSession> registration_validation_sessions{};
-    std::vector<AccountThreePid> account_threepids{};
     // CORS policy snapshot. Copied from `config.server().cors` at
     // `start_client_server()` time. CORS is not hot-reloadable: a config
     // change requires a server restart.

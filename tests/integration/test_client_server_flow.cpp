@@ -1206,6 +1206,74 @@ SCENARIO("GET /_merovingian/admin/audit filters by category and event_type query
     }
 }
 
+// WS3: /_merovingian/admin/* routes are now wired into the production
+// client-server dispatch (previously they 404'd on the public client port —
+// only reachable via the test-only local router). This scenario exercises the
+// full handle_client_server_request path: the allow() rate-limit gate runs
+// first, then the admin branch dispatches to the local router. It asserts the
+// per-IP /_merovingian/admin/ prefix policy (30/60s) inherited from
+// default_client_rate_limit_config() is enforced end-to-end and that a second
+// source IP is unaffected — proving admin routes are served AND throttled in
+// production, with no double-count (a single allow() call per request).
+SCENARIO("/_merovingian/admin/* routes are served and rate-limited on the client port",
+         "[homeserver][admin][rate-limit][integration]")
+{
+    GIVEN("a started client-server runtime with a bootstrapped and logged-in admin")
+    {
+        auto const config = registration_enabled_config();
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        // start_client_server installs the production rate-limit engine built
+        // from default_client_rate_limit_config(), which carries the
+        // /_merovingian/admin/ -> 30/60s per-IP prefix policy under test.
+
+        auto const admin_bootstrap =
+            merovingian::homeserver::bootstrap_admin_user(rt.homeserver, "ops", "CorrectHorse7!");
+        REQUIRE(admin_bootstrap.ok);
+        // Log in through the production dispatch path so the admin carries a
+        // real session token the admin_auth_denied gate will accept.
+        auto const admin_login = merovingian::homeserver::handle_client_server_request(
+            rt,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@ops:example.org"},"password":"CorrectHorse7!","device_id":"OPSDEV"})"});
+        REQUIRE(admin_login.response.status == 200U);
+        auto const admin_token = response_string_field(admin_login.response.body, "access_token");
+
+        // LocalHttpRequest aggregate-init order: method, target, access_token,
+        // body, headers, remote_addr. Setting remote_addr drives the per-IP
+        // bucket key in allow(); an empty remote_addr would collapse to the
+        // "unknown" bucket and mask per-IP isolation.
+        auto const admin_health = [&](std::string const& ip) {
+            return merovingian::homeserver::handle_client_server_request(
+                rt, {"GET", "/_merovingian/admin/health", admin_token, {}, {}, ip});
+        };
+
+        WHEN("30 admin health requests arrive from one source IP")
+        {
+            for (std::uint32_t i = 0U; i < 30U; ++i)
+            {
+                auto const resp = admin_health("10.0.0.1");
+                REQUIRE(resp.response.status == 200U);
+            }
+
+            THEN("the 31st request from that IP is rejected 429 M_LIMIT_EXCEEDED")
+            {
+                auto const denied = admin_health("10.0.0.1");
+                REQUIRE(denied.response.status == 429U);
+                REQUIRE(denied.response.body.find("M_LIMIT_EXCEEDED") != std::string::npos);
+            }
+            AND_THEN("a request from a different source IP is unaffected")
+            {
+                auto const other = admin_health("10.0.0.2");
+                REQUIRE(other.response.status == 200U);
+            }
+        }
+    }
+}
+
 SCENARIO("Typing notifications are delivered via ephemeral events in /sync",
          "[homeserver][client-server][integration][sync][typing][regression]")
 {

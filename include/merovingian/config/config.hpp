@@ -52,6 +52,28 @@ struct TurnServerConfig final
     std::uint32_t ttl_seconds{86400U};
 };
 
+// Identity Service API configuration (Matrix v1.19 Identity Service API).
+// The homeserver acts as a client of one or more remote identity servers for
+// third-party identifier (3PID) invites, binds, unbinds, and requestToken
+// flows. `trusted_servers` is the allowlist of IS base URLs the homeserver
+// will contact: a 3PID invite/bind whose `id_server` is not in this list is
+// refused (M_UNRECOGNIZED / 404), so operators pin the IS attack surface.
+// `default_server` is the IS used when a client omits `id_server` from a
+// requestToken/bind call. `allowed_bind_domains` restricts which domains a
+// user may bind an email 3PID for (preventing bind-of-someone-else's-domain
+// abuse). Timeouts bound the outbound IS HTTP calls (see OutboundClient).
+// Empty by default: with no trusted servers, every 3PID operation that
+// requires an IS fails closed with a clear error rather than silently
+// minting tokens locally.
+struct IdentityServerConfig final
+{
+    std::vector<std::string> trusted_servers{};
+    std::string default_server{};
+    std::vector<std::string> allowed_bind_domains{};
+    std::uint32_t connect_timeout_seconds{10U};
+    std::uint32_t total_timeout_seconds{30U};
+};
+
 // OIDC authorisation server metadata configuration for MSC2965 discovery.
 // When `enabled` is false, GET /_matrix/client/v1/auth_metadata returns
 // 404 M_UNRECOGNIZED. When enabled, the endpoint returns RFC 8414 metadata
@@ -86,6 +108,10 @@ struct ServerConfig final
     // OIDC discovery metadata. Empty by default; when populated the
     // auth_metadata endpoint advertises the configured OAuth 2.0 server.
     OidcConfig oidc{};
+    // Identity Service API client config for 3PID invites/bind/unbind/
+    // requestToken. Empty by default; with no trusted servers the homeserver
+    // refuses 3PID operations that need an IS rather than minting locally.
+    IdentityServerConfig identity_server{};
 };
 
 struct ListenerConfig final

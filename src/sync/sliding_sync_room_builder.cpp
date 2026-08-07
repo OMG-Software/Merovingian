@@ -478,6 +478,73 @@ auto count_highlights(database::PersistentStore const& store, std::string_view r
     return count;
 }
 
+// Combine a list's room-config fields with a room_subscription's, per MSC4186
+// room-config combination. When a room matches both a list and a
+// room_subscription, required_state is the superset (union with exact-duplicate
+// dedup and wildcard-aware pruning of subsumed pairs), timeline_limit is the
+// maximum of the two, and include_heroes is OR'd. Wildcard-aware pruning means
+// a pair such as ("m.room.member", "$ME") is dropped when
+// ("m.room.member", "*") is also present, since the wildcard already matches
+// every state_key; the subsumption rules reuse the anonymous-namespace matcher
+// so they stay identical to the runtime matching rules.
+auto combine_room_configs(SlidingSyncList const& list, SlidingSyncRoomSubscription const& sub)
+    -> SlidingSyncRoomSubscription
+{
+    auto combined = sub;
+    combined.timeline_limit = std::max(list.timeline_limit, sub.timeline_limit);
+    combined.include_heroes = list.include_heroes || sub.include_heroes;
+
+    // Union the two required_state vectors, dropping exact duplicates.
+    auto merged = std::vector<std::pair<std::string, std::string>>{};
+    merged.reserve(sub.required_state.size() + list.required_state.size());
+    auto const push_unique = [&](std::string const& t, std::string const& k) {
+        for (auto const& existing : merged)
+        {
+            if (existing.first == t && existing.second == k)
+            {
+                return;
+            }
+        }
+        merged.emplace_back(t, k);
+    };
+    for (auto const& [t, k] : sub.required_state)
+    {
+        push_unique(t, k);
+    }
+    for (auto const& [t, k] : list.required_state)
+    {
+        push_unique(t, k);
+    }
+
+    // Prune pairs subsumed by another pair's wildcard pattern: pair p is
+    // subsumed when some other pair o matches p via the sliding-sync wildcard
+    // rules (o's type "*" or equal to p's, o's key "*" or equal to p's).
+    auto pruned = std::vector<std::pair<std::string, std::string>>{};
+    pruned.reserve(merged.size());
+    for (auto const& p : merged)
+    {
+        auto subsumed = false;
+        for (auto const& o : merged)
+        {
+            if (&o == &p)
+            {
+                continue;
+            }
+            if (matches_required_state_pair(o.first, o.second, p.first, p.second))
+            {
+                subsumed = true;
+                break;
+            }
+        }
+        if (!subsumed)
+        {
+            pruned.push_back(p);
+        }
+    }
+    combined.required_state = std::move(pruned);
+    return combined;
+}
+
 auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_view room_id, std::string_view user,
                          SlidingSyncRoomSubscription const& sub, std::uint64_t room_since_event_ordering,
                          bool is_initial, database::PersistentStore const& store,

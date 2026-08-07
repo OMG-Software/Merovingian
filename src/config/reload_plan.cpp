@@ -374,6 +374,33 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
         add_change(plan, "server.turn.ttl_seconds");
     }
 
+    // Identity Service API. Unlike the OIDC block (which has no reload diff —
+    // issue #421), every identity_server field is diffed so a hot-reload that
+    // changes the trusted-IS allowlist or timeouts is detected. All changes
+    // are restart_required (see reload_policy.cpp): the outbound IS client and
+    // cached resolver are built at startup.
+    if (current.server().identity_server.trusted_servers != next.server().identity_server.trusted_servers)
+    {
+        add_change(plan, "server.identity_server.trusted_servers");
+    }
+    if (current.server().identity_server.default_server != next.server().identity_server.default_server)
+    {
+        add_change(plan, "server.identity_server.default_server");
+    }
+    if (current.server().identity_server.allowed_bind_domains != next.server().identity_server.allowed_bind_domains)
+    {
+        add_change(plan, "server.identity_server.allowed_bind_domains");
+    }
+    if (current.server().identity_server.connect_timeout_seconds !=
+        next.server().identity_server.connect_timeout_seconds)
+    {
+        add_change(plan, "server.identity_server.connect_timeout_seconds");
+    }
+    if (current.server().identity_server.total_timeout_seconds != next.server().identity_server.total_timeout_seconds)
+    {
+        add_change(plan, "server.identity_server.total_timeout_seconds");
+    }
+
     if (current.security().secrets.master_key_file != next.security().secrets.master_key_file)
     {
         add_change(plan, "security.secrets.master_key_file");

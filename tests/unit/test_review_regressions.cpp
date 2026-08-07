@@ -27,6 +27,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <type_traits>
 #include <vector>
@@ -196,7 +197,7 @@ private:
 
 } // namespace
 
-SCENARIO("Admin health remains admin-only after router split", "[homeserver][security][review]")
+SCENARIO("Admin routes split missing-token 401 from non-admin 403", "[homeserver][security][review]")
 {
     GIVEN("a runtime with an admin user and a regular user")
     {
@@ -213,19 +214,59 @@ SCENARIO("Admin health remains admin-only after router split", "[homeserver][sec
         REQUIRE(admin_login.ok);
         REQUIRE(normal_login.ok);
 
-        WHEN("both users request admin health")
+        WHEN("admin, non-admin, and missing-token callers hit the admin health route")
         {
             auto const admin_response = merovingian::homeserver::handle_local_http_request(
                 runtime, {"GET", "/_merovingian/admin/health", admin_login.value, {}});
             auto const normal_response = merovingian::homeserver::handle_local_http_request(
                 runtime, {"GET", "/_merovingian/admin/health", normal_login.value, {}});
+            auto const missing_response = merovingian::homeserver::handle_local_http_request(
+                runtime, {"GET", "/_merovingian/admin/health", {}, {}});
 
-            THEN("only the admin session can read operational health")
+            THEN("admin gets 200, non-admin gets 403, missing token gets 401")
             {
                 REQUIRE(admin_response.status == 200U);
-                REQUIRE(normal_response.status == 401U);
+                REQUIRE(normal_response.status == 403U);
+                REQUIRE(normal_response.body == "admin privileges required");
+                REQUIRE(missing_response.status == 401U);
+                REQUIRE(missing_response.body == "admin authentication required");
                 REQUIRE_FALSE(
                     merovingian::homeserver::authenticated_admin_user(runtime, normal_login.value).has_value());
+            }
+        }
+
+        WHEN("non-admin and missing-token callers hit the admin media moderation routes")
+        {
+            // The auth gate fires before any media lookup, so a non-existent
+            // media id still surfaces the 401/403 distinction rather than 404.
+            auto constexpr media_id = std::string_view{"media-not-present"};
+            auto const quarantine_non_admin = merovingian::homeserver::handle_local_http_request(
+                runtime, {"POST", "/_merovingian/admin/media/quarantine/" + std::string{media_id}, normal_login.value,
+                          "policy review"});
+            auto const quarantine_missing = merovingian::homeserver::handle_local_http_request(
+                runtime,
+                {"POST", "/_merovingian/admin/media/quarantine/" + std::string{media_id}, {}, "policy review"});
+            auto const release_non_admin = merovingian::homeserver::handle_local_http_request(
+                runtime,
+                {"POST", "/_merovingian/admin/media/release/" + std::string{media_id}, normal_login.value, {}});
+            auto const release_missing = merovingian::homeserver::handle_local_http_request(
+                runtime, {"POST", "/_merovingian/admin/media/release/" + std::string{media_id}, {}, {}});
+            auto const remove_non_admin = merovingian::homeserver::handle_local_http_request(
+                runtime, {"POST", "/_merovingian/admin/media/remove/" + std::string{media_id}, normal_login.value,
+                          "operator removal"});
+            auto const remove_missing = merovingian::homeserver::handle_local_http_request(
+                runtime, {"POST", "/_merovingian/admin/media/remove/" + std::string{media_id}, {}, "operator removal"});
+
+            THEN("non-admin gets 403 and missing token gets 401 on every moderation route")
+            {
+                REQUIRE(quarantine_non_admin.status == 403U);
+                REQUIRE(quarantine_non_admin.body == "admin privileges required");
+                REQUIRE(quarantine_missing.status == 401U);
+                REQUIRE(quarantine_missing.body == "admin authentication required");
+                REQUIRE(release_non_admin.status == 403U);
+                REQUIRE(release_missing.status == 401U);
+                REQUIRE(remove_non_admin.status == 403U);
+                REQUIRE(remove_missing.status == 401U);
             }
         }
     }

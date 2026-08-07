@@ -982,6 +982,31 @@ namespace
             }
         }
 
+        auto account_threepids = query_rows(connection, "postgresql_load_account_threepids",
+                                            "SELECT user_id, medium, address, country, id_server, "
+                                            "added_at_ms, validated_at_ms, bound FROM account_threepids "
+                                            "ORDER BY user_id, medium, address");
+        if (!account_threepids.ok)
+        {
+            return false;
+        }
+        for (auto const& row : account_threepids.rows)
+        {
+            if (row.size() >= 8U)
+            {
+                PersistentThreePidBinding entry{};
+                entry.user_id = row[0];
+                entry.medium = row[1];
+                entry.address = row[2];
+                entry.country = row[3].empty() ? std::nullopt : std::optional<std::string>{row[3]};
+                entry.id_server = row[4].empty() ? std::nullopt : std::optional<std::string>{row[4]};
+                entry.added_at_ms = parse_u64(row[5]);
+                entry.validated_at_ms = parse_u64(row[6]);
+                entry.bound = text_is_true(row[7]);
+                store.account_threepids.push_back(std::move(entry));
+            }
+        }
+
         auto const watermark = query_rows(connection, "postgresql_load_sync_stream_watermark",
                                           "SELECT watermark FROM sync_stream_watermark");
         if (!watermark.ok)

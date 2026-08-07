@@ -1447,6 +1447,10 @@ namespace
         std::optional<std::string> id_server{};
         std::optional<std::string> medium{};
         std::optional<std::string> address{};
+        // Bearer token authenticating the inviting user to the identity server.
+        // Required by the spec when `id_server` is supplied; passed through to
+        // the IS store-invite call.
+        std::optional<std::string> id_access_token{};
     };
 
     [[nodiscard]] auto parse_membership_action_body(std::string_view body) -> std::optional<MembershipActionBody>
@@ -1462,6 +1466,7 @@ namespace
         auto const* medium = string_member(*object, "medium");
         auto const* address = string_member(*object, "address");
         auto const* reason = string_member(*object, "reason");
+        auto const* id_access_token = string_member(*object, "id_access_token");
 
         auto body_out = MembershipActionBody{};
         body_out.reason = reason == nullptr ? std::string{} : *reason;
@@ -1480,6 +1485,10 @@ namespace
         if (address != nullptr && !address->empty())
         {
             body_out.address = *address;
+        }
+        if (id_access_token != nullptr && !id_access_token->empty())
+        {
+            body_out.id_access_token = *id_access_token;
         }
 
         // The two documented request shapes are mutually exclusive: either a
@@ -1823,18 +1832,21 @@ namespace
     }
 
     [[nodiscard]] auto find_account_threepid(ClientServerRuntime& rt, std::string_view user_id, std::string_view medium,
-                                             std::string_view address) -> AccountThreePid*
+                                             std::string_view address) -> database::PersistentThreePidBinding*
     {
-        auto const iterator = std::ranges::find_if(rt.account_threepids, [&](AccountThreePid const& current) {
-            return current.user_id == user_id && current.medium == medium && current.address == address;
-        });
-        return iterator == rt.account_threepids.end() ? nullptr : &(*iterator);
+        auto& store = rt.homeserver.database.persistent_store;
+        auto const iterator =
+            std::ranges::find_if(store.account_threepids, [&](database::PersistentThreePidBinding const& current) {
+                return current.user_id == user_id && current.medium == medium && current.address == address;
+            });
+        return iterator == store.account_threepids.end() ? nullptr : &(*iterator);
     }
 
     [[nodiscard]] auto threepid_in_use(ClientServerRuntime const& rt, std::string_view medium, std::string_view address,
                                        std::optional<std::string_view> except_user_id = std::nullopt) -> bool
     {
-        return std::ranges::any_of(rt.account_threepids, [&](AccountThreePid const& current) {
+        auto const& store = rt.homeserver.database.persistent_store;
+        return std::ranges::any_of(store.account_threepids, [&](database::PersistentThreePidBinding const& current) {
             return current.medium == medium && current.address == address &&
                    (!except_user_id.has_value() || current.user_id != *except_user_id);
         });
@@ -1843,7 +1855,7 @@ namespace
     [[nodiscard]] auto ensure_account_threepid(ClientServerRuntime& rt, std::string_view user_id,
                                                std::string_view medium, std::string_view address,
                                                std::optional<std::string_view> country, std::uint64_t validated_at_ms)
-        -> AccountThreePid&
+        -> database::PersistentThreePidBinding&
     {
         auto const now_ms = wall_clock_milliseconds();
         auto* existing = find_account_threepid(rt, user_id, medium, address);
@@ -1855,10 +1867,13 @@ namespace
             {
                 existing->country = std::string{*country};
             }
+            // Write-through: mirror the in-memory mutation to the backend so the
+            // binding survives restart. store_account_threepid upserts on conflict.
+            std::ignore = database::store_account_threepid(rt.homeserver.database.persistent_store, *existing);
             return *existing;
         }
 
-        rt.account_threepids.push_back(AccountThreePid{
+        auto binding = database::PersistentThreePidBinding{
             std::string{user_id},
             std::string{medium},
             std::string{address},
@@ -1867,11 +1882,22 @@ namespace
             now_ms,
             validated_at_ms,
             false,
-        });
-        return rt.account_threepids.back();
+        };
+        // store_account_threepid owns the in-memory mirror: on success it inserts
+        // the binding into the store vector, so re-find to return a stable
+        // reference. On the rare backend failure the entry is absent; fall back to
+        // an in-memory-only copy so the caller's field mutations stay well-defined.
+        std::ignore = database::store_account_threepid(rt.homeserver.database.persistent_store, binding);
+        auto* stored = find_account_threepid(rt, user_id, medium, address);
+        if (stored != nullptr)
+        {
+            return *stored;
+        }
+        rt.homeserver.database.persistent_store.account_threepids.push_back(std::move(binding));
+        return rt.homeserver.database.persistent_store.account_threepids.back();
     }
 
-    [[nodiscard]] auto threepid_unbind_result(AccountThreePid const* record,
+    [[nodiscard]] auto threepid_unbind_result(database::PersistentThreePidBinding const* record,
                                               std::optional<std::string_view> requested_id_server) -> std::string_view
     {
         if (record == nullptr)
@@ -4139,25 +4165,40 @@ namespace
         for (auto const& room_id : response_room_ids)
         {
             auto sub = sync::SlidingSyncRoomSubscription{};
+
+            // Find the owning list (if any) for this room among the windowed
+            // lists. The first list whose window contains the room wins; a room
+            // present in multiple lists is not combined across lists (MSC4186
+            // combination is applied for list-vs-room_subscription below).
+            auto list_for_room_it = ssreq.lists.end();
+            for (auto const& [lname, result] : list_results)
+            {
+                if (std::ranges::find(result.windowed_room_ids, room_id) != result.windowed_room_ids.end())
+                {
+                    list_for_room_it = ssreq.lists.find(lname);
+                    break;
+                }
+            }
+
             if (auto const sit = ssreq.room_subscriptions.find(room_id); sit != ssreq.room_subscriptions.end())
             {
                 sub = sit->second;
-            }
-            else
-            {
-                for (auto const& [lname, result] : list_results)
+                // Per MSC4186, when a room matches both a list and a
+                // room_subscription the room configs combine into a superset:
+                // required_state is the union (deduped and wildcard-aware),
+                // timeline_limit is the maximum, and include_heroes is OR'd.
+                if (list_for_room_it != ssreq.lists.end())
                 {
-                    if (std::ranges::find(result.windowed_room_ids, room_id) != result.windowed_room_ids.end())
-                    {
-                        if (auto const lit = ssreq.lists.find(lname); lit != ssreq.lists.end())
-                        {
-                            sub.required_state = lit->second.required_state;
-                            sub.timeline_limit = lit->second.timeline_limit;
-                            sub.include_heroes = lit->second.include_heroes;
-                        }
-                        break;
-                    }
+                    sub = sync::combine_room_configs(list_for_room_it->second, sub);
                 }
+            }
+            else if (list_for_room_it != ssreq.lists.end())
+            {
+                // Room is in a list window but not subscribed: use the owning
+                // list's params verbatim.
+                sub.required_state = list_for_room_it->second.required_state;
+                sub.timeline_limit = list_for_room_it->second.timeline_limit;
+                sub.include_heroes = list_for_room_it->second.include_heroes;
             }
             auto const room_seen_it = conn.rooms_seen.find(room_id);
             auto const is_initial = room_seen_it == conn.rooms_seen.end();
@@ -7399,6 +7440,20 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     }
 
     auto const request_path = std::string_view{req.target}.substr(0U, std::string_view{req.target}.find('?'));
+    // /_merovingian/admin/* — operational admin surface (health, metrics,
+    // audit, media moderation). Dispatched to the local router BEFORE the
+    // general user-token gate so require_admin() owns the 401/403 split
+    // (missing/invalid token -> 401, valid non-admin -> 403), matching how
+    // /_matrix/client/v3/logout is dispatched. Rate limiting is inherited
+    // from the allow() gate above: the per-IP /_merovingian/admin/ prefix
+    // policy in default_client_rate_limit_config() applies, so admin routes
+    // are throttled exactly once with no double-count.
+    if (starts_with(request_path, "/_merovingian/admin/"))
+    {
+        auto local = call_local(req);
+        apply_cors_headers(req, local, rt.cors);
+        return DispatchResult{DispatchResult::Status::complete, std::move(local), {}};
+    }
     // Spec: GET /_matrix/client/v3/publicRooms
     // ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3publicrooms
     // When ?server= names a remote homeserver the request must be proxied to
@@ -8244,7 +8299,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     if (req.method == "GET" && req.target == "/_matrix/client/v3/account/3pid")
     {
         auto threepids = canonicaljson::Array{};
-        for (auto const& record : rt.account_threepids)
+        for (auto const& record : rt.homeserver.database.persistent_store.account_threepids)
         {
             if (record.user_id != *user)
             {
@@ -8318,6 +8373,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             session->validated_at_ms);
         record.id_server = body->id_server;
         record.bound = true;
+        // ensure_account_threepid persisted the binding before id_server/bound were
+        // set; re-persist so the bound marker and identity-server reference survive.
+        std::ignore = database::store_account_threepid(rt.homeserver.database.persistent_store, record);
         return dispatch_resp(req, rt, 200U, "{}");
     }
     if (req.method == "POST" && req.target == "/_matrix/client/v3/account/3pid")
@@ -8353,6 +8411,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             session->validated_at_ms);
         record.id_server = *id_server;
         record.bound = true;
+        // ensure_account_threepid persisted the binding before id_server/bound were
+        // set; re-persist so the bound marker and identity-server reference survive.
+        std::ignore = database::store_account_threepid(rt.homeserver.database.persistent_store, record);
         return dispatch_resp(req, rt, 200U, "{}");
     }
     if (req.method == "POST" && req.target == "/_matrix/client/v3/account/3pid/unbind")
@@ -8370,6 +8431,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             record->bound = false;
             record->id_server.reset();
+            // Write-through: persist the cleared bound/id_server state.
+            std::ignore = database::store_account_threepid(rt.homeserver.database.persistent_store, *record);
         }
         return dispatch_resp(req, rt, 200U,
                              json_serialize(json_obj({json_member("id_server_unbind_result", json_str(result))})));
@@ -8385,9 +8448,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         auto* record = find_account_threepid(rt, *user, body->medium, normalized_address);
         auto const result = threepid_unbind_result(
             record, body->id_server.has_value() ? std::optional<std::string_view>{*body->id_server} : std::nullopt);
-        std::erase_if(rt.account_threepids, [&](AccountThreePid const& current) {
-            return current.user_id == *user && current.medium == body->medium && current.address == normalized_address;
-        });
+        // Write-through delete: remove the binding from the backend and the mirror.
+        std::ignore = database::delete_account_threepid(rt.homeserver.database.persistent_store, *user, body->medium,
+                                                        normalized_address);
         return dispatch_resp(req, rt, 200U,
                              json_serialize(json_obj({json_member("id_server_unbind_result", json_str(result))})));
     }
@@ -9916,7 +9979,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             else
             {
                 auto const result = merovingian::homeserver::invite_user_by_threepid(
-                    rt.homeserver, req.access_token, room_id, *body->id_server, *body->medium, *body->address);
+                    rt.homeserver, req.access_token, room_id, *body->id_server, *body->medium, *body->address,
+                    body->id_access_token.value_or(""));
                 if (!result.ok)
                 {
                     return dispatch_err(req, rt, result.status, error_code_for_status(result.status), result.reason);

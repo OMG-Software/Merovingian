@@ -147,6 +147,23 @@ backend drift surfaces in CI rather than at runtime. The
 `subprojects/curl.wrap` fallback is deferred until a known-good WrapDB
 release is pinned.
 
+### Identity Service API client
+
+The `identity` module's `IdentityServerClient` is a client of the Matrix
+Identity Service API, not a federation peer, so it authenticates with a
+bearer `id_access_token` (not `X-Matrix` federation auth). It issues
+`store-invite` (third-party invite issuance), `lookup`, `bind`, `unbind`,
+and `requestToken` calls to a remote identity server over the same
+SSRF-safe `OutboundClient` + `CachedServerDiscovery` resolver used for
+federation: hostnames resolve through `CachedServerDiscovery` with pinned
+addresses, and private/loopback addresses are rejected so a misconfigured
+or hostile IS hostname cannot redirect the homeserver onto an internal
+network. Trusted IS hosts are configured via
+`server.identity_server.trusted_servers`; the homeserver fails closed
+(403) when an `id_server` named in a 3PID invite is not in that list. The
+`store-invite` call is performed outside `runtime.mutex` so an unreachable
+identity server cannot block unrelated room mutations.
+
 ## TLS listener boundary
 
 TLS is a runtime listener boundary, not a replacement for the HTTP parser. The
@@ -223,6 +240,7 @@ cap applies regardless of which room, device, or media ID appears in the URL:
 | Device and key APIs | 30/60s per IP |
 | Media APIs | 20/60s per IP |
 | Federation APIs | 120/60s per IP |
+| Admin routes (`/_merovingian/admin/*`) | 30/60s per IP |
 | Generic client APIs | 90/60s per IP fallback |
 
 Operators override any class via `client_rate_limits.per_ip.<target>` and
@@ -242,6 +260,34 @@ hash maps capped at 100,000 entries each, with stale-entry and
 least-recently-touched eviction, so a client rotating a spoofable
 `X-Forwarded-For` value (see below) cannot grow the table or the per-check
 cost without bound.
+
+### Admin routes
+
+`/_merovingian/admin/*` (health, metrics, audit, media moderation) is served on
+the public client listener. The client-server dispatcher routes the
+`/_merovingian/admin/` prefix to the local router **before** the general
+user-token gate, so `require_admin()` owns the auth outcome: 401
+`M_MISSING_TOKEN`/`M_UNKNOWN_TOKEN` for a missing or invalid token, 403
+`M_FORBIDDEN` for a valid token belonging to a non-admin user. The routes
+inherit the same `allow()` rate-limit gate as every other client-server
+request — throttled exactly once per request, no double-count — under the
+`/_merovingian/admin/` per-IP prefix policy (30/60s by default, operator-tunable
+via `client_rate_limits.per_ip`). Operator-only and low-volume, but still
+throttled against brute-force token guessing.
+
+### In-memory counter trade-off
+
+Rate-limit counters live entirely in process memory (`m_ip_buckets` /
+`m_user_buckets` on the `RateLimitEngine`). They are **not** persisted: there is
+no per-request database write to update a counter, by design. The trade-off is
+that a restart (or a worker crash under a federated deployment) resets the
+counters, so a client that was being throttled can immediately retry. This is
+an accepted operator sign-off: the cost of a per-request durable write — and
+the latency and contention a shared counter table would add to the hottest path
+in the server — is not worth the marginal benefit, because rate limiting is a
+best-effort abuse throttle rather than a hard correctness invariant. If a
+durable cap is required for a specific route, an operator should front the
+homeserver with a proxy that enforces it.
 
 ### Trusted-proxy client IP resolution
 

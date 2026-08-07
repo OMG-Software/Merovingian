@@ -228,6 +228,56 @@ namespace
         {
             server.oidc.account_management_actions_supported = parse_string_list(value);
         }
+        else if (key == "server.identity_server.trusted_servers")
+        {
+            server.identity_server.trusted_servers = parse_string_list(value);
+        }
+        else if (key == "server.identity_server.default_server")
+        {
+            server.identity_server.default_server = std::string{value};
+        }
+        else if (key == "server.identity_server.allowed_bind_domains")
+        {
+            server.identity_server.allowed_bind_domains = parse_string_list(value);
+        }
+        else if (key == "server.identity_server.connect_timeout_seconds")
+        {
+            try
+            {
+                auto const parsed = std::stoul(std::string{value});
+                if (parsed == 0U || parsed > std::numeric_limits<std::uint32_t>::max())
+                {
+                    add_parse_finding(findings, std::string{key}, "expected positive integer");
+                }
+                else
+                {
+                    server.identity_server.connect_timeout_seconds = static_cast<std::uint32_t>(parsed);
+                }
+            }
+            catch (...)
+            {
+                add_parse_finding(findings, std::string{key}, "expected positive integer");
+            }
+        }
+        else if (key == "server.identity_server.total_timeout_seconds")
+        {
+            try
+            {
+                auto const parsed = std::stoul(std::string{value});
+                if (parsed == 0U || parsed > std::numeric_limits<std::uint32_t>::max())
+                {
+                    add_parse_finding(findings, std::string{key}, "expected positive integer");
+                }
+                else
+                {
+                    server.identity_server.total_timeout_seconds = static_cast<std::uint32_t>(parsed);
+                }
+            }
+            catch (...)
+            {
+                add_parse_finding(findings, std::string{key}, "expected positive integer");
+            }
+        }
         else if (key == "listeners.client.bind")
         {
             listeners.client.bind = std::string{value};

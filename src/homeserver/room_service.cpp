@@ -29,6 +29,7 @@
 #include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/homeserver/runtime_signing_key_store.hpp"
+#include "merovingian/identity/identity_client.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
@@ -417,23 +418,42 @@ namespace
     // state_key is the opaque invite token, and the content carries the Ed25519
     // public key used later to validate `third_party_signed` joins.
     // Spec: Matrix v1.19 rooms/v11.md — Authorization rules for m.room.third_party_invite.
-    [[nodiscard]] auto serialize_third_party_invite_event_json(std::string_view token,
-                                                               std::string_view public_key_base64,
-                                                               std::string_view display_name)
+    [[nodiscard]] auto serialize_third_party_invite_event_json(
+        std::string_view token, std::string_view public_key_base64, std::string_view key_validity_url,
+        std::vector<merovingian::identity::StoreInvitePublicKey> const& public_keys, std::string_view display_name)
         -> std::optional<std::string>
     {
-        auto public_key_entry = canonicaljson::Object{};
-        public_key_entry.push_back(
-            canonicaljson::make_member("public_key", canonicaljson::Value{std::string{public_key_base64}}));
-
-        auto public_keys = canonicaljson::Array{};
-        public_keys.push_back(canonicaljson::Value{std::move(public_key_entry)});
+        // The IS returns a long-term key and an ephemeral key; both are emitted
+        // in `public_keys` so joining servers can verify the join-side `signed`
+        // blob against either via each entry's `key_validity_url`. The
+        // top-level `public_key`/`key_validity_url` carry the ephemeral key the
+        // IS used to sign the token. Spec: client-server-api.md
+        // § m.room.third_party_invite.
+        auto public_keys_array = canonicaljson::Array{};
+        for (auto const& entry : public_keys)
+        {
+            auto pk_entry = canonicaljson::Object{};
+            pk_entry.push_back(
+                canonicaljson::make_member("public_key", canonicaljson::Value{std::string{entry.public_key}}));
+            if (!entry.key_validity_url.empty())
+            {
+                pk_entry.push_back(canonicaljson::make_member(
+                    "key_validity_url", canonicaljson::Value{std::string{entry.key_validity_url}}));
+            }
+            public_keys_array.push_back(canonicaljson::Value{std::move(pk_entry)});
+        }
 
         auto content = canonicaljson::Object{};
         content.push_back(canonicaljson::make_member("display_name", canonicaljson::Value{std::string{display_name}}));
         content.push_back(
             canonicaljson::make_member("public_key", canonicaljson::Value{std::string{public_key_base64}}));
-        content.push_back(canonicaljson::make_member("public_keys", canonicaljson::Value{std::move(public_keys)}));
+        if (!key_validity_url.empty())
+        {
+            content.push_back(
+                canonicaljson::make_member("key_validity_url", canonicaljson::Value{std::string{key_validity_url}}));
+        }
+        content.push_back(
+            canonicaljson::make_member("public_keys", canonicaljson::Value{std::move(public_keys_array)}));
 
         auto event = canonicaljson::Object{};
         event.push_back(
@@ -4425,11 +4445,20 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
 
 [[nodiscard]] auto invite_user_by_threepid(HomeserverRuntime& runtime, std::string_view access_token,
                                            std::string_view room_id, std::string_view id_server,
-                                           std::string_view medium, std::string_view address) -> OperationResult
+                                           std::string_view medium, std::string_view address,
+                                           std::string_view id_access_token) -> OperationResult
 {
-    std::ignore = id_server;
+    // The identity server — not the homeserver — generates the invite token and
+    // the ephemeral key that signs the join-side `signed` blob. A local-only
+    // invite would be unverifiable on join, so this function refuses to mint one
+    // unless `id_server` is an operator-trusted IS it can actually reach, and
+    // fails closed on any IS error. Spec: client-server-api.md § Inviting a user
+    // via a third-party identifier; identity-service-api.md § store-invite.
+    auto guard = std::unique_lock<std::recursive_mutex>{runtime.mutex, std::defer_lock};
 
-    auto guard = std::unique_lock<std::recursive_mutex>{runtime.mutex};
+    // Validation under the lock: auth, room, membership, and that `id_server`
+    // names an operator-trusted identity server.
+    guard.lock();
     auto const user_id = authenticated_user(runtime, access_token);
     if (!user_id.has_value())
     {
@@ -4445,27 +4474,77 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
         return make_operation_result(false, {}, "user is not joined", 403U);
     }
 
-    auto const token = crypto::secure_random_hex(32U);
-    if (!token.has_value())
+    auto const& identity_config = runtime.config.server().identity_server;
+    auto const parsed_base = merovingian::identity::parse_identity_server_url("https://" + std::string{id_server});
+    if (!parsed_base.has_value())
     {
-        return make_operation_result(false, {}, "token generation failed", 500U);
+        return make_operation_result(false, {}, "identity server is not trusted", 403U);
+    }
+    // Match the client-supplied `id_server` (a host[:port]) against a trusted
+    // IS base URL by host+port, then use the trusted entry as the call target so
+    // an operator-configured path prefix is preserved.
+    auto const trusted_match =
+        std::ranges::find_if(identity_config.trusted_servers, [&parsed_base](std::string const& trusted) {
+            auto const parsed_trusted = merovingian::identity::parse_identity_server_url(trusted);
+            return parsed_trusted.has_value() && parsed_trusted->host == parsed_base->host &&
+                   parsed_trusted->port == parsed_base->port;
+        });
+    if (trusted_match == identity_config.trusted_servers.end())
+    {
+        return make_operation_result(false, {}, "identity server is not trusted", 403U);
+    }
+    auto base_url = std::string{*trusted_match};
+    guard.unlock();
+
+    // IS store-invite call: network-bound, deliberately outside runtime.mutex
+    // (matches the convention at filter_verified_send_join_events above).
+    if (runtime.outbound_client == nullptr || runtime.cached_discovery == nullptr)
+    {
+        return make_operation_result(false, {}, "identity server is not reachable", 502U);
+    }
+    auto id_client = merovingian::identity::IdentityServerClient{*runtime.outbound_client, *runtime.cached_discovery,
+                                                                 runtime.config.server().identity_server};
+    auto const invite = id_client.store_invite(base_url, id_access_token, medium, address, room_id, *user_id);
+    if (!invite.ok)
+    {
+        return make_operation_result(false, {}, "identity server is not reachable", 502U);
+    }
+    if (invite.status != 200U)
+    {
+        // IS-level rejection (e.g. 401 bad id_access_token, 404 unbound 3PID).
+        // Fail closed; never fall back to a local-only, unverifiable invite.
+        return make_operation_result(false, {}, "identity server rejected the invite", invite.status);
+    }
+    auto const parsed = merovingian::identity::parse_store_invite_response(invite.body);
+    if (!parsed.has_value() || parsed->public_keys.empty())
+    {
+        return make_operation_result(false, {}, "identity server returned a malformed store-invite response", 502U);
     }
 
-    auto const keypair = crypto::generate_ed25519_keypair();
-    if (!keypair.has_value())
-    {
-        return make_operation_result(false, {}, "keypair generation failed", 500U);
-    }
-
-    auto const public_key_b64 = events::matrix_base64_from_bytes(
-        std::string_view{reinterpret_cast<char const*>(keypair->public_key.data()), keypair->public_key.size()});
-
-    auto const event_json = serialize_third_party_invite_event_json(*token, public_key_b64, address);
+    // The ephemeral key (last entry) signs the join-side `signed` blob; the
+    // long-term key is first. Carry the ephemeral key as the top-level
+    // public_key and list every key in public_keys so joining servers can
+    // verify via key_validity_url.
+    auto const& ephemeral = parsed->public_keys.back();
+    auto const display_name = parsed->display_name.empty() ? std::string{address} : parsed->display_name;
+    auto const event_json = serialize_third_party_invite_event_json(
+        parsed->token, ephemeral.public_key, ephemeral.key_validity_url, parsed->public_keys, display_name);
     if (!event_json.has_value())
     {
         return make_operation_result(false, {}, "third-party invite event serialization failed", 500U);
     }
 
+    // Re-lock and persist: room state may have changed during the IS round-trip.
+    guard.lock();
+    auto* room_after = find_room(runtime.database, room_id);
+    if (room_after == nullptr)
+    {
+        return make_operation_result(false, {}, "room not found", 404U);
+    }
+    if (!room_has_member(*room_after, *user_id))
+    {
+        return make_operation_result(false, {}, "user is not joined", 403U);
+    }
     auto const composed = compose_signed_event(runtime, room_id, *user_id, *event_json);
     if (!composed.has_value())
     {

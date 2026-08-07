@@ -329,6 +329,91 @@ SCENARIO("Persistent store profiles upsert and apply targeted displayname and av
     }
 }
 
+SCENARIO("Persistent store upserts, finds, and deletes durable 3PID bindings", "[database][persistence][threepid]")
+{
+    GIVEN("an in-memory persistent store")
+    {
+        auto store = merovingian::database::PersistentStore{};
+
+        WHEN("alice binds an email 3PID and the same binding is upserted with updated fields")
+        {
+            REQUIRE(merovingian::database::store_account_threepid(
+                store,
+                {"@alice:example.org", "email", "alice@example.org", std::nullopt, std::nullopt, 1000U, 2000U, false}));
+            REQUIRE(merovingian::database::store_account_threepid(
+                store, {"@alice:example.org", "email", "alice@example.org", std::optional<std::string>{"US"},
+                        std::optional<std::string>{"is.example.org"}, 1000U, 3000U, true}));
+
+            auto const stored =
+                merovingian::database::find_account_threepid(store, "@alice:example.org", "email", "alice@example.org");
+
+            THEN("the binding is a single row carrying the upserted country, id server, and bound marker")
+            {
+                REQUIRE(store.account_threepids.size() == 1U);
+                REQUIRE(stored.has_value());
+                REQUIRE(stored->country == std::optional<std::string>{"US"});
+                REQUIRE(stored->id_server == std::optional<std::string>{"is.example.org"});
+                REQUIRE(stored->validated_at_ms == 3000U);
+                REQUIRE(stored->bound);
+                REQUIRE(store.prepared_statements.size() == 2U);
+                REQUIRE(store.prepared_statements[0].name == "upsert_account_threepid");
+                REQUIRE(store.prepared_statements[1].name == "upsert_account_threepid");
+            }
+        }
+
+        WHEN("a second user binds a distinct 3PID and alice deletes hers")
+        {
+            REQUIRE(merovingian::database::store_account_threepid(
+                store,
+                {"@alice:example.org", "email", "alice@example.org", std::nullopt, std::nullopt, 1000U, 2000U, true}));
+            REQUIRE(merovingian::database::store_account_threepid(
+                store, {"@bob:example.org", "email", "bob@example.org", std::nullopt,
+                        std::optional<std::string>{"is.example.org"}, 4000U, 5000U, true}));
+
+            auto const deleted = merovingian::database::delete_account_threepid(store, "@alice:example.org", "email",
+                                                                                "alice@example.org");
+            auto const alice =
+                merovingian::database::find_account_threepid(store, "@alice:example.org", "email", "alice@example.org");
+            auto const bob =
+                merovingian::database::find_account_threepid(store, "@bob:example.org", "email", "bob@example.org");
+            auto const redelete = merovingian::database::delete_account_threepid(store, "@alice:example.org", "email",
+                                                                                 "alice@example.org");
+
+            THEN("only alice's row is removed and re-deleting or finding the missing binding fails closed")
+            {
+                REQUIRE(deleted);
+                REQUIRE_FALSE(redelete);
+                REQUIRE_FALSE(alice.has_value());
+                REQUIRE(bob.has_value());
+                REQUIRE(store.account_threepids.size() == 1U);
+                REQUIRE(store.account_threepids.front().user_id == "@bob:example.org");
+                REQUIRE(store.prepared_statements.back().name == "delete_account_threepid");
+            }
+        }
+
+        WHEN("the binding helpers receive input missing a required key")
+        {
+            auto const empty_user = merovingian::database::store_account_threepid(
+                store, {"", "email", "alice@example.org", std::nullopt, std::nullopt, 0U, 0U, false});
+            auto const empty_medium = merovingian::database::store_account_threepid(
+                store, {"@alice:example.org", "", "alice@example.org", std::nullopt, std::nullopt, 0U, 0U, false});
+            auto const empty_address = merovingian::database::store_account_threepid(
+                store, {"@alice:example.org", "email", "", std::nullopt, std::nullopt, 0U, 0U, false});
+            auto const missing =
+                merovingian::database::find_account_threepid(store, "@ghost:example.org", "email", "ghost@example.org");
+
+            THEN("the store fails closed without synthesizing a partial binding row")
+            {
+                REQUIRE_FALSE(empty_user);
+                REQUIRE_FALSE(empty_medium);
+                REQUIRE_FALSE(empty_address);
+                REQUIRE_FALSE(missing.has_value());
+                REQUIRE(store.account_threepids.empty());
+            }
+        }
+    }
+}
+
 SCENARIO("Persistent client transaction records keep the first response and scope idempotency by room and type",
          "[database][persistence][client-txn]")
 {
@@ -927,7 +1012,7 @@ SCENARIO("Database migration runner applies the current schema and the matching 
                 REQUIRE(upgrade_plan.direction == merovingian::database::MigrationDirection::upgrade);
                 REQUIRE(upgrade_plan.current_version == 0U);
                 REQUIRE(upgrade_plan.target_version == merovingian::database::current_schema_version());
-                REQUIRE(upgrade_plan.steps.size() == 5U);
+                REQUIRE(upgrade_plan.steps.size() == 6U);
                 REQUIRE(upgrade_plan.steps[0].version == 1U);
                 REQUIRE(upgrade_plan.steps[0].name == "initial_schema");
                 REQUIRE(upgrade_plan.steps[1].version == 2U);
@@ -938,24 +1023,28 @@ SCENARIO("Database migration runner applies the current schema and the matching 
                 REQUIRE(upgrade_plan.steps[3].name == "state_transitions");
                 REQUIRE(upgrade_plan.steps[4].version == 5U);
                 REQUIRE(upgrade_plan.steps[4].name == "backfill_state_transitions");
+                REQUIRE(upgrade_plan.steps[5].version == 6U);
+                REQUIRE(upgrade_plan.steps[5].name == "account_threepids");
                 REQUIRE(upgraded.ok);
                 REQUIRE(upgraded.state.version == merovingian::database::current_schema_version());
-                REQUIRE(upgraded.state.applied_migrations.size() == 5U);
+                REQUIRE(upgraded.state.applied_migrations.size() == 6U);
                 REQUIRE(upgraded.state.applied_migrations[0].name == "initial_schema");
                 REQUIRE(upgraded.state.applied_migrations[1].name == "sync_stream_watermark");
                 REQUIRE(upgraded.state.applied_migrations[2].name == "event_stream_watermark");
                 REQUIRE(upgraded.state.applied_migrations[3].name == "state_transitions");
                 REQUIRE(upgraded.state.applied_migrations[4].name == "backfill_state_transitions");
+                REQUIRE(upgraded.state.applied_migrations[5].name == "account_threepids");
                 REQUIRE(upgraded.state.tables.size() == merovingian::database::current_schema_tables().size());
                 REQUIRE(compatible.valid);
                 REQUIRE(second_plan.steps.empty());
                 REQUIRE(downgrade_plan.direction == merovingian::database::MigrationDirection::downgrade);
-                REQUIRE(downgrade_plan.steps.size() == 5U);
-                REQUIRE(downgrade_plan.steps[0].name == "drop_backfill_state_transitions");
-                REQUIRE(downgrade_plan.steps[1].name == "drop_state_transitions");
-                REQUIRE(downgrade_plan.steps[2].name == "drop_event_stream_watermark");
-                REQUIRE(downgrade_plan.steps[3].name == "drop_sync_stream_watermark");
-                REQUIRE(downgrade_plan.steps[4].name == "drop_initial_schema");
+                REQUIRE(downgrade_plan.steps.size() == 6U);
+                REQUIRE(downgrade_plan.steps[0].name == "drop_account_threepids");
+                REQUIRE(downgrade_plan.steps[1].name == "drop_backfill_state_transitions");
+                REQUIRE(downgrade_plan.steps[2].name == "drop_state_transitions");
+                REQUIRE(downgrade_plan.steps[3].name == "drop_event_stream_watermark");
+                REQUIRE(downgrade_plan.steps[4].name == "drop_sync_stream_watermark");
+                REQUIRE(downgrade_plan.steps[5].name == "drop_initial_schema");
                 REQUIRE(downgraded.ok);
                 REQUIRE(downgraded.state.version == 0U);
                 REQUIRE(downgraded.state.tables.empty());
@@ -1640,7 +1729,7 @@ SCENARIO("Checked-in migrations cover the v1 bootstrap and the v2/v3 stream wate
             THEN("the v1 bootstrap creates the initial schema and numbered migrations add post-v1 tables")
             {
                 REQUIRE(loaded.ok);
-                REQUIRE(loaded.steps.size() == 5U);
+                REQUIRE(loaded.steps.size() == 6U);
                 REQUIRE(loaded.steps[0].version == 1U);
                 REQUIRE(loaded.steps[0].name == "initial_schema");
                 REQUIRE(loaded.steps[0].statements.size() == merovingian::database::initial_schema_tables().size());
@@ -1656,6 +1745,9 @@ SCENARIO("Checked-in migrations cover the v1 bootstrap and the v2/v3 stream wate
                 REQUIRE(loaded.steps[4].version == 5U);
                 REQUIRE(loaded.steps[4].name == "backfill_state_transitions");
                 REQUIRE(loaded.steps[4].statements.size() == 1U);
+                REQUIRE(loaded.steps[5].version == 6U);
+                REQUIRE(loaded.steps[5].name == "account_threepids");
+                REQUIRE(loaded.steps[5].statements.size() == 1U);
 
                 for (auto const& statement : loaded.steps[0].statements)
                 {
@@ -1722,12 +1814,13 @@ SCENARIO("Database schema inventory covers the core Matrix tables", "[database][
                 // presence_state) folded into the v1 initial schema.
                 // sync_stream_watermark arrives in migration v2,
                 // event_stream_watermark in migration v3, state_transitions
-                // in migration v4, and the state_transitions backfill in
-                // migration v5; the first four are counted in the current schema
-                // inventory, while v5 is data-only and adds no tables.
+                // in migration v4, the state_transitions backfill in migration v5,
+                // and account_threepids in migration v6; the post-v1 tables
+                // (v2/v3/v4/v6) are counted in the current schema inventory,
+                // while v5 is data-only and adds no tables.
                 REQUIRE(tables.size() == 45U);
-                REQUIRE(merovingian::database::current_schema_version() == 5U);
-                REQUIRE(merovingian::database::current_schema_tables().size() == 48U);
+                REQUIRE(merovingian::database::current_schema_version() == 6U);
+                REQUIRE(merovingian::database::current_schema_tables().size() == 49U);
                 REQUIRE(users_definition.has_value());
                 REQUIRE(current_state_definition.has_value());
                 REQUIRE(room_aliases_definition.has_value());

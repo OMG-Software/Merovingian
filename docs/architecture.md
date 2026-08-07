@@ -66,6 +66,7 @@ header-only public boundary.
 | `federation_worker` | Worker CLI parsing and event loop for out-of-process federation |
 | `homeserver` | Top-level runtime, HTTP serving, routing, auth/room/media services |
 | `http` | Outbound HTTP client (libcurl), rate limiting |
+| `identity` | Outbound Identity Service API client (3PID store-invite, lookup, bind, unbind, requestToken) |
 | `ipc` | Encrypted AF_UNIX IPC channel (ephemeral key exchange, AEAD framing) |
 | `media` | Media repository: upload, download, quarantine |
 | `net` | TCP listener, thread pool, shutdown signal |
@@ -101,6 +102,7 @@ flowchart TB
         rooms["rooms"]
         events["events"]
         federation["federation"]
+        identity["identity"]
         media["media"]
         sync["sync"]
         trust_safety["trust_safety"]
@@ -117,8 +119,9 @@ flowchart TB
 
     net --> homeserver
     fedworker_mod --> homeserver & federation & ipc & net
-    homeserver --> auth & rooms & events & federation & media & sync & trust_safety
+    homeserver --> auth & rooms & events & federation & media & sync & trust_safety & identity
     federation --> http
+    identity --> http
     services --> database
     events --> crypto & canonicaljson
     federation --> crypto & canonicaljson

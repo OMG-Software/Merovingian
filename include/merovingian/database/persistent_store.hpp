@@ -353,6 +353,26 @@ struct PersistentProfile final
     std::string avatar_url{};
 };
 
+// A third-party identifier (3PID) bound to a user account. `medium` is "email"
+// or "msisdn"; `address` is the normalized identifier. `country` and
+// `id_server` are nullopt when the binding was added without an identity-server
+// round-trip (e.g. a registration-time validated email); `id_server` is set
+// once the 3PID is bound at an identity server and `bound` records that the
+// server-side IS binding exists. `added_at_ms`/`validated_at_ms` are epoch-ms.
+// Primary key is (user_id, medium, address); a 3PID is globally unique to one
+// account (enforced by threepid_in_use before insert).
+struct PersistentThreePidBinding final
+{
+    std::string user_id{};
+    std::string medium{};
+    std::string address{};
+    std::optional<std::string> country{};
+    std::optional<std::string> id_server{};
+    std::uint64_t added_at_ms{0U};
+    std::uint64_t validated_at_ms{0U};
+    bool bound{false};
+};
+
 struct PersistentRoomAlias final
 {
     std::string room_alias{};
@@ -415,6 +435,7 @@ struct PersistentStore final
         , presence_states{other.presence_states}
         , filters{other.filters}
         , profiles{other.profiles}
+        , account_threepids{other.account_threepids}
         , room_aliases{other.room_aliases}
         , client_txn_ids{other.client_txn_ids}
         , prepared_statements{other.prepared_statements}
@@ -469,6 +490,7 @@ struct PersistentStore final
         presence_states = other.presence_states;
         filters = other.filters;
         profiles = other.profiles;
+        account_threepids = other.account_threepids;
         room_aliases = other.room_aliases;
         client_txn_ids = other.client_txn_ids;
         prepared_statements = other.prepared_statements;
@@ -523,6 +545,7 @@ struct PersistentStore final
     std::vector<PersistentPresence> presence_states{};
     std::vector<PersistentFilter> filters{};
     std::vector<PersistentProfile> profiles{};
+    std::vector<PersistentThreePidBinding> account_threepids{};
     std::vector<PersistentRoomAlias> room_aliases{};
     std::vector<PersistentClientTxnRecord> client_txn_ids{};
     std::vector<PreparedStatement> prepared_statements{};
@@ -759,6 +782,18 @@ auto apply_store_event_with_state(PersistentStore& store, PreparedStateUpdate co
 // Update only avatar_url for an existing profile row.
 [[nodiscard]] auto update_profile_avatar_url(PersistentStore& store, std::string_view user_id,
                                              std::string_view avatar_url) -> bool;
+// Upsert a 3PID binding keyed by (user_id, medium, address). Persists the row
+// and mirrors it into the in-memory vector (replacing any existing entry).
+// Returns false on an empty user_id/medium/address or a backend write failure.
+[[nodiscard]] auto store_account_threepid(PersistentStore& store, PersistentThreePidBinding binding) -> bool;
+// Return the 3PID binding for (user_id, medium, address), or nullopt.
+[[nodiscard]] auto find_account_threepid(PersistentStore const& store, std::string_view user_id,
+                                         std::string_view medium, std::string_view address)
+    -> std::optional<PersistentThreePidBinding>;
+// Remove the 3PID binding for (user_id, medium, address). Returns false if no
+// such binding exists or the backend delete fails.
+[[nodiscard]] auto delete_account_threepid(PersistentStore& store, std::string_view user_id, std::string_view medium,
+                                           std::string_view address) -> bool;
 // Look up a previous idempotent send result. Returns the stored event_id
 // (or empty string for to-device sends) if the (user_id, room_id,
 // event_type, txn_id) tuple was already committed; nullopt otherwise.

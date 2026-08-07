@@ -56,6 +56,15 @@ auto reload_policy_for_key(std::string_view key) noexcept -> ReloadPolicy
         return ReloadPolicy::restart_required;
     }
 
+    // Identity Service API: the outbound IS client and the cached SSRF-safe
+    // resolver are constructed at startup from the trusted-server allowlist and
+    // timeouts. SIGHUP does not rebuild them, so any identity_server change
+    // requires a restart (consistent with client_rate_limits and server.cors).
+    if (starts_with(key, "server.identity_server."))
+    {
+        return ReloadPolicy::restart_required;
+    }
+
     return ReloadPolicy::reloadable;
 }
 

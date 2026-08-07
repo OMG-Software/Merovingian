@@ -1,3 +1,51 @@
+## 0.11.9
+
+Four capability-gap closures: remote 3PID identity-server lookup, MSC4186
+required_state merge, admin-route rate limiting, and admin 401/403 consistency.
+
+- Identity service: a new `identity` module provides an outbound Identity
+  Service API client (`store-invite`, `lookup`, `bind`, `unbind`,
+  `requestToken`) that talks to a remote identity server over the SSRF-safe
+  resolver with pinned addresses. `POST /_matrix/client/v3/rooms/{roomId}/invite`
+  with `id_server`/`medium`/`address` now contacts the identity server's
+  `store-invite` endpoint and builds the `m.room.third_party_invite` from the
+  IS-issued token and public key, instead of minting them locally (local-only
+  minting produced an unverifiable invite — the join-side `third_party_signed`
+  signature is checked against the IS's key, which the IS never issued). The
+  homeserver fails closed (403) when `id_server` is not an operator-trusted
+  identity server. 3PID bindings are persisted (new `006_account_threepids.sql`
+  migration) instead of held only in memory. A new `identity_server.*` config
+  block selects trusted identity servers, allowed bind domains, and timeouts.
+  **Note:** the `bind`/`unbind`/`requestToken` handlers persist locally but do
+  not yet drive the remote identity server — that IS sync is a documented
+  follow-on (tracked in `docs/todos/capability-gaps.md`) pending a discovery
+  test-seam for hermetic IS mocking.
+- Sliding sync (MSC4186): when a room is present in both a list window and a
+  `room_subscriptions` entry, the combined `required_state` is now the superset
+  (with dedup and wildcard-aware merge), the combined `timeline_limit` is the
+  maximum, and `include_heroes` is OR'd — per MSC4186 room-config combination
+  rules. Previously the subscription overrode the list wholesale.
+- Admin routes: `/_merovingian/admin/*` (health, metrics, audit, media
+  moderation) were previously unreachable in production — the client listener
+  only dispatches `/_matrix/client/*` and `/_matrix/media/*`, so admin routes
+  404'd on the public port and were only reachable via the test-only local
+  router. They are now wired into `handle_client_server_request` and served on
+  the client listener, dispatched to the local router before the general
+  user-token gate so `require_admin()` owns the 401/403 split. They inherit the
+  existing `allow()` per-IP/per-user/per-route rate limiter (throttled exactly
+  once per request, no double-count); the `/_merovingian/admin/` prefix is
+  capped at 30/min per IP by default and is operator-tunable via
+  `client_rate_limits:`. **Security note:** the admin surface is now exposed on
+  the public client port — it remains auth-gated by `require_admin()` (401 for a
+  missing/invalid token, 403 for a valid non-admin token) and rate-limited, so
+  only operators with a confirmed admin session can use it. Counters remain
+  in-memory by design — no per-request database write amplification; the
+  trade-off (counters reset on restart) is documented in `docs/http-transport.md`.
+- Admin auth: `/_merovingian/admin/*` routes now return 401 for a missing or
+  invalid token and 403 `M_FORBIDDEN` for a valid token belonging to a non-admin
+  user, matching the `/_matrix/client/v3/admin/*` surface. Previously both
+  cases returned 401.
+
 ## 0.11.8
 
 Cross-device verification: notify a user's own devices when one of their devices uploads keys, and prompt a freshly-logged-in device to discover its own user's existing devices.

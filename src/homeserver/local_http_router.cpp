@@ -163,6 +163,27 @@ namespace
         return response(result.status, result.ok ? result.value : result.reason);
     }
 
+    // Admin-route auth gate for `/_merovingian/admin/*`. Returns std::nullopt
+    // when the caller is a confirmed admin (the route proceeds and builds its
+    // own success response); otherwise returns the 401/403 denial response —
+    // 401 for a missing/invalid token, 403 for a valid non-admin token, per
+    // the v1.19 admin-surface consistency fix (mirrors /_matrix/client/v3/admin/*).
+    [[nodiscard]] auto admin_auth_denied(HomeserverRuntime& runtime, std::string_view access_token,
+                                         observability::CorrelationContext const& correlation)
+        -> std::optional<LocalHttpResponse>
+    {
+        auto const admin = require_admin(runtime, access_token);
+        if (admin.user_id.has_value())
+        {
+            return std::nullopt;
+        }
+        auto const missing = admin.denial == AdminAuthResult::Denial::missing_token;
+        auto const status = static_cast<std::uint16_t>(missing ? 401 : 403);
+        auto const body =
+            missing ? std::string{"admin authentication required"} : std::string{"admin privileges required"};
+        return response(status, body, observability_headers(correlation, "text/plain; charset=utf-8"));
+    }
+
     [[nodiscard]] auto starts_with(std::string_view value, std::string_view prefix) noexcept -> bool
     {
         return value.size() >= prefix.size() && value.substr(0U, prefix.size()) == prefix;
@@ -1904,30 +1925,37 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
     }
     if (request.method == "GET" && request.target == "/_merovingian/admin/health")
     {
-        return authenticated_admin_user(runtime, request.access_token).has_value()
-                   ? response(200U, admin_health_summary(runtime),
-                              observability_headers(correlation, "text/plain; charset=utf-8"))
-                   : response(401U, "admin authentication required",
-                              observability_headers(correlation, "text/plain; charset=utf-8"));
+        if (auto const denied = admin_auth_denied(runtime, request.access_token, correlation); denied.has_value())
+        {
+            return *denied;
+        }
+        return response(200U, admin_health_summary(runtime),
+                        observability_headers(correlation, "text/plain; charset=utf-8"));
     }
     if (request.method == "GET" && request.target == "/_merovingian/admin/media/metrics")
     {
-        return authenticated_admin_user(runtime, request.access_token).has_value()
-                   ? response(200U, media_metrics_summary(runtime),
-                              observability_headers(correlation, "text/plain; charset=utf-8"))
-                   : response(401U, "admin authentication required",
-                              observability_headers(correlation, "text/plain; charset=utf-8"));
+        if (auto const denied = admin_auth_denied(runtime, request.access_token, correlation); denied.has_value())
+        {
+            return *denied;
+        }
+        return response(200U, media_metrics_summary(runtime),
+                        observability_headers(correlation, "text/plain; charset=utf-8"));
     }
     if (request.method == "GET" && request.target == "/_merovingian/admin/metrics")
     {
-        return authenticated_admin_user(runtime, request.access_token).has_value()
-                   ? response(200U, admin_metrics_summary(runtime),
-                              observability_headers(correlation, "text/plain; version=0.0.4; charset=utf-8"))
-                   : response(401U, "admin authentication required",
-                              observability_headers(correlation, "text/plain; version=0.0.4; charset=utf-8"));
+        if (auto const denied = admin_auth_denied(runtime, request.access_token, correlation); denied.has_value())
+        {
+            return *denied;
+        }
+        return response(200U, admin_metrics_summary(runtime),
+                        observability_headers(correlation, "text/plain; version=0.0.4; charset=utf-8"));
     }
     if (request.method == "GET" && starts_with(request.target, "/_merovingian/admin/audit"))
     {
+        if (auto const denied = admin_auth_denied(runtime, request.access_token, correlation); denied.has_value())
+        {
+            return *denied;
+        }
         // Query string filter for the audit summary (0.5.0). The
         // endpoint accepts `?category=`, `?event_type=` to narrow
         // the result set. Malformed `category=` values return 400;
@@ -1958,11 +1986,10 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
                 }
             }
         }
-        return authenticated_admin_user(runtime, request.access_token).has_value()
-                   ? response(200U, admin_audit_summary(runtime, category_filter, event_type_filter),
-                              observability_headers(correlation, "text/plain; charset=utf-8"))
-                   : response(401U, "admin authentication required",
-                              observability_headers(correlation, "text/plain; charset=utf-8"));
+        // The admin auth gate at the top of this block already returned 401/403
+        // for non-admin callers, so reaching here means the caller is an admin.
+        return response(200U, admin_audit_summary(runtime, category_filter, event_type_filter),
+                        observability_headers(correlation, "text/plain; charset=utf-8"));
     }
     if (request.method == "GET" && request.target.substr(0U, request.target.find('?')) == "/_matrix/key/v2/server")
     {

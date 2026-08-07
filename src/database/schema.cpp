@@ -11,7 +11,7 @@ namespace merovingian::database
 namespace
 {
 
-    constexpr auto schema_version = std::uint32_t{5U};
+    constexpr auto schema_version = std::uint32_t{6U};
 
     // Tables introduced after the v1 initial schema are listed here so the
     // bootstrap path can create the original v1 shape and then apply numbered
@@ -28,14 +28,20 @@ namespace
         std::string_view{"state_transitions"},
     };
 
+    constexpr auto v6_table_names = std::array{
+        std::string_view{"account_threepids"},
+    };
+
     [[nodiscard]] auto table_is_post_v1(std::string_view table_name) noexcept -> bool
     {
         return std::ranges::find(v2_table_names, table_name) != v2_table_names.end() ||
                std::ranges::find(v3_table_names, table_name) != v3_table_names.end() ||
-               std::ranges::find(v4_table_names, table_name) != v4_table_names.end();
+               std::ranges::find(v4_table_names, table_name) != v4_table_names.end() ||
+               std::ranges::find(v6_table_names, table_name) != v6_table_names.end();
     }
 
-    constexpr auto post_v1_table_count = v2_table_names.size() + v3_table_names.size() + v4_table_names.size();
+    constexpr auto post_v1_table_count =
+        v2_table_names.size() + v3_table_names.size() + v4_table_names.size() + v6_table_names.size();
 
     constexpr auto core_tables = std::array{
         SchemaTableDefinition{"schema_migrations",
@@ -74,6 +80,11 @@ namespace
         SchemaTableDefinition{
                               "state_transitions",       "room_id TEXT NOT NULL, event_type TEXT NOT NULL, state_key TEXT NOT NULL, event_id TEXT NOT "
             "NULL, previous_event_id TEXT NOT NULL DEFAULT '', PRIMARY KEY (room_id, event_type, state_key, event_id)"},
+        SchemaTableDefinition{"account_threepids",
+                              "user_id TEXT NOT NULL, medium TEXT NOT NULL, address TEXT NOT NULL, "
+                              "country TEXT NOT NULL DEFAULT '', id_server TEXT NOT NULL DEFAULT '', "
+                              "added_at_ms TEXT NOT NULL DEFAULT '0', validated_at_ms TEXT NOT NULL DEFAULT '0', "
+                              "bound TEXT NOT NULL DEFAULT '0', PRIMARY KEY (user_id, medium, address)"                                                                 },
         SchemaTableDefinition{"state_groups",            "state_group_id TEXT PRIMARY KEY, room_id TEXT NOT NULL"                                                       },
         SchemaTableDefinition{"state_group_edges",       "state_group_id TEXT NOT NULL, prev_state_group_id TEXT NOT NULL, "
                                                    "PRIMARY KEY (state_group_id, prev_state_group_id)"                },

@@ -31,7 +31,10 @@ remaining work before PostgreSQL-backed production operation.
   server can populate `unsigned.replaces_state` for state events, and schema
   version `5` backfills `state_transitions` from `current_state` via
   `migrations/005_backfill_state_transitions.sql` so existing rooms do not lack
-  transition history after the v4 upgrade.
+  transition history after the v4 upgrade, and schema version `6` adds the
+  `account_threepids` table via `migrations/006_account_threepids.sql` so
+  bound 3PID associations survive restarts rather than living only in the
+  in-memory `vector<AccountThreePid>`.
   After the project reaches production-ready `v1.0.0`, every schema change
   must add a forward migration and keep deployed databases compatible.
 - SQLite RAII wrappers around database connections and prepared statements.
@@ -123,6 +126,25 @@ remaining work before PostgreSQL-backed production operation.
   (`prev_events` and `auth_events`) to find the predecessor state event of the
   same `(room_id, event_type, state_key)` tuple, instead of assuming the local
   arrival-time current state was the predecessor.
+- `account_threepids` table (schema version `6`, migration
+  `migrations/006_account_threepids.sql`) records the 3PID bindings a user has
+  added to their account, replacing the prior in-memory
+  `vector<AccountThreePid>` which was lost on restart. Columns are `user_id`,
+  `medium`, `address`, `country`, `id_server`, `added_at_ms`,
+  `validated_at_ms`, and `bound`, with a unique key on `(medium, address)` so
+  the same email/msisdn cannot be bound twice. The runtime migration path
+  uses the compiled migration catalog in `src/database/migration.cpp`
+  (upgrade step version `6` "account_threepids"; downgrade step version `5`
+  "drop_account_threepids") rather than the on-disk `.sql` file, which
+  remains the canonical schema definition.
+- `PersistentThreePidBinding` struct and the
+  `store_account_threepid` / `find_account_threepid` /
+  `delete_account_threepid` store functions
+  ([persistent_store.hpp](../include/merovingian/database/persistent_store.hpp))
+  persist, look up, and remove bound 3PIDs. Implemented for both SQLite
+  (`sqlite_store.cpp`) and PostgreSQL (`postgresql_store.cpp`); rows are
+  hydrated into the in-memory store on backend open so existing bindings are
+  visible immediately after restart.
 - `/sync` calls `database::ensure_sync_stream_id_ahead_of()` when the client's
   `since` token is ahead of the server's counter. This recovers live deployments
   whose counter rolled back below a stored token (for example, when the watermark
