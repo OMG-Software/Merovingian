@@ -178,7 +178,7 @@ namespace
             return std::nullopt;
         }
         auto const missing = admin.denial == AdminAuthResult::Denial::missing_token;
-        auto const status = missing ? 401U : 403U;
+        auto const status = static_cast<std::uint16_t>(missing ? 401 : 403);
         auto const body =
             missing ? std::string{"admin authentication required"} : std::string{"admin privileges required"};
         return response(status, body, observability_headers(correlation, "text/plain; charset=utf-8"));
