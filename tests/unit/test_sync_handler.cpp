@@ -250,9 +250,16 @@ SCENARIO("Sync surfaces account_data, to_device, device_lists, presence, and key
                 auto const* device_lists = as_object(*json_member(*root, "device_lists"));
                 auto const* changed = as_array(*json_member(*device_lists, "changed"));
                 // Spec MUST: device_lists.changed MUST list devices whose keys have changed.
-                // Do NOT remove/change - removing this hides key-tracking regressions.
+                // Do NOT remove/change - removing this hides key-tracking regressions. The
+                // set holds two entries: @bob (the explicitly-queued DLC below) and @alice
+                // herself, because /login records a self-DLC so a freshly-logged-in device
+                // is prompted to /keys/query its own user's device list on first sync.
                 REQUIRE(changed != nullptr);
-                REQUIRE(changed->size() == 1U);
+                REQUIRE(changed->size() == 2U);
+                REQUIRE(std::ranges::any_of(*changed, [](merovingian::canonicaljson::Value const& v) {
+                    auto const* uid = std::get_if<std::string>(&v.storage());
+                    return uid != nullptr && *uid == "@bob:example.org";
+                }));
 
                 auto const* presence = as_object(*json_member(*root, "presence"));
                 auto const* pres_events = as_array(*json_member(*presence, "events"));
@@ -466,10 +473,8 @@ SCENARIO("Cross-device verification request is delivered by legacy /sync", "[syn
         auto const [alice_id, token_a] = register_and_login(rt);
         auto const device_a = first_device_id_for(rt, alice_id);
 
-        auto const login_b_body = json_body({
-            R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":")",
-            alice_id,
-            R"("},"password":"CorrectHorse7!","device_id":"DEVICE_B"})"});
+        auto const login_b_body = json_body({R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":")",
+                                             alice_id, R"("},"password":"CorrectHorse7!","device_id":"DEVICE_B"})"});
         auto const login_b = merovingian::homeserver::handle_client_server_request(
             rt, {"POST", "/_matrix/client/v3/login", {}, login_b_body});
         REQUIRE(login_b.response.status == 200U);
@@ -485,15 +490,12 @@ SCENARIO("Cross-device verification request is delivered by legacy /sync", "[syn
 
         WHEN("device A sends a verification request to device B via sendToDevice")
         {
-            auto const send_body = json_body({
-                R"({"messages":{")",
-                alice_id,
-                R"(":{"DEVICE_B":{"transaction_id":"t1","timestamp":1234567890,"from_device":")",
-                device_a,
-                R"(","methods":["m.sas.v2"]}}}})"});
+            auto const send_body =
+                json_body({R"({"messages":{")", alice_id,
+                           R"(":{"DEVICE_B":{"transaction_id":"t1","timestamp":1234567890,"from_device":")", device_a,
+                           R"(","methods":["m.sas.v2"]}}}})"});
             auto const send = merovingian::homeserver::handle_client_server_request(
-                rt,
-                {"PUT", "/_matrix/client/v3/sendToDevice/m.key.verification.request/txn-1", token_a, send_body});
+                rt, {"PUT", "/_matrix/client/v3/sendToDevice/m.key.verification.request/txn-1", token_a, send_body});
             REQUIRE(send.response.status == 200U);
 
             THEN("device B's next incremental /sync receives the verification request")
@@ -511,8 +513,7 @@ SCENARIO("Cross-device verification request is delivered by legacy /sync", "[syn
                 REQUIRE(events->size() == 1U);
                 auto const* event = as_object(events->front());
                 REQUIRE(event != nullptr);
-                REQUIRE(std::get<std::string>(json_member(*event, "type")->storage()) ==
-                        "m.key.verification.request");
+                REQUIRE(std::get<std::string>(json_member(*event, "type")->storage()) == "m.key.verification.request");
                 REQUIRE(std::get<std::string>(json_member(*event, "sender")->storage()) == alice_id);
 
                 auto const* content = as_object(*json_member(*event, "content"));
@@ -542,10 +543,8 @@ SCENARIO("Cross-device verification request is delivered by sliding sync to_devi
         auto const [alice_id, token_a] = register_and_login(rt);
         auto const device_a = first_device_id_for(rt, alice_id);
 
-        auto const login_b_body = json_body({
-            R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":")",
-            alice_id,
-            R"("},"password":"CorrectHorse7!","device_id":"DEVICE_B"})"});
+        auto const login_b_body = json_body({R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":")",
+                                             alice_id, R"("},"password":"CorrectHorse7!","device_id":"DEVICE_B"})"});
         auto const login_b = merovingian::homeserver::handle_client_server_request(
             rt, {"POST", "/_matrix/client/v3/login", {}, login_b_body});
         REQUIRE(login_b.response.status == 200U);
@@ -566,23 +565,19 @@ SCENARIO("Cross-device verification request is delivered by sliding sync to_devi
 
         WHEN("device A sends a verification request to device B via sendToDevice")
         {
-            auto const send_body = json_body({
-                R"({"messages":{")",
-                alice_id,
-                R"(":{"DEVICE_B":{"transaction_id":"t1","timestamp":1234567890,"from_device":")",
-                device_a,
-                R"(","methods":["m.sas.v2"]}}}})"});
+            auto const send_body =
+                json_body({R"({"messages":{")", alice_id,
+                           R"(":{"DEVICE_B":{"transaction_id":"t1","timestamp":1234567890,"from_device":")", device_a,
+                           R"(","methods":["m.sas.v2"]}}}})"});
             auto const send = merovingian::homeserver::handle_client_server_request(
-                rt,
-                {"PUT", "/_matrix/client/v3/sendToDevice/m.key.verification.request/txn-1", token_a, send_body});
+                rt, {"PUT", "/_matrix/client/v3/sendToDevice/m.key.verification.request/txn-1", token_a, send_body});
             REQUIRE(send.response.status == 200U);
 
             THEN("device B's next sliding sync receives the verification request in extensions.to_device.events")
             {
-                auto const request_body = json_body({
-                    R"({"conn_id":"enc","extensions":{"to_device":{"enabled":true,"since":")",
-                    next_batch_b,
-                    R"("},"e2ee":{"enabled":true}}})"});
+                auto const request_body =
+                    json_body({R"({"conn_id":"enc","extensions":{"to_device":{"enabled":true,"since":")", next_batch_b,
+                               R"("},"e2ee":{"enabled":true}}})"});
                 auto const incremental_b = merovingian::homeserver::handle_client_server_request(
                     rt, {"POST", "/_matrix/client/unstable/org.matrix.simplified_msc3575/sync", token_b, request_body});
                 REQUIRE(incremental_b.response.status == 200U);
@@ -598,8 +593,7 @@ SCENARIO("Cross-device verification request is delivered by sliding sync to_devi
                 REQUIRE(events->size() == 1U);
                 auto const* event = as_object(events->front());
                 REQUIRE(event != nullptr);
-                REQUIRE(std::get<std::string>(json_member(*event, "type")->storage()) ==
-                        "m.key.verification.request");
+                REQUIRE(std::get<std::string>(json_member(*event, "type")->storage()) == "m.key.verification.request");
                 REQUIRE(std::get<std::string>(json_member(*event, "sender")->storage()) == alice_id);
 
                 auto const* content = as_object(*json_member(*event, "content"));

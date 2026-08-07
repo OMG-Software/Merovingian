@@ -100,7 +100,14 @@ production-gated.
   populates `/sync`'s `device_lists.changed`/`left` from `store.device_list_changes` filtered
   by `since_sync_stream_id`, and `broadcast_device_list_updates()` emits `m.device_list_update`
   EDUs on cross-signing/key changes. Per-algorithm `device_one_time_keys_count` is wired into
-  `/sync` as well.
+  `/sync` as well. A `device_lists.changed` self-notification is recorded at two trigger points
+  so a user's own devices discover each other without relying on room co-membership: on
+  `POST /_matrix/client/v3/keys/upload` (key upload) and on `POST /_matrix/client/v3/login`
+  when a genuinely new device is created. The login trigger ensures a freshly-logged-in
+  device's initial `/sync` lists its own user in `device_lists.changed`, prompting it to
+  `/keys/query` and fetch the user's *existing* devices' keys before any
+  `m.key.verification.request` can arrive — closing the cross-device verification gap where
+  the new device otherwise dropped the request for lack of the sender's device keys.
 - Key-backup retrieval and deletion: `handle_key_api_route()` implements
   `get_key_backup_version`, `get_key_backup_version_by_id`, `get_room_key_backup`
   (session/room/batch), `get_room_key_backup_batch`, `delete_room_key_backup`,

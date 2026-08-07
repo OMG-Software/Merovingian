@@ -6512,6 +6512,99 @@ SCENARIO("Uploading device keys from one of a user's devices notifies the user's
     }
 }
 
+SCENARIO("A newly logged-in device is prompted to query its own user's device list on first sync",
+         "[homeserver][client-server][e2ee][device-lists][regression]")
+{
+    // Spec: Matrix Client-Server API v1.19
+    // URL: ../../docs/matrix-v1.19-spec/client-server-api.md#e2e-extensions-to-sync
+    // A new login MUST surface the user's own ID in device_lists.changed on the
+    // device's first /sync so the client issues /keys/query and learns the
+    // user's *existing* devices' keys. Without this, a new device (e.g. Element
+    // X) receives an m.key.verification.request from an existing verified
+    // device but cannot look up the sender's device keys and silently drops the
+    // request ("Could not retrieve the device data ... ignoring it"). Key
+    // upload alone records a self-DLC, but the new device's initial sync runs
+    // before its own key upload, and an existing device that uploaded keys
+    // before this notification existed leaves no DLC for the new device to
+    // observe. Recording a self-DLC at login closes that gap: the new device is
+    // prompted to query on its very first sync, before the existing device even
+    // knows the new login exists, so the sender's keys are already cached when
+    // the verification request later arrives.
+    GIVEN("an existing user with one logged-in device A that has not yet uploaded keys")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+
+        auto const dev_a_login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEV_A"})"});
+        REQUIRE(dev_a_login.response.status == 200U);
+        auto const dev_a_token = login_token(dev_a_login.response.body);
+
+        WHEN("device B logs in and performs its initial /sync with no key uploads having occurred")
+        {
+            auto const dev_b_login = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST",
+                 "/_matrix/client/v3/login",
+                 {},
+                 R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEV_B"})"});
+            REQUIRE(dev_b_login.response.status == 200U);
+            auto const dev_b_token = login_token(dev_b_login.response.body);
+
+            auto const dev_b_initial = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/sync", dev_b_token, {}});
+            REQUIRE(dev_b_initial.response.status == 200U);
+
+            THEN("device B's initial /sync lists the user in device_lists.changed")
+            {
+                // The login itself records a self device-list-change so the new
+                // device is prompted to /keys/query its own user and discover
+                // existing devices before any verification request can arrive.
+                auto const sync_body = parse_object(dev_b_initial.response.body);
+                auto const* device_lists = object_member_as_object(sync_body, "device_lists");
+                REQUIRE(device_lists != nullptr);
+                auto const* changed = object_member_as_array(*device_lists, "changed");
+                REQUIRE(changed != nullptr);
+                auto const saw_self = std::ranges::any_of(*changed, [](merovingian::canonicaljson::Value const& value) {
+                    auto const* user_id = std::get_if<std::string>(&value.storage());
+                    return user_id != nullptr && *user_id == "@alice:example.org";
+                });
+                REQUIRE(saw_self);
+            }
+
+            AND_THEN("device B can fetch device A's keys via /keys/query once device A uploads them")
+            {
+                upload_device_keys(runtime, dev_a_token, "@alice:example.org", "DEV_A", "DEV_A_CURVE", "DEV_A_ED");
+
+                // An empty device list requests every stored device for the user.
+                auto const query = merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST", "/_matrix/client/v3/keys/query", dev_b_token,
+                              R"({"device_keys":{"@alice:example.org":[]}})"});
+                REQUIRE(query.response.status == 200U);
+                auto const body = query.response.body;
+                INFO("query body = " + body);
+                REQUIRE(body.find("device_keys") != std::string::npos);
+                REQUIRE(body.find("@alice:example.org") != std::string::npos);
+                REQUIRE(body.find("DEV_A") != std::string::npos);
+                REQUIRE(body.find("DEV_A_CURVE") != std::string::npos);
+                REQUIRE(body.find("DEV_A_ED") != std::string::npos);
+            }
+        }
+    }
+}
+
 SCENARIO("First post-join room bootstrap includes encryption state for encrypted rooms",
          "[homeserver][client-server][e2ee][bootstrap][regression]")
 {
