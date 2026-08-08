@@ -693,6 +693,70 @@ SCENARIO("MSC4186 combines list and room_subscription required_state for the sam
     }
 }
 
+// ── multi-list required_state combination (MSC4186) ─────────────────────────
+// Per MSC4186, a room that appears in MORE THAN ONE list window must have its
+// configs combined across ALL matching lists — not just the first matching list.
+
+SCENARIO("MSC4186 combines required_state across two list windows for the same room",
+         "[homeserver][sliding-sync][integration][room-config-combine][multi-list]")
+{
+    GIVEN("a user with a joined room present in two list windows")
+    {
+        auto const config = sliding_sync_config();
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const token = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
+        auto const room_id = create_room(rt, token);
+
+        auto const has_state_event = [](merovingian::canonicaljson::Object const* rm, std::string_view event_type) {
+            if (rm == nullptr)
+            {
+                return false;
+            }
+            auto const* state = object_member_as_array(*rm, "required_state");
+            if (state == nullptr)
+            {
+                return false;
+            }
+            return std::ranges::any_of(*state, [&](auto const& val) {
+                auto const* ev = std::get_if<merovingian::canonicaljson::Object>(&val.storage());
+                if (ev == nullptr)
+                {
+                    return false;
+                }
+                auto const* type = string_member(*ev, "type");
+                return type != nullptr && *type == event_type;
+            });
+        };
+
+        WHEN("two named lists with disjoint required_state both window the room")
+        {
+            // Both lists window [0,9] so the single joined room is in each window.
+            // List "a" requests m.room.power_levels; list "b" requests m.room.create.
+            auto const body =
+                std::string{"{\"lists\":{"
+                            "\"a\":{\"ranges\":[[0,9]],\"required_state\":[[\"m.room.power_levels\",\"\"]]},"
+                            "\"b\":{\"ranges\":[[0,9]],\"required_state\":[[\"m.room.create\",\"\"]]}"
+                            "}}"};
+            auto const result = sliding_sync(rt, token, body);
+
+            THEN("the room response carries the union of both lists' required_state")
+            {
+                REQUIRE(result.response.status == 200U);
+                auto const rooms = rooms_object(result.response.body);
+                auto const* rm = object_member_as_object(rooms, room_id);
+                REQUIRE(rm != nullptr);
+                // Before multi-list combination, only the first matching list's
+                // required_state (m.room.power_levels) was returned. Per MSC4186 both
+                // matching list windows must combine.
+                REQUIRE(has_state_event(rm, "m.room.power_levels"));
+                REQUIRE(has_state_event(rm, "m.room.create"));
+            }
+        }
+    }
+}
+
 // ── MSC3575 compatibility alias ───────────────────────────────────────────────
 
 SCENARIO("MSC4186 sliding sync is reachable at the org.matrix.simplified_msc3575 compatibility path",

@@ -1012,7 +1012,7 @@ SCENARIO("Database migration runner applies the current schema and the matching 
                 REQUIRE(upgrade_plan.direction == merovingian::database::MigrationDirection::upgrade);
                 REQUIRE(upgrade_plan.current_version == 0U);
                 REQUIRE(upgrade_plan.target_version == merovingian::database::current_schema_version());
-                REQUIRE(upgrade_plan.steps.size() == 6U);
+                REQUIRE(upgrade_plan.steps.size() == 7U);
                 REQUIRE(upgrade_plan.steps[0].version == 1U);
                 REQUIRE(upgrade_plan.steps[0].name == "initial_schema");
                 REQUIRE(upgrade_plan.steps[1].version == 2U);
@@ -1025,26 +1025,31 @@ SCENARIO("Database migration runner applies the current schema and the matching 
                 REQUIRE(upgrade_plan.steps[4].name == "backfill_state_transitions");
                 REQUIRE(upgrade_plan.steps[5].version == 6U);
                 REQUIRE(upgrade_plan.steps[5].name == "account_threepids");
+                REQUIRE(upgrade_plan.steps[6].version == 7U);
+                REQUIRE(upgrade_plan.steps[6].name == "account_threepids_columns");
                 REQUIRE(upgraded.ok);
                 REQUIRE(upgraded.state.version == merovingian::database::current_schema_version());
-                REQUIRE(upgraded.state.applied_migrations.size() == 6U);
+                REQUIRE(upgraded.state.applied_migrations.size() == 7U);
                 REQUIRE(upgraded.state.applied_migrations[0].name == "initial_schema");
                 REQUIRE(upgraded.state.applied_migrations[1].name == "sync_stream_watermark");
                 REQUIRE(upgraded.state.applied_migrations[2].name == "event_stream_watermark");
                 REQUIRE(upgraded.state.applied_migrations[3].name == "state_transitions");
                 REQUIRE(upgraded.state.applied_migrations[4].name == "backfill_state_transitions");
                 REQUIRE(upgraded.state.applied_migrations[5].name == "account_threepids");
+                REQUIRE(upgraded.state.applied_migrations[6].name == "account_threepids_columns");
                 REQUIRE(upgraded.state.tables.size() == merovingian::database::current_schema_tables().size());
                 REQUIRE(compatible.valid);
                 REQUIRE(second_plan.steps.empty());
                 REQUIRE(downgrade_plan.direction == merovingian::database::MigrationDirection::downgrade);
-                REQUIRE(downgrade_plan.steps.size() == 6U);
-                REQUIRE(downgrade_plan.steps[0].name == "drop_account_threepids");
-                REQUIRE(downgrade_plan.steps[1].name == "drop_backfill_state_transitions");
-                REQUIRE(downgrade_plan.steps[2].name == "drop_state_transitions");
-                REQUIRE(downgrade_plan.steps[3].name == "drop_event_stream_watermark");
-                REQUIRE(downgrade_plan.steps[4].name == "drop_sync_stream_watermark");
-                REQUIRE(downgrade_plan.steps[5].name == "drop_initial_schema");
+                REQUIRE(downgrade_plan.steps.size() == 7U);
+                // Downgrade walks v7->v0; the column drop must precede the table drop.
+                REQUIRE(downgrade_plan.steps[0].name == "drop_account_threepids_columns");
+                REQUIRE(downgrade_plan.steps[1].name == "drop_account_threepids");
+                REQUIRE(downgrade_plan.steps[2].name == "drop_backfill_state_transitions");
+                REQUIRE(downgrade_plan.steps[3].name == "drop_state_transitions");
+                REQUIRE(downgrade_plan.steps[4].name == "drop_event_stream_watermark");
+                REQUIRE(downgrade_plan.steps[5].name == "drop_sync_stream_watermark");
+                REQUIRE(downgrade_plan.steps[6].name == "drop_initial_schema");
                 REQUIRE(downgraded.ok);
                 REQUIRE(downgraded.state.version == 0U);
                 REQUIRE(downgraded.state.tables.empty());
@@ -1729,7 +1734,7 @@ SCENARIO("Checked-in migrations cover the v1 bootstrap and the v2/v3 stream wate
             THEN("the v1 bootstrap creates the initial schema and numbered migrations add post-v1 tables")
             {
                 REQUIRE(loaded.ok);
-                REQUIRE(loaded.steps.size() == 6U);
+                REQUIRE(loaded.steps.size() == 7U);
                 REQUIRE(loaded.steps[0].version == 1U);
                 REQUIRE(loaded.steps[0].name == "initial_schema");
                 REQUIRE(loaded.steps[0].statements.size() == merovingian::database::initial_schema_tables().size());
@@ -1748,6 +1753,10 @@ SCENARIO("Checked-in migrations cover the v1 bootstrap and the v2/v3 stream wate
                 REQUIRE(loaded.steps[5].version == 6U);
                 REQUIRE(loaded.steps[5].name == "account_threepids");
                 REQUIRE(loaded.steps[5].statements.size() == 1U);
+                REQUIRE(loaded.steps[6].version == 7U);
+                REQUIRE(loaded.steps[6].name == "account_threepids_columns");
+                // v7 ALTERs two columns onto the v6 account_threepids table.
+                REQUIRE(loaded.steps[6].statements.size() == 2U);
 
                 for (auto const& statement : loaded.steps[0].statements)
                 {
@@ -1815,11 +1824,12 @@ SCENARIO("Database schema inventory covers the core Matrix tables", "[database][
                 // sync_stream_watermark arrives in migration v2,
                 // event_stream_watermark in migration v3, state_transitions
                 // in migration v4, the state_transitions backfill in migration v5,
-                // and account_threepids in migration v6; the post-v1 tables
-                // (v2/v3/v4/v6) are counted in the current schema inventory,
-                // while v5 is data-only and adds no tables.
+                // and account_threepids in migration v6; migration v7 adds the
+                // client_secret/sid columns onto account_threepids (no new table).
+                // The post-v1 tables (v2/v3/v4/v6) are counted in the current
+                // schema inventory, while v5 and v7 add no tables.
                 REQUIRE(tables.size() == 45U);
-                REQUIRE(merovingian::database::current_schema_version() == 6U);
+                REQUIRE(merovingian::database::current_schema_version() == 7U);
                 REQUIRE(merovingian::database::current_schema_tables().size() == 49U);
                 REQUIRE(users_definition.has_value());
                 REQUIRE(current_state_definition.has_value());

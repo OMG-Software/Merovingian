@@ -4503,7 +4503,8 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
         return make_operation_result(false, {}, "identity server is not reachable", 502U);
     }
     auto id_client = merovingian::identity::IdentityServerClient{*runtime.outbound_client, *runtime.cached_discovery,
-                                                                 runtime.config.server().identity_server};
+                                                                 runtime.config.server().identity_server,
+                                                                 &runtime.test_forced_identity_resolution};
     auto const invite = id_client.store_invite(base_url, id_access_token, medium, address, room_id, *user_id);
     if (!invite.ok)
     {

@@ -1,3 +1,52 @@
+## 0.11.10
+
+Four follow-ons to the 0.11.9 identity-server work: a discovery test-seam for
+hermetic IS mocking, `bind`/`unbind`/`requestToken` actually driving the remote
+IS, a positive-path 3PID-invite conformance test, and MSC4186 multi-list
+room-config combination.
+
+- Identity service: the `bind`/`unbind`/`requestToken` handlers now contact the
+  remote identity server instead of persisting locally only. `bind`
+  (`POST /account/3pid/bind` and the legacy `POST /account/3pid`) calls IS
+  `/3pid/bind` and persists `client_secret`+`sid` (new `007_account_threepids_columns`
+  migration) so the binding can later be unbound. `unbind`
+  (`POST /account/3pid/unbind`) and `delete` (`POST /account/3pid/delete`) recover
+  `client_secret`+`sid` from the stored binding and call IS `/3pid/unbind` using
+  IS auth mode 2 (`sid`+`client_secret`, no bearer); on IS non-support
+  (`no-support`) the local binding is still removed, but a transport failure now
+  **fails closed (502)** — silently removing the local record while the IS still
+  holds the binding would orphan it (the user could never unbind it without the
+  stored `client_secret`/`sid`). `requestToken` (register/account-3pid, email/msisdn)
+  delegates `sid`-issuance to the IS when the request carries
+  `id_server`+`id_access_token`; local validation is unchanged when they are
+  absent (spec-compliant). A new `request_msisdn_token` IS client method is added.
+  **Security note:** `account_threepids.client_secret`/`sid` are stored as TEXT
+  (only populated for IS-bound 3PIDs); the threat and mitigations are documented
+  in `docs/threat-model.md`. **Observable change:** unbind/delete on an
+  unreachable IS now returns 502 instead of silently succeeding locally.
+- Discovery test-seam: `IdentityServerClient::perform()` resolves the IS host via
+  `CachedServerDiscovery::lookup_addresses` (which rejects loopback) and never
+  set `trusted_ca_pem`, so a self-signed local mock IS failed TLS — making
+  hermetic IS tests impossible. A new `test_forced_identity_resolution` map on
+  `HomeserverRuntime` (mirroring the existing `test_forced_outbound_resolution`
+  contract) lets tests pin a local IS address and supply an in-memory CA bundle;
+  `perform()` consults it before discovery. The seam struct lives in the
+  `identity` header to keep the `homeserver → identity` dependency direction
+  correct. Always empty in production; SSRF and TLS-trust behaviour is unchanged.
+- Conformance: a positive-path 3PID-invite scenario
+  (`tests/conformance/test_3pid_invite_conformance.cpp`) proves that
+  `POST /rooms/{roomId}/invite` with a trusted `id_server` contacts the IS
+  `store-invite` and persists an `m.room.third_party_invite` carrying the
+  IS-issued token as `state_key` (the prior scenario covered only the 403
+  fail-closed path). A bind/unbind round-trip integration test exercises the
+  mode-2 unbind flow end to end via a mock IS.
+- Sliding sync (MSC4186): when a room is present in **multiple** list windows,
+  the room configs now combine across all of them — `required_state` is the
+  superset, `timeline_limit` is the maximum, `include_heroes` is OR'd — per
+  MSC4186 room-config combination. Previously only the first matching list
+  contributed (list-vs-subscription was already combined in 0.11.9; list-vs-list
+  was the remaining gap).
+
 ## 0.11.9
 
 Four capability-gap closures: remote 3PID identity-server lookup, MSC4186

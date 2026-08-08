@@ -290,3 +290,79 @@ SCENARIO("parse_lookup_response extracts the bound MXID", "[identity][identity-p
         }
     }
 }
+
+SCENARIO("build_request_msisdn_token_body emits client_secret, country, phone_number, and optional next_link",
+         "[identity][identity-body]")
+{
+    GIVEN("client_secret, country, phone_number, and a next_link")
+    {
+        WHEN("the msisdn request-token body is built with a next_link")
+        {
+            auto const body = merovingian::identity::build_request_msisdn_token_body("s3cr3t", "GB", "447700900000",
+                                                                                     "https://hs.example.org/next");
+
+            THEN("the body is canonical JSON with all four fields, keys sorted")
+            {
+                REQUIRE(body == R"({"client_secret":"s3cr3t","country":"GB",)"
+                                R"("next_link":"https://hs.example.org/next","phone_number":"447700900000"})");
+            }
+        }
+    }
+
+    GIVEN("client_secret, country, and phone_number with no next_link")
+    {
+        WHEN("the msisdn request-token body is built with an empty next_link")
+        {
+            auto const body =
+                merovingian::identity::build_request_msisdn_token_body("s3cr3t", "GB", "447700900000", "");
+
+            THEN("the body omits next_link entirely")
+            {
+                REQUIRE(body == R"({"client_secret":"s3cr3t","country":"GB","phone_number":"447700900000"})");
+            }
+        }
+    }
+}
+
+SCENARIO("parse_request_token_response extracts the IS-issued session id", "[identity][identity-parse]")
+{
+    GIVEN("a well-formed request-token response carrying a sid")
+    {
+        WHEN("parsed")
+        {
+            auto const parsed = merovingian::identity::parse_request_token_response(R"({"sid":"is-issued-sid-1"})");
+
+            THEN("the sid is captured")
+            {
+                REQUIRE(parsed.has_value());
+                REQUIRE(*parsed == "is-issued-sid-1");
+            }
+        }
+    }
+
+    GIVEN("a request-token response missing the sid")
+    {
+        WHEN("parsed")
+        {
+            auto const parsed = merovingian::identity::parse_request_token_response(R"({})");
+
+            THEN("parsing fails closed (the sid is mandatory)")
+            {
+                REQUIRE_FALSE(parsed.has_value());
+            }
+        }
+    }
+
+    GIVEN("malformed JSON")
+    {
+        WHEN("parsed")
+        {
+            auto const parsed = merovingian::identity::parse_request_token_response("not-json");
+
+            THEN("parsing fails closed")
+            {
+                REQUIRE_FALSE(parsed.has_value());
+            }
+        }
+    }
+}

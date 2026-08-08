@@ -162,7 +162,30 @@ network. Trusted IS hosts are configured via
 `server.identity_server.trusted_servers`; the homeserver fails closed
 (403) when an `id_server` named in a 3PID invite is not in that list. The
 `store-invite` call is performed outside `runtime.mutex` so an unreachable
-identity server cannot block unrelated room mutations.
+identity server cannot block unrelated room mutations. The same resolver,
+trust gate, bearer-auth, fail-closed, and release-`mutex`-for-network conventions
+apply to the `bind`, `unbind`, and `requestToken` handlers (v0.11.10); see
+`docs/auth-identity.md`.
+
+#### Identity discovery test-seam (`test_forced_identity_resolution`)
+
+`IdentityServerClient` accepts an optional
+`std::map<std::string, identity::TestForcedIdentityResolution> const*
+forced_resolution` (defined in `include/merovingian/identity/identity_client.hpp`,
+stored on `HomeserverRuntime::test_forced_identity_resolution` and keyed by IS
+host). When an entry exists for the target host, `perform()` uses the entry's
+`pinned_addresses` and in-memory `trusted_ca_pem` and skips
+`CachedServerDiscovery` entirely, so a self-signed local mock IS listening on
+`127.0.0.1` can be reached over real TLS without weakening the production SSRF
+path — the map is empty in production and has no production construction path.
+Unlike the federation seam, the identity seam carries no `resolved_port`: the IS
+base URL already names the port, and `OutboundClient` builds the `CURLOPT_RESOLVE`
+entry `host:port:address` from the URL's host:port and the seam's address, so the
+mock IS port must match the URL/id_server the homeserver is configured to call.
+This keeps the `homeserver → identity` dependency direction correct (the seam
+struct lives in the identity header, not `runtime.hpp`) and lets the
+conformance/integration suites exercise `store-invite`, `bind`, `unbind`, and
+`requestToken` hermetically.
 
 ## TLS listener boundary
 

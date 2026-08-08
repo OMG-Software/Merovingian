@@ -321,6 +321,24 @@ auto downgrade_initial_schema_migration() -> MigrationStep
     return {6U, "account_threepids", std::move(statements), MigrationDirection::upgrade};
 }
 
+// v7: add the IS validation pair (`client_secret`, `sid`) to account_threepids.
+// Populated only for 3PIDs bound via a remote identity server, so a later unbind
+// can drive IS auth mode 2 (sid + client_secret) without HS-signed requests. The
+// base table is created at v6; this step ALTERs the columns onto it so the v6
+// migration stays historically intact and fresh installs (which run every
+// upgrade step in order) end at the same v7 shape.
+[[nodiscard]] auto upgrade_account_threepids_columns_migration() -> MigrationStep
+{
+    auto statements = std::vector<PreparedStatement>{};
+    statements.push_back(
+        PreparedStatement{"add_client_secret_column",
+                          "ALTER TABLE account_threepids ADD COLUMN client_secret TEXT NOT NULL DEFAULT ''",
+                          {}});
+    statements.push_back(PreparedStatement{
+        "add_sid_column", "ALTER TABLE account_threepids ADD COLUMN sid TEXT NOT NULL DEFAULT ''", {}});
+    return {7U, "account_threepids_columns", std::move(statements), MigrationDirection::upgrade};
+}
+
 auto upgrade_migration_catalog() -> std::vector<MigrationStep>
 {
     return {initial_schema_migration(),
@@ -328,7 +346,8 @@ auto upgrade_migration_catalog() -> std::vector<MigrationStep>
             upgrade_event_stream_watermark_migration(),
             upgrade_state_transitions_migration(),
             upgrade_backfill_state_transitions_migration(),
-            upgrade_account_threepids_migration()};
+            upgrade_account_threepids_migration(),
+            upgrade_account_threepids_columns_migration()};
 }
 
 [[nodiscard]] auto downgrade_backfill_state_transitions_migration() -> MigrationStep
@@ -345,6 +364,18 @@ auto upgrade_migration_catalog() -> std::vector<MigrationStep>
     auto statements = std::vector<PreparedStatement>{};
     statements.push_back(make_drop_table_statement("account_threepids").value());
     return {5U, "drop_account_threepids", std::move(statements), MigrationDirection::downgrade};
+}
+
+// v7 → v6: drop the IS validation pair before the v6 → v5 table-drop. The
+// downgrade plan walks one version at a time, so this step (target v6) is
+// selected before drop_account_threepids (target v5) when downgrading from v7.
+[[nodiscard]] auto downgrade_account_threepids_columns_migration() -> MigrationStep
+{
+    auto statements = std::vector<PreparedStatement>{};
+    statements.push_back(PreparedStatement{"drop_sid_column", "ALTER TABLE account_threepids DROP COLUMN sid", {}});
+    statements.push_back(
+        PreparedStatement{"drop_client_secret_column", "ALTER TABLE account_threepids DROP COLUMN client_secret", {}});
+    return {6U, "drop_account_threepids_columns", std::move(statements), MigrationDirection::downgrade};
 }
 
 [[nodiscard]] auto downgrade_sync_stream_watermark_migration() -> MigrationStep
@@ -370,9 +401,13 @@ auto upgrade_migration_catalog() -> std::vector<MigrationStep>
 
 auto downgrade_migration_catalog() -> std::vector<MigrationStep>
 {
-    return {downgrade_account_threepids_migration(),     downgrade_backfill_state_transitions_migration(),
-            downgrade_state_transitions_migration(),     downgrade_event_stream_watermark_migration(),
-            downgrade_sync_stream_watermark_migration(), downgrade_initial_schema_migration()};
+    return {downgrade_account_threepids_columns_migration(),
+            downgrade_account_threepids_migration(),
+            downgrade_backfill_state_transitions_migration(),
+            downgrade_state_transitions_migration(),
+            downgrade_event_stream_watermark_migration(),
+            downgrade_sync_stream_watermark_migration(),
+            downgrade_initial_schema_migration()};
 }
 
 auto migration_plan_between(std::uint32_t current_version, std::uint32_t target_version) -> MigrationPlan

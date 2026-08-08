@@ -11,7 +11,7 @@ NNN_snake_case_description.sql
 
 `NNN` is a zero-padded three-digit integer: `001`, `002`, ..., `010`, `011`, ...
 The next migration number is always `max(existing) + 1`.
-Current highest: `006`.
+Current highest: `007`.
 
 Schema version `2` introduced the `sync_stream_watermark` table via
 `002_sync_stream_watermark.sql` to support live pre-production deployments that
@@ -24,7 +24,11 @@ version `5` (`005_backfill_state_transitions.sql`) is data-only and backfills
 the `state_transitions` rows for pre-existing rooms; it adds no tables. Schema
 version `6` adds the `account_threepids` table via `006_account_threepids.sql`
 so durable 3PID bindings (medium/address, optional country and identity server,
-validation/bound timestamps) survive restarts. After
+validation/bound timestamps) survive restarts. Schema version `7`
+(`007_account_threepids_columns.sql`) adds the `client_secret` and `sid`
+TEXT columns onto `account_threepids` so the homeserver can persist the
+identity-server credentials needed for IS-delegated unbind (auth mode 2:
+sid + client_secret); it adds no new tables. After
 `v1.0.0`, deployed databases become a strict compatibility boundary and schema
 changes must be added as new forward migration files instead of modifying
 already-applied migrations.

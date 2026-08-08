@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.11.9
+Version:        0.11.10
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -101,6 +101,8 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Fri Aug 08 2026 James Chapman <claude@ping.me.uk> - 0.11.10-1
+- Discovery test-seam for hermetic identity-server mocking; bind/unbind/requestToken now drive the remote IS (mode-2 unbind via stored client_secret+sid); MSC4186 multi-list sliding-sync combination.
 * Fri Aug 07 2026 James Chapman <claude@ping.me.uk> - 0.11.9-1
 - Capability-gap closures: remote 3PID identity-server lookup (store-invite) for third-party invites with durable account_threepids bindings; MSC4186 sliding sync required_state merge for list+subscription; rate-limit /_merovingian/admin/* routes; consistent 401/403 admin authentication.
 * Tue Aug 04 2026 James Chapman <claude@ping.me.uk> - 0.11.8-1

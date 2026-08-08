@@ -599,6 +599,38 @@ threat it closes; the controls above are the standing defences these reinforce.
   outside `runtime.mutex` per the codebase convention, so a slow or hostile
   IS cannot block other runtime work.
 
+- **IS-delegated `bind`/`unbind`/`requestToken` and stored `client_secret`/`sid`
+  (v0.11.10):** delegating `bind`, `unbind`, and `requestToken` to a remote IS
+  extends the v0.11.9 outbound surface, and unbind auth mode 2 requires the HS
+  to persist the IS-issued `client_secret` + `sid` so it can replay them in a
+  later unbind body. New risks and mitigations, all fail-closed: (1) **DB
+  compromise widens 3PID control** — an attacker who reads `account_threepids`
+  gains the `client_secret` + `sid` for every IS-bound 3PID and can call the IS
+  `/3pid/unbind` directly, detaching 3PIDs for affected users without the user's
+  password. Mitigation: the columns are populated **only** for IS-bound 3PIDs
+  (local-only bindings stay empty), they sit behind the same DB-role gating as
+  the rest of the account store (the `merovingian_runtime` role reads/writes
+  them; the migration role does not), and an incident response rotates/revokes
+  affected IS sessions the same way access-token hashes are rotated on a DB
+  leak — there is no plaintext token material here, only IS re-unbind secrets.
+  (2) **Orphaned IS-side bindings on premature local removal** — silently
+  deleting the local record after a transport failure would drop the stored
+  `client_secret`/`sid`, making a retry impossible while the IS still holds the
+  binding. Mitigation: unbind fails closed with `502` on transport error and on
+  unrecognised non-2xx IS responses, so the local record — and its
+  `client_secret`/`sid` — survives until the IS confirms or the user retries.
+  (3) **Trust-set change stranding** — an operator removing an IS from
+  `trusted_servers` must not strand a 3PID the user can no longer unbind.
+  Mitigation: when the stored `id_server` is no longer trusted, unbind reports
+  `id_server_unbind_result="no-support"` and still removes the local record,
+  so the user is never stuck by an operator trust change. (4) **SSRF / trust
+  / auth-model / fail-closed transport / no-lock-across-I/O** — the same five
+  v0.11.9 controls apply unchanged: all three handlers resolve via
+  `CachedServerDiscovery` with `deny_ip_ranges`, gate on `trusted_servers`,
+  authenticate with a bearer `id_access_token` (except the unauthenticated
+  mode-2 unbind body), fail closed with `502`/`403`, and release
+  `runtime.mutex` for the network call.
+
 ## Security principles
 
 - Fail closed.

@@ -34,7 +34,11 @@ remaining work before PostgreSQL-backed production operation.
   transition history after the v4 upgrade, and schema version `6` adds the
   `account_threepids` table via `migrations/006_account_threepids.sql` so
   bound 3PID associations survive restarts rather than living only in the
-  in-memory `vector<AccountThreePid>`.
+  in-memory `vector<AccountThreePid>`, and schema version `7` adds the
+  `client_secret` and `sid` TEXT columns to `account_threepids` via
+  `migrations/007_account_threepids_columns.sql` so an IS-bound 3PID can be
+  remotely unbound via IS unbind auth mode 2 (the stored pair is replayed in the
+  unbind body; empty for local-only bindings).
   After the project reaches production-ready `v1.0.0`, every schema change
   must add a forward migration and keep deployed databases compatible.
 - SQLite RAII wrappers around database connections and prepared statements.
@@ -137,7 +141,19 @@ remaining work before PostgreSQL-backed production operation.
   (upgrade step version `6` "account_threepids"; downgrade step version `5`
   "drop_account_threepids") rather than the on-disk `.sql` file, which
   remains the canonical schema definition.
-- `PersistentThreePidBinding` struct and the
+- `account_threepids.client_secret` / `account_threepids.sid` columns
+  (schema version `7`, migration
+  `migrations/007_account_threepids_columns.sql`) store the
+  `client_secret` + `sid` pair the IS issued for a binding, so a later remote
+  unbind can replay them in the request body (IS unbind auth mode 2). Both
+  columns are `TEXT NOT NULL DEFAULT ''`; they are populated only for IS-bound
+  3PIDs and left empty for local-only bindings. The runtime migration path
+  uses the compiled catalog in `src/database/migration.cpp` (upgrade step
+  version `7` "account_threepids_columns"; downgrade step version `6`
+  "drop_account_threepids_columns" — column drop precedes the v5 table drop
+  on the downgrade walk); `schema::current_schema_version()` returns `7U`.
+- `PersistentThreePidBinding` struct (now carrying optional `client_secret`
+  and `sid`) and the
   `store_account_threepid` / `find_account_threepid` /
   `delete_account_threepid` store functions
   ([persistent_store.hpp](../include/merovingian/database/persistent_store.hpp))
