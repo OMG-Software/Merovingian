@@ -656,6 +656,23 @@ namespace
                                                              column_text(row, 2), column_text(row, 3),
                                                              column_text(row, 4)});
                          }) &&
+               load_rows(connection,
+                         "SELECT user_id, app_id, pushkey, kind, app_display_name, device_display_name, "
+                         "profile_tag, lang, data_url, data_format FROM pushers ORDER BY user_id, app_id, pushkey",
+                         [&store](sqlite3_stmt& row) {
+                             PersistentPusher entry{};
+                             entry.user_id = column_text(row, 0);
+                             entry.app_id = column_text(row, 1);
+                             entry.pushkey = column_text(row, 2);
+                             entry.kind = column_text(row, 3);
+                             entry.app_display_name = column_text(row, 4);
+                             entry.device_display_name = column_text(row, 5);
+                             entry.profile_tag = column_text(row, 6);
+                             entry.lang = column_text(row, 7);
+                             entry.data_url = column_text(row, 8);
+                             entry.data_format = column_text(row, 9);
+                             store.pushers.push_back(std::move(entry));
+                         }) &&
                load_rows(connection, "SELECT watermark FROM sync_stream_watermark",
                          [&store](sqlite3_stmt& row) {
                              store.next_sync_stream_id = parse_u64(column_text(row, 0));

@@ -809,6 +809,8 @@ only reports what *would* happen.
 | `security.secrets.master_key_file` | Restart required |
 | `client_rate_limits.*` | Restart required |
 | `log_modules.*` | Restart required |
+| `server.identity_server.*` | Restart required |
+| `server.push.*` | Restart required |
 | `database.pool_size` | Reloadable |
 | `server.turn.*` | Reloadable |
 | `security.trust_safety.*` | Reloadable |

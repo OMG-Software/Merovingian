@@ -1012,6 +1012,33 @@ namespace
             }
         }
 
+        auto pushers = query_rows(connection, "postgresql_load_pushers",
+                                  "SELECT user_id, app_id, pushkey, kind, app_display_name, device_display_name, "
+                                  "profile_tag, lang, data_url, data_format FROM pushers "
+                                  "ORDER BY user_id, app_id, pushkey");
+        if (!pushers.ok)
+        {
+            return false;
+        }
+        for (auto const& row : pushers.rows)
+        {
+            if (row.size() >= 10U)
+            {
+                PersistentPusher entry{};
+                entry.user_id = row[0];
+                entry.app_id = row[1];
+                entry.pushkey = row[2];
+                entry.kind = row[3];
+                entry.app_display_name = row[4];
+                entry.device_display_name = row[5];
+                entry.profile_tag = row[6];
+                entry.lang = row[7];
+                entry.data_url = row[8];
+                entry.data_format = row[9];
+                store.pushers.push_back(std::move(entry));
+            }
+        }
+
         auto const watermark = query_rows(connection, "postgresql_load_sync_stream_watermark",
                                           "SELECT watermark FROM sync_stream_watermark");
         if (!watermark.ok)

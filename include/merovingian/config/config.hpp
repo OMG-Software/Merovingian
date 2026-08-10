@@ -91,6 +91,22 @@ struct OidcConfig final
     std::vector<std::string> account_management_actions_supported{};
 };
 
+// Push Gateway API delivery configuration (Matrix v1.19 push-gateway-api /
+// CS API push-notifications module). `enabled` gates the entire outbound
+// delivery path and defaults to false, mirroring OidcConfig's pattern, so
+// merging this capability cannot cause an existing deployment to start
+// sending traffic to gateways on upgrade — an operator must explicitly opt
+// in. Timeouts mirror IdentityServerConfig's operator-tunable connect/total
+// pair; a pusher's gateway URL is client-supplied (any client can register
+// one), so these bound how long the homeserver waits on a host it does not
+// control.
+struct PushConfig final
+{
+    bool enabled{false};
+    std::uint32_t connect_timeout_seconds{10U};
+    std::uint32_t total_timeout_seconds{30U};
+};
+
 struct ServerConfig final
 {
     std::string server_name{"example.org"};
@@ -112,6 +128,8 @@ struct ServerConfig final
     // requestToken. Empty by default; with no trusted servers the homeserver
     // refuses 3PID operations that need an IS rather than minting locally.
     IdentityServerConfig identity_server{};
+    // Push Gateway API delivery config. Disabled by default (see PushConfig).
+    PushConfig push{};
 };
 
 struct ListenerConfig final

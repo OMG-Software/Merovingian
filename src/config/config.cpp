@@ -645,6 +645,16 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
             {"server.identity_server.total_timeout_seconds", "total timeout must be >= connect timeout"});
     }
 
+    // Push Gateway API delivery: same connect/total timeout ordering rule as
+    // the identity-server client. Validated regardless of `enabled` so a
+    // config that later flips push.enabled=true does not silently inherit an
+    // invalid timeout pair.
+    auto const& push = config.server().push;
+    if (push.total_timeout_seconds < push.connect_timeout_seconds)
+    {
+        findings.push_back({"server.push.total_timeout_seconds", "total timeout must be >= connect timeout"});
+    }
+
     if (!is_valid_listener_bind(config.listeners().client.bind))
     {
         findings.push_back({"listeners.client.bind", "client listener bind address must be host:port"});

@@ -398,6 +398,28 @@ struct PersistentClientTxnRecord final
     std::string event_id{};
 };
 
+// A push notification pusher registered via `POST
+// /_matrix/client/v3/pushers/set` (Matrix v1.19 CS API §push-notifications).
+// Keyed by (user_id, app_id, pushkey) — the spec's uniqueness rule: setting a
+// pusher with the same app_id and pushkey for the same user replaces it
+// in-place rather than creating a second row. `kind` is "http" or "email".
+// `data_url` and `data_format` mirror the pusher's `data` dictionary (the
+// `url` and `format` keys); `data_url` is required for kind "http" and
+// empty for "email". `profile_tag` is optional per spec and empty when unset.
+struct PersistentPusher final
+{
+    std::string user_id{};
+    std::string app_id{};
+    std::string pushkey{};
+    std::string kind{};
+    std::string app_display_name{};
+    std::string device_display_name{};
+    std::string profile_tag{};
+    std::string lang{};
+    std::string data_url{};
+    std::string data_format{};
+};
+
 struct PersistentStore final
 {
     PersistentStore() = default;
@@ -444,6 +466,7 @@ struct PersistentStore final
         , account_threepids{other.account_threepids}
         , room_aliases{other.room_aliases}
         , client_txn_ids{other.client_txn_ids}
+        , pushers{other.pushers}
         , prepared_statements{other.prepared_statements}
         , prepared_statements_mutex{std::make_unique<std::mutex>()}
         , next_sync_stream_id{other.next_sync_stream_id}
@@ -499,6 +522,7 @@ struct PersistentStore final
         account_threepids = other.account_threepids;
         room_aliases = other.room_aliases;
         client_txn_ids = other.client_txn_ids;
+        pushers = other.pushers;
         prepared_statements = other.prepared_statements;
         prepared_statements_mutex = std::make_unique<std::mutex>();
         next_sync_stream_id = other.next_sync_stream_id;
@@ -554,6 +578,7 @@ struct PersistentStore final
     std::vector<PersistentThreePidBinding> account_threepids{};
     std::vector<PersistentRoomAlias> room_aliases{};
     std::vector<PersistentClientTxnRecord> client_txn_ids{};
+    std::vector<PersistentPusher> pushers{};
     std::vector<PreparedStatement> prepared_statements{};
     // Guards prepared_statements, which is appended to by
     // commit_persistent_transaction from multiple concurrent room-stripe paths
@@ -800,6 +825,21 @@ auto apply_store_event_with_state(PersistentStore& store, PreparedStateUpdate co
 // such binding exists or the backend delete fails.
 [[nodiscard]] auto delete_account_threepid(PersistentStore& store, std::string_view user_id, std::string_view medium,
                                            std::string_view address) -> bool;
+// Upsert a pusher keyed by (user_id, app_id, pushkey). Persists the row and
+// mirrors it into the in-memory vector (replacing any existing entry with the
+// same key). Returns false on an empty user_id/app_id/pushkey/kind or a
+// backend write failure.
+[[nodiscard]] auto store_pusher(PersistentStore& store, PersistentPusher pusher) -> bool;
+// Return the pusher for (user_id, app_id, pushkey), or nullopt.
+[[nodiscard]] auto find_pusher(PersistentStore const& store, std::string_view user_id, std::string_view app_id,
+                               std::string_view pushkey) -> std::optional<PersistentPusher>;
+// Remove the pusher for (user_id, app_id, pushkey). Returns false if no such
+// pusher exists or the backend delete fails.
+[[nodiscard]] auto delete_pusher(PersistentStore& store, std::string_view user_id, std::string_view app_id,
+                                 std::string_view pushkey) -> bool;
+// Return every pusher registered for user_id, in insertion order.
+[[nodiscard]] auto list_pushers_for_user(PersistentStore const& store, std::string_view user_id)
+    -> std::vector<PersistentPusher>;
 // Look up a previous idempotent send result. Returns the stored event_id
 // (or empty string for to-device sends) if the (user_id, room_id,
 // event_type, txn_id) tuple was already committed; nullopt otherwise.

@@ -339,6 +339,18 @@ auto downgrade_initial_schema_migration() -> MigrationStep
     return {7U, "account_threepids_columns", std::move(statements), MigrationDirection::upgrade};
 }
 
+// v8: durable pushers table (Matrix v1.19 CS API Push Notifications module).
+// Persists the pusher fields the spec defines — pushkey, kind, app_id,
+// app_display_name, device_display_name, profile_tag, lang, and the `data`
+// dictionary's `url`/`format` keys — keyed on (user_id, app_id, pushkey) per
+// the spec's "same app_id and pushkey for this user is updated" rule.
+[[nodiscard]] auto upgrade_pushers_migration() -> MigrationStep
+{
+    auto statements = std::vector<PreparedStatement>{};
+    statements.push_back(make_create_table_statement(schema_table_definition("pushers").value()).value());
+    return {8U, "pushers", std::move(statements), MigrationDirection::upgrade};
+}
+
 auto upgrade_migration_catalog() -> std::vector<MigrationStep>
 {
     return {initial_schema_migration(),
@@ -347,7 +359,8 @@ auto upgrade_migration_catalog() -> std::vector<MigrationStep>
             upgrade_state_transitions_migration(),
             upgrade_backfill_state_transitions_migration(),
             upgrade_account_threepids_migration(),
-            upgrade_account_threepids_columns_migration()};
+            upgrade_account_threepids_columns_migration(),
+            upgrade_pushers_migration()};
 }
 
 [[nodiscard]] auto downgrade_backfill_state_transitions_migration() -> MigrationStep
@@ -378,6 +391,14 @@ auto upgrade_migration_catalog() -> std::vector<MigrationStep>
     return {6U, "drop_account_threepids_columns", std::move(statements), MigrationDirection::downgrade};
 }
 
+// v8 -> v7: drop the pushers table.
+[[nodiscard]] auto downgrade_pushers_migration() -> MigrationStep
+{
+    auto statements = std::vector<PreparedStatement>{};
+    statements.push_back(make_drop_table_statement("pushers").value());
+    return {7U, "drop_pushers", std::move(statements), MigrationDirection::downgrade};
+}
+
 [[nodiscard]] auto downgrade_sync_stream_watermark_migration() -> MigrationStep
 {
     auto statements = std::vector<PreparedStatement>{};
@@ -401,7 +422,8 @@ auto upgrade_migration_catalog() -> std::vector<MigrationStep>
 
 auto downgrade_migration_catalog() -> std::vector<MigrationStep>
 {
-    return {downgrade_account_threepids_columns_migration(),
+    return {downgrade_pushers_migration(),
+            downgrade_account_threepids_columns_migration(),
             downgrade_account_threepids_migration(),
             downgrade_backfill_state_transitions_migration(),
             downgrade_state_transitions_migration(),

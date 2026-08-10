@@ -44,6 +44,37 @@ then closed one of the gaps the audit found.
 - The document gained a "Reading this document" note recording the two failure
   modes this audit exposed: silence in the ledger does not imply coverage, and a
   routed endpoint returning 200 does not imply an implemented one.
+- **Step 1 of closing the push gap**: a new `push` module (pusher persistence,
+  push-rule evaluation, and a Push Gateway API client), built but not yet wired
+  into the client-server router — routing is a follow-on. Delivery is disabled
+  by default (`server.push.enabled = false`) so merging this cannot cause an
+  existing deployment to start sending gateway traffic on upgrade.
+  - New `008_pushers` migration (schema version 8) adds a `pushers` table
+    keyed on `(user_id, app_id, pushkey)` per the spec's uniqueness rule, with
+    `store_pusher`/`find_pusher`/`delete_pusher`/`list_pushers_for_user` on
+    `PersistentStore`, following the `PersistentThreePidBinding` pattern.
+  - `merovingian::push` (`include/merovingian/push/push_rules.hpp`,
+    `src/push/push_rules.cpp`): a pure, side-effect-free push-rule evaluator.
+    `parse_push_ruleset()` parses a stored ruleset once into a typed
+    `PushRuleset`; `evaluate_push_rules()` evaluates one event per call against
+    it, honouring override > content > room > sender > underride precedence,
+    `.m.rule.master`'s absolute priority, the "never notify for your own
+    events" rule, and the `event_match`, `contains_display_name`,
+    `room_member_count`, and `sender_notification_permission` condition kinds.
+  - `merovingian::push::PushGatewayClient`
+    (`include/merovingian/push/push_gateway_client.hpp`,
+    `src/push/push_gateway_client.cpp`): an outbound `POST
+    /_matrix/push/v1/notify` client built on the SSRF-safe
+    `http::OutboundClient` + `CachedServerDiscovery` pattern used by
+    `IdentityServerClient` — a pusher's gateway URL is client-supplied,
+    attacker-influenced data, so it is resolved the same fail-closed way
+    federation and identity-server traffic is, never via ad-hoc DNS. `notify()`
+    fails closed with no network call at all when `server.push.enabled` is
+    false, and surfaces the spec's `rejected` pushkey list to the caller
+    without touching the database itself.
+  - New `config::PushConfig` (`server.push.*`: `enabled`, connect/total
+    timeouts), modelled on `OidcConfig`/`IdentityServerConfig`; restart-required
+    on change, same lifecycle as the identity-server client.
 
 ## 0.11.10
 

@@ -631,6 +631,41 @@ threat it closes; the controls above are the standing defences these reinforce.
   mode-2 unbind body), fail closed with `502`/`403`, and release
   `runtime.mutex` for the network call.
 
+- **Outbound Push Gateway `notify` SSRF surface (v0.11.11, module built, not
+  yet routed):** a pusher's gateway URL (`data.url` on
+  `POST /_matrix/client/v3/pushers/set`) is supplied entirely by the
+  registering client — unlike the identity-server URL above, there is no
+  operator allowlist for push gateways; any Matrix client can point a pusher
+  at any host. `merovingian::push::PushGatewayClient::notify()` is therefore
+  treated as hostile input from construction and fails closed the same way
+  the identity-server and federation outbound paths do: (1) **SSRF** — the
+  gateway host is resolved through `federation::CachedServerDiscovery`
+  (`ServerDiscoveryNetwork::lookup_addresses`), which applies the operator's
+  `deny_ip_ranges` (private/loopback ranges rejected) before returning pinned
+  addresses; the client never performs its own DNS lookup and never hands the
+  transport a client-supplied address directly — `http::OutboundClient` binds
+  the connection to the pinned address via `CURLOPT_RESOLVE`. (2) **URL shape
+  gate** — the gateway URL is independently re-validated as `https://` with a
+  path of exactly `/_matrix/push/v1/notify` before any resolution is
+  attempted (mirroring the registration-time check in `client_server.cpp`'s
+  `matrix_pusher_url_is_valid`), so this module does not rely solely on
+  upstream validation holding. (3) **Config gate, disabled by default** —
+  `notify()` checks `config::PushConfig::enabled` before doing anything else;
+  while `server.push.enabled` is `false` (the default), no DNS lookup,
+  connection, or byte ever leaves the process for this path, so merging this
+  module cannot itself create the SSRF surface for a deployment that has not
+  opted in. (4) **No lock held across network I/O** — like the identity and
+  federation clients, `PushGatewayClient` holds no lock of its own and the
+  caller must not hold `runtime.mutex` across the call. (5) **Rejection
+  handling stays read-only** — `notify()` returns the spec's `rejected`
+  pushkey list to the caller rather than deleting from the database itself,
+  so a malicious or buggy gateway cannot use a crafted response to trigger
+  writes beyond what the caller explicitly chooses to act on. This module is
+  not yet reachable from any HTTP endpoint (`pushers/set` still discards the
+  pusher body — see `docs/todos/capability-gaps.md`); the routing follow-on
+  that wires it in must preserve all five mitigations, not just the config
+  gate.
+
 ## Security principles
 
 - Fail closed.

@@ -2714,6 +2714,85 @@ auto restore_sync_stream_id(PersistentStore& store) -> void
     return true;
 }
 
+[[nodiscard]] auto store_pusher(PersistentStore& store, PersistentPusher pusher) -> bool
+{
+    if (pusher.user_id.empty() || pusher.app_id.empty() || pusher.pushkey.empty() || pusher.kind.empty())
+    {
+        return false;
+    }
+    auto const statement =
+        record_statement("upsert_pusher",
+                         "INSERT INTO pushers (user_id, app_id, pushkey, kind, app_display_name, device_display_name, "
+                         "profile_tag, lang, data_url, data_format) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) "
+                         "ON CONFLICT (user_id, app_id, pushkey) DO UPDATE SET kind = $4, app_display_name = $5, "
+                         "device_display_name = $6, profile_tag = $7, lang = $8, data_url = $9, data_format = $10",
+                         {public_value(pusher.user_id), public_value(pusher.app_id), public_value(pusher.pushkey),
+                          public_value(pusher.kind), public_value(pusher.app_display_name),
+                          public_value(pusher.device_display_name), public_value(pusher.profile_tag),
+                          public_value(pusher.lang), public_value(pusher.data_url), public_value(pusher.data_format)});
+    if (!record_and_persist(store, statement))
+    {
+        return false;
+    }
+    // Keep the in-memory mirror in sync; replace the existing entry if present.
+    auto const existing = std::ranges::find_if(store.pushers, [&pusher](PersistentPusher const& current) {
+        return current.user_id == pusher.user_id && current.app_id == pusher.app_id &&
+               current.pushkey == pusher.pushkey;
+    });
+    if (existing != store.pushers.end())
+    {
+        *existing = std::move(pusher);
+        return true;
+    }
+    store.pushers.push_back(std::move(pusher));
+    return true;
+}
+
+[[nodiscard]] auto find_pusher(PersistentStore const& store, std::string_view user_id, std::string_view app_id,
+                               std::string_view pushkey) -> std::optional<PersistentPusher>
+{
+    auto const it = std::ranges::find_if(store.pushers, [&](PersistentPusher const& current) {
+        return current.user_id == user_id && current.app_id == app_id && current.pushkey == pushkey;
+    });
+    return it == store.pushers.end() ? std::nullopt : std::optional<PersistentPusher>{*it};
+}
+
+[[nodiscard]] auto delete_pusher(PersistentStore& store, std::string_view user_id, std::string_view app_id,
+                                 std::string_view pushkey) -> bool
+{
+    auto const existing = std::ranges::find_if(store.pushers, [&](PersistentPusher const& current) {
+        return current.user_id == user_id && current.app_id == app_id && current.pushkey == pushkey;
+    });
+    if (existing == store.pushers.end())
+    {
+        return false;
+    }
+    if (!record_and_persist(store,
+                            record_statement("delete_pusher",
+                                             "DELETE FROM pushers WHERE user_id = $1 AND app_id = $2 "
+                                             "AND pushkey = $3",
+                                             {public_value(user_id), public_value(app_id), public_value(pushkey)})))
+    {
+        return false;
+    }
+    store.pushers.erase(existing);
+    return true;
+}
+
+[[nodiscard]] auto list_pushers_for_user(PersistentStore const& store, std::string_view user_id)
+    -> std::vector<PersistentPusher>
+{
+    auto result = std::vector<PersistentPusher>{};
+    for (auto const& pusher : store.pushers)
+    {
+        if (pusher.user_id == user_id)
+        {
+            result.push_back(pusher);
+        }
+    }
+    return result;
+}
+
 [[nodiscard]] auto update_profile_displayname(PersistentStore& store, std::string_view user_id,
                                               std::string_view displayname) -> bool
 {
