@@ -52,14 +52,14 @@ namespace
         return it == object.end() ? nullptr : it->value.get();
     }
 
-    // Walks `event` following a dot-separated property path and returns the
-    // leaf value as a string. Returns nullopt when any intermediate segment
-    // is absent or not an object, or when the leaf is absent or not a
-    // string — matching the spec's "If the property ... is completely
-    // absent ... or does not have a string value, then the condition will
-    // not match" rule for event_match.
-    [[nodiscard]] auto event_property_as_string(canonicaljson::Value const& event, std::string_view key)
-        -> std::optional<std::string>
+    // Walks `event` following a dot-separated property path (with the `\.`
+    // / `\\` segment escaping split_property_path already decodes) and
+    // returns the leaf value, or nullptr when any intermediate segment is
+    // absent or not an object, or the leaf itself is absent. Shared by every
+    // condition kind that resolves a `key` path: `event_match`,
+    // `event_property_is`, and `event_property_contains`.
+    [[nodiscard]] auto resolve_event_property(canonicaljson::Value const& event, std::string_view key) noexcept
+        -> canonicaljson::Value const*
     {
         auto const segments = split_property_path(key);
         auto const* current = &event;
@@ -68,17 +68,68 @@ namespace
             auto const* object = std::get_if<canonicaljson::Object>(&current->storage());
             if (object == nullptr)
             {
-                return std::nullopt;
+                return nullptr;
             }
             auto const* member = object_member(*object, segment);
             if (member == nullptr)
             {
-                return std::nullopt;
+                return nullptr;
             }
             current = member;
         }
+        return current;
+    }
+
+    // Returns the leaf value as a string. Returns nullopt when the path is
+    // unresolvable (see resolve_event_property) or the leaf is not a
+    // string — matching the spec's "If the property ... is completely
+    // absent ... or does not have a string value, then the condition will
+    // not match" rule for event_match.
+    [[nodiscard]] auto event_property_as_string(canonicaljson::Value const& event, std::string_view key)
+        -> std::optional<std::string>
+    {
+        auto const* current = resolve_event_property(event, key);
+        if (current == nullptr)
+        {
+            return std::nullopt;
+        }
         auto const* value = std::get_if<std::string>(&current->storage());
         return value == nullptr ? std::nullopt : std::optional<std::string>{*value};
+    }
+
+    // Exact-value, exact-type comparison for the `value` parameter of
+    // `event_property_is` / `event_property_contains`. Per spec the
+    // condition's `value` is "A non-compound canonical JSON value" — string,
+    // integer, boolean, or null — so only those alternatives are compared;
+    // anything else (array, object, or a stray double) never matches,
+    // including two values that happen to share the same alternative index
+    // via `std::variant::operator==` semantics we deliberately avoid, since
+    // that would require `Array`/`Object` equality that `Value` does not
+    // define. A type mismatch (e.g. string "true" vs. boolean true) always
+    // fails, per the spec's `m.federate` example.
+    [[nodiscard]] auto scalar_values_equal(canonicaljson::Value const& lhs, canonicaljson::Value const& rhs) noexcept
+        -> bool
+    {
+        if (std::holds_alternative<std::nullptr_t>(lhs.storage()))
+        {
+            return std::holds_alternative<std::nullptr_t>(rhs.storage());
+        }
+        if (auto const* lhs_bool = std::get_if<bool>(&lhs.storage()); lhs_bool != nullptr)
+        {
+            auto const* rhs_bool = std::get_if<bool>(&rhs.storage());
+            return rhs_bool != nullptr && *lhs_bool == *rhs_bool;
+        }
+        if (auto const* lhs_int = std::get_if<std::int64_t>(&lhs.storage()); lhs_int != nullptr)
+        {
+            auto const* rhs_int = std::get_if<std::int64_t>(&rhs.storage());
+            return rhs_int != nullptr && *lhs_int == *rhs_int;
+        }
+        if (auto const* lhs_string = std::get_if<std::string>(&lhs.storage()); lhs_string != nullptr)
+        {
+            auto const* rhs_string = std::get_if<std::string>(&rhs.storage());
+            return rhs_string != nullptr && *lhs_string == *rhs_string;
+        }
+        return false;
     }
 
     [[nodiscard]] auto ascii_lower(std::string_view value) -> std::string
@@ -293,6 +344,29 @@ namespace
                 it != context.notification_power_levels.end() ? it->second : context.default_notification_power_level;
             return context.sender_power_level >= required;
         }
+        case PushConditionKind::event_property_is: {
+            if (!condition.value.has_value())
+            {
+                return false;
+            }
+            auto const* actual = resolve_event_property(event, condition.key);
+            return actual != nullptr && scalar_values_equal(*actual, *condition.value);
+        }
+        case PushConditionKind::event_property_contains: {
+            if (!condition.value.has_value())
+            {
+                return false;
+            }
+            auto const* actual = resolve_event_property(event, condition.key);
+            auto const* array = actual == nullptr ? nullptr : std::get_if<canonicaljson::Array>(&actual->storage());
+            if (array == nullptr)
+            {
+                return false;
+            }
+            return std::ranges::any_of(*array, [&condition](canonicaljson::Value const& element) {
+                return scalar_values_equal(element, *condition.value);
+            });
+        }
         case PushConditionKind::unknown:
         default:
             // Per spec: "Unrecognised conditions MUST NOT match any events."
@@ -337,6 +411,14 @@ namespace
         {
             return PushConditionKind::sender_notification_permission;
         }
+        if (kind == "event_property_is")
+        {
+            return PushConditionKind::event_property_is;
+        }
+        if (kind == "event_property_contains")
+        {
+            return PushConditionKind::event_property_contains;
+        }
         return PushConditionKind::unknown;
     }
 
@@ -371,6 +453,10 @@ namespace
             {
                 condition.is = *is_string;
             }
+        }
+        if (auto const* value_value = object_member(object, "value"); value_value != nullptr)
+        {
+            condition.value = *value_value;
         }
         return condition;
     }

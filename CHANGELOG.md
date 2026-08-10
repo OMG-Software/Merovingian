@@ -59,8 +59,20 @@ then closed one of the gaps the audit found.
     `PushRuleset`; `evaluate_push_rules()` evaluates one event per call against
     it, honouring override > content > room > sender > underride precedence,
     `.m.rule.master`'s absolute priority, the "never notify for your own
-    events" rule, and the `event_match`, `contains_display_name`,
-    `room_member_count`, and `sender_notification_permission` condition kinds.
+    events" rule, and all six spec condition kinds: `event_match`,
+    `contains_display_name`, `room_member_count`,
+    `sender_notification_permission`, `event_property_is`, and
+    `event_property_contains`. The latter two were initially stubbed to
+    `PushConditionKind::unknown` (never-match) — closed in the same branch,
+    since `.m.rule.is_user_mention`/`.m.rule.is_room_mention` are built on
+    exactly these two kinds and would otherwise never fire, silently
+    disabling @-mentions. Both share the evaluator's existing
+    dot-separated-path resolver (`resolve_event_property`, refactored out of
+    `event_match`'s string-only lookup) so the `\.`/`\\` escaping rules
+    (docs/matrix-v1.19-spec/appendices.md#dot-separated-property-paths) are
+    honoured identically across all three key-based condition kinds; `value`
+    comparison is exact-type (a string `"true"` never equals boolean `true`,
+    per spec) and fails closed on unresolvable paths or non-array targets.
   - `merovingian::push::PushGatewayClient`
     (`include/merovingian/push/push_gateway_client.hpp`,
     `src/push/push_gateway_client.cpp`): an outbound `POST

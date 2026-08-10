@@ -14,18 +14,21 @@
 namespace merovingian::push
 {
 
-// Matrix v1.19 CS API §push-notifications defines four condition kinds that
-// this evaluator implements: `event_match`, `contains_display_name`,
-// `room_member_count`, and `sender_notification_permission`. Any other kind
-// (e.g. `event_property_is`, `event_property_contains`) parses to `unknown`
-// and — per spec ("Unrecognised conditions MUST NOT match any events") —
-// never matches, which effectively disables the rule that references it.
+// Matrix v1.19 CS API §push-notifications defines six condition kinds, all of
+// which this evaluator implements: `event_match`, `contains_display_name`,
+// `room_member_count`, `sender_notification_permission`, `event_property_is`,
+// and `event_property_contains`. Any other (unrecognised) kind parses to
+// `unknown` and — per spec ("Unrecognised conditions MUST NOT match any
+// events") — never matches, which effectively disables the rule that
+// references it.
 enum class PushConditionKind
 {
     event_match,
     contains_display_name,
     room_member_count,
     sender_notification_permission,
+    event_property_is,
+    event_property_contains,
     unknown,
 };
 
@@ -35,12 +38,19 @@ enum class PushConditionKind
 //   contains_display_name           -> (none)
 //   room_member_count               -> is
 //   sender_notification_permission  -> key
+//   event_property_is               -> key, value
+//   event_property_contains         -> key, value
 struct PushCondition final
 {
     PushConditionKind kind{PushConditionKind::unknown};
     std::string key{};
     std::string pattern{};
     std::string is{};
+    // Only set when the parsed rule provided a `value` member. Per spec,
+    // "A non-compound canonical JSON value" — i.e. string, integer, boolean,
+    // or null; an absent `value` (missing from a malformed rule) leaves this
+    // empty and the condition fails closed (never matches).
+    std::optional<canonicaljson::Value> value{};
 };
 
 // The five push rule kinds, checked in this exact precedence order per spec:
