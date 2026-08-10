@@ -261,11 +261,13 @@ auto parse_notify_response(std::string_view body) -> std::optional<PushGatewayRe
     return result;
 }
 
-PushGatewayClient::PushGatewayClient(http::OutboundClient& outbound, federation::CachedServerDiscovery& discovery,
-                                     config::PushConfig const& config) noexcept
+PushGatewayClient::PushGatewayClient(
+    http::OutboundClient& outbound, federation::CachedServerDiscovery& discovery, config::PushConfig const& config,
+    std::map<std::string, TestForcedPushGatewayResolution> const* forced_resolution) noexcept
     : outbound_{outbound}
     , discovery_{discovery}
     , config_{config}
+    , test_forced_resolution_{forced_resolution}
 {
 }
 
@@ -286,26 +288,46 @@ auto PushGatewayClient::notify(std::string_view gateway_url, PushGatewayNotifica
         return {false, false, 0U, {}, http::OutboundError::invalid_url, "invalid push gateway URL"};
     }
 
-    // SSRF-safe resolution: never resolve DNS directly and never accept a
-    // client-supplied address. The gateway URL is attacker-influenced (any
-    // client can register a pusher pointing anywhere), so this path is the
-    // same discovery boundary the identity-server and federation clients use.
-    auto const resolved = discovery_.upstream().lookup_addresses(parsed->host, parsed->port);
-    if (!resolved.ok || resolved.addresses.empty())
+    auto request = http::OutboundRequest{};
+    // Test-only seam: a forced entry keyed by the gateway host pins loopback
+    // addresses and an in-memory CA bundle instead of going through SSRF-safe
+    // discovery. Always nullptr/empty in production — see
+    // TestForcedPushGatewayResolution's doc comment.
+    auto const* forced_entry = [&]() -> TestForcedPushGatewayResolution const* {
+        if (test_forced_resolution_ == nullptr)
+        {
+            return nullptr;
+        }
+        auto const found = test_forced_resolution_->find(parsed->host);
+        return found == test_forced_resolution_->end() ? nullptr : &found->second;
+    }();
+    if (forced_entry != nullptr)
     {
-        return {false,
-                false,
-                0U,
-                {},
-                http::OutboundError::unresolved_host,
-                "SSRF-safe resolution failed for push gateway host: " + resolved.reason};
+        request.pinned_addresses = forced_entry->pinned_addresses;
+        request.trusted_ca_pem = forced_entry->trusted_ca_pem;
+    }
+    else
+    {
+        // SSRF-safe resolution: never resolve DNS directly and never accept a
+        // client-supplied address. The gateway URL is attacker-influenced (any
+        // client can register a pusher pointing anywhere), so this path is the
+        // same discovery boundary the identity-server and federation clients use.
+        auto const resolved = discovery_.upstream().lookup_addresses(parsed->host, parsed->port);
+        if (!resolved.ok || resolved.addresses.empty())
+        {
+            return {false,
+                    false,
+                    0U,
+                    {},
+                    http::OutboundError::unresolved_host,
+                    "SSRF-safe resolution failed for push gateway host: " + resolved.reason};
+        }
+        request.pinned_addresses = resolved.addresses;
     }
 
-    auto request = http::OutboundRequest{};
     request.method = "POST";
     request.url = std::string{gateway_url};
     request.body = build_notify_request_body(notification);
-    request.pinned_addresses = resolved.addresses;
     request.connect_timeout_seconds = config_.connect_timeout_seconds;
     request.total_timeout_seconds = config_.total_timeout_seconds;
     request.headers.push_back(http::OutboundHeader{"Content-Type", "application/json"});

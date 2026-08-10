@@ -24,6 +24,7 @@
 #include "merovingian/federation/outbound_transaction.hpp"
 #include "merovingian/federation/server_discovery.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
+#include "merovingian/homeserver/default_push_ruleset.hpp"
 #include "merovingian/homeserver/federation_proxy.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/local_services.hpp"
@@ -32,7 +33,10 @@
 #include "merovingian/identity/identity_client.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
+#include "merovingian/push/push_gateway_client.hpp"
+#include "merovingian/push/push_rules.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
+#include "merovingian/sync/sliding_sync_room_builder.hpp"
 #include "merovingian/trust_safety/policy_engine.hpp"
 
 #include <algorithm>
@@ -43,6 +47,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <future>
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -54,6 +59,7 @@
 #include <string_view>
 #include <system_error>
 #include <thread>
+#include <unordered_map>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -4749,6 +4755,269 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
     return make_operation_result(true, std::string{room_id});
 }
 
+namespace
+{
+
+    // One pusher targeted for delivery, paired with the fully-built Push
+    // Gateway API notification body for that specific pusher (counts and the
+    // event_id_only field trim are computed per recipient/per pusher, so each
+    // delivery gets its own PushGatewayNotification even though several may
+    // share the same event).
+    struct PendingPushDelivery final
+    {
+        database::PersistentPusher pusher{};
+        push::PushGatewayNotification notification{};
+    };
+
+    // Reads the room's current m.room.power_levels event content, parsed as a
+    // full-event-shaped canonicaljson::Value ({"content": {...}, ...}) — the
+    // shape events::extract_user_power_level/extract_power_level_key expect.
+    // Returns a null Value (both helpers treat that as "use every default")
+    // when the room has no power_levels state yet.
+    [[nodiscard]] auto room_power_levels_event_value(database::PersistentStore const& store, std::string_view room_id)
+        -> canonicaljson::Value
+    {
+        auto const state_it = std::ranges::find_if(store.state, [&](database::PersistentStateEvent const& state) {
+            return state.room_id == room_id && state.event_type == "m.room.power_levels" && state.state_key.empty();
+        });
+        if (state_it == store.state.end())
+        {
+            return canonicaljson::Value{};
+        }
+        auto const event_it = std::ranges::find_if(store.events, [&](database::PersistentEvent const& event) {
+            return event.event_id == state_it->event_id;
+        });
+        if (event_it == store.events.end())
+        {
+            return canonicaljson::Value{};
+        }
+        auto parsed = canonicaljson::parse_lossless(event_it->json);
+        if (parsed.error != canonicaljson::ParseError::none)
+        {
+            return canonicaljson::Value{};
+        }
+        return std::move(parsed.value);
+    }
+
+    // Sum of sync::count_notifications() across every room `user_id` is
+    // currently joined to — the Push Gateway API's counts.unread definition:
+    // "the number of unread messages a user has across all of the rooms they
+    // are a member of." Reuses the same per-room read-receipt baseline
+    // /sync's unread_notifications block already computes; no second unread
+    // implementation.
+    [[nodiscard]] auto total_unread_count(HomeserverRuntime const& runtime, std::string_view user_id) -> std::uint32_t
+    {
+        auto const& store = runtime.database.persistent_store;
+        auto total = std::uint64_t{0U};
+        for (auto const& membership : store.memberships)
+        {
+            if (membership.user_id != user_id || membership.membership != "join")
+            {
+                continue;
+            }
+            auto const read_ordering = sync::read_receipt_ordering(runtime, store, membership.room_id, user_id);
+            total += sync::count_notifications(store, membership.room_id, user_id, read_ordering);
+        }
+        return static_cast<std::uint32_t>(std::min<std::uint64_t>(total, std::numeric_limits<std::uint32_t>::max()));
+    }
+
+    // Evaluates push rules for `composed` against every local, joined,
+    // pusher-registered recipient of `room` (everyone except `sender`), and
+    // returns one PendingPushDelivery per (recipient, pusher) pair whose
+    // evaluation says "notify". Only "http" pushers are returned — Merovingian's
+    // Push Gateway API client only speaks the HTTP pusher protocol; "email"
+    // pushers are accepted and persisted by POST /pushers/set but are not yet
+    // deliverable (see docs/todos/capability-gaps.md).
+    //
+    // Pure/in-memory only (state reads, JSON parsing, rule evaluation) — no
+    // network, no database writes. Safe to call under runtime.mutex, which
+    // send_event() already holds when it calls this. The gateway network
+    // calls happen later, off the request path — see dispatch_push_deliveries.
+    [[nodiscard]] auto build_pending_push_deliveries(HomeserverRuntime const& runtime, LocalRoom const& room,
+                                                     ComposedEvent const& composed, std::string_view sender)
+        -> std::vector<PendingPushDelivery>
+    {
+        auto deliveries = std::vector<PendingPushDelivery>{};
+        if (!runtime.config.server().push.enabled)
+        {
+            return deliveries;
+        }
+        auto const& store = runtime.database.persistent_store;
+        auto const& server_name = runtime.config.server().server_name;
+
+        auto event_parsed = canonicaljson::parse_lossless(composed.json);
+        if (event_parsed.error != canonicaljson::ParseError::none)
+        {
+            return deliveries;
+        }
+
+        auto const power_levels_value = room_power_levels_event_value(store, room.room_id);
+        auto const sender_power_level = events::extract_user_power_level(power_levels_value, sender);
+        auto notification_power_levels = std::unordered_map<std::string, std::int64_t>{};
+        if (auto const* pl_object = std::get_if<canonicaljson::Object>(&power_levels_value.storage());
+            pl_object != nullptr)
+        {
+            if (auto const* content = object_member(*pl_object, "content"); content != nullptr)
+            {
+                if (auto const* content_object = std::get_if<canonicaljson::Object>(&content->storage());
+                    content_object != nullptr)
+                {
+                    if (auto const* notifications = object_member(*content_object, "notifications");
+                        notifications != nullptr)
+                    {
+                        if (auto const* notifications_object =
+                                std::get_if<canonicaljson::Object>(&notifications->storage());
+                            notifications_object != nullptr)
+                        {
+                            for (auto const& member : *notifications_object)
+                            {
+                                if (auto const* level = std::get_if<std::int64_t>(&member.value->storage());
+                                    level != nullptr)
+                                {
+                                    notification_power_levels[member.key] = *level;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Spec (push-gateway-api.md): "content" is "the content field from the
+        // event, if present" — omitted (along with the other event-detail
+        // fields below) for pushers whose data.format is "event_id_only".
+        auto const content_json = [&]() -> std::string {
+            auto const* root = std::get_if<canonicaljson::Object>(&event_parsed.value.storage());
+            auto const* content = root != nullptr ? object_member(*root, "content") : nullptr;
+            return content != nullptr ? serialize_canonical_string(*content).value_or(std::string{}) : std::string{};
+        }();
+        auto const sender_display_name = [&]() -> std::string {
+            auto const profile = database::find_profile(store, sender);
+            return profile.has_value() ? profile->displayname : std::string{};
+        }();
+        auto const is_member_event = composed.event_type == "m.room.member";
+
+        for (auto const& member : room.members)
+        {
+            if (member == sender || events::domain_of(member) != server_name)
+            {
+                continue;
+            }
+            auto pushers = database::list_pushers_for_user(store, member);
+            if (pushers.empty())
+            {
+                continue;
+            }
+
+            auto const ruleset = push::parse_push_ruleset(default_push_ruleset(member));
+            auto const recipient_profile = database::find_profile(store, member);
+            auto context = push::PushEvaluationContext{};
+            context.receiving_user_id = member;
+            context.receiving_user_display_name =
+                recipient_profile.has_value() ? recipient_profile->displayname : std::string{};
+            context.room_member_count = static_cast<std::uint64_t>(room.members.size());
+            context.sender_power_level = sender_power_level;
+            context.notification_power_levels = notification_power_levels;
+            auto const result = push::evaluate_push_rules(ruleset, event_parsed.value, context);
+            if (!result.notify)
+            {
+                continue;
+            }
+
+            auto const unread = total_unread_count(runtime, member);
+            for (auto const& pusher : pushers)
+            {
+                if (pusher.kind != "http" || pusher.data_url.empty())
+                {
+                    continue;
+                }
+                auto notification = push::PushGatewayNotification{};
+                notification.event_id = composed.event_id;
+                notification.room_id = room.room_id;
+                notification.counts = {unread, 0U};
+                notification.prio = "high";
+                auto const event_id_only = pusher.data_format == "event_id_only";
+                if (!event_id_only)
+                {
+                    notification.type = composed.event_type;
+                    notification.sender = std::string{sender};
+                    notification.sender_display_name = sender_display_name;
+                    notification.content_json = content_json;
+                    notification.user_is_target =
+                        is_member_event && composed.state_key.has_value() && *composed.state_key == member;
+                }
+
+                auto device = push::PushGatewayDevice{};
+                device.app_id = pusher.app_id;
+                device.pushkey = pusher.pushkey;
+                if (!pusher.data_format.empty())
+                {
+                    device.data_format = pusher.data_format;
+                }
+                device.tweak_sound = result.tweak_sound;
+                device.tweak_highlight = result.tweak_highlight;
+                notification.devices.push_back(std::move(device));
+
+                deliveries.push_back(PendingPushDelivery{pusher, std::move(notification)});
+            }
+        }
+        return deliveries;
+    }
+
+    // Fires the actual Push Gateway API network calls for `deliveries` — all
+    // of which were computed synchronously, in-memory, under runtime.mutex by
+    // build_pending_push_deliveries above. This function runs the deliveries
+    // entirely OFF that lock and off the request path: it is invoked from
+    // send_event() via std::async(std::launch::async, ...) and the resulting
+    // future is parked in runtime.orphan_futures_, exactly mirroring
+    // join_room's background member-fill task (see the orphan_futures_ doc
+    // comment on HomeserverRuntime — same lifetime contract: runtime's
+    // destructor blocks until every such future has drained, so the captured
+    // `runtime&` reference stays valid for as long as this task can run).
+    //
+    // A rejected pushkey (the gateway's `rejected` array) means that pusher is
+    // permanently dead per spec ("Homeservers must cease sending notification
+    // requests for these pushkeys and remove the associated pushers") — this
+    // briefly re-acquires runtime.mutex to delete it. A slow, hostile, or
+    // unreachable gateway therefore cannot block or fail the request that
+    // triggered it: by the time any of this runs, send_event() has already
+    // returned its response to the client.
+    auto run_pending_push_deliveries(HomeserverRuntime& runtime, std::vector<PendingPushDelivery> deliveries) -> void
+    {
+        auto client =
+            push::PushGatewayClient{*runtime.outbound_client, *runtime.cached_discovery, runtime.config.server().push,
+                                    &runtime.test_forced_push_gateway_resolution};
+        for (auto const& delivery : deliveries)
+        {
+            auto const result = client.notify(delivery.pusher.data_url, delivery.notification);
+            if (result.ok && !result.rejected_pushkeys.empty())
+            {
+                auto lock = std::unique_lock<std::recursive_mutex>{runtime.mutex};
+                std::ignore = database::delete_pusher(runtime.database.persistent_store, delivery.pusher.user_id,
+                                                      delivery.pusher.app_id, delivery.pusher.pushkey);
+            }
+        }
+    }
+
+    // Dispatches `deliveries` asynchronously (see run_pending_push_deliveries)
+    // and parks the future in runtime.orphan_futures_. No-op when there is
+    // nothing to deliver or the runtime has no outbound transport wired
+    // (worker/test contexts that never populate outbound_client/cached_discovery).
+    auto dispatch_push_deliveries(HomeserverRuntime& runtime, std::vector<PendingPushDelivery> deliveries) -> void
+    {
+        if (deliveries.empty() || runtime.outbound_client == nullptr || runtime.cached_discovery == nullptr)
+        {
+            return;
+        }
+        auto push_future = std::async(std::launch::async, [&runtime, deliveries = std::move(deliveries)]() mutable {
+            run_pending_push_deliveries(runtime, std::move(deliveries));
+        });
+        auto const orphan_lock = std::lock_guard{runtime.orphan_futures_mutex_};
+        runtime.orphan_futures_.push_back(std::move(push_future));
+    }
+
+} // namespace
+
 // NOLINTBEGIN(bugprone-easily-swappable-parameters)
 [[nodiscard]] auto send_event(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id,
                               std::string_view event_json) -> OperationResult
@@ -4910,6 +5179,16 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
                                {"destinations", std::to_string(remote_servers.size()), false}
             });
         }
+    }
+    // Push delivery: evaluate push rules for every local, joined,
+    // pusher-registered recipient and fire the Push Gateway API notifications
+    // off the request path (see build_pending_push_deliveries and
+    // dispatch_push_deliveries above). build_pending_push_deliveries itself
+    // no-ops immediately when push.enabled is false, so a deployment that has
+    // not opted in pays no cost beyond this one config read.
+    if (auto deliveries = build_pending_push_deliveries(runtime, *room, *composed, *user_id); !deliveries.empty())
+    {
+        dispatch_push_deliveries(runtime, std::move(deliveries));
     }
     return make_operation_result(true, composed->event_id);
 }

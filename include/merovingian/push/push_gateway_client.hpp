@@ -7,6 +7,7 @@
 #include "merovingian/http/outbound_client.hpp"
 
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -92,6 +93,21 @@ struct PushGatewayResult final
     std::string error_detail{};
 };
 
+// Test-only override for one push-gateway host. Mirrors
+// identity::TestForcedIdentityResolution's contract exactly (see that type's
+// doc comment for the rationale): when a caller supplies a non-null map and
+// it has an entry keyed by the gateway URL's host, PushGatewayClient::notify()
+// uses these pinned addresses and in-memory CA bundle instead of SSRF-safe
+// discovery. Always empty in production; no production construction path
+// populates it. Exists so integration tests can drive a real local HTTPS
+// gateway (self-signed certificate, loopback address) without weakening the
+// production SSRF/discovery boundary in push_gateway_client.cpp.
+struct TestForcedPushGatewayResolution final
+{
+    std::vector<std::string> pinned_addresses{};
+    std::string trusted_ca_pem{};
+};
+
 // Outbound Push Gateway API client. Mirrors identity::IdentityServerClient's
 // shape and security posture: every call resolves the gateway host to
 // SSRF-safe pinned addresses via CachedServerDiscovery (private/loopback
@@ -112,8 +128,9 @@ struct PushGatewayResult final
 class PushGatewayClient final
 {
 public:
-    PushGatewayClient(http::OutboundClient& outbound, federation::CachedServerDiscovery& discovery,
-                      config::PushConfig const& config) noexcept;
+    PushGatewayClient(
+        http::OutboundClient& outbound, federation::CachedServerDiscovery& discovery, config::PushConfig const& config,
+        std::map<std::string, TestForcedPushGatewayResolution> const* forced_resolution = nullptr) noexcept;
 
     // POST /_matrix/push/v1/notify at `gateway_url` (the pusher's
     // `data.url`, required to be an HTTPS URL with path
@@ -126,6 +143,10 @@ private:
     http::OutboundClient& outbound_;
     federation::CachedServerDiscovery& discovery_;
     config::PushConfig const& config_;
+    // Test-only seam (see TestForcedPushGatewayResolution above). nullptr in
+    // production; when non-null and keyed by the gateway host, notify() uses
+    // the entry's pinned addresses + in-memory CA bundle instead of discovery.
+    std::map<std::string, TestForcedPushGatewayResolution> const* test_forced_resolution_{nullptr};
 };
 
 } // namespace merovingian::push

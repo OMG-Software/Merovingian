@@ -88,6 +88,68 @@ then closed one of the gaps the audit found.
     timeouts), modelled on `OidcConfig`/`IdentityServerConfig`; restart-required
     on change, same lifecycle as the identity-server client.
 
+- **Step 2: wired the `push` module into the homeserver — push notifications
+  are now actually delivered.** `GET /pushers` and `POST /pushers/set` no
+  longer lie to the client, and a sent event can now reach a real Push
+  Gateway.
+  - `GET /pushers` returns the caller's persisted pushers in the spec's
+    `Pusher` shape instead of a hardcoded empty array.
+  - `POST /pushers/set` persists via `store_pusher`; `kind: null` now
+    deletes via `delete_pusher` instead of being a silent no-op. Implemented
+    the `append` field per spec: `append: false` (the default) removes any
+    other user's pusher sharing the same `app_id`+`pushkey` before storing
+    this one; `append: true` leaves it in place. The existing body
+    validation, including the `https` + `/_matrix/push/v1/notify`
+    pusher-URL check, is unchanged.
+  - **Delivery**: `room_service.cpp`'s `send_event()` — the single choke
+    point for both `PUT .../send/{eventType}/{txnId}` and
+    `PUT .../state/{eventType}/{stateKey}` (both rewrite to it) — now, after
+    persisting an event, evaluates that event against every local joined
+    recipient's push rules (`default_push_ruleset()`, the exact ruleset
+    `GET /pushrules` already serves — moved to a new shared
+    `homeserver/default_push_ruleset.{hpp,cpp}` so the two can never drift
+    apart) and builds one Push Gateway notification per (recipient, "http"
+    pusher) pair whose evaluation says "notify". `counts.unread` reuses
+    `sync::count_notifications`/`sync::read_receipt_ordering` (the same
+    unread baseline `/sync` already computes) summed across every room the
+    recipient is joined to, rather than a second implementation.
+    "email" pushers are accepted and persisted but not yet deliverable — no
+    email transport exists — and are simply skipped at delivery time.
+  - **Gated and off the request path.** All of this is skipped entirely —
+    no rule evaluation, no pusher lookup, no thread — when
+    `server.push.enabled` is `false` (the default), so merging this cannot
+    cause an existing deployment to start sending gateway traffic on
+    upgrade. When enabled, the actual `PushGatewayClient::notify()` calls
+    run on a detached `std::async` task parked in
+    `HomeserverRuntime::orphan_futures_` — the same mechanism `join_room`'s
+    background member-fill task already uses — so a slow, hostile, or
+    unreachable gateway can never block or fail the request that triggered
+    it; `runtime.mutex` is only briefly re-acquired to delete a pusher whose
+    pushkey the gateway reports in its `rejected` array.
+  - New `push::TestForcedPushGatewayResolution` test-only seam on
+    `PushGatewayClient` (mirrors `identity::TestForcedIdentityResolution`
+    exactly) so integration tests can drive a real local HTTPS mock gateway
+    without weakening the production SSRF/discovery boundary; wired onto
+    `HomeserverRuntime::test_forced_push_gateway_resolution` (always empty in
+    production).
+  - New conformance coverage
+    (`tests/conformance/test_push_notifications_conformance.cpp`): the
+    set/get round-trip, `kind: null` delete, `append` cross-user removal
+    semantics, and the https/notify-path URL rejection. New integration
+    coverage (`tests/integration/test_push_delivery_flow.cpp`, against a real
+    local TLS mock gateway): delivery is skipped while `push.enabled` is
+    false; an enabled gateway receives a correctly-shaped notify request for
+    a message that matches a push rule; a rejected pushkey is deleted; and
+    message sending still succeeds — promptly, without blocking — when the
+    recipient's gateway is unreachable.
+  - **Known gap, recorded honestly**: delivery is wired at the `send_event`
+    choke point only, so plain messages and direct state-event PUTs trigger
+    it. Membership-mutating endpoints (`invite`/`join`/`leave`/`kick`/`ban`,
+    and the 3PID-invite path) go through separate dedicated functions in
+    `room_service.cpp` that do not yet call into the delivery pipeline, so
+    `.m.rule.invite_for_me` does not yet produce a real push. `GET
+    /notifications` remains unrouted. See `docs/todos/capability-gaps.md`.
+
 ## 0.11.10
 
 Four follow-ons to the 0.11.9 identity-server work: a discovery test-seam for

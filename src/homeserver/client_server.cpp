@@ -28,6 +28,7 @@
 #include "merovingian/federation/security.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/client_server.hpp"
+#include "merovingian/homeserver/default_push_ruleset.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/homeserver/media_service.hpp"
@@ -523,233 +524,10 @@ namespace
         return std::move(result.value);
     }
 
-    [[nodiscard]] auto push_action_set_tweak(std::string_view tweak) -> canonicaljson::Value
-    {
-        return json_obj({json_member("set_tweak", json_str(tweak))});
-    }
-
-    [[nodiscard]] auto push_action_set_tweak(std::string_view tweak, std::string_view value) -> canonicaljson::Value
-    {
-        return json_obj({
-            json_member("set_tweak", json_str(tweak)),
-            json_member("value", json_str(value)),
-        });
-    }
-
-    [[nodiscard]] auto push_action_set_tweak(std::string_view tweak, bool value) -> canonicaljson::Value
-    {
-        return json_obj({
-            json_member("set_tweak", json_str(tweak)),
-            json_member("value", json_bool(value)),
-        });
-    }
-
-    [[nodiscard]] auto push_condition_event_match(std::string_view key, std::string_view pattern)
-        -> canonicaljson::Value
-    {
-        return json_obj({
-            json_member("key", json_str(key)),
-            json_member("kind", json_str("event_match")),
-            json_member("pattern", json_str(pattern)),
-        });
-    }
-
-    [[nodiscard]] auto push_condition_event_property_is(std::string_view key, std::string_view value)
-        -> canonicaljson::Value
-    {
-        return json_obj({
-            json_member("key", json_str(key)),
-            json_member("kind", json_str("event_property_is")),
-            json_member("value", json_str(value)),
-        });
-    }
-
-    [[nodiscard]] auto push_condition_event_property_is(std::string_view key, bool value) -> canonicaljson::Value
-    {
-        return json_obj({
-            json_member("key", json_str(key)),
-            json_member("kind", json_str("event_property_is")),
-            json_member("value", json_bool(value)),
-        });
-    }
-
-    [[nodiscard]] auto push_condition_event_property_contains(std::string_view key, std::string_view value)
-        -> canonicaljson::Value
-    {
-        return json_obj({
-            json_member("key", json_str(key)),
-            json_member("kind", json_str("event_property_contains")),
-            json_member("value", json_str(value)),
-        });
-    }
-
-    [[nodiscard]] auto push_condition_room_member_count(std::string_view member_count) -> canonicaljson::Value
-    {
-        return json_obj({
-            json_member("is", json_str(member_count)),
-            json_member("kind", json_str("room_member_count")),
-        });
-    }
-
-    [[nodiscard]] auto push_condition_sender_notification_permission(std::string_view key) -> canonicaljson::Value
-    {
-        return json_obj({
-            json_member("key", json_str(key)),
-            json_member("kind", json_str("sender_notification_permission")),
-        });
-    }
-
-    // Spec: CS API v1.19 §m.rule.contains_display_name — condition kind that matches when
-    // the event body contains the receiving user's current display name (case-insensitive).
-    // No additional fields required beyond "kind".
-    [[nodiscard]] auto push_condition_contains_display_name() -> canonicaljson::Value
-    {
-        return json_obj({
-            json_member("kind", json_str("contains_display_name")),
-        });
-    }
-
-    [[nodiscard]] auto push_rule(std::string_view rule_id, bool enabled, canonicaljson::Array conditions,
-                                 canonicaljson::Array actions) -> canonicaljson::Value
-    {
-        return json_obj({
-            json_member("actions", json_arr(std::move(actions))),
-            json_member("conditions", json_arr(std::move(conditions))),
-            json_member("default", json_bool(true)),
-            json_member("enabled", json_bool(enabled)),
-            json_member("rule_id", json_str(rule_id)),
-        });
-    }
-
-    [[nodiscard]] auto default_push_ruleset(std::string_view user_id) -> canonicaljson::Object
-    {
-        auto override_rules = canonicaljson::Array{};
-        override_rules.push_back(push_rule(".m.rule.master", false, {}, {}));
-        override_rules.push_back(
-            push_rule(".m.rule.suppress_notices", true,
-                      canonicaljson::Array{push_condition_event_match("content.msgtype", "m.notice")}, {}));
-        override_rules.push_back(push_rule(".m.rule.invite_for_me", true,
-                                           canonicaljson::Array{
-                                               push_condition_event_match("type", "m.room.member"),
-                                               push_condition_event_match("content.membership", "invite"),
-                                               push_condition_event_match("state_key", user_id),
-                                           },
-                                           canonicaljson::Array{
-                                               json_str("notify"),
-                                               push_action_set_tweak("sound", std::string_view{"default"}),
-                                               push_action_set_tweak("highlight", false),
-                                           }));
-        override_rules.push_back(push_rule(".m.rule.member_event", true,
-                                           canonicaljson::Array{push_condition_event_match("type", "m.room.member")},
-                                           {}));
-        override_rules.push_back(push_rule(
-            ".m.rule.is_user_mention", true,
-            canonicaljson::Array{push_condition_event_property_contains("content.m\\.mentions.user_ids", user_id)},
-            canonicaljson::Array{
-                json_str("notify"),
-                push_action_set_tweak("sound", std::string_view{"default"}),
-                push_action_set_tweak("highlight"),
-            }));
-        override_rules.push_back(push_rule(".m.rule.is_room_mention", true,
-                                           canonicaljson::Array{
-                                               push_condition_event_property_is("content.m\\.mentions.room", true),
-                                               push_condition_sender_notification_permission("room"),
-                                           },
-                                           canonicaljson::Array{
-                                               json_str("notify"),
-                                               push_action_set_tweak("highlight"),
-                                           }));
-        override_rules.push_back(push_rule(".m.rule.tombstone", true,
-                                           canonicaljson::Array{
-                                               push_condition_event_match("type", "m.room.tombstone"),
-                                               push_condition_event_match("state_key", ""),
-                                           },
-                                           canonicaljson::Array{
-                                               json_str("notify"),
-                                               push_action_set_tweak("highlight"),
-                                           }));
-        override_rules.push_back(push_rule(".m.rule.reaction", true,
-                                           canonicaljson::Array{push_condition_event_match("type", "m.reaction")}, {}));
-        override_rules.push_back(push_rule(".m.rule.room.server_acl", true,
-                                           canonicaljson::Array{
-                                               push_condition_event_match("type", "m.room.server_acl"),
-                                               push_condition_event_match("state_key", ""),
-                                           },
-                                           {}));
-        override_rules.push_back(push_rule(".m.rule.suppress_edits", true,
-                                           canonicaljson::Array{push_condition_event_property_is(
-                                               "content.m\\.relates_to.rel_type", std::string_view{"m.replace"})},
-                                           {}));
-        // Spec: CS API v1.19 §.m.rule.contains_display_name — legacy rule for clients that do
-        // not use m.mentions; matches messages whose body contains the user's display name.
-        override_rules.push_back(push_rule(".m.rule.contains_display_name", true,
-                                           canonicaljson::Array{push_condition_contains_display_name()},
-                                           canonicaljson::Array{
-                                               json_str("notify"),
-                                               push_action_set_tweak("sound", std::string_view{"default"}),
-                                               push_action_set_tweak("highlight"),
-                                           }));
-        // Spec: CS API v1.19 §.m.rule.roomnotif — matches messages containing "@room" when
-        // the sender has permission to notify the whole room.
-        override_rules.push_back(push_rule(".m.rule.roomnotif", true,
-                                           canonicaljson::Array{
-                                               push_condition_event_match("content.body", "@room"),
-                                               push_condition_sender_notification_permission("room"),
-                                           },
-                                           canonicaljson::Array{
-                                               json_str("notify"),
-                                               push_action_set_tweak("highlight"),
-                                           }));
-
-        auto underride_rules = canonicaljson::Array{};
-        underride_rules.push_back(push_rule(".m.rule.call", true,
-                                            canonicaljson::Array{push_condition_event_match("type", "m.call.invite")},
-                                            canonicaljson::Array{
-                                                json_str("notify"),
-                                                push_action_set_tweak("sound", std::string_view{"ring"}),
-                                                push_action_set_tweak("highlight", false),
-                                            }));
-        underride_rules.push_back(push_rule(".m.rule.encrypted_room_one_to_one", true,
-                                            canonicaljson::Array{
-                                                push_condition_room_member_count("2"),
-                                                push_condition_event_match("type", "m.room.encrypted"),
-                                            },
-                                            canonicaljson::Array{
-                                                json_str("notify"),
-                                                push_action_set_tweak("sound", std::string_view{"default"}),
-                                                push_action_set_tweak("highlight", false),
-                                            }));
-        underride_rules.push_back(push_rule(".m.rule.room_one_to_one", true,
-                                            canonicaljson::Array{
-                                                push_condition_room_member_count("2"),
-                                                push_condition_event_match("type", "m.room.message"),
-                                            },
-                                            canonicaljson::Array{
-                                                json_str("notify"),
-                                                push_action_set_tweak("sound", std::string_view{"default"}),
-                                                push_action_set_tweak("highlight", false),
-                                            }));
-        underride_rules.push_back(push_rule(".m.rule.message", true,
-                                            canonicaljson::Array{push_condition_event_match("type", "m.room.message")},
-                                            canonicaljson::Array{
-                                                json_str("notify"),
-                                                push_action_set_tweak("highlight", false),
-                                            }));
-        underride_rules.push_back(push_rule(
-            ".m.rule.encrypted", true, canonicaljson::Array{push_condition_event_match("type", "m.room.encrypted")},
-            canonicaljson::Array{
-                json_str("notify"),
-                push_action_set_tweak("highlight", false),
-            }));
-
-        return canonicaljson::Object{
-            json_member("content", json_arr({})),
-            json_member("override", json_arr(std::move(override_rules))),
-            json_member("room", json_arr({})),
-            json_member("sender", json_arr({})),
-            json_member("underride", json_arr(std::move(underride_rules))),
-        };
-    }
+    // default_push_ruleset() and its helper condition/action/rule builders
+    // moved to homeserver/default_push_ruleset.{hpp,cpp} so room_service.cpp's
+    // push-delivery pipeline can build the exact same ruleset this endpoint
+    // serves (see that header's doc comment).
 
     [[nodiscard]] auto push_rule_array(canonicaljson::Object const& ruleset, std::string_view kind)
         -> canonicaljson::Array const*
@@ -891,6 +669,19 @@ namespace
         std::string app_id{};
         std::string pushkey{};
         std::optional<std::string> kind{}; // nullopt when the request body has kind:null (delete)
+        // Only populated (and only meaningful) when kind.has_value(); a kind:null
+        // delete request only needs app_id + pushkey.
+        std::string app_display_name{};
+        std::string device_display_name{};
+        std::string profile_tag{};
+        std::string lang{};
+        std::string data_url{}; // empty for kind "email"
+        std::string data_format{};
+        // Spec: "If true, the homeserver should add another pusher with the given
+        // pushkey and App ID in addition to any others with different user IDs.
+        // Otherwise, the homeserver must remove any other pushers with the same
+        // App ID and pushkey for different users." Default false.
+        bool append{false};
     };
 
     struct MatrixSafetyReportBody final
@@ -2288,6 +2079,7 @@ namespace
         {
             return std::nullopt;
         }
+        auto const append = append_value != nullptr && std::get<bool>(append_value->storage());
 
         auto const* kind_value = object_member(*object, "kind");
         if (kind_value == nullptr)
@@ -2303,7 +2095,10 @@ namespace
 
         if (kind_is_null)
         {
-            return MatrixPusherSetBody{std::string{*app_id}, std::string{*pushkey}, std::nullopt};
+            auto deletion = MatrixPusherSetBody{};
+            deletion.app_id = *app_id;
+            deletion.pushkey = *pushkey;
+            return deletion;
         }
 
         auto const* app_display_name = string_member(*object, "app_display_name");
@@ -2316,10 +2111,10 @@ namespace
             return std::nullopt;
         }
 
+        auto const* data_url = string_member(*data, "url");
         if (*kind_string == "http")
         {
-            auto const* url = string_member(*data, "url");
-            if (url == nullptr || !matrix_pusher_url_is_valid(*url))
+            if (data_url == nullptr || !matrix_pusher_url_is_valid(*data_url))
             {
                 return std::nullopt;
             }
@@ -2329,8 +2124,23 @@ namespace
             // Only "http" and "email" are defined by Matrix v1.19.
             return std::nullopt;
         }
+        auto const* data_format = string_member(*data, "format");
+        auto const* profile_tag = string_member(*object, "profile_tag");
 
-        return MatrixPusherSetBody{std::string{*app_id}, std::string{*pushkey}, std::string{*kind_string}};
+        auto result = MatrixPusherSetBody{};
+        result.app_id = *app_id;
+        result.pushkey = *pushkey;
+        result.kind = *kind_string;
+        result.app_display_name = *app_display_name;
+        result.device_display_name = *device_display_name;
+        result.profile_tag = profile_tag != nullptr ? *profile_tag : std::string{};
+        result.lang = *lang;
+        // data.url only applies to "http" pushers; PersistentPusher documents
+        // data_url as empty for "email".
+        result.data_url = (*kind_string == "http" && data_url != nullptr) ? *data_url : std::string{};
+        result.data_format = data_format != nullptr ? *data_format : std::string{};
+        result.append = append;
+        return result;
     }
 
     [[nodiscard]] auto parse_safety_report_body(std::string_view body) -> std::optional<MatrixSafetyReportBody>
@@ -9121,23 +8931,83 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             req, rt, 200U, json_serialize(json_obj({json_member("id_server_unbind_result", json_str(local_result))})));
     }
     // Spec: GET /pushers returns the push notification pushers for the
-    // authenticated user. Merovingian does not yet support push
-    // subscriptions, so return the spec-required empty list so Element's
-    // settings UI does not show a spurious error.
+    // authenticated user (Matrix v1.19 CS API §push-notifications).
     if (req.method == "GET" && req.target == "/_matrix/client/v3/pushers")
     {
-        return dispatch_resp(req, rt, 200U, R"({"pushers":[]})");
+        auto const pushers = database::list_pushers_for_user(rt.homeserver.database.persistent_store, *user);
+        auto pusher_array = canonicaljson::Array{};
+        for (auto const& pusher : pushers)
+        {
+            auto data = canonicaljson::Object{};
+            if (!pusher.data_format.empty())
+            {
+                data.push_back(json_member("format", json_str(pusher.data_format)));
+            }
+            if (!pusher.data_url.empty())
+            {
+                data.push_back(json_member("url", json_str(pusher.data_url)));
+            }
+            pusher_array.push_back(json_obj({
+                json_member("app_display_name", json_str(pusher.app_display_name)),
+                json_member("app_id", json_str(pusher.app_id)),
+                json_member("data", json_obj(std::move(data))),
+                json_member("device_display_name", json_str(pusher.device_display_name)),
+                json_member("kind", json_str(pusher.kind)),
+                json_member("lang", json_str(pusher.lang)),
+                json_member("profile_tag", json_str(pusher.profile_tag)),
+                json_member("pushkey", json_str(pusher.pushkey)),
+            }));
+        }
+        return dispatch_resp(req, rt, 200U,
+                             json_serialize(json_obj({json_member("pushers", json_arr(std::move(pusher_array)))})));
     }
     // Spec: POST /pushers/set creates, updates, or deletes a pusher for the
-    // authenticated user. Merovingian does not yet deliver push notifications,
-    // but accepts and validates the request so clients can register without
-    // error. Real delivery will be implemented later.
+    // authenticated user. "If kind is not null, the pusher with this app_id
+    // and pushkey for this user is updated, or it is created if it doesn't
+    // exist. If kind is null, the pusher ... is deleted." append:false (the
+    // default) additionally removes any OTHER user's pusher sharing the same
+    // app_id+pushkey ("the homeserver must remove any other pushers with the
+    // same App ID and pushkey for different users"); append:true skips that
+    // removal.
     if (req.method == "POST" && req.target == "/_matrix/client/v3/pushers/set")
     {
-        if (!parse_pusher_set_body(req.body).has_value())
+        auto const body = parse_pusher_set_body(req.body);
+        if (!body.has_value())
         {
             return dispatch_err(req, rt, 400U, "M_BAD_JSON",
                                 "pusher body must contain app_id, pushkey, and kind with required fields");
+        }
+        auto& store = rt.homeserver.database.persistent_store;
+        if (!body->kind.has_value())
+        {
+            std::ignore = database::delete_pusher(store, *user, body->app_id, body->pushkey);
+            return dispatch_resp(req, rt, 200U, "{}");
+        }
+        if (!body->append)
+        {
+            // Snapshot the matching (user_id) list first: delete_pusher can
+            // reallocate/erase from store.pushers, which would invalidate an
+            // iterator into it if we deleted while iterating directly.
+            auto other_users = std::vector<std::string>{};
+            for (auto const& existing : store.pushers)
+            {
+                if (existing.user_id != *user && existing.app_id == body->app_id && existing.pushkey == body->pushkey)
+                {
+                    other_users.push_back(existing.user_id);
+                }
+            }
+            for (auto const& other_user : other_users)
+            {
+                std::ignore = database::delete_pusher(store, other_user, body->app_id, body->pushkey);
+            }
+        }
+        auto const stored = database::store_pusher(
+            store, database::PersistentPusher{*user, body->app_id, body->pushkey, *body->kind, body->app_display_name,
+                                              body->device_display_name, body->profile_tag, body->lang, body->data_url,
+                                              body->data_format});
+        if (!stored)
+        {
+            return dispatch_err(req, rt, 500U, "M_UNKNOWN", "failed to store pusher");
         }
         return dispatch_resp(req, rt, 200U, "{}");
     }

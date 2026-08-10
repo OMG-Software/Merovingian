@@ -104,6 +104,7 @@ flowchart TB
         federation["federation"]
         identity["identity"]
         media["media"]
+        push["push<br/>push rules, gateway client"]
         sync["sync"]
         trust_safety["trust_safety"]
     end
@@ -119,9 +120,10 @@ flowchart TB
 
     net --> homeserver
     fedworker_mod --> homeserver & federation & ipc & net
-    homeserver --> auth & rooms & events & federation & media & sync & trust_safety & identity
+    homeserver --> auth & rooms & events & federation & media & push & sync & trust_safety & identity
     federation --> http
     identity --> http
+    push --> http & federation
     services --> database
     events --> crypto & canonicaljson
     federation --> crypto & canonicaljson
@@ -168,6 +170,27 @@ Request flow:
 4. Federation requests go to `FederationProxy::handle()` (when `federation.worker.enabled=true`) which verifies the inbound X-Matrix signature itself (`verify_inbound_federation_signature`), then extracts and percent-decodes the room ID, selects the owning worker shard (`fnv1a_32(room_id) % federation.worker.shards`), and serialises only the verified identity (`origin`/`key_id`/`sig_verified`) over the authenticated, encrypted IPC channel to that `merovingian-fed-worker` process; the raw peer `Authorization` header never crosses IPC (#323). Non-room requests route to shard 0. When the worker is disabled, requests go directly to `handle_federation_http_request()`, which performs verification in-process.
 5. In-process requests (room creation that needs both auth and federation) go through `handle_local_http_request()`.
 6. For `/sync` long-polls: if no new data exists, `DispatchResult::needs_wait` is returned with `SyncWaitParams`. The HTTP server releases the runtime mutex, calls `SyncNotifier::wait_for_change()`, then re-acquires the lock and rebuilds the response. This offloading keeps the main pool free for real requests.
+
+**Fire-and-forget background work.** Some work must start from inside a
+request handler but must not make the client wait on it: `join_room`'s
+background member-fill (deferred verification of the bulk member list after
+a fast join) and, since v0.11.11, push notification delivery
+(`room_service.cpp`'s `dispatch_push_deliveries`, following a client-server
+`send_event`) both use the same pattern rather than a dedicated thread pool.
+The handler snapshots everything it needs *while it still holds
+`runtime.mutex`* (for push delivery: which pushers to notify, and the
+already-built notification bodies — no I/O), then submits a
+`std::async(std::launch::async, [&runtime, ...]{ ... })` task that performs
+the actual network calls without the lock, re-acquiring it only briefly to
+persist an outcome (e.g. deleting a pusher the gateway rejected). The
+resulting `std::future` is parked in `HomeserverRuntime::orphan_futures_`
+(guarded by `orphan_futures_mutex_`); the runtime's destructor blocks on
+every parked future before any of its other members (`outbound_client`,
+`cached_discovery`, the persistent store) are torn down, so the task's
+captured `runtime&` reference is always valid for as long as it can run.
+Tests wait on the same vector instead of sleeping — see
+`tests/integration/test_join_room_flow.cpp` and
+`tests/integration/test_push_delivery_flow.cpp`.
 
 ```mermaid
 sequenceDiagram
@@ -374,7 +397,8 @@ Implemented endpoints are grouped below. Matrix v1.19 behaviour is described in 
 - **Directory**: `GET/POST /publicRooms`, `GET/PUT /directory/room/{alias}`, `GET /joined_rooms`
 - **Media**: `POST /media/v3/upload`, `GET /media/v3/download/{server}/{mediaId}`, `GET /media/v3/thumbnail/{server}/{mediaId}`, `GET /media/v3/config`
 - **Admin**: `GET /admin/safety/reports`, quarantine/release/remove media
-- **Other**: `GET /capabilities`, `GET /voip/turnServer`, `GET /pushrules/...`, MSC2965 OIDC discovery
+- **Push notifications**: `GET /pushers`, `POST /pushers/set`, `GET /pushrules/...`. Delivery is gated on `server.push.enabled` (default `false`); when enabled, `room_service.cpp`'s `send_event()` evaluates each local joined recipient's push rules and dispatches Push Gateway API notifications asynchronously — see "Fire-and-forget background work" above and `push` in the module diagram.
+- **Other**: `GET /capabilities`, `GET /voip/turnServer`, MSC2965 OIDC discovery
 
 ## Sync subsystem
 

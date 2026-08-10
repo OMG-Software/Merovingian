@@ -631,15 +631,14 @@ threat it closes; the controls above are the standing defences these reinforce.
   mode-2 unbind body), fail closed with `502`/`403`, and release
   `runtime.mutex` for the network call.
 
-- **Outbound Push Gateway `notify` SSRF surface (v0.11.11, module built, not
-  yet routed):** a pusher's gateway URL (`data.url` on
-  `POST /_matrix/client/v3/pushers/set`) is supplied entirely by the
-  registering client — unlike the identity-server URL above, there is no
-  operator allowlist for push gateways; any Matrix client can point a pusher
-  at any host. `merovingian::push::PushGatewayClient::notify()` is therefore
-  treated as hostile input from construction and fails closed the same way
-  the identity-server and federation outbound paths do: (1) **SSRF** — the
-  gateway host is resolved through `federation::CachedServerDiscovery`
+- **Outbound Push Gateway `notify` SSRF surface (v0.11.11, routed):** a
+  pusher's gateway URL (`data.url` on `POST /_matrix/client/v3/pushers/set`)
+  is supplied entirely by the registering client — unlike the identity-server
+  URL above, there is no operator allowlist for push gateways; any Matrix
+  client can point a pusher at any host. `merovingian::push::PushGatewayClient::notify()`
+  is therefore treated as hostile input from construction and fails closed the
+  same way the identity-server and federation outbound paths do: (1) **SSRF**
+  — the gateway host is resolved through `federation::CachedServerDiscovery`
   (`ServerDiscoveryNetwork::lookup_addresses`), which applies the operator's
   `deny_ip_ranges` (private/loopback ranges rejected) before returning pinned
   addresses; the client never performs its own DNS lookup and never hands the
@@ -649,22 +648,29 @@ threat it closes; the controls above are the standing defences these reinforce.
   path of exactly `/_matrix/push/v1/notify` before any resolution is
   attempted (mirroring the registration-time check in `client_server.cpp`'s
   `matrix_pusher_url_is_valid`), so this module does not rely solely on
-  upstream validation holding. (3) **Config gate, disabled by default** —
-  `notify()` checks `config::PushConfig::enabled` before doing anything else;
-  while `server.push.enabled` is `false` (the default), no DNS lookup,
-  connection, or byte ever leaves the process for this path, so merging this
-  module cannot itself create the SSRF surface for a deployment that has not
-  opted in. (4) **No lock held across network I/O** — like the identity and
-  federation clients, `PushGatewayClient` holds no lock of its own and the
-  caller must not hold `runtime.mutex` across the call. (5) **Rejection
-  handling stays read-only** — `notify()` returns the spec's `rejected`
-  pushkey list to the caller rather than deleting from the database itself,
-  so a malicious or buggy gateway cannot use a crafted response to trigger
-  writes beyond what the caller explicitly chooses to act on. This module is
-  not yet reachable from any HTTP endpoint (`pushers/set` still discards the
-  pusher body — see `docs/todos/capability-gaps.md`); the routing follow-on
-  that wires it in must preserve all five mitigations, not just the config
-  gate.
+  upstream validation holding. (3) **Config gate, disabled by default,
+  enforced at both call sites** — `notify()` checks `config::PushConfig::enabled`
+  before doing anything else, and `room_service.cpp`'s
+  `build_pending_push_deliveries()` re-checks the same flag before evaluating
+  a single push rule or reading a single pusher row, so a deployment that has
+  not opted in pays no cost beyond one config read per sent event and no DNS
+  lookup, connection, or byte ever leaves the process. (4) **No lock held
+  across network I/O** — like the identity and federation clients,
+  `PushGatewayClient` holds no lock of its own, and the routing that calls it
+  (`room_service.cpp`'s `run_pending_push_deliveries`) never holds
+  `runtime.mutex` while it runs: gateway calls happen entirely on a detached
+  `std::async` task parked in `HomeserverRuntime::orphan_futures_` (the same
+  mechanism `join_room`'s background member-fill task uses — see
+  `architecture.md`), so a slow or unreachable gateway cannot block or fail
+  the client-server request that triggered the notification. (5) **Rejection
+  handling stays narrow** — a `rejected` pushkey deletes exactly the one
+  `(user_id, app_id, pushkey)` row that pusher call targeted (one HTTP
+  request is sent per pusher, never a bundled multi-device request), so a
+  malicious or buggy gateway response cannot cause deletion of a pusher it
+  was never asked to notify. `runtime.mutex` is re-acquired only for the
+  duration of that single `delete_pusher` call, mirroring the identity-client
+  pattern of dropping the lock for the network round trip and re-acquiring it
+  only to persist the outcome.
 
 ## Security principles
 

@@ -16,6 +16,7 @@
 #include "merovingian/net/listener.hpp"
 #include "merovingian/observability/observability.hpp"
 #include "merovingian/platform/hardening_self_check.hpp"
+#include "merovingian/push/push_gateway_client.hpp"
 #include "merovingian/sync/sliding_sync.hpp"
 #include "merovingian/sync/sync_notifier.hpp"
 #include "merovingian/trust_safety/policy_engine.hpp"
@@ -228,6 +229,11 @@ struct HomeserverRuntime final
     // IdentityServerClient::perform() to pin a local mock IS + in-memory CA
     // bundle in tests (discovery rejects loopback and never sets a CA bundle).
     std::map<std::string, identity::TestForcedIdentityResolution> test_forced_identity_resolution{};
+    // Test-only: see push::TestForcedPushGatewayResolution. Always empty in
+    // production; keyed by push-gateway host. Consulted by
+    // PushGatewayClient::notify() to pin a local mock gateway + in-memory CA
+    // bundle in tests (discovery rejects loopback and never sets a CA bundle).
+    std::map<std::string, push::TestForcedPushGatewayResolution> test_forced_push_gateway_resolution{};
     std::unique_ptr<federation::DispatchWorker> dispatch_worker{};
     // Non-null when federation.worker.enabled = true. Intercepts inbound
     // federation requests and forwards them to the out-of-process worker.
