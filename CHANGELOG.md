@@ -1,3 +1,34 @@
+## 0.11.11
+
+Documentation only: an audit of the routed client-server surface against Matrix
+v1.19, recorded in `docs/todos/capability-gaps.md`. **No behaviour change** — no
+source file is touched. This corrects the gap ledger, which implied more coverage
+than exists.
+
+- Two whole spec sections were absent while going untracked, so they were
+  invisible in our own planning: the **Application Service API** (no
+  `as_token`/`hs_token`, no `/_matrix/app/v1/*` outbound calls, no
+  `m.login.application_service`, no namespace exclusivity — bridges and bots
+  cannot be run against this homeserver) and the **Push Gateway API**. Both now
+  have their own sections with per-surface rows.
+- **Push was the most misleading entry.** Push-*rule* CRUD is genuinely
+  `spec-covered`, but `GET /_matrix/client/v3/pushers` returns a hardcoded
+  `{"pushers":[]}`, `POST /pushers/set` validates the body and discards it, and
+  nothing ever posts to a gateway's `/_matrix/push/v1/notify` — the sole
+  reference to that path is an outbound-URL validator. **No user can receive a
+  push notification.** The capability row now carries a split status and the
+  endpoint rows are marked `scaffolded`.
+- Newly recorded as unrouted: `POST /search` (full-text event search; only the
+  unrelated `user_directory/search` exists), `GET /notifications`,
+  `GET /rooms/{roomId}/context/{eventId}` (permalink resolution, user-visible in
+  Element), `POST /user/{userId}/openid/request_token`, SSO login (`m.login.sso`
+  is not advertised), and `m.ignored_user_list` enforcement — the account-data
+  key is storable because that store is generic, but ignored users are never
+  filtered from `/sync`, so the ignore silently does nothing.
+- The document gained a "Reading this document" note recording the two failure
+  modes this audit exposed: silence in the ledger does not imply coverage, and a
+  routed endpoint returning 200 does not imply an implemented one.
+
 ## 0.11.10
 
 Four follow-ons to the 0.11.9 identity-server work: a discovery test-seam for
@@ -40,22 +71,6 @@ room-config combination.
   IS-issued token as `state_key` (the prior scenario covered only the 403
   fail-closed path). A bind/unbind round-trip integration test exercises the
   mode-2 unbind flow end to end via a mock IS.
-- Gap tracking: audited the routed client-server surface against Matrix v1.19 and
-  recorded the results in `docs/todos/capability-gaps.md`. **No behaviour change** —
-  this corrects the ledger, which previously implied more coverage than exists. Two
-  whole spec sections were missing without being tracked: the **Application Service
-  API** (no `as_token`/`hs_token`, no `/_matrix/app/v1/*`, no appservice login or
-  namespace exclusivity) and the **Push Gateway API**. Push was the more misleading
-  entry: push-*rule* CRUD is genuinely `spec-covered`, but `GET /pushers` returns a
-  hardcoded empty array, `POST /pushers/set` validates and discards the pusher, and
-  nothing ever posts to a gateway's `/_matrix/push/v1/notify` — so no push
-  notification can be delivered. Also newly recorded as unrouted: `POST /search`,
-  `GET /notifications`, `GET /rooms/{roomId}/context/{eventId}`,
-  `POST /user/{userId}/openid/request_token`, SSO login, and `m.ignored_user_list`
-  enforcement (the account-data key is storable, but ignored users are never
-  filtered from `/sync`). The document now carries a "Reading this document" note
-  recording that a status is a claim rather than a proof, and that neither silence
-  nor a routed endpoint implies coverage.
 - Sliding sync (MSC4186): when a room is present in **multiple** list windows,
   the room configs now combine across all of them — `required_state` is the
   superset, `timeline_limit` is the maximum, `include_heroes` is OR'd — per
