@@ -4,6 +4,19 @@ Open work per capability area. Status column reflects the current level in the
 `not-started → planned → scaffolded → unit-covered → integrated → runtime-wired
 → spec-covered → production-gated` ladder.
 
+**Reading this document.** A status here is a claim, not a proof — only rows backed
+by a conformance test in `tests/conformance/` are independently verified. Two
+failure modes have bitten us, so check for both when auditing:
+
+1. **Silence is not coverage.** An unlisted endpoint may be unimplemented rather
+   than complete. The Application Service and Push Gateway APIs were absent
+   entirely while going unmentioned here until the 0.11.10 audit.
+2. **A routed endpoint is not an implemented one.** `POST /pushers/set` returned
+   200 and was covered by a `spec-covered` push-rule row, while discarding every
+   pusher it was given. Grep proves absence well; it does not prove behaviour.
+
+When adding a capability, record what is *missing* as explicitly as what works.
+
 ## Capability ledger
 
 | Capability | Status | Gap |
@@ -12,7 +25,9 @@ Open work per capability area. Status column reflects the current level in the
 | Secure configuration | `runtime-wired` | Replace phase-specific CI naming with capability gates and add production profile enforcement. |
 | Runtime listener | `runtime-wired` | Add per-endpoint rate-limit accounting, multi-listener thread pool, and keep-alive. Per-connection slowloris enforcement landed via `connection_guard`. |
 | HTTP transport | `runtime-wired` | Upgrade to `llhttp` or reviewed parser boundary, add request body streaming, keep-alive, HTTP/2, remote-IP buckets for unauthenticated routes, and operator-tunable policy overrides. Per-connection slowloris policy landed via `connection_guard`. Durable rate-limit state is **not** planned: counters are in-memory by design (no per-request DB write amplification), an accepted operator sign-off — see `docs/http-transport.md` "In-memory counter trade-off". `/_merovingian/admin/*` is now served and rate-limited on the client port (0.11.9). |
-| Client-server API | `runtime-wired` | Sync surfaces (long polling, filters, presence, to-device, account-data, sliding sync) now wired. Static TURN credentials and OIDC discovery metadata (`auth_metadata`) are implemented. `POST /_matrix/client/v3/rooms/{roomId}/invite` with `id_server`/`medium`/`address` contacts the operator-trusted identity server's `store-invite` endpoint (via the `identity` module's `IdentityServerClient`) and persists an `m.room.third_party_invite` carrying the IS-issued token and public key, per Matrix v1.19 client-server-api § Third-party invites (the IS-issued token is the event state_key). The HS fails closed with 403 when `id_server` is not in `server.identity_server.trusted_servers`; the network call goes over the SSRF-safe `OutboundClient` + `CachedServerDiscovery` (pinned addresses, private/loopback rejected) outside `runtime.mutex`. 3PID bindings are persisted via migration `006_account_threepids.sql` (was in-memory only); the IS credentials needed for IS-delegated unbind (auth mode 2: `sid`+`client_secret`) are persisted via migration `007_account_threepids_columns.sql` (0.11.10). The `bind`/`unbind`/`requestToken` handlers now drive the remote identity server when the client supplies `id_server`+`id_access_token` and the IS is operator-trusted (IS delegation is opt-in; untrusted IS → 403; absent pair → local validation unchanged); `unbind`/`delete` fail closed (502) on transport error so an IS-side binding is never orphaned (0.11.10). A discovery test-seam (`runtime.test_forced_identity_resolution` → `IdentityServerClient` 4th ctor arg) enables a self-signed local mock IS for hermetic tests (0.11.10). |
+| Client-server API | `runtime-wired` | Sync surfaces (long polling, filters, presence, to-device, account-data, sliding sync) now wired. Static TURN credentials and OIDC discovery metadata (`auth_metadata`) are implemented. `POST /_matrix/client/v3/rooms/{roomId}/invite` with `id_server`/`medium`/`address` contacts the operator-trusted identity server's `store-invite` endpoint (via the `identity` module's `IdentityServerClient`) and persists an `m.room.third_party_invite` carrying the IS-issued token and public key, per Matrix v1.19 client-server-api § Third-party invites (the IS-issued token is the event state_key). The HS fails closed with 403 when `id_server` is not in `server.identity_server.trusted_servers`; the network call goes over the SSRF-safe `OutboundClient` + `CachedServerDiscovery` (pinned addresses, private/loopback rejected) outside `runtime.mutex`. 3PID bindings are persisted via migration `006_account_threepids.sql` (was in-memory only); the IS credentials needed for IS-delegated unbind (auth mode 2: `sid`+`client_secret`) are persisted via migration `007_account_threepids_columns.sql` (0.11.10). The `bind`/`unbind`/`requestToken` handlers now drive the remote identity server when the client supplies `id_server`+`id_access_token` and the IS is operator-trusted (IS delegation is opt-in; untrusted IS → 403; absent pair → local validation unchanged); `unbind`/`delete` fail closed (502) on transport error so an IS-side binding is never orphaned (0.11.10). A discovery test-seam (`runtime.test_forced_identity_resolution` → `IdentityServerClient` 4th ctor arg) enables a self-signed local mock IS for hermetic tests (0.11.10). **Unrouted v1.19 endpoints** (audited 0.11.10, see the Client-server table): `POST /search`, `GET /notifications`, `GET /rooms/{roomId}/context/{eventId}`, `POST /user/{userId}/openid/request_token`, SSO login, and `m.ignored_user_list` enforcement. |
+| Application service API | `not-started` | **Entire Matrix v1.19 Application Service API is unimplemented.** No `as_token`/`hs_token` handling, no appservice registration files, no `/_matrix/app/v1/*` outbound calls (transactions, user/room/thirdparty queries), no `m.login.application_service` login type, and no namespace-based user/alias exclusivity. `GET /_matrix/client/v3/thirdparty/protocols` deliberately returns an empty `{}` because no appservices run (returning 404 made Element retry-loop); the remaining `/thirdparty/*` client endpoints are meaningless until this lands. Bridges and bots cannot be operated against this homeserver. |
+| Push notifications | `scaffolded` | **Split status — rules are real, delivery does not exist.** Push *rule* CRUD is `spec-covered` (see the Client-server table). But `GET /_matrix/client/v3/pushers` returns a hardcoded `{"pushers":[]}`, `POST /_matrix/client/v3/pushers/set` validates the body and discards it (no persistence), `GET /_matrix/client/v3/notifications` is unrouted, and nothing ever POSTs to a gateway's `/_matrix/push/v1/notify` — the only reference to that path is an outbound-URL validator. **No user can receive a push notification.** Needs: pusher persistence, rule evaluation against the event stream, and the Push Gateway API client. |
 | Authentication and sessions | `runtime-wired` | Server-side access/refresh token expiry with configurable lifetimes, hashed registration-token validity, and constant-time token-hash lookups landed in 0.8.20. Add richer operator bootstrap lifecycle controls, account recovery controls, and Matrix conformance fixtures for remaining auth flows. |
 | E2EE key APIs | `spec-covered` | Key backup version management, session retrieval, count, etag, and session/room/batch deletion endpoints are wired. `POST /_matrix/client/v3/keys/upload` reports one-time key counts grouped by advertised algorithm. `GET /_matrix/client/v3/keys/changes` now validates `from`/`to` sync tokens and filters results to the requested stream range, with conformance coverage for missing/invalid parameters and stream-boundary behaviour. Cross-device verification: `/_matrix/client/v3/keys/upload` and `/_matrix/client/v3/login` (on new-device creation) record a `device_lists.changed` self-notification so a user's own devices discover each other and a freshly-logged-in device fetches existing devices' keys on its first `/sync` (0.11.8). Remaining: broader Matrix v1.19 semantics and additional conformance fixtures. |
 | Rooms, events, and sync | `runtime-wired` | Sync long polling, filters, presence, to-device, account-data, and restricted/restricted_v2 join rule evaluation now wired. Third-party invite auth (rule 4.3.1 signature/token validation on `m.room.member` invites, plus invite-power gating on `m.room.third_party_invite` creation) landed and is wired into the local send path, inbound federation PDU path, and state resolution. `POST /_matrix/client/v3/rooms/{roomId}/invite` with `id_server`/`medium`/`address` round-trips to the trusted identity server's `store-invite` endpoint and persists an `m.room.third_party_invite` carrying the IS-issued token/public key (no longer local-only; 0.11.9), and `POST /_matrix/client/v3/rooms/{roomId}/join` accepts `third_party_signed` objects for matching same-server invites by verifying the embedded signature and creating the intermediate invite member event. Room-version policy table is conformance-covered, and a runtime conformance scenario now creates rooms for every stable version v1–v12 and verifies the create event records the requested version. MSC4186 multi-list combination (a room in more than one list window has ALL matching list windows combined, not just the first) landed in 0.11.10. |
@@ -55,7 +70,16 @@ Open work per capability area. Status column reflects the current level in the
 | `POST /_matrix/client/v3/rooms/{roomId}/send` | `spec-covered` | Restricted and restricted_v2 join rule evaluation, and third-party invite auth (rule 4.3.1), landed in `events/authorization.cpp`. |
 | `PUT /_matrix/client/v3/user/{userId}/account_data/{type}` | `spec-covered` | Room-scoped account data (`/rooms/{roomId}/account_data/{type}`). |
 | `GET/PUT/DELETE /_matrix/client/v3/user/{userId}/rooms/{roomId}/tags[/{tag}]` | `spec-covered` | Room tagging via `m.tag` account data; `order` doubles supported in general JSON parser. |
-| Push rule CRUD | `spec-covered` | Writable push-rule CRUD (PUT/DELETE/enabled/actions). |
+| Push rule CRUD | `spec-covered` | Writable push-rule CRUD (PUT/DELETE/enabled/actions). Rules are stored and served correctly, but nothing evaluates them against the event stream — see `GET /pushers` below and the Push notifications capability row. |
+| `GET /_matrix/client/v3/pushers` | `scaffolded` | Returns a hardcoded `{"pushers":[]}`. Pushers are never persisted, so a registered pusher is invisible on read-back. |
+| `POST /_matrix/client/v3/pushers/set` | `scaffolded` | Validates the body (including the `https` + `/_matrix/push/v1/notify` pusher-URL check) and returns 200, then discards it. No persistence, no delivery. |
+| `GET /_matrix/client/v3/notifications` | `not-started` | Unrouted. Needs the pusher/rule-evaluation work first. |
+| `POST /_matrix/client/v3/search` | `not-started` | Unrouted. Full-text event search across rooms; only `POST /_matrix/client/v3/user_directory/search` (a different endpoint) exists. |
+| `GET /_matrix/client/v3/rooms/{roomId}/context/{eventId}` | `not-started` | Unrouted. Clients use this to resolve permalinks and jump to a message with surrounding events; its absence is user-visible in Element. |
+| `POST /_matrix/client/v3/user/{userId}/openid/request_token` | `not-started` | Unrouted. The `openid` symbols in `identity/` are the homeserver acting as a *client* of an identity server, not this endpoint. |
+| SSO login (`m.login.sso`, `GET /_matrix/client/v3/login/sso/redirect[/{idpId}]`) | `not-started` | Unrouted; `m.login.sso` is not advertised as a login flow. Password and token login are implemented. |
+| Ignoring users (`m.ignored_user_list`) | `not-started` | No enforcement. A client can store the account-data key because account data is generic storage, but the server never filters ignored users' events out of `/sync` or `/messages`, so the ignore silently does nothing. |
+| `GET /_matrix/client/v3/thirdparty/protocols` | `scaffolded` | Returns an empty `{}` — the conformant answer while no application services are registered (404 caused Element retry loops). The remaining `/thirdparty/*` endpoints are blocked on the Application Service API. |
 | `PUT /_matrix/client/v3/profile/{userId}/avatar_url` | `spec-covered` | Conformance fixture now covers successful update, cross-user 403 guard, and retrieval via `GET /_matrix/client/v3/profile/{userId}/avatar_url`. |
 | `GET /_matrix/client/v1/rooms/{roomId}/hierarchy` | `spec-covered` | Paginated depth-first space tree with `max_depth`, `suggested_only`, and `limit`. |
 | `GET /_matrix/client/v1/rooms/{roomId}/relations/{eventId}` | `spec-covered` | Direct relation scan with `dir`, `from`, `to`, `limit`, and `recurse` query parameters; supports encrypted poll responses via `m.reference`. |
@@ -84,6 +108,32 @@ Open work per capability area. Status column reflects the current level in the
 | Key publication (`GET /_matrix/key/v2/server`) | `spec-covered` | Key-ID format, valid_until_ts expiry, old_verify_keys structural contract, and key-rotation publication (new key active, retired key in old_verify_keys) now covered by conformance fixtures. Multiple simultaneously-active signing keys are published in `verify_keys` and signed by the preferred key, with unit and conformance coverage. |
 | `GET /_matrix/federation/v1/media/download/{mediaId}` inbound (serving our media to remote servers) | `spec-covered` | Authenticated by `X-Matrix` request signatures and served from the main process media repository as a `multipart/mixed` response per Matrix v1.19. Conformance coverage added for 200, 404, 451, missing-provider 501, and percent-decoded `mediaId`. The federation worker is bypassed because it has no access to the local media store. |
 | `GET /_matrix/federation/v1/media/download/{mediaId}` outbound (fetching remote media) | `spec-covered` | Tries the authenticated endpoint first, falls back to the deprecated v3 endpoint on 404, and follows `Location` redirects via an SSRF-safe resolver with pinned addresses (v0.11.5). |
+
+### Application Service API
+
+Unimplemented in full. Tracked here so the absence is visible rather than inferred
+from silence. See [spec](../matrix-v1.19-spec/application-service-api.md).
+
+| Surface | Status | Needs |
+| --- | --- | --- |
+| Appservice registration files (`as_token`, `hs_token`, namespaces) | `not-started` | Config parsing, token storage, and namespace-based exclusivity for users, aliases, and room IDs. |
+| `PUT /_matrix/app/v1/transactions/{txnId}` (outbound) | `not-started` | Push events to registered appservices with at-least-once delivery and txn-id idempotency. |
+| `GET /_matrix/app/v1/users/{userId}`, `/rooms/{roomAlias}` (outbound) | `not-started` | Query hooks for appservice-owned users and aliases. |
+| `m.login.application_service` login type | `not-started` | Lets an appservice log in as any user inside its namespace. |
+| Appservice-authenticated CS API (`?user_id=` masquerading) | `not-started` | `as_token` bearer auth plus identity assertion on the client-server surface. |
+| `/_matrix/client/v3/thirdparty/*` (location, user, protocol) | `not-started` | Depends on registered appservices; `protocols` currently returns an empty `{}`. |
+
+### Push Gateway API
+
+Unimplemented. Push *rules* are stored but never evaluated, and no notification is
+ever delivered. See [spec](../matrix-v1.19-spec/push-gateway-api.md).
+
+| Surface | Status | Needs |
+| --- | --- | --- |
+| `POST /_matrix/push/v1/notify` (outbound to gateway) | `not-started` | An HTTP client that posts notifications to a pusher's gateway URL over the SSRF-safe `OutboundClient`, with retry/backoff and pusher-rejection handling. |
+| Pusher persistence | `not-started` | A store for `POST /pushers/set` so pushers survive the request and appear in `GET /pushers`. |
+| Push-rule evaluation | `not-started` | Evaluate the stored rule set against each event to decide notify/highlight/sound actions and drive unread counts. |
+| Email pushers (`kind: "email"`) | `not-started` | Accepted by body validation today, but no email transport exists. |
 
 ### Server administration
 
