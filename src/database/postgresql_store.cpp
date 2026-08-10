@@ -984,8 +984,8 @@ namespace
 
         auto account_threepids = query_rows(connection, "postgresql_load_account_threepids",
                                             "SELECT user_id, medium, address, country, id_server, "
-                                            "added_at_ms, validated_at_ms, bound FROM account_threepids "
-                                            "ORDER BY user_id, medium, address");
+                                            "added_at_ms, validated_at_ms, bound, client_secret, sid "
+                                            "FROM account_threepids ORDER BY user_id, medium, address");
         if (!account_threepids.ok)
         {
             return false;
@@ -1003,6 +1003,11 @@ namespace
                 entry.added_at_ms = parse_u64(row[5]);
                 entry.validated_at_ms = parse_u64(row[6]);
                 entry.bound = text_is_true(row[7]);
+                if (row.size() >= 10U)
+                {
+                    entry.client_secret = row[8].empty() ? std::nullopt : std::optional<std::string>{row[8]};
+                    entry.sid = row[9].empty() ? std::nullopt : std::optional<std::string>{row[9]};
+                }
                 store.account_threepids.push_back(std::move(entry));
             }
         }

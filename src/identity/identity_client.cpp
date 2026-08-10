@@ -171,6 +171,20 @@ auto build_request_token_body(std::string_view client_secret, std::string_view e
     return serialize_object(std::move(obj));
 }
 
+auto build_request_msisdn_token_body(std::string_view client_secret, std::string_view country,
+                                     std::string_view phone_number, std::string_view next_link) -> std::string
+{
+    auto obj = canonicaljson::Object{};
+    obj.push_back(make_str_member("client_secret", client_secret));
+    obj.push_back(make_str_member("country", country));
+    obj.push_back(make_str_member("phone_number", phone_number));
+    if (!next_link.empty())
+    {
+        obj.push_back(make_str_member("next_link", next_link));
+    }
+    return serialize_object(std::move(obj));
+}
+
 auto parse_store_invite_response(std::string_view body) -> std::optional<StoreInviteResponse>
 {
     auto const parsed = canonicaljson::parse_lossless(body);
@@ -239,11 +253,34 @@ auto parse_lookup_response(std::string_view body) -> std::optional<LookupRespons
     return out;
 }
 
-IdentityServerClient::IdentityServerClient(http::OutboundClient& outbound, federation::CachedServerDiscovery& discovery,
-                                           config::IdentityServerConfig const& config) noexcept
+auto parse_request_token_response(std::string_view body) -> std::optional<std::string>
+{
+    auto const parsed = canonicaljson::parse_lossless(body);
+    if (parsed.error != canonicaljson::ParseError::none)
+    {
+        return std::nullopt;
+    }
+    auto const* root = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+    if (root == nullptr)
+    {
+        return std::nullopt;
+    }
+    auto const* sid = string_member(*root, "sid");
+    if (sid == nullptr || sid->empty())
+    {
+        return std::nullopt;
+    }
+    return std::optional<std::string>{*sid};
+}
+
+IdentityServerClient::IdentityServerClient(
+    http::OutboundClient& outbound, federation::CachedServerDiscovery& discovery,
+    config::IdentityServerConfig const& config,
+    std::map<std::string, TestForcedIdentityResolution> const* forced_resolution) noexcept
     : outbound_{outbound}
     , discovery_{discovery}
     , config_{config}
+    , test_forced_resolution_{forced_resolution}
 {
 }
 
@@ -255,17 +292,39 @@ auto IdentityServerClient::perform(std::string_view base_url, std::string_view m
     {
         return {false, 0U, {}, http::OutboundError::invalid_url, "invalid identity server base URL"};
     }
-    // SSRF-safe resolution: the cached discovery network applies the operator
-    // deny_ip_ranges (private/loopback) before returning pinned addresses. We
-    // never resolve DNS in the client or accept a client-supplied address.
-    auto const resolved = discovery_.upstream().lookup_addresses(parsed->host, parsed->port);
-    if (!resolved.ok || resolved.addresses.empty())
+
+    // Resolve the IS host to pinned addresses for the outbound client. The
+    // test-only `test_forced_identity_resolution` seam (when present and keyed
+    // by this host) supplies pinned addresses + an in-memory CA bundle and
+    // bypasses discovery — so a self-signed local mock IS can be used in tests
+    // (discovery rejects loopback and never populates a CA bundle). In
+    // production this map is always empty/null and the SSRF-safe discovery
+    // path below runs unchanged.
+    auto pinned = std::vector<std::string>{};
+    auto ca_pem = std::string{};
+    if (test_forced_resolution_ != nullptr)
     {
-        return {false,
-                0U,
-                {},
-                http::OutboundError::unresolved_host,
-                "SSRF-safe resolution failed for identity server host: " + resolved.reason};
+        if (auto const it = test_forced_resolution_->find(parsed->host); it != test_forced_resolution_->end())
+        {
+            pinned = it->second.pinned_addresses;
+            ca_pem = it->second.trusted_ca_pem;
+        }
+    }
+    if (pinned.empty())
+    {
+        // SSRF-safe resolution: the cached discovery network applies the operator
+        // deny_ip_ranges (private/loopback) before returning pinned addresses. We
+        // never resolve DNS in the client or accept a client-supplied address.
+        auto const resolved = discovery_.upstream().lookup_addresses(parsed->host, parsed->port);
+        if (!resolved.ok || resolved.addresses.empty())
+        {
+            return {false,
+                    0U,
+                    {},
+                    http::OutboundError::unresolved_host,
+                    "SSRF-safe resolution failed for identity server host: " + resolved.reason};
+        }
+        pinned = resolved.addresses;
     }
 
     // Build the full URL from the base URL (trimmed of trailing slash) + the
@@ -282,7 +341,8 @@ auto IdentityServerClient::perform(std::string_view base_url, std::string_view m
     request.method = std::string{method};
     request.url = std::move(url);
     request.body = std::string{body};
-    request.pinned_addresses = resolved.addresses;
+    request.pinned_addresses = std::move(pinned);
+    request.trusted_ca_pem = std::move(ca_pem);
     request.connect_timeout_seconds = config_.connect_timeout_seconds;
     request.total_timeout_seconds = config_.total_timeout_seconds;
     request.headers.push_back(http::OutboundHeader{"Content-Type", "application/json"});
@@ -336,6 +396,15 @@ auto IdentityServerClient::request_email_token(std::string_view base_url, std::s
 {
     return perform(base_url, "POST", "/_matrix/identity/v2/validate/email/requestToken", id_access_token,
                    build_request_token_body(client_secret, email, next_link));
+}
+
+auto IdentityServerClient::request_msisdn_token(std::string_view base_url, std::string_view id_access_token,
+                                                std::string_view client_secret, std::string_view country,
+                                                std::string_view phone_number, std::string_view next_link)
+    -> IdentityServerResult
+{
+    return perform(base_url, "POST", "/_matrix/identity/v2/validate/msisdn/requestToken", id_access_token,
+                   build_request_msisdn_token_body(client_secret, country, phone_number, next_link));
 }
 
 } // namespace merovingian::identity

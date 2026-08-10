@@ -32,12 +32,18 @@ production-gated.
   endpoint does not require authentication via an access token. Authentication
   is provided via the refresh token." `client_auth_endpoint_requires_access_token`
   excludes `login`, `register_account`, and `refresh_token`.
-- Account 3PID email and MSISDN flows are implemented for the local account
-  surface: unauthenticated `requestToken` endpoints issue validation sessions,
-  `POST /account/3pid/add` enforces password UIA, the deprecated
+- Account 3PID email and MSISDN flows are implemented across both the local and
+  the IS-delegated surface. `POST /account/3pid/email/requestToken` and
+  `POST /account/3pid/msisdn/requestToken` issue local validation sessions when no
+  `id_server` is supplied (spec-conformant local validation), and delegate to a
+  trusted remote identity server when both `id_server` and `id_access_token` are
+  supplied — storing a `RegistrationValidationSession` keyed by the IS-issued
+  `sid` so a later `bind` with the same `sid` + `client_secret` completes the
+  association. `POST /account/3pid/add` enforces password UIA, the deprecated
   `POST /account/3pid` association route is accepted, and the bind/list/unbind/
-  delete endpoints maintain per-account 3PID records including
-  `added_at` / `validated_at` metadata.
+  delete endpoints maintain per-account 3PID records including `added_at` /
+  `validated_at` metadata plus, for IS-bound 3PIDs, the stored `client_secret` and
+  `sid` (migration `007`) needed to drive a mode-2 remote unbind.
 - Access-token hashes are durable and hydrate back into runtime sessions after
   restart.
 - Refresh-token hashes are persisted, rotated, and revoked on global logout,
@@ -146,11 +152,55 @@ The `server.identity_server.*` config block (`trusted_servers`,
 `default_server`, `allowed_bind_domains`, `connect_timeout_seconds`,
 `total_timeout_seconds`) is hot-reloaded and marked restart-required for
 trust-set changes. 3PID bindings are persisted via migration
-`006_account_threepids.sql` (previously in-memory).
+`006_account_threepids.sql` (previously in-memory); IS-bound bindings additionally
+store the `client_secret` and `sid` needed for a remote unbind via migration
+`007_account_threepids_columns.sql`.
 
-**Deferred follow-on:** the `bind`, `unbind`, and `requestToken` handlers
-persist locally but do not yet drive the remote IS; that sync is deferred pending
-a discovery test-seam for hermetic IS mocking.
+### bind / unbind / requestToken IS delegation (v0.11.10)
+
+The `bind`, `unbind`, and `requestToken` handlers now drive the remote IS when a
+trusted `id_server` is supplied, not just persist locally:
+
+- **`requestToken`** (`/account/3pid/email/requestToken`,
+  `/account/3pid/msisdn/requestToken`, and the register/email, register/msisdn
+  variants) — when both `id_server` and `id_access_token` are present and
+  `id_server` is trusted, the HS resolves the trusted base URL, calls
+  `IdentityServerClient::request_email_token` / `request_msisdn_token`, and on
+  a 200 with an IS-issued `sid` stores a `RegistrationValidationSession` keyed by
+  that `sid` (purpose `register` / `account-3pid`). The IS is the validation
+  authority: it contacts the user by email/SMS and (optionally) redirects via
+  `next_link`, so Merovingian has no client-facing `submitToken` for IS-delegated
+  flows — the session completes when the client later calls `bind` with the same
+  `sid` + `client_secret`. Absent `id_server` / `id_access_token`, the existing
+  local-validation path is unchanged. Fail closed with `502` on transport error
+  or a malformed IS response; `403` when `id_server` is not trusted.
+
+- **`bind`** (`/account/3pid/add`, plus the deprecated `/account/3pid`) — after
+  password UIA and the validation-session lookup, when `id_server` /
+  `id_access_token` are supplied and trusted, the HS calls
+  `IdentityServerClient::bind` over the held runtime mutex released for the
+  network call, then persists `bound=true`, `id_server`, `client_secret`, and
+  `sid`. The legacy `/account/3pid` route is extended to carry optional
+  `id_server` / `id_access_token`; when absent it stays local-only for back-compat.
+
+- **`unbind`** (`/account/3pid/delete`, `/account/3pid`) — the client sends no
+  secret (spec-correct), so the HS recovers `client_secret` + `sid` from the
+  stored binding and calls `IdentityServerClient::unbind` with an empty
+  `id_access_token`. Per the IS API v2 this is **unbind auth mode 2**
+  (`client_secret` + `sid`, no bearer) — `build_unbind_body` carries no
+  `Authorization` header. Transport failure fails closed with `502`: silently
+  removing the local binding while the IS still holds it would orphan the
+  IS-side binding (the local `client_secret`/`sid` would be gone, making a retry
+  impossible). A non-2xx IS response other than a recognised "no-support" shape
+  also surfaces `502` so the user may retry; `id_server_unbind_result` reports
+  `"success"` on 200 and `"no-support"` when the IS declines, removing the local
+  record either way per spec (an operator trust-set change must not strand the
+  3PID). When the stored binding has no `client_secret`/`sid`, the handler falls
+  back to the existing local-only `threepid_unbind_result` logic.
+
+All three flows reach the IS through the `test_forced_identity_resolution`
+discovery seam (see `docs/http-transport.md`), which is empty in production —
+production traffic resolves via the SSRF-safe `CachedServerDiscovery` path.
 
 ## Security posture
 

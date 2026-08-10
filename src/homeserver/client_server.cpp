@@ -36,6 +36,7 @@
 #include "merovingian/homeserver/space_hierarchy.hpp"
 #include "merovingian/http/rate_limit.hpp"
 #include "merovingian/http/request.hpp"
+#include "merovingian/identity/identity_client.hpp"
 #include "merovingian/media/security.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
@@ -825,6 +826,11 @@ namespace
         std::string email{};
         std::optional<std::string> next_link{};
         std::uint64_t send_attempt{0U};
+        // Optional IS-delegation pair: when both are present the homeserver forwards
+        // the requestToken call to the named (operator-trusted) identity server
+        // instead of running the local validation flow.
+        std::optional<std::string> id_server{};
+        std::optional<std::string> id_access_token{};
     };
 
     struct MatrixRegisterMsisdnRequestBody final
@@ -834,6 +840,9 @@ namespace
         std::string phone_number{};
         std::optional<std::string> next_link{};
         std::uint64_t send_attempt{0U};
+        // Optional IS-delegation pair (see MatrixRegisterEmailRequestBody).
+        std::optional<std::string> id_server{};
+        std::optional<std::string> id_access_token{};
     };
 
     struct MatrixAccountThreePidAddBody final
@@ -1797,10 +1806,32 @@ namespace
         ClientServerRuntime& rt, std::string_view purpose, std::string_view medium, std::string_view address,
         std::string_view client_secret, std::string_view client_ip, std::uint64_t send_attempt,
         std::optional<std::string> next_link = std::nullopt, std::optional<std::string> country = std::nullopt,
-        std::optional<std::string> user_id = std::nullopt) -> RegistrationValidationSession*
+        std::optional<std::string> user_id = std::nullopt, std::optional<std::string> sid_override = std::nullopt)
+        -> RegistrationValidationSession*
     {
         auto const now_ms = wall_clock_milliseconds();
         prune_registration_validation_sessions(rt, now_ms);
+        // IS-delegated requestToken: the identity server issues its own sid and is
+        // the validation authority, so retries yield fresh sids — never de-dup against
+        // an existing local session (which would surface a stale sid). Always create a
+        // fresh session keyed by the IS-issued sid, still bound by the per-remote/global caps.
+        if (sid_override.has_value())
+        {
+            auto const per_remote_sessions = static_cast<std::size_t>(std::ranges::count_if(
+                rt.registration_validation_sessions, [client_ip](RegistrationValidationSession const& session) {
+                    return session.client_ip == client_ip;
+                }));
+            if (per_remote_sessions >= registration_validation_max_sessions_per_remote ||
+                rt.registration_validation_sessions.size() >= registration_validation_max_sessions_global)
+            {
+                return nullptr;
+            }
+            rt.registration_validation_sessions.push_back(
+                {*sid_override, std::string{purpose}, std::string{medium}, std::string{address},
+                 std::string{client_secret}, std::string{client_ip}, std::move(user_id), std::move(country),
+                 std::move(next_link), send_attempt, now_ms, now_ms, now_ms});
+            return &rt.registration_validation_sessions.back();
+        }
         auto* existing = find_registration_validation_session(
             rt, purpose, medium, address, client_secret,
             country.has_value() ? std::optional<std::string_view>{*country} : std::nullopt,
@@ -1912,6 +1943,33 @@ namespace
         return "success";
     }
 
+    // Matches a client-supplied `id_server` (a host[:port]) against the operator-
+    // configured trusted identity-server base URLs by host+port, returning the
+    // trusted base URL to use as the IS call target (preserving any configured path
+    // prefix). Returns nullopt when the IS is not trusted. Mirrors the matcher in
+    // room_service.cpp::invite_user_by_threepid so every IS-delegated client-server
+    // handler applies the same trust gate.
+    [[nodiscard]] auto resolve_trusted_identity_base_url(config::IdentityServerConfig const& identity_config,
+                                                         std::string_view id_server) -> std::optional<std::string>
+    {
+        auto const parsed_base = merovingian::identity::parse_identity_server_url("https://" + std::string{id_server});
+        if (!parsed_base.has_value())
+        {
+            return std::nullopt;
+        }
+        auto const match =
+            std::ranges::find_if(identity_config.trusted_servers, [&parsed_base](std::string const& trusted) {
+                auto const parsed_trusted = merovingian::identity::parse_identity_server_url(trusted);
+                return parsed_trusted.has_value() && parsed_trusted->host == parsed_base->host &&
+                       parsed_trusted->port == parsed_base->port;
+            });
+        if (match == identity_config.trusted_servers.end())
+        {
+            return std::nullopt;
+        }
+        return std::optional<std::string>{*match};
+    }
+
     [[nodiscard]] auto parse_register_email_request_body(std::string_view body)
         -> std::optional<MatrixRegisterEmailRequestBody>
     {
@@ -1928,10 +1986,15 @@ namespace
             return std::nullopt;
         }
         auto const* next_link = string_member(*object, "next_link");
-        return MatrixRegisterEmailRequestBody{*client_secret, *email,
-                                              next_link == nullptr ? std::optional<std::string>{}
-                                                                   : std::optional<std::string>{*next_link},
-                                              static_cast<std::uint64_t>(*send_attempt)};
+        auto const* id_server = string_member(*object, "id_server");
+        auto const* id_access_token = string_member(*object, "id_access_token");
+        return MatrixRegisterEmailRequestBody{
+            *client_secret,
+            *email,
+            next_link == nullptr ? std::optional<std::string>{} : std::optional<std::string>{*next_link},
+            static_cast<std::uint64_t>(*send_attempt),
+            id_server == nullptr ? std::optional<std::string>{} : std::optional<std::string>{*id_server},
+            id_access_token == nullptr ? std::optional<std::string>{} : std::optional<std::string>{*id_access_token}};
     }
 
     [[nodiscard]] auto parse_register_msisdn_request_body(std::string_view body)
@@ -1952,12 +2015,16 @@ namespace
             return std::nullopt;
         }
         auto const* next_link = string_member(*object, "next_link");
+        auto const* id_server = string_member(*object, "id_server");
+        auto const* id_access_token = string_member(*object, "id_access_token");
         return MatrixRegisterMsisdnRequestBody{
             *client_secret,
             *country,
             *phone_number,
             next_link == nullptr ? std::optional<std::string>{} : std::optional<std::string>{*next_link},
             static_cast<std::uint64_t>(*send_attempt),
+            id_server == nullptr ? std::optional<std::string>{} : std::optional<std::string>{*id_server},
+            id_access_token == nullptr ? std::optional<std::string>{} : std::optional<std::string>{*id_access_token},
         };
     }
 
@@ -4166,39 +4233,43 @@ namespace
         {
             auto sub = sync::SlidingSyncRoomSubscription{};
 
-            // Find the owning list (if any) for this room among the windowed
-            // lists. The first list whose window contains the room wins; a room
-            // present in multiple lists is not combined across lists (MSC4186
-            // combination is applied for list-vs-room_subscription below).
-            auto list_for_room_it = ssreq.lists.end();
-            for (auto const& [lname, result] : list_results)
-            {
-                if (std::ranges::find(result.windowed_room_ids, room_id) != result.windowed_room_ids.end())
-                {
-                    list_for_room_it = ssreq.lists.find(lname);
-                    break;
-                }
-            }
-
-            if (auto const sit = ssreq.room_subscriptions.find(room_id); sit != ssreq.room_subscriptions.end())
+            // Seed the per-room config with the room_subscription (if any). Per
+            // MSC4186, when a room matches BOTH a list and a room_subscription the
+            // configs combine into a superset.
+            auto const sit = ssreq.room_subscriptions.find(room_id);
+            if (sit != ssreq.room_subscriptions.end())
             {
                 sub = sit->second;
-                // Per MSC4186, when a room matches both a list and a
-                // room_subscription the room configs combine into a superset:
-                // required_state is the union (deduped and wildcard-aware),
-                // timeline_limit is the maximum, and include_heroes is OR'd.
-                if (list_for_room_it != ssreq.lists.end())
-                {
-                    sub = sync::combine_room_configs(list_for_room_it->second, sub);
-                }
             }
-            else if (list_for_room_it != ssreq.lists.end())
+            else
             {
-                // Room is in a list window but not subscribed: use the owning
-                // list's params verbatim.
-                sub.required_state = list_for_room_it->second.required_state;
-                sub.timeline_limit = list_for_room_it->second.timeline_limit;
-                sub.include_heroes = list_for_room_it->second.include_heroes;
+                // No explicit subscription: use a neutral fold start so a list-only
+                // room inherits the list's own timeline_limit (std::max against 0)
+                // rather than the SlidingSyncRoomSubscription default of 20, which
+                // would inflate a list configured with timeline_limit=1 to 20.
+                sub.timeline_limit = 0U;
+            }
+
+            // MSC4186 multi-list combination: a room may appear in more than one
+            // list window. ALL matching list windows combine (left-fold over
+            // combine_room_configs) with each other and the room_subscription:
+            // required_state is the union (deduped and wildcard-aware),
+            // timeline_limit is the maximum, and include_heroes is OR'd. The
+            // helper is associative+commutative, so fold order is irrelevant. A
+            // room in a single list (no subscription) is the degenerate fold of
+            // one list over the neutral start.
+            for (auto const& [lname, result] : list_results)
+            {
+                if (std::ranges::find(result.windowed_room_ids, room_id) == result.windowed_room_ids.end())
+                {
+                    continue;
+                }
+                auto const lit = ssreq.lists.find(lname);
+                if (lit == ssreq.lists.end())
+                {
+                    continue;
+                }
+                sub = sync::combine_room_configs(lit->second, sub);
             }
             auto const room_seen_it = conn.rooms_seen.find(room_id);
             auto const is_initial = room_seen_it == conn.rooms_seen.end();
@@ -7677,6 +7748,70 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             return dispatch_err(req, rt, 400U, "M_BAD_JSON", "email must be a plausible address");
         }
+        // IS delegation: when both id_server and id_access_token are present, forward
+        // the requestToken to the named (operator-trusted) identity server, which
+        // runs the real email-validation flow and issues its own sid. The pair must
+        // both be present or both absent; a lone field is a bad request.
+        if (body->id_server.has_value() != body->id_access_token.has_value())
+        {
+            return dispatch_err(req, rt, 400U, "M_BAD_JSON",
+                                "id_server and id_access_token must both be present or both absent");
+        }
+        if (body->id_server.has_value() && body->id_access_token.has_value())
+        {
+            auto const trusted_base =
+                resolve_trusted_identity_base_url(rt.homeserver.config.server().identity_server, *body->id_server);
+            if (!trusted_base.has_value())
+            {
+                return dispatch_err(req, rt, 403U, "M_UNRECOGNIZED", "identity server is not trusted");
+            }
+            auto const normalized_address = normalize_threepid_address("email", body->email);
+            auto const email = std::string{body->email};
+            auto const client_secret = std::string{body->client_secret};
+            auto const next_link = body->next_link;
+            auto const id_access_token = std::string{*body->id_access_token};
+            auto const base_url = std::string{*trusted_base};
+            if (rt.homeserver.outbound_client == nullptr || rt.homeserver.cached_discovery == nullptr)
+            {
+                return dispatch_err(req, rt, 502U, "M_UNREACHABLE", "identity server is not reachable");
+            }
+            guard.unlock();
+            auto id_client = merovingian::identity::IdentityServerClient{
+                *rt.homeserver.outbound_client, *rt.homeserver.cached_discovery,
+                rt.homeserver.config.server().identity_server, &rt.homeserver.test_forced_identity_resolution};
+            auto const is_result =
+                id_client.request_email_token(base_url, id_access_token, client_secret, email,
+                                              next_link.has_value() ? *next_link : std::string_view{});
+            guard.lock();
+            if (!is_result.ok)
+            {
+                return dispatch_err(req, rt, 502U, "M_UNREACHABLE", "identity server is not reachable");
+            }
+            if (is_result.status != 200U)
+            {
+                return dispatch_err(req, rt, is_result.status, "M_UNRECOGNIZED",
+                                    "identity server rejected the requestToken");
+            }
+            auto const is_sid = merovingian::identity::parse_request_token_response(is_result.body);
+            if (!is_sid.has_value())
+            {
+                return dispatch_err(req, rt, 502U, "M_UNRECOGNIZED",
+                                    "identity server returned a malformed requestToken response");
+            }
+            // Record a local session keyed by the IS-issued sid so the later bind
+            // can recover the medium/address. The IS is the validation authority;
+            // Merovingian has no client-facing submitToken, so the session completes
+            // when the client later binds with the same sid + client_secret.
+            auto* session = ensure_registration_validation_session(rt, "register", "email", normalized_address,
+                                                                   client_secret, req.remote_addr, body->send_attempt,
+                                                                   next_link, std::nullopt, std::nullopt, *is_sid);
+            if (session == nullptr)
+            {
+                return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", "too many outstanding validation sessions",
+                                    60000U);
+            }
+            return dispatch_resp(req, rt, 200U, json_serialize(json_obj({json_member("sid", json_str(session->sid))})));
+        }
         auto* session = ensure_registration_validation_session(
             rt, "register", "email", normalize_threepid_address("email", body->email), body->client_secret,
             req.remote_addr, body->send_attempt, body->next_link);
@@ -7710,6 +7845,67 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         if (!phone_number_is_valid(body->phone_number))
         {
             return dispatch_err(req, rt, 400U, "M_BAD_JSON", "phone_number must not be empty");
+        }
+        // IS delegation: see register/email/requestToken for the full rationale. The
+        // pair (id_server, id_access_token) must both be present or both absent.
+        if (body->id_server.has_value() != body->id_access_token.has_value())
+        {
+            return dispatch_err(req, rt, 400U, "M_BAD_JSON",
+                                "id_server and id_access_token must both be present or both absent");
+        }
+        if (body->id_server.has_value() && body->id_access_token.has_value())
+        {
+            auto const trusted_base =
+                resolve_trusted_identity_base_url(rt.homeserver.config.server().identity_server, *body->id_server);
+            if (!trusted_base.has_value())
+            {
+                return dispatch_err(req, rt, 403U, "M_UNRECOGNIZED", "identity server is not trusted");
+            }
+            auto const normalized_address = normalize_threepid_address("msisdn", body->phone_number);
+            auto const client_secret = std::string{body->client_secret};
+            auto const country = std::string{body->country};
+            auto const phone_number = std::string{body->phone_number};
+            auto const next_link = body->next_link;
+            auto const id_access_token = std::string{*body->id_access_token};
+            auto const base_url = std::string{*trusted_base};
+            if (rt.homeserver.outbound_client == nullptr || rt.homeserver.cached_discovery == nullptr)
+            {
+                return dispatch_err(req, rt, 502U, "M_UNREACHABLE", "identity server is not reachable");
+            }
+            guard.unlock();
+            auto id_client = merovingian::identity::IdentityServerClient{
+                *rt.homeserver.outbound_client, *rt.homeserver.cached_discovery,
+                rt.homeserver.config.server().identity_server, &rt.homeserver.test_forced_identity_resolution};
+            auto const is_result =
+                id_client.request_msisdn_token(base_url, id_access_token, client_secret, country, phone_number,
+                                               next_link.has_value() ? *next_link : std::string_view{});
+            guard.lock();
+            if (!is_result.ok)
+            {
+                return dispatch_err(req, rt, 502U, "M_UNREACHABLE", "identity server is not reachable");
+            }
+            if (is_result.status != 200U)
+            {
+                return dispatch_err(req, rt, is_result.status, "M_UNRECOGNIZED",
+                                    "identity server rejected the requestToken");
+            }
+            auto const is_sid = merovingian::identity::parse_request_token_response(is_result.body);
+            if (!is_sid.has_value())
+            {
+                return dispatch_err(req, rt, 502U, "M_UNRECOGNIZED",
+                                    "identity server returned a malformed requestToken response");
+            }
+            // Key the local session by the IS-issued sid (see register/email). The
+            // country is preserved so the later bind can recover the MSISDN locale.
+            auto* session = ensure_registration_validation_session(rt, "register", "msisdn", normalized_address,
+                                                                   client_secret, req.remote_addr, body->send_attempt,
+                                                                   next_link, country, std::nullopt, *is_sid);
+            if (session == nullptr)
+            {
+                return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", "too many outstanding validation sessions",
+                                    60000U);
+            }
+            return dispatch_resp(req, rt, 200U, json_serialize(json_obj({json_member("sid", json_str(session->sid))})));
         }
         auto* session = ensure_registration_validation_session(
             rt, "register", "msisdn", normalize_threepid_address("msisdn", body->phone_number), body->client_secret,
@@ -8013,6 +8209,63 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             return dispatch_err(req, rt, 400U, "M_THREEPID_IN_USE",
                                 "third-party identifier is already associated with an account");
         }
+        // IS delegation: see register/email/requestToken for the full rationale.
+        if (body->id_server.has_value() != body->id_access_token.has_value())
+        {
+            return dispatch_err(req, rt, 400U, "M_BAD_JSON",
+                                "id_server and id_access_token must both be present or both absent");
+        }
+        if (body->id_server.has_value() && body->id_access_token.has_value())
+        {
+            auto const trusted_base =
+                resolve_trusted_identity_base_url(rt.homeserver.config.server().identity_server, *body->id_server);
+            if (!trusted_base.has_value())
+            {
+                return dispatch_err(req, rt, 403U, "M_UNRECOGNIZED", "identity server is not trusted");
+            }
+            auto const email = std::string{body->email};
+            auto const client_secret = std::string{body->client_secret};
+            auto const next_link = body->next_link;
+            auto const id_access_token = std::string{*body->id_access_token};
+            auto const base_url = std::string{*trusted_base};
+            if (rt.homeserver.outbound_client == nullptr || rt.homeserver.cached_discovery == nullptr)
+            {
+                return dispatch_err(req, rt, 502U, "M_UNREACHABLE", "identity server is not reachable");
+            }
+            guard.unlock();
+            auto id_client = merovingian::identity::IdentityServerClient{
+                *rt.homeserver.outbound_client, *rt.homeserver.cached_discovery,
+                rt.homeserver.config.server().identity_server, &rt.homeserver.test_forced_identity_resolution};
+            auto const is_result =
+                id_client.request_email_token(base_url, id_access_token, client_secret, email,
+                                              next_link.has_value() ? *next_link : std::string_view{});
+            guard.lock();
+            if (!is_result.ok)
+            {
+                return dispatch_err(req, rt, 502U, "M_UNREACHABLE", "identity server is not reachable");
+            }
+            if (is_result.status != 200U)
+            {
+                return dispatch_err(req, rt, is_result.status, "M_UNRECOGNIZED",
+                                    "identity server rejected the requestToken");
+            }
+            auto const is_sid = merovingian::identity::parse_request_token_response(is_result.body);
+            if (!is_sid.has_value())
+            {
+                return dispatch_err(req, rt, 502U, "M_UNRECOGNIZED",
+                                    "identity server returned a malformed requestToken response");
+            }
+            // Key the local session by the IS-issued sid (see register/email).
+            auto* session = ensure_registration_validation_session(rt, "account-3pid", "email", normalized_address,
+                                                                   client_secret, req.remote_addr, body->send_attempt,
+                                                                   next_link, std::nullopt, std::nullopt, *is_sid);
+            if (session == nullptr)
+            {
+                return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", "too many outstanding validation sessions",
+                                    60000U);
+            }
+            return dispatch_resp(req, rt, 200U, json_serialize(json_obj({json_member("sid", json_str(session->sid))})));
+        }
         auto* session =
             ensure_registration_validation_session(rt, "account-3pid", "email", normalized_address, body->client_secret,
                                                    req.remote_addr, body->send_attempt, body->next_link);
@@ -8052,6 +8305,64 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             return dispatch_err(req, rt, 400U, "M_THREEPID_IN_USE",
                                 "third-party identifier is already associated with an account");
+        }
+        // IS delegation: see register/email/requestToken for the full rationale.
+        if (body->id_server.has_value() != body->id_access_token.has_value())
+        {
+            return dispatch_err(req, rt, 400U, "M_BAD_JSON",
+                                "id_server and id_access_token must both be present or both absent");
+        }
+        if (body->id_server.has_value() && body->id_access_token.has_value())
+        {
+            auto const trusted_base =
+                resolve_trusted_identity_base_url(rt.homeserver.config.server().identity_server, *body->id_server);
+            if (!trusted_base.has_value())
+            {
+                return dispatch_err(req, rt, 403U, "M_UNRECOGNIZED", "identity server is not trusted");
+            }
+            auto const client_secret = std::string{body->client_secret};
+            auto const country = std::string{body->country};
+            auto const phone_number = std::string{body->phone_number};
+            auto const next_link = body->next_link;
+            auto const id_access_token = std::string{*body->id_access_token};
+            auto const base_url = std::string{*trusted_base};
+            if (rt.homeserver.outbound_client == nullptr || rt.homeserver.cached_discovery == nullptr)
+            {
+                return dispatch_err(req, rt, 502U, "M_UNREACHABLE", "identity server is not reachable");
+            }
+            guard.unlock();
+            auto id_client = merovingian::identity::IdentityServerClient{
+                *rt.homeserver.outbound_client, *rt.homeserver.cached_discovery,
+                rt.homeserver.config.server().identity_server, &rt.homeserver.test_forced_identity_resolution};
+            auto const is_result =
+                id_client.request_msisdn_token(base_url, id_access_token, client_secret, country, phone_number,
+                                               next_link.has_value() ? *next_link : std::string_view{});
+            guard.lock();
+            if (!is_result.ok)
+            {
+                return dispatch_err(req, rt, 502U, "M_UNREACHABLE", "identity server is not reachable");
+            }
+            if (is_result.status != 200U)
+            {
+                return dispatch_err(req, rt, is_result.status, "M_UNRECOGNIZED",
+                                    "identity server rejected the requestToken");
+            }
+            auto const is_sid = merovingian::identity::parse_request_token_response(is_result.body);
+            if (!is_sid.has_value())
+            {
+                return dispatch_err(req, rt, 502U, "M_UNRECOGNIZED",
+                                    "identity server returned a malformed requestToken response");
+            }
+            // Key the local session by the IS-issued sid (see register/email).
+            auto* session = ensure_registration_validation_session(rt, "account-3pid", "msisdn", normalized_address,
+                                                                   client_secret, req.remote_addr, body->send_attempt,
+                                                                   next_link, country, std::nullopt, *is_sid);
+            if (session == nullptr)
+            {
+                return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", "too many outstanding validation sessions",
+                                    60000U);
+            }
+            return dispatch_resp(req, rt, 200U, json_serialize(json_obj({json_member("sid", json_str(session->sid))})));
         }
         auto* session = ensure_registration_validation_session(rt, "account-3pid", "msisdn", normalized_address,
                                                                body->client_secret, req.remote_addr, body->send_attempt,
@@ -8367,6 +8678,59 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             return dispatch_err(req, rt, 400U, "M_THREEPID_IN_USE",
                                 "third-party identifier is already associated with an account");
         }
+        // IS delegation: when the named id_server is operator-trusted, bind at the
+        // IS first (the IS is the authority for the 3PID) and fail closed on any
+        // transport/IS error before recording locally. When untrusted, fall back to
+        // the historical local-only bind so existing deployments without a trusted
+        // IS keep working. Spec: identity-service-api.md §3pid/bind.
+        auto const trusted_base =
+            resolve_trusted_identity_base_url(rt.homeserver.config.server().identity_server, body->id_server);
+        auto is_delegated = trusted_base.has_value();
+        if (is_delegated)
+        {
+            // Snapshot under the lock; the session pointer borrows the sessions
+            // vector which another thread could reallocate while the lock is dropped.
+            auto const medium = std::string{session->medium};
+            auto const address = std::string{session->address};
+            auto const country = session->country;
+            auto const validated_at_ms = session->validated_at_ms;
+            auto const client_secret = std::string{body->client_secret};
+            auto const sid = std::string{body->sid};
+            auto const id_access_token = std::string{body->id_access_token};
+            auto const mxid = std::string{*user};
+            auto const base_url = std::string{*trusted_base};
+            if (rt.homeserver.outbound_client == nullptr || rt.homeserver.cached_discovery == nullptr)
+            {
+                return dispatch_err(req, rt, 502U, "M_UNREACHABLE", "identity server is not reachable");
+            }
+            // IS call is network-bound: drop runtime.mutex for the duration (same
+            // convention as the call_local lambda above and room_service.cpp).
+            guard.unlock();
+            auto id_client = merovingian::identity::IdentityServerClient{
+                *rt.homeserver.outbound_client, *rt.homeserver.cached_discovery,
+                rt.homeserver.config.server().identity_server, &rt.homeserver.test_forced_identity_resolution};
+            auto const is_result = id_client.bind(base_url, id_access_token, client_secret, sid, mxid);
+            guard.lock();
+            if (!is_result.ok)
+            {
+                return dispatch_err(req, rt, 502U, "M_UNREACHABLE", "identity server is not reachable");
+            }
+            if (is_result.status != 200U)
+            {
+                return dispatch_err(req, rt, is_result.status, "M_UNRECOGNIZED", "identity server rejected the bind");
+            }
+            auto& record = ensure_account_threepid(
+                rt, mxid, medium, address,
+                country.has_value() ? std::optional<std::string_view>{*country} : std::nullopt, validated_at_ms);
+            record.id_server = body->id_server;
+            record.bound = true;
+            // Persist the IS validation pair so a later unbind can drive IS auth
+            // mode 2 (sid + client_secret) without a homeserver-signed request.
+            record.client_secret = client_secret;
+            record.sid = sid;
+            std::ignore = database::store_account_threepid(rt.homeserver.database.persistent_store, record);
+            return dispatch_resp(req, rt, 200U, "{}");
+        }
         auto& record = ensure_account_threepid(
             rt, *user, session->medium, session->address,
             session->country.has_value() ? std::optional<std::string_view>{*session->country} : std::nullopt,
@@ -8405,6 +8769,49 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             return dispatch_err(req, rt, 400U, "M_THREEPID_IN_USE",
                                 "third-party identifier is already associated with an account");
         }
+        // IS delegation for the legacy /account/3pid endpoint: same trust gate and
+        // fail-closed contract as /account/3pid/bind above.
+        auto const trusted_base =
+            resolve_trusted_identity_base_url(rt.homeserver.config.server().identity_server, *id_server);
+        if (trusted_base.has_value())
+        {
+            auto const medium = std::string{session->medium};
+            auto const address = std::string{session->address};
+            auto const country = session->country;
+            auto const validated_at_ms = session->validated_at_ms;
+            auto const client_secret_str = std::string{*client_secret};
+            auto const sid_str = std::string{*sid};
+            auto const id_access_token_str = std::string{*id_access_token};
+            auto const mxid = std::string{*user};
+            auto const base_url = std::string{*trusted_base};
+            if (rt.homeserver.outbound_client == nullptr || rt.homeserver.cached_discovery == nullptr)
+            {
+                return dispatch_err(req, rt, 502U, "M_UNREACHABLE", "identity server is not reachable");
+            }
+            guard.unlock();
+            auto id_client = merovingian::identity::IdentityServerClient{
+                *rt.homeserver.outbound_client, *rt.homeserver.cached_discovery,
+                rt.homeserver.config.server().identity_server, &rt.homeserver.test_forced_identity_resolution};
+            auto const is_result = id_client.bind(base_url, id_access_token_str, client_secret_str, sid_str, mxid);
+            guard.lock();
+            if (!is_result.ok)
+            {
+                return dispatch_err(req, rt, 502U, "M_UNREACHABLE", "identity server is not reachable");
+            }
+            if (is_result.status != 200U)
+            {
+                return dispatch_err(req, rt, is_result.status, "M_UNRECOGNIZED", "identity server rejected the bind");
+            }
+            auto& record = ensure_account_threepid(
+                rt, mxid, medium, address,
+                country.has_value() ? std::optional<std::string_view>{*country} : std::nullopt, validated_at_ms);
+            record.id_server = *id_server;
+            record.bound = true;
+            record.client_secret = client_secret_str;
+            record.sid = sid_str;
+            std::ignore = database::store_account_threepid(rt.homeserver.database.persistent_store, record);
+            return dispatch_resp(req, rt, 200U, "{}");
+        }
         auto& record = ensure_account_threepid(
             rt, *user, session->medium, session->address,
             session->country.has_value() ? std::optional<std::string_view>{*session->country} : std::nullopt,
@@ -8424,18 +8831,88 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             return dispatch_err(req, rt, 400U, "M_BAD_JSON", "3PID unbind body must contain address and medium");
         }
         auto const normalized_address = normalize_threepid_address(body->medium, body->address);
+        auto const requested_id_server =
+            body->id_server.has_value() ? std::optional<std::string_view>{*body->id_server} : std::nullopt;
         auto* record = find_account_threepid(rt, *user, body->medium, normalized_address);
-        auto const result = threepid_unbind_result(
-            record, body->id_server.has_value() ? std::optional<std::string_view>{*body->id_server} : std::nullopt);
-        if (record != nullptr && result == "success")
+        auto const local_result = threepid_unbind_result(record, requested_id_server);
+        // An IS-delegated binding carries the (client_secret, sid) needed to drive
+        // IS unbind auth mode 2. When present and the requested id_server matches
+        // (or is absent), unbind at the IS first and fail closed on transport so a
+        // network failure cannot orphan the IS-side binding after the local copy is
+        // cleared. Spec: identity-service-api.md §3pid/unbind.
+        auto const is_delegated =
+            (record != nullptr && record->bound && local_result == "success" && record->id_server.has_value() &&
+             record->client_secret.has_value() && record->sid.has_value());
+        if (is_delegated)
+        {
+            auto const trusted_base =
+                resolve_trusted_identity_base_url(rt.homeserver.config.server().identity_server, *record->id_server);
+            if (!trusted_base.has_value())
+            {
+                // Operator withdrew trust for the IS that holds the binding. We can no
+                // longer reach it to unbind, so report no-support but still clear locally
+                // — a trust change must not strand the 3PID at the homeserver.
+                record->bound = false;
+                record->id_server.reset();
+                record->client_secret.reset();
+                record->sid.reset();
+                std::ignore = database::store_account_threepid(rt.homeserver.database.persistent_store, *record);
+                return dispatch_resp(
+                    req, rt, 200U,
+                    json_serialize(json_obj({json_member("id_server_unbind_result", json_str("no-support"))})));
+            }
+            auto const medium = std::string{body->medium};
+            auto const address = std::string{normalized_address};
+            auto const client_secret = std::string{*record->client_secret};
+            auto const sid = std::string{*record->sid};
+            auto const base_url = std::string{*trusted_base};
+            if (rt.homeserver.outbound_client == nullptr || rt.homeserver.cached_discovery == nullptr)
+            {
+                return dispatch_err(req, rt, 502U, "M_UNREACHABLE", "identity server is not reachable");
+            }
+            guard.unlock();
+            auto id_client = merovingian::identity::IdentityServerClient{
+                *rt.homeserver.outbound_client, *rt.homeserver.cached_discovery,
+                rt.homeserver.config.server().identity_server, &rt.homeserver.test_forced_identity_resolution};
+            // Mode 2: empty bearer — the IS authenticates the unbind via the
+            // client_secret + sid carried in the body (build_unbind_body).
+            auto const is_result = id_client.unbind(base_url, std::string_view{}, client_secret, sid, medium, address);
+            guard.lock();
+            if (!is_result.ok)
+            {
+                // Fail closed: leave the local binding intact so the user can retry.
+                return dispatch_err(req, rt, 502U, "M_UNREACHABLE", "identity server is not reachable");
+            }
+            if (is_result.status != 200U && is_result.status != 404U && is_result.status != 501U)
+            {
+                // 401/403/other: the IS rejected the unbind; do not clear locally.
+                return dispatch_err(req, rt, is_result.status, "M_UNRECOGNIZED", "identity server rejected the unbind");
+            }
+            auto const result_str =
+                (is_result.status == 200U) ? std::string_view{"success"} : std::string_view{"no-support"};
+            // Re-find: the store vector may have moved while the lock was dropped.
+            auto* refreshed = find_account_threepid(rt, *user, body->medium, normalized_address);
+            if (refreshed != nullptr)
+            {
+                refreshed->bound = false;
+                refreshed->id_server.reset();
+                refreshed->client_secret.reset();
+                refreshed->sid.reset();
+                std::ignore = database::store_account_threepid(rt.homeserver.database.persistent_store, *refreshed);
+            }
+            return dispatch_resp(
+                req, rt, 200U,
+                json_serialize(json_obj({json_member("id_server_unbind_result", json_str(result_str))})));
+        }
+        if (record != nullptr && local_result == "success")
         {
             record->bound = false;
             record->id_server.reset();
             // Write-through: persist the cleared bound/id_server state.
             std::ignore = database::store_account_threepid(rt.homeserver.database.persistent_store, *record);
         }
-        return dispatch_resp(req, rt, 200U,
-                             json_serialize(json_obj({json_member("id_server_unbind_result", json_str(result))})));
+        return dispatch_resp(
+            req, rt, 200U, json_serialize(json_obj({json_member("id_server_unbind_result", json_str(local_result))})));
     }
     if (req.method == "POST" && req.target == "/_matrix/client/v3/account/3pid/delete")
     {
@@ -8445,14 +8922,65 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             return dispatch_err(req, rt, 400U, "M_BAD_JSON", "3PID delete body must contain address and medium");
         }
         auto const normalized_address = normalize_threepid_address(body->medium, body->address);
+        auto const requested_id_server =
+            body->id_server.has_value() ? std::optional<std::string_view>{*body->id_server} : std::nullopt;
         auto* record = find_account_threepid(rt, *user, body->medium, normalized_address);
-        auto const result = threepid_unbind_result(
-            record, body->id_server.has_value() ? std::optional<std::string_view>{*body->id_server} : std::nullopt);
+        auto const local_result = threepid_unbind_result(record, requested_id_server);
+        // delete removes the local binding entirely, so for an IS-delegated binding
+        // the IS unbind must succeed (or report no-support) BEFORE we drop the local
+        // copy — otherwise the stored (client_secret, sid) needed to retry are gone
+        // and the IS-side binding is orphaned. Fail closed on transport.
+        auto const is_delegated =
+            (record != nullptr && record->bound && local_result == "success" && record->id_server.has_value() &&
+             record->client_secret.has_value() && record->sid.has_value());
+        if (is_delegated)
+        {
+            auto const trusted_base =
+                resolve_trusted_identity_base_url(rt.homeserver.config.server().identity_server, *record->id_server);
+            if (!trusted_base.has_value())
+            {
+                std::ignore = database::delete_account_threepid(rt.homeserver.database.persistent_store, *user,
+                                                                body->medium, normalized_address);
+                return dispatch_resp(
+                    req, rt, 200U,
+                    json_serialize(json_obj({json_member("id_server_unbind_result", json_str("no-support"))})));
+            }
+            auto const medium = std::string{body->medium};
+            auto const address = std::string{normalized_address};
+            auto const client_secret = std::string{*record->client_secret};
+            auto const sid = std::string{*record->sid};
+            auto const base_url = std::string{*trusted_base};
+            if (rt.homeserver.outbound_client == nullptr || rt.homeserver.cached_discovery == nullptr)
+            {
+                return dispatch_err(req, rt, 502U, "M_UNREACHABLE", "identity server is not reachable");
+            }
+            guard.unlock();
+            auto id_client = merovingian::identity::IdentityServerClient{
+                *rt.homeserver.outbound_client, *rt.homeserver.cached_discovery,
+                rt.homeserver.config.server().identity_server, &rt.homeserver.test_forced_identity_resolution};
+            auto const is_result = id_client.unbind(base_url, std::string_view{}, client_secret, sid, medium, address);
+            guard.lock();
+            if (!is_result.ok)
+            {
+                return dispatch_err(req, rt, 502U, "M_UNREACHABLE", "identity server is not reachable");
+            }
+            if (is_result.status != 200U && is_result.status != 404U && is_result.status != 501U)
+            {
+                return dispatch_err(req, rt, is_result.status, "M_UNRECOGNIZED", "identity server rejected the unbind");
+            }
+            auto const result_str =
+                (is_result.status == 200U) ? std::string_view{"success"} : std::string_view{"no-support"};
+            std::ignore = database::delete_account_threepid(rt.homeserver.database.persistent_store, *user,
+                                                            body->medium, normalized_address);
+            return dispatch_resp(
+                req, rt, 200U,
+                json_serialize(json_obj({json_member("id_server_unbind_result", json_str(result_str))})));
+        }
         // Write-through delete: remove the binding from the backend and the mirror.
         std::ignore = database::delete_account_threepid(rt.homeserver.database.persistent_store, *user, body->medium,
                                                         normalized_address);
-        return dispatch_resp(req, rt, 200U,
-                             json_serialize(json_obj({json_member("id_server_unbind_result", json_str(result))})));
+        return dispatch_resp(
+            req, rt, 200U, json_serialize(json_obj({json_member("id_server_unbind_result", json_str(local_result))})));
     }
     // Spec: GET /pushers returns the push notification pushers for the
     // authenticated user. Merovingian does not yet support push

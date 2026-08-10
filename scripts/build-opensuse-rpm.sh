@@ -10,7 +10,7 @@
 # release bundle alongside the Fedora and RHEL RPMs.
 set -e
 
-VERSION="0.11.9"
+VERSION="0.11.10"
 
 mkdir -p "${HOME}/rpmbuild/BUILD"
 mkdir -p "${HOME}/rpmbuild/BUILDROOT"

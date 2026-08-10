@@ -7,6 +7,7 @@
 #include "merovingian/http/outbound_client.hpp"
 
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -90,9 +91,36 @@ struct IdentityServerUrl final
 [[nodiscard]] auto build_request_token_body(std::string_view client_secret, std::string_view email,
                                             std::string_view next_link) -> std::string;
 
+// Body for POST /_matrix/identity/v2/validate/msisdn/requestToken. `country` is a
+// two-letter ISO-3166-1 alpha-2 code; `phone_number` is the MSISDN digits. The
+// optional `next_link` is omitted when empty (matches the email builder).
+[[nodiscard]] auto build_request_msisdn_token_body(std::string_view client_secret, std::string_view country,
+                                                   std::string_view phone_number, std::string_view next_link)
+    -> std::string;
+
 // Pure response parsers. Return nullopt on a malformed body. No network.
 [[nodiscard]] auto parse_store_invite_response(std::string_view body) -> std::optional<StoreInviteResponse>;
 [[nodiscard]] auto parse_lookup_response(std::string_view body) -> std::optional<LookupResponse>;
+
+// Parses the `{sid}` body returned by a v2 validate/*/requestToken endpoint.
+// Returns nullopt on a malformed body or a body missing the mandatory `sid`.
+[[nodiscard]] auto parse_request_token_response(std::string_view body) -> std::optional<std::string>;
+
+// Test-only override for one identity-server host. Mirrors the homeserver's
+// `TestOnlyForcedOutboundResolution` contract: when `HomeserverRuntime` has an
+// entry keyed by the IS host, `IdentityServerClient::perform()` uses these
+// pinned addresses and in-memory CA bundle instead of SSRF-safe discovery. The
+// IS base URL already carries the port (no `resolved_port` override is needed,
+// unlike the federation seam which resolves a different port via SRV/.well-
+// known), so only the pinned addresses and CA bundle are required. The struct
+// lives here — not in `runtime.hpp` — so the `identity` module does not depend
+// on `homeserver` (the dependency runs `homeserver → identity`). Always empty
+// in production; no production construction path populates it.
+struct TestForcedIdentityResolution final
+{
+    std::vector<std::string> pinned_addresses{};
+    std::string trusted_ca_pem{};
+};
 
 // Outbound Identity Service API client. The homeserver is a *client* of one or
 // more operator-configured identity servers (config.server().identity_server).
@@ -110,8 +138,10 @@ struct IdentityServerUrl final
 class IdentityServerClient final
 {
 public:
-    IdentityServerClient(http::OutboundClient& outbound, federation::CachedServerDiscovery& discovery,
-                         config::IdentityServerConfig const& config) noexcept;
+    IdentityServerClient(
+        http::OutboundClient& outbound, federation::CachedServerDiscovery& discovery,
+        config::IdentityServerConfig const& config,
+        std::map<std::string, TestForcedIdentityResolution> const* forced_resolution = nullptr) noexcept;
 
     // POST /_matrix/identity/v2/store-invite. `base_url` is the IS base URL
     // (must be in config.trusted_servers at the call site); `id_access_token`
@@ -145,16 +175,29 @@ public:
                                            std::string_view client_secret, std::string_view email,
                                            std::string_view next_link) -> IdentityServerResult;
 
+    // POST /_matrix/identity/v2/validate/msisdn/requestToken. Starts an MSISDN
+    // validation session; the IS sends an SMS token and returns a `sid`. The
+    // caller persists the (sid, client_secret) pair. Authenticated.
+    [[nodiscard]] auto request_msisdn_token(std::string_view base_url, std::string_view id_access_token,
+                                            std::string_view client_secret, std::string_view country,
+                                            std::string_view phone_number, std::string_view next_link)
+        -> IdentityServerResult;
+
 private:
     // Builds and performs one IS request: resolves base_url to SSRF-safe pinned
-    // addresses, applies the configured timeouts, attaches the bearer token,
-    // and returns the raw OutboundResult mapped to IdentityServerResult.
+    // addresses (or uses the test-only forced resolution when present), applies
+    // the configured timeouts, attaches the bearer token, and returns the raw
+    // OutboundResult mapped to IdentityServerResult.
     [[nodiscard]] auto perform(std::string_view base_url, std::string_view method, std::string_view path,
                                std::string_view id_access_token, std::string_view body) -> IdentityServerResult;
 
     http::OutboundClient& outbound_;
     federation::CachedServerDiscovery& discovery_;
     config::IdentityServerConfig const& config_;
+    // Test-only seam (see TestForcedIdentityResolution above). nullptr in
+    // production; when non-null and keyed by the IS host, perform() uses the
+    // entry's pinned addresses + in-memory CA bundle instead of discovery.
+    std::map<std::string, TestForcedIdentityResolution> const* test_forced_resolution_{nullptr};
 };
 
 } // namespace merovingian::identity

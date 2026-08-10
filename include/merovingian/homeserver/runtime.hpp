@@ -11,6 +11,7 @@
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/server_discovery.hpp"
 #include "merovingian/http/outbound_client.hpp"
+#include "merovingian/identity/identity_client.hpp"
 #include "merovingian/media/repository.hpp"
 #include "merovingian/net/listener.hpp"
 #include "merovingian/observability/observability.hpp"
@@ -222,6 +223,11 @@ struct HomeserverRuntime final
     // Test-only: see TestOnlyForcedOutboundResolution above. Always empty in
     // production; keyed by destination server_name.
     std::map<std::string, TestOnlyForcedOutboundResolution> test_forced_outbound_resolution{};
+    // Test-only: see identity::TestForcedIdentityResolution. Always empty in
+    // production; keyed by identity-server host. Consulted by
+    // IdentityServerClient::perform() to pin a local mock IS + in-memory CA
+    // bundle in tests (discovery rejects loopback and never sets a CA bundle).
+    std::map<std::string, identity::TestForcedIdentityResolution> test_forced_identity_resolution{};
     std::unique_ptr<federation::DispatchWorker> dispatch_worker{};
     // Non-null when federation.worker.enabled = true. Intercepts inbound
     // federation requests and forwards them to the out-of-process worker.

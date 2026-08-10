@@ -371,6 +371,12 @@ struct PersistentThreePidBinding final
     std::uint64_t added_at_ms{0U};
     std::uint64_t validated_at_ms{0U};
     bool bound{false};
+    // IS validation pair (populated only for 3PIDs bound via a remote identity
+    // server). Stored so a later unbind can drive IS auth mode 2 (sid +
+    // client_secret) without a homeserver-signed request. See migration 007 and
+    // docs/threat-model.md for the storage trade-off.
+    std::optional<std::string> client_secret{};
+    std::optional<std::string> sid{};
 };
 
 struct PersistentRoomAlias final

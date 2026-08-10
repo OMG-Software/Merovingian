@@ -2655,13 +2655,14 @@ auto restore_sync_stream_id(PersistentStore& store) -> void
     auto const statement = record_statement(
         "upsert_account_threepid",
         "INSERT INTO account_threepids (user_id, medium, address, country, id_server, added_at_ms, "
-        "validated_at_ms, bound) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) "
+        "validated_at_ms, bound, client_secret, sid) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) "
         "ON CONFLICT (user_id, medium, address) DO UPDATE SET country = $4, id_server = $5, "
-        "added_at_ms = $6, validated_at_ms = $7, bound = $8",
+        "added_at_ms = $6, validated_at_ms = $7, bound = $8, client_secret = $9, sid = $10",
         {public_value(binding.user_id), public_value(binding.medium), public_value(binding.address),
          public_value(binding.country.value_or("")), public_value(binding.id_server.value_or("")),
          public_value(std::to_string(binding.added_at_ms)), public_value(std::to_string(binding.validated_at_ms)),
-         public_value(binding.bound ? "true" : "false")});
+         public_value(binding.bound ? "true" : "false"), public_value(binding.client_secret.value_or("")),
+         public_value(binding.sid.value_or(""))});
     if (!record_and_persist(store, statement))
     {
         return false;

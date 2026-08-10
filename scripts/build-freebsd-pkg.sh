@@ -3,7 +3,7 @@
 # Build for merovingian 0.11.6.
 set -e
 
-VERSION="0.11.9"
+VERSION="0.11.10"
 STAGING="staging-fbsd"
 
 # Clean any state (staged files, build dir) from cached FreeBSD VM runs.

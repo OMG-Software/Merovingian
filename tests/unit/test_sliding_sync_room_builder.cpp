@@ -807,3 +807,154 @@ SCENARIO("MSC4186 combine deduplicates exact duplicate required_state pairs",
         }
     }
 }
+
+// ── MSC4186 multi-list combination ─────────────────────────────────────────
+// Per MSC4186, when a room matches MULTIPLE list windows (and optionally a
+// room_subscription) ALL matching list windows combine — not just the first.
+// The combination is a left-fold over combine_room_configs, which is
+// associative and commutative (union with dedup + wildcard pruning, std::max
+// timeline_limit, OR'd include_heroes), so the fold order does not matter.
+
+SCENARIO("MSC4186 multi-list fold combines ALL matching list windows with a room_subscription",
+         "[sync][sliding-sync][room-config-combine][multi-list]")
+{
+    GIVEN("two lists and a room_subscription for the same room with disjoint required_state")
+    {
+        auto list_a = merovingian::sync::SlidingSyncList{};
+        list_a.required_state = {
+            {"m.room.power_levels", ""}
+        };
+        list_a.timeline_limit = 1U;
+        list_a.include_heroes = false;
+
+        auto list_b = merovingian::sync::SlidingSyncList{};
+        list_b.required_state = {
+            {"m.room.topic", ""}
+        };
+        list_b.timeline_limit = 3U;
+        list_b.include_heroes = true;
+
+        auto sub = merovingian::sync::SlidingSyncRoomSubscription{};
+        sub.required_state = {
+            {"m.room.member", "$ME"}
+        };
+        sub.timeline_limit = 5U;
+        sub.include_heroes = false;
+
+        WHEN("the room configs are folded across both lists and the subscription")
+        {
+            // The runtime folds list windows over the subscription left-to-right.
+            auto const folded =
+                merovingian::sync::combine_room_configs(list_b, merovingian::sync::combine_room_configs(list_a, sub));
+
+            THEN("required_state is the union of all three sets")
+            {
+                auto const contains = [&](std::string_view t, std::string_view k) {
+                    return std::ranges::any_of(folded.required_state, [&](auto const& p) {
+                        return p.first == t && p.second == k;
+                    });
+                };
+                REQUIRE(contains("m.room.power_levels", ""));
+                REQUIRE(contains("m.room.topic", ""));
+                REQUIRE(contains("m.room.member", "$ME"));
+                REQUIRE(folded.required_state.size() == 3U);
+            }
+            THEN("timeline_limit is the maximum across all three")
+            {
+                REQUIRE(folded.timeline_limit == 5U);
+            }
+            THEN("include_heroes is OR'd across all three")
+            {
+                REQUIRE(folded.include_heroes == true);
+            }
+        }
+    }
+}
+
+SCENARIO("MSC4186 multi-list fold with no room_subscription degenerates to the union of list windows",
+         "[sync][sliding-sync][room-config-combine][multi-list]")
+{
+    GIVEN("two lists for the same room with disjoint required_state and no subscription")
+    {
+        auto list_a = merovingian::sync::SlidingSyncList{};
+        list_a.required_state = {
+            {"m.room.power_levels", ""}
+        };
+        list_a.timeline_limit = 1U;
+
+        auto list_b = merovingian::sync::SlidingSyncList{};
+        list_b.required_state = {
+            {"m.room.topic", ""}
+        };
+        list_b.timeline_limit = 4U;
+
+        WHEN("the room configs are folded across both lists with a neutral subscription")
+        {
+            // The runtime uses a neutral fold start (timeline_limit=0) for rooms
+            // with no explicit subscription so the list's own timeline_limit wins.
+            auto sub = merovingian::sync::SlidingSyncRoomSubscription{};
+            sub.timeline_limit = 0U;
+            auto const folded =
+                merovingian::sync::combine_room_configs(list_b, merovingian::sync::combine_room_configs(list_a, sub));
+
+            THEN("required_state is the union of both lists")
+            {
+                REQUIRE(folded.required_state.size() == 2U);
+            }
+            THEN("timeline_limit is the maximum of the two lists")
+            {
+                REQUIRE(folded.timeline_limit == 4U);
+            }
+        }
+    }
+}
+
+SCENARIO("MSC4186 multi-list fold is associative across three list windows",
+         "[sync][sliding-sync][room-config-combine][multi-list]")
+{
+    GIVEN("three lists with disjoint required_state")
+    {
+        auto make_list = [](std::string t, std::uint64_t lim) {
+            auto l = merovingian::sync::SlidingSyncList{};
+            l.required_state = {
+                {std::move(t), ""}
+            };
+            l.timeline_limit = lim;
+            return l;
+        };
+        auto const list_a = make_list("m.room.create", 1U);
+        auto const list_b = make_list("m.room.power_levels", 2U);
+        auto const list_c = make_list("m.room.topic", 3U);
+
+        WHEN("folded in two different groupings")
+        {
+            // Neutral fold start (timeline_limit=0) — models a list-only room.
+            auto sub = merovingian::sync::SlidingSyncRoomSubscription{};
+            sub.timeline_limit = 0U;
+            // (c ∘ (b ∘ (a ∘ sub)))
+            auto const left_folded = merovingian::sync::combine_room_configs(
+                list_c,
+                merovingian::sync::combine_room_configs(list_b, merovingian::sync::combine_room_configs(list_a, sub)));
+            // (b ∘ (c ∘ (a ∘ sub))) — different order
+            auto const reordered = merovingian::sync::combine_room_configs(
+                list_b,
+                merovingian::sync::combine_room_configs(list_c, merovingian::sync::combine_room_configs(list_a, sub)));
+
+            THEN("both foldings yield the same union and the same timeline_limit")
+            {
+                REQUIRE(left_folded.required_state.size() == 3U);
+                REQUIRE(reordered.required_state.size() == 3U);
+                REQUIRE(left_folded.timeline_limit == 3U);
+                REQUIRE(reordered.timeline_limit == 3U);
+                auto const same_set = [&](auto const& first, auto const& second) {
+                    return std::ranges::all_of(first, [&](auto const& p) {
+                        return std::ranges::any_of(second, [&](auto const& q) {
+                            return q.first == p.first && q.second == p.second;
+                        });
+                    });
+                };
+                REQUIRE(same_set(left_folded.required_state, reordered.required_state));
+            }
+        }
+    }
+}

@@ -665,8 +665,8 @@ namespace
                              store.event_stream_watermark = parse_u64(column_text(row, 0));
                          }) &&
                load_rows(connection,
-                         "SELECT user_id, medium, address, country, id_server, added_at_ms, validated_at_ms, bound "
-                         "FROM account_threepids ORDER BY user_id, medium, address",
+                         "SELECT user_id, medium, address, country, id_server, added_at_ms, validated_at_ms, bound, "
+                         "client_secret, sid FROM account_threepids ORDER BY user_id, medium, address",
                          [&store](sqlite3_stmt& row) {
                              PersistentThreePidBinding entry{};
                              entry.user_id = column_text(row, 0);
@@ -679,6 +679,11 @@ namespace
                              entry.added_at_ms = parse_u64(column_text(row, 5));
                              entry.validated_at_ms = parse_u64(column_text(row, 6));
                              entry.bound = text_is_true(column_text(row, 7));
+                             auto const client_secret = column_text(row, 8);
+                             entry.client_secret =
+                                 client_secret.empty() ? std::nullopt : std::optional<std::string>{client_secret};
+                             auto const sid = column_text(row, 9);
+                             entry.sid = sid.empty() ? std::nullopt : std::optional<std::string>{sid};
                              store.account_threepids.push_back(std::move(entry));
                          });
     }
