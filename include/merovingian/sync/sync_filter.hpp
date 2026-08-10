@@ -51,6 +51,22 @@ struct SyncFilter final
 // an empty (non-present) filter rather than failing the request.
 [[nodiscard]] auto parse_filter_argument(std::string_view filter_argument) -> SyncFilter;
 
+// Parses a flat Matrix `RoomEventFilter` JSON object — the shape used by the
+// `filter=` query parameter on `GET /messages` and
+// `GET /rooms/{roomId}/context/{eventId}`. Unlike `SyncFilter`'s nested
+// `room.timeline.*`/`room.state.*` filters, a `RoomEventFilter` puts
+// `types`/`not_types`/`senders`/`not_senders`/`rooms`/`not_rooms` directly at
+// the top level, so this reuses `RoomFilter` as storage: the flat
+// type/sender fields populate `RoomFilter::timeline`, and `rooms`/`not_rooms`
+// populate the matching `RoomFilter` fields directly.
+//
+// Returns `std::nullopt` when `filter_argument` is non-empty but is not
+// valid JSON or not a JSON object — callers should fail the request with
+// `M_BAD_JSON` in that case rather than silently ignoring a malformed
+// filter. An empty `filter_argument` yields a default (pass-everything)
+// filter.
+[[nodiscard]] auto parse_room_event_filter_argument(std::string_view filter_argument) -> std::optional<RoomFilter>;
+
 // Applies the EventType include/exclude rules. Returns true when the event
 // should be kept. `event_type` and `sender` are matched against the
 // allow/deny lists; empty lists mean "no restriction". When `event_type`

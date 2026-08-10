@@ -935,6 +935,12 @@ namespace
         std::string event_id{};
     };
 
+    struct RoomContextPathParts final
+    {
+        std::string room_id{};
+        std::string event_id{};
+    };
+
     struct RoomRelationsPathParts final
     {
         std::string room_id{};
@@ -5958,6 +5964,27 @@ namespace
                                   core::percent_decode_path_component(event_id)};
     }
 
+    [[nodiscard]] auto room_context_path_parts(std::string_view target) -> std::optional<RoomContextPathParts>
+    {
+        auto constexpr prefix = std::string_view{"/_matrix/client/v3/rooms/"};
+        auto constexpr marker = std::string_view{"/context/"};
+        auto const path = target.substr(0U, target.find('?'));
+        auto const suffix = route_suffix(path, prefix);
+        auto const marker_pos = suffix.find(marker);
+        if (suffix.empty() || marker_pos == std::string_view::npos || marker_pos == 0U ||
+            marker_pos + marker.size() >= suffix.size())
+        {
+            return std::nullopt;
+        }
+        auto const event_id = suffix.substr(marker_pos + marker.size());
+        if (event_id.empty() || event_id.find('/') != std::string_view::npos)
+        {
+            return std::nullopt;
+        }
+        return RoomContextPathParts{core::percent_decode_path_component(suffix.substr(0U, marker_pos)),
+                                    core::percent_decode_path_component(event_id)};
+    }
+
     [[nodiscard]] auto room_relations_path_parts(std::string_view target) -> std::optional<RoomRelationsPathParts>
     {
         auto constexpr prefix = std::string_view{"/_matrix/client/v1/rooms/"};
@@ -6230,6 +6257,117 @@ namespace
         return json_serialize(json_obj({
             json_member("chunk", json_arr(std::move(chunk))),
             json_member("start", json_str(start_token)),
+            json_member("end", json_str(end_token)),
+            json_member("state", json_arr(std::move(state))),
+        }));
+    }
+
+    // Extracts the "type" field from a stored event's JSON, or an empty
+    // string when the JSON is malformed/not an object. Used to apply a
+    // RoomEventFilter's types/not_types predicates to PersistentEvent rows,
+    // which do not carry a parsed event type of their own.
+    [[nodiscard]] auto stored_event_type(database::PersistentEvent const& event) -> std::string
+    {
+        auto const parsed = canonicaljson::parse_lossless(event.json);
+        if (parsed.error != canonicaljson::ParseError::none)
+        {
+            return {};
+        }
+        auto const* obj = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+        if (obj == nullptr)
+        {
+            return {};
+        }
+        auto const* type = string_member(*obj, "type");
+        return type == nullptr ? std::string{} : *type;
+    }
+
+    // Builds the GET /rooms/{roomId}/context/{eventId} response body.
+    // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3roomsroomidcontexteventid
+    //
+    // `target` is a room event already confirmed to belong to `room_id`; the
+    // caller has also already applied the membership gate. `filter` is a
+    // parsed RoomEventFilter (see sync::parse_room_event_filter_argument) —
+    // it is applied to events_before/events_after/state but, per spec, never
+    // to `event` itself. `limit` is the already-clamped total cap shared
+    // between events_before and events_after.
+    //
+    // `start`/`end` reuse the plain-stream-ordering token format GET
+    // /messages produces (see messages_json above) so a client can continue
+    // paginating with GET /messages?from=<start|end>&dir=<b|f>.
+    [[nodiscard]] auto room_context_json(ClientServerRuntime const& rt, std::string_view room_id,
+                                         database::PersistentEvent const& target, sync::RoomFilter const& filter,
+                                         std::size_t limit) -> std::string
+    {
+        auto const& store = rt.homeserver.database.persistent_store;
+
+        auto entries = std::vector<database::PersistentEvent const*>{};
+        for (auto const& event : store.events)
+        {
+            if (event.room_id == room_id)
+            {
+                entries.push_back(&event);
+            }
+        }
+        std::ranges::sort(entries, [](auto const* lhs, auto const* rhs) noexcept {
+            return lhs->stream_ordering < rhs->stream_ordering;
+        });
+        auto const target_it = std::ranges::find_if(entries, [&](database::PersistentEvent const* candidate) {
+            return candidate->event_id == target.event_id;
+        });
+        auto const target_index = static_cast<std::size_t>(target_it - entries.begin());
+
+        // RoomEventFilter.rooms/not_rooms gate the whole response: this
+        // endpoint is inherently single-room, so a room list that excludes
+        // `room_id` empties events_before/events_after/state (but `event`
+        // itself is still returned — spec: the filter is not applied to it).
+        auto const room_allowed = sync::room_passes_filter(filter, room_id);
+
+        auto const before_limit = limit / 2U;
+        auto const after_limit = limit - before_limit;
+
+        auto events_before = canonicaljson::Array{};
+        auto start_token = std::to_string(target.stream_ordering);
+        if (room_allowed && target_index > 0U)
+        {
+            for (auto i = target_index; i > 0U && events_before.size() < before_limit; --i)
+            {
+                auto const* candidate = entries[i - 1U];
+                if (!sync::event_passes_filter(filter.timeline, stored_event_type(*candidate),
+                                               candidate->sender_user_id))
+                {
+                    continue;
+                }
+                events_before.push_back(client_event_with_id(store, *candidate));
+                start_token = std::to_string(candidate->stream_ordering);
+            }
+        }
+
+        auto events_after = canonicaljson::Array{};
+        auto end_token = std::to_string(target.stream_ordering);
+        if (room_allowed)
+        {
+            for (auto i = target_index + 1U; i < entries.size() && events_after.size() < after_limit; ++i)
+            {
+                auto const* candidate = entries[i];
+                if (!sync::event_passes_filter(filter.timeline, stored_event_type(*candidate),
+                                               candidate->sender_user_id))
+                {
+                    continue;
+                }
+                events_after.push_back(client_event_with_id(store, *candidate));
+                end_token = std::to_string(candidate->stream_ordering);
+            }
+        }
+
+        auto state =
+            room_allowed ? build_current_state_events_array(store, filter.timeline, room_id) : canonicaljson::Array{};
+
+        return json_serialize(json_obj({
+            json_member("start", json_str(start_token)),
+            json_member("events_before", json_arr(std::move(events_before))),
+            json_member("event", client_event_with_id(store, target)),
+            json_member("events_after", json_arr(std::move(events_after))),
             json_member("end", json_str(end_token)),
             json_member("state", json_arr(std::move(state))),
         }));
@@ -9918,6 +10056,56 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     return dispatch_err(req, rt, 500U, "M_UNKNOWN", "failed to serialize event");
                 }
                 return complete({200U, serialized.output});
+            }
+        }
+        // GET /_matrix/client/v3/rooms/{roomId}/context/{eventId}
+        // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3roomsroomidcontexteventid
+        // Returns the events immediately before/after a given event plus room
+        // state, for permalink resolution. Same membership gate as GET
+        // .../event/{eventId} above; an unknown event id, or one that belongs
+        // to a different room than roomId, both fail closed with the same 404
+        // so a member cannot learn whether the event exists elsewhere.
+        if (req.method == "GET")
+        {
+            if (auto const path = room_context_path_parts(req.target); path.has_value())
+            {
+                auto const& store = rt.homeserver.database.persistent_store;
+                auto const is_joined =
+                    std::ranges::any_of(store.memberships, [&](database::PersistentMembership const& membership) {
+                        return membership.room_id == path->room_id && membership.user_id == *user &&
+                               membership.membership == "join";
+                    });
+                if (!is_joined)
+                {
+                    return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "not a member of this room");
+                }
+                auto const event = std::ranges::find_if(store.events, [&](database::PersistentEvent const& current) {
+                    return current.room_id == path->room_id && current.event_id == path->event_id;
+                });
+                if (event == store.events.end())
+                {
+                    return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "event not found");
+                }
+
+                auto const filter_argument = messages_query_value(req.target, "filter");
+                auto const parsed_filter = sync::parse_room_event_filter_argument(filter_argument);
+                if (!parsed_filter.has_value())
+                {
+                    return dispatch_err(req, rt, 400U, "M_BAD_JSON", "filter parameter is not valid JSON");
+                }
+
+                // Spec: limit applies to the sum of events_before and
+                // events_after; defaults to 10. Clamp to the same maximum
+                // GET /messages uses to bound resource usage.
+                auto limit = std::size_t{10U};
+                if (auto const parsed_limit = parse_u64(messages_query_value(req.target, "limit"));
+                    parsed_limit.has_value())
+                {
+                    limit = static_cast<std::size_t>(std::min<std::uint64_t>(*parsed_limit, std::uint64_t{100U}));
+                }
+
+                return dispatch_resp(req, rt, 200U,
+                                     room_context_json(rt, path->room_id, *event, *parsed_filter, limit));
             }
         }
         // GET /rooms/{roomId}/state/{eventType}/{stateKey}

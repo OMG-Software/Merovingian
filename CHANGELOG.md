@@ -1,9 +1,24 @@
 ## 0.11.11
 
-Documentation only: an audit of the routed client-server surface against Matrix
-v1.19, recorded in `docs/todos/capability-gaps.md`. **No behaviour change** — no
-source file is touched. This corrects the gap ledger, which implied more coverage
-than exists.
+Started as a documentation-only audit of the routed client-server surface
+against Matrix v1.19, recorded in `docs/todos/capability-gaps.md`; the branch
+then closed one of the gaps the audit found.
+
+- Routed `GET /_matrix/client/v3/rooms/{roomId}/context/{eventId}` (event
+  context for permalink resolution). Requires authentication and the same
+  joined-membership gate as `/messages` and `/event/{eventId}`; an unknown
+  event id and an event id belonging to a different room both fail closed
+  with an identical 404 `M_NOT_FOUND` so a member cannot tell the two cases
+  apart. `limit` (spec default 10, applied to the combined size of
+  `events_before` and `events_after`) is clamped to the same maximum
+  `/messages` uses. `filter` accepts a JSON `RoomEventFilter`, reusing the
+  existing `sync::EventTypeFilter`/`RoomFilter` machinery via a new
+  `sync::parse_room_event_filter_argument()` rather than a second filter
+  implementation; a non-empty value that fails to parse as a JSON object is
+  rejected with 400 `M_BAD_JSON` instead of being silently ignored. `start`
+  and `end` reuse the plain stream-ordering token format `GET /messages`
+  already produces, so a client can continue paginating from a context
+  response with `GET /messages?from=<token>&dir=<b|f>`.
 
 - Two whole spec sections were absent while going untracked, so they were
   invisible in our own planning: the **Application Service API** (no
@@ -21,10 +36,11 @@ than exists.
 - Newly recorded as unrouted: `POST /search` (full-text event search; only the
   unrelated `user_directory/search` exists), `GET /notifications`,
   `GET /rooms/{roomId}/context/{eventId}` (permalink resolution, user-visible in
-  Element), `POST /user/{userId}/openid/request_token`, SSO login (`m.login.sso`
-  is not advertised), and `m.ignored_user_list` enforcement — the account-data
-  key is storable because that store is generic, but ignored users are never
-  filtered from `/sync`, so the ignore silently does nothing.
+  Element — since routed, see above), `POST /user/{userId}/openid/request_token`,
+  SSO login (`m.login.sso` is not advertised), and `m.ignored_user_list`
+  enforcement — the account-data key is storable because that store is generic,
+  but ignored users are never filtered from `/sync`, so the ignore silently does
+  nothing.
 - The document gained a "Reading this document" note recording the two failure
   modes this audit exposed: silence in the ledger does not imply coverage, and a
   routed endpoint returning 200 does not imply an implemented one.

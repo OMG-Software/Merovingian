@@ -209,6 +209,38 @@ auto parse_filter_argument(std::string_view filter_argument) -> SyncFilter
     return out;
 }
 
+auto parse_room_event_filter_argument(std::string_view filter_argument) -> std::optional<RoomFilter>
+{
+    auto out = RoomFilter{};
+    if (filter_argument.empty())
+    {
+        return out;
+    }
+    auto const parsed = canonicaljson::parse_lossless(filter_argument);
+    if (parsed.error != canonicaljson::ParseError::none)
+    {
+        return std::nullopt;
+    }
+    auto const* root = as_object(parsed.value);
+    if (root == nullptr)
+    {
+        return std::nullopt;
+    }
+    // RoomEventFilter is flat: types/not_types/senders/not_senders sit at the
+    // top level rather than nested under "timeline", so populate `timeline`
+    // directly from the root object.
+    populate_event_filter(out.timeline, *root);
+    if (auto const* rooms = find_member(*root, "rooms"); rooms != nullptr)
+    {
+        out.rooms = extract_strings(*rooms);
+    }
+    if (auto const* not_rooms = find_member(*root, "not_rooms"); not_rooms != nullptr)
+    {
+        out.not_rooms = extract_strings(*not_rooms);
+    }
+    return out;
+}
+
 // Spec: Matrix CS API v1.19 § Filtering
 // URL:  ../../docs/matrix-v1.19-spec/client-server-api.md#filtering
 //
