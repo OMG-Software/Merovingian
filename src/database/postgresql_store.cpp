@@ -1039,6 +1039,31 @@ namespace
             }
         }
 
+        auto notifications_result = query_rows(connection, "postgresql_load_notifications",
+                                               "SELECT user_id, room_id, event_id, stream_ordering, ts, actions, "
+                                               "profile_tag, highlight FROM notifications "
+                                               "ORDER BY user_id, stream_ordering");
+        if (!notifications_result.ok)
+        {
+            return false;
+        }
+        for (auto const& row : notifications_result.rows)
+        {
+            if (row.size() >= 8U)
+            {
+                PersistentNotification entry{};
+                entry.user_id = row[0];
+                entry.room_id = row[1];
+                entry.event_id = row[2];
+                entry.stream_ordering = parse_u64(row[3]);
+                entry.ts = parse_u64(row[4]);
+                entry.actions = row[5];
+                entry.profile_tag = row[6];
+                entry.highlight = text_is_true(row[7]);
+                store.notifications.push_back(std::move(entry));
+            }
+        }
+
         auto const watermark = query_rows(connection, "postgresql_load_sync_stream_watermark",
                                           "SELECT watermark FROM sync_stream_watermark");
         if (!watermark.ok)

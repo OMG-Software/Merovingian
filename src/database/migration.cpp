@@ -351,6 +351,24 @@ auto downgrade_initial_schema_migration() -> MigrationStep
     return {8U, "pushers", std::move(statements), MigrationDirection::upgrade};
 }
 
+// v9: durable notification history for `GET /_matrix/client/v3/notifications`
+// (Matrix v1.19 CS API §push-notifications). Recorded whenever push rule
+// evaluation resolves `notify: true` for a local recipient -- independent of
+// whether that recipient has a registered pusher or `server.push.enabled` is
+// set (see room_service.cpp's build_pending_push_deliveries), so a user with
+// push notifications turned off still sees their notification history.
+// `stream_ordering` mirrors the triggering event's stream position and
+// doubles as this table's pagination key, exactly like `events.stream_
+// ordering` already does for GET /messages. Retention: pruned per-user at
+// write time (see database::store_notification), so the table cannot grow
+// without bound.
+[[nodiscard]] auto upgrade_notifications_migration() -> MigrationStep
+{
+    auto statements = std::vector<PreparedStatement>{};
+    statements.push_back(make_create_table_statement(schema_table_definition("notifications").value()).value());
+    return {9U, "notifications", std::move(statements), MigrationDirection::upgrade};
+}
+
 auto upgrade_migration_catalog() -> std::vector<MigrationStep>
 {
     return {initial_schema_migration(),
@@ -360,7 +378,8 @@ auto upgrade_migration_catalog() -> std::vector<MigrationStep>
             upgrade_backfill_state_transitions_migration(),
             upgrade_account_threepids_migration(),
             upgrade_account_threepids_columns_migration(),
-            upgrade_pushers_migration()};
+            upgrade_pushers_migration(),
+            upgrade_notifications_migration()};
 }
 
 [[nodiscard]] auto downgrade_backfill_state_transitions_migration() -> MigrationStep
@@ -399,6 +418,14 @@ auto upgrade_migration_catalog() -> std::vector<MigrationStep>
     return {7U, "drop_pushers", std::move(statements), MigrationDirection::downgrade};
 }
 
+// v9 -> v8: drop the notifications table.
+[[nodiscard]] auto downgrade_notifications_migration() -> MigrationStep
+{
+    auto statements = std::vector<PreparedStatement>{};
+    statements.push_back(make_drop_table_statement("notifications").value());
+    return {8U, "drop_notifications", std::move(statements), MigrationDirection::downgrade};
+}
+
 [[nodiscard]] auto downgrade_sync_stream_watermark_migration() -> MigrationStep
 {
     auto statements = std::vector<PreparedStatement>{};
@@ -422,7 +449,8 @@ auto upgrade_migration_catalog() -> std::vector<MigrationStep>
 
 auto downgrade_migration_catalog() -> std::vector<MigrationStep>
 {
-    return {downgrade_pushers_migration(),
+    return {downgrade_notifications_migration(),
+            downgrade_pushers_migration(),
             downgrade_account_threepids_columns_migration(),
             downgrade_account_threepids_migration(),
             downgrade_backfill_state_transitions_migration(),

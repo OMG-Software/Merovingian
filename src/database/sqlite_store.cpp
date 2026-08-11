@@ -702,6 +702,21 @@ namespace
                              auto const sid = column_text(row, 9);
                              entry.sid = sid.empty() ? std::nullopt : std::optional<std::string>{sid};
                              store.account_threepids.push_back(std::move(entry));
+                         }) &&
+               load_rows(connection,
+                         "SELECT user_id, room_id, event_id, stream_ordering, ts, actions, profile_tag, highlight "
+                         "FROM notifications ORDER BY user_id, stream_ordering",
+                         [&store](sqlite3_stmt& row) {
+                             PersistentNotification entry{};
+                             entry.user_id = column_text(row, 0);
+                             entry.room_id = column_text(row, 1);
+                             entry.event_id = column_text(row, 2);
+                             entry.stream_ordering = parse_u64(column_text(row, 3));
+                             entry.ts = parse_u64(column_text(row, 4));
+                             entry.actions = column_text(row, 5);
+                             entry.profile_tag = column_text(row, 6);
+                             entry.highlight = text_is_true(column_text(row, 7));
+                             store.notifications.push_back(std::move(entry));
                          });
     }
 

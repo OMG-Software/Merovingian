@@ -4864,14 +4864,52 @@ namespace
         return static_cast<std::uint32_t>(std::min<std::uint64_t>(total, std::numeric_limits<std::uint32_t>::max()));
     }
 
+    // Reconstructs a spec-shaped `actions` array (Matrix v1.19 CS API
+    // §push-rules-api, referenced by GET /notifications' Notification.actions)
+    // from a PushEvaluationResult. push_rules.hpp deliberately does not keep
+    // the matched rule's raw actions array — it pre-resolves outcomes to
+    // notify/tweak_sound/tweak_highlight (see PushEvaluationResult's doc
+    // comment) — so this rebuilds the conventional shape ("notify" plus one
+    // set_tweak object per active tweak, matching how default_push_ruleset.hpp
+    // itself writes actions) for storage in PersistentNotification::actions.
+    [[nodiscard]] auto push_notification_actions_json(push::PushEvaluationResult const& result) -> std::string
+    {
+        auto actions = canonicaljson::Array{};
+        actions.push_back(canonicaljson::Value{std::string{"notify"}});
+        if (result.tweak_sound.has_value())
+        {
+            auto tweak = canonicaljson::Object{};
+            tweak.push_back(canonicaljson::make_member("set_tweak", canonicaljson::Value{std::string{"sound"}}));
+            tweak.push_back(canonicaljson::make_member("value", canonicaljson::Value{*result.tweak_sound}));
+            actions.push_back(canonicaljson::Value{std::move(tweak)});
+        }
+        if (result.tweak_highlight)
+        {
+            auto tweak = canonicaljson::Object{};
+            tweak.push_back(canonicaljson::make_member("set_tweak", canonicaljson::Value{std::string{"highlight"}}));
+            tweak.push_back(canonicaljson::make_member("value", canonicaljson::Value{true}));
+            actions.push_back(canonicaljson::Value{std::move(tweak)});
+        }
+        return serialize_canonical_string(canonicaljson::Value{std::move(actions)}).value_or(R"(["notify"])");
+    }
+
     // Evaluates push rules for `composed` against every local, joined,
-    // pusher-registered recipient of `room` (everyone except `sender`), plus
-    // anyone named in `extra_recipients`, and returns one PendingPushDelivery
-    // per (recipient, pusher) pair whose evaluation says "notify". Only
-    // "http" pushers are returned — Merovingian's Push Gateway API client
-    // only speaks the HTTP pusher protocol; "email" pushers are accepted and
-    // persisted by POST /pushers/set but are not yet deliverable (see
-    // docs/todos/capability-gaps.md).
+    // eligible (not ignoring the sender) recipient of `room` (everyone except
+    // `sender`), plus anyone named in `extra_recipients`, and:
+    //   1. Records a GET /_matrix/client/v3/notifications history row (see
+    //      database::store_notification) for every recipient whose evaluation
+    //      says "notify" — unconditionally, regardless of whether that
+    //      recipient has a pusher or `server.push.enabled` is set. Spec: the
+    //      endpoint returns events the user "has been, or would have been
+    //      notified about" — a user with push turned off must still see this
+    //      history when they open the client.
+    //   2. Returns one PendingPushDelivery per (recipient, pusher) pair for
+    //      actual Push Gateway delivery — but only when push.enabled is set
+    //      and the recipient has a registered pusher. Only "http" pushers are
+    //      returned — Merovingian's Push Gateway API client only speaks the
+    //      HTTP pusher protocol; "email" pushers are accepted and persisted by
+    //      POST /pushers/set but are not yet deliverable (see
+    //      docs/todos/capability-gaps.md).
     //
     // `extra_recipients` exists for membership transitions: an invitee is
     // not a joined member of `room` (store_or_update_membership only adds to
@@ -4881,28 +4919,49 @@ namespace
     // are silently skipped, so callers may pass the membership target
     // unconditionally (self-transitions included) without special-casing.
     //
-    // Pure/in-memory only (state reads, JSON parsing, rule evaluation) — no
-    // network, no database writes. Safe to call under runtime.mutex, which
-    // send_event() already holds when it calls this. The gateway network
-    // calls happen later, off the request path — see dispatch_push_deliveries.
-    [[nodiscard]] auto build_pending_push_deliveries(HomeserverRuntime const& runtime, LocalRoom const& room,
+    // In-memory state reads, JSON parsing, and rule evaluation, plus a
+    // synchronous local notification-history write per notify-worthy
+    // recipient (no network I/O — a single-row SQLite/PostgreSQL insert, the
+    // same kind of synchronous write send_event() already does for the event
+    // itself). Safe to call under runtime.mutex, which send_event() already
+    // holds when it calls this. Only the Push Gateway network calls happen
+    // later, off the request path — see dispatch_push_deliveries.
+    [[nodiscard]] auto build_pending_push_deliveries(HomeserverRuntime& runtime, LocalRoom const& room,
                                                      ComposedEvent const& composed, std::string_view sender,
                                                      std::span<std::string const> extra_recipients = {})
         -> std::vector<PendingPushDelivery>
     {
         auto deliveries = std::vector<PendingPushDelivery>{};
-        if (!runtime.config.server().push.enabled)
-        {
-            return deliveries;
-        }
-        auto const& store = runtime.database.persistent_store;
+        auto& store = runtime.database.persistent_store;
         auto const& server_name = runtime.config.server().server_name;
+        // Gateway delivery (the network call) is gated on push.enabled — see
+        // the `push_delivery_enabled` check below and run_pending_push_
+        // deliveries — but rule evaluation and notification-history recording
+        // are not: see this function's doc comment above.
+        auto const push_delivery_enabled = runtime.config.server().push.enabled;
 
         auto event_parsed = canonicaljson::parse_lossless(composed.json);
         if (event_parsed.error != canonicaljson::ParseError::none)
         {
             return deliveries;
         }
+
+        // ComposedEvent::stream_ordering is always 0 -- compose_signed_event
+        // builds it before the real position is allocated (allocate_stream_
+        // ordering runs afterwards, in persist_composed_event/send_event) and
+        // never writes the allocated value back into the struct. Every caller
+        // of this function persists `composed` (via persist_composed_event or
+        // the equivalent inline store_event_with_state in send_event) before
+        // calling it, so the authoritative value already lives in
+        // store.events by now; look it up there instead of trusting
+        // composed.stream_ordering; used below both for the pagination key
+        // and, indirectly, for the read/unread threshold.
+        auto const persisted_stream_ordering = [&]() -> std::uint64_t {
+            auto const event_row = std::ranges::find_if(store.events, [&](database::PersistentEvent const& event) {
+                return event.event_id == composed.event_id;
+            });
+            return event_row != store.events.end() ? event_row->stream_ordering : composed.stream_ordering;
+        }();
 
         auto const power_levels_value = room_power_levels_event_value(store, room.room_id);
         auto const sender_power_level = events::extract_user_power_level(power_levels_value, sender);
@@ -4947,6 +5006,16 @@ namespace
         auto const sender_display_name = [&]() -> std::string {
             auto const profile = database::find_profile(store, sender);
             return profile.has_value() ? profile->displayname : std::string{};
+        }();
+        // GET /notifications' Notification.ts: "The unix timestamp at which
+        // the event notification was sent, in milliseconds" — the triggering
+        // event's own origin_server_ts, embedded at composition time (see
+        // compose_signed_event).
+        auto const notification_ts = [&]() -> std::uint64_t {
+            auto const* root = std::get_if<canonicaljson::Object>(&event_parsed.value.storage());
+            auto const* origin_server_ts = root != nullptr ? integer_member(*root, "origin_server_ts") : nullptr;
+            return origin_server_ts != nullptr && *origin_server_ts > 0 ? static_cast<std::uint64_t>(*origin_server_ts)
+                                                                        : std::uint64_t{0U};
         }();
         auto const is_member_event = composed.event_type == "m.room.member";
 
@@ -5004,12 +5073,10 @@ namespace
                 continue;
             }
 
-            auto pushers = database::list_pushers_for_user(store, member);
-            if (pushers.empty())
-            {
-                continue;
-            }
-
+            // Evaluate push rules for every eligible recipient regardless of
+            // whether they have a pusher or push delivery is enabled — GET
+            // /notifications history recording just below depends on this
+            // either way (see this function's doc comment).
             auto const ruleset = push::parse_push_ruleset(default_push_ruleset(member));
             auto const recipient_profile = database::find_profile(store, member);
             auto context = push::PushEvaluationContext{};
@@ -5021,6 +5088,28 @@ namespace
             context.notification_power_levels = notification_power_levels;
             auto const result = push::evaluate_push_rules(ruleset, event_parsed.value, context);
             if (!result.notify)
+            {
+                continue;
+            }
+
+            // Record notification history (PersistentNotification) for GET
+            // /_matrix/client/v3/notifications — unconditionally: independent
+            // of push.enabled and of whether `member` has a pusher at all.
+            // profile_tag is left empty: it names a specific pusher's
+            // configured tag, but this recording happens once per (user,
+            // event) rather than once per pusher.
+            std::ignore = database::store_notification(
+                store, database::PersistentNotification{std::string{member}, room.room_id, composed.event_id,
+                                                        persisted_stream_ordering, notification_ts,
+                                                        push_notification_actions_json(result), std::string{},
+                                                        result.tweak_highlight});
+
+            if (!push_delivery_enabled)
+            {
+                continue;
+            }
+            auto pushers = database::list_pushers_for_user(store, member);
+            if (pushers.empty())
             {
                 continue;
             }
@@ -5357,12 +5446,12 @@ namespace
             });
         }
     }
-    // Push delivery: evaluate push rules for every local, joined,
-    // pusher-registered recipient and fire the Push Gateway API notifications
-    // off the request path (see build_pending_push_deliveries and
-    // dispatch_push_deliveries above). build_pending_push_deliveries itself
-    // no-ops immediately when push.enabled is false, so a deployment that has
-    // not opted in pays no cost beyond this one config read.
+    // Push delivery: evaluate push rules for every local, joined recipient,
+    // record GET /_matrix/client/v3/notifications history for every
+    // notify-worthy one (regardless of push.enabled/pushers — see
+    // build_pending_push_deliveries's doc comment), and fire the Push Gateway
+    // API notifications off the request path for those with push.enabled and
+    // a registered pusher (see dispatch_push_deliveries above).
     if (auto deliveries = build_pending_push_deliveries(runtime, *room, *composed, *user_id); !deliveries.empty())
     {
         dispatch_push_deliveries(runtime, std::move(deliveries));

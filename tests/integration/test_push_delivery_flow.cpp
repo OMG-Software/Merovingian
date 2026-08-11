@@ -210,6 +210,41 @@ auto set_ignored_users(merovingian::homeserver::ClientServerRuntime& runtime, st
     REQUIRE(resp.response.status == 200U);
 }
 
+// GET /_matrix/client/v3/notifications, parsed into an object.
+[[nodiscard]] auto get_notifications(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token)
+    -> merovingian::canonicaljson::Object
+{
+    auto const response = merovingian::homeserver::handle_client_server_request(
+        runtime, {"GET", "/_matrix/client/v3/notifications", token, {}});
+    REQUIRE(response.response.status == 200U);
+    return parse_object(response.response.body);
+}
+
+// Whether `notifications` contains an entry whose own `event.event_id` field
+// equals `event_id`. Parses each element's `event` object rather than
+// substring-searching the serialized response, so a value that merely
+// appears elsewhere (e.g. quoted inside another event's prev_events) cannot
+// produce a false positive.
+[[nodiscard]] auto notifications_contain_event(merovingian::canonicaljson::Array const& notifications,
+                                               std::string const& event_id) -> bool
+{
+    for (auto const& entry : notifications)
+    {
+        auto const* entry_object = std::get_if<merovingian::canonicaljson::Object>(&entry.storage());
+        if (entry_object == nullptr)
+        {
+            continue;
+        }
+        auto const* event_object = object_member_as_object(*entry_object, "event");
+        auto const* found_event_id = event_object == nullptr ? nullptr : string_member(*event_object, "event_id");
+        if (found_event_id != nullptr && *found_event_id == event_id)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
 } // namespace
 
 // Spec: Matrix Client-Server API v1.19 §push-notifications
@@ -761,6 +796,118 @@ SCENARIO("an invite from an ignored sender never queues a push notification for 
                 REQUIRE(invite.response.status == 200U);
                 auto const lock = std::lock_guard{started.runtime.homeserver.orphan_futures_mutex_};
                 REQUIRE(started.runtime.homeserver.orphan_futures_.empty());
+            }
+        }
+    }
+}
+
+// ── GET /_matrix/client/v3/notifications × Ignoring Users ─────────────────
+// Spec (spec: docs/matrix-v1.19-spec/client-server-api.md#ignoring-users):
+// an ignored sender's events must not reach the ignoring user through any
+// client-facing delivery surface, and GET /notifications is exactly that —
+// it is fed by the same build_pending_push_deliveries evaluation the push
+// gateway path uses (see room_service.cpp), gated by the same
+// trust_safety::is_delivery_suppressed check, so a suppressed event is never
+// recorded as a notification in the first place.
+SCENARIO("a message from an ignored sender never appears in the ignoring recipient's GET /notifications",
+         "[integration][push][ignoring-users]")
+{
+    GIVEN("alice and bob in a room, and bob has ignored alice")
+    {
+        auto started = merovingian::homeserver::start_client_server(push_test_config());
+        REQUIRE(started.started);
+        // push.enabled deliberately left at its default (false): notification
+        // history recording must not depend on it (see the "no pusher, push
+        // disabled" scenario below) -- this proves the ignore suppression
+        // holds under that same condition.
+        auto const alice = register_and_login(started.runtime, "alice");
+        auto const bob = register_and_login(started.runtime, "bob");
+        auto const room_id = room_with_alice_and_bob(started.runtime, alice, bob);
+
+        set_ignored_users(started.runtime, bob, "%40bob%3Aexample.org",
+                          R"({"ignored_users":{"@alice:example.org":{}}})");
+
+        WHEN("alice (whom bob ignores) sends a message, and someone else (charlie) also messages bob")
+        {
+            auto const ignored_send = send_text_message(started.runtime, alice, room_id, "txn-notif-ignored", "hi bob");
+            REQUIRE(ignored_send.response.status == 200U);
+            auto const ignored_body = parse_object(ignored_send.response.body);
+            auto const* ignored_event_id = string_member(ignored_body, "event_id");
+            REQUIRE(ignored_event_id != nullptr);
+
+            auto const charlie = register_and_login(started.runtime, "charlie");
+            // room_with_alice_and_bob creates a private_chat room (join_rule
+            // "invite"), so charlie must be invited before he can join it --
+            // unlike the ignored sender above, who is already a member.
+            auto const charlie_invite = invite_user_via_http(started.runtime, alice, room_id, "@charlie:example.org");
+            REQUIRE(charlie_invite.response.status == 200U);
+            auto const charlie_join = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/join", charlie, "{}"});
+            REQUIRE(charlie_join.response.status == 200U);
+            auto const visible_send =
+                send_text_message(started.runtime, charlie, room_id, "txn-notif-visible", "hi from charlie too");
+            REQUIRE(visible_send.response.status == 200U);
+            auto const visible_body = parse_object(visible_send.response.body);
+            auto const* visible_event_id = string_member(visible_body, "event_id");
+            REQUIRE(visible_event_id != nullptr);
+
+            THEN("bob's GET /notifications does not contain alice's event but does contain charlie's")
+            {
+                auto const body = get_notifications(started.runtime, bob);
+                auto const* notifications = object_member_as_array(body, "notifications");
+                REQUIRE(notifications != nullptr);
+
+                // Structural absence check: alice's event_id must not appear
+                // as any entry's own event.event_id (not a substring search
+                // over the serialized response).
+                REQUIRE_FALSE(notifications_contain_event(*notifications, *ignored_event_id));
+                // Positive counterpart: an otherwise-identical notification
+                // from a non-ignored sender in the same room does appear, so
+                // the absence above is not just an empty-array vacuous pass.
+                REQUIRE(notifications_contain_event(*notifications, *visible_event_id));
+            }
+        }
+    }
+}
+
+// The core judgement call behind recording notification history in
+// build_pending_push_deliveries: recording must not be gated on
+// server.push.enabled or on the recipient having a registered pusher --
+// only actual Push Gateway delivery is gated on those. A user who never
+// configured a pusher, on a server that never turned push.enabled on, must
+// still see their notifications when they open the client.
+SCENARIO("a notification is recorded even when push.enabled is false and the recipient has no pusher",
+         "[integration][push]")
+{
+    GIVEN("push delivery disabled (the default), alice and bob in a room, and bob has no pusher")
+    {
+        auto started = merovingian::homeserver::start_client_server(push_test_config());
+        REQUIRE(started.started);
+        REQUIRE_FALSE(started.runtime.homeserver.config.server().push.enabled);
+
+        auto const alice = register_and_login(started.runtime, "alice");
+        auto const bob = register_and_login(started.runtime, "bob");
+        auto const room_id = room_with_alice_and_bob(started.runtime, alice, bob);
+        REQUIRE(pusher_count(started.runtime, bob) == 0U);
+
+        WHEN("alice sends a message that matches the default .m.rule.message rule")
+        {
+            auto const send = send_text_message(started.runtime, alice, room_id, "txn-notif-no-push", "hello bob");
+            REQUIRE(send.response.status == 200U);
+            auto const send_body = parse_object(send.response.body);
+            auto const* event_id = string_member(send_body, "event_id");
+            REQUIRE(event_id != nullptr);
+
+            THEN("no background push task was queued, but the notification still appears in GET /notifications")
+            {
+                {
+                    auto const lock = std::lock_guard{started.runtime.homeserver.orphan_futures_mutex_};
+                    REQUIRE(started.runtime.homeserver.orphan_futures_.empty());
+                }
+                auto const body = get_notifications(started.runtime, bob);
+                auto const* notifications = object_member_as_array(body, "notifications");
+                REQUIRE(notifications != nullptr);
+                REQUIRE(notifications_contain_event(*notifications, *event_id));
             }
         }
     }

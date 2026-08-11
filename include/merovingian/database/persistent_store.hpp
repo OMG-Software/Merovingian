@@ -420,6 +420,32 @@ struct PersistentPusher final
     std::string data_format{};
 };
 
+// A recorded notification for `GET /_matrix/client/v3/notifications` (Matrix
+// v1.19 CS API §push-notifications). Recorded once per (user_id, event_id)
+// whenever push rule evaluation resolves `notify: true` for that recipient --
+// independent of whether the recipient has a registered pusher or whether
+// `server.push.enabled` is set (a user with push notifications turned off
+// must still see their notification history when they open the client; see
+// room_service.cpp's build_pending_push_deliveries). `actions` is the
+// canonical-JSON-serialized actions array the matched rule produced;
+// `highlight` mirrors its `set_tweak: highlight` action so `GET
+// /notifications?only=highlight` can filter without re-parsing `actions`.
+// `stream_ordering` is the triggering event's global stream position --
+// unique per (user_id, event_id) row, since a recipient gets at most one
+// notification per event -- and doubles as this table's pagination key,
+// exactly like `events.stream_ordering` already does for GET /messages.
+struct PersistentNotification final
+{
+    std::string user_id{};
+    std::string room_id{};
+    std::string event_id{};
+    std::uint64_t stream_ordering{0U};
+    std::uint64_t ts{0U};
+    std::string actions{};
+    std::string profile_tag{};
+    bool highlight{false};
+};
+
 struct PersistentStore final
 {
     PersistentStore() = default;
@@ -467,6 +493,7 @@ struct PersistentStore final
         , room_aliases{other.room_aliases}
         , client_txn_ids{other.client_txn_ids}
         , pushers{other.pushers}
+        , notifications{other.notifications}
         , prepared_statements{other.prepared_statements}
         , prepared_statements_mutex{std::make_unique<std::mutex>()}
         , next_sync_stream_id{other.next_sync_stream_id}
@@ -523,6 +550,7 @@ struct PersistentStore final
         room_aliases = other.room_aliases;
         client_txn_ids = other.client_txn_ids;
         pushers = other.pushers;
+        notifications = other.notifications;
         prepared_statements = other.prepared_statements;
         prepared_statements_mutex = std::make_unique<std::mutex>();
         next_sync_stream_id = other.next_sync_stream_id;
@@ -579,6 +607,7 @@ struct PersistentStore final
     std::vector<PersistentRoomAlias> room_aliases{};
     std::vector<PersistentClientTxnRecord> client_txn_ids{};
     std::vector<PersistentPusher> pushers{};
+    std::vector<PersistentNotification> notifications{};
     std::vector<PreparedStatement> prepared_statements{};
     // Guards prepared_statements, which is appended to by
     // commit_persistent_transaction from multiple concurrent room-stripe paths
@@ -840,6 +869,19 @@ auto apply_store_event_with_state(PersistentStore& store, PreparedStateUpdate co
 // Return every pusher registered for user_id, in insertion order.
 [[nodiscard]] auto list_pushers_for_user(PersistentStore const& store, std::string_view user_id)
     -> std::vector<PersistentPusher>;
+// Upsert a notification keyed by (user_id, event_id) -- see
+// PersistentNotification. Persists the row, mirrors it into the in-memory
+// vector, and then prunes user_id's oldest rows beyond a fixed per-user
+// retention cap (see k_max_notifications_per_user in persistent_store.cpp)
+// so `notifications` cannot grow without bound under sustained message
+// volume. Returns false on an empty user_id/room_id/event_id or a backend
+// write failure.
+[[nodiscard]] auto store_notification(PersistentStore& store, PersistentNotification notification) -> bool;
+// Return every notification recorded for user_id, in insertion
+// (stream_ordering) order ascending. Callers apply from/limit/only
+// pagination and filtering.
+[[nodiscard]] auto list_notifications_for_user(PersistentStore const& store, std::string_view user_id)
+    -> std::vector<PersistentNotification>;
 // Look up a previous idempotent send result. Returns the stored event_id
 // (or empty string for to-device sends) if the (user_id, room_id,
 // event_type, txn_id) tuple was already committed; nullopt otherwise.

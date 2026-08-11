@@ -11026,8 +11026,11 @@ SCENARIO("PUT /pushrules/{scope}/{kind}/{ruleId}/enabled returns 404 M_UNRECOGNI
 
 // --- GET /_matrix/client/v3/notifications ------------------------------------
 // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3notifications
-// IMPLEMENTATION GAP: notification list not yet implemented.
-SCENARIO("GET /notifications returns 404 M_UNRECOGNIZED (implementation gap)", "[conformance][client-server][push]")
+// Full behavioural coverage (highlight filter, limit, pagination, read
+// reflecting receipts, ignored senders) lives in
+// tests/conformance/test_notifications_conformance.cpp; this scenario only
+// pins down that the route is wired up and the response shape is correct.
+SCENARIO("GET /notifications returns 200 with a notifications array", "[conformance][client-server][push]")
 {
     GIVEN("a running client-server and a logged-in user")
     {
@@ -11040,14 +11043,16 @@ SCENARIO("GET /notifications returns 404 M_UNRECOGNIZED (implementation gap)", "
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"GET", "/_matrix/client/v3/notifications", token, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("the server returns 200 with an empty notifications array and no next_token")
             {
-                // IMPLEMENTATION GAP: notifications list not supported.
-                REQUIRE(response.response.status == 404U);
+                // Spec MUST: notifications is Required; next_token is absent
+                // "If this is absent, there are no more results."
+                REQUIRE(response.response.status == 200U);
                 auto const body = parse_object(response.response.body);
-                auto const* errcode = string_member(body, "errcode");
-                REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
+                auto const* notifications = object_member_as_array(body, "notifications");
+                REQUIRE(notifications != nullptr);
+                REQUIRE(notifications->empty());
+                REQUIRE(string_member(body, "next_token") == nullptr);
             }
         }
     }
@@ -11272,28 +11277,30 @@ SCENARIO("GET /presence/{userId}/status conformance")
 // 13.7   Push notifications — GET /notifications
 // ============================================================================
 // Spec: Matrix v1.19 §13.7 GET /_matrix/client/v3/notifications
-//       IMPLEMENTATION GAP: not yet implemented. Must return 404 M_UNRECOGNIZED.
+// Behavioural coverage lives in test_notifications_conformance.cpp; this
+// scenario is the "unauthenticated" companion to the routed-response check
+// above -- "Requires authentication: Yes".
 
 SCENARIO("GET /notifications conformance")
 {
-    GIVEN("a started homeserver with an authenticated user")
+    GIVEN("a started homeserver with no authenticated user")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
-        auto const token = logged_in_token(started.runtime);
 
-        WHEN("GET /notifications is called")
+        WHEN("GET /notifications is called with no access token")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime, {"GET", "/_matrix/client/v3/notifications", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v3/notifications", {}, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED")
+            THEN("the server returns 401 M_MISSING_TOKEN")
             {
-                REQUIRE(response.response.status == 404);
+                // Spec MUST: "Requires authentication: Yes."
+                REQUIRE(response.response.status == 401);
                 auto const body = parse_object(response.response.body);
                 auto const* err = string_member(body, "errcode");
                 REQUIRE(err != nullptr);
-                REQUIRE(*err == "M_UNRECOGNIZED");
+                REQUIRE(*err == "M_MISSING_TOKEN");
             }
         }
     }

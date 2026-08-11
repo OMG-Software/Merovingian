@@ -2793,6 +2793,111 @@ auto restore_sync_stream_id(PersistentStore& store) -> void
     return result;
 }
 
+[[nodiscard]] auto store_notification(PersistentStore& store, PersistentNotification notification) -> bool
+{
+    if (notification.user_id.empty() || notification.room_id.empty() || notification.event_id.empty())
+    {
+        return false;
+    }
+    auto const statement = record_statement(
+        "upsert_notification",
+        "INSERT INTO notifications (user_id, room_id, event_id, stream_ordering, ts, actions, profile_tag, "
+        "highlight) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT (user_id, event_id) DO UPDATE SET "
+        "room_id = $2, stream_ordering = $4, ts = $5, actions = $6, profile_tag = $7, highlight = $8",
+        {public_value(notification.user_id), public_value(notification.room_id), public_value(notification.event_id),
+         public_value(std::to_string(notification.stream_ordering)), public_value(std::to_string(notification.ts)),
+         public_value(notification.actions), public_value(notification.profile_tag),
+         public_value(notification.highlight ? "true" : "false")});
+    if (!record_and_persist(store, statement))
+    {
+        return false;
+    }
+    // Keep the in-memory mirror in sync; replace the existing entry if present.
+    auto const existing =
+        std::ranges::find_if(store.notifications, [&notification](PersistentNotification const& current) {
+            return current.user_id == notification.user_id && current.event_id == notification.event_id;
+        });
+    if (existing != store.notifications.end())
+    {
+        *existing = notification;
+    }
+    else
+    {
+        store.notifications.push_back(notification);
+    }
+
+    // Retention: bound this user's notification history so it cannot grow
+    // without limit under sustained message volume. 200 covers many
+    // multiples of a typical /notifications page (the spec leaves `limit`
+    // optional; clients page in small batches) while keeping even a very
+    // active user's history table small. Chosen independently of
+    // room_service.cpp's k_max_in_flight_push_deliveries -- that bounds
+    // concurrent background threads; this bounds persisted rows.
+    constexpr auto k_max_notifications_per_user = std::size_t{200U};
+    auto user_row_count = std::size_t{0U};
+    for (auto const& row : store.notifications)
+    {
+        if (row.user_id == notification.user_id)
+        {
+            ++user_row_count;
+        }
+    }
+    if (user_row_count > k_max_notifications_per_user)
+    {
+        auto user_rows = std::vector<PersistentNotification const*>{};
+        user_rows.reserve(user_row_count);
+        for (auto const& row : store.notifications)
+        {
+            if (row.user_id == notification.user_id)
+            {
+                user_rows.push_back(&row);
+            }
+        }
+        std::ranges::sort(user_rows, [](PersistentNotification const* lhs, PersistentNotification const* rhs) {
+            return lhs->stream_ordering < rhs->stream_ordering;
+        });
+        // Copy the event ids of the oldest rows to delete before mutating
+        // store.notifications -- erasing invalidates the pointers in
+        // user_rows, but not these already-copied strings.
+        auto const excess = user_row_count - k_max_notifications_per_user;
+        auto to_delete = std::vector<std::string>{};
+        to_delete.reserve(excess);
+        for (auto i = std::size_t{0U}; i < excess; ++i)
+        {
+            to_delete.push_back(user_rows[i]->event_id);
+        }
+        for (auto const& stale_event_id : to_delete)
+        {
+            std::ignore = record_and_persist(
+                store,
+                record_statement("prune_notification", "DELETE FROM notifications WHERE user_id = $1 AND event_id = $2",
+                                 {public_value(notification.user_id), public_value(stale_event_id)}));
+            auto const stale = std::ranges::find_if(store.notifications, [&](PersistentNotification const& current) {
+                return current.user_id == notification.user_id && current.event_id == stale_event_id;
+            });
+            if (stale != store.notifications.end())
+            {
+                store.notifications.erase(stale);
+            }
+        }
+    }
+    return true;
+}
+
+[[nodiscard]] auto list_notifications_for_user(PersistentStore const& store, std::string_view user_id)
+    -> std::vector<PersistentNotification>
+{
+    auto result = std::vector<PersistentNotification>{};
+    for (auto const& notification : store.notifications)
+    {
+        if (notification.user_id == user_id)
+        {
+            result.push_back(notification);
+        }
+    }
+    return result;
+}
+
 [[nodiscard]] auto update_profile_displayname(PersistentStore& store, std::string_view user_id,
                                               std::string_view displayname) -> bool
 {

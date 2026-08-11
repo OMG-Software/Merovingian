@@ -11,7 +11,7 @@ NNN_snake_case_description.sql
 
 `NNN` is a zero-padded three-digit integer: `001`, `002`, ..., `010`, `011`, ...
 The next migration number is always `max(existing) + 1`.
-Current highest: `008`.
+Current highest: `009`.
 
 Schema version `2` introduced the `sync_stream_watermark` table via
 `002_sync_stream_watermark.sql` to support live pre-production deployments that
@@ -31,7 +31,12 @@ identity-server credentials needed for IS-delegated unbind (auth mode 2:
 sid + client_secret); it adds no new tables. Schema version `8`
 (`008_pushers.sql`) adds the `pushers` table so push notification pushers
 registered via `POST /_matrix/client/v3/pushers/set` survive restarts, keyed
-on `(user_id, app_id, pushkey)` per the spec's uniqueness rule. After
+on `(user_id, app_id, pushkey)` per the spec's uniqueness rule. Schema
+version `9` (`009_notifications.sql`) adds the `notifications` table so
+`GET /_matrix/client/v3/notifications` history survives restarts, keyed on
+`(user_id, event_id)`; `stream_ordering` doubles as the endpoint's `from`/
+`next_token` pagination key, and rows are pruned per-user at write time (see
+`docs/database-persistence.md`) so the table cannot grow without bound. After
 `v1.0.0`, deployed databases become a strict compatibility boundary and schema
 changes must be added as new forward migration files instead of modifying
 already-applied migrations.

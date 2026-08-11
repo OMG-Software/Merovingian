@@ -41,7 +41,10 @@ remaining work before PostgreSQL-backed production operation.
   unbind body; empty for local-only bindings), and schema version `8` adds the
   `pushers` table via `migrations/008_pushers.sql` so push notification
   pushers registered via `POST /_matrix/client/v3/pushers/set` survive
-  restarts.
+  restarts, and schema version `9` adds the `notifications` table via
+  `migrations/009_notifications.sql` so `GET /_matrix/client/v3/notifications`
+  history survives restarts (see "Notification history" below for the
+  retention policy that keeps it bounded).
   After the project reaches production-ready `v1.0.0`, every schema change
   must add a forward migration and keep deployed databases compatible.
 - SQLite RAII wrappers around database connections and prepared statements.
@@ -186,6 +189,54 @@ remaining work before PostgreSQL-backed production operation.
   body (see `docs/todos/capability-gaps.md`); the `merovingian::push` module
   (`push_rules.hpp`, `push_gateway_client.hpp`) provides the evaluation and
   delivery logic a follow-on routing change will call.
+- `notifications` table (schema version `9`, migration
+  `migrations/009_notifications.sql`) records the history
+  `GET /_matrix/client/v3/notifications` serves. Columns are `user_id`,
+  `room_id`, `event_id`, `stream_ordering` (the triggering event's global
+  stream position — unique per row, since a recipient gets at most one
+  notification per event, and doubles as this table's pagination key exactly
+  like `events.stream_ordering` already does for `GET /messages`), `ts` (the
+  event's `origin_server_ts`, milliseconds), `actions` (the canonical-JSON
+  actions array reconstructed from the matched push rule's resolved outcome —
+  `push_rules.hpp`'s `PushEvaluationResult` does not keep the rule's raw
+  actions array, so `room_service.cpp`'s `push_notification_actions_json`
+  rebuilds the conventional `["notify", {"set_tweak": ...}, ...]` shape),
+  `profile_tag` (left empty: this recording happens once per `(user, event)`
+  rather than once per pusher, so it cannot name one pusher's configured
+  tag), and `highlight` (`"true"`/`"false"`, mirroring the matched rule's
+  `set_tweak: highlight` action, so `?only=highlight` can filter without
+  re-parsing `actions`), with a primary key on `(user_id, event_id)`. The
+  runtime migration path uses the compiled catalog in
+  `src/database/migration.cpp` (upgrade step version `9` "notifications";
+  downgrade step version `8` "drop_notifications");
+  `schema::current_schema_version()` returns `9U`. The `PersistentNotification`
+  struct and the `store_notification` / `list_notifications_for_user` store
+  functions
+  ([persistent_store.hpp](../include/merovingian/database/persistent_store.hpp))
+  persist and list rows, following the same pattern as `PersistentPusher`
+  above; implemented for both SQLite and PostgreSQL, hydrated on backend
+  open. `room_service.cpp`'s `build_pending_push_deliveries()` calls
+  `store_notification` for every local recipient whose push rule evaluation
+  resolves `notify: true` — **unconditionally**, regardless of
+  `server.push.enabled` or whether that recipient has a registered pusher:
+  `GET /notifications` returns events the user "has been, or would have
+  been, notified about" (spec), so a user with push turned off must still
+  see their history. Only the Push Gateway delivery half of that function
+  (building a `PendingPushDelivery` and dispatching it) stays gated on
+  `push.enabled` + a registered pusher. The `read` field the endpoint reports
+  is *not* stored on the row — it is computed at request time from
+  `sync::read_receipt_ordering()` against the caller's current `m.read`/
+  `m.read.private` receipt in that room, so it always reflects the latest
+  receipt without a write-side update on every receipt change.
+  **Retention:** `store_notification` prunes the oldest rows for that
+  `user_id` beyond a fixed cap, `k_max_notifications_per_user` (200,
+  `persistent_store.cpp`), after every insert — chosen to cover many
+  multiples of the endpoint's own default page size while keeping even a
+  very active user's history table small; chosen independently of
+  `room_service.cpp`'s `k_max_in_flight_push_deliveries` (that bounds
+  concurrent background threads, this bounds persisted rows). This closes
+  the same class of unbounded-growth vector `k_max_in_flight_push_deliveries`
+  fixed for push delivery's background-task count.
 - `/sync` calls `database::ensure_sync_stream_id_ahead_of()` when the client's
   `since` token is ahead of the server's counter. This recovers live deployments
   whose counter rolled back below a stored token (for example, when the watermark

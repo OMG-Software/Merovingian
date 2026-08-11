@@ -651,10 +651,15 @@ threat it closes; the controls above are the standing defences these reinforce.
   upstream validation holding. (3) **Config gate, disabled by default,
   enforced at both call sites** — `notify()` checks `config::PushConfig::enabled`
   before doing anything else, and `room_service.cpp`'s
-  `build_pending_push_deliveries()` re-checks the same flag before evaluating
-  a single push rule or reading a single pusher row, so a deployment that has
-  not opted in pays no cost beyond one config read per sent event and no DNS
-  lookup, connection, or byte ever leaves the process. (4) **No lock held
+  `build_pending_push_deliveries()` re-checks the same flag before reading a
+  single pusher row or building a gateway-bound `PendingPushDelivery` (rule
+  evaluation and `GET /_matrix/client/v3/notifications` history recording now
+  run unconditionally, ahead of this check — see the "Notification history"
+  entry below — but that is a local, in-process read/write with no network
+  reach; the gate that decides whether a byte can leave the process is
+  unchanged), so a deployment that has not opted into gateway delivery still
+  pays no DNS lookup, connection, or outbound byte per sent event. (4) **No
+  lock held
   across network I/O** — like the identity and federation clients,
   `PushGatewayClient` holds no lock of its own, and the routing that calls it
   (`room_service.cpp`'s `run_pending_push_deliveries`) never holds
@@ -671,6 +676,29 @@ threat it closes; the controls above are the standing defences these reinforce.
   duration of that single `delete_pusher` call, mirroring the identity-client
   pattern of dropping the lock for the network round trip and re-acquiring it
   only to persist the outcome.
+
+- **Notification history storage (v0.11.11, routed):** `GET
+  /_matrix/client/v3/notifications` needs history to serve, so
+  `build_pending_push_deliveries()` records one `PersistentNotification` row
+  (`database::store_notification`) per local recipient whose push rule
+  evaluation resolves `notify: true` — deliberately unconditional on
+  `push.enabled` and on the recipient having any pusher at all (the endpoint
+  returns events the user "has been, or would have been, notified about";
+  a user with push turned off must still see this history). This is a
+  same-server, in-memory-plus-local-database write triggered by an event the
+  requesting user was already authorized to see (the recipient is already a
+  room member or the invite target) — it opens no new network path and adds
+  no new trust boundary. Two properties bound its own resource cost: (1)
+  **per-user retention** — `store_notification` prunes the oldest rows for
+  that `user_id` beyond a fixed cap (`k_max_notifications_per_user`, 200,
+  `persistent_store.cpp`) after every insert, so the table cannot grow
+  without bound under sustained message volume, mirroring the fix applied to
+  `orphan_futures_` below; (2) **ignore-list suppression applies first** — a
+  notification is recorded only after the same
+  `trust_safety::is_delivery_suppressed` check the gateway path uses, so an
+  event from a sender the recipient has ignored is invisible to
+  `GET /notifications` exactly as it is to Push Gateway delivery, not a
+  separate code path that could drift out of sync.
 
 - **Push delivery background tasks were unbounded (v0.11.11, fixed):**
   `dispatch_push_deliveries` parked one `std::async` future in

@@ -315,6 +315,73 @@ then closed one of the gaps the audit found.
     message, and an ignored inviter's invite, never queue a background push
     task).
 
+- Routed `GET /_matrix/client/v3/notifications`, the last unimplemented piece
+  of this branch's push notification work. Requires authentication;
+  paginates via `from`/`next_token`, reusing the plain-stream-ordering token
+  format `GET /messages` already established (`next_token` is the
+  `stream_ordering` of the first not-yet-returned notification, so a
+  follow-up request with `from=<next_token>` continues without gap or
+  overlap); `only=highlight` filters to notifications whose matched rule set
+  the highlight tweak; `limit` defaults to 50 and clamps to 1000; `read`
+  reflects the caller's own `m.read`/`m.read.private` receipt in that room,
+  computed at request time via the existing `sync::read_receipt_ordering()`
+  rather than stored on the row.
+  - New `notifications` table (`migrations/009_notifications.sql`, schema
+    version 9): `user_id`, `room_id`, `event_id`, `stream_ordering`, `ts`,
+    `actions`, `profile_tag`, `highlight`, primary key `(user_id, event_id)`.
+    `PersistentNotification` plus `store_notification`/
+    `list_notifications_for_user` on `PersistentStore`, hydrated for both
+    SQLite and PostgreSQL, following the `PersistentPusher` pattern.
+  - Notifications are recorded in `room_service.cpp`'s
+    `build_pending_push_deliveries()` — the point where an event is already
+    evaluated against each recipient's push rules — for every local
+    recipient whose evaluation resolves `notify: true`. Recording is
+    **unconditional** on `server.push.enabled` and on the recipient having a
+    registered pusher: the spec says the endpoint returns events the user
+    "has been, or would have been, notified about," so a user with push
+    turned off, or never configured a pusher, still needs their history.
+    Only the Push Gateway delivery half of that function (building a
+    `PendingPushDelivery` and dispatching it to a real gateway) stays gated
+    on `push.enabled` + a pusher. Suppression for an ignored sender is
+    unchanged — recording happens after the same
+    `trust_safety::is_delivery_suppressed` check the gateway path already
+    used, so an ignored sender's event is invisible to `/notifications` too,
+    not a separate code path that could drift.
+  - `PushEvaluationResult` (`push_rules.hpp`) resolves a matched rule down to
+    `notify`/`tweak_sound`/`tweak_highlight` rather than keeping its raw
+    `actions` array, so a new `push_notification_actions_json()` helper
+    reconstructs the conventional shape (`["notify", {"set_tweak": ...}]`)
+    for storage — `profile_tag` is left empty, since recording happens once
+    per `(user, event)` rather than once per pusher and so cannot name one
+    pusher's configured tag.
+  - Retention: `store_notification` prunes the oldest rows for a `user_id`
+    beyond a fixed cap, `k_max_notifications_per_user` (200,
+    `persistent_store.cpp`), after every insert — the same "bound all
+    resources" policy already applied to `orphan_futures_`/
+    `k_max_in_flight_push_deliveries` for push delivery's background tasks,
+    now applied to this table's row count.
+  - New `tests/conformance/test_notifications_conformance.cpp`: a
+    notification appears with every required field after a matching event;
+    `only=highlight` filters to the highlight-tweaked notification (with the
+    unfiltered response as the positive counterpart); `limit` bounds the
+    page and `next_token` appears only when more results remain; `from`/
+    `next_token` pagination collects every notification exactly once with no
+    gap or overlap; `read` reflects an `m.read` receipt (notifications at or
+    before the receipted event become read, later ones stay unread).
+  - New scenarios in `tests/conformance/test_client_server_conformance.cpp`
+    replacing the two stale "404 M_UNRECOGNIZED (implementation gap)"
+    placeholders: routed-response shape, and unauthenticated access rejected
+    with 401 `M_MISSING_TOKEN`.
+  - New scenarios in `tests/integration/test_push_delivery_flow.cpp`: a
+    message from an ignored sender never appears in the ignoring recipient's
+    `GET /notifications` (with a non-ignored sender's message as the positive
+    counterpart), and a notification is recorded even when `push.enabled` is
+    false and the recipient has no pusher registered.
+  - `tests/unit/test_database_persistence.cpp` and
+    `tests/integration/test_persistent_homeserver_flow.cpp`: updated the
+    hardcoded migration-step/schema-version assertions for the new schema
+    version 9 and the `notifications` migration step.
+
 ## 0.11.10
 
 Four follow-ons to the 0.11.9 identity-server work: a discovery test-seam for

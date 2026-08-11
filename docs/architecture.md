@@ -422,7 +422,7 @@ Implemented endpoints are grouped below. Matrix v1.19 behaviour is described in 
 - **Directory**: `GET/POST /publicRooms`, `GET/PUT /directory/room/{alias}`, `GET /joined_rooms`
 - **Media**: `POST /media/v3/upload`, `GET /media/v3/download/{server}/{mediaId}`, `GET /media/v3/thumbnail/{server}/{mediaId}`, `GET /media/v3/config`
 - **Admin**: `GET /admin/safety/reports`, quarantine/release/remove media
-- **Push notifications**: `GET /pushers`, `POST /pushers/set`, `GET /pushrules/...`. Delivery is gated on `server.push.enabled` (default `false`); when enabled, `room_service.cpp`'s `send_event()` evaluates each local joined recipient's push rules and dispatches Push Gateway API notifications asynchronously — see "Fire-and-forget background work" above and `push` in the module diagram.
+- **Push notifications**: `GET /pushers`, `POST /pushers/set`, `GET /pushrules/...`, `GET /notifications`. Gateway delivery is gated on `server.push.enabled` (default `false`); when enabled, `room_service.cpp`'s `send_event()` evaluates each local joined recipient's push rules and dispatches Push Gateway API notifications asynchronously — see "Fire-and-forget background work" above and `push` in the module diagram. `GET /notifications` history recording (`database::store_notification`, a synchronous local write, not gateway I/O) happens in that same rule-evaluation step regardless of `push.enabled` or whether the recipient has a pusher — a user with push turned off still needs to see their notifications.
 - **Other**: `GET /capabilities`, `GET /voip/turnServer`, MSC2965 OIDC discovery
 
 ## Sync subsystem

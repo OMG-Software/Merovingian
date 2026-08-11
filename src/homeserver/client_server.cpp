@@ -9098,6 +9098,122 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         }
         return dispatch_resp(req, rt, 200U, "{}");
     }
+    // GET /_matrix/client/v3/notifications
+    // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3notifications
+    // Paginates through events the user "has been, or would have been,
+    // notified about". Notification history is recorded independently of
+    // pushers/push.enabled -- see room_service.cpp's build_pending_push_
+    // deliveries doc comment -- so this works the same whether or not the
+    // user has push notifications configured.
+    if (req.method == "GET" && request_path == "/_matrix/client/v3/notifications")
+    {
+        auto const& store = rt.homeserver.database.persistent_store;
+        auto notifications = database::list_notifications_for_user(store, *user);
+
+        // "only: ... Supply highlight to return only events where the
+        // notification had the highlight tweak set."
+        if (messages_query_value(req.target, "only") == "highlight")
+        {
+            std::erase_if(notifications, [](database::PersistentNotification const& entry) {
+                return !entry.highlight;
+            });
+        }
+
+        // Newest-first: stream_ordering mirrors the triggering event's global
+        // stream position, unique per row (see PersistentNotification), so
+        // sorting by it descending gives a stable, gap/overlap-free order to
+        // paginate over exactly like GET /messages' backward direction does.
+        std::ranges::sort(notifications,
+                          [](database::PersistentNotification const& lhs, database::PersistentNotification const& rhs) {
+                              return lhs.stream_ordering > rhs.stream_ordering;
+                          });
+
+        auto const from_token = parse_u64(messages_query_value(req.target, "from"));
+        // Spec leaves the default unspecified; 50 balances a useful first
+        // page against response size, clamped to bound a hostile/careless
+        // limit= value the same way GET /messages clamps its own.
+        auto limit = std::size_t{50U};
+        if (auto const parsed = parse_u64(messages_query_value(req.target, "limit")); parsed.has_value())
+        {
+            limit = static_cast<std::size_t>(std::min<std::uint64_t>(*parsed, std::uint64_t{1000U}));
+        }
+
+        // Memoizes read_receipt_ordering per room_id: a user can have many
+        // notifications in the same room across one response, and the
+        // receipt lookup scans every receipt the user has ever sent.
+        auto read_ordering_by_room = std::unordered_map<std::string, std::uint64_t>{};
+        auto const read_ordering_for_room = [&](std::string const& room_id) -> std::uint64_t {
+            auto const cached = read_ordering_by_room.find(room_id);
+            if (cached != read_ordering_by_room.end())
+            {
+                return cached->second;
+            }
+            auto const ordering = sync::read_receipt_ordering(rt.homeserver, store, room_id, *user);
+            read_ordering_by_room.emplace(room_id, ordering);
+            return ordering;
+        };
+
+        auto array = canonicaljson::Array{};
+        auto next_token = std::string{};
+        for (auto const& notification : notifications)
+        {
+            // Strictly-greater, not >=: `next_token` names the first
+            // notification this page did NOT consume, so the next request must
+            // *include* it. Using >= would skip exactly that entry and silently
+            // drop one notification per page boundary.
+            if (from_token.has_value() && notification.stream_ordering > *from_token)
+            {
+                continue;
+            }
+            if (array.size() >= limit)
+            {
+                // Not consumed this page: the next request's `from` must
+                // name this notification so pagination has no gap or overlap.
+                next_token = std::to_string(notification.stream_ordering);
+                break;
+            }
+            auto const event_it = std::ranges::find_if(store.events, [&](database::PersistentEvent const& event) {
+                return event.event_id == notification.event_id;
+            });
+            if (event_it == store.events.end())
+            {
+                // Defensive: the event row is gone (should not normally
+                // happen) -- skip rather than emit a notification with no
+                // underlying event, since `event` is spec-required.
+                continue;
+            }
+
+            // Spec: "read: Indicates whether the user has sent a read
+            // receipt indicating that they have read this message." Computed
+            // from the user's current m.read/m.read.private baseline in this
+            // room (see "Marking notifications as read"), not stored on the
+            // row, so it always reflects the latest receipt.
+            auto const read = notification.stream_ordering <= read_ordering_for_room(notification.room_id);
+
+            auto actions_parsed = canonicaljson::parse_lossless(notification.actions);
+            auto actions_value = actions_parsed.error == canonicaljson::ParseError::none
+                                     ? std::move(actions_parsed.value)
+                                     : canonicaljson::Value{canonicaljson::Array{}};
+
+            array.push_back(json_obj({
+                json_member("actions", std::move(actions_value)),
+                json_member("event", client_event_with_id(store, *event_it)),
+                json_member("profile_tag", json_str(notification.profile_tag)),
+                json_member("read", json_bool(read)),
+                json_member("room_id", json_str(notification.room_id)),
+                json_member("ts", json_int(static_cast<std::int64_t>(notification.ts))),
+            }));
+        }
+
+        auto response = canonicaljson::Object{};
+        if (!next_token.empty())
+        {
+            // "If this is absent, there are no more results."
+            response.push_back(json_member("next_token", json_str(next_token)));
+        }
+        response.push_back(json_member("notifications", json_arr(std::move(array))));
+        return dispatch_resp(req, rt, 200U, json_serialize(json_obj(std::move(response))));
+    }
     // Clients (Cinny, Element) fetch /capabilities immediately after login to
     // discover what the server supports. Return a minimal stable set; extend
     // as features are implemented.
