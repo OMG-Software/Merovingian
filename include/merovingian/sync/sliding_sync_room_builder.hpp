@@ -34,11 +34,19 @@ namespace merovingian::sync
 //                SlidingSyncRoomResponse::lazy_members_included) bypass the
 //                normal since-floor so a genuinely new-to-this-connection
 //                member is always delivered at least once.
+// `ignored_senders` — the requesting user's resolved m.ignored_user_list
+// (see trust_safety::resolve_ignored_users), resolved ONCE by the caller for
+// the whole sliding sync request and passed down here per room rather than
+// re-resolved per call. Applied to the room's timeline: non-state events
+// from an ignored sender are withheld; state events are still delivered per
+// spec ("Servers must still send state events sent by ignored users to
+// clients").
 [[nodiscard]] auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_view room_id,
                                        std::string_view user, SlidingSyncRoomSubscription const& sub,
                                        std::uint64_t room_since_event_ordering, bool is_initial,
                                        database::PersistentStore const& store,
-                                       std::unordered_set<std::string> const& lazy_members_already_sent = {})
+                                       std::unordered_set<std::string> const& lazy_members_already_sent = {},
+                                       std::unordered_set<std::string> const& ignored_senders = {})
     -> SlidingSyncRoomResponse;
 
 // Combine a list's room-config fields with a room_subscription's, per MSC4186

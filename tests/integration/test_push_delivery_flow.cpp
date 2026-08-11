@@ -196,6 +196,20 @@ auto wait_for_background_tasks(merovingian::homeserver::HomeserverRuntime& runti
         {"POST", "/_matrix/client/v3/rooms/" + room_id + "/invite", token, R"({"user_id":")" + user_id + R"("})"});
 }
 
+// PUT the caller's own m.ignored_user_list account-data event. Spec:
+// docs/matrix-v1.19-spec/client-server-api.md#ignoring-users.
+// `percent_encoded_user_id` is the caller's own mxid, percent-encoded for
+// the path segment (PUT /user/{userId}/account_data/{type} requires userId
+// == the authenticated caller).
+auto set_ignored_users(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token,
+                       std::string const& percent_encoded_user_id, std::string const& ignored_users_body) -> void
+{
+    auto const resp = merovingian::homeserver::handle_client_server_request(
+        runtime, {"PUT", "/_matrix/client/v3/user/" + percent_encoded_user_id + "/account_data/m.ignored_user_list",
+                  token, ignored_users_body});
+    REQUIRE(resp.response.status == 200U);
+}
+
 } // namespace
 
 // Spec: Matrix Client-Server API v1.19 §push-notifications
@@ -668,6 +682,85 @@ SCENARIO("inviting a user succeeds even when the invitee's push gateway is unrea
                 // The pusher is untouched: an unreachable gateway is a transport
                 // failure, not a `rejected` pushkey, so it must not be deleted.
                 REQUIRE(pusher_count(started.runtime, bob) == 1U);
+            }
+        }
+    }
+}
+
+// ── Ignoring Users (spec: docs/matrix-v1.19-spec/client-server-api.md
+// #ignoring-users) — the most user-visible failure mode of an unenforced
+// ignore list: a push notification arriving from someone the user ignored.
+// Proven the same way as the "push.enabled false" and "in-flight cap
+// exceeded" scenarios above — build_pending_push_deliveries's ignore check
+// runs before it ever looks up the recipient's pushers, so a suppressed
+// delivery never reaches dispatch_push_deliveries and no background task is
+// queued at all. The registered pusher URL is deliberately unreachable
+// nonsense: if suppression were not wired in, a background task would try to
+// contact it and the test would hang or fail via the orphan_futures_ probe
+// below, not silently pass.
+SCENARIO("a message from an ignored sender never queues a push notification for the ignoring recipient",
+         "[integration][push][ignoring-users]")
+{
+    GIVEN("push delivery enabled, alice and bob in a room, bob has ignored alice, and bob has an http pusher")
+    {
+        auto started = merovingian::homeserver::start_client_server(push_test_config());
+        REQUIRE(started.started);
+        started.runtime.homeserver.config.server().push.enabled = true;
+
+        auto const alice = register_and_login(started.runtime, "alice");
+        auto const bob = register_and_login(started.runtime, "bob");
+        auto const room_id = room_with_alice_and_bob(started.runtime, alice, bob);
+
+        set_ignored_users(started.runtime, bob, "%40bob%3Aexample.org",
+                          R"({"ignored_users":{"@alice:example.org":{}}})");
+        register_http_pusher(started.runtime, bob, "org.matrix.integration", "bob-pushkey-ignored-sender",
+                             "https://push-ignored-sender-must-not-be-contacted.invalid/_matrix/push/v1/notify");
+
+        WHEN("alice (whom bob ignores) sends a message that would otherwise notify bob")
+        {
+            auto const send = send_text_message(started.runtime, alice, room_id, "txn-ignored-sender", "hello bob");
+
+            THEN("the send still succeeds and no background push task was ever queued for bob")
+            {
+                REQUIRE(send.response.status == 200U);
+                auto const lock = std::lock_guard{started.runtime.homeserver.orphan_futures_mutex_};
+                REQUIRE(started.runtime.homeserver.orphan_futures_.empty());
+            }
+        }
+    }
+}
+
+// Spec MUST: "Servers must not send room invites from ignored users to
+// clients." — proves the invite path (dispatch_membership_push_notification,
+// which also funnels through build_pending_push_deliveries) is covered by
+// the same suppression, not just the plain message path above.
+SCENARIO("an invite from an ignored sender never queues a push notification for the ignoring invitee",
+         "[integration][push][ignoring-users]")
+{
+    GIVEN("push delivery enabled, alice ignores bob, alice has a pusher, and bob has his own room to invite her into")
+    {
+        auto started = merovingian::homeserver::start_client_server(push_test_config());
+        REQUIRE(started.started);
+        started.runtime.homeserver.config.server().push.enabled = true;
+
+        auto const alice = register_and_login(started.runtime, "alice");
+        auto const bob = register_and_login(started.runtime, "bob");
+        auto const bob_room = room_with_alice_only(started.runtime, bob); // bob-owned, alice not a member yet
+
+        set_ignored_users(started.runtime, alice, "%40alice%3Aexample.org",
+                          R"({"ignored_users":{"@bob:example.org":{}}})");
+        register_http_pusher(started.runtime, alice, "org.matrix.integration", "alice-pushkey-ignored-invite",
+                             "https://push-ignored-invite-must-not-be-contacted.invalid/_matrix/push/v1/notify");
+
+        WHEN("bob invites alice, whom he does not know has ignored him")
+        {
+            auto const invite = invite_user_via_http(started.runtime, bob, bob_room, "@alice:example.org");
+
+            THEN("the invite still succeeds and no background push task was ever queued for alice")
+            {
+                REQUIRE(invite.response.status == 200U);
+                auto const lock = std::lock_guard{started.runtime.homeserver.orphan_futures_mutex_};
+                REQUIRE(started.runtime.homeserver.orphan_futures_.empty());
             }
         }
     }

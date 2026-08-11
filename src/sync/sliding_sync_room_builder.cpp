@@ -6,6 +6,7 @@
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/trust_safety/ignore_list.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -81,6 +82,57 @@ namespace
             }
         }
         return std::string{stored_json};
+    }
+
+    // Ignoring Users (spec: docs/matrix-v1.19-spec/client-server-api.md
+    // #ignoring-users, Server behaviour). Parses `event_json` once to answer
+    // both questions trust_safety::is_delivery_suppressed needs: is this a
+    // state event (has a "state_key" member), and — the one case where a
+    // state event is withheld anyway — is it `user`'s own room invite (an
+    // m.room.member event with state_key == user and content.membership ==
+    // "invite")? MSC4186 has no separate invite-state surface like legacy
+    // /sync's rooms.invite.<room_id>.invite_state, so this classification
+    // stands in for build_invite_state_events_array's suppression there, for
+    // both the timeline and required_state below.
+    struct EventIgnoreClassification final
+    {
+        bool is_state_event{false};
+        bool is_new_room_invite_for_user{false};
+    };
+
+    [[nodiscard]] auto classify_event_for_ignore_filter(std::string_view event_json, std::string_view user)
+        -> EventIgnoreClassification
+    {
+        auto result = EventIgnoreClassification{};
+        auto const parsed = canonicaljson::parse_lossless(event_json);
+        if (parsed.error != canonicaljson::ParseError::none)
+        {
+            return result;
+        }
+        auto const* root = as_object(parsed.value);
+        if (root == nullptr)
+        {
+            return result;
+        }
+        result.is_state_event = find_member(*root, "state_key") != nullptr;
+        auto const* type_val = find_member(*root, "type");
+        auto const* type_s = type_val != nullptr ? as_string(*type_val) : nullptr;
+        if (type_s == nullptr || *type_s != "m.room.member")
+        {
+            return result;
+        }
+        auto const* state_key_val = find_member(*root, "state_key");
+        auto const* state_key_s = state_key_val != nullptr ? as_string(*state_key_val) : nullptr;
+        if (state_key_s == nullptr || *state_key_s != user)
+        {
+            return result;
+        }
+        auto const* content_val = find_member(*root, "content");
+        auto const* content = content_val != nullptr ? as_object(*content_val) : nullptr;
+        auto const* membership_val = content != nullptr ? find_member(*content, "membership") : nullptr;
+        auto const* membership_s = membership_val != nullptr ? as_string(*membership_val) : nullptr;
+        result.is_new_room_invite_for_user = membership_s != nullptr && *membership_s == "invite";
+        return result;
     }
 
     // ── required_state wildcard matching ───────────────────────────────────
@@ -548,7 +600,8 @@ auto combine_room_configs(SlidingSyncList const& list, SlidingSyncRoomSubscripti
 auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_view room_id, std::string_view user,
                          SlidingSyncRoomSubscription const& sub, std::uint64_t room_since_event_ordering,
                          bool is_initial, database::PersistentStore const& store,
-                         std::unordered_set<std::string> const& lazy_members_already_sent) -> SlidingSyncRoomResponse
+                         std::unordered_set<std::string> const& lazy_members_already_sent,
+                         std::unordered_set<std::string> const& ignored_senders) -> SlidingSyncRoomResponse
 {
     auto resp = SlidingSyncRoomResponse{};
 
@@ -629,6 +682,18 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
         {
             continue;
         }
+        // Ignoring Users: non-state events from an ignored sender are
+        // withheld from the timeline; state events are still delivered so
+        // the room's visible state stays accurate — except the recipient's
+        // own room invite, which the spec says must never be sent from an
+        // ignored inviter even though it is itself a state event.
+        auto const ignore_classification = classify_event_for_ignore_filter(ev.json, user);
+        if (trust_safety::is_delivery_suppressed(ignored_senders, ev.sender_user_id,
+                                                 ignore_classification.is_state_event,
+                                                 ignore_classification.is_new_room_invite_for_user))
+        {
+            continue;
+        }
         timeline_events.emplace_back(ev.stream_ordering, client_event_json(ev.event_id, ev.json));
     }
     std::sort(timeline_events.begin(), timeline_events.end(), [](auto const& a, auto const& b) {
@@ -700,6 +765,15 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt, std::string_vi
                 if (!bypass_floor && ev.stream_ordering <= room_since_event_ordering)
                 {
                     break; // unchanged since last pos — skip
+                }
+                // Every entry reaching here is already a known state event
+                // (from store.state); only the invite override can still
+                // withhold it — see classify_event_for_ignore_filter above.
+                if (trust_safety::is_delivery_suppressed(
+                        ignored_senders, ev.sender_user_id, /*is_state_event=*/true,
+                        classify_event_for_ignore_filter(ev.json, user).is_new_room_invite_for_user))
+                {
+                    break; // spec: invites from ignored users are not sent
                 }
                 resp.required_state_json.push_back(client_event_json(ev.event_id, ev.json));
                 if (lazy_load_room_members && se.event_type == "m.room.member" &&

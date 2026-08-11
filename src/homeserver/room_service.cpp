@@ -37,6 +37,7 @@
 #include "merovingian/push/push_rules.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
 #include "merovingian/sync/sliding_sync_room_builder.hpp"
+#include "merovingian/trust_safety/ignore_list.hpp"
 #include "merovingian/trust_safety/policy_engine.hpp"
 
 #include <algorithm>
@@ -4949,6 +4950,29 @@ namespace
         }();
         auto const is_member_event = composed.event_type == "m.room.member";
 
+        // Ignoring Users (spec: docs/matrix-v1.19-spec/client-server-api.md
+        // #ignoring-users, Server behaviour). Computed once for this event —
+        // state-key presence and, for membership events, the membership
+        // value are properties of the event itself, not of the recipient —
+        // and reused per recipient below via trust_safety::is_delivery_
+        // suppressed rather than re-parsing per iteration.
+        auto const is_state_event = [&]() -> bool {
+            auto const* root = std::get_if<canonicaljson::Object>(&event_parsed.value.storage());
+            return root != nullptr && object_member(*root, "state_key") != nullptr;
+        }();
+        auto const membership_value = [&]() -> std::string {
+            if (!is_member_event)
+            {
+                return {};
+            }
+            auto const* root = std::get_if<canonicaljson::Object>(&event_parsed.value.storage());
+            auto const* content = root != nullptr ? object_member(*root, "content") : nullptr;
+            auto const* content_object =
+                content != nullptr ? std::get_if<canonicaljson::Object>(&content->storage()) : nullptr;
+            auto const* membership = content_object != nullptr ? string_member(*content_object, "membership") : nullptr;
+            return membership != nullptr ? *membership : std::string{};
+        }();
+
         auto recipients = room.members;
         for (auto const& extra : extra_recipients)
         {
@@ -4964,6 +4988,22 @@ namespace
             {
                 continue;
             }
+
+            // A recipient's own m.ignored_user_list gates whether this event
+            // reaches them at all: state events are still delivered (the
+            // spec's exemption keeps room state accurate for the viewer),
+            // but a room invite from an ignored sender must not be — that
+            // override takes precedence over the state-event exemption even
+            // though an invite is itself an m.room.member state event.
+            auto const ignored_by_recipient = trust_safety::resolve_ignored_users(store, member);
+            auto const is_new_room_invite_for_member = is_member_event && composed.state_key.has_value() &&
+                                                       *composed.state_key == member && membership_value == "invite";
+            if (trust_safety::is_delivery_suppressed(ignored_by_recipient, sender, is_state_event,
+                                                     is_new_room_invite_for_member))
+            {
+                continue;
+            }
+
             auto pushers = database::list_pushers_for_user(store, member);
             if (pushers.empty())
             {

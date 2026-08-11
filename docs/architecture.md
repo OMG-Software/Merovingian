@@ -74,7 +74,7 @@ header-only public boundary.
 | `platform` | POSIX file metadata, hardening self-checks |
 | `rooms` | Room version policy, encryption policy |
 | `sync` | Sync notifier, stream tokens, sync filters, MSC4186 sliding sync |
-| `trust_safety` | Policy engine for moderation rules |
+| `trust_safety` | Policy engine for moderation rules; `m.ignored_user_list` delivery-filter enforcement (`ignore_list`) |
 
 Entry points: `src/main.cpp` (`merovingian-server`), `src/db_migrate.cpp`
 (`merovingian-db-migrate`), `src/federation_worker/main.cpp`
@@ -124,6 +124,7 @@ flowchart TB
     federation --> http
     identity --> http
     push --> http & federation
+    sync --> trust_safety
     services --> database
     events --> crypto & canonicaljson
     federation --> crypto & canonicaljson

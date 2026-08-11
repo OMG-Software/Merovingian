@@ -246,6 +246,74 @@ then closed one of the gaps the audit found.
     gateway, so it stays fast; no change needed there. The pure
     `at_background_task_capacity()` cap-boundary check remains covered
     separately in `tests/unit/test_runtime_orphan_futures.cpp`.
+- **Closed the `m.ignored_user_list` gap the audit above found**: the
+  account-data key was storable but the server never acted on it. Implemented
+  server-side enforcement per Matrix v1.19 CS API §Ignoring Users.
+  - New `merovingian::trust_safety::ignore_list` module
+    (`include/merovingian/trust_safety/ignore_list.hpp`,
+    `src/trust_safety/ignore_list.cpp`): `parse_ignored_user_list()` parses an
+    `m.ignored_user_list` account-data body into a `std::unordered_set`,
+    failing safe to an empty set on malformed/absent content;
+    `resolve_ignored_users()` reads a user's global ignore-list row from the
+    store; `is_delivery_suppressed()` is the pure decision function — non-state
+    events from an ignored sender are withheld, state events are exempt
+    (spec: "Servers must still send state events sent by ignored users to
+    clients"), and a room invite is suppressed regardless of the state-event
+    exemption (spec: "Servers must not send room invites from ignored users
+    to clients"). One shared predicate, called from every delivery surface
+    rather than reimplemented per call site.
+  - Wired into `GET /sync` (`client_server.cpp`): the timeline-matching loop,
+    the invite section (looked up via the inviter's `PersistentInvite::
+    sender_user_id`), and `build_room_ephemeral_events_array()`'s typing and
+    receipt entries. The ignore set is resolved once per request and reused,
+    not re-read per event.
+  - Wired into MSC4186 sliding sync: `build_room_response()`
+    (`sliding_sync_room_builder.cpp`) filters the per-room timeline and, since
+    MSC4186 has no separate invite-state surface like legacy `/sync`'s
+    `rooms.invite.<room_id>.invite_state`, applies the same invite override
+    inside `required_state` for the one case a client can still observe an
+    invite: an explicit `room_subscriptions` entry naming a room the caller
+    was invited to. `build_extensions()` (`sliding_sync_extensions.cpp`)
+    applies the same filter to the receipts and typing extensions. Both take
+    the caller's resolved ignore set as a parameter, resolved once by
+    `sliding_sync_json()` rather than per room/extension.
+  - Wired into `GET /messages` (`messages_json`) and
+    `GET /context/{eventId}` (`room_context_json`): both now take the
+    requesting user's mxid and drop non-state events from an ignored sender.
+    `/context` deliberately never filters the requested `event` field itself
+    — the caller asked for context around that exact event_id (e.g. a
+    permalink); only `events_before`/`events_after` are filtered.
+  - Wired into push delivery: `build_pending_push_deliveries()`
+    (`room_service.cpp`) checks each recipient's ignore list before even
+    looking up their pushers, so an ignored sender's message — or a
+    membership/invite push routed through the same function via
+    `dispatch_membership_push_notification` — never reaches
+    `dispatch_push_deliveries` and never queues a background delivery task.
+  - Judgement calls: ephemeral typing/receipt entries are treated as ordinary
+    (non-state) "events sent by that user" and suppressed the same as
+    messages, since the spec's client-behaviour clause is written in those
+    general terms and neither is a state event. Sliding sync's room *list*
+    only ever enumerates joined rooms (pre-existing, unrelated to this
+    change) — invite suppression there is provable only via `room_
+    subscriptions`, which is what the new test exercises.
+  - New `tests/conformance/test_ignoring_users_conformance.cpp`: an ignored
+    sender's message is absent from `/sync` while an unignored sender's is
+    present; a state event from an ignored sender is still delivered; a room
+    invite from an ignored sender is withheld from `/sync` while another
+    user's invite is not; un-ignoring restores delivery of events sent
+    afterward; a malformed `m.ignored_user_list` is treated as empty;
+    `/messages` and `/context` apply the same filter (with `/context`'s
+    target-event exemption).
+  - New `tests/unit/test_trust_safety_ignore_list.cpp`: pure-function coverage
+    of `parse_ignored_user_list`, `resolve_ignored_users`,
+    `is_delivery_suppressed` (including the state-event and invite-override
+    cases and fail-safe behaviour with an empty ignore set), and
+    `event_json_is_state_event`'s state_key-presence discriminator.
+  - New scenarios in `tests/integration/test_sliding_sync_flow.cpp` (timeline
+    suppression; invite suppression via `room_subscriptions`) and
+    `tests/integration/test_push_delivery_flow.cpp` (an ignored sender's
+    message, and an ignored inviter's invite, never queue a background push
+    task).
 
 ## 0.11.10
 

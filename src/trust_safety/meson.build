@@ -1,4 +1,5 @@
 trust_safety_sources = files(
+  'ignore_list.cpp',
   'policy_engine.cpp',
 )
 

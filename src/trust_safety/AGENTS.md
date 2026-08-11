@@ -7,6 +7,7 @@ Policy engine for content and user moderation.
 | File | Responsibility |
 |---|---|
 | `policy_engine.cpp` | Evaluates content against configured policy rules; returns allow/deny/flag decisions |
+| `ignore_list.cpp` | Matrix v1.19 `m.ignored_user_list` enforcement: parses the account-data event, resolves a user's ignore set, and decides whether a delivery (timeline event, invite, ephemeral entry, push notification) should be withheld. Shared by `src/homeserver/`, `src/sync/`, and `src/homeserver/room_service.cpp`'s push path — see its header for the full call-site list. |
 
 ## Rules
 

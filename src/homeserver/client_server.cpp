@@ -50,6 +50,7 @@
 #include "merovingian/sync/stream_token.hpp"
 #include "merovingian/sync/sync_filter.hpp"
 #include "merovingian/sync/sync_notifier.hpp"
+#include "merovingian/trust_safety/ignore_list.hpp"
 #include "merovingian/trust_safety/policy_engine.hpp"
 
 #include <algorithm>
@@ -3018,7 +3019,9 @@ namespace
 
     [[nodiscard]] auto build_room_ephemeral_events_array(HomeserverRuntime const& runtime, std::string_view room_id,
                                                          std::uint64_t since_sync_stream_id,
-                                                         std::uint64_t& max_observed_stream_id) -> canonicaljson::Array
+                                                         std::uint64_t& max_observed_stream_id,
+                                                         std::unordered_set<std::string> const& ignored_senders = {})
+        -> canonicaljson::Array
     {
         auto events = canonicaljson::Array{};
 
@@ -3029,6 +3032,14 @@ namespace
             for (auto const& typing : runtime.typing_users)
             {
                 if (typing.room_id != room_id || !typing.typing)
+                {
+                    continue;
+                }
+                // Ignoring Users: typing is not a state event, so the same
+                // "no longer receive events sent by that user" client
+                // behaviour the spec describes applies — a typing indicator
+                // is exactly that kind of ephemeral, per-user activity.
+                if (trust_safety::is_delivery_suppressed(ignored_senders, typing.user_id, /*is_state_event=*/false))
                 {
                     continue;
                 }
@@ -3057,11 +3068,22 @@ namespace
             {
                 continue;
             }
-            receipt_index[receipt.event_id][receipt.receipt_type][receipt.user_id] = receipt.ts;
+            // The stream watermark always advances, suppressed or not, so a
+            // suppressed receipt is never re-considered "unseen" on the next
+            // poll. Only inclusion in the response is gated by the ignore
+            // list.
             if (receipt.stream_id > max_observed_stream_id)
             {
                 max_observed_stream_id = receipt.stream_id;
             }
+            // Ignoring Users: a read receipt is an event sent by its
+            // `user_id` (not a state event), so it is withheld the same way
+            // typing above is.
+            if (trust_safety::is_delivery_suppressed(ignored_senders, receipt.user_id, /*is_state_event=*/false))
+            {
+                continue;
+            }
+            receipt_index[receipt.event_id][receipt.receipt_type][receipt.user_id] = receipt.ts;
         }
         if (!receipt_index.empty())
         {
@@ -3347,6 +3369,12 @@ namespace
         auto join_members = canonicaljson::Object{};
         auto join_count = std::size_t{0U};
 
+        // Ignoring Users (spec: docs/matrix-v1.19-spec/client-server-api.md
+        // #ignoring-users, Server behaviour). Resolved once per request and
+        // reused for every room's timeline/ephemeral events and the invite
+        // list below — never re-read per event.
+        auto const ignored_senders = trust_safety::resolve_ignored_users(store, user);
+
         log_diagnostic("sync.request",
                        {
                            {"user",                    std::string{user},                                   false},
@@ -3393,6 +3421,17 @@ namespace
                     // until events expose their type. Passing an empty string
                     // for event_type makes `event_passes_filter` apply the
                     // sender rules without requiring a type match.
+                    continue;
+                }
+                // Ignoring Users: non-state events from an ignored sender are
+                // withheld from the timeline; state events are still sent
+                // (spec: "Servers must still send state events sent by
+                // ignored users to clients") so the room's visible state
+                // never looks different just because the viewer ignored the
+                // sender.
+                if (trust_safety::is_delivery_suppressed(ignored_senders, event.sender_user_id,
+                                                         trust_safety::event_json_is_state_event(event.json)))
+                {
                     continue;
                 }
                 matched.push_back(&event);
@@ -3443,7 +3482,7 @@ namespace
                 state_events = build_current_state_events_array(store, filter.room.state, room.room_id);
             }
             auto ephemeral_events = build_room_ephemeral_events_array(rt.homeserver, room.room_id, since_sync_stream_id,
-                                                                      max_observed_sync_stream_id);
+                                                                      max_observed_sync_stream_id, ignored_senders);
 
             // unread_notifications: counts are relative to the user's last
             // m.read/m.read.private receipt, not the sync position (#417,
@@ -3516,6 +3555,18 @@ namespace
             }
             if (membership.membership == "invite")
             {
+                // Ignoring Users: "Servers must not send room invites from
+                // ignored users to clients." An invite whose inviter cannot
+                // be resolved (no matching PersistentInvite row) is passed
+                // through unfiltered — fail safe, never drop a legitimate
+                // invite because of a lookup gap.
+                auto const invite_record = database::find_invite(store, membership.room_id, user);
+                if (invite_record.has_value() &&
+                    trust_safety::is_delivery_suppressed(ignored_senders, invite_record->sender_user_id,
+                                                         /*is_state_event=*/true, /*is_new_room_invite=*/true))
+                {
+                    continue;
+                }
                 if (invite_count < rt.limits.max_sync_rooms)
                 {
                     auto invite_state_events = build_invite_state_events_array(store, membership.room_id, user);
@@ -3837,6 +3888,12 @@ namespace
     {
         auto& store = rt.homeserver.database.persistent_store;
 
+        // Ignoring Users (spec: docs/matrix-v1.19-spec/client-server-api.md
+        // #ignoring-users, Server behaviour). Resolved once per request and
+        // threaded through to every room's timeline and the receipts/typing
+        // extensions below — never re-read per event.
+        auto const ignored_senders = trust_safety::resolve_ignored_users(store, user);
+
         auto const conn_key = std::string{user} + "/" + std::string{device_id} + "/" +
                               (ssreq.conn_id.has_value() ? *ssreq.conn_id : "__default__");
 
@@ -4100,7 +4157,7 @@ namespace
             auto const& lazy_already_sent =
                 lazy_sent_it != conn.lazy_members_sent.end() ? lazy_sent_it->second : empty_lazy_members_set;
             auto room = sync::build_room_response(rt.homeserver, room_id, user, sub, room_since, is_initial, store,
-                                                  lazy_already_sent);
+                                                  lazy_already_sent, ignored_senders);
             if (!room.lazy_members_included.empty())
             {
                 lazy_members_included_by_room[room_id] = room.lazy_members_included;
@@ -4131,7 +4188,7 @@ namespace
         {
             extension_responses =
                 sync::build_extensions(rt.homeserver, user, device_id, *ssreq.extensions, since_sync_stream_id,
-                                       store.next_sync_stream_id, store, response_room_ids);
+                                       store.next_sync_stream_id, store, response_room_ids, ignored_senders);
             ext_obj = sliding_sync_ext_to_value(*extension_responses);
         }
 
@@ -5995,8 +6052,8 @@ namespace
         return parsed;
     }
 
-    [[nodiscard]] auto messages_json(ClientServerRuntime const& rt, std::string_view room_id, std::string_view target)
-        -> std::string
+    [[nodiscard]] auto messages_json(ClientServerRuntime const& rt, std::string_view room_id, std::string_view target,
+                                     std::string_view user_id) -> std::string
     {
         auto const& store = rt.homeserver.database.persistent_store;
         auto const dir = messages_query_value(target, "dir");
@@ -6007,13 +6064,25 @@ namespace
         {
             limit = static_cast<std::size_t>(std::min<std::uint64_t>(*parsed, std::uint64_t{100U}));
         }
+        // Ignoring Users (spec: docs/matrix-v1.19-spec/client-server-api.md
+        // #ignoring-users). Resolved once for this request. Events from an
+        // ignored sender are dropped from consideration entirely (as if they
+        // did not exist for pagination purposes) except state events, which
+        // the spec requires servers to keep sending.
+        auto const ignored_senders = trust_safety::resolve_ignored_users(store, user_id);
         auto entries = std::vector<database::PersistentEvent const*>{};
         for (auto const& event : store.events)
         {
-            if (event.room_id == room_id)
+            if (event.room_id != room_id)
             {
-                entries.push_back(&event);
+                continue;
             }
+            if (trust_safety::is_delivery_suppressed(ignored_senders, event.sender_user_id,
+                                                     trust_safety::event_json_is_state_event(event.json)))
+            {
+                continue;
+            }
+            entries.push_back(&event);
         }
         std::ranges::sort(entries, [](auto const* lhs, auto const* rhs) noexcept {
             return lhs->stream_ordering < rhs->stream_ordering;
@@ -6107,9 +6176,17 @@ namespace
     // paginating with GET /messages?from=<start|end>&dir=<b|f>.
     [[nodiscard]] auto room_context_json(ClientServerRuntime const& rt, std::string_view room_id,
                                          database::PersistentEvent const& target, sync::RoomFilter const& filter,
-                                         std::size_t limit) -> std::string
+                                         std::size_t limit, std::string_view user_id) -> std::string
     {
         auto const& store = rt.homeserver.database.persistent_store;
+
+        // Ignoring Users: resolved once for this request and applied only to
+        // events_before/events_after below — never to `target` itself. The
+        // caller asked for context around this specific event_id (e.g. a
+        // permalink); returning something other than the event they named
+        // would be a worse outcome than showing one message from an ignored
+        // sender they explicitly navigated to.
+        auto const ignored_senders = trust_safety::resolve_ignored_users(store, user_id);
 
         auto entries = std::vector<database::PersistentEvent const*>{};
         for (auto const& event : store.events)
@@ -6148,6 +6225,11 @@ namespace
                 {
                     continue;
                 }
+                if (trust_safety::is_delivery_suppressed(ignored_senders, candidate->sender_user_id,
+                                                         trust_safety::event_json_is_state_event(candidate->json)))
+                {
+                    continue;
+                }
                 events_before.push_back(client_event_with_id(store, *candidate));
                 start_token = std::to_string(candidate->stream_ordering);
             }
@@ -6162,6 +6244,11 @@ namespace
                 auto const* candidate = entries[i];
                 if (!sync::event_passes_filter(filter.timeline, stored_event_type(*candidate),
                                                candidate->sender_user_id))
+                {
+                    continue;
+                }
+                if (trust_safety::is_delivery_suppressed(ignored_senders, candidate->sender_user_id,
+                                                         trust_safety::event_json_is_state_event(candidate->json)))
                 {
                     continue;
                 }
@@ -9975,7 +10062,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 }
 
                 return dispatch_resp(req, rt, 200U,
-                                     room_context_json(rt, path->room_id, *event, *parsed_filter, limit));
+                                     room_context_json(rt, path->room_id, *event, *parsed_filter, limit, *user));
             }
         }
         // GET /rooms/{roomId}/state/{eventType}/{stateKey}
@@ -10501,7 +10588,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                    {"actor",   *user,          false},
                                    {"room_id", *messages_room, false}
                 });
-                return dispatch_resp(req, rt, 200U, messages_json(rt, *messages_room, req.target));
+                return dispatch_resp(req, rt, 200U, messages_json(rt, *messages_room, req.target, *user));
             }
         }
         if (req.method == "POST" && suffix.size() > invite_s.size() &&

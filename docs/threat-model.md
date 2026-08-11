@@ -747,6 +747,34 @@ threat it closes; the controls above are the standing defences these reinforce.
   future while holding the mutex — this failure mode was unique to the two
   fixed call sites.
 
+- **`m.ignored_user_list` was storable but never enforced (v0.11.11, fixed):**
+  a client could set the account-data key (account data is generic storage)
+  but the server never filtered anything by it — every /sync, /messages,
+  /context, sliding sync, and push-notification response ignored it
+  entirely, so a user who ignored an abuser kept receiving that abuser's
+  messages, invites, and push notifications regardless. This is a
+  safety-relevant gap for a homeserver whose stated design goal is user
+  safety: the *only* client-facing control a harassed user has short of
+  leaving a room or blocking at the OS/network level did nothing. Fixed by
+  `merovingian::trust_safety::ignore_list` — a single shared predicate
+  (`is_delivery_suppressed`) called from every delivery surface: `GET /sync`
+  (timeline, invite list, ephemeral typing/receipts), MSC4186 sliding sync
+  (timeline, required_state, receipts/typing extensions),
+  `GET /messages`, `GET /context/{eventId}`, and
+  `build_pending_push_deliveries()` (message and membership/invite push).
+  Scope, deliberately narrow per spec: this is a **delivery-side filter
+  only** — it does not touch event persistence, authorization, state
+  resolution, or federation acceptance (an ignored user's events are still
+  fully valid room state, exactly as the spec requires: "Servers must still
+  send state events sent by ignored users to clients"), it does not hide
+  history already delivered to the client, and it does not stop the ignored
+  user from continuing to send into a shared room — see
+  `docs/trust-safety.md` "What ignoring a user does NOT protect against" for
+  the full boundary. A malformed or absent `m.ignored_user_list` fails safe
+  to "nothing ignored" (`parse_ignored_user_list` never throws and treats
+  any parse failure as an empty set) rather than either erroring or
+  over-suppressing.
+
 ## Security principles
 
 - Fail closed.
