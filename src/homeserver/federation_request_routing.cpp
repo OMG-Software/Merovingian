@@ -209,4 +209,11 @@ auto is_federation_key_server_endpoint(std::string_view target) noexcept -> bool
     return path == "/_matrix/key/v2/server";
 }
 
+auto is_federation_openid_userinfo_endpoint(std::string_view target) noexcept -> bool
+{
+    auto const query_pos = target.find('?');
+    auto const path = target.substr(0U, query_pos);
+    return path == "/_matrix/federation/v1/openid/userinfo";
+}
+
 } // namespace merovingian::homeserver

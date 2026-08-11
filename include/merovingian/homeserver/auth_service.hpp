@@ -79,4 +79,40 @@ struct AdminAuthResult
 // the hash rather than holding the plaintext token on the request path.
 [[nodiscard]] auto load_hashed_registration_token(config::RegistrationSecurityConfig const& registration)
     -> std::optional<std::string>;
+
+// Result of minting an OpenID token via `POST
+// /_matrix/client/v3/user/{userId}/openid/request_token` (Matrix v1.19 CS
+// API §OpenID). Kept separate from OperationResult because the spec's 200
+// response has three required fields beyond the token itself.
+struct OpenidTokenIssueResult final
+{
+    bool ok{false};
+    std::uint16_t status{500U};
+    std::string access_token{};
+    std::string matrix_server_name{};
+    std::uint64_t expires_in_seconds{0U};
+    std::string reason{};
+};
+
+// Mints a short-lived OpenID token for `user_id`. The token is stored in the
+// dedicated `openid_tokens` table -- NEVER the access-token store -- so it
+// cannot be used to authenticate ordinary client-server requests (see
+// federation_openid_userinfo for the matching separation on the redeem
+// side; docs/threat-model.md documents the token-confusion risk this
+// prevents). The caller is responsible for verifying the path userId
+// matches the authenticated caller before calling this: this function does
+// not re-check identity, only that user_id is well-formed enough to hash
+// and persist.
+[[nodiscard]] auto request_openid_token(HomeserverRuntime& runtime, std::string_view user_id) -> OpenidTokenIssueResult;
+
+// Redeems an OpenID token minted by request_openid_token, returning the
+// owning Matrix user ID, or std::nullopt if the token is unknown, expired,
+// or malformed. Used by `GET /_matrix/federation/v1/openid/userinfo`
+// (Matrix v1.19 SS API §OpenID). Deliberately consults only the
+// openid_tokens table -- an ordinary client-server access token is always
+// rejected here, even if it happens to collide byte-for-byte, because the
+// lookup never touches the access-token/session store.
+[[nodiscard]] auto federation_openid_userinfo(HomeserverRuntime const& runtime, std::string_view openid_access_token)
+    -> std::optional<std::string>;
+
 } // namespace merovingian::homeserver

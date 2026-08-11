@@ -30,4 +30,15 @@ namespace merovingian::homeserver
 // worker routing and federation authorization verification.
 [[nodiscard]] auto is_federation_key_server_endpoint(std::string_view target) noexcept -> bool;
 
+// Returns true when the request target is exactly
+// `/_matrix/federation/v1/openid/userinfo` (optionally followed by a query
+// string carrying `?access_token=...`). Matrix v1.19 SS API §OpenID marks
+// this endpoint "Requires authentication: No" -- it is called by arbitrary
+// third-party services, not necessarily other homeservers -- so, like the
+// key server endpoint above, it must never be routed through the X-Matrix
+// signature-required federation dispatch path. Matched precisely for the
+// same reason as is_federation_key_server_endpoint: a substring match would
+// let an unrelated path bypass authorization verification.
+[[nodiscard]] auto is_federation_openid_userinfo_endpoint(std::string_view target) noexcept -> bool;
+
 } // namespace merovingian::homeserver

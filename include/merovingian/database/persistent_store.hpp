@@ -446,6 +446,24 @@ struct PersistentNotification final
     bool highlight{false};
 };
 
+// A short-lived OpenID token minted by `POST
+// /_matrix/client/v3/user/{userId}/openid/request_token` (Matrix v1.19 CS
+// API §OpenID) and redeemed by `GET /_matrix/federation/v1/openid/userinfo`
+// (SS API §OpenID). Deliberately a table of its own, disjoint from
+// PersistentAccessToken/access_tokens: this token authenticates nothing on
+// the client-server surface -- its only valid use is the federation
+// userinfo lookup -- so keeping it out of the access-token store and its
+// lookup path is what prevents it from being replayed as a client-server
+// bearer credential (see docs/threat-model.md). Unlike access tokens, every
+// row has a finite expiry (the spec's `expires_in` is required), so
+// expires_at is a plain time_point rather than optional.
+struct PersistentOpenidToken final
+{
+    std::string user_id{};
+    std::string token_hash{};
+    std::chrono::system_clock::time_point expires_at{};
+};
+
 struct PersistentStore final
 {
     PersistentStore() = default;
@@ -494,6 +512,7 @@ struct PersistentStore final
         , client_txn_ids{other.client_txn_ids}
         , pushers{other.pushers}
         , notifications{other.notifications}
+        , openid_tokens{other.openid_tokens}
         , prepared_statements{other.prepared_statements}
         , prepared_statements_mutex{std::make_unique<std::mutex>()}
         , next_sync_stream_id{other.next_sync_stream_id}
@@ -551,6 +570,7 @@ struct PersistentStore final
         client_txn_ids = other.client_txn_ids;
         pushers = other.pushers;
         notifications = other.notifications;
+        openid_tokens = other.openid_tokens;
         prepared_statements = other.prepared_statements;
         prepared_statements_mutex = std::make_unique<std::mutex>();
         next_sync_stream_id = other.next_sync_stream_id;
@@ -608,6 +628,7 @@ struct PersistentStore final
     std::vector<PersistentClientTxnRecord> client_txn_ids{};
     std::vector<PersistentPusher> pushers{};
     std::vector<PersistentNotification> notifications{};
+    std::vector<PersistentOpenidToken> openid_tokens{};
     std::vector<PreparedStatement> prepared_statements{};
     // Guards prepared_statements, which is appended to by
     // commit_persistent_transaction from multiple concurrent room-stripe paths
@@ -882,6 +903,14 @@ auto apply_store_event_with_state(PersistentStore& store, PreparedStateUpdate co
 // pagination and filtering.
 [[nodiscard]] auto list_notifications_for_user(PersistentStore const& store, std::string_view user_id)
     -> std::vector<PersistentNotification>;
+// Insert an OpenID token row. Persists it, mirrors it into the in-memory
+// vector, and then prunes every already-expired row (across all users) so
+// `openid_tokens` cannot grow without bound -- the time-based analogue of
+// store_notification's per-user count cap, appropriate here because an
+// OpenID token's natural retention bound is its own short expiry rather
+// than a row count. Returns false on an empty user_id/token_hash or a
+// backend write failure.
+[[nodiscard]] auto store_openid_token(PersistentStore& store, PersistentOpenidToken token) -> bool;
 // Look up a previous idempotent send result. Returns the stored event_id
 // (or empty string for to-device sends) if the (user_id, room_id,
 // event_type, txn_id) tuple was already committed; nullopt otherwise.

@@ -1055,6 +1055,267 @@ SCENARIO("GET /whoami returns required spec fields", "[conformance][client-serve
     }
 }
 
+// --- OpenID (Matrix v1.19 CS API §OpenID / SS API §OpenID) ------------------------
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3useruseridopenidrequest_token
+//       ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1openiduserinfo
+//
+// Covers both halves together because the token minted by the client-server
+// endpoint is meaningless without the federation endpoint that redeems it,
+// and vice versa -- neither half is independently testable against the spec.
+
+SCENARIO("POST /user/{userId}/openid/request_token returns required spec fields",
+         "[conformance][client-server][openid]")
+{
+    GIVEN("a logged-in user")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+
+        WHEN("alice requests an OpenID token for herself")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/user/@alice:example.org/openid/request_token", token, "{}"});
+
+            THEN("the response is 200 with all spec-required fields")
+            {
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+
+                // Spec MUST: access_token is present and non-empty.
+                auto const* access_token = string_member(body, "access_token");
+                REQUIRE(access_token != nullptr);
+                REQUIRE(!access_token->empty());
+
+                // Spec MUST: token_type is the literal string "Bearer".
+                auto const* token_type = string_member(body, "token_type");
+                REQUIRE(token_type != nullptr);
+                REQUIRE(*token_type == "Bearer");
+
+                // Spec MUST: matrix_server_name identifies this homeserver.
+                auto const* server_name = string_member(body, "matrix_server_name");
+                REQUIRE(server_name != nullptr);
+                REQUIRE(*server_name == "example.org");
+
+                // Spec MUST: expires_in is a required integer field.
+                auto const* expires_in = int_member(body, "expires_in");
+                REQUIRE(expires_in != nullptr);
+                REQUIRE(*expires_in > 0);
+            }
+        }
+    }
+}
+
+SCENARIO("POST /user/{userId}/openid/request_token without authentication is rejected",
+         "[conformance][client-server][openid]")
+{
+    GIVEN("a running homeserver")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+
+        WHEN("the request carries no access token")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"POST", "/_matrix/client/v3/user/@alice:example.org/openid/request_token", {}, "{}"});
+
+            THEN("the request is rejected as unauthenticated")
+            {
+                // Spec MUST: "Requires authentication: Yes".
+                REQUIRE(response.response.status == 401U);
+            }
+        }
+    }
+}
+
+SCENARIO("POST /user/{userId}/openid/request_token for a mismatched userId fails closed without revealing "
+         "whether that user exists",
+         "[conformance][client-server][openid][security]")
+{
+    GIVEN("alice is logged in, bob is a real registered user, and carol does not exist")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const alice_token = logged_in_token(started.runtime);
+        REQUIRE(!register_and_login(started.runtime, "bob").empty());
+
+        WHEN("alice requests a token naming bob, an existing other user")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/user/@bob:example.org/openid/request_token", alice_token, "{}"});
+
+            THEN("the request is rejected 403 M_FORBIDDEN")
+            {
+                REQUIRE(response.response.status == 403U);
+                auto const body = parse_object(response.response.body);
+                auto const* errcode = string_member(body, "errcode");
+                REQUIRE(errcode != nullptr);
+                REQUIRE(*errcode == "M_FORBIDDEN");
+            }
+        }
+
+        WHEN("alice requests a token naming carol, who does not exist on this server")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/user/@carol:example.org/openid/request_token", alice_token, "{}"});
+
+            THEN("the request is rejected with the identical 403 M_FORBIDDEN response as for a real other user")
+            {
+                // Security: the response must not let a caller distinguish
+                // "not you" from "no such user" -- both are the same status
+                // and errcode as the bob case above.
+                REQUIRE(response.response.status == 403U);
+                auto const body = parse_object(response.response.body);
+                auto const* errcode = string_member(body, "errcode");
+                REQUIRE(errcode != nullptr);
+                REQUIRE(*errcode == "M_FORBIDDEN");
+            }
+        }
+    }
+}
+
+SCENARIO("GET /_matrix/federation/v1/openid/userinfo returns sub for a token minted by request_token",
+         "[conformance][federation][openid]")
+{
+    GIVEN("alice has minted an OpenID token via the client-server endpoint")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+        auto const mint = merovingian::homeserver::handle_client_server_request(
+            started.runtime, {"POST", "/_matrix/client/v3/user/@alice:example.org/openid/request_token", token, "{}"});
+        REQUIRE(mint.response.status == 200U);
+        auto const mint_body = parse_object(mint.response.body);
+        auto const* openid_token = string_member(mint_body, "access_token");
+        REQUIRE(openid_token != nullptr);
+
+        WHEN("a third party redeems it at the federation userinfo endpoint")
+        {
+            auto const userinfo = merovingian::homeserver::handle_federation_http_request(
+                started.runtime.homeserver,
+                {"GET", "/_matrix/federation/v1/openid/userinfo?access_token=" + *openid_token, {}, {}});
+
+            THEN("the response is 200 with the owning Matrix user ID")
+            {
+                // Spec MUST: sub is the Matrix User ID who generated the token.
+                REQUIRE(userinfo.status == 200U);
+                auto const body = parse_object(userinfo.body);
+                auto const* sub = string_member(body, "sub");
+                REQUIRE(sub != nullptr);
+                REQUIRE(*sub == "@alice:example.org");
+            }
+        }
+    }
+}
+
+SCENARIO("GET /_matrix/federation/v1/openid/userinfo fails closed for an unknown token",
+         "[conformance][federation][openid][error]")
+{
+    GIVEN("a running homeserver")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+
+        WHEN("a token that was never issued is presented")
+        {
+            auto const userinfo = merovingian::homeserver::handle_federation_http_request(
+                started.runtime.homeserver,
+                {"GET", "/_matrix/federation/v1/openid/userinfo?access_token=mvo_never_issued", {}, {}});
+
+            THEN("the response is 401 M_UNKNOWN_TOKEN")
+            {
+                // Spec MUST: "401 The token was not recognized or has expired."
+                REQUIRE(userinfo.status == 401U);
+                auto const body = parse_object(userinfo.body);
+                auto const* errcode = string_member(body, "errcode");
+                REQUIRE(errcode != nullptr);
+                REQUIRE(*errcode == "M_UNKNOWN_TOKEN");
+            }
+        }
+    }
+}
+
+SCENARIO("GET /_matrix/federation/v1/openid/userinfo rejects an ordinary client-server access token",
+         "[conformance][federation][openid][security]")
+{
+    GIVEN("alice's ordinary client-server access token")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+
+        WHEN("it is presented to the federation userinfo endpoint as if it were an OpenID token")
+        {
+            auto const userinfo = merovingian::homeserver::handle_federation_http_request(
+                started.runtime.homeserver,
+                {"GET", "/_matrix/federation/v1/openid/userinfo?access_token=" + token, {}, {}});
+
+            THEN("it is rejected exactly like an unknown token")
+            {
+                // Security-critical: an access token must never redeem as an
+                // OpenID token (see docs/threat-model.md).
+                REQUIRE(userinfo.status == 401U);
+                auto const body = parse_object(userinfo.body);
+                auto const* errcode = string_member(body, "errcode");
+                REQUIRE(errcode != nullptr);
+                REQUIRE(*errcode == "M_UNKNOWN_TOKEN");
+            }
+        }
+    }
+}
+
+SCENARIO("An OpenID token is rejected as a client-server access token",
+         "[conformance][client-server][openid][security]")
+{
+    GIVEN("alice has minted an OpenID token via the client-server endpoint")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const real_token = logged_in_token(started.runtime);
+        auto const mint = merovingian::homeserver::handle_client_server_request(
+            started.runtime,
+            {"POST", "/_matrix/client/v3/user/@alice:example.org/openid/request_token", real_token, "{}"});
+        REQUIRE(mint.response.status == 200U);
+        auto const mint_body = parse_object(mint.response.body);
+        auto const* openid_token = string_member(mint_body, "access_token");
+        REQUIRE(openid_token != nullptr);
+        // Sanity: confirm this is genuinely a live OpenID token before
+        // proving it cannot double as an access token below -- otherwise a
+        // rejection here would be meaningless (any garbage string is
+        // "rejected").
+        auto const userinfo_sanity = merovingian::homeserver::handle_federation_http_request(
+            started.runtime.homeserver,
+            {"GET", "/_matrix/federation/v1/openid/userinfo?access_token=" + *openid_token, {}, {}});
+        REQUIRE(userinfo_sanity.status == 200U);
+
+        WHEN("the OpenID token is presented as an Authorization: Bearer credential to GET /account/whoami")
+        {
+            auto const whoami = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v3/account/whoami", *openid_token, {}});
+
+            THEN("it is rejected exactly like an unknown access token, and does not authenticate as alice")
+            {
+                // Security-critical: an OpenID token lives only in
+                // openid_tokens, never access_tokens, so it must never pass
+                // the ordinary client-server auth gate (see
+                // docs/threat-model.md, "OpenID token confusion"). If this
+                // ever authenticated, every third-party service alice logged
+                // into via OpenID would gain full control of her account.
+                REQUIRE(whoami.response.status == 401U);
+                auto const body = parse_object(whoami.response.body);
+                auto const* errcode = string_member(body, "errcode");
+                REQUIRE(errcode != nullptr);
+                REQUIRE(*errcode == "M_UNKNOWN_TOKEN");
+                // The response must not carry alice's identity anywhere.
+                REQUIRE(whoami.response.body.find("@alice:example.org") == std::string::npos);
+            }
+        }
+    }
+}
+
 SCENARIO("Registration-issued session reports its device and can upload device keys for that device",
          "[conformance][client-server][whoami][e2ee][keys]")
 {
@@ -12863,7 +13124,9 @@ SCENARIO("GET /v1/rooms/{roomId}/threads conformance")
 // 23     OpenID — POST /user/{userId}/openid/request_token
 // ============================================================================
 // Spec: Matrix v1.19 §23 POST /_matrix/client/v3/user/{userId}/openid/request_token
-//       IMPLEMENTATION GAP: not yet implemented. Must return 404 M_UNRECOGNIZED.
+//       IMPLEMENTATION LANDED: routed. See the dedicated OpenID scenarios
+//       above for full response-shape, auth, and security coverage; this
+//       sweep entry now proves the route is live rather than 404.
 
 SCENARIO("POST /user/{userId}/openid/request_token conformance")
 {
@@ -12879,13 +13142,16 @@ SCENARIO("POST /user/{userId}/openid/request_token conformance")
                 started.runtime,
                 {"POST", "/_matrix/client/v3/user/%40alice%3Aexample.org/openid/request_token", token, "{}"});
 
-            THEN("the server returns 404 M_UNRECOGNIZED")
+            THEN("the server returns 200 with a usable OpenID access_token, not the M_UNRECOGNIZED an unrouted "
+                 "endpoint would return")
             {
-                REQUIRE(response.response.status == 404);
+                // The route is implemented (see the dedicated scenarios above);
+                // percent-encoded userId resolves the same as the plain form.
+                REQUIRE(response.response.status == 200);
                 auto const body = parse_object(response.response.body);
-                auto const* err = string_member(body, "errcode");
-                REQUIRE(err != nullptr);
-                REQUIRE(*err == "M_UNRECOGNIZED");
+                auto const* access_token = string_member(body, "access_token");
+                REQUIRE(access_token != nullptr);
+                REQUIRE(!access_token->empty());
             }
         }
     }

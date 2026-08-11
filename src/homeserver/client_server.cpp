@@ -11364,6 +11364,38 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         auto const suffix = std::string_view{req.target}.substr(user_prefix.size());
         auto constexpr filter_s = std::string_view{"/filter"};
         auto constexpr filter_m = std::string_view{"/filter/"};
+        auto constexpr openid_request_token_s = std::string_view{"/openid/request_token"};
+
+        // POST /_matrix/client/v3/user/{userId}/openid/request_token
+        // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3useruseridopenidrequest_token
+        // Mints a short-lived OpenID token redeemable at the federation
+        // `GET /openid/userinfo` endpoint -- and nowhere else (see
+        // request_openid_token's doc comment and docs/threat-model.md).
+        if (req.method == "POST" && ends_with(suffix, openid_request_token_s))
+        {
+            auto const encoded_user = suffix.substr(0U, suffix.size() - openid_request_token_s.size());
+            auto const path_user = core::percent_decode_path_component(encoded_user);
+            if (path_user != *user)
+            {
+                // Fail closed on a pure string compare against the already-
+                // authenticated caller: this can never reveal whether some
+                // other userId exists on this server.
+                return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "cannot request an OpenID token for another user");
+            }
+            auto const result = request_openid_token(rt.homeserver, path_user);
+            if (!result.ok)
+            {
+                return dispatch_err(req, rt, result.status, "M_UNKNOWN", result.reason);
+            }
+            return dispatch_resp(
+                req, rt, 200U,
+                json_serialize(json_obj({
+                    json_member("access_token", json_str(result.access_token)),
+                    json_member("expires_in", json_int(static_cast<std::int64_t>(result.expires_in_seconds))),
+                    json_member("matrix_server_name", json_str(result.matrix_server_name)),
+                    json_member("token_type", json_str("Bearer")),
+                })));
+        }
 
         if (req.method == "POST" && ends_with(suffix, filter_s))
         {

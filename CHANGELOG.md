@@ -382,6 +382,78 @@ then closed one of the gaps the audit found.
     hardcoded migration-step/schema-version assertions for the new schema
     version 9 and the `notifications` migration step.
 
+- Implemented Matrix v1.19 OpenID, both halves: `POST
+  /_matrix/client/v3/user/{userId}/openid/request_token` (client-server, mints
+  a token) and `GET /_matrix/federation/v1/openid/userinfo` (federation,
+  redeems it). Closes the last unrouted client-server endpoint this branch's
+  audit had flagged (`docs/todos/capability-gaps.md`).
+  - **Security-critical design constraint:** an OpenID token must never be
+    usable as a client-server access token. Kept structurally separate rather
+    than relying on a runtime check: a new `openid_tokens` table (never
+    `access_tokens`), a dedicated mint path (`homeserver::request_openid_
+    token`) and a dedicated redeem path (`homeserver::federation_openid_
+    userinfo`) that are the only functions touching that table. The ordinary
+    client-server auth gate (`authenticated_user`) never reads `openid_
+    tokens`; `federation_openid_userinfo` never reads `access_tokens`/
+    `sessions`. See `docs/threat-model.md` ("OpenID token confusion") and
+    `docs/auth-identity.md` ("OpenID tokens").
+  - New `openid_tokens` table (`migrations/010_openid_tokens.sql`, schema
+    version 10): `user_id`, `token_hash` (primary key), `expires_at` (epoch
+    milliseconds, always finite — unlike access tokens, an OpenID token never
+    has "no expiry"). `PersistentOpenidToken` plus `store_openid_token` on
+    `PersistentStore`, hydrated for both SQLite and PostgreSQL, following the
+    `PersistentPusher`/`PersistentAccessToken` pattern. Retention:
+    `store_openid_token` sweeps every already-expired row (across all users)
+    on each insert, since an OpenID token's natural bound is its own expiry
+    rather than a per-user row count.
+  - `POST /user/{userId}/openid/request_token`: authenticated, and the path
+    `userId` must equal the caller — a mismatch fails closed 403
+    `M_FORBIDDEN` via a pure string compare against the already-authenticated
+    user, so the response cannot reveal whether some other `userId` exists on
+    this server (verified against both a real other user and a nonexistent
+    one, asserting byte-identical responses). Mints a token good for one
+    hour (hardcoded — not operator-configurable, since a longer-lived OpenID
+    token still cannot reach the client-server surface) and returns the
+    spec's four required fields: `access_token`, `token_type` (`"Bearer"`),
+    `matrix_server_name`, `expires_in` (seconds). Rate-limited under the same
+    default per-IP bucket every other authenticated non-enumerated endpoint
+    (filter, account_data, pushers) uses.
+  - `GET /openid/userinfo`: per spec, requires no authentication and is not
+    rate-limited — the caller may be any third-party service, not
+    necessarily a homeserver — so it is dispatched entirely outside
+    `federation::handle_inbound_federation_request`'s X-Matrix
+    signature-required path, alongside the existing `GET
+    /_matrix/key/v2/server` bypass, in `src/homeserver/local_http_router.cpp`
+    / `src/homeserver/federation_proxy.cpp`
+    (`is_federation_openid_userinfo_endpoint`,
+    `federation_openid_userinfo_response`). An unknown or expired token gets
+    the identical `401 M_UNKNOWN_TOKEN` / "Access token unknown or expired"
+    body in both cases, matching the spec's own error shape, so a caller
+    cannot distinguish "never issued" from "expired".
+  - New `tests/unit/test_openid_token_store.cpp`: `store_openid_token`
+    persists, rejects empty `user_id`/malformed `token_hash`, and sweeps
+    already-expired rows on the next insert while leaving still-valid rows
+    (for other users) untouched.
+  - New scenarios in `tests/unit/test_homeserver_auth_service.cpp`:
+    `request_openid_token` returns all spec-required fields;
+    `federation_openid_userinfo` redeems a minted token, fails closed for an
+    unknown token, and fails closed identically for an expired one (asserted
+    against a real unknown-token call, not just "returns false"); an OpenID
+    token is rejected by `authenticated_user` and an ordinary access token is
+    rejected by `federation_openid_userinfo` — the two security-critical
+    separation directions.
+  - New scenarios in `tests/conformance/test_client_server_conformance.cpp`:
+    successful mint returns all four fields; unauthenticated request rejected
+    401; requesting a token for another user (both a real user and a
+    nonexistent one) rejected 403 with identical bodies; `GET
+    /openid/userinfo` returns the correct `sub` for a token minted through the
+    real client-server endpoint (full round trip); unknown token rejected
+    401 `M_UNKNOWN_TOKEN`; an ordinary access token rejected 401
+    `M_UNKNOWN_TOKEN` at `/openid/userinfo`.
+  - `tests/unit/test_database_persistence.cpp`: updated the hardcoded
+    migration-step/schema-version assertions for the new schema version 10
+    and the `openid_tokens` migration step.
+
 ## 0.11.10
 
 Four follow-ons to the 0.11.9 identity-server work: a discovery test-seam for

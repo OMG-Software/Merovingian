@@ -1085,4 +1085,107 @@ auto access_token_is_soft_logout(HomeserverRuntime& runtime, std::string_view ac
     return session_expired_for_token(runtime.database, token_hashes, now);
 }
 
+auto request_openid_token(HomeserverRuntime& runtime, std::string_view user_id) -> OpenidTokenIssueResult
+{
+    log_diagnostic("openid.request_token.started", {
+                                                       {"user_id", std::string{user_id}, false}
+    });
+    auto const token = issue_token();
+    if (!token.has_value())
+    {
+        log_diagnostic("openid.request_token.rejected",
+                       {
+                           {"user_id", std::string{user_id},      false},
+                           {"reason",  "token generation failed", false}
+        },
+                       observability::LogEventSeverity::warning);
+        return {false, 500U, {}, {}, 0U, "token generation failed"};
+    }
+    // Reuses the same keyed-hash machinery access tokens use (issue_token_hash
+    // prefers the master-key-derived v4 HMAC, falling back to v3/v2) -- the
+    // hash function itself is not what separates OpenID tokens from access
+    // tokens; the *table* they land in and the *lookup path* that consults
+    // that table are. This row only ever goes into openid_tokens, and only
+    // federation_openid_userinfo below ever reads that table.
+    auto const token_hash = issue_token_hash(runtime, *token);
+    if (!token_hash.has_value())
+    {
+        log_diagnostic("openid.request_token.rejected",
+                       {
+                           {"user_id", std::string{user_id},   false},
+                           {"reason",  "token hashing failed", false}
+        },
+                       observability::LogEventSeverity::warning);
+        return {false, 500U, {}, {}, 0U, "token hashing failed"};
+    }
+    // Matrix v1.19 SS API §OpenID: the token is a narrow, short-lived
+    // credential good only for GET /openid/userinfo. One hour mirrors the
+    // default access_token_lifetime_ms and the spec's own `expires_in`
+    // example; there is no operator config knob for it because -- unlike an
+    // access token -- a longer-lived OpenID token still cannot reach the
+    // ordinary client-server surface, so the usual "shorten this to reduce
+    // blast radius" tradeoff does not apply the same way.
+    constexpr auto openid_token_lifetime = std::chrono::seconds{3600};
+    auto const expires_at = std::chrono::system_clock::now() + openid_token_lifetime;
+    if (!database::store_openid_token(runtime.database.persistent_store,
+                                      {std::string{user_id}, *token_hash, expires_at}))
+    {
+        log_diagnostic("openid.request_token.rejected",
+                       {
+                           {"user_id", std::string{user_id},       false},
+                           {"reason",  "token persistence failed", false}
+        },
+                       observability::LogEventSeverity::warning);
+        return {false, 500U, {}, {}, 0U, "token persistence failed"};
+    }
+    append_local_audit(runtime.database, observability::AuditCategory::auth, "auth.openid.request_token",
+                       std::string{user_id}, {}, "issued");
+    log_diagnostic("openid.request_token.accepted",
+                   {
+                       {"user_id", std::string{user_id}, false}
+    },
+                   observability::LogEventSeverity::info);
+    return {true,
+            200U,
+            *token,
+            runtime.config.server().server_name,
+            static_cast<std::uint64_t>(openid_token_lifetime.count()),
+            {}};
+}
+
+auto federation_openid_userinfo(HomeserverRuntime const& runtime, std::string_view openid_access_token)
+    -> std::optional<std::string>
+{
+    if (openid_access_token.empty())
+    {
+        return std::nullopt;
+    }
+    // Deliberately independent of authenticated_user/find_session: those
+    // consult database.sessions / persistent_store.access_tokens, and an
+    // OpenID token must never authenticate as one (docs/threat-model.md,
+    // "OpenID token confusion"). Only persistent_store.openid_tokens is
+    // consulted below. lookup_token_hashes/matches_any_token_hash are reused
+    // purely for their hashing/constant-time-compare properties, not as a
+    // shared trust boundary with access tokens.
+    auto const candidate_hashes = lookup_token_hashes(runtime, openid_access_token);
+    if (candidate_hashes.empty())
+    {
+        return std::nullopt;
+    }
+    auto const now = std::chrono::system_clock::now();
+    for (auto const& row : runtime.database.persistent_store.openid_tokens)
+    {
+        // A match on an expired row still falls through to nullopt below --
+        // "unknown token" and "expired token" are indistinguishable to the
+        // caller, so a probing third party cannot tell a token merely lapsed
+        // from one that was never valid (Matrix v1.19 SS API §OpenID: both
+        // are the same 401 response).
+        if (matches_any_token_hash(row.token_hash, candidate_hashes) && row.expires_at > now)
+        {
+            return row.user_id;
+        }
+    }
+    return std::nullopt;
+}
+
 } // namespace merovingian::homeserver

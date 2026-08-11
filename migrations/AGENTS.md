@@ -36,10 +36,19 @@ version `9` (`009_notifications.sql`) adds the `notifications` table so
 `GET /_matrix/client/v3/notifications` history survives restarts, keyed on
 `(user_id, event_id)`; `stream_ordering` doubles as the endpoint's `from`/
 `next_token` pagination key, and rows are pruned per-user at write time (see
-`docs/database-persistence.md`) so the table cannot grow without bound. After
-`v1.0.0`, deployed databases become a strict compatibility boundary and schema
-changes must be added as new forward migration files instead of modifying
-already-applied migrations.
+`docs/database-persistence.md`) so the table cannot grow without bound.
+Schema version `10` (`010_openid_tokens.sql`) adds the `openid_tokens` table
+so tokens minted by `POST /_matrix/client/v3/user/{userId}/openid/request_token`
+(Matrix v1.19 CS API §OpenID) survive restarts and can be redeemed by `GET
+/_matrix/federation/v1/openid/userinfo` (SS API §OpenID). It is deliberately
+a separate table from `access_tokens`: an OpenID token is a narrow,
+short-lived credential good only for the federation userinfo lookup, and
+must never be usable as a client-server bearer token — see
+`docs/threat-model.md`. Every row has a finite `expires_at`; expired rows
+are pruned at write time (see `docs/database-persistence.md`) so the table
+cannot grow without bound. After `v1.0.0`, deployed databases become a
+strict compatibility boundary and schema changes must be added as new
+forward migration files instead of modifying already-applied migrations.
 
 ## File format
 

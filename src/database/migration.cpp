@@ -369,6 +369,22 @@ auto downgrade_initial_schema_migration() -> MigrationStep
     return {9U, "notifications", std::move(statements), MigrationDirection::upgrade};
 }
 
+// v10: durable OpenID token store for `POST
+// /_matrix/client/v3/user/{userId}/openid/request_token` (Matrix v1.19 CS
+// API §OpenID). Deliberately a table of its own, never the `access_tokens`
+// table: an OpenID token is a narrow, short-lived credential that is only
+// ever redeemed by `GET /_matrix/federation/v1/openid/userinfo` (SS API
+// §OpenID) and must never be usable to authenticate an ordinary
+// client-server request (see docs/threat-model.md). Every row has a finite
+// `expires_at`; expired rows are pruned at write time (see
+// database::store_openid_token), so the table cannot grow without bound.
+[[nodiscard]] auto upgrade_openid_tokens_migration() -> MigrationStep
+{
+    auto statements = std::vector<PreparedStatement>{};
+    statements.push_back(make_create_table_statement(schema_table_definition("openid_tokens").value()).value());
+    return {10U, "openid_tokens", std::move(statements), MigrationDirection::upgrade};
+}
+
 auto upgrade_migration_catalog() -> std::vector<MigrationStep>
 {
     return {initial_schema_migration(),
@@ -379,7 +395,8 @@ auto upgrade_migration_catalog() -> std::vector<MigrationStep>
             upgrade_account_threepids_migration(),
             upgrade_account_threepids_columns_migration(),
             upgrade_pushers_migration(),
-            upgrade_notifications_migration()};
+            upgrade_notifications_migration(),
+            upgrade_openid_tokens_migration()};
 }
 
 [[nodiscard]] auto downgrade_backfill_state_transitions_migration() -> MigrationStep
@@ -426,6 +443,14 @@ auto upgrade_migration_catalog() -> std::vector<MigrationStep>
     return {8U, "drop_notifications", std::move(statements), MigrationDirection::downgrade};
 }
 
+// v10 -> v9: drop the openid_tokens table.
+[[nodiscard]] auto downgrade_openid_tokens_migration() -> MigrationStep
+{
+    auto statements = std::vector<PreparedStatement>{};
+    statements.push_back(make_drop_table_statement("openid_tokens").value());
+    return {9U, "drop_openid_tokens", std::move(statements), MigrationDirection::downgrade};
+}
+
 [[nodiscard]] auto downgrade_sync_stream_watermark_migration() -> MigrationStep
 {
     auto statements = std::vector<PreparedStatement>{};
@@ -449,7 +474,8 @@ auto upgrade_migration_catalog() -> std::vector<MigrationStep>
 
 auto downgrade_migration_catalog() -> std::vector<MigrationStep>
 {
-    return {downgrade_notifications_migration(),
+    return {downgrade_openid_tokens_migration(),
+            downgrade_notifications_migration(),
             downgrade_pushers_migration(),
             downgrade_account_threepids_columns_migration(),
             downgrade_account_threepids_migration(),

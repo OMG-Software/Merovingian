@@ -803,6 +803,40 @@ threat it closes; the controls above are the standing defences these reinforce.
   any parse failure as an empty set) rather than either erroring or
   over-suppressing.
 
+- **OpenID token confusion (identified and mitigated during implementation,
+  v0.11.11):** `POST /_matrix/client/v3/user/{userId}/openid/request_token`
+  (Matrix v1.19 CS API §OpenID) mints a bearer credential meant for exactly
+  one purpose — proving identity to a third party via the federation `GET
+  /_matrix/federation/v1/openid/userinfo` endpoint. The risk: reusing the
+  existing access-token machinery carelessly (the same table, the same
+  lookup function, the same hash-and-compare path used for
+  `Authorization: Bearer`) would mint something that also authenticates the
+  full client-server API — handing every third-party service a user logs
+  into via OpenID a privilege-escalation path into that user's account. This
+  is a token-confusion vulnerability class, not a hypothetical: the two
+  token kinds are byte-for-byte indistinguishable opaque strings, so nothing
+  short of a structural separation prevents one being presented as the
+  other. Mitigated by keeping OpenID tokens in a table (`openid_tokens`,
+  migration `010_openid_tokens.sql`) and a lookup path
+  (`homeserver::federation_openid_userinfo`) fully disjoint from
+  `access_tokens` and `authenticated_user` — see `docs/auth-identity.md`
+  ("OpenID tokens") for the full design and `docs/database-persistence.md`
+  for the schema. The two directions are conformance- and unit-tested
+  explicitly: an OpenID token presented to `authenticated_user` (the gate
+  behind every ordinary `Authorization: Bearer` check) is rejected, and an
+  ordinary access token presented to `federation_openid_userinfo` is
+  rejected — both fail exactly as if the token had never been issued, so a
+  probing caller cannot even learn that token-kind confusion was attempted.
+  A secondary, smaller risk in the same feature: the redeem endpoint is
+  spec-mandated to require no authentication at all (it must be reachable by
+  arbitrary third parties, not just other homeservers), so it must never be
+  routed through the federation module's X-Matrix signature-required
+  dispatch path — doing so by accident would either wrongly reject every
+  legitimate caller or, worse, create an incentive to weaken that path's
+  authentication requirement generally. Mitigated by dispatching it
+  entirely outside `federation::handle_inbound_federation_request`, in the
+  same homeserver-router bypass used for `GET /_matrix/key/v2/server`.
+
 ## Security principles
 
 - Fail closed.

@@ -196,6 +196,7 @@ shell = find_program('sh')
       'unit/test_push_rules.cpp',
       'unit/test_push_gateway_client.cpp',
       'unit/test_push_pusher_store.cpp',
+      'unit/test_openid_token_store.cpp',
     ),
     include_directories: inc,
     dependencies: [catch2_dep, thread_dep, libsodium_dep, openssl_dep, libpq_dep, sqlite_dep, libcurl_dep, resolv_dep],

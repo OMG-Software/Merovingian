@@ -16,16 +16,24 @@
 //   - refresh_local_session: empty/unknown token rejected; valid refresh issues new tokens;
 //     single-use enforcement
 //   - access_token_is_soft_logout: false for empty and unknown tokens
+//   - request_openid_token / federation_openid_userinfo: mint returns all
+//     spec-required fields; userinfo redeems a valid token; unknown and
+//     expired tokens both fail closed identically; an OpenID token is
+//     rejected by the ordinary client-server auth gate and an ordinary
+//     access token is rejected by federation_openid_userinfo (the
+//     security-critical separation -- see docs/threat-model.md)
 
 #include "../support/registration_token.hpp"
 #include "merovingian/auth/identity.hpp"
 #include "merovingian/auth/password.hpp"
 #include "merovingian/config/config.hpp"
+#include "merovingian/database/persistent_store.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <chrono>
 #include <string>
 
 #include <sodium.h>
@@ -632,6 +640,198 @@ SCENARIO("load_hashed_registration_token loads and hashes a token file once",
             THEN("no hash is returned so registration is rejected")
             {
                 REQUIRE_FALSE(hash.has_value());
+            }
+        }
+    }
+}
+
+// --- request_openid_token / federation_openid_userinfo ---------------------------
+
+SCENARIO("request_openid_token mints a token with all spec-required fields",
+         "[homeserver][auth][openid][client-server]")
+{
+    GIVEN("a registered user")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const reg = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                      merovingian::tests::registration_token);
+        REQUIRE(reg.ok);
+
+        WHEN("an OpenID token is requested for that user")
+        {
+            auto const result = merovingian::homeserver::request_openid_token(runtime, reg.value);
+
+            THEN("the mint succeeds and every spec-required field is populated")
+            {
+                REQUIRE(result.ok);
+                REQUIRE(result.status == 200U);
+                // Spec MUST: access_token, expires_in, matrix_server_name, token_type
+                // are all required in the 200 response.
+                REQUIRE_FALSE(result.access_token.empty());
+                REQUIRE(result.expires_in_seconds > 0U);
+                REQUIRE(result.matrix_server_name == runtime.config.server().server_name);
+            }
+        }
+    }
+}
+
+SCENARIO("federation_openid_userinfo redeems a token minted by request_openid_token",
+         "[homeserver][auth][openid][federation]")
+{
+    GIVEN("a user with a freshly minted OpenID token")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const reg = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                      merovingian::tests::registration_token);
+        REQUIRE(reg.ok);
+        auto const issued = merovingian::homeserver::request_openid_token(runtime, reg.value);
+        REQUIRE(issued.ok);
+
+        WHEN("the token is redeemed via federation_openid_userinfo")
+        {
+            auto const sub = merovingian::homeserver::federation_openid_userinfo(runtime, issued.access_token);
+
+            THEN("the owning Matrix user ID is returned")
+            {
+                REQUIRE(sub.has_value());
+                REQUIRE(*sub == reg.value);
+            }
+        }
+    }
+}
+
+SCENARIO("federation_openid_userinfo fails closed for an unknown token",
+         "[homeserver][auth][openid][federation][error]")
+{
+    GIVEN("a started runtime with no minted OpenID tokens")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        WHEN("userinfo is called with a token that was never issued")
+        {
+            auto const sub = merovingian::homeserver::federation_openid_userinfo(runtime, "mvo_never_issued");
+
+            THEN("no user ID is returned")
+            {
+                REQUIRE_FALSE(sub.has_value());
+            }
+        }
+
+        WHEN("userinfo is called with an empty token")
+        {
+            auto const sub = merovingian::homeserver::federation_openid_userinfo(runtime, "");
+
+            THEN("no user ID is returned")
+            {
+                REQUIRE_FALSE(sub.has_value());
+            }
+        }
+    }
+}
+
+SCENARIO("federation_openid_userinfo fails closed for an expired token, identically to an unknown one",
+         "[homeserver][auth][openid][federation][error]")
+{
+    GIVEN("a user whose OpenID token's expiry has already passed")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const reg = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                      merovingian::tests::registration_token);
+        REQUIRE(reg.ok);
+        auto const issued = merovingian::homeserver::request_openid_token(runtime, reg.value);
+        REQUIRE(issued.ok);
+        // Confirm the token is valid before backdating it, so the later
+        // rejection is provably caused by expiry rather than some other
+        // lookup failure.
+        REQUIRE(merovingian::homeserver::federation_openid_userinfo(runtime, issued.access_token).has_value());
+        for (auto& row : runtime.database.persistent_store.openid_tokens)
+        {
+            row.expires_at = std::chrono::system_clock::now() - std::chrono::seconds{1};
+        }
+
+        WHEN("userinfo is called after the token has expired")
+        {
+            auto const expired_sub = merovingian::homeserver::federation_openid_userinfo(runtime, issued.access_token);
+            auto const unknown_sub = merovingian::homeserver::federation_openid_userinfo(runtime, "mvo_never_issued");
+
+            THEN("no user ID is returned, and the outcome is indistinguishable from an unknown token")
+            {
+                REQUIRE_FALSE(expired_sub.has_value());
+                REQUIRE_FALSE(unknown_sub.has_value());
+            }
+        }
+    }
+}
+
+SCENARIO("an OpenID token is rejected by the ordinary client-server auth gate", "[homeserver][auth][openid][security]")
+{
+    GIVEN("a user with a freshly minted OpenID token")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const reg = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                      merovingian::tests::registration_token);
+        REQUIRE(reg.ok);
+        auto const issued = merovingian::homeserver::request_openid_token(runtime, reg.value);
+        REQUIRE(issued.ok);
+        // Sanity: the token is genuinely valid for its intended purpose.
+        REQUIRE(merovingian::homeserver::federation_openid_userinfo(runtime, issued.access_token).has_value());
+
+        WHEN("the OpenID token is presented to authenticated_user, as an ordinary bearer credential would be")
+        {
+            auto const user = merovingian::homeserver::authenticated_user(runtime, issued.access_token);
+
+            THEN("it does not authenticate a client-server request")
+            {
+                // Security-critical: an OpenID token lives only in
+                // openid_tokens, never access_tokens, so it must never pass
+                // the ordinary client-server auth gate.
+                REQUIRE_FALSE(user.has_value());
+            }
+        }
+    }
+}
+
+SCENARIO("an ordinary access token is rejected by federation_openid_userinfo", "[homeserver][auth][openid][security]")
+{
+    GIVEN("a logged-in user's ordinary access token")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const reg = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                      merovingian::tests::registration_token);
+        REQUIRE(reg.ok);
+        auto const login = merovingian::homeserver::login_local_user(runtime, reg.value, "CorrectHorse7!", "DEVICE1");
+        REQUIRE(login.ok);
+        // Sanity: the token is genuinely valid for its intended purpose.
+        REQUIRE(merovingian::homeserver::authenticated_user(runtime, login.value).has_value());
+
+        WHEN("the access token is presented to federation_openid_userinfo, as an OpenID token would be")
+        {
+            auto const sub = merovingian::homeserver::federation_openid_userinfo(runtime, login.value);
+
+            THEN("it is not accepted as an OpenID token")
+            {
+                // Security-critical: federation_openid_userinfo consults
+                // only openid_tokens, never access_tokens/sessions, so an
+                // ordinary access token must never redeem as one.
+                REQUIRE_FALSE(sub.has_value());
             }
         }
     }

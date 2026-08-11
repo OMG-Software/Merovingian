@@ -44,7 +44,11 @@ remaining work before PostgreSQL-backed production operation.
   restarts, and schema version `9` adds the `notifications` table via
   `migrations/009_notifications.sql` so `GET /_matrix/client/v3/notifications`
   history survives restarts (see "Notification history" below for the
-  retention policy that keeps it bounded).
+  retention policy that keeps it bounded), and schema version `10` adds the
+  `openid_tokens` table via `migrations/010_openid_tokens.sql` so tokens
+  minted by `POST /_matrix/client/v3/user/{userId}/openid/request_token`
+  survive restarts and can be redeemed by
+  `GET /_matrix/federation/v1/openid/userinfo` (see "OpenID tokens" below).
   After the project reaches production-ready `v1.0.0`, every schema change
   must add a forward migration and keep deployed databases compatible.
 - SQLite RAII wrappers around database connections and prepared statements.
@@ -208,8 +212,8 @@ remaining work before PostgreSQL-backed production operation.
   re-parsing `actions`), with a primary key on `(user_id, event_id)`. The
   runtime migration path uses the compiled catalog in
   `src/database/migration.cpp` (upgrade step version `9` "notifications";
-  downgrade step version `8` "drop_notifications");
-  `schema::current_schema_version()` returns `9U`. The `PersistentNotification`
+  downgrade step version `8` "drop_notifications").
+  The `PersistentNotification`
   struct and the `store_notification` / `list_notifications_for_user` store
   functions
   ([persistent_store.hpp](../include/merovingian/database/persistent_store.hpp))
@@ -237,6 +241,39 @@ remaining work before PostgreSQL-backed production operation.
   concurrent background threads, this bounds persisted rows). This closes
   the same class of unbounded-growth vector `k_max_in_flight_push_deliveries`
   fixed for push delivery's background-task count.
+- `openid_tokens` table (schema version `10`, migration
+  `migrations/010_openid_tokens.sql`) stores the short-lived tokens minted by
+  `POST /_matrix/client/v3/user/{userId}/openid/request_token` (Matrix v1.19
+  CS API §OpenID) and redeemed by `GET /_matrix/federation/v1/openid/userinfo`
+  (SS API §OpenID). Columns are `user_id`, `token_hash` (primary key), and
+  `expires_at` (epoch milliseconds, encoded the same way as
+  `access_tokens.expires_at` / `refresh_tokens.expires_at` via
+  `expires_at_text`/`parse_expires_at`). Unlike an access token's expiry,
+  `expires_at` is never optional here — every OpenID token has a finite
+  lifetime. The runtime migration path uses the compiled catalog in
+  `src/database/migration.cpp` (upgrade step version `10` "openid_tokens";
+  downgrade step version `9` "drop_openid_tokens"); `schema::current_schema_
+  version()` returns `10U`. This is a **separate table from `access_tokens`**,
+  by design — see `docs/auth-identity.md` ("OpenID tokens") and
+  `docs/threat-model.md` for why that separation is the entire security
+  property this feature depends on. The `PersistentOpenidToken` struct and
+  the `store_openid_token` store function
+  ([persistent_store.hpp](../include/merovingian/database/persistent_store.hpp))
+  persist rows, following the same hashed-token pattern as
+  `PersistentAccessToken`; implemented for both SQLite and PostgreSQL,
+  hydrated on backend open. `homeserver::request_openid_token` (`src/
+  homeserver/auth_service.cpp`) mints and hashes the token — reusing the same
+  keyed-hash machinery (`issue_token_hash`, preferring the master-key-derived
+  v4 HMAC) access tokens use, since the hash *algorithm* is not the security
+  boundary here — and `homeserver::federation_openid_userinfo` is the only
+  function that ever reads this table back; the ordinary client-server auth
+  gate (`authenticated_user`) never consults it, and `federation_openid_
+  userinfo` never consults `access_tokens`/`sessions`. **Retention:**
+  `store_openid_token` sweeps every already-expired row (across all users, not
+  just the one being inserted) on each insert — appropriate because an OpenID
+  token's natural bound is its own short expiry (one hour; see
+  `docs/auth-identity.md`) rather than a per-user row count, unlike
+  `notifications`' count-based cap above.
 - `/sync` calls `database::ensure_sync_stream_id_ahead_of()` when the client's
   `since` token is ahead of the server's counter. This recovers live deployments
   whose counter rolled back below a stored token (for example, when the watermark

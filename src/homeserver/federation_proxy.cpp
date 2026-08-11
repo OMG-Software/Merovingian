@@ -46,6 +46,15 @@ auto FederationProxy::handle(LocalHttpRequest const& request) -> LocalHttpRespon
         return handle_federation_http_request(runtime_, request);
     }
 
+    // GET /_matrix/federation/v1/openid/userinfo is likewise always served
+    // locally: the spec marks it unauthenticated (no X-Matrix signature to
+    // verify), it carries no room_id to shard by, and the openid_tokens
+    // table it consults lives only in the main process's persistent store.
+    if (is_federation_openid_userinfo_endpoint(request.target))
+    {
+        return handle_federation_http_request(runtime_, request);
+    }
+
     // #323: verify the inbound X-Matrix signature in the main process before
     // forwarding to the worker. Only the verified peer identity crosses the
     // (authenticated) IPC channel; the raw peer Authorization header — which
@@ -111,8 +120,8 @@ auto FederationProxy::handle(LocalHttpRequest const& request) -> LocalHttpRespon
     return pool_->handle(verified_request, room_id);
 }
 
-auto FederationProxy::send_outbound_request(http::OutboundRequest const& request,
-                                            std::string_view room_id) -> http::OutboundResult
+auto FederationProxy::send_outbound_request(http::OutboundRequest const& request, std::string_view room_id)
+    -> http::OutboundResult
 {
     if (!pool_)
     {

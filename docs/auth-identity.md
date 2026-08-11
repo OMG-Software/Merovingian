@@ -202,6 +202,60 @@ All three flows reach the IS through the `test_forced_identity_resolution`
 discovery seam (see `docs/http-transport.md`), which is empty in production —
 production traffic resolves via the SSRF-safe `CachedServerDiscovery` path.
 
+## OpenID tokens
+
+`POST /_matrix/client/v3/user/{userId}/openid/request_token` (Matrix v1.19
+CS API §OpenID) mints a narrow, short-lived bearer credential whose *only*
+valid use is `GET /_matrix/federation/v1/openid/userinfo` (SS API §OpenID),
+which a third-party service calls to learn the caller's Matrix user ID. This
+is a fundamentally different trust level from an ordinary access token — an
+access token authenticates the full client-server API; an OpenID token must
+authenticate nothing beyond "who is this user" to one federation endpoint —
+so it has its own, deliberately separate, lifecycle:
+
+- **Separate table.** OpenID tokens live in `openid_tokens`
+  (`migrations/010_openid_tokens.sql`, schema version 10), never
+  `access_tokens`. See `docs/database-persistence.md` for the schema.
+- **Separate mint path.** `homeserver::request_openid_token`
+  (`src/homeserver/auth_service.cpp`) is the only function that writes to
+  `openid_tokens`. It reuses the same keyed-hash machinery
+  (`issue_token_hash`, preferring the master-key-derived v4 HMAC, falling
+  back to v3/v2) access tokens use — sharing a well-reviewed hash function
+  is not the same as sharing a trust boundary, and reusing it avoids a
+  second, less-reviewed hashing path.
+- **Separate lookup path.** `homeserver::federation_openid_userinfo` is the
+  only function that reads `openid_tokens`. The ordinary client-server auth
+  gate (`authenticated_user`, which backs every `Authorization: Bearer`
+  check) only ever consults `access_tokens`/`database.sessions` and never
+  looks at `openid_tokens`. Symmetrically, `federation_openid_userinfo`
+  never consults `access_tokens`/`sessions`. Neither lookup path can
+  accidentally accept the other token kind, because neither path ever reads
+  the other table — the separation is structural, not a runtime check that
+  could be bypassed or forgotten at a new call site.
+- **Always finite expiry.** One hour from mint, hardcoded (not
+  operator-configurable, unlike `access_token_lifetime_ms`): a longer-lived
+  OpenID token still cannot reach the client-server surface, so the usual
+  "shorten this to reduce blast radius" tradeoff for access tokens does not
+  apply the same way here.
+- **Fail-closed, indistinguishable rejection.** `GET /openid/userinfo`
+  returns the identical `401 M_UNKNOWN_TOKEN` / "Access token unknown or
+  expired" body whether the presented token was never issued or has expired
+  — matching the spec's own error shape — so a caller cannot use the
+  response to distinguish the two cases.
+- **Unauthenticated redeem endpoint.** Per spec, `GET /openid/userinfo`
+  requires no X-Matrix request signature and is not rate-limited: the caller
+  may be any third-party service, not necessarily a homeserver. It is
+  therefore dispatched outside the federation module's signed-request path
+  entirely (`src/homeserver/local_http_router.cpp`,
+  `federation_openid_userinfo_response`), alongside the same-shaped bypass
+  for `GET /_matrix/key/v2/server`.
+- **Retention.** `store_openid_token` sweeps every already-expired row
+  (across all users) on each insert, so `openid_tokens` cannot grow without
+  bound — see `docs/database-persistence.md`.
+
+See `docs/threat-model.md` ("OpenID token confusion") for the
+privilege-escalation risk this separation exists to prevent.
+
 ## Security posture
 
 The core auth policy module deliberately stays free of cryptographic password
@@ -228,6 +282,10 @@ The boundary establishes these guarantees:
   and is not logged through prepared-statement summaries.
 - Registration tokens are verified with Argon2id and only the hash is retained;
   plaintext tokens are zeroised with `sodium_memzero` after hashing.
+- OpenID tokens (`POST /user/{userId}/openid/request_token`) are hashed and
+  persisted in a table structurally disjoint from `access_tokens`, with
+  disjoint mint and lookup paths, so they can never authenticate an ordinary
+  client-server request — see "OpenID tokens" above.
 
 ## Deliberately not included
 

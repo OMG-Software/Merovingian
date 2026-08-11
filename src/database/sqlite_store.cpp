@@ -717,6 +717,15 @@ namespace
                              entry.profile_tag = column_text(row, 6);
                              entry.highlight = text_is_true(column_text(row, 7));
                              store.notifications.push_back(std::move(entry));
+                         }) &&
+               load_rows(connection, "SELECT user_id, token_hash, expires_at FROM openid_tokens ORDER BY user_id",
+                         [&store](sqlite3_stmt& row) {
+                             PersistentOpenidToken entry{};
+                             entry.user_id = column_text(row, 0);
+                             entry.token_hash = column_text(row, 1);
+                             entry.expires_at = std::chrono::system_clock::time_point{
+                                 std::chrono::milliseconds{parse_u64(column_text(row, 2))}};
+                             store.openid_tokens.push_back(std::move(entry));
                          });
     }
 
