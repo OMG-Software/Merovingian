@@ -672,6 +672,81 @@ threat it closes; the controls above are the standing defences these reinforce.
   pattern of dropping the lock for the network round trip and re-acquiring it
   only to persist the outcome.
 
+- **Push delivery background tasks were unbounded (v0.11.11, fixed):**
+  `dispatch_push_deliveries` parked one `std::async` future in
+  `HomeserverRuntime::orphan_futures_` per qualifying event and never reaped
+  a completed one, unlike `join_room`'s make_join race, which already reaps
+  before parking (see `architecture.md`). With `push.enabled = true`, this
+  was an unbounded memory leak proportional to message volume (one
+  `orphan_futures_` entry per event, forever) and unbounded thread creation
+  — a busy room, or a client sending many events in a burst, drove one OS
+  thread per event with no ceiling. Fixed by two changes shared with the
+  join-race path via a single helper: `reap_completed_futures()` removes
+  every already-finished future from `orphan_futures_` (via a non-blocking
+  `wait_for(0s)`, never `.get()`/`.wait()` on a still-running one) before a
+  new one is parked, and a dedicated counter,
+  `HomeserverRuntime::push_delivery_in_flight_` (a `std::atomic<std::size_t>`,
+  tracked separately from the shared vector's total size so a large join
+  race cannot starve push delivery or vice versa — see the deadlock note
+  below for why it is atomic rather than mutex-guarded), is
+  checked against a fixed cap, `k_max_in_flight_push_deliveries` (128,
+  `room_service.cpp`) before a task is spawned. At capacity the delivery is
+  dropped — never spawned, never blocked on — and a warning is logged: a
+  missed push is recoverable (the client still sees the event on its next
+  `/sync`), an exhausted thread pool is not. This is the same "bound all
+  resources, fail closed toward availability" trade-off as the `via`-list
+  bound above.
+
+- **Membership transitions never reached push delivery (v0.11.11, fixed):**
+  delivery previously fired only from `send_event()` (`/send` and `/state`
+  PUTs); the membership-mutating endpoints (invite/join/leave/kick/ban, and
+  the 3PID invite) each go through their own dedicated functions in
+  `room_service.cpp` and never called `build_pending_push_deliveries()` /
+  `dispatch_push_deliveries()` at all. The concrete consequence: the default,
+  enabled-by-default rule `.m.rule.invite_for_me` — whose entire purpose is
+  to notify a user they were invited — could never fire, since nothing ever
+  evaluated push rules for a membership event. Fixed by routing every
+  membership transition through the same pipeline
+  (`dispatch_membership_push_notification()`, called from
+  `persist_membership_transition` — the shared helper behind invite/ban/
+  kick/leave/knock — and from `join_room` and `invite_user_by_threepid`
+  directly). The one correctness subtlety: `build_pending_push_deliveries()`
+  only evaluates rules for `LocalRoom::members`, i.e. *joined* members, but
+  an invitee is by definition not yet joined
+  (`apply_runtime_membership` only adds to `members` on `"join"`), so an
+  invite target was invisible to the old membership-only loop even where the
+  loop *was* reachable. `build_pending_push_deliveries()` now accepts an
+  `extra_recipients` span for exactly this case; entries equal to the sender
+  or already a joined member are silently absorbed, so every call site can
+  pass the membership target unconditionally. This is a same-server-only,
+  in-memory routing change — it does not alter the SSRF/URL/config gates
+  above, all of which still apply per delivery.
+
+- **The in-flight counter above deadlocked runtime shutdown (v0.11.11,
+  fixed):** `push_delivery_in_flight_` was originally a plain `std::size_t`,
+  and the background task decremented it as its *final action* while holding
+  `orphan_futures_mutex_`. `HomeserverRuntime::~HomeserverRuntime()` (and the
+  integration test helper `wait_for_background_tasks()`) held that same
+  mutex for their entire drain, including the blocking `future.wait()` calls
+  on every parked future. A destructor that already held the mutex could
+  never see the task finish, because the task could never acquire the mutex
+  it needed to finish first — deadlock. Push delivery is disabled by default
+  so no running deployment was exposed, but any deployment that enables it
+  would hang indefinitely on shutdown with a delivery still in flight. Fixed
+  two ways: `push_delivery_in_flight_` is now a `std::atomic<std::size_t>`,
+  so the background task's decrement never takes `orphan_futures_mutex_` at
+  all (the dispatcher-side check-and-increment still does, since that
+  read-modify-write against the cap must stay correct across concurrent
+  dispatchers); and both waiters now hold `orphan_futures_mutex_` only long
+  enough to move the parked futures out of `orphan_futures_`, waiting on the
+  moved-out copies with the mutex released. This also means a runtime
+  shutdown no longer blocks a concurrent `dispatch_push_deliveries` call
+  trying to reap or park a future while the drain is in progress. Every
+  other site that parks or reaps `orphan_futures_` (the make_join race in
+  `room_service.cpp`'s `join_room`) was audited and does not wait on a
+  future while holding the mutex — this failure mode was unique to the two
+  fixed call sites.
+
 ## Security principles
 
 - Fail closed.

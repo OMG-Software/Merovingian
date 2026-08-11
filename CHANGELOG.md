@@ -142,13 +142,110 @@ then closed one of the gaps the audit found.
     a message that matches a push rule; a rejected pushkey is deleted; and
     message sending still succeeds — promptly, without blocking — when the
     recipient's gateway is unreachable.
-  - **Known gap, recorded honestly**: delivery is wired at the `send_event`
-    choke point only, so plain messages and direct state-event PUTs trigger
-    it. Membership-mutating endpoints (`invite`/`join`/`leave`/`kick`/`ban`,
-    and the 3PID-invite path) go through separate dedicated functions in
-    `room_service.cpp` that do not yet call into the delivery pipeline, so
-    `.m.rule.invite_for_me` does not yet produce a real push. `GET
-    /notifications` remains unrouted. See `docs/todos/capability-gaps.md`.
+  - **Known gap, recorded honestly**: `GET /notifications` remains unrouted,
+    "email" pushers are accepted and persisted but never delivered (no email
+    transport exists), and there is no gateway retry/backoff (spec SHOULD,
+    not MUST — a failed delivery attempt today is not retried). See
+    `docs/todos/capability-gaps.md`.
+- **Two follow-on fixes to the push delivery path landed in the same
+  branch**, closing the gaps the paragraphs above recorded:
+  - **Bounded the background delivery tasks (resource-exhaustion fix).**
+    `dispatch_push_deliveries` parked one future per qualifying event in
+    `HomeserverRuntime::orphan_futures_` and never reaped a completed one —
+    unlike `join_room`'s make_join race, which already reaps before parking.
+    With `push.enabled = true` this was an unbounded memory leak (one entry
+    per event, forever) and unbounded OS thread creation under sustained
+    message volume or a hostile client. Fixed by two changes shared with the
+    join-race path via one helper, `reap_completed_futures()`
+    (`runtime.hpp`/`.cpp`): completed futures are removed from
+    `orphan_futures_` before a new one is parked (checked with a
+    non-blocking `wait_for(0s)`, never `.get()`/`.wait()` on a still-running
+    one), and a new counter, `HomeserverRuntime::push_delivery_in_flight_`
+    (guarded by the existing `orphan_futures_mutex_`, tracked separately
+    from the join race so the two cannot starve each other), is checked
+    against a fixed cap, `k_max_in_flight_push_deliveries` (128), before a
+    task is spawned. At capacity the delivery is dropped and logged at
+    `WARN` rather than spawned or blocked on: a missed push is recoverable
+    (the client still sees the event on its next `/sync`), an exhausted
+    thread pool is not. New `tests/unit/test_runtime_orphan_futures.cpp`
+    exercises `reap_completed_futures()` and the pure cap-boundary check
+    (`at_background_task_capacity()`) deterministically via `std::promise`,
+    with no real threads or timing dependence; new integration coverage in
+    `tests/integration/test_push_delivery_flow.cpp` proves the real call
+    site reaps before parking and drops (rather than spawns) once the
+    real counter is saturated.
+  - **Membership transitions now notify.** Delivery previously fired only
+    from `send_event()`. `persist_membership_transition` — the shared
+    helper behind invite/ban/kick/leave/knock — plus `join_room` and
+    `invite_user_by_threepid` now route through the same pipeline via a new
+    `dispatch_membership_push_notification()`. The one correctness
+    subtlety: `build_pending_push_deliveries()` only evaluated rules
+    against `LocalRoom::members`, i.e. joined members, but an invitee is by
+    definition not (yet) joined, so `.m.rule.invite_for_me` — a default,
+    enabled rule whose entire purpose is to notify an invite recipient —
+    could never have fired even once the pipeline was reachable.
+    `build_pending_push_deliveries()` now accepts an `extra_recipients` span
+    for exactly this case; an entry equal to the sender or already a joined
+    member is silently absorbed, so every call site passes the membership
+    target unconditionally rather than special-casing which transitions
+    have a real, distinct recipient. New integration coverage proves an
+    invited user's pusher receives the notification, and that a failing
+    gateway never fails or blocks the invite itself.
+  - See `docs/threat-model.md` ("Push delivery background tasks were
+    unbounded" and "Membership transitions never reached push delivery")
+    and `docs/architecture.md`'s "Fire-and-forget background work" section
+    for the full design writeup.
+- **Follow-up fix: the in-flight counter introduced above deadlocked runtime
+  shutdown whenever a push delivery was still running.** `dispatch_push_
+  deliveries`'s background task decremented `push_delivery_in_flight_` as its
+  final action while holding `orphan_futures_mutex_` — the same mutex
+  `HomeserverRuntime::~HomeserverRuntime()` (and the integration test helper
+  `wait_for_background_tasks()`) held for their *entire* drain, including the
+  blocking `future.wait()` calls. A waiter that already held the mutex could
+  never see the task finish, because the task could never acquire the mutex
+  it needed to finish — a classic deadlock. Push delivery is disabled by
+  default, so no running deployment was affected, but any deployment that
+  enables it would hang on server shutdown with a delivery in flight; the
+  integration suite hit this directly (a 583s timeout in "a completed
+  push-delivery task is reaped before the next one is parked").
+  - `HomeserverRuntime::push_delivery_in_flight_` is now `std::atomic<std::
+    size_t>` (`runtime.hpp`). The dispatcher-side check-and-increment stays
+    under `orphan_futures_mutex_` (already held there to reap
+    `orphan_futures_`), keeping that read-modify-write correct against the
+    cap; the background task's decrement no longer takes the mutex at all,
+    so its completion can never depend on it. The move constructor and move
+    assignment operator (`runtime.cpp`) switch from `std::exchange` (not
+    valid on a non-movable `std::atomic`) to `.exchange(0U)`.
+  - `HomeserverRuntime::~HomeserverRuntime()` and
+    `wait_for_background_tasks()` (`tests/integration/
+    test_push_delivery_flow.cpp`) now hold `orphan_futures_mutex_` only long
+    enough to move the parked futures out of `orphan_futures_`, then wait on
+    the moved-out copies with the mutex released — never holding a lock
+    across a blocking wait. This also stops a runtime shutdown (or a test's
+    background-task wait) from needlessly blocking a concurrent
+    `dispatch_push_deliveries` call trying to reap or park a future while the
+    drain is in progress. Audited every other site that parks or reaps
+    `orphan_futures_` (the make_join race in `room_service.cpp`'s
+    `join_room`, twice) and confirmed none of them wait on a future while
+    holding the mutex — this pattern was unique to the two fixed call sites.
+  - New `tests/unit/test_runtime_orphan_futures.cpp` scenario, "HomeserverRuntime's
+    destructor releases orphan_futures_mutex_ before blocking on a
+    still-running background task": parks a background task gated on an
+    external promise (so it stays in flight, unable to finish, for the whole
+    test), destroys the runtime on another thread, and polls
+    `orphan_futures_mutex_` with `try_lock()` for up to 2 seconds to prove it
+    becomes available again while the task is still blocked — deterministic,
+    since the task's gate is never opened until after the poll, so a
+    destructor that still held the mutex across its wait would show the
+    mutex held for the *entire* window, not just possibly missed by a race.
+  - Reviewed "exceeding the in-flight push-delivery cap drops the
+    notification instead of spawning it" (`test_push_delivery_flow.cpp`):
+    it already asserts the cap policy by setting
+    `push_delivery_in_flight_` directly to a value at the cap rather than
+    physically spawning 128 real concurrent deliveries against a mock
+    gateway, so it stays fast; no change needed there. The pure
+    `at_background_task_capacity()` cap-boundary check remains covered
+    separately in `tests/unit/test_runtime_orphan_futures.cpp`.
 
 ## 0.11.10
 

@@ -175,11 +175,13 @@ Request flow:
 request handler but must not make the client wait on it: `join_room`'s
 background member-fill (deferred verification of the bulk member list after
 a fast join) and, since v0.11.11, push notification delivery
-(`room_service.cpp`'s `dispatch_push_deliveries`, following a client-server
-`send_event`) both use the same pattern rather than a dedicated thread pool.
-The handler snapshots everything it needs *while it still holds
-`runtime.mutex`* (for push delivery: which pushers to notify, and the
-already-built notification bodies — no I/O), then submits a
+(`room_service.cpp`'s `dispatch_push_deliveries`, reached from
+`send_event()` — `/send` and `/state` — and from every membership-mutating
+path: invite, join, leave, kick, ban, knock, and the 3PID invite, via
+`dispatch_membership_push_notification()`) both use the same pattern rather
+than a dedicated thread pool. The handler snapshots everything it needs
+*while it still holds `runtime.mutex`* (for push delivery: which pushers to
+notify, and the already-built notification bodies — no I/O), then submits a
 `std::async(std::launch::async, [&runtime, ...]{ ... })` task that performs
 the actual network calls without the lock, re-acquiring it only briefly to
 persist an outcome (e.g. deleting a pusher the gateway rejected). The
@@ -188,7 +190,29 @@ resulting `std::future` is parked in `HomeserverRuntime::orphan_futures_`
 every parked future before any of its other members (`outbound_client`,
 `cached_discovery`, the persistent store) are torn down, so the task's
 captured `runtime&` reference is always valid for as long as it can run.
-Tests wait on the same vector instead of sleeping — see
+Both call sites now share one reaping policy, `reap_completed_futures()`
+(`runtime.hpp`/`.cpp`): every already-finished future is removed from
+`orphan_futures_` before a new one is parked, so the vector does not grow
+unboundedly over the runtime's lifetime. Push delivery additionally bounds
+*concurrent* tasks — not just the vector's steady-state size — via
+`HomeserverRuntime::push_delivery_in_flight_`, a `std::atomic<std::size_t>`
+(tracked separately from the make_join race's use of the same vector so the
+two do not starve each other) checked against a fixed cap
+(`k_max_in_flight_push_deliveries`, 128) before a task is spawned; at
+capacity the delivery is dropped and logged rather than spawned, since a
+missed push is recoverable but unbounded thread creation is not (see
+`threat-model.md`, "Push delivery background tasks were unbounded"). The
+dispatcher-side check-and-increment happens under `orphan_futures_mutex_`
+(already held there to reap `orphan_futures_`), but the background task's
+own decrement deliberately does not take that mutex: a task's completion
+must never depend on acquiring a lock a waiter might be holding across a
+blocking `future.wait()` on that very task. Both waiters
+(`~HomeserverRuntime()` and the integration test's
+`wait_for_background_tasks()`) hold `orphan_futures_mutex_` only long enough
+to move the parked futures out of `orphan_futures_` before waiting on the
+moved-out copies with the mutex released, for exactly this reason (see
+`threat-model.md`, "The in-flight counter above deadlocked runtime
+shutdown"). Tests wait on the same vector instead of sleeping — see
 `tests/integration/test_join_room_flow.cpp` and
 `tests/integration/test_push_delivery_flow.cpp`.
 

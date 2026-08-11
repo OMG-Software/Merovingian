@@ -894,6 +894,21 @@ namespace
                                         invite_state_events_for_room(store, room_id, target_user_id), stream_ordering});
     }
 
+    // Forward declaration: defined further down this file, after
+    // build_pending_push_deliveries / dispatch_push_deliveries /
+    // PendingPushDelivery (near send_event, alongside the rest of the push
+    // evaluation logic). This declaration's own signature deliberately never
+    // names PendingPushDelivery, so persist_membership_transition, join_room
+    // and invite_user_by_threepid (all defined earlier in the file than
+    // that block) can call it via plain forward declaration without
+    // requiring PendingPushDelivery to be a complete type at their call
+    // sites -- constructing/moving a std::vector<PendingPushDelivery> would
+    // need that, but it happens only inside this function's body, defined
+    // later where the type is complete.
+    auto dispatch_membership_push_notification(HomeserverRuntime& runtime, LocalRoom const& room,
+                                               ComposedEvent const& composed, std::string_view sender,
+                                               std::string_view extra_recipient) -> void;
+
     [[nodiscard]] auto persist_membership_transition(HomeserverRuntime& runtime, std::string_view room_id,
                                                      std::string_view sender_user_id, std::string_view target_user_id,
                                                      std::string_view membership, std::string_view reason = {})
@@ -915,7 +930,8 @@ namespace
             return make_operation_result(false, {}, "membership event persistence failed", 500U);
         }
 
-        if (auto* room = find_room(runtime.database, room_id); room != nullptr)
+        auto* room = find_room(runtime.database, room_id);
+        if (room != nullptr)
         {
             room->events.push_back(composed->json);
         }
@@ -952,6 +968,18 @@ namespace
         if (runtime.sync_notifier != nullptr)
         {
             runtime.sync_notifier->publish(runtime.database.next_stream_ordering - 1U, sync_stream_id);
+        }
+        // Push delivery: covers invite/ban/kick/leave/knock, all funneled
+        // through this one function. `target_user_id` is passed as an extra
+        // recipient because for "invite" they are not (yet) a joined member
+        // of `room` — see dispatch_membership_push_notification. For every
+        // other membership value this is a harmless no-op: the default
+        // ruleset's `.m.rule.member_event` override suppresses notification
+        // for non-invite membership events, and a self-transition (leave,
+        // knock) is filtered as the sender regardless.
+        if (room != nullptr)
+        {
+            dispatch_membership_push_notification(runtime, *room, *composed, sender_user_id, target_user_id);
         }
         return make_operation_result(true, std::string{room_id});
     }
@@ -3203,17 +3231,8 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
         // drained in HomeserverRuntime::~HomeserverRuntime() before any member is
         // destroyed. Completed orphans from a previous race are pruned first.
         {
-            auto orphan_lk = std::lock_guard{runtime.orphan_futures_mutex_};
-            auto kept = std::vector<std::future<void>>{};
-            kept.reserve(runtime.orphan_futures_.size());
-            for (auto& f : runtime.orphan_futures_)
-            {
-                if (f.valid() && f.wait_for(std::chrono::seconds{0}) != std::future_status::ready)
-                {
-                    kept.push_back(std::move(f));
-                }
-            }
-            runtime.orphan_futures_ = std::move(kept);
+            auto const orphan_lk = std::lock_guard{runtime.orphan_futures_mutex_};
+            reap_completed_futures(runtime.orphan_futures_);
         }
         // join_timeout_seconds is the per-call budget for each make_join attempt.
         // Fall back to remote_timeout_seconds only when the join timeout is
@@ -4037,6 +4056,12 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
             });
             return make_operation_result(false, {}, "invite metadata cleanup failed", 500U);
         }
+        // Push delivery: a self-join has no distinct recipient to add (the
+        // extra_recipient equals the sender and is filtered as such), but is
+        // still routed through the same pipeline as every other membership
+        // transition — see persist_membership_transition's push comment
+        // above for why this is a no-op against the default ruleset today.
+        dispatch_membership_push_notification(runtime, *room, *composed, *user_id, *user_id);
     }
     else if (!database::delete_invite(runtime.database.persistent_store, room_id, *user_id))
     {
@@ -4562,15 +4587,32 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
         return make_operation_result(false, {}, "third-party invite persistence failed", 500U);
     }
 
-    if (auto* r = find_room(runtime.database, room_id); r != nullptr)
+    auto* room_for_push = find_room(runtime.database, room_id);
+    if (room_for_push != nullptr)
     {
-        r->events.push_back(composed->json);
+        room_for_push->events.push_back(composed->json);
     }
 
     auto const sync_stream_id = database::allocate_sync_stream_id(runtime.database.persistent_store);
     if (runtime.sync_notifier != nullptr)
     {
         runtime.sync_notifier->publish(runtime.database.next_stream_ordering - 1U, sync_stream_id);
+    }
+
+    // Push delivery: no real mxid to add as an extra recipient here -- the
+    // m.room.third_party_invite event's state_key is a signed token, not a
+    // Matrix user ID (the invitee has no account yet; the identity server's
+    // store-invite call above is what actually reaches them, by email/SMS).
+    // Passing *user_id (the sender) as the "extra recipient" is a no-op --
+    // build_pending_push_deliveries always filters the sender out -- so this
+    // still routes through the same pipeline as every other membership
+    // transition for consistency: today it evaluates to nothing against the
+    // default ruleset (see persist_membership_transition's push comment
+    // above), but it means any existing joined member's custom push rules
+    // still see the event.
+    if (room_for_push != nullptr)
+    {
+        dispatch_membership_push_notification(runtime, *room_for_push, *composed, *user_id, *user_id);
     }
 
     append_local_audit(runtime.database, observability::AuditCategory::admin, "room.third_party_invited", *user_id,
@@ -4822,19 +4864,29 @@ namespace
     }
 
     // Evaluates push rules for `composed` against every local, joined,
-    // pusher-registered recipient of `room` (everyone except `sender`), and
-    // returns one PendingPushDelivery per (recipient, pusher) pair whose
-    // evaluation says "notify". Only "http" pushers are returned — Merovingian's
-    // Push Gateway API client only speaks the HTTP pusher protocol; "email"
-    // pushers are accepted and persisted by POST /pushers/set but are not yet
-    // deliverable (see docs/todos/capability-gaps.md).
+    // pusher-registered recipient of `room` (everyone except `sender`), plus
+    // anyone named in `extra_recipients`, and returns one PendingPushDelivery
+    // per (recipient, pusher) pair whose evaluation says "notify". Only
+    // "http" pushers are returned — Merovingian's Push Gateway API client
+    // only speaks the HTTP pusher protocol; "email" pushers are accepted and
+    // persisted by POST /pushers/set but are not yet deliverable (see
+    // docs/todos/capability-gaps.md).
+    //
+    // `extra_recipients` exists for membership transitions: an invitee is
+    // not a joined member of `room` (store_or_update_membership only adds to
+    // room.members on "join" — see apply_runtime_membership), so without it
+    // .m.rule.invite_for_me could never reach the person actually being
+    // invited. Entries equal to `sender` or already present in room.members
+    // are silently skipped, so callers may pass the membership target
+    // unconditionally (self-transitions included) without special-casing.
     //
     // Pure/in-memory only (state reads, JSON parsing, rule evaluation) — no
     // network, no database writes. Safe to call under runtime.mutex, which
     // send_event() already holds when it calls this. The gateway network
     // calls happen later, off the request path — see dispatch_push_deliveries.
     [[nodiscard]] auto build_pending_push_deliveries(HomeserverRuntime const& runtime, LocalRoom const& room,
-                                                     ComposedEvent const& composed, std::string_view sender)
+                                                     ComposedEvent const& composed, std::string_view sender,
+                                                     std::span<std::string const> extra_recipients = {})
         -> std::vector<PendingPushDelivery>
     {
         auto deliveries = std::vector<PendingPushDelivery>{};
@@ -4897,7 +4949,16 @@ namespace
         }();
         auto const is_member_event = composed.event_type == "m.room.member";
 
-        for (auto const& member : room.members)
+        auto recipients = room.members;
+        for (auto const& extra : extra_recipients)
+        {
+            if (std::ranges::find(recipients, extra) == recipients.end())
+            {
+                recipients.push_back(extra);
+            }
+        }
+
+        for (auto const& member : recipients)
         {
             if (member == sender || events::domain_of(member) != server_name)
             {
@@ -4999,21 +5060,97 @@ namespace
         }
     }
 
+    // Bounds the number of concurrently in-flight push-delivery background
+    // tasks (see HomeserverRuntime::push_delivery_in_flight_). Each
+    // dispatch_push_deliveries call spawns exactly one OS thread regardless
+    // of how many individual notifications it carries — run_pending_push_
+    // deliveries loops over every PendingPushDelivery sequentially within
+    // that one task — so this is a per-event, not per-notification, cap.
+    // 128 gives a busy multi-room deployment ample headroom under normal
+    // message volume while still bounding thread creation against a hostile
+    // or misbehaving client driving a high send rate; same order of
+    // magnitude as k_max_join_parallelism above.
+    static constexpr auto k_max_in_flight_push_deliveries = std::size_t{128U};
+
     // Dispatches `deliveries` asynchronously (see run_pending_push_deliveries)
     // and parks the future in runtime.orphan_futures_. No-op when there is
     // nothing to deliver or the runtime has no outbound transport wired
     // (worker/test contexts that never populate outbound_client/cached_discovery).
+    //
+    // Before parking, reaps every already-completed future from
+    // orphan_futures_ (shared with join_room's make_join race — see
+    // reap_completed_futures) so the vector does not grow by one entry per
+    // event for the life of the runtime, and checks
+    // push_delivery_in_flight_ against k_max_in_flight_push_deliveries so a
+    // busy room or a client sending many events cannot drive unbounded
+    // thread creation. At capacity, the delivery is dropped — never spawned,
+    // never blocked on — and a warning is logged: a missed push is
+    // recoverable (the client still sees the event on its next /sync), an
+    // exhausted thread pool is not.
     auto dispatch_push_deliveries(HomeserverRuntime& runtime, std::vector<PendingPushDelivery> deliveries) -> void
     {
         if (deliveries.empty() || runtime.outbound_client == nullptr || runtime.cached_discovery == nullptr)
         {
             return;
         }
+        {
+            auto const orphan_lock = std::lock_guard{runtime.orphan_futures_mutex_};
+            reap_completed_futures(runtime.orphan_futures_);
+            if (at_background_task_capacity(runtime.push_delivery_in_flight_, k_max_in_flight_push_deliveries))
+            {
+                log_diagnostic("push.delivery.dropped",
+                               {
+                                   {"in_flight",  std::to_string(runtime.push_delivery_in_flight_), false},
+                                   {"cap",        std::to_string(k_max_in_flight_push_deliveries),  false},
+                                   {"deliveries", std::to_string(deliveries.size()),                false}
+                },
+                               observability::LogEventSeverity::warning);
+                return;
+            }
+            ++runtime.push_delivery_in_flight_;
+        }
         auto push_future = std::async(std::launch::async, [&runtime, deliveries = std::move(deliveries)]() mutable {
             run_pending_push_deliveries(runtime, std::move(deliveries));
+            // Deliberately NOT under orphan_futures_mutex_: this task's
+            // completion must never depend on acquiring the same mutex a
+            // waiter (HomeserverRuntime::~HomeserverRuntime(),
+            // wait_for_background_tasks() in test_push_delivery_flow.cpp)
+            // might hold while blocked in future.wait() on this very task —
+            // that combination deadlocks. push_delivery_in_flight_ is a
+            // std::atomic for exactly this reason; the increment and cap
+            // check above remain under the mutex since that read-modify-write
+            // must stay atomic against concurrent dispatchers.
+            --runtime.push_delivery_in_flight_;
         });
         auto const orphan_lock = std::lock_guard{runtime.orphan_futures_mutex_};
         runtime.orphan_futures_.push_back(std::move(push_future));
+    }
+
+    // Evaluates push rules and fires (off the request path) any notifications
+    // triggered by `composed` for `room`, additionally considering
+    // `extra_recipient` — a recipient who is not (yet) a joined member of
+    // `room` and so would otherwise be invisible to build_pending_push_
+    // deliveries's room.members loop. This is for membership transitions: an
+    // invitee is exactly this case — .m.rule.invite_for_me must reach them,
+    // but store_or_update_membership for an "invite" does not add the
+    // invitee to room.members (only "join" does — see
+    // apply_runtime_membership). `extra_recipient` equal to `sender`, or
+    // already a joined member, is silently absorbed by
+    // build_pending_push_deliveries, so every membership-mutating call site
+    // (invite/ban/kick/leave/knock/join, and the 3PID invite) can call this
+    // unconditionally rather than special-casing which transitions have a
+    // real, distinct recipient. Safe to call under runtime.mutex (see
+    // build_pending_push_deliveries).
+    auto dispatch_membership_push_notification(HomeserverRuntime& runtime, LocalRoom const& room,
+                                               ComposedEvent const& composed, std::string_view sender,
+                                               std::string_view extra_recipient) -> void
+    {
+        auto const extra = std::array<std::string, 1>{std::string{extra_recipient}};
+        if (auto deliveries = build_pending_push_deliveries(runtime, room, composed, sender, std::span{extra});
+            !deliveries.empty())
+        {
+            dispatch_push_deliveries(runtime, std::move(deliveries));
+        }
     }
 
 } // namespace

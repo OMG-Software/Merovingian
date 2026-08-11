@@ -22,6 +22,7 @@
 #include "merovingian/trust_safety/policy_engine.hpp"
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <functional>
@@ -303,7 +304,48 @@ struct HomeserverRuntime final
     // (before any race creates orphans), so the vector is empty at move time.
     std::mutex orphan_futures_mutex_{};
     std::vector<std::future<void>> orphan_futures_{};
+    // Count of push-delivery background tasks (dispatch_push_deliveries in
+    // room_service.cpp) currently running. Tracked separately from
+    // orphan_futures_.size() because that vector is shared with the
+    // make_join race's loser futures (join_room) — sizing the push cap off
+    // the shared vector would let a large join race starve push delivery, or
+    // let a push burst count against join concurrency.
+    //
+    // The check-and-increment happens on the dispatcher side under
+    // orphan_futures_mutex_ (already held there to reap orphan_futures_), so
+    // that read-modify-write against the cap stays correct across concurrent
+    // dispatchers. The decrement happens inside the background task itself,
+    // as its final action, WITHOUT taking orphan_futures_mutex_: both
+    // HomeserverRuntime::~HomeserverRuntime() and test helpers wait on
+    // parked futures while holding that same mutex only briefly (to move
+    // them out — see the destructor), never across the blocking wait, but a
+    // task that needed the mutex to finish would still deadlock against any
+    // waiter that held it for the wait itself. std::atomic sidesteps the
+    // question entirely: the task never needs the mutex to complete. See
+    // at_background_task_capacity() and k_max_in_flight_push_deliveries in
+    // room_service.cpp.
+    std::atomic<std::size_t> push_delivery_in_flight_{0U};
 };
+
+// Removes every already-completed future from `futures` in place, preserving
+// the relative order of the survivors. Readiness is checked with a
+// non-blocking wait_for(0s) — never .get()/.wait() on a future that might
+// still be running. Shared by every call site that parks background work in
+// HomeserverRuntime::orphan_futures_ (join_room's make_join race losers,
+// dispatch_push_deliveries's push-gateway tasks) so the reap-before-park
+// policy is defined exactly once. Callers are responsible for holding
+// orphan_futures_mutex_ while calling this.
+auto reap_completed_futures(std::vector<std::future<void>>& futures) -> void;
+
+// Pure capacity check for a background task pool bounded by a fixed cap —
+// no futures, no threads, no I/O — so the cap boundary (drop the N+1th unit
+// of work rather than spawn it) can be exercised directly in a unit test
+// without any concurrency machinery. `in_flight_count` is the count AFTER
+// reaping.
+[[nodiscard]] constexpr auto at_background_task_capacity(std::size_t in_flight_count, std::size_t cap) noexcept -> bool
+{
+    return in_flight_count >= cap;
+}
 
 // Typing-state helpers used by client-server and federation handlers.
 [[nodiscard]] auto current_typing_users_in_room(HomeserverRuntime const& rt, std::string_view room_id)
