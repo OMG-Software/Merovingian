@@ -905,9 +905,27 @@ namespace
             // serializes on the room stripe, and releases only the global mutex
             // for the backend commit so independent rooms can persist in parallel.
             auto result = ingest_pdu_event(*rt, envelope);
-            if (result.status == federation::PduIngestionStatus::accepted && rt->sync_notifier != nullptr)
+            if (result.status == federation::PduIngestionStatus::accepted)
             {
-                rt->sync_notifier->publish(result.accepted_stream_ordering, result.accepted_sync_stream_id);
+                if (rt->sync_notifier != nullptr)
+                {
+                    rt->sync_notifier->publish(result.accepted_stream_ordering, result.accepted_sync_stream_id);
+                }
+                // #479 P1 fix: this is the single convergence point for every
+                // accepted federation PDU — both the direct main-process path
+                // (inbound_request.cpp calling runtime.pdu_sink) and the
+                // worker-relayed path (worker_pool.cpp's pdu_ingest handler
+                // calling this same runtime_.federation.pdu_sink) land here
+                // exactly once per accepted PDU, so this cannot double-deliver.
+                // Without this call, an event from a remote room member never
+                // reached the push pipeline at all: send_event() (the only
+                // other caller of build_pending_push_deliveries) only runs for
+                // locally composed events, so a message from a federated room
+                // member produced no /notifications row and no Push Gateway
+                // request for a local recipient — the normal federated-room
+                // case. See room_service.hpp's deliver_federation_push_
+                // notifications doc comment.
+                deliver_federation_push_notifications(*rt, envelope, result.accepted_stream_ordering);
             }
             return result;
         };

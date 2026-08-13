@@ -93,7 +93,11 @@ auto default_client_rate_limit_config() noexcept -> RateLimitConfig
     // 5/min per user for login, 30/min for keys/devices, 20/min for media,
     // 120/min for federation, 90/min for everything else. Admin routes
     // (/_merovingian/admin/*) get 30/min per IP — operator-only, low-volume,
-    // but still throttled against brute-force token guessing.
+    // but still throttled against brute-force token guessing. Search gets the
+    // same 20/min-per-IP tier as media: like media, each request can do real
+    // work (a bounded in-memory scan of the caller's joined-room events,
+    // capped by ClientApiLimits::max_search_events_scanned) rather than a
+    // cheap lookup, so it is throttled tighter than the generic fallback.
     return RateLimitConfig{
         .per_ip =
             {
@@ -103,6 +107,7 @@ auto default_client_rate_limit_config() noexcept -> RateLimitConfig
                      {"/_matrix/client/v3/devices", {30U, 60U}},
                      {"/_matrix/media/", {20U, 60U}},
                      {"/_matrix/client/v1/media/", {20U, 60U}},
+                     {"/_matrix/client/v3/search", {20U, 60U}},
                      {"/_matrix/federation/", {120U, 60U}},
                      {"/_merovingian/admin/", {30U, 60U}},
                      },

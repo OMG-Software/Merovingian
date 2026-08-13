@@ -63,6 +63,14 @@ struct ClientApiLimits final
     std::size_t max_body_bytes{65536U};
     std::size_t max_sync_rooms{16U};
     std::size_t max_sync_events_per_room{8U};
+    // POST /search has no per-room scope (unlike /messages) and no secondary
+    // full-text index (see docs/architecture.md's "Server-side search"
+    // section): it walks the joined-room subset of PersistentStore::events
+    // directly. This bounds the number of candidate events a single request
+    // will JSON-parse and text-match before it must stop and hand back a
+    // `next_batch` continuation, so one cheap authenticated request cannot
+    // force an O(store size) scan.
+    std::size_t max_search_events_scanned{2000U};
 };
 
 // Wall-clock source for the rate-limit engine. The engine takes a

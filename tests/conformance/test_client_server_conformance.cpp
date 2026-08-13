@@ -12340,7 +12340,11 @@ SCENARIO("GET /v1/rooms/{roomId}/relations/{eventId}/{relType}/{eventType} confo
 // 16     Search — POST /search
 // ============================================================================
 // Spec: Matrix v1.19 §16 POST /_matrix/client/v3/search
-//       IMPLEMENTATION GAP: not yet implemented. Must return 404 M_UNRECOGNIZED.
+//       Routed in 0.11.11 (see tests/conformance/test_search_conformance.cpp
+//       for the full behavioural/access-control suite). This scenario is the
+//       routing/shape smoke test: a well-formed request against an empty
+//       store returns 200 with the spec-required
+//       search_categories.room_events.{count,results} fields.
 
 SCENARIO("POST /search conformance")
 {
@@ -12350,20 +12354,27 @@ SCENARIO("POST /search conformance")
         REQUIRE(started.started);
         auto const token = logged_in_token(started.runtime);
 
-        WHEN("POST /search is called")
+        WHEN("POST /search is called with a well-formed body")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
                 {"POST", "/_matrix/client/v3/search", token,
                  R"({"search_categories":{"room_events":{"search_term":"test","filter":{"limit":10}}}})"});
 
-            THEN("the server returns 404 M_UNRECOGNIZED")
+            THEN("the server returns 200 with the spec-required response shape")
             {
-                REQUIRE(response.response.status == 404);
+                REQUIRE(response.response.status == 200); // Spec: 200 "Results of the search."
                 auto const body = parse_object(response.response.body);
-                auto const* err = string_member(body, "errcode");
-                REQUIRE(err != nullptr);
-                REQUIRE(*err == "M_UNRECOGNIZED");
+                auto const* categories = object_member_as_object(body, "search_categories");
+                REQUIRE(categories != nullptr); // Spec: search_categories is Required
+                auto const* room_events = object_member_as_object(*categories, "room_events");
+                REQUIRE(room_events != nullptr);
+                auto const* count = int_member(*room_events, "count");
+                REQUIRE(count != nullptr);
+                REQUIRE(*count == 0); // no events exist yet in this fresh store
+                auto const* results = object_member_as_array(*room_events, "results");
+                REQUIRE(results != nullptr);
+                REQUIRE(results->empty());
             }
         }
     }

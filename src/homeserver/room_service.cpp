@@ -4812,6 +4812,64 @@ namespace
         push::PushGatewayNotification notification{};
     };
 
+    // Bounds how many of one recipient's registered pushers are processed for
+    // a single notify-worthy event. POST /pushers/set (client_server.cpp) has
+    // no per-user limit on distinct (app_id, pushkey) pairs, and every later
+    // matching event copies the recipient's whole pusher list and processes
+    // it SEQUENTIALLY inside one dispatch_push_deliveries background task —
+    // up to server.push.total_timeout_seconds (default 30s) per pusher. An
+    // unbounded list therefore lets one recipient's pusher count alone keep a
+    // task (and, repeated across events, one of the
+    // k_max_in_flight_push_deliveries slots below) occupied for minutes to
+    // hours, independent of the 128-task cap. 10 comfortably covers a real
+    // user's device count (phone, tablet, a couple of desktops/browsers) while
+    // bounding the worst case to 10 * total_timeout_seconds per event rather
+    // than unbounded.
+    static constexpr auto k_max_pushers_per_delivery = std::size_t{10U};
+
+    // Resolves `member`'s display name FOR THIS ROOM: the `displayname` field
+    // of their current `m.room.member` state event, if present and non-empty.
+    // Spec (push-gateway-api.md, contains_display_name): the condition
+    // "matches messages where content.body contains the owner's display name
+    // in that room" — a per-room value, not the account-wide profile. A
+    // recipient with a room-specific membership display name, or a remote
+    // member whose profile row this server never learned, would otherwise be
+    // checked against the wrong (or an empty, for remote users) name, either
+    // missing a real mention or matching a stale/unrelated one. Falls back to
+    // the account-wide profile row (database::find_profile) only when the
+    // membership event carries no displayname at all — the common case where
+    // the user never overrode it for this room — and finally to an empty
+    // string, matching the prior behaviour for a member with no profile.
+    [[nodiscard]] auto room_member_display_name(database::PersistentStore const& store, std::string_view room_id,
+                                                std::string_view member) -> std::string
+    {
+        auto const state_it = std::ranges::find_if(store.state, [&](database::PersistentStateEvent const& state) {
+            return state.room_id == room_id && state.event_type == "m.room.member" && state.state_key == member;
+        });
+        if (state_it != store.state.end())
+        {
+            auto const event_it = std::ranges::find_if(store.events, [&](database::PersistentEvent const& event) {
+                return event.event_id == state_it->event_id;
+            });
+            if (event_it != store.events.end())
+            {
+                auto parsed = canonicaljson::parse_lossless(event_it->json);
+                if (parsed.error == canonicaljson::ParseError::none)
+                {
+                    auto const* root = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+                    auto const* content = root != nullptr ? object_member_as_object(*root, "content") : nullptr;
+                    auto const* displayname = content != nullptr ? string_member(*content, "displayname") : nullptr;
+                    if (displayname != nullptr && !displayname->empty())
+                    {
+                        return *displayname;
+                    }
+                }
+            }
+        }
+        auto const profile = database::find_profile(store, member);
+        return profile.has_value() ? profile->displayname : std::string{};
+    }
+
     // Reads the room's current m.room.power_levels event content, parsed as a
     // full-event-shaped canonicaljson::Value ({"content": {...}, ...}) — the
     // shape events::extract_user_power_level/extract_power_level_key expect.
@@ -5078,11 +5136,12 @@ namespace
             // /notifications history recording just below depends on this
             // either way (see this function's doc comment).
             auto const ruleset = push::parse_push_ruleset(default_push_ruleset(member));
-            auto const recipient_profile = database::find_profile(store, member);
             auto context = push::PushEvaluationContext{};
             context.receiving_user_id = member;
-            context.receiving_user_display_name =
-                recipient_profile.has_value() ? recipient_profile->displayname : std::string{};
+            // contains_display_name matches against the recipient's display
+            // name IN THIS ROOM, not their account-wide profile — see
+            // room_member_display_name's doc comment above.
+            context.receiving_user_display_name = room_member_display_name(store, room.room_id, member);
             context.room_member_count = static_cast<std::uint64_t>(room.members.size());
             context.sender_power_level = sender_power_level;
             context.notification_power_levels = notification_power_levels;
@@ -5112,6 +5171,23 @@ namespace
             if (pushers.empty())
             {
                 continue;
+            }
+            if (pushers.size() > k_max_pushers_per_delivery)
+            {
+                // Mirrors dispatch_push_deliveries's push.delivery.dropped log
+                // below: never truncate silently. The recipient still gets
+                // notified (on the pushers kept), but the operator can see a
+                // user is registering far more pushers than any real client
+                // count, which the notification-history row above cannot
+                // surface on its own.
+                log_diagnostic("push.pushers.truncated",
+                               {
+                                   {"user_id",   std::string{member},                        false},
+                                   {"total",     std::to_string(pushers.size()),             false},
+                                   {"processed", std::to_string(k_max_pushers_per_delivery), false}
+                },
+                               observability::LogEventSeverity::warning);
+                pushers.resize(k_max_pushers_per_delivery);
             }
 
             auto const unread = total_unread_count(runtime, member);
@@ -5459,6 +5535,53 @@ namespace
     return make_operation_result(true, composed->event_id);
 }
 // NOLINTEND(bugprone-easily-swappable-parameters)
+
+// See the doc comment in room_service.hpp. Builds a ComposedEvent-shaped
+// view of `envelope` (federation ingestion never produces a real ComposedEvent
+// — that type is send_event's own composition output) purely so it can reuse
+// build_pending_push_deliveries/dispatch_push_deliveries unchanged rather than
+// duplicating their logic for the federation path.
+auto deliver_federation_push_notifications(HomeserverRuntime& runtime, federation::InboundPduEnvelope const& envelope,
+                                           std::uint64_t accepted_stream_ordering) -> void
+{
+    auto const* room = find_room(runtime.database, envelope.room_id);
+    if (room == nullptr)
+    {
+        return;
+    }
+
+    auto composed = ComposedEvent{};
+    composed.event_id = envelope.event_id;
+    composed.json = envelope.json;
+    composed.depth = envelope.depth;
+    composed.stream_ordering = accepted_stream_ordering;
+    composed.prev_event_ids = envelope.prev_event_ids;
+    composed.auth_event_ids = envelope.auth_event_ids;
+    composed.signatures = envelope.signatures;
+    composed.event_type = envelope.event_type;
+    composed.state_key = envelope.state_key;
+
+    // Mirrors dispatch_membership_push_notification's extra_recipient: a
+    // federated invite/ban/kick/knock target may not yet be a joined member
+    // of the room (only "join" mutates LocalDatabase::members — see
+    // apply_runtime_membership above), so without surfacing state_key here
+    // explicitly, .m.rule.invite_for_me could never fire for an invite that
+    // arrived over federation rather than locally. Safe to pass
+    // unconditionally for every m.room.member PDU: build_pending_push_
+    // deliveries silently absorbs an entry equal to the sender or already a
+    // joined member.
+    auto const extra_recipient =
+        composed.event_type == "m.room.member" ? composed.state_key.value_or(std::string{}) : std::string{};
+    auto const extra_array = std::array<std::string, 1>{extra_recipient};
+    auto const extra_span =
+        extra_recipient.empty() ? std::span<std::string const>{} : std::span<std::string const>{extra_array};
+
+    if (auto deliveries = build_pending_push_deliveries(runtime, *room, composed, envelope.sender, extra_span);
+        !deliveries.empty())
+    {
+        dispatch_push_deliveries(runtime, std::move(deliveries));
+    }
+}
 
 [[nodiscard]] auto fetch_room_state(HomeserverRuntime const& runtime, std::string_view access_token,
                                     std::string_view room_id) -> OperationResult

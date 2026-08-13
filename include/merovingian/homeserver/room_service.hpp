@@ -3,6 +3,7 @@
 #pragma once
 
 #include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/federation/outbound_transaction.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
@@ -191,6 +192,24 @@ struct SendJoinStateSplit final
 [[nodiscard]] auto rotate_server_signing_key(HomeserverRuntime& runtime) -> OperationResult;
 [[nodiscard]] auto send_event(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id,
                               std::string_view event_json) -> OperationResult;
+// Evaluates push rules and dispatches push notifications (and GET
+// /notifications history rows) for `envelope`, an event that was just
+// accepted through federation ingestion (ingest_pdu_event) rather than
+// composed locally via send_event. PDUs accepted over federation never pass
+// through send_event, so without this call the push pipeline never runs for
+// them at all — a remote room member's message would produce no
+// /notifications row and no Push Gateway request for a local recipient (the
+// normal federated-room case). Mirrors send_event's own build_pending_push_
+// deliveries/dispatch_push_deliveries call. `accepted_stream_ordering` is the
+// value ingest_pdu_event assigned the event (PduIngestionResult::
+// accepted_stream_ordering), needed for GET /notifications pagination.
+// Callers must invoke this only once per accepted PDU — see
+// wire_federation_callbacks_impl's pdu_sink, the sole call site, for why that
+// holds structurally. Safe to call under runtime.mutex; the actual Push
+// Gateway network calls still happen off the request path (see
+// dispatch_push_deliveries).
+auto deliver_federation_push_notifications(HomeserverRuntime& runtime, federation::InboundPduEnvelope const& envelope,
+                                           std::uint64_t accepted_stream_ordering) -> void;
 [[nodiscard]] auto fetch_room_state(HomeserverRuntime const& runtime, std::string_view access_token,
                                     std::string_view room_id) -> OperationResult;
 // Converts a stored persistent event into a client-facing event value,

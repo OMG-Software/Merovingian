@@ -803,6 +803,60 @@ threat it closes; the controls above are the standing defences these reinforce.
   any parse failure as an empty set) rather than either erroring or
   over-suppressing.
 
+- **Federated events never reached push delivery (v0.11.11, fixed):** the
+  fixes above wired delivery into `send_event()` (locally composed events)
+  and every membership-mutating path, but an event accepted over federation
+  persists through a different function, `ingest_pdu_event()`, called from
+  the `runtime.federation.pdu_sink` callback — which only ever published the
+  sync token and never called `build_pending_push_deliveries()`/
+  `dispatch_push_deliveries()`. The practical consequence: a message from a
+  remote room member, the ordinary case for any room with federated
+  membership, produced no `/notifications` history row and no Push Gateway
+  request for a local recipient — push notifications silently did not work
+  for federated rooms at all. Fixed with `deliver_federation_push_
+  notifications()` (`room_service.cpp`), called from the `pdu_sink` lambda
+  (`local_http_router.cpp`'s `wire_federation_callbacks_impl`) immediately
+  after a PDU is accepted. This lambda is the single convergence point for
+  every accepted PDU regardless of origin — both the direct main-process
+  federation path (`inbound_request.cpp` calling `runtime.pdu_sink`
+  synchronously) and the worker-relayed path (`worker_pool.cpp`'s
+  `pdu_ingest` IPC handler calling the same `runtime_.federation.pdu_sink`
+  on main) — so wiring the call in exactly one place cannot result in a PDU
+  being delivered twice. Reuses `build_pending_push_deliveries`/
+  `dispatch_push_deliveries` unchanged rather than a second delivery
+  implementation that could drift from the local one; carries the same
+  `push.enabled` gate, the same off-request-path `std::async` dispatch, and
+  the same `k_max_in_flight_push_deliveries` cap as the local path.
+
+- **Unbounded pushers per recipient (v0.11.11, fixed):** `POST /pushers/set`
+  has no per-user limit on the number of distinct `(app_id, pushkey)` pairs
+  a user may register. Before this fix, every notify-worthy event copied a
+  recipient's *entire* pusher list (`database::list_pushers_for_user`) and
+  processed it sequentially inside a single `dispatch_push_deliveries`
+  background task — up to `server.push.total_timeout_seconds` (default 30s)
+  per pusher. `k_max_in_flight_push_deliveries` (128) bounds how many
+  *tasks* may run concurrently, but nothing bounded the work inside one
+  task: an authenticated user (no special privilege required — any account
+  can call `POST /pushers/set` repeatedly) registering, say, 500 pushers
+  could keep a single delivery task — and, since every subsequent message
+  to that user repeats the same cost, potentially many of the 128 in-flight
+  slots over time — occupied for tens of minutes to hours, materially
+  degrading push delivery for every other user on a shared server. Fixed by
+  bounding delivery rather than registration: `room_service.cpp`'s
+  `k_max_pushers_per_delivery` (10) caps how many of a recipient's pushers
+  are actually contacted per event; the rest are skipped, logged at `WARN`
+  (`push.pushers.truncated`, mirroring the existing `push.delivery.dropped`
+  log for the task-level cap) rather than dropped silently. Registration
+  itself (`POST /pushers/set`) still accepts an unbounded number of pushers
+  — this is a delivery-side mitigation, not a registration-side limit — so
+  a user's excess pushers beyond the tenth are simply never contacted for
+  any given event rather than being rejected up front; a future
+  registration-time cap remains open work (see `docs/todos/capability-gaps.md`).
+  Notification-history recording (`GET /notifications`) is unaffected by
+  this cap — it happens once per `(user, event)` before the pusher list is
+  even read, so a user with more than ten pushers still sees every
+  notification in their history even though not every pusher is contacted.
+
 - **OpenID token confusion (identified and mitigated during implementation,
   v0.11.11):** `POST /_matrix/client/v3/user/{userId}/openid/request_token`
   (Matrix v1.19 CS API §OpenID) mints a bearer credential meant for exactly

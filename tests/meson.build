@@ -237,6 +237,7 @@ shell = find_program('sh')
       'conformance/test_read_markers_conformance.cpp',
       'conformance/test_receipt_conformance.cpp',
       'conformance/test_safety_report_conformance.cpp',
+      'conformance/test_search_conformance.cpp',
       'conformance/test_server_discovery.cpp',
       'conformance/test_signing_json_conformance.cpp',
       'conformance/test_state_resolution_conformance.cpp',

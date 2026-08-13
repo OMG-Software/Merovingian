@@ -4,6 +4,32 @@ Started as a documentation-only audit of the routed client-server surface
 against Matrix v1.19, recorded in `docs/todos/capability-gaps.md`; the branch
 then closed one of the gaps the audit found.
 
+- Routed `POST /_matrix/client/v3/search` (server-side event search), the
+  last previously-unrouted endpoint the 0.11.11 audit found in the
+  Client-Server API. Searches `content.body` (m.room.message), `content.name`
+  (m.room.name), and `content.topic` (m.room.topic) — a case-insensitive
+  substring match, not stemmed/tokenised full text search — across rooms the
+  caller is currently joined to, never searching end-to-end encrypted rooms
+  (spec MUST). `filter` (`RoomEventFilter`), `keys`, `order_by`
+  (`rank`/`recent`), `event_context` (`before_limit`/`after_limit`/
+  `include_profile`), `include_state`, and `groupings` (`room_id`/`sender`)
+  are all honoured rather than silently ignored. `m.ignored_user_list` is
+  applied via the shared `trust_safety::ignore_list` helper, resolved once
+  per request. Unlike `/messages`, this endpoint has no per-room scope, so a
+  new `ClientApiLimits::max_search_events_scanned` (2000) bounds how many
+  candidate events a single request will JSON-parse and text-match before it
+  must hand back a `next_batch` continuation instead of scanning further;
+  `/_matrix/client/v3/search` also gets its own 20/min-per-IP rate-limit
+  tier (the same tier as media) rather than the generic 90/min fallback.
+  Known gaps, recorded in `docs/todos/capability-gaps.md`: only rooms the
+  caller is currently joined to are searched (the spec's fuller "including
+  rooms you have left" scope is not implemented — the same join-only
+  membership gate `/messages`/`/context`/`/event/{eventId}` already use);
+  `order_by: rank` is only locally accurate within a request's bounded scan
+  window, not a global top-K across the caller's entire matching history;
+  per-group `next_batch` pagination is not implemented (spec allows this);
+  and the MSC3765 extensible-topic `content['m.topic']` representation is
+  not indexed.
 - Routed `GET /_matrix/client/v3/rooms/{roomId}/context/{eventId}` (event
   context for permalink resolution). Requires authentication and the same
   joined-membership gate as `/messages` and `/event/{eventId}`; an unknown
@@ -453,6 +479,65 @@ then closed one of the gaps the audit found.
   - `tests/unit/test_database_persistence.cpp`: updated the hardcoded
     migration-step/schema-version assertions for the new schema version 10
     and the `openid_tokens` migration step.
+- **Three PR #479 review findings closed in the push delivery path** — two
+  P1, one P2.
+  - **P1: push notifications never fired for federated-room messages.**
+    Delivery was wired into `send_event()` (locally composed events) and the
+    membership paths, but an event accepted over federation persists through
+    `ingest_pdu_event()` (called from the `runtime.federation.pdu_sink`
+    callback wired by `wire_federation_callbacks_impl` in
+    `local_http_router.cpp`) and only ever published the sync token — it
+    never reached `build_pending_push_deliveries`/`dispatch_push_deliveries`.
+    A message from a remote room member, the ordinary federated-room case,
+    therefore produced no `/notifications` row and no Push Gateway request
+    for a local recipient. Fixed with a new
+    `homeserver::deliver_federation_push_notifications()` (`room_service.
+    cpp`/`.hpp`), called from the `pdu_sink` lambda after a PDU is accepted —
+    the single convergence point for both the direct main-process federation
+    path and the worker-relayed path, so it cannot double-fire. Reuses
+    `build_pending_push_deliveries`/`dispatch_push_deliveries` unchanged
+    rather than a second delivery path; passes the event's `state_key` as an
+    extra recipient for `m.room.member` PDUs the same way
+    `dispatch_membership_push_notification` already does, so a federated
+    invite can also fire `.m.rule.invite_for_me`. New integration coverage
+    in `tests/integration/test_push_delivery_flow.cpp`: a federation-accepted
+    message reaches a local recipient's pusher and `/notifications` history;
+    a locally composed event is still delivered exactly once now that the
+    federation path also dispatches push notifications.
+  - **P1: unbounded pushers per recipient.** `POST /pushers/set` has no
+    per-user limit on distinct `(app_id, pushkey)` pairs, and every
+    notify-worthy event copied and processed a recipient's *entire* pusher
+    list sequentially inside one background task — up to
+    `server.push.total_timeout_seconds` (default 30s) per pusher — so a
+    large enough list could keep a task, and repeated across events one of
+    the 128 in-flight slots, occupied for minutes to hours; the existing
+    128-task cap only bounds task *count*, not the work inside one task.
+    Fixed by bounding delivery, not registration: `room_service.cpp`'s new
+    `k_max_pushers_per_delivery` (10, comfortably above a real user's device
+    count) truncates the pusher list actually contacted per event, logging
+    `push.pushers.truncated` at `WARN` (never silently) the same way the
+    128-task cap logs `push.delivery.dropped`. Registration itself
+    (`POST /pushers/set`, `client_server.cpp`) is unchanged — out of this
+    branch's scope, owned by other in-flight work on this PR — so this is a
+    delivery-side bound, not a registration-side rejection; notification
+    history recording is unaffected (still unconditional per recipient,
+    independent of the pusher cap). New integration coverage: a recipient
+    with 12 registered pushers has only the first 10 actually contacted for
+    one event.
+  - **P2: `contains_display_name` read the wrong display name.** Spec: the
+    condition "matches messages where `content.body` contains the owner's
+    display name **in that room**" — a per-room value. `build_pending_push_
+    deliveries` instead read the recipient's account-wide profile row
+    (`database::find_profile`), so a room-specific membership display name,
+    or a stale account-wide one, evaluated the wrong text — missing a real
+    mention or matching an unrelated one. Fixed with a new
+    `room_member_display_name()` helper (`room_service.cpp`) that resolves
+    the recipient's current `m.room.member` state event content in that
+    room, falling back to the account-wide profile only when the membership
+    event carries no `displayname` at all. New integration coverage: a
+    message containing the recipient's room-specific membership display name
+    is highlighted; a message containing only a stale account-wide profile
+    name is recorded but not highlighted.
 
 ## 0.11.10
 

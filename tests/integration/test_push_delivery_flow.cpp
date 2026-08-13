@@ -23,15 +23,21 @@
 #include "../support/json_test_support.hpp"
 #include "../support/registration_token.hpp"
 #include "../support/tls_mock_server.hpp"
+#include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/database/persistent_store.hpp"
+#include "merovingian/events/event_id.hpp"
+#include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/homeserver/client_server.hpp"
+#include "merovingian/homeserver/local_http_router.hpp"
+#include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/net/tcp_acceptor.hpp"
 #include "merovingian/push/push_gateway_client.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -243,6 +249,167 @@ auto set_ignored_users(merovingian::homeserver::ClientServerRuntime& runtime, st
         }
     }
     return false;
+}
+
+// Whether the notifications-history entry for `event_id` carries a
+// `{"set_tweak":"highlight","value":true}` action — i.e. whether push rule
+// evaluation actually chose the highlight tweak for that event (only
+// .m.rule.contains_display_name does, among the default rules exercised in
+// this file). Parses each entry's own `actions` array rather than
+// substring-searching the response, per this file's structural-assertion
+// discipline (see notifications_contain_event above).
+[[nodiscard]] auto notification_actions_have_highlight(merovingian::canonicaljson::Array const& notifications,
+                                                       std::string const& event_id) -> bool
+{
+    for (auto const& entry : notifications)
+    {
+        auto const* entry_object = std::get_if<merovingian::canonicaljson::Object>(&entry.storage());
+        if (entry_object == nullptr)
+        {
+            continue;
+        }
+        auto const* event_object = object_member_as_object(*entry_object, "event");
+        auto const* found_event_id = event_object == nullptr ? nullptr : string_member(*event_object, "event_id");
+        if (found_event_id == nullptr || *found_event_id != event_id)
+        {
+            continue;
+        }
+        auto const* actions_array = object_member_as_array(*entry_object, "actions");
+        if (actions_array == nullptr)
+        {
+            return false;
+        }
+        for (auto const& action : *actions_array)
+        {
+            auto const* action_object = std::get_if<merovingian::canonicaljson::Object>(&action.storage());
+            if (action_object == nullptr)
+            {
+                continue;
+            }
+            auto const* set_tweak = string_member(*action_object, "set_tweak");
+            if (set_tweak == nullptr || *set_tweak != "highlight")
+            {
+                continue;
+            }
+            auto const* highlight_value = bool_member(*action_object, "value");
+            return highlight_value != nullptr && *highlight_value;
+        }
+        return false;
+    }
+    return false;
+}
+
+// A federation-enabled variant of push_test_config() — used by the
+// federation-delivery scenarios below, which need security.federation.enabled
+// so wire_federation_callbacks() actually wires runtime.federation.pdu_sink
+// (see wire_federation_callbacks_impl's early-return guard in
+// local_http_router.cpp).
+[[nodiscard]] auto push_federation_test_config() -> merovingian::config::Config
+{
+    auto config = push_test_config();
+    config.security().federation.enabled = true;
+    return config;
+}
+
+// Directly seeds `remote_user` as an already-joined member of `room_id`,
+// without driving a real make_join/send_join handshake (out of scope here —
+// see test_join_room_flow.cpp for that path). Mirrors the seeding technique
+// tests/unit/test_federation_pdu_ingest_concurrency.cpp uses for its
+// remote-member fixture: writes LocalRoom::members, the PersistentMembership
+// row, and a real (state-key, event) pair so build_pdu_auth_event_map finds a
+// sender_member entry when a later PDU from this sender is authorized.
+auto seed_remote_member(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& room_id,
+                        std::string const& remote_user) -> void
+{
+    namespace canonicaljson = merovingian::canonicaljson;
+    auto& homeserver = runtime.homeserver;
+    auto& store = homeserver.database.persistent_store;
+
+    auto room_it =
+        std::ranges::find_if(homeserver.database.rooms, [&](merovingian::homeserver::LocalRoom const& candidate) {
+            return candidate.room_id == room_id;
+        });
+    REQUIRE(room_it != homeserver.database.rooms.end());
+    room_it->members.push_back(remote_user);
+    store.memberships.push_back({room_id, remote_user, "join", 0U});
+
+    auto content = canonicaljson::Object{};
+    content.push_back(canonicaljson::make_member("membership", canonicaljson::Value{std::string{"join"}}));
+
+    auto event_obj = canonicaljson::Object{};
+    event_obj.push_back(canonicaljson::make_member("type", canonicaljson::Value{std::string{"m.room.member"}}));
+    event_obj.push_back(canonicaljson::make_member("room_id", canonicaljson::Value{room_id}));
+    event_obj.push_back(canonicaljson::make_member("sender", canonicaljson::Value{remote_user}));
+    event_obj.push_back(canonicaljson::make_member("state_key", canonicaljson::Value{remote_user}));
+    event_obj.push_back(canonicaljson::make_member("content", canonicaljson::Value{std::move(content)}));
+    event_obj.push_back(
+        canonicaljson::make_member("origin_server_ts", canonicaljson::Value{static_cast<std::int64_t>(500)}));
+    event_obj.push_back(canonicaljson::make_member("depth", canonicaljson::Value{static_cast<std::int64_t>(2)}));
+    event_obj.push_back(canonicaljson::make_member("prev_events", canonicaljson::Value{canonicaljson::Array{}}));
+    event_obj.push_back(canonicaljson::make_member("auth_events", canonicaljson::Value{canonicaljson::Array{}}));
+
+    auto const hash = merovingian::events::make_content_hash(canonicaljson::Value{event_obj});
+    REQUIRE(hash.error.empty());
+    auto hashes = canonicaljson::Object{};
+    hashes.push_back(canonicaljson::make_member("sha256", canonicaljson::Value{hash.sha256}));
+    event_obj.push_back(canonicaljson::make_member("hashes", canonicaljson::Value{std::move(hashes)}));
+
+    auto const serialized = canonicaljson::serialize_canonical(canonicaljson::Value{event_obj});
+    REQUIRE(serialized.error == canonicaljson::CanonicalJsonError::none);
+
+    auto const member_event_id = room_id + ":seeded-remote-member:" + remote_user;
+    store.events.push_back({member_event_id, room_id, remote_user, serialized.output, 2U, 0U, {}, {}, {}});
+    store.state.push_back({room_id, "m.room.member", remote_user, member_event_id});
+}
+
+// Builds an already-signed-shaped (content-hash-correct, but not
+// Ed25519-signed — ingest_pdu_event/PduSink never re-verify the signature;
+// that already happened once upstream at authorize_federation_pdu, see
+// local_http_router.cpp's #450 TRUST BOUNDARY comment) m.room.message PDU
+// envelope from `sender`, mirroring test_federation_pdu_ingest_concurrency.
+// cpp's make_message_pdu. Used to drive the wired federation pdu_sink
+// directly, standing in for a real inbound /_matrix/federation/v1/send/{txn}
+// transaction (which would additionally need X-Matrix request auth and a
+// verifiable Ed25519 event signature — orthogonal to what this file tests).
+[[nodiscard]] auto make_federation_message_envelope(std::string const& room_id, std::string const& sender,
+                                                    std::string const& body, std::string const& event_id)
+    -> merovingian::federation::InboundPduEnvelope
+{
+    namespace canonicaljson = merovingian::canonicaljson;
+    auto content = canonicaljson::Object{};
+    content.push_back(canonicaljson::make_member("body", canonicaljson::Value{body}));
+    content.push_back(canonicaljson::make_member("msgtype", canonicaljson::Value{std::string{"m.text"}}));
+
+    auto event_obj = canonicaljson::Object{};
+    event_obj.push_back(canonicaljson::make_member("type", canonicaljson::Value{std::string{"m.room.message"}}));
+    event_obj.push_back(canonicaljson::make_member("room_id", canonicaljson::Value{room_id}));
+    event_obj.push_back(canonicaljson::make_member("sender", canonicaljson::Value{sender}));
+    event_obj.push_back(canonicaljson::make_member("content", canonicaljson::Value{std::move(content)}));
+    event_obj.push_back(
+        canonicaljson::make_member("origin_server_ts", canonicaljson::Value{static_cast<std::int64_t>(1000)}));
+    event_obj.push_back(canonicaljson::make_member("depth", canonicaljson::Value{static_cast<std::int64_t>(3)}));
+    event_obj.push_back(canonicaljson::make_member("prev_events", canonicaljson::Value{canonicaljson::Array{}}));
+    event_obj.push_back(canonicaljson::make_member("auth_events", canonicaljson::Value{canonicaljson::Array{}}));
+
+    auto const hash = merovingian::events::make_content_hash(canonicaljson::Value{event_obj});
+    REQUIRE(hash.error.empty());
+    auto hashes = canonicaljson::Object{};
+    hashes.push_back(canonicaljson::make_member("sha256", canonicaljson::Value{hash.sha256}));
+    event_obj.push_back(canonicaljson::make_member("hashes", canonicaljson::Value{std::move(hashes)}));
+
+    auto const serialized = canonicaljson::serialize_canonical(canonicaljson::Value{event_obj});
+    REQUIRE(serialized.error == canonicaljson::CanonicalJsonError::none);
+
+    auto env = merovingian::federation::InboundPduEnvelope{};
+    env.event_id = event_id;
+    env.room_id = room_id;
+    env.room_version = "12";
+    env.sender = sender;
+    env.event_type = "m.room.message";
+    env.origin_server_ts = 1000;
+    env.depth = 3U;
+    env.json = serialized.output;
+    return env;
 }
 
 } // namespace
@@ -908,6 +1075,387 @@ SCENARIO("a notification is recorded even when push.enabled is false and the rec
                 auto const* notifications = object_member_as_array(body, "notifications");
                 REQUIRE(notifications != nullptr);
                 REQUIRE(notifications_contain_event(*notifications, *event_id));
+            }
+        }
+    }
+}
+
+// ── Federation-accepted events reach the push pipeline (0.11.11 gap audit,
+// PR #479 review finding P1) ──────────────────────────────────────────────
+// Spec: Matrix Server-Server API v1.19 §PDUs; Client-Server API v1.19
+// §push-notifications
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#pdus
+//       ../../docs/matrix-v1.19-spec/client-server-api.md#push-notifications
+//
+// Before this fix, push delivery was wired only into send_event() — the
+// locally-composed-event path. Events accepted over federation persist
+// through ingest_pdu_event() (called from the runtime.federation.pdu_sink
+// callback wired by wire_federation_callbacks_impl in local_http_router.cpp)
+// and only ever published the sync token, never reaching build_pending_push_
+// deliveries/dispatch_push_deliveries. A message from a remote room member —
+// the ordinary federated-room case — therefore produced no /notifications
+// row and no Push Gateway request for a local recipient. This is the
+// regression test for the fix (deliver_federation_push_notifications,
+// room_service.cpp, called from the pdu_sink lambda).
+SCENARIO("an event accepted via federation from a remote sender delivers a push notification and a "
+         "notifications-history row to a local recipient",
+         "[integration][push][federation]")
+{
+    GIVEN("push and federation delivery enabled, bob (local) has a room and a pusher, and alice (remote) is already "
+          "a joined member of it")
+    {
+        auto started = merovingian::homeserver::start_client_server(push_federation_test_config());
+        REQUIRE(started.started);
+        started.runtime.homeserver.config.server().push.enabled = true;
+
+        auto const bob = register_and_login(started.runtime, "bob");
+        auto const room_id = room_with_alice_only(started.runtime, bob); // bob is the room's only local member
+        auto const remote_sender = std::string{"@alice:remote.example.org"};
+        seed_remote_member(started.runtime, room_id, remote_sender);
+
+        auto const gateway_host = std::string{"push-federation.localhost.test"};
+        auto cert = merovingian::tests::tls_mock::write_test_tls_certificate(gateway_host);
+        auto tls_ctx = merovingian::homeserver::make_tls_server_context(cert.certificate_file, cert.private_key_file);
+        REQUIRE(tls_ctx.ok());
+        auto acceptor = merovingian::net::TcpAcceptor{};
+        REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+        auto const port = acceptor.bound_port();
+        REQUIRE(port > 0U);
+        auto const gateway_url = "https://" + gateway_host + ":" + std::to_string(port) + "/_matrix/push/v1/notify";
+        started.runtime.homeserver.test_forced_push_gateway_resolution[gateway_host] =
+            merovingian::push::TestForcedPushGatewayResolution{{"127.0.0.1"}, cert.certificate_pem};
+
+        auto const pushkey = std::string{"bob-pushkey-federation"};
+        register_http_pusher(started.runtime, bob, "org.matrix.integration", pushkey, gateway_url);
+
+        merovingian::homeserver::wire_federation_callbacks(started.runtime.homeserver);
+        REQUIRE(started.runtime.homeserver.federation.pdu_sink != nullptr);
+
+        auto const event_id = room_id + ":federation-msg-1";
+        auto const envelope =
+            make_federation_message_envelope(room_id, remote_sender, "hello from federation", event_id);
+
+        auto captured_request = std::string{};
+        auto const notify_response = merovingian::tests::tls_mock::json_http_response("200 OK", R"({"rejected":[]})");
+        auto server_thread = std::thread{[&] {
+            merovingian::tests::tls_mock::run_one_shot_tls_server(acceptor, *tls_ctx.context, notify_response,
+                                                                  &captured_request);
+        }};
+        auto const server_join = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
+
+        WHEN("the remote message PDU is accepted through the wired federation pdu_sink")
+        {
+            auto const result = started.runtime.homeserver.federation.pdu_sink(envelope);
+            REQUIRE(result.status == merovingian::federation::PduIngestionStatus::accepted);
+
+            wait_for_background_tasks(started.runtime.homeserver);
+            if (server_thread.joinable())
+            {
+                server_thread.join();
+            }
+
+            THEN("bob's pusher received a notify request naming alice as sender and the federated event")
+            {
+                REQUIRE_FALSE(captured_request.empty());
+                REQUIRE(captured_request.find(pushkey) != std::string::npos);
+                REQUIRE(captured_request.find(event_id) != std::string::npos);
+                REQUIRE(captured_request.find(room_id) != std::string::npos);
+                REQUIRE(captured_request.find("\"sender\":\"" + remote_sender + "\"") != std::string::npos);
+                REQUIRE(captured_request.find("\"type\":\"m.room.message\"") != std::string::npos);
+            }
+
+            THEN("exactly one push-delivery task was queued for this event")
+            {
+                auto const lock = std::lock_guard{started.runtime.homeserver.orphan_futures_mutex_};
+                REQUIRE(started.runtime.homeserver.orphan_futures_.size() == 1U);
+            }
+
+            THEN("bob's GET /notifications contains the federated event")
+            {
+                auto const body = get_notifications(started.runtime, bob);
+                auto const* notifications = object_member_as_array(body, "notifications");
+                REQUIRE(notifications != nullptr);
+                REQUIRE(notifications_contain_event(*notifications, event_id));
+            }
+        }
+    }
+}
+
+// The other half of the P1 fix: deliver_federation_push_notifications is
+// wired into the federation pdu_sink, a code path send_event() never touches
+// (they are structurally disjoint — send_event() persists locally-composed
+// events, pdu_sink only ever runs for PDUs accepted from a remote server —
+// see room_service.hpp's doc comment on deliver_federation_push_
+// notifications). This proves a locally composed event, sent the ordinary
+// way, is still delivered exactly once now that the federation path also
+// dispatches push notifications: not zero (a regression in the other
+// direction), not two (a double-dispatch bug).
+SCENARIO("a locally composed event is still delivered exactly once now that federation-accepted events also "
+         "dispatch push notifications",
+         "[integration][push][federation]")
+{
+    GIVEN("push and federation delivery enabled, alice and bob in a room, and bob has a pusher pointed at a mock "
+          "gateway that only serves one connection")
+    {
+        auto started = merovingian::homeserver::start_client_server(push_federation_test_config());
+        REQUIRE(started.started);
+        started.runtime.homeserver.config.server().push.enabled = true;
+        merovingian::homeserver::wire_federation_callbacks(started.runtime.homeserver);
+
+        auto const alice = register_and_login(started.runtime, "alice");
+        auto const bob = register_and_login(started.runtime, "bob");
+        auto const room_id = room_with_alice_and_bob(started.runtime, alice, bob);
+
+        auto const gateway_host = std::string{"push-no-double.localhost.test"};
+        auto cert = merovingian::tests::tls_mock::write_test_tls_certificate(gateway_host);
+        auto tls_ctx = merovingian::homeserver::make_tls_server_context(cert.certificate_file, cert.private_key_file);
+        REQUIRE(tls_ctx.ok());
+        auto acceptor = merovingian::net::TcpAcceptor{};
+        REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+        auto const port = acceptor.bound_port();
+        REQUIRE(port > 0U);
+        auto const gateway_url = "https://" + gateway_host + ":" + std::to_string(port) + "/_matrix/push/v1/notify";
+        started.runtime.homeserver.test_forced_push_gateway_resolution[gateway_host] =
+            merovingian::push::TestForcedPushGatewayResolution{{"127.0.0.1"}, cert.certificate_pem};
+
+        auto const pushkey = std::string{"bob-pushkey-no-double"};
+        register_http_pusher(started.runtime, bob, "org.matrix.integration", pushkey, gateway_url);
+
+        // Serves exactly one connection: if send_event's local-event path
+        // somehow triggered a second delivery attempt, that attempt would
+        // find no listener and the test would fail (via the request-count/
+        // task-count checks below) rather than silently passing.
+        auto captured_request = std::string{};
+        auto const notify_response = merovingian::tests::tls_mock::json_http_response("200 OK", R"({"rejected":[]})");
+        auto server_thread = std::thread{[&] {
+            merovingian::tests::tls_mock::run_one_shot_tls_server(acceptor, *tls_ctx.context, notify_response,
+                                                                  &captured_request);
+        }};
+        auto const server_join = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
+
+        WHEN("alice sends one local message")
+        {
+            auto const send = send_text_message(started.runtime, alice, room_id, "txn-no-double", "hello bob");
+            REQUIRE(send.response.status == 200U);
+            auto const send_body = parse_object(send.response.body);
+            auto const* event_id = string_member(send_body, "event_id");
+            REQUIRE(event_id != nullptr);
+
+            wait_for_background_tasks(started.runtime.homeserver);
+            if (server_thread.joinable())
+            {
+                server_thread.join();
+            }
+
+            THEN("exactly one push-delivery task was queued for the send")
+            {
+                auto const lock = std::lock_guard{started.runtime.homeserver.orphan_futures_mutex_};
+                REQUIRE(started.runtime.homeserver.orphan_futures_.size() == 1U);
+            }
+
+            THEN("the mock gateway received exactly one notify request, for that event")
+            {
+                REQUIRE_FALSE(captured_request.empty());
+                REQUIRE(captured_request.find(*event_id) != std::string::npos);
+            }
+        }
+    }
+}
+
+// ── Per-recipient pusher bound (0.11.11 gap audit, PR #479 review finding
+// P1) ────────────────────────────────────────────────────────────────────
+// Spec: Matrix Push Gateway API v1.19, POST /_matrix/push/v1/notify
+// URL: ../../docs/matrix-v1.19-spec/push-gateway-api.md#post_matrixpushv1notify
+//
+// POST /pushers/set has no per-user limit on distinct (app_id, pushkey)
+// pairs, and build_pending_push_deliveries used to copy and process every one
+// of a recipient's pushers sequentially inside a single background task —
+// unbounded by the 128-task in-flight cap, which only bounds the number of
+// *tasks*, not the work inside one. Fixed by room_service.cpp's
+// k_max_pushers_per_delivery (10): only the first 10 of a recipient's
+// pushers are contacted per event; the rest are skipped (with a
+// push.pushers.truncated warning log, not silently).
+SCENARIO("a recipient with more pushers than the per-delivery cap only has the capped number actually contacted "
+         "for one event",
+         "[integration][push]")
+{
+    GIVEN("push delivery enabled, alice and bob in a room, and bob has more http pushers than the per-delivery cap, "
+          "all pointed at the same mock gateway")
+    {
+        auto started = merovingian::homeserver::start_client_server(push_test_config());
+        REQUIRE(started.started);
+        started.runtime.homeserver.config.server().push.enabled = true;
+
+        auto const alice = register_and_login(started.runtime, "alice");
+        auto const bob = register_and_login(started.runtime, "bob");
+        auto const room_id = room_with_alice_and_bob(started.runtime, alice, bob);
+
+        auto const gateway_host = std::string{"push-pusher-cap.localhost.test"};
+        auto cert = merovingian::tests::tls_mock::write_test_tls_certificate(gateway_host);
+        auto tls_ctx = merovingian::homeserver::make_tls_server_context(cert.certificate_file, cert.private_key_file);
+        REQUIRE(tls_ctx.ok());
+        auto acceptor = merovingian::net::TcpAcceptor{};
+        REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+        auto const port = acceptor.bound_port();
+        REQUIRE(port > 0U);
+        auto const gateway_url = "https://" + gateway_host + ":" + std::to_string(port) + "/_matrix/push/v1/notify";
+        started.runtime.homeserver.test_forced_push_gateway_resolution[gateway_host] =
+            merovingian::push::TestForcedPushGatewayResolution{{"127.0.0.1"}, cert.certificate_pem};
+
+        // 12 distinct (app_id, pushkey) pushers for bob -- 2 more than
+        // room_service.cpp's k_max_pushers_per_delivery (10).
+        auto constexpr registered_pusher_count = 12U;
+        for (auto i = 0U; i < registered_pusher_count; ++i)
+        {
+            register_http_pusher(started.runtime, bob, "org.matrix.integration", "bob-pushkey-cap-" + std::to_string(i),
+                                 gateway_url);
+        }
+        REQUIRE(pusher_count(started.runtime, bob) == registered_pusher_count);
+
+        auto constexpr expected_processed = 10U; // room_service.cpp's k_max_pushers_per_delivery
+        auto const ok_response = merovingian::tests::tls_mock::json_http_response("200 OK", R"({"rejected":[]})");
+        auto path_responses = std::vector<std::pair<std::string, std::string>>{};
+        for (auto i = 0U; i < expected_processed; ++i)
+        {
+            path_responses.emplace_back("/_matrix/push/v1/notify", ok_response);
+        }
+        auto captured_requests = std::vector<std::string>{};
+        auto server_thread = std::thread{[&] {
+            merovingian::tests::tls_mock::run_path_dispatch_tls_server(acceptor, *tls_ctx.context, path_responses,
+                                                                       &captured_requests);
+        }};
+        auto const server_join = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
+
+        WHEN("alice sends a message that matches the default .m.rule.message rule")
+        {
+            auto const send = send_text_message(started.runtime, alice, room_id, "txn-pusher-cap", "hello bob");
+            REQUIRE(send.response.status == 200U);
+
+            wait_for_background_tasks(started.runtime.homeserver);
+            if (server_thread.joinable())
+            {
+                server_thread.join();
+            }
+
+            THEN("exactly the capped number of pushers were actually contacted, not all twelve")
+            {
+                REQUIRE(captured_requests.size() == expected_processed);
+            }
+        }
+    }
+}
+
+// ── contains_display_name uses room membership, not the account profile
+// (0.11.11 gap audit, PR #479 review finding P2) ───────────────────────────
+// Spec: Matrix Client-Server API v1.19 §push-notifications, contains_display_name
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#push-notifications
+//
+// Spec: contains_display_name "matches messages where content.body contains
+// the owner's display name in that room" -- a per-room value, not the
+// account-wide profile. build_pending_push_deliveries used to read
+// database::find_profile's account-wide displayname instead, so a
+// room-specific membership display name (or a stale account-wide one)
+// evaluated the wrong text. Fixed by room_service.cpp's
+// room_member_display_name. The highlight tweak (.m.rule.contains_display_
+// name's action, an override rule that pre-empts the plain-notify
+// .m.rule.message underride when it matches) is the observable signal.
+SCENARIO("contains_display_name matches the recipient's room-specific membership display name, not a stale "
+         "account-wide profile name",
+         "[integration][push]")
+{
+    GIVEN("alice and bob in a room, and bob's account profile displayname differs from his current room-membership "
+          "displayname")
+    {
+        auto started = merovingian::homeserver::start_client_server(push_test_config());
+        REQUIRE(started.started);
+
+        auto const alice = register_and_login(started.runtime, "alice");
+        auto const bob = register_and_login(started.runtime, "bob");
+        auto const room_id = room_with_alice_and_bob(started.runtime, alice, bob);
+
+        // Account-wide profile: a name that will not appear anywhere in the
+        // room's current membership state below.
+        auto const profile_update = merovingian::homeserver::handle_client_server_request(
+            started.runtime, {"PUT", "/_matrix/client/v3/profile/%40bob%3Aexample.org/displayname", bob,
+                              R"({"displayname":"StaleAccountBob"})"});
+        REQUIRE(profile_update.response.status == 200U);
+
+        // Room-specific membership displayname: overwrite bob's current
+        // m.room.member state event content directly, simulating what a
+        // per-room display-name override would leave behind, distinct from
+        // the account profile above.
+        auto& store = started.runtime.homeserver.database.persistent_store;
+        auto const state_it =
+            std::ranges::find_if(store.state, [&](merovingian::database::PersistentStateEvent const& state) {
+                return state.room_id == room_id && state.event_type == "m.room.member" &&
+                       state.state_key == "@bob:example.org";
+            });
+        REQUIRE(state_it != store.state.end());
+
+        auto content = merovingian::canonicaljson::Object{};
+        content.push_back(merovingian::canonicaljson::make_member(
+            "membership", merovingian::canonicaljson::Value{std::string{"join"}}));
+        content.push_back(merovingian::canonicaljson::make_member(
+            "displayname", merovingian::canonicaljson::Value{std::string{"RoomOnlyBob"}}));
+        auto event_obj = merovingian::canonicaljson::Object{};
+        event_obj.push_back(merovingian::canonicaljson::make_member(
+            "type", merovingian::canonicaljson::Value{std::string{"m.room.member"}}));
+        event_obj.push_back(
+            merovingian::canonicaljson::make_member("room_id", merovingian::canonicaljson::Value{room_id}));
+        event_obj.push_back(merovingian::canonicaljson::make_member(
+            "sender", merovingian::canonicaljson::Value{std::string{"@bob:example.org"}}));
+        event_obj.push_back(merovingian::canonicaljson::make_member(
+            "state_key", merovingian::canonicaljson::Value{std::string{"@bob:example.org"}}));
+        event_obj.push_back(
+            merovingian::canonicaljson::make_member("content", merovingian::canonicaljson::Value{std::move(content)}));
+        event_obj.push_back(merovingian::canonicaljson::make_member(
+            "origin_server_ts", merovingian::canonicaljson::Value{static_cast<std::int64_t>(500)}));
+        auto const serialized =
+            merovingian::canonicaljson::serialize_canonical(merovingian::canonicaljson::Value{event_obj});
+        REQUIRE(serialized.error == merovingian::canonicaljson::CanonicalJsonError::none);
+        auto const overridden_member_event_id = room_id + ":bob-room-displayname-override";
+        store.events.push_back(
+            {overridden_member_event_id, room_id, "@bob:example.org", serialized.output, 0U, 0U, {}, {}, {}});
+        state_it->event_id = overridden_member_event_id;
+
+        WHEN("alice sends a message containing bob's room-specific display name")
+        {
+            auto const send_room_name =
+                send_text_message(started.runtime, alice, room_id, "txn-displayname-room", "hey RoomOnlyBob");
+            REQUIRE(send_room_name.response.status == 200U);
+            auto const room_name_body = parse_object(send_room_name.response.body);
+            auto const* room_name_event_id = string_member(room_name_body, "event_id");
+            REQUIRE(room_name_event_id != nullptr);
+
+            THEN("the notification is highlighted -- contains_display_name matched the room-specific name")
+            {
+                auto const body = get_notifications(started.runtime, bob);
+                auto const* notifications = object_member_as_array(body, "notifications");
+                REQUIRE(notifications != nullptr);
+                REQUIRE(notification_actions_have_highlight(*notifications, *room_name_event_id));
+            }
+        }
+
+        WHEN("alice sends a message containing only bob's stale account-wide profile name")
+        {
+            auto const send_stale_name =
+                send_text_message(started.runtime, alice, room_id, "txn-displayname-stale", "hey StaleAccountBob");
+            REQUIRE(send_stale_name.response.status == 200U);
+            auto const stale_body = parse_object(send_stale_name.response.body);
+            auto const* stale_event_id = string_member(stale_body, "event_id");
+            REQUIRE(stale_event_id != nullptr);
+
+            THEN("the notification is recorded but NOT highlighted -- contains_display_name must not match the "
+                 "stale profile name")
+            {
+                auto const body = get_notifications(started.runtime, bob);
+                auto const* notifications = object_member_as_array(body, "notifications");
+                REQUIRE(notifications != nullptr);
+                // Positive counterpart: the event IS present in the history,
+                // so the highlight absence below cannot vacuously pass
+                // because the whole entry was missing.
+                REQUIRE(notifications_contain_event(*notifications, *stale_event_id));
+                REQUIRE_FALSE(notification_actions_have_highlight(*notifications, *stale_event_id));
             }
         }
     }
