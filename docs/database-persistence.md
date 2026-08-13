@@ -205,12 +205,12 @@ remaining work before PostgreSQL-backed production operation.
   `PersistentThreePidBinding` above; implemented for both SQLite and
   PostgreSQL, hydrated on backend open. `merovingian::push::PushGatewayClient`
   (`push_gateway_client.hpp`) forwards a device's `data_extra` members
-  verbatim into the notify request body. **Known gap** (out of scope for
-  this migration): `client_server.cpp`'s pusher-registration parsing and
-  `room_service.cpp`'s pusher-to-`PushGatewayDevice` conversion still only
-  read/write the `url`/`format` keys, so a custom `data` member is not yet
-  captured at registration time or threaded through to a live delivery —
-  see `docs/todos/capability-gaps.md`.
+  verbatim into the notify request body, and — since the PR #479 follow-up —
+  `client_server.cpp`'s `parse_pusher_set_body()` captures every `data`
+  member beyond `url`/`format` at registration time and `room_service.cpp`'s
+  pusher-to-`PushGatewayDevice` conversion threads it through to a live
+  delivery, so the gap noted above is closed end to end; see
+  `docs/todos/capability-gaps.md`.
 - `notifications` table (schema version `9`, migration
   `migrations/009_notifications.sql`) records the history
   `GET /_matrix/client/v3/notifications` serves. Columns are `user_id`,

@@ -678,6 +678,11 @@ namespace
         std::string lang{};
         std::string data_url{}; // empty for kind "email"
         std::string data_format{};
+        // Every OTHER member of the request's `data` object besides url/format,
+        // canonical-JSON-serialized (empty string = none). Mirrors
+        // PersistentPusher::data_extra_json — see its doc comment for why this
+        // must be forwarded to the gateway verbatim.
+        std::string data_extra_json{};
         // Spec: "If true, the homeserver should add another pusher with the given
         // pushkey and App ID in addition to any others with different user IDs.
         // Otherwise, the homeserver must remove any other pushers with the same
@@ -1320,6 +1325,34 @@ namespace
             return nullptr;
         }
         return std::get_if<canonicaljson::Object>(&value->storage());
+    }
+
+    // Merges the custom `data` members persisted in a pusher's
+    // `data_extra_json` (every member of the registered `data` dictionary
+    // besides `url`/`format`, which already have dedicated columns/response
+    // fields) into a GET /pushers response `data` object. Silently skips a
+    // malformed/non-object value rather than failing the whole response —
+    // this only ever contains what parse_pusher_set_body itself serialized.
+    auto append_pusher_data_extra(canonicaljson::Object& data, std::string_view data_extra_json) -> void
+    {
+        if (data_extra_json.empty())
+        {
+            return;
+        }
+        auto const parsed = canonicaljson::parse_lossless(data_extra_json);
+        if (parsed.error != canonicaljson::ParseError::none)
+        {
+            return;
+        }
+        auto const* extra = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+        if (extra == nullptr)
+        {
+            return;
+        }
+        for (auto const& member : *extra)
+        {
+            data.push_back(member);
+        }
     }
 
     [[nodiscard]] auto parse_register_body(std::string_view body) -> std::optional<MatrixRegisterBody>
@@ -2128,6 +2161,23 @@ namespace
         auto const* data_format = string_member(*data, "format");
         auto const* profile_tag = string_member(*object, "profile_tag");
 
+        // Capture every OTHER member of `data` besides url/format. Matrix
+        // v1.19 Push Gateway API requires the homeserver to forward the whole
+        // `data` dictionary minus `url` to the gateway on notify, not just
+        // `format` — see PersistentPusher::data_extra_json's doc comment.
+        // Serialized now (rather than carried as a live Object) so
+        // MatrixPusherSetBody stays trivially copyable like its sibling
+        // fields and matches the column PersistentPusher persists it into.
+        auto data_extra = canonicaljson::Object{};
+        for (auto const& member : *data)
+        {
+            if (member.key == "url" || member.key == "format")
+            {
+                continue;
+            }
+            data_extra.push_back(member);
+        }
+
         auto result = MatrixPusherSetBody{};
         result.app_id = *app_id;
         result.pushkey = *pushkey;
@@ -2140,6 +2190,7 @@ namespace
         // data_url as empty for "email".
         result.data_url = (*kind_string == "http" && data_url != nullptr) ? *data_url : std::string{};
         result.data_format = data_format != nullptr ? *data_format : std::string{};
+        result.data_extra_json = data_extra.empty() ? std::string{} : json_serialize(json_obj(std::move(data_extra)));
         result.append = append;
         return result;
     }
@@ -9637,6 +9688,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             {
                 data.push_back(json_member("url", json_str(pusher.data_url)));
             }
+            append_pusher_data_extra(data, pusher.data_extra_json);
             pusher_array.push_back(json_obj({
                 json_member("app_display_name", json_str(pusher.app_display_name)),
                 json_member("app_id", json_str(pusher.app_id)),
@@ -9670,8 +9722,40 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         auto& store = rt.homeserver.database.persistent_store;
         if (!body->kind.has_value())
         {
-            std::ignore = database::delete_pusher(store, *user, body->app_id, body->pushkey);
+            // Deleting a pusher that never existed is a no-op per spec ("the
+            // pusher ... is deleted") and matches this endpoint's established
+            // idempotent-retry behaviour — only a genuine backend failure on
+            // an EXISTING pusher is reported. Reviewer finding (PR #479,
+            // client_server.cpp:9071): the previous std::ignore here meant a
+            // client was told "done" even when the delete failed and the
+            // pusher stayed live, still receiving pushes despite the user
+            // believing they had disabled notifications.
+            auto const existed = database::find_pusher(store, *user, body->app_id, body->pushkey).has_value();
+            if (existed && !database::delete_pusher(store, *user, body->app_id, body->pushkey))
+            {
+                return dispatch_err(req, rt, 500U, "M_UNKNOWN", "failed to delete pusher");
+            }
             return dispatch_resp(req, rt, 200U, "{}");
+        }
+        // Reviewer finding (PR #479, client_server.cpp:9089): persist the
+        // replacement pusher BEFORE removing any other users' pushers that
+        // share this app_id+pushkey. append:false's removal reaches pushers
+        // belonging to OTHER users, so doing it first meant a store_pusher
+        // failure after a successful removal left those unrelated users'
+        // notifications silently disabled with no replacement ever created.
+        // Persisting first means a store_pusher failure now returns 500
+        // having touched nothing; there is no store-level API for wrapping
+        // this upsert and the other-user deletes in one atomic transaction
+        // (store_pusher/delete_pusher each commit and update the in-memory
+        // mirror independently), so ordering is the fix rather than a new
+        // transaction primitive.
+        auto const stored = database::store_pusher(
+            store, database::PersistentPusher{*user, body->app_id, body->pushkey, *body->kind, body->app_display_name,
+                                              body->device_display_name, body->profile_tag, body->lang, body->data_url,
+                                              body->data_format, body->data_extra_json});
+        if (!stored)
+        {
+            return dispatch_err(req, rt, 500U, "M_UNKNOWN", "failed to store pusher");
         }
         if (!body->append)
         {
@@ -9688,16 +9772,12 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
             for (auto const& other_user : other_users)
             {
+                // The replacement above already succeeded, so a failure here
+                // only leaves a stale duplicate pusher for another user (an
+                // extra delivery, not a lost one) rather than the reviewer's
+                // "deleted with no replacement" scenario.
                 std::ignore = database::delete_pusher(store, other_user, body->app_id, body->pushkey);
             }
-        }
-        auto const stored = database::store_pusher(
-            store, database::PersistentPusher{*user, body->app_id, body->pushkey, *body->kind, body->app_display_name,
-                                              body->device_display_name, body->profile_tag, body->lang, body->data_url,
-                                              body->data_format});
-        if (!stored)
-        {
-            return dispatch_err(req, rt, 500U, "M_UNKNOWN", "failed to store pusher");
         }
         return dispatch_resp(req, rt, 200U, "{}");
     }

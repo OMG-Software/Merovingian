@@ -116,6 +116,59 @@ auto register_http_pusher(merovingian::homeserver::ClientServerRuntime& runtime,
     REQUIRE(response.response.status == 200U);
 }
 
+// Registers an http pusher for `token` pointing at `url`, whose `data` object
+// also carries the custom "routing_key" (string) and "priority" (int)
+// members beyond url/format — used by the custom-data round-trip scenario
+// below (PR #479 review finding P1) to prove those members survive
+// registration, GET /pushers, and delivery to the gateway.
+auto register_http_pusher_with_extra_data(merovingian::homeserver::ClientServerRuntime& runtime,
+                                          std::string const& token, std::string const& app_id,
+                                          std::string const& pushkey, std::string const& url) -> void
+{
+    auto const body = std::string{R"({"app_id":")"} + app_id + R"(","pushkey":")" + pushkey +
+                      R"(","kind":"http","app_display_name":"Integration App",)" +
+                      R"("device_display_name":"Integration Device","lang":"en",)" + R"("data":{"url":")" + url +
+                      R"(","routing_key":"custom-routing-value","priority":5}})";
+    auto const response = merovingian::homeserver::handle_client_server_request(
+        runtime, {"POST", "/_matrix/client/v3/pushers/set", token, body});
+    REQUIRE(response.response.status == 200U);
+}
+
+// GET /pushers for `token`, returning the `data` object of the entry whose
+// `pushkey` matches, or nullopt if no such pusher is registered. Parses each
+// pusher's own fields structurally rather than substring-searching the
+// serialized response.
+[[nodiscard]] auto pusher_data_object(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token,
+                                      std::string const& pushkey) -> std::optional<merovingian::canonicaljson::Object>
+{
+    auto const response = merovingian::homeserver::handle_client_server_request(
+        runtime, {"GET", "/_matrix/client/v3/pushers", token, {}});
+    REQUIRE(response.response.status == 200U);
+    auto const body = parse_object(response.response.body);
+    auto const* pushers = object_member_as_array(body, "pushers");
+    REQUIRE(pushers != nullptr);
+    for (auto const& entry : *pushers)
+    {
+        auto const* entry_object = std::get_if<merovingian::canonicaljson::Object>(&entry.storage());
+        if (entry_object == nullptr)
+        {
+            continue;
+        }
+        auto const* found_pushkey = string_member(*entry_object, "pushkey");
+        if (found_pushkey == nullptr || *found_pushkey != pushkey)
+        {
+            continue;
+        }
+        auto const* data = object_member_as_object(*entry_object, "data");
+        if (data == nullptr)
+        {
+            return std::nullopt;
+        }
+        return *data;
+    }
+    return std::nullopt;
+}
+
 // PUT /rooms/{roomId}/send/m.room.message/{txnId} — a plain text message.
 [[nodiscard]] auto send_text_message(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token,
                                      std::string const& room_id, std::string const& txn_id, std::string const& body)
@@ -520,6 +573,92 @@ SCENARIO("an enabled gateway receives a notify request for a message that matche
             THEN("bob's pusher is still registered (the gateway did not reject it)")
             {
                 REQUIRE(pusher_count(started.runtime, bob) == 1U);
+            }
+        }
+    }
+}
+
+// Spec: Matrix Push Gateway API v1.19, Device object's `data` field —
+// "the data dictionary passed in at pusher creation minus the url key".
+// URL: ../../docs/matrix-v1.19-spec/push-gateway-api.md#post_matrixpushv1notify
+//
+// PR #479 review finding P1: parse_pusher_set_body in client_server.cpp
+// discarded every member of the registration's `data` object beyond
+// url/format, even though PersistentPusher::data_extra_json (migration
+// 011_pushers_data_extra.sql) and PushGatewayDevice::data_extra already
+// existed to carry them all the way to the gateway. This is the full round
+// trip that closes that gap: registration captures a custom string
+// ("routing_key") and integer ("priority") member, GET /pushers echoes them
+// back, and the mock gateway's notify request actually receives them.
+SCENARIO("custom pusher data members survive registration, GET /pushers, and reach the push gateway's notify request",
+         "[integration][push]")
+{
+    GIVEN("push delivery enabled, alice and bob in a room, and bob's pusher registered with custom data members")
+    {
+        auto started = merovingian::homeserver::start_client_server(push_test_config());
+        REQUIRE(started.started);
+        started.runtime.homeserver.config.server().push.enabled = true;
+
+        auto const alice = register_and_login(started.runtime, "alice");
+        auto const bob = register_and_login(started.runtime, "bob");
+        auto const room_id = room_with_alice_and_bob(started.runtime, alice, bob);
+
+        auto const gateway_host = std::string{"push-custom-data.localhost.test"};
+        auto cert = merovingian::tests::tls_mock::write_test_tls_certificate(gateway_host);
+        auto tls_ctx = merovingian::homeserver::make_tls_server_context(cert.certificate_file, cert.private_key_file);
+        REQUIRE(tls_ctx.ok());
+        auto acceptor = merovingian::net::TcpAcceptor{};
+        REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+        auto const port = acceptor.bound_port();
+        REQUIRE(port > 0U);
+        auto const gateway_url = "https://" + gateway_host + ":" + std::to_string(port) + "/_matrix/push/v1/notify";
+
+        started.runtime.homeserver.test_forced_push_gateway_resolution[gateway_host] =
+            merovingian::push::TestForcedPushGatewayResolution{{"127.0.0.1"}, cert.certificate_pem};
+
+        auto const pushkey = std::string{"bob-pushkey-custom-data"};
+        register_http_pusher_with_extra_data(started.runtime, bob, "org.matrix.integration", pushkey, gateway_url);
+
+        // GET /pushers already echoes the custom data members back to the
+        // registering client — checked here as an unconditional precondition
+        // (matching this file's "REQUIRE(pusher_count(...))" convention)
+        // rather than as a sibling THEN section, so the mock-server setup
+        // below is not pointlessly spun up and timed out on this leaf run
+        // too.
+        auto const registered_data = pusher_data_object(started.runtime, bob, pushkey);
+        REQUIRE(registered_data.has_value());
+        auto const* registered_routing_key = string_member(*registered_data, "routing_key");
+        auto const* registered_priority = int_member(*registered_data, "priority");
+        REQUIRE(registered_routing_key != nullptr);
+        REQUIRE(*registered_routing_key == "custom-routing-value");
+        REQUIRE(registered_priority != nullptr);
+        REQUIRE(*registered_priority == 5);
+
+        auto captured_request = std::string{};
+        auto const notify_response = merovingian::tests::tls_mock::json_http_response("200 OK", R"({"rejected":[]})");
+        auto server_thread = std::thread{[&] {
+            merovingian::tests::tls_mock::run_one_shot_tls_server(acceptor, *tls_ctx.context, notify_response,
+                                                                  &captured_request);
+        }};
+        auto const server_join = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
+
+        WHEN("alice sends a message that matches the default .m.rule.message rule")
+        {
+            auto const send = send_text_message(started.runtime, alice, room_id, "txn-custom-data", "hello bob");
+            REQUIRE(send.response.status == 200U);
+
+            wait_for_background_tasks(started.runtime.homeserver);
+            if (server_thread.joinable())
+            {
+                server_thread.join();
+            }
+
+            THEN("the mock gateway's notify request carries the custom data members verbatim")
+            {
+                REQUIRE_FALSE(captured_request.empty());
+                REQUIRE(captured_request.find(pushkey) != std::string::npos);
+                REQUIRE(captured_request.find(R"("routing_key":"custom-routing-value")") != std::string::npos);
+                REQUIRE(captured_request.find(R"("priority":5)") != std::string::npos);
             }
         }
     }

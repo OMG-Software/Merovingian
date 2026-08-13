@@ -5220,6 +5220,25 @@ namespace
                 {
                     device.data_format = pusher.data_format;
                 }
+                // Every OTHER member of the pusher's registered `data`
+                // dictionary besides url/format MUST reach the gateway
+                // verbatim (Matrix v1.19 Push Gateway API: "data dictionary
+                // passed in at pusher creation minus the url key"). Silently
+                // skip a malformed value rather than failing the whole
+                // delivery — this only ever contains what parse_pusher_set_
+                // body itself serialized in client_server.cpp.
+                if (!pusher.data_extra_json.empty())
+                {
+                    auto const parsed_extra = canonicaljson::parse_lossless(pusher.data_extra_json);
+                    if (parsed_extra.error == canonicaljson::ParseError::none)
+                    {
+                        if (auto const* extra = std::get_if<canonicaljson::Object>(&parsed_extra.value.storage());
+                            extra != nullptr)
+                        {
+                            device.data_extra = *extra;
+                        }
+                    }
+                }
                 device.tweak_sound = result.tweak_sound;
                 device.tweak_highlight = result.tweak_highlight;
                 notification.devices.push_back(std::move(device));

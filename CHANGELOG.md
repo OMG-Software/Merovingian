@@ -555,17 +555,55 @@ then closed one of the gaps the audit found.
     `PushGatewayDevice::data_extra` field that `build_device_object()` now
     merges into the outgoing `data` object (defensively skipping any stray
     `url`/`format` member so the routing URL can never leak into the body
-    and `format` can never duplicate). **Known gap, out of this branch's
-    scope:** `client_server.cpp`'s pusher-registration parsing and
-    `room_service.cpp`'s pusher-to-`PushGatewayDevice` conversion still only
-    read/write `url`/`format`, so a custom `data` member is not yet captured
-    at registration or threaded through to a live delivery end-to-end — the
-    persistence and delivery-serialization plumbing is ready, but those two
-    call sites (owned by other in-flight work on this PR) need a follow-up
-    edit to finish wiring it. New unit coverage: `build_notify_request_body`
-    forwards custom `data_extra` members verbatim and excludes/deduplicates
-    `url`/`format`; `store_pusher`/`find_pusher` round-trip `data_extra_json`
-    including an upsert replacing it.
+    and `format` can never duplicate). **Gap closed:** `parse_pusher_set_
+    body()` (`client_server.cpp`) now captures every member of the request's
+    `data` object besides `url`/`format` into `MatrixPusherSetBody::data_
+    extra_json`, the `POST /pushers/set` handler persists it via
+    `PersistentPusher::data_extra_json`, `GET /pushers` echoes it back in the
+    pusher's `data` object, and `room_service.cpp`'s pusher-to-
+    `PushGatewayDevice` conversion threads it into `PushGatewayDevice::
+    data_extra` so a live delivery actually carries it. New coverage:
+    `build_notify_request_body` forwards custom `data_extra` members verbatim
+    and excludes/deduplicates `url`/`format`; `store_pusher`/`find_pusher`
+    round-trip `data_extra_json` including an upsert replacing it;
+    `test_client_server.cpp` proves `POST /pushers/set` → `GET /pushers`
+    round-trips a custom string and integer `data` member; `test_push_
+    delivery_flow.cpp`'s "custom pusher data members survive registration,
+    GET /pushers, and reach the push gateway's notify request" scenario
+    proves the full path end to end against a real mock gateway.
+  - **P2 (PR #479 review, `client_server.cpp:9071`): a failed `delete_pusher`
+    was reported to the client as success.** The `kind:null` branch of
+    `POST /pushers/set` discarded `delete_pusher`'s return value with
+    `std::ignore`, so a backend failure on an existing pusher still returned
+    `200 {}` — the client believes it disabled notifications while the
+    pusher stays live and keeps receiving pushes. Now checks whether the
+    pusher exists first (`find_pusher`); deleting a pusher that was never
+    registered remains a 200 no-op, matching the endpoint's existing
+    idempotent-retry behaviour and the spec's plain "the pusher ... is
+    deleted" wording, but a `delete_pusher` failure on one that DOES exist
+    now returns `500 M_UNKNOWN`. New unit coverage
+    (`tests/unit/test_client_server.cpp`): forcing the persistence backend to
+    fail (flipping `PersistentStoreBackend::sqlite` with an empty
+    `sqlite_path`, which `persist_transaction_to_backend` already fails
+    closed on) on an existing pusher returns an error instead of `200`, and
+    the pusher remains registered afterward.
+  - **P2 (PR #479 review, `client_server.cpp:9089`): cross-user pusher
+    replacement was not atomic.** `append:false` (the default) deleted every
+    OTHER user's pusher sharing the target `app_id`+`pushkey` BEFORE the
+    replacement pusher was persisted; a `store_pusher` failure after those
+    deletions left unrelated users' pushers gone with no replacement ever
+    created, silently disabling their notifications. Reordered: the
+    replacement is persisted first, and the other-user removals only run
+    once that succeeds, so a `store_pusher` failure now returns `500` having
+    deleted nothing. (No store-level API exists for wrapping this upsert and
+    the other-user deletes in one transaction — `store_pusher`/
+    `delete_pusher` each commit and update the in-memory mirror
+    independently — so reordering is the fix rather than a new transaction
+    primitive; see the reasoning in `client_server.cpp`'s comment at the call
+    site.) New unit coverage (`tests/unit/test_client_server.cpp`): with the
+    same forced-backend-failure seam, a `append:false` registration that
+    fails to store leaves another user's already-registered pusher for that
+    `app_id`+`pushkey` untouched.
   - **P2 (PR #479 review): `contains_display_name` matched the display name
     as a glob pattern, not literal text.** A display name is data supplied
     by an arbitrary user, not an author-written pattern — matching it with
