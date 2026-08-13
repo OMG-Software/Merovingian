@@ -9851,6 +9851,92 @@ SCENARIO("GET /rooms/{roomId}/context/{eventId} returns events_before/event/even
 }
 
 // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3roomsroomidcontexteventid
+// Summary: `state` is "The state of the room at the last event returned" --
+// not the room's *current* state. This is only observable when something
+// paginated *past* the returned window has since changed room state: the
+// last event actually placed in events_after (bounded by `limit`) must
+// predate the state change for the two to diverge.
+SCENARIO("GET /rooms/{roomId}/context/{eventId} returns state at the last event returned, not current state",
+         "[conformance][client-server][room-participation]")
+{
+    GIVEN("a room whose name changes after the messages a bounded context window returns")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+        auto const room_id = create_room(started.runtime, token);
+
+        auto const name_response = merovingian::homeserver::handle_client_server_request(
+            started.runtime, {"PUT", "/_matrix/client/v3/rooms/" + room_id + "/state/m.room.name", token,
+                              R"({"name":"Original Name"})"});
+        REQUIRE(name_response.response.status == 200U);
+
+        auto const target = send_text(started.runtime, token, room_id, "ctx-state-target", "target");
+        // Two events after `target`; with limit=2 (after_limit=1) only the
+        // nearer one (after1) lands inside the returned window.
+        auto const after1 = send_text(started.runtime, token, room_id, "ctx-state-after1", "after one");
+        auto const after2 = send_text(started.runtime, token, room_id, "ctx-state-after2", "after two");
+        std::ignore = after2;
+
+        // The room name changes only after both `after1` and `after2` -- i.e.
+        // strictly after the last event the bounded context window below will
+        // actually return.
+        auto const renamed_response = merovingian::homeserver::handle_client_server_request(
+            started.runtime,
+            {"PUT", "/_matrix/client/v3/rooms/" + room_id + "/state/m.room.name", token, R"({"name":"Changed Name"})"});
+        REQUIRE(renamed_response.response.status == 200U);
+
+        WHEN("GET context/{eventId}?limit=2 is called for the target event")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"GET", "/_matrix/client/v3/rooms/" + room_id + "/context/" + target + "?limit=2", token, {}});
+
+            THEN("state carries the room name as of the last returned event, not the room's current name")
+            {
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+
+                // Confirm the test's premise: events_after is bounded to
+                // exactly `after1`, so the name change (which happened after
+                // `after2`) falls outside the returned window.
+                auto const* after = object_member_as_array(body, "events_after");
+                REQUIRE(after != nullptr);
+                REQUIRE(after->size() == 1U);
+                auto const* after_event = std::get_if<merovingian::canonicaljson::Object>(&(*after)[0U].storage());
+                REQUIRE(after_event != nullptr);
+                REQUIRE(*string_member(*after_event, "event_id") == after1);
+
+                auto const* state = object_member_as_array(body, "state");
+                REQUIRE(state != nullptr);
+                auto found_name_event = false;
+                for (auto const& value : *state)
+                {
+                    auto const* state_event = std::get_if<merovingian::canonicaljson::Object>(&value.storage());
+                    REQUIRE(state_event != nullptr);
+                    auto const* type = string_member(*state_event, "type");
+                    REQUIRE(type != nullptr);
+                    if (*type != "m.room.name")
+                    {
+                        continue;
+                    }
+                    found_name_event = true;
+                    auto const* content = object_member_as_object(*state_event, "content");
+                    REQUIRE(content != nullptr);
+                    auto const* name = string_member(*content, "name");
+                    REQUIRE(name != nullptr);
+                    // Spec MUST: state at the last event returned (after1),
+                    // which predates the rename -- must read "Original Name",
+                    // not the room's present-day "Changed Name".
+                    REQUIRE(*name == "Original Name");
+                }
+                REQUIRE(found_name_event);
+            }
+        }
+    }
+}
+
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3roomsroomidcontexteventid
 // Summary: "limit" bounds the combined size of events_before and events_after.
 SCENARIO("GET /rooms/{roomId}/context/{eventId} honours the limit query parameter",
          "[conformance][client-server][room-participation]")

@@ -225,6 +225,23 @@ namespace
         return result;
     }
 
+    // The room's current recorded state event IDs -- the fallback both
+    // `resolved_state_event_ids` and `resolve_state_event_ids_at` use when no
+    // event to reconstruct against is given.
+    [[nodiscard]] auto current_state_event_ids(database::PersistentStore const& store, std::string_view room_id)
+        -> std::vector<std::string>
+    {
+        auto ids = std::vector<std::string>{};
+        for (auto const& state_event : store.state)
+        {
+            if (state_event.room_id == room_id)
+            {
+                ids.push_back(state_event.event_id);
+            }
+        }
+        return ids;
+    }
+
     // Resolves the set of state event IDs a /state or /state_ids response should
     // carry. When `at_event_id` names a stored event the state is reconstructed
     // as of that event; otherwise the room's current recorded state is returned.
@@ -235,13 +252,42 @@ namespace
         {
             return reconstruct_state_at_event(store, room_id, at_event_id);
         }
-        auto ids = std::vector<std::string>{};
-        for (auto const& state_event : store.state)
+        return current_state_event_ids(store, room_id);
+    }
+
+    // Reconstructs "the room state at `event`" -- state that includes `event`'s
+    // own contribution when it is itself a state event, unlike
+    // `reconstruct_state_at_event` (which stops just short of it). Starts from
+    // the state prior to `event` and, when `event` carries a state_key,
+    // replaces (or adds) the entry for its (type, state_key) with `event`
+    // itself, since a state event's own change is by definition part of the
+    // room's state once that event has happened.
+    [[nodiscard]] auto reconstruct_state_including_event(database::PersistentStore const& store,
+                                                         std::string_view room_id, database::PersistentEvent const& at)
+        -> std::vector<std::string>
+    {
+        auto ids = reconstruct_state_at_event(store, room_id, at.event_id);
+        auto const identity = state_identity(at.json);
+        if (!identity.is_state)
         {
-            if (state_event.room_id == room_id)
+            return ids;
+        }
+        auto const existing = std::ranges::find_if(ids, [&](std::string const& id) {
+            auto const* event = find_event(store, id);
+            if (event == nullptr)
             {
-                ids.push_back(state_event.event_id);
+                return false;
             }
+            auto const candidate_identity = state_identity(event->json);
+            return candidate_identity.type == identity.type && candidate_identity.state_key == identity.state_key;
+        });
+        if (existing != ids.end())
+        {
+            *existing = at.event_id;
+        }
+        else
+        {
+            ids.push_back(at.event_id);
         }
         return ids;
     }
@@ -377,6 +423,21 @@ auto build_state_ids_response(database::PersistentStore const& store, std::strin
                                                    {"auth_chain_ids", std::to_string(auth_chain_id_count), false}
     });
     return serialize(std::move(response));
+}
+
+auto resolve_state_event_ids_at(database::PersistentStore const& store, std::string_view room_id,
+                                std::string_view at_event_id) -> std::vector<std::string>
+{
+    if (at_event_id.empty())
+    {
+        return current_state_event_ids(store, room_id);
+    }
+    auto const* at = find_event(store, at_event_id);
+    if (at == nullptr || at->room_id != room_id)
+    {
+        return current_state_event_ids(store, room_id);
+    }
+    return reconstruct_state_including_event(store, room_id, *at);
 }
 
 auto build_backfill_pdus(database::PersistentStore const& store, std::string_view room_id,

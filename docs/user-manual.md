@@ -411,6 +411,54 @@ support.
 > acceptable for all users of this homeserver, or run a TURN server that does not
 > require authentication.
 
+#### OIDC discovery — `server.oidc.*`
+
+`GET /_matrix/client/v1/auth_metadata` (MSC2965) returns 404 `M_UNRECOGNIZED`
+until `server.oidc.enabled=true`. Merovingian does not implement an OAuth 2.0
+authorization server itself — these keys only describe an external one for
+clients to discover.
+
+| Key | Default | When to change |
+|---|---|---|
+| `server.oidc.enabled` | `false` | Set `true` once the endpoints below point at a real OIDC provider. |
+| `server.oidc.issuer` | (empty) | **Required when enabled.** Must be a valid HTTPS URL with no query or fragment. |
+| `server.oidc.authorization_endpoint` | (empty) | The provider's authorization endpoint. |
+| `server.oidc.token_endpoint` | (empty) | The provider's token endpoint. |
+| `server.oidc.registration_endpoint` | (empty) | The provider's dynamic client registration endpoint, if supported. |
+| `server.oidc.revocation_endpoint` | (empty) | The provider's token revocation endpoint, if supported. |
+| `server.oidc.device_authorization_endpoint` | (empty) | The provider's device authorization endpoint, if supported. |
+| `server.oidc.account_management_uri` | (empty) | A user-facing account management page, if the provider offers one. |
+| `server.oidc.account_management_actions_supported` | (empty) | Comma-separated list of account-management actions the URI above supports. |
+
+#### Identity Service API — `server.identity_server.*`
+
+Used for 3PID (email/phone) invites, binds, unbinds, and `requestToken`
+flows. With `trusted_servers` empty (the default) every operation that needs
+an identity server fails closed rather than silently minting tokens locally.
+
+| Key | Default | When to change |
+|---|---|---|
+| `server.identity_server.trusted_servers` | (empty) | Comma-separated allow-list of identity server base URLs (must be HTTPS). A 3PID operation naming an `id_server` outside this list is refused. |
+| `server.identity_server.default_server` | (empty) | Identity server used when a client omits `id_server`. Must be HTTPS and must also appear in `trusted_servers`. |
+| `server.identity_server.allowed_bind_domains` | (empty) | Restricts which email/phone domains a user may bind a 3PID for. Empty allows any domain. |
+| `server.identity_server.connect_timeout_seconds` | `10` | Outbound connect timeout for identity server HTTP calls. |
+| `server.identity_server.total_timeout_seconds` | `30` | Outbound total timeout for identity server HTTP calls. Must be `>=` `connect_timeout_seconds`. |
+
+#### Push notifications — `server.push.*`
+
+Push Gateway API delivery (Matrix v1.19 push-gateway-api / CS API
+push-notifications module) is **disabled by default** — pushers can still be
+registered via `POST /pushers/set`, but no notification is ever sent to a
+gateway until `server.push.enabled=true`. This mirrors `server.oidc.enabled`'s
+pattern so merging this capability cannot start sending traffic to
+client-supplied gateway URLs on upgrade.
+
+| Key | Default | When to change |
+|---|---|---|
+| `server.push.enabled` | `false` | Set `true` to actually deliver notifications to registered pushers' gateways. |
+| `server.push.connect_timeout_seconds` | `10` | Outbound connect timeout when contacting a pusher's gateway URL (client-supplied, untrusted). |
+| `server.push.total_timeout_seconds` | `30` | Outbound total timeout for a gateway push request. Must be `>=` `connect_timeout_seconds`. |
+
 #### Listeners — `listeners.client.*` and `listeners.federation.*`
 
 | Key | Default | When to change |
@@ -821,6 +869,7 @@ only reports what *would* happen.
 | `security.federation.*` (except `join_response_max_size`) | Reloadable |
 | `security.media.*` | Reloadable |
 | `security.logging.*` | Reloadable |
+| `server.oidc.*` | Reloadable |
 
 `--plan-config-reload <current> <next>` compares two validated configs and
 reports the reload action:

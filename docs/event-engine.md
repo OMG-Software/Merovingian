@@ -193,6 +193,19 @@ superseded historical state values are recovered without a stored state group.
 When `event_id` is absent the handler rejects the request with
 `400 M_MISSING_PARAM`; an unknown `event_id` falls back to the current state.
 
+The client-server `GET /rooms/{roomId}/context/{eventId}` endpoint reuses this
+same backward DAG walk (`federation::resolve_state_event_ids_at()`, 0.11.11)
+to populate its `state` field with the room state at the last event the
+response actually returns, rather than the room's current state, per CS API:
+"The state of the room at the last event returned." Because `/context`'s
+`state` needs the pinned event's *own* contribution included when that event
+is itself a state event — unlike the federation endpoints above, which stop
+one step short by design — the shared walk's result is folded together with
+the pinned event before being returned. `GET /rooms/{roomId}/messages` was not
+changed: its `state` field is spec'd around chunk-relevance/lazy-loading, not
+a DAG position, so this reconstruction does not apply to it in the same way;
+see `docs/todos/capability-gaps.md` for that tracked divergence.
+
 ## Redaction
 
 The redaction engine retains top-level keys and event-content keys according to

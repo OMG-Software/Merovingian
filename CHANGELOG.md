@@ -647,6 +647,53 @@ then closed one of the gaps the audit found.
     ruleset assertion; `test_push_delivery_flow.cpp`'s display-name
     scenario, which now proves the highlight does NOT fire rather than that
     it does).
+- **P2 (PR #479 review, `client_server.cpp:6261`): `GET /rooms/{roomId}/context/{eventId}`
+  returned the room's *current* state, not "the state of the room at the
+  last event returned"** (CS API v1.19). When a room's name, membership,
+  power levels, or other state changed after the event a client asked for
+  context around, the response's `state` array leaked present-day values
+  into what was supposed to be a point-in-time view — a documented deviation
+  when `/context` landed, now fixed properly. New
+  `federation::resolve_state_event_ids_at()` (`event_query.hpp`/`.cpp`)
+  reuses the backward event-DAG walk `build_state_response`/
+  `build_state_ids_response` already use to answer the federation
+  `GET /state`/`/state_ids` endpoints (landed 0.8.10) rather than
+  reimplementing state reconstruction, then folds the pinned event's own
+  state contribution back in when it is itself a state event — the
+  federation endpoints deliberately stop one step short of that (SS API
+  `GET /state`: "prior to considering any state changes induced by the
+  requested event"), while CS API `/context` wants the state inclusive of
+  the last event returned. `room_context_json()` now tracks the event_id of
+  the last event actually placed in `events_after` (falling back to the
+  requested event itself when `events_after` is empty) and reconstructs
+  `state` at that position instead of calling
+  `build_current_state_events_array()`. New conformance coverage
+  (`test_client_server_conformance.cpp`): a room's name changes strictly
+  after the last event a bounded `limit` admits into `events_after`; `state`
+  still reports the pre-rename name, not the room's present-day one.
+  **`GET /messages` was deliberately left unchanged** and is now explicitly
+  tracked in `docs/todos/capability-gaps.md` as a divergence rather than
+  silently inconsistent: its `state` field is spec'd around chunk-relevance/
+  lazy-loading ("a list of state events relevant to showing the `chunk`"),
+  not a DAG position, so this fix's shape does not apply there — it would
+  need its own lazy-loading-aware implementation, which remains unstarted.
+- **P2 (PR #479 review, `config.hpp:107`): the `server.push.*` config keys
+  were undocumented.** Push delivery defaults to disabled
+  (`server.push.enabled=false`), and the only prior documentation change was
+  a wildcard entry in the reloadability table — an operator had no
+  discoverable way to turn on the delivery path this PR spent considerable
+  effort building. `docs/user-manual.md`'s configuration parameter reference
+  gained a "Push notifications — `server.push.*`" table (`enabled`,
+  `connect_timeout_seconds` default `10`, `total_timeout_seconds` default
+  `30`, read from `include/merovingian/config/config.hpp`) and
+  `config/merovingian.conf.example` gained a matching commented-out example
+  section. While in there, `server.oidc.*` and `server.identity_server.*`
+  were found to have the same gap (implemented, config-parseable, but never
+  in the parameter reference table) — an earlier task had matched that
+  precedent instead of fixing it. Both gained their own reference tables too
+  (`server.oidc.*`'s reloadability was also missing from the reloadability
+  policy table entirely; added as `Reloadable`, matching `reload_policy.cpp`'s
+  default fallthrough for keys with no explicit rule).
 
 ## 0.11.10
 

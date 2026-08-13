@@ -23,6 +23,7 @@
 #include "merovingian/crypto/random.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/events/event_signer.hpp"
+#include "merovingian/federation/event_query.hpp"
 #include "merovingian/federation/outbound_membership.hpp"
 #include "merovingian/federation/outbound_transaction.hpp"
 #include "merovingian/federation/security.hpp"
@@ -6212,6 +6213,31 @@ namespace
         return type == nullptr ? std::string{} : *type;
     }
 
+    // Builds a ClientEvent array from an explicit list of state event IDs
+    // (e.g. from federation::resolve_state_event_ids_at), applying the same
+    // RoomEventFilter type/sender predicate build_current_state_events_array
+    // applies to the room's current state. Unknown event IDs are skipped.
+    [[nodiscard]] auto build_state_events_array_for_ids(database::PersistentStore const& store,
+                                                        sync::EventTypeFilter const& filter,
+                                                        std::vector<std::string> const& state_event_ids)
+        -> canonicaljson::Array
+    {
+        auto state_events = canonicaljson::Array{};
+        for (auto const& event_id : state_event_ids)
+        {
+            auto const event = std::ranges::find_if(store.events, [&](database::PersistentEvent const& candidate) {
+                return candidate.event_id == event_id;
+            });
+            if (event == store.events.end() ||
+                !sync::event_passes_filter(filter, stored_event_type(*event), event->sender_user_id))
+            {
+                continue;
+            }
+            state_events.push_back(client_event_with_id(store, *event));
+        }
+        return state_events;
+    }
+
     // Builds the GET /rooms/{roomId}/context/{eventId} response body.
     // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3roomsroomidcontexteventid
     //
@@ -6288,6 +6314,12 @@ namespace
 
         auto events_after = canonicaljson::Array{};
         auto end_token = std::to_string(target.stream_ordering);
+        // The event_id of the last event actually placed in events_after, or
+        // `target` itself when events_after ends up empty (room not allowed by
+        // the filter, no later events, or all later events filtered/ignored
+        // out). This is "the last event returned" the spec's `state` field is
+        // defined relative to -- see below.
+        auto last_returned_event_id = target.event_id;
         if (room_allowed)
         {
             for (auto i = target_index + 1U; i < entries.size() && events_after.size() < after_limit; ++i)
@@ -6305,11 +6337,21 @@ namespace
                 }
                 events_after.push_back(client_event_with_id(store, *candidate));
                 end_token = std::to_string(candidate->stream_ordering);
+                last_returned_event_id = candidate->event_id;
             }
         }
 
-        auto state =
-            room_allowed ? build_current_state_events_array(store, filter.timeline, room_id) : canonicaljson::Array{};
+        // Spec: "state" is "The state of the room at the last event returned"
+        // -- not the room's current state, which would be temporally wrong
+        // once anything paginated past has changed room state (e.g. the name
+        // or a member's membership) since. Reconstructed via the same
+        // event-DAG walk the federation /state and /state_ids endpoints use
+        // (federation::resolve_state_event_ids_at), pinned to
+        // `last_returned_event_id` rather than left at "current".
+        auto state = room_allowed ? build_state_events_array_for_ids(
+                                        store, filter.timeline,
+                                        federation::resolve_state_event_ids_at(store, room_id, last_returned_event_id))
+                                  : canonicaljson::Array{};
 
         return json_serialize(json_obj({
             json_member("start", json_str(start_token)),
