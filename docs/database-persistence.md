@@ -48,7 +48,13 @@ remaining work before PostgreSQL-backed production operation.
   `openid_tokens` table via `migrations/010_openid_tokens.sql` so tokens
   minted by `POST /_matrix/client/v3/user/{userId}/openid/request_token`
   survive restarts and can be redeemed by
-  `GET /_matrix/federation/v1/openid/userinfo` (see "OpenID tokens" below).
+  `GET /_matrix/federation/v1/openid/userinfo` (see "OpenID tokens" below),
+  and schema version `11` ALTERs a `data_extra_json` column onto the
+  existing `pushers` table via `migrations/011_pushers_data_extra.sql` (no
+  new table) so custom members of a pusher's registration-time `data`
+  dictionary — beyond the `url`/`format` keys already stored as dedicated
+  columns — survive restarts and can be forwarded to the Push Gateway (see
+  "Pushers" below).
   After the project reaches production-ready `v1.0.0`, every schema change
   must add a forward migration and keep deployed databases compatible.
 - SQLite RAII wrappers around database connections and prepared statements.
@@ -175,24 +181,36 @@ remaining work before PostgreSQL-backed production operation.
   records the push notification pushers a user has registered via
   `POST /_matrix/client/v3/pushers/set`. Columns are `user_id`, `app_id`,
   `pushkey`, `kind`, `app_display_name`, `device_display_name`,
-  `profile_tag`, `lang`, `data_url`, and `data_format` (the pusher's `data`
+  `profile_tag`, `lang`, `data_url`, `data_format` (the pusher's `data`
   dictionary's `url`/`format` keys, stored as plain columns rather than
-  nested JSON), with a primary key on `(user_id, app_id, pushkey)` — the
-  spec's uniqueness rule: setting a pusher with the same `app_id` and
-  `pushkey` for the same user replaces it in place. The runtime migration
-  path uses the compiled catalog in `src/database/migration.cpp` (upgrade
-  step version `8` "pushers"; downgrade step version `7` "drop_pushers");
-  `schema::current_schema_version()` returns `8U`. The `PersistentPusher`
-  struct and the `store_pusher` / `find_pusher` / `delete_pusher` /
-  `list_pushers_for_user` store functions
+  nested JSON), and — since schema version `11`, migration
+  `migrations/011_pushers_data_extra.sql` — `data_extra_json` (a
+  canonical-JSON-serialized object holding every OTHER member of the
+  pusher's `data` dictionary at registration time; PR #479 review finding
+  P1: the Push Gateway API's notify Device object is defined as "the data
+  dictionary passed in at pusher creation minus the url key", so a custom
+  member beyond `url`/`format` must survive a restart and reach the gateway,
+  not just be discarded), with a primary key on `(user_id, app_id,
+  pushkey)` — the spec's uniqueness rule: setting a pusher with the same
+  `app_id` and `pushkey` for the same user replaces it in place. The
+  runtime migration path uses the compiled catalog in
+  `src/database/migration.cpp` (upgrade step version `8` "pushers", version
+  `11` "pushers_data_extra"; downgrade step version `7` "drop_pushers",
+  version `10` "drop_pushers_data_extra"); `schema::current_schema_
+  version()` returns `11U`. The `PersistentPusher` struct and the
+  `store_pusher` / `find_pusher` / `delete_pusher` / `list_pushers_for_user`
+  store functions
   ([persistent_store.hpp](../include/merovingian/database/persistent_store.hpp))
   persist, look up, list, and remove pushers, following the same pattern as
   `PersistentThreePidBinding` above; implemented for both SQLite and
-  PostgreSQL, hydrated on backend open. This table is not yet wired into the
-  client-server router — `POST /pushers/set` still validates and discards the
-  body (see `docs/todos/capability-gaps.md`); the `merovingian::push` module
-  (`push_rules.hpp`, `push_gateway_client.hpp`) provides the evaluation and
-  delivery logic a follow-on routing change will call.
+  PostgreSQL, hydrated on backend open. `merovingian::push::PushGatewayClient`
+  (`push_gateway_client.hpp`) forwards a device's `data_extra` members
+  verbatim into the notify request body. **Known gap** (out of scope for
+  this migration): `client_server.cpp`'s pusher-registration parsing and
+  `room_service.cpp`'s pusher-to-`PushGatewayDevice` conversion still only
+  read/write the `url`/`format` keys, so a custom `data` member is not yet
+  captured at registration time or threaded through to a live delivery —
+  see `docs/todos/capability-gaps.md`.
 - `notifications` table (schema version `9`, migration
   `migrations/009_notifications.sql`) records the history
   `GET /_matrix/client/v3/notifications` serves. Columns are `user_id`,

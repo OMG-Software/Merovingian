@@ -89,6 +89,61 @@ SCENARIO("Persistent store upserts, finds, lists, and deletes pushers", "[databa
             }
         }
 
+        WHEN("a pusher is registered with custom data_extra_json members and later updated")
+        {
+            // PR #479 review finding P1: the pushers table only stored
+            // data_url/data_format, so any other custom member of the
+            // pusher's `data` dictionary was discarded at registration time,
+            // before it could ever reach the gateway. data_extra_json closes
+            // that gap; this proves it survives a store round trip.
+            REQUIRE(merovingian::database::store_pusher(
+                store, {"@alice:example.org", "org.example.app.ios", "abc123", "http", "Example App", "iPhone", "",
+                        "en", "https://push.example.org/_matrix/push/v1/notify", "event_id_only",
+                        R"({"routing_key":"custom-routing-value"})"}));
+
+            auto const stored =
+                merovingian::database::find_pusher(store, "@alice:example.org", "org.example.app.ios", "abc123");
+
+            THEN("the extra data survives the round trip intact")
+            {
+                REQUIRE(stored.has_value());
+                REQUIRE(stored->data_extra_json == R"({"routing_key":"custom-routing-value"})");
+            }
+
+            AND_WHEN("the same (user_id, app_id, pushkey) is re-registered with different extra data")
+            {
+                REQUIRE(merovingian::database::store_pusher(
+                    store, {"@alice:example.org", "org.example.app.ios", "abc123", "http", "Example App", "iPhone", "",
+                            "en", "https://push.example.org/_matrix/push/v1/notify", "event_id_only",
+                            R"({"routing_key":"replaced-value"})"}));
+                auto const updated =
+                    merovingian::database::find_pusher(store, "@alice:example.org", "org.example.app.ios", "abc123");
+
+                THEN("the row is a single upserted entry carrying the new extra data")
+                {
+                    REQUIRE(store.pushers.size() == 1U);
+                    REQUIRE(updated.has_value());
+                    REQUIRE(updated->data_extra_json == R"({"routing_key":"replaced-value"})");
+                }
+            }
+        }
+
+        WHEN("a pusher is registered without specifying data_extra_json")
+        {
+            REQUIRE(merovingian::database::store_pusher(
+                store, {"@alice:example.org", "org.example.app.ios", "abc123", "http", "Example App", "iPhone", "",
+                        "en", "https://push.example.org/_matrix/push/v1/notify", ""}));
+
+            auto const stored =
+                merovingian::database::find_pusher(store, "@alice:example.org", "org.example.app.ios", "abc123");
+
+            THEN("it defaults to empty, meaning no extra members")
+            {
+                REQUIRE(stored.has_value());
+                REQUIRE(stored->data_extra_json.empty());
+            }
+        }
+
         WHEN("the pusher helpers receive input missing a required key")
         {
             auto const empty_user = merovingian::database::store_pusher(

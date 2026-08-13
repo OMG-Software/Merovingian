@@ -50,6 +50,23 @@ namespace
         {
             data.push_back(make_str_member("format", *device.data_format));
         }
+        // Spec (push-gateway-api.md, Device.data): "the data dictionary
+        // passed in at pusher creation minus the url key" — every other
+        // custom member the pusher was registered with MUST be forwarded
+        // verbatim, not just `format`. `url`/`format` are skipped
+        // defensively (see PushGatewayDevice::data_extra's doc comment)
+        // rather than trusted to already be absent.
+        if (device.data_extra.has_value())
+        {
+            for (auto const& member : *device.data_extra)
+            {
+                if (member.key == "url" || member.key == "format")
+                {
+                    continue;
+                }
+                data.push_back(canonicaljson::make_member(member.key, *member.value));
+            }
+        }
 
         auto object = canonicaljson::Object{};
         object.push_back(make_str_member("app_id", device.app_id));

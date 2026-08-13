@@ -534,10 +534,81 @@ then closed one of the gaps the audit found.
     `room_member_display_name()` helper (`room_service.cpp`) that resolves
     the recipient's current `m.room.member` state event content in that
     room, falling back to the account-wide profile only when the membership
-    event carries no `displayname` at all. New integration coverage: a
-    message containing the recipient's room-specific membership display name
-    is highlighted; a message containing only a stale account-wide profile
-    name is recorded but not highlighted.
+    event carries no `displayname` at all. This resolver remains live
+    infrastructure feeding `PushEvaluationContext::receiving_user_display_
+    name` on every evaluation (see the P2 finding below, which removes the
+    only default rule that consumed it); a follow-on PR #479 review pass
+    found and closed three further defects in this same area — P1 below,
+    plus two more P2s.
+  - **P1 (PR #479 review): custom pusher `data` members were silently
+    dropped, both at delivery and at rest.** `push_gateway_client.cpp`
+    rebuilt the notify request's `data` object from only `data_format`,
+    discarding every other member the pusher's `data` dictionary carried at
+    registration — Push Gateway API v1.19: the Device object's `data` is "the
+    data dictionary passed in at pusher creation **minus the url key**",
+    i.e. everything else must reach the gateway verbatim (gateways commonly
+    use custom `data` members for routing/credentials). The `pushers` table
+    only ever stored `data_url`/`data_format`, so the loss actually started
+    at registration time. Added `data_extra_json` to `PersistentPusher` and
+    the `pushers` table (`migrations/011_pushers_data_extra.sql`, schema
+    version `11`) to store the rest of the dictionary, and a
+    `PushGatewayDevice::data_extra` field that `build_device_object()` now
+    merges into the outgoing `data` object (defensively skipping any stray
+    `url`/`format` member so the routing URL can never leak into the body
+    and `format` can never duplicate). **Known gap, out of this branch's
+    scope:** `client_server.cpp`'s pusher-registration parsing and
+    `room_service.cpp`'s pusher-to-`PushGatewayDevice` conversion still only
+    read/write `url`/`format`, so a custom `data` member is not yet captured
+    at registration or threaded through to a live delivery end-to-end — the
+    persistence and delivery-serialization plumbing is ready, but those two
+    call sites (owned by other in-flight work on this PR) need a follow-up
+    edit to finish wiring it. New unit coverage: `build_notify_request_body`
+    forwards custom `data_extra` members verbatim and excludes/deduplicates
+    `url`/`format`; `store_pusher`/`find_pusher` round-trip `data_extra_json`
+    including an upsert replacing it.
+  - **P2 (PR #479 review): `contains_display_name` matched the display name
+    as a glob pattern, not literal text.** A display name is data supplied
+    by an arbitrary user, not an author-written pattern — matching it with
+    the same glob engine content-rule patterns use meant a display name of
+    literally `*` matched every message in every room (forcing a highlight
+    regardless of whether the message named that user at all), and `?`
+    matched any single character. Fixed with a new
+    `contains_literal_word_boundary_substring()` (`push_rules.cpp`) that
+    performs the same word-boundary substring search but compares the
+    candidate substring to the display name byte-for-byte, with no glob
+    interpretation. New unit coverage: a display name of `*` or containing
+    `?` no longer matches unrelated message bodies, but does match the
+    literal character; the ordinary case (a plain display name at a word
+    boundary) still matches.
+  - **P2 (PR #479 review): `.m.rule.roomnotif` and `.m.rule.contains_
+    display_name` were not spec-defined server defaults.** CS API v1.19
+    §push-notifications, "Predefined Rules": "[Changed in v1.17]: the legacy
+    default push rules that looked for mentions in the body of the event
+    were removed." The current spec's complete "Default Override Rules" list
+    has ten entries and does not include either rule_id; both were
+    pre-`m.mentions`-module rules that scanned `content.body` for literal
+    text (a display name, or `"@room"`) — exactly the false-positive pattern
+    `.m.rule.is_user_mention`/`.m.rule.is_room_mention` (structured
+    `m.mentions`, added v1.7) replaced: a message merely containing someone's
+    name, or the literal text `"@room"`, as ordinary prose highlighted the
+    recipient even when the sender's event carried no `m.mentions` at all
+    and the correct mentions rule did not match. Both were previously added
+    as server defaults (0.11.11) citing an Element SDK client-side warning
+    and claiming they are "MUST per the Matrix v1.18 CS API" — that claim
+    does not hold up against the checked-in v1.18/v1.19 spec text, so both
+    are removed from `default_push_ruleset.cpp`. The `contains_display_name`
+    *condition kind* itself remains spec-valid (deprecated, not removed) and
+    its evaluator is unaffected — only the two default rules that fired it
+    (and the `@room` body scan) unconditionally for every recipient are
+    gone. New unit coverage
+    (`tests/unit/test_default_push_ruleset.cpp`): the default ruleset no
+    longer contains either rule_id; a message body naming the recipient or
+    containing literal `"@room"` text still notifies via `.m.rule.message`
+    but is never highlighted. Conformance and integration coverage updated
+    to match (`test_client_server_conformance.cpp`'s `/pushrules/` default
+    ruleset assertion; `test_push_delivery_flow.cpp`'s display-name
+    scenario, which now proves the highlight does NOT fire rather than that
+    it does).
 
 ## 0.11.10
 

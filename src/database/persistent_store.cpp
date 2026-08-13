@@ -2720,16 +2720,18 @@ auto restore_sync_stream_id(PersistentStore& store) -> void
     {
         return false;
     }
-    auto const statement =
-        record_statement("upsert_pusher",
-                         "INSERT INTO pushers (user_id, app_id, pushkey, kind, app_display_name, device_display_name, "
-                         "profile_tag, lang, data_url, data_format) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) "
-                         "ON CONFLICT (user_id, app_id, pushkey) DO UPDATE SET kind = $4, app_display_name = $5, "
-                         "device_display_name = $6, profile_tag = $7, lang = $8, data_url = $9, data_format = $10",
-                         {public_value(pusher.user_id), public_value(pusher.app_id), public_value(pusher.pushkey),
-                          public_value(pusher.kind), public_value(pusher.app_display_name),
-                          public_value(pusher.device_display_name), public_value(pusher.profile_tag),
-                          public_value(pusher.lang), public_value(pusher.data_url), public_value(pusher.data_format)});
+    auto const statement = record_statement(
+        "upsert_pusher",
+        "INSERT INTO pushers (user_id, app_id, pushkey, kind, app_display_name, device_display_name, "
+        "profile_tag, lang, data_url, data_format, data_extra_json) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, "
+        "$11) "
+        "ON CONFLICT (user_id, app_id, pushkey) DO UPDATE SET kind = $4, app_display_name = $5, "
+        "device_display_name = $6, profile_tag = $7, lang = $8, data_url = $9, data_format = $10, "
+        "data_extra_json = $11",
+        {public_value(pusher.user_id), public_value(pusher.app_id), public_value(pusher.pushkey),
+         public_value(pusher.kind), public_value(pusher.app_display_name), public_value(pusher.device_display_name),
+         public_value(pusher.profile_tag), public_value(pusher.lang), public_value(pusher.data_url),
+         public_value(pusher.data_format), public_value(pusher.data_extra_json)});
     if (!record_and_persist(store, statement))
     {
         return false;

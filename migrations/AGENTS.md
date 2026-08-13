@@ -11,7 +11,7 @@ NNN_snake_case_description.sql
 
 `NNN` is a zero-padded three-digit integer: `001`, `002`, ..., `010`, `011`, ...
 The next migration number is always `max(existing) + 1`.
-Current highest: `009`.
+Current highest: `011`.
 
 Schema version `2` introduced the `sync_stream_watermark` table via
 `002_sync_stream_watermark.sql` to support live pre-production deployments that
@@ -46,7 +46,13 @@ short-lived credential good only for the federation userinfo lookup, and
 must never be usable as a client-server bearer token — see
 `docs/threat-model.md`. Every row has a finite `expires_at`; expired rows
 are pruned at write time (see `docs/database-persistence.md`) so the table
-cannot grow without bound. After `v1.0.0`, deployed databases become a
+cannot grow without bound. Schema version `11` (`011_pushers_data_extra.sql`)
+ALTERs `data_extra_json` onto `pushers` (no new table): a canonical-JSON
+object holding every member of a pusher's registration-time `data`
+dictionary beyond `url`/`format`, which already have dedicated columns.
+Matrix v1.19 Push Gateway API requires forwarding the pusher's whole `data`
+dictionary minus `url` to the gateway, not just `format`; see
+`docs/database-persistence.md`. After `v1.0.0`, deployed databases become a
 strict compatibility boundary and schema changes must be added as new
 forward migration files instead of modifying already-applied migrations.
 

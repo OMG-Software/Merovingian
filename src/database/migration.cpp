@@ -385,6 +385,24 @@ auto downgrade_initial_schema_migration() -> MigrationStep
     return {10U, "openid_tokens", std::move(statements), MigrationDirection::upgrade};
 }
 
+// v11: add `data_extra_json` onto `pushers` (Matrix v1.19 Push Gateway API,
+// PR #479 review finding P1). The Push Gateway API's notify Device object
+// carries "the data dictionary passed in at pusher creation minus the url
+// key" -- previously only `url`/`format` were persisted, so any other
+// custom member a client's `data` dictionary carried at registration was
+// discarded before it ever reached the gateway. This ALTERs the existing
+// `pushers` table (created at v8) exactly like v7's `account_threepids_
+// columns` step ALTERs `account_threepids` (created at v6) -- the base
+// CREATE TABLE stays historically intact and fresh installs, which run
+// every upgrade step in order, still end at the same v11 shape.
+[[nodiscard]] auto upgrade_pushers_data_extra_migration() -> MigrationStep
+{
+    auto statements = std::vector<PreparedStatement>{};
+    statements.push_back(PreparedStatement{
+        "add_data_extra_json_column", "ALTER TABLE pushers ADD COLUMN data_extra_json TEXT NOT NULL DEFAULT ''", {}});
+    return {11U, "pushers_data_extra", std::move(statements), MigrationDirection::upgrade};
+}
+
 auto upgrade_migration_catalog() -> std::vector<MigrationStep>
 {
     return {initial_schema_migration(),
@@ -396,7 +414,8 @@ auto upgrade_migration_catalog() -> std::vector<MigrationStep>
             upgrade_account_threepids_columns_migration(),
             upgrade_pushers_migration(),
             upgrade_notifications_migration(),
-            upgrade_openid_tokens_migration()};
+            upgrade_openid_tokens_migration(),
+            upgrade_pushers_data_extra_migration()};
 }
 
 [[nodiscard]] auto downgrade_backfill_state_transitions_migration() -> MigrationStep
@@ -451,6 +470,15 @@ auto upgrade_migration_catalog() -> std::vector<MigrationStep>
     return {9U, "drop_openid_tokens", std::move(statements), MigrationDirection::downgrade};
 }
 
+// v11 -> v10: drop the data_extra_json column added onto pushers.
+[[nodiscard]] auto downgrade_pushers_data_extra_migration() -> MigrationStep
+{
+    auto statements = std::vector<PreparedStatement>{};
+    statements.push_back(
+        PreparedStatement{"drop_data_extra_json_column", "ALTER TABLE pushers DROP COLUMN data_extra_json", {}});
+    return {10U, "drop_pushers_data_extra", std::move(statements), MigrationDirection::downgrade};
+}
+
 [[nodiscard]] auto downgrade_sync_stream_watermark_migration() -> MigrationStep
 {
     auto statements = std::vector<PreparedStatement>{};
@@ -474,7 +502,8 @@ auto upgrade_migration_catalog() -> std::vector<MigrationStep>
 
 auto downgrade_migration_catalog() -> std::vector<MigrationStep>
 {
-    return {downgrade_openid_tokens_migration(),
+    return {downgrade_pushers_data_extra_migration(),
+            downgrade_openid_tokens_migration(),
             downgrade_notifications_migration(),
             downgrade_pushers_migration(),
             downgrade_account_threepids_columns_migration(),

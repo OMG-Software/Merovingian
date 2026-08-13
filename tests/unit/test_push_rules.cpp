@@ -310,6 +310,108 @@ SCENARIO("contains_display_name condition matches the receiving user's display n
     }
 }
 
+// PR #479 review finding P2: contains_display_name must compare the display
+// name as literal text, never as a glob pattern. A display name is data
+// supplied by an arbitrary user, not an author-written pattern — treating
+// '*'/'?' in it as wildcards would let a user with display name "*" get
+// highlighted on every single message in every room, regardless of whether
+// it names them.
+SCENARIO("contains_display_name treats the display name as literal text, never a glob pattern", "[push]")
+{
+    GIVEN("a receiving user whose display name is a bare '*' glob wildcard")
+    {
+        auto ruleset_object = Object{};
+        ruleset_object.push_back(
+            make_member("override", Value{Array{make_rule("mention-rule", true, Array{cond_contains_display_name()},
+                                                          Array{action_notify()})}}));
+        auto const ruleset = merovingian::push::parse_push_ruleset(ruleset_object);
+        auto context = merovingian::push::PushEvaluationContext{"@receiver:example.org"};
+        context.receiving_user_display_name = "*";
+
+        WHEN("the message body contains no literal '*' character")
+        {
+            auto const event = make_event("m.room.message", "@sender:example.org", "!room:example.org",
+                                          Object{str_member("body", "just an ordinary message, nothing special")});
+            auto const result = merovingian::push::evaluate_push_rules(ruleset, event, context);
+
+            THEN("the rule does not match -- '*' is not interpreted as a wildcard matching everything")
+            {
+                REQUIRE_FALSE(result.notify);
+            }
+        }
+
+        WHEN("the message body does contain a literal '*' character at a word boundary")
+        {
+            auto const event = make_event("m.room.message", "@sender:example.org", "!room:example.org",
+                                          Object{str_member("body", "look at this * right here")});
+            auto const result = merovingian::push::evaluate_push_rules(ruleset, event, context);
+
+            THEN("the rule matches the literal character")
+            {
+                REQUIRE(result.notify);
+            }
+        }
+    }
+
+    GIVEN("a receiving user whose display name contains a literal '?' character")
+    {
+        auto ruleset_object = Object{};
+        ruleset_object.push_back(
+            make_member("override", Value{Array{make_rule("mention-rule", true, Array{cond_contains_display_name()},
+                                                          Array{action_notify()})}}));
+        auto const ruleset = merovingian::push::parse_push_ruleset(ruleset_object);
+        auto context = merovingian::push::PushEvaluationContext{"@receiver:example.org"};
+        context.receiving_user_display_name = "Bob?";
+
+        WHEN("the message body contains a different single character where '?' would glob-match")
+        {
+            auto const event = make_event("m.room.message", "@sender:example.org", "!room:example.org",
+                                          Object{str_member("body", "hey Bobz nice to meet you")});
+            auto const result = merovingian::push::evaluate_push_rules(ruleset, event, context);
+
+            THEN("the rule does not match -- '?' is not interpreted as a single-character wildcard")
+            {
+                REQUIRE_FALSE(result.notify);
+            }
+        }
+
+        WHEN("the message body contains the literal display name including the '?' character")
+        {
+            auto const event = make_event("m.room.message", "@sender:example.org", "!room:example.org",
+                                          Object{str_member("body", "hey Bob? nice to meet you")});
+            auto const result = merovingian::push::evaluate_push_rules(ruleset, event, context);
+
+            THEN("the rule matches")
+            {
+                REQUIRE(result.notify);
+            }
+        }
+    }
+
+    GIVEN("a receiving user with an ordinary display name (regression: the fix must not break the normal case)")
+    {
+        auto ruleset_object = Object{};
+        ruleset_object.push_back(
+            make_member("override", Value{Array{make_rule("mention-rule", true, Array{cond_contains_display_name()},
+                                                          Array{action_notify()})}}));
+        auto const ruleset = merovingian::push::parse_push_ruleset(ruleset_object);
+        auto context = merovingian::push::PushEvaluationContext{"@receiver:example.org"};
+        context.receiving_user_display_name = "Alice";
+
+        WHEN("the message body contains the display name at a word boundary")
+        {
+            auto const event = make_event("m.room.message", "@sender:example.org", "!room:example.org",
+                                          Object{str_member("body", "Hello Alice, how are you?")});
+            auto const result = merovingian::push::evaluate_push_rules(ruleset, event, context);
+
+            THEN("the rule still matches")
+            {
+                REQUIRE(result.notify);
+            }
+        }
+    }
+}
+
 SCENARIO("room_member_count condition matches numeric comparisons against the room's member count", "[push]")
 {
     GIVEN("an override rule requiring exactly two room members")

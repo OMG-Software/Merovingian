@@ -112,15 +112,13 @@ namespace
         });
     }
 
-    // Spec: CS API v1.19 §m.rule.contains_display_name — condition kind that matches when
-    // the event body contains the receiving user's current display name (case-insensitive).
-    // No additional fields required beyond "kind".
-    [[nodiscard]] auto push_condition_contains_display_name() -> canonicaljson::Value
-    {
-        return json_obj({
-            json_member("kind", json_str("contains_display_name")),
-        });
-    }
+    // NOTE: the `contains_display_name` condition kind (CS API v1.19
+    // §push-notifications) has no default-ruleset builder here on purpose —
+    // see the comment above the removed `.m.rule.contains_display_name` /
+    // `.m.rule.roomnotif` default rules further down this file. The
+    // condition kind itself remains a valid (if deprecated) choice for a
+    // hand-authored user rule; push_rules.cpp's condition_matches still
+    // implements it.
 
     [[nodiscard]] auto push_rule(std::string_view rule_id, bool enabled, canonicaljson::Array conditions,
                                  canonicaljson::Array actions) -> canonicaljson::Value
@@ -194,26 +192,32 @@ auto default_push_ruleset(std::string_view user_id) -> canonicaljson::Object
                                        canonicaljson::Array{push_condition_event_property_is(
                                            "content.m\\.relates_to.rel_type", std::string_view{"m.replace"})},
                                        {}));
-    // Spec: CS API v1.19 §.m.rule.contains_display_name — legacy rule for clients that do
-    // not use m.mentions; matches messages whose body contains the user's display name.
-    override_rules.push_back(push_rule(".m.rule.contains_display_name", true,
-                                       canonicaljson::Array{push_condition_contains_display_name()},
-                                       canonicaljson::Array{
-                                           json_str("notify"),
-                                           push_action_set_tweak("sound", std::string_view{"default"}),
-                                           push_action_set_tweak("highlight"),
-                                       }));
-    // Spec: CS API v1.19 §.m.rule.roomnotif — matches messages containing "@room" when
-    // the sender has permission to notify the whole room.
-    override_rules.push_back(push_rule(".m.rule.roomnotif", true,
-                                       canonicaljson::Array{
-                                           push_condition_event_match("content.body", "@room"),
-                                           push_condition_sender_notification_permission("room"),
-                                       },
-                                       canonicaljson::Array{
-                                           json_str("notify"),
-                                           push_action_set_tweak("highlight"),
-                                       }));
+    // Spec: CS API v1.19 §push-notifications, "Predefined Rules": "[Changed in
+    // v1.17]: the legacy default push rules that looked for mentions in the
+    // body of the event were removed." The complete "Default Override Rules"
+    // list in the current spec has ten entries (master, suppress_notices,
+    // invite_for_me, member_event, is_user_mention, is_room_mention,
+    // tombstone, reaction, room.server_acl, suppress_edits, all present
+    // above) and does not include `.m.rule.contains_display_name` or
+    // `.m.rule.roomnotif`. Both were body-text-scanning rules from before the
+    // `m.mentions` module (v1.7) — `.m.rule.contains_display_name` matched
+    // any occurrence of the recipient's display name in the message body,
+    // and `.m.rule.roomnotif` matched any literal "@room" text — and both
+    // produce exactly the false-positive class the mentions module was
+    // introduced to fix: a message that merely contains someone's name, or
+    // the literal text "@room", as ordinary prose highlights a recipient
+    // even when the sender never invoked `m.mentions` and
+    // `.m.rule.is_user_mention`/`.m.rule.is_room_mention` correctly does not
+    // match. A previous revision of this file added both rules back as
+    // server-defaults citing an "Element SDK" client-side warning and
+    // claiming they are "MUST per the Matrix v1.18 CS API" — that claim does
+    // not hold up: neither rule_id appears anywhere in the checked-in
+    // v1.18 or v1.19 spec text. The `contains_display_name` *condition kind*
+    // itself remains spec-valid (deprecated, "should not be used in new push
+    // rules", but not removed — see push_rules.cpp's condition_matches),
+    // so a hand-authored user rule may still reference it; only the two
+    // *default* rules that fired it unconditionally for every recipient are
+    // removed here.
 
     auto underride_rules = canonicaljson::Array{};
     underride_rules.push_back(push_rule(".m.rule.call", true,

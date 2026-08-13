@@ -253,11 +253,10 @@ auto set_ignored_users(merovingian::homeserver::ClientServerRuntime& runtime, st
 
 // Whether the notifications-history entry for `event_id` carries a
 // `{"set_tweak":"highlight","value":true}` action — i.e. whether push rule
-// evaluation actually chose the highlight tweak for that event (only
-// .m.rule.contains_display_name does, among the default rules exercised in
-// this file). Parses each entry's own `actions` array rather than
-// substring-searching the response, per this file's structural-assertion
-// discipline (see notifications_contain_event above).
+// evaluation actually chose the highlight tweak for that event. Parses each
+// entry's own `actions` array rather than substring-searching the response,
+// per this file's structural-assertion discipline (see
+// notifications_contain_event above).
 [[nodiscard]] auto notification_actions_have_highlight(merovingian::canonicaljson::Array const& notifications,
                                                        std::string const& event_id) -> bool
 {
@@ -1345,22 +1344,38 @@ SCENARIO("a recipient with more pushers than the per-delivery cap only has the c
     }
 }
 
-// ── contains_display_name uses room membership, not the account profile
-// (0.11.11 gap audit, PR #479 review finding P2) ───────────────────────────
-// Spec: Matrix Client-Server API v1.19 §push-notifications, contains_display_name
+// ── a message body naming the recipient never highlights via a default rule
+// (0.11.11 gap audit, PR #479 review findings P2 + follow-on P2) ───────────
+// Spec: Matrix Client-Server API v1.19 §push-notifications, "Predefined
+// Rules" -- "[Changed in v1.17]: the legacy default push rules that looked
+// for mentions in the body of the event were removed."
 // URL: ../../docs/matrix-v1.19-spec/client-server-api.md#push-notifications
 //
-// Spec: contains_display_name "matches messages where content.body contains
-// the owner's display name in that room" -- a per-room value, not the
-// account-wide profile. build_pending_push_deliveries used to read
-// database::find_profile's account-wide displayname instead, so a
-// room-specific membership display name (or a stale account-wide one)
-// evaluated the wrong text. Fixed by room_service.cpp's
-// room_member_display_name. The highlight tweak (.m.rule.contains_display_
-// name's action, an override rule that pre-empts the plain-notify
-// .m.rule.message underride when it matches) is the observable signal.
-SCENARIO("contains_display_name matches the recipient's room-specific membership display name, not a stale "
-         "account-wide profile name",
+// This scenario used to prove `.m.rule.contains_display_name` (a server
+// default at the time) read bob's room-specific membership displayname
+// rather than his stale account-wide profile name, using the highlight
+// tweak as the observable signal. Per the spec text above,
+// `.m.rule.contains_display_name` is not one of the ten rules the current
+// spec's "Default Override Rules" list defines and has been removed from
+// default_push_ruleset.cpp (see src/homeserver/default_push_ruleset.cpp and
+// tests/unit/test_default_push_ruleset.cpp) -- it was exactly the kind of
+// body-text-mention-scanning rule that list's v1.17 change removed, and
+// caused a real false positive: a message merely containing someone's name
+// as ordinary prose highlighted them regardless of the sender's actual
+// `m.mentions` intent. This scenario now proves the inverse: neither bob's
+// room-specific membership displayname nor his stale account-wide profile
+// name, appearing as plain body text, ever produces a highlight -- while
+// the message itself is still delivered and recorded as a normal
+// (non-highlighted) notification via the underride rules, so the fix is
+// "no more false-positive highlight", not "no more delivery at all". The
+// room-membership-vs-account-profile distinction this scenario's setup
+// exercises (room_service.cpp's room_member_display_name) remains live
+// infrastructure feeding PushEvaluationContext::receiving_user_display_name
+// on every evaluation, ready for any future rule (default or user-defined)
+// that references the contains_display_name condition kind, even though no
+// current default rule consumes it.
+SCENARIO("a message body naming the recipient (room-specific or stale account-wide) never highlights, "
+         "only via a default rule",
          "[integration][push]")
 {
     GIVEN("alice and bob in a room, and bob's account profile displayname differs from his current room-membership "
@@ -1427,12 +1442,17 @@ SCENARIO("contains_display_name matches the recipient's room-specific membership
             auto const* room_name_event_id = string_member(room_name_body, "event_id");
             REQUIRE(room_name_event_id != nullptr);
 
-            THEN("the notification is highlighted -- contains_display_name matched the room-specific name")
+            THEN("the notification is recorded but NOT highlighted -- no default rule scans the body for a name")
             {
                 auto const body = get_notifications(started.runtime, bob);
                 auto const* notifications = object_member_as_array(body, "notifications");
                 REQUIRE(notifications != nullptr);
-                REQUIRE(notification_actions_have_highlight(*notifications, *room_name_event_id));
+                // Positive counterpart: the event IS present in the history
+                // (delivered via .m.rule.room_one_to_one/.m.rule.message),
+                // so the highlight absence below cannot vacuously pass
+                // because the whole entry was missing.
+                REQUIRE(notifications_contain_event(*notifications, *room_name_event_id));
+                REQUIRE_FALSE(notification_actions_have_highlight(*notifications, *room_name_event_id));
             }
         }
 
@@ -1445,15 +1465,11 @@ SCENARIO("contains_display_name matches the recipient's room-specific membership
             auto const* stale_event_id = string_member(stale_body, "event_id");
             REQUIRE(stale_event_id != nullptr);
 
-            THEN("the notification is recorded but NOT highlighted -- contains_display_name must not match the "
-                 "stale profile name")
+            THEN("the notification is recorded but NOT highlighted, exactly as for the room-specific name")
             {
                 auto const body = get_notifications(started.runtime, bob);
                 auto const* notifications = object_member_as_array(body, "notifications");
                 REQUIRE(notifications != nullptr);
-                // Positive counterpart: the event IS present in the history,
-                // so the highlight absence below cannot vacuously pass
-                // because the whole entry was missing.
                 REQUIRE(notifications_contain_event(*notifications, *stale_event_id));
                 REQUIRE_FALSE(notification_actions_have_highlight(*notifications, *stale_event_id));
             }

@@ -11049,10 +11049,24 @@ SCENARIO("GET /pushrules/ returns a global push rules object", "[conformance][cl
                 REQUIRE(push_rule_by_id(*override_rules, ".m.rule.reaction") != nullptr);
                 REQUIRE(push_rule_by_id(*override_rules, ".m.rule.room.server_acl") != nullptr);
                 REQUIRE(push_rule_by_id(*override_rules, ".m.rule.suppress_edits") != nullptr);
-                // Spec MUST: legacy mention/notify rules — absent from this server caused
-                // Element SDK to log "Missing default global override push rule" on login.
-                REQUIRE(push_rule_by_id(*override_rules, ".m.rule.contains_display_name") != nullptr);
-                REQUIRE(push_rule_by_id(*override_rules, ".m.rule.roomnotif") != nullptr);
+                // Spec change (PR #479 review finding P2, v1.17): CS API v1.19
+                // §push-notifications, "Predefined Rules" — "[Changed in v1.17]:
+                // the legacy default push rules that looked for mentions in the
+                // body of the event were removed." The complete "Default
+                // Override Rules" list above (ten entries) is exhaustive in the
+                // current spec; `.m.rule.contains_display_name` and
+                // `.m.rule.roomnotif` are not in it. A previous revision of
+                // this assertion required their presence, citing an Element
+                // SDK client-side warning and claiming both are "MUST per the
+                // Matrix v1.18 CS API" — neither rule_id appears anywhere in
+                // the checked-in v1.18 or v1.19 spec text, so that claim does
+                // not hold up; both were the pre-m.mentions body-text-scanning
+                // rules the v1.17 change removed (matching literal display-name
+                // text / "@room" in the body regardless of the sender's actual
+                // m.mentions intent — exactly the false-positive class
+                // .m.rule.is_user_mention/.m.rule.is_room_mention replaced).
+                REQUIRE(push_rule_by_id(*override_rules, ".m.rule.contains_display_name") == nullptr);
+                REQUIRE(push_rule_by_id(*override_rules, ".m.rule.roomnotif") == nullptr);
                 // Spec MUST: underride rules
                 REQUIRE(push_rule_by_id(*underride_rules, ".m.rule.call") != nullptr);
                 REQUIRE(push_rule_by_id(*underride_rules, ".m.rule.encrypted_room_one_to_one") != nullptr);

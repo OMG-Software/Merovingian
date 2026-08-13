@@ -202,6 +202,87 @@ SCENARIO("build_notify_request_body produces the Push Gateway API's notification
     }
 }
 
+// PR #479 review finding P1: the Push Gateway API's notify Device object's
+// `data` field is "the data dictionary passed in at pusher creation minus
+// the url key" (push-gateway-api.md) -- every custom member beyond `format`
+// must be forwarded verbatim, not silently dropped.
+SCENARIO("build_notify_request_body forwards every custom data_extra member, excluding url and format",
+         "[push][push-gateway]")
+{
+    GIVEN("a device with custom data_extra members alongside format")
+    {
+        auto notification = merovingian::push::PushGatewayNotification{};
+
+        auto device = merovingian::push::PushGatewayDevice{};
+        device.app_id = "org.matrix.console.ios";
+        device.pushkey = "abc123";
+        device.data_format = "event_id_only";
+        auto extra = merovingian::canonicaljson::Object{};
+        extra.push_back(merovingian::canonicaljson::make_member(
+            "routing_key", merovingian::canonicaljson::Value{std::string{"custom-routing-value"}}));
+        extra.push_back(
+            merovingian::canonicaljson::make_member("retries", merovingian::canonicaljson::Value{std::int64_t{3}}));
+        // A defensive caller error: a stray `url`/`format` member inside
+        // data_extra must never leak the routing URL into the body or
+        // duplicate `format`.
+        extra.push_back(merovingian::canonicaljson::make_member(
+            "url", merovingian::canonicaljson::Value{std::string{"https://attacker.example/leak"}}));
+        extra.push_back(merovingian::canonicaljson::make_member(
+            "format", merovingian::canonicaljson::Value{std::string{"should-not-duplicate"}}));
+        device.data_extra = std::move(extra);
+        notification.devices.push_back(device);
+
+        WHEN("the request body is built")
+        {
+            auto const body = merovingian::push::build_notify_request_body(notification);
+            auto const root = parse_object(body);
+            auto const* inner_value = object_member(root, "notification");
+            auto const* inner = std::get_if<merovingian::canonicaljson::Object>(&inner_value->storage());
+            REQUIRE(inner != nullptr);
+            auto const* devices_value = object_member(*inner, "devices");
+            auto const* devices = std::get_if<merovingian::canonicaljson::Array>(&devices_value->storage());
+            REQUIRE(devices != nullptr);
+            REQUIRE(devices->size() == 1U);
+            auto const* device_object = std::get_if<merovingian::canonicaljson::Object>(&(*devices)[0].storage());
+            REQUIRE(device_object != nullptr);
+            auto const* data_value = object_member(*device_object, "data");
+            auto const* data = std::get_if<merovingian::canonicaljson::Object>(&data_value->storage());
+            REQUIRE(data != nullptr);
+
+            THEN("format is present exactly once, from data_format")
+            {
+                auto count = 0;
+                for (auto const& member : *data)
+                {
+                    if (member.key == "format")
+                    {
+                        ++count;
+                    }
+                }
+                REQUIRE(count == 1);
+                auto const* format = object_member(*data, "format");
+                REQUIRE(format != nullptr);
+                REQUIRE(std::get<std::string>(format->storage()) == "event_id_only");
+            }
+
+            THEN("both custom data_extra members are forwarded verbatim")
+            {
+                auto const* routing_key = object_member(*data, "routing_key");
+                REQUIRE(routing_key != nullptr);
+                REQUIRE(std::get<std::string>(routing_key->storage()) == "custom-routing-value");
+                auto const* retries = object_member(*data, "retries");
+                REQUIRE(retries != nullptr);
+                REQUIRE(std::get<std::int64_t>(retries->storage()) == 3);
+            }
+
+            THEN("url is never present in the request body, even though data_extra carried one")
+            {
+                REQUIRE(object_member(*data, "url") == nullptr);
+            }
+        }
+    }
+}
+
 SCENARIO("parse_notify_response reads the rejected pushkey list and fails closed on a malformed body",
          "[push][push-gateway]")
 {

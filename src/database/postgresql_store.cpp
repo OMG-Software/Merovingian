@@ -1014,7 +1014,7 @@ namespace
 
         auto pushers = query_rows(connection, "postgresql_load_pushers",
                                   "SELECT user_id, app_id, pushkey, kind, app_display_name, device_display_name, "
-                                  "profile_tag, lang, data_url, data_format FROM pushers "
+                                  "profile_tag, lang, data_url, data_format, data_extra_json FROM pushers "
                                   "ORDER BY user_id, app_id, pushkey");
         if (!pushers.ok)
         {
@@ -1035,6 +1035,10 @@ namespace
                 entry.lang = row[7];
                 entry.data_url = row[8];
                 entry.data_format = row[9];
+                if (row.size() >= 11U)
+                {
+                    entry.data_extra_json = row[10];
+                }
                 store.pushers.push_back(std::move(entry));
             }
         }

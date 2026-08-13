@@ -658,7 +658,8 @@ namespace
                          }) &&
                load_rows(connection,
                          "SELECT user_id, app_id, pushkey, kind, app_display_name, device_display_name, "
-                         "profile_tag, lang, data_url, data_format FROM pushers ORDER BY user_id, app_id, pushkey",
+                         "profile_tag, lang, data_url, data_format, data_extra_json FROM pushers ORDER BY user_id, "
+                         "app_id, pushkey",
                          [&store](sqlite3_stmt& row) {
                              PersistentPusher entry{};
                              entry.user_id = column_text(row, 0);
@@ -671,6 +672,7 @@ namespace
                              entry.lang = column_text(row, 7);
                              entry.data_url = column_text(row, 8);
                              entry.data_format = column_text(row, 9);
+                             entry.data_extra_json = column_text(row, 10);
                              store.pushers.push_back(std::move(entry));
                          }) &&
                load_rows(connection, "SELECT watermark FROM sync_stream_watermark",

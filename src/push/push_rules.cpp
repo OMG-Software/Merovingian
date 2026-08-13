@@ -231,6 +231,48 @@ namespace
         return false;
     }
 
+    // Literal-text word-boundary substring match, used for
+    // `contains_display_name` instead of glob_matches_word_boundary_substring.
+    // A display name is *data*, not a user-authored glob pattern: a display
+    // name of literally "*" or containing "?" must never be interpreted as a
+    // wildcard, or a user could force a highlight on every message (or any
+    // message containing a single arbitrary character) just by picking such a
+    // display name. `literal` is compared byte-for-byte (case-insensitively,
+    // matching glob_matches_word_boundary_substring's behaviour) against
+    // every word-boundary-delimited substring of `value`, with no glob
+    // semantics at all.
+    [[nodiscard]] auto contains_literal_word_boundary_substring(std::string_view value, std::string_view literal)
+        -> bool
+    {
+        if (literal.empty())
+        {
+            return false;
+        }
+        auto const lowered_value = ascii_lower(value);
+        auto const lowered_literal = ascii_lower(literal);
+        auto const length = lowered_value.size();
+
+        auto search_from = std::size_t{0U};
+        while (true)
+        {
+            auto const found = lowered_value.find(lowered_literal, search_from);
+            if (found == std::string::npos)
+            {
+                return false;
+            }
+            auto const end = found + lowered_literal.size();
+            auto const starts_at_boundary = found == 0U || !is_word_character(lowered_value[found - 1U]);
+            auto const ends_at_boundary = end == length || !is_word_character(lowered_value[end]);
+            if (starts_at_boundary && ends_at_boundary)
+            {
+                return true;
+            }
+            // Advance past this occurrence's start (not its end) so
+            // overlapping candidate substrings are not skipped.
+            search_from = found + 1U;
+        }
+    }
+
     // Parses the `is` parameter of a room_member_count condition: an
     // optional comparison prefix (==, <, >, <=, >=; default ==) followed by a
     // decimal integer. Returns nullopt for a malformed value so the caller
@@ -324,17 +366,17 @@ namespace
             {
                 return false;
             }
-            // The display name is matched the same way a content rule's glob
-            // pattern is: as a word-boundary-delimited substring, case
-            // insensitively. There is no globbing syntax in a display name,
-            // so escape none — the display name is the literal substring to
-            // find, which glob_matches_word_boundary_substring supports
-            // directly since it contains no '*'/'?' wildcard characters in
-            // the overwhelming common case. A display name that happens to
-            // contain '*' or '?' would be treated as a wildcard here; this
-            // is a known, narrow edge case left to the caller to pre-empt if
-            // it matters for their deployment.
-            return glob_matches_word_boundary_substring(*body, context.receiving_user_display_name);
+            // The display name is matched as a word-boundary-delimited
+            // substring, case insensitively — but as literal text, never as
+            // a glob pattern. A display name is data supplied by (or on
+            // behalf of) an arbitrary user, not an author-written pattern;
+            // treating '*'/'?' in it as wildcards would let a display name
+            // of "*" match every message in the room (or "?" match any
+            // message containing an arbitrary single character), forcing a
+            // highlight regardless of whether the message actually names
+            // that user. contains_literal_word_boundary_substring performs
+            // no glob interpretation at all.
+            return contains_literal_word_boundary_substring(*body, context.receiving_user_display_name);
         }
         case PushConditionKind::room_member_count:
             return room_member_count_matches(condition.is, context.room_member_count);
