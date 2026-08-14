@@ -7,7 +7,9 @@
 #include "merovingian/sync/sliding_sync.hpp"
 
 #include <cstdint>
+#include <string>
 #include <string_view>
+#include <unordered_set>
 #include <vector>
 
 namespace merovingian::sync
@@ -21,13 +23,18 @@ namespace merovingian::sync
 // `response_room_ids`      — union of all room IDs appearing in the rooms map of the current
 //                            response. Scopes receipts and typing when the extension request
 //                            does not name explicit rooms.
+// `ignored_senders`        — the requesting user's resolved m.ignored_user_list
+//                            (see trust_safety::resolve_ignored_users), resolved once by the
+//                            caller and reused here. Typing and receipt entries authored by an
+//                            ignored user are withheld from the receipts/typing extensions.
 //
 // `store` is mutable because the to_device extension drains delivered messages via
 // drain_to_device_messages, which removes them from the in-memory queue.
 [[nodiscard]] auto build_extensions(homeserver::HomeserverRuntime const& rt, std::string_view user,
                                     std::string_view device_id, SlidingSyncExtensionRequests const& ext_req,
                                     std::uint64_t since_sync_stream_id, std::uint64_t current_sync_stream_id,
-                                    database::PersistentStore& store, std::vector<std::string> const& response_room_ids)
+                                    database::PersistentStore& store, std::vector<std::string> const& response_room_ids,
+                                    std::unordered_set<std::string> const& ignored_senders = {})
     -> SlidingSyncExtensionResponses;
 
 } // namespace merovingian::sync

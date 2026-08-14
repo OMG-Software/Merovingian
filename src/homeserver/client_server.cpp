@@ -23,11 +23,13 @@
 #include "merovingian/crypto/random.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/events/event_signer.hpp"
+#include "merovingian/federation/event_query.hpp"
 #include "merovingian/federation/outbound_membership.hpp"
 #include "merovingian/federation/outbound_transaction.hpp"
 #include "merovingian/federation/security.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/client_server.hpp"
+#include "merovingian/homeserver/default_push_ruleset.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/homeserver/media_service.hpp"
@@ -49,6 +51,7 @@
 #include "merovingian/sync/stream_token.hpp"
 #include "merovingian/sync/sync_filter.hpp"
 #include "merovingian/sync/sync_notifier.hpp"
+#include "merovingian/trust_safety/ignore_list.hpp"
 #include "merovingian/trust_safety/policy_engine.hpp"
 
 #include <algorithm>
@@ -523,233 +526,10 @@ namespace
         return std::move(result.value);
     }
 
-    [[nodiscard]] auto push_action_set_tweak(std::string_view tweak) -> canonicaljson::Value
-    {
-        return json_obj({json_member("set_tweak", json_str(tweak))});
-    }
-
-    [[nodiscard]] auto push_action_set_tweak(std::string_view tweak, std::string_view value) -> canonicaljson::Value
-    {
-        return json_obj({
-            json_member("set_tweak", json_str(tweak)),
-            json_member("value", json_str(value)),
-        });
-    }
-
-    [[nodiscard]] auto push_action_set_tweak(std::string_view tweak, bool value) -> canonicaljson::Value
-    {
-        return json_obj({
-            json_member("set_tweak", json_str(tweak)),
-            json_member("value", json_bool(value)),
-        });
-    }
-
-    [[nodiscard]] auto push_condition_event_match(std::string_view key, std::string_view pattern)
-        -> canonicaljson::Value
-    {
-        return json_obj({
-            json_member("key", json_str(key)),
-            json_member("kind", json_str("event_match")),
-            json_member("pattern", json_str(pattern)),
-        });
-    }
-
-    [[nodiscard]] auto push_condition_event_property_is(std::string_view key, std::string_view value)
-        -> canonicaljson::Value
-    {
-        return json_obj({
-            json_member("key", json_str(key)),
-            json_member("kind", json_str("event_property_is")),
-            json_member("value", json_str(value)),
-        });
-    }
-
-    [[nodiscard]] auto push_condition_event_property_is(std::string_view key, bool value) -> canonicaljson::Value
-    {
-        return json_obj({
-            json_member("key", json_str(key)),
-            json_member("kind", json_str("event_property_is")),
-            json_member("value", json_bool(value)),
-        });
-    }
-
-    [[nodiscard]] auto push_condition_event_property_contains(std::string_view key, std::string_view value)
-        -> canonicaljson::Value
-    {
-        return json_obj({
-            json_member("key", json_str(key)),
-            json_member("kind", json_str("event_property_contains")),
-            json_member("value", json_str(value)),
-        });
-    }
-
-    [[nodiscard]] auto push_condition_room_member_count(std::string_view member_count) -> canonicaljson::Value
-    {
-        return json_obj({
-            json_member("is", json_str(member_count)),
-            json_member("kind", json_str("room_member_count")),
-        });
-    }
-
-    [[nodiscard]] auto push_condition_sender_notification_permission(std::string_view key) -> canonicaljson::Value
-    {
-        return json_obj({
-            json_member("key", json_str(key)),
-            json_member("kind", json_str("sender_notification_permission")),
-        });
-    }
-
-    // Spec: CS API v1.19 §m.rule.contains_display_name — condition kind that matches when
-    // the event body contains the receiving user's current display name (case-insensitive).
-    // No additional fields required beyond "kind".
-    [[nodiscard]] auto push_condition_contains_display_name() -> canonicaljson::Value
-    {
-        return json_obj({
-            json_member("kind", json_str("contains_display_name")),
-        });
-    }
-
-    [[nodiscard]] auto push_rule(std::string_view rule_id, bool enabled, canonicaljson::Array conditions,
-                                 canonicaljson::Array actions) -> canonicaljson::Value
-    {
-        return json_obj({
-            json_member("actions", json_arr(std::move(actions))),
-            json_member("conditions", json_arr(std::move(conditions))),
-            json_member("default", json_bool(true)),
-            json_member("enabled", json_bool(enabled)),
-            json_member("rule_id", json_str(rule_id)),
-        });
-    }
-
-    [[nodiscard]] auto default_push_ruleset(std::string_view user_id) -> canonicaljson::Object
-    {
-        auto override_rules = canonicaljson::Array{};
-        override_rules.push_back(push_rule(".m.rule.master", false, {}, {}));
-        override_rules.push_back(
-            push_rule(".m.rule.suppress_notices", true,
-                      canonicaljson::Array{push_condition_event_match("content.msgtype", "m.notice")}, {}));
-        override_rules.push_back(push_rule(".m.rule.invite_for_me", true,
-                                           canonicaljson::Array{
-                                               push_condition_event_match("type", "m.room.member"),
-                                               push_condition_event_match("content.membership", "invite"),
-                                               push_condition_event_match("state_key", user_id),
-                                           },
-                                           canonicaljson::Array{
-                                               json_str("notify"),
-                                               push_action_set_tweak("sound", std::string_view{"default"}),
-                                               push_action_set_tweak("highlight", false),
-                                           }));
-        override_rules.push_back(push_rule(".m.rule.member_event", true,
-                                           canonicaljson::Array{push_condition_event_match("type", "m.room.member")},
-                                           {}));
-        override_rules.push_back(push_rule(
-            ".m.rule.is_user_mention", true,
-            canonicaljson::Array{push_condition_event_property_contains("content.m\\.mentions.user_ids", user_id)},
-            canonicaljson::Array{
-                json_str("notify"),
-                push_action_set_tweak("sound", std::string_view{"default"}),
-                push_action_set_tweak("highlight"),
-            }));
-        override_rules.push_back(push_rule(".m.rule.is_room_mention", true,
-                                           canonicaljson::Array{
-                                               push_condition_event_property_is("content.m\\.mentions.room", true),
-                                               push_condition_sender_notification_permission("room"),
-                                           },
-                                           canonicaljson::Array{
-                                               json_str("notify"),
-                                               push_action_set_tweak("highlight"),
-                                           }));
-        override_rules.push_back(push_rule(".m.rule.tombstone", true,
-                                           canonicaljson::Array{
-                                               push_condition_event_match("type", "m.room.tombstone"),
-                                               push_condition_event_match("state_key", ""),
-                                           },
-                                           canonicaljson::Array{
-                                               json_str("notify"),
-                                               push_action_set_tweak("highlight"),
-                                           }));
-        override_rules.push_back(push_rule(".m.rule.reaction", true,
-                                           canonicaljson::Array{push_condition_event_match("type", "m.reaction")}, {}));
-        override_rules.push_back(push_rule(".m.rule.room.server_acl", true,
-                                           canonicaljson::Array{
-                                               push_condition_event_match("type", "m.room.server_acl"),
-                                               push_condition_event_match("state_key", ""),
-                                           },
-                                           {}));
-        override_rules.push_back(push_rule(".m.rule.suppress_edits", true,
-                                           canonicaljson::Array{push_condition_event_property_is(
-                                               "content.m\\.relates_to.rel_type", std::string_view{"m.replace"})},
-                                           {}));
-        // Spec: CS API v1.19 §.m.rule.contains_display_name — legacy rule for clients that do
-        // not use m.mentions; matches messages whose body contains the user's display name.
-        override_rules.push_back(push_rule(".m.rule.contains_display_name", true,
-                                           canonicaljson::Array{push_condition_contains_display_name()},
-                                           canonicaljson::Array{
-                                               json_str("notify"),
-                                               push_action_set_tweak("sound", std::string_view{"default"}),
-                                               push_action_set_tweak("highlight"),
-                                           }));
-        // Spec: CS API v1.19 §.m.rule.roomnotif — matches messages containing "@room" when
-        // the sender has permission to notify the whole room.
-        override_rules.push_back(push_rule(".m.rule.roomnotif", true,
-                                           canonicaljson::Array{
-                                               push_condition_event_match("content.body", "@room"),
-                                               push_condition_sender_notification_permission("room"),
-                                           },
-                                           canonicaljson::Array{
-                                               json_str("notify"),
-                                               push_action_set_tweak("highlight"),
-                                           }));
-
-        auto underride_rules = canonicaljson::Array{};
-        underride_rules.push_back(push_rule(".m.rule.call", true,
-                                            canonicaljson::Array{push_condition_event_match("type", "m.call.invite")},
-                                            canonicaljson::Array{
-                                                json_str("notify"),
-                                                push_action_set_tweak("sound", std::string_view{"ring"}),
-                                                push_action_set_tweak("highlight", false),
-                                            }));
-        underride_rules.push_back(push_rule(".m.rule.encrypted_room_one_to_one", true,
-                                            canonicaljson::Array{
-                                                push_condition_room_member_count("2"),
-                                                push_condition_event_match("type", "m.room.encrypted"),
-                                            },
-                                            canonicaljson::Array{
-                                                json_str("notify"),
-                                                push_action_set_tweak("sound", std::string_view{"default"}),
-                                                push_action_set_tweak("highlight", false),
-                                            }));
-        underride_rules.push_back(push_rule(".m.rule.room_one_to_one", true,
-                                            canonicaljson::Array{
-                                                push_condition_room_member_count("2"),
-                                                push_condition_event_match("type", "m.room.message"),
-                                            },
-                                            canonicaljson::Array{
-                                                json_str("notify"),
-                                                push_action_set_tweak("sound", std::string_view{"default"}),
-                                                push_action_set_tweak("highlight", false),
-                                            }));
-        underride_rules.push_back(push_rule(".m.rule.message", true,
-                                            canonicaljson::Array{push_condition_event_match("type", "m.room.message")},
-                                            canonicaljson::Array{
-                                                json_str("notify"),
-                                                push_action_set_tweak("highlight", false),
-                                            }));
-        underride_rules.push_back(push_rule(
-            ".m.rule.encrypted", true, canonicaljson::Array{push_condition_event_match("type", "m.room.encrypted")},
-            canonicaljson::Array{
-                json_str("notify"),
-                push_action_set_tweak("highlight", false),
-            }));
-
-        return canonicaljson::Object{
-            json_member("content", json_arr({})),
-            json_member("override", json_arr(std::move(override_rules))),
-            json_member("room", json_arr({})),
-            json_member("sender", json_arr({})),
-            json_member("underride", json_arr(std::move(underride_rules))),
-        };
-    }
+    // default_push_ruleset() and its helper condition/action/rule builders
+    // moved to homeserver/default_push_ruleset.{hpp,cpp} so room_service.cpp's
+    // push-delivery pipeline can build the exact same ruleset this endpoint
+    // serves (see that header's doc comment).
 
     [[nodiscard]] auto push_rule_array(canonicaljson::Object const& ruleset, std::string_view kind)
         -> canonicaljson::Array const*
@@ -891,6 +671,24 @@ namespace
         std::string app_id{};
         std::string pushkey{};
         std::optional<std::string> kind{}; // nullopt when the request body has kind:null (delete)
+        // Only populated (and only meaningful) when kind.has_value(); a kind:null
+        // delete request only needs app_id + pushkey.
+        std::string app_display_name{};
+        std::string device_display_name{};
+        std::string profile_tag{};
+        std::string lang{};
+        std::string data_url{}; // empty for kind "email"
+        std::string data_format{};
+        // Every OTHER member of the request's `data` object besides url/format,
+        // canonical-JSON-serialized (empty string = none). Mirrors
+        // PersistentPusher::data_extra_json — see its doc comment for why this
+        // must be forwarded to the gateway verbatim.
+        std::string data_extra_json{};
+        // Spec: "If true, the homeserver should add another pusher with the given
+        // pushkey and App ID in addition to any others with different user IDs.
+        // Otherwise, the homeserver must remove any other pushers with the same
+        // App ID and pushkey for different users." Default false.
+        bool append{false};
     };
 
     struct MatrixSafetyReportBody final
@@ -930,6 +728,12 @@ namespace
     };
 
     struct RoomEventPathParts final
+    {
+        std::string room_id{};
+        std::string event_id{};
+    };
+
+    struct RoomContextPathParts final
     {
         std::string room_id{};
         std::string event_id{};
@@ -1522,6 +1326,34 @@ namespace
             return nullptr;
         }
         return std::get_if<canonicaljson::Object>(&value->storage());
+    }
+
+    // Merges the custom `data` members persisted in a pusher's
+    // `data_extra_json` (every member of the registered `data` dictionary
+    // besides `url`/`format`, which already have dedicated columns/response
+    // fields) into a GET /pushers response `data` object. Silently skips a
+    // malformed/non-object value rather than failing the whole response —
+    // this only ever contains what parse_pusher_set_body itself serialized.
+    auto append_pusher_data_extra(canonicaljson::Object& data, std::string_view data_extra_json) -> void
+    {
+        if (data_extra_json.empty())
+        {
+            return;
+        }
+        auto const parsed = canonicaljson::parse_lossless(data_extra_json);
+        if (parsed.error != canonicaljson::ParseError::none)
+        {
+            return;
+        }
+        auto const* extra = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+        if (extra == nullptr)
+        {
+            return;
+        }
+        for (auto const& member : *extra)
+        {
+            data.push_back(member);
+        }
     }
 
     [[nodiscard]] auto parse_register_body(std::string_view body) -> std::optional<MatrixRegisterBody>
@@ -2282,6 +2114,7 @@ namespace
         {
             return std::nullopt;
         }
+        auto const append = append_value != nullptr && std::get<bool>(append_value->storage());
 
         auto const* kind_value = object_member(*object, "kind");
         if (kind_value == nullptr)
@@ -2297,7 +2130,10 @@ namespace
 
         if (kind_is_null)
         {
-            return MatrixPusherSetBody{std::string{*app_id}, std::string{*pushkey}, std::nullopt};
+            auto deletion = MatrixPusherSetBody{};
+            deletion.app_id = *app_id;
+            deletion.pushkey = *pushkey;
+            return deletion;
         }
 
         auto const* app_display_name = string_member(*object, "app_display_name");
@@ -2310,10 +2146,10 @@ namespace
             return std::nullopt;
         }
 
+        auto const* data_url = string_member(*data, "url");
         if (*kind_string == "http")
         {
-            auto const* url = string_member(*data, "url");
-            if (url == nullptr || !matrix_pusher_url_is_valid(*url))
+            if (data_url == nullptr || !matrix_pusher_url_is_valid(*data_url))
             {
                 return std::nullopt;
             }
@@ -2323,8 +2159,41 @@ namespace
             // Only "http" and "email" are defined by Matrix v1.19.
             return std::nullopt;
         }
+        auto const* data_format = string_member(*data, "format");
+        auto const* profile_tag = string_member(*object, "profile_tag");
 
-        return MatrixPusherSetBody{std::string{*app_id}, std::string{*pushkey}, std::string{*kind_string}};
+        // Capture every OTHER member of `data` besides url/format. Matrix
+        // v1.19 Push Gateway API requires the homeserver to forward the whole
+        // `data` dictionary minus `url` to the gateway on notify, not just
+        // `format` — see PersistentPusher::data_extra_json's doc comment.
+        // Serialized now (rather than carried as a live Object) so
+        // MatrixPusherSetBody stays trivially copyable like its sibling
+        // fields and matches the column PersistentPusher persists it into.
+        auto data_extra = canonicaljson::Object{};
+        for (auto const& member : *data)
+        {
+            if (member.key == "url" || member.key == "format")
+            {
+                continue;
+            }
+            data_extra.push_back(member);
+        }
+
+        auto result = MatrixPusherSetBody{};
+        result.app_id = *app_id;
+        result.pushkey = *pushkey;
+        result.kind = *kind_string;
+        result.app_display_name = *app_display_name;
+        result.device_display_name = *device_display_name;
+        result.profile_tag = profile_tag != nullptr ? *profile_tag : std::string{};
+        result.lang = *lang;
+        // data.url only applies to "http" pushers; PersistentPusher documents
+        // data_url as empty for "email".
+        result.data_url = (*kind_string == "http" && data_url != nullptr) ? *data_url : std::string{};
+        result.data_format = data_format != nullptr ? *data_format : std::string{};
+        result.data_extra_json = data_extra.empty() ? std::string{} : json_serialize(json_obj(std::move(data_extra)));
+        result.append = append;
+        return result;
     }
 
     [[nodiscard]] auto parse_safety_report_body(std::string_view body) -> std::optional<MatrixSafetyReportBody>
@@ -3202,7 +3071,9 @@ namespace
 
     [[nodiscard]] auto build_room_ephemeral_events_array(HomeserverRuntime const& runtime, std::string_view room_id,
                                                          std::uint64_t since_sync_stream_id,
-                                                         std::uint64_t& max_observed_stream_id) -> canonicaljson::Array
+                                                         std::uint64_t& max_observed_stream_id,
+                                                         std::unordered_set<std::string> const& ignored_senders = {})
+        -> canonicaljson::Array
     {
         auto events = canonicaljson::Array{};
 
@@ -3213,6 +3084,14 @@ namespace
             for (auto const& typing : runtime.typing_users)
             {
                 if (typing.room_id != room_id || !typing.typing)
+                {
+                    continue;
+                }
+                // Ignoring Users: typing is not a state event, so the same
+                // "no longer receive events sent by that user" client
+                // behaviour the spec describes applies — a typing indicator
+                // is exactly that kind of ephemeral, per-user activity.
+                if (trust_safety::is_delivery_suppressed(ignored_senders, typing.user_id, /*is_state_event=*/false))
                 {
                     continue;
                 }
@@ -3241,11 +3120,22 @@ namespace
             {
                 continue;
             }
-            receipt_index[receipt.event_id][receipt.receipt_type][receipt.user_id] = receipt.ts;
+            // The stream watermark always advances, suppressed or not, so a
+            // suppressed receipt is never re-considered "unseen" on the next
+            // poll. Only inclusion in the response is gated by the ignore
+            // list.
             if (receipt.stream_id > max_observed_stream_id)
             {
                 max_observed_stream_id = receipt.stream_id;
             }
+            // Ignoring Users: a read receipt is an event sent by its
+            // `user_id` (not a state event), so it is withheld the same way
+            // typing above is.
+            if (trust_safety::is_delivery_suppressed(ignored_senders, receipt.user_id, /*is_state_event=*/false))
+            {
+                continue;
+            }
+            receipt_index[receipt.event_id][receipt.receipt_type][receipt.user_id] = receipt.ts;
         }
         if (!receipt_index.empty())
         {
@@ -3531,6 +3421,12 @@ namespace
         auto join_members = canonicaljson::Object{};
         auto join_count = std::size_t{0U};
 
+        // Ignoring Users (spec: docs/matrix-v1.19-spec/client-server-api.md
+        // #ignoring-users, Server behaviour). Resolved once per request and
+        // reused for every room's timeline/ephemeral events and the invite
+        // list below — never re-read per event.
+        auto const ignored_senders = trust_safety::resolve_ignored_users(store, user);
+
         log_diagnostic("sync.request",
                        {
                            {"user",                    std::string{user},                                   false},
@@ -3577,6 +3473,17 @@ namespace
                     // until events expose their type. Passing an empty string
                     // for event_type makes `event_passes_filter` apply the
                     // sender rules without requiring a type match.
+                    continue;
+                }
+                // Ignoring Users: non-state events from an ignored sender are
+                // withheld from the timeline; state events are still sent
+                // (spec: "Servers must still send state events sent by
+                // ignored users to clients") so the room's visible state
+                // never looks different just because the viewer ignored the
+                // sender.
+                if (trust_safety::is_delivery_suppressed(ignored_senders, event.sender_user_id,
+                                                         trust_safety::event_json_is_state_event(event.json)))
+                {
                     continue;
                 }
                 matched.push_back(&event);
@@ -3627,7 +3534,7 @@ namespace
                 state_events = build_current_state_events_array(store, filter.room.state, room.room_id);
             }
             auto ephemeral_events = build_room_ephemeral_events_array(rt.homeserver, room.room_id, since_sync_stream_id,
-                                                                      max_observed_sync_stream_id);
+                                                                      max_observed_sync_stream_id, ignored_senders);
 
             // unread_notifications: counts are relative to the user's last
             // m.read/m.read.private receipt, not the sync position (#417,
@@ -3700,6 +3607,18 @@ namespace
             }
             if (membership.membership == "invite")
             {
+                // Ignoring Users: "Servers must not send room invites from
+                // ignored users to clients." An invite whose inviter cannot
+                // be resolved (no matching PersistentInvite row) is passed
+                // through unfiltered — fail safe, never drop a legitimate
+                // invite because of a lookup gap.
+                auto const invite_record = database::find_invite(store, membership.room_id, user);
+                if (invite_record.has_value() &&
+                    trust_safety::is_delivery_suppressed(ignored_senders, invite_record->sender_user_id,
+                                                         /*is_state_event=*/true, /*is_new_room_invite=*/true))
+                {
+                    continue;
+                }
                 if (invite_count < rt.limits.max_sync_rooms)
                 {
                     auto invite_state_events = build_invite_state_events_array(store, membership.room_id, user);
@@ -4021,6 +3940,12 @@ namespace
     {
         auto& store = rt.homeserver.database.persistent_store;
 
+        // Ignoring Users (spec: docs/matrix-v1.19-spec/client-server-api.md
+        // #ignoring-users, Server behaviour). Resolved once per request and
+        // threaded through to every room's timeline and the receipts/typing
+        // extensions below — never re-read per event.
+        auto const ignored_senders = trust_safety::resolve_ignored_users(store, user);
+
         auto const conn_key = std::string{user} + "/" + std::string{device_id} + "/" +
                               (ssreq.conn_id.has_value() ? *ssreq.conn_id : "__default__");
 
@@ -4284,7 +4209,7 @@ namespace
             auto const& lazy_already_sent =
                 lazy_sent_it != conn.lazy_members_sent.end() ? lazy_sent_it->second : empty_lazy_members_set;
             auto room = sync::build_room_response(rt.homeserver, room_id, user, sub, room_since, is_initial, store,
-                                                  lazy_already_sent);
+                                                  lazy_already_sent, ignored_senders);
             if (!room.lazy_members_included.empty())
             {
                 lazy_members_included_by_room[room_id] = room.lazy_members_included;
@@ -4315,7 +4240,7 @@ namespace
         {
             extension_responses =
                 sync::build_extensions(rt.homeserver, user, device_id, *ssreq.extensions, since_sync_stream_id,
-                                       store.next_sync_stream_id, store, response_room_ids);
+                                       store.next_sync_stream_id, store, response_room_ids, ignored_senders);
             ext_obj = sliding_sync_ext_to_value(*extension_responses);
         }
 
@@ -5958,6 +5883,27 @@ namespace
                                   core::percent_decode_path_component(event_id)};
     }
 
+    [[nodiscard]] auto room_context_path_parts(std::string_view target) -> std::optional<RoomContextPathParts>
+    {
+        auto constexpr prefix = std::string_view{"/_matrix/client/v3/rooms/"};
+        auto constexpr marker = std::string_view{"/context/"};
+        auto const path = target.substr(0U, target.find('?'));
+        auto const suffix = route_suffix(path, prefix);
+        auto const marker_pos = suffix.find(marker);
+        if (suffix.empty() || marker_pos == std::string_view::npos || marker_pos == 0U ||
+            marker_pos + marker.size() >= suffix.size())
+        {
+            return std::nullopt;
+        }
+        auto const event_id = suffix.substr(marker_pos + marker.size());
+        if (event_id.empty() || event_id.find('/') != std::string_view::npos)
+        {
+            return std::nullopt;
+        }
+        return RoomContextPathParts{core::percent_decode_path_component(suffix.substr(0U, marker_pos)),
+                                    core::percent_decode_path_component(event_id)};
+    }
+
     [[nodiscard]] auto room_relations_path_parts(std::string_view target) -> std::optional<RoomRelationsPathParts>
     {
         auto constexpr prefix = std::string_view{"/_matrix/client/v1/rooms/"};
@@ -6158,8 +6104,8 @@ namespace
         return parsed;
     }
 
-    [[nodiscard]] auto messages_json(ClientServerRuntime const& rt, std::string_view room_id, std::string_view target)
-        -> std::string
+    [[nodiscard]] auto messages_json(ClientServerRuntime const& rt, std::string_view room_id, std::string_view target,
+                                     std::string_view user_id) -> std::string
     {
         auto const& store = rt.homeserver.database.persistent_store;
         auto const dir = messages_query_value(target, "dir");
@@ -6170,13 +6116,25 @@ namespace
         {
             limit = static_cast<std::size_t>(std::min<std::uint64_t>(*parsed, std::uint64_t{100U}));
         }
+        // Ignoring Users (spec: docs/matrix-v1.19-spec/client-server-api.md
+        // #ignoring-users). Resolved once for this request. Events from an
+        // ignored sender are dropped from consideration entirely (as if they
+        // did not exist for pagination purposes) except state events, which
+        // the spec requires servers to keep sending.
+        auto const ignored_senders = trust_safety::resolve_ignored_users(store, user_id);
         auto entries = std::vector<database::PersistentEvent const*>{};
         for (auto const& event : store.events)
         {
-            if (event.room_id == room_id)
+            if (event.room_id != room_id)
             {
-                entries.push_back(&event);
+                continue;
             }
+            if (trust_safety::is_delivery_suppressed(ignored_senders, event.sender_user_id,
+                                                     trust_safety::event_json_is_state_event(event.json)))
+            {
+                continue;
+            }
+            entries.push_back(&event);
         }
         std::ranges::sort(entries, [](auto const* lhs, auto const* rhs) noexcept {
             return lhs->stream_ordering < rhs->stream_ordering;
@@ -6232,6 +6190,779 @@ namespace
             json_member("start", json_str(start_token)),
             json_member("end", json_str(end_token)),
             json_member("state", json_arr(std::move(state))),
+        }));
+    }
+
+    // Extracts the "type" field from a stored event's JSON, or an empty
+    // string when the JSON is malformed/not an object. Used to apply a
+    // RoomEventFilter's types/not_types predicates to PersistentEvent rows,
+    // which do not carry a parsed event type of their own.
+    [[nodiscard]] auto stored_event_type(database::PersistentEvent const& event) -> std::string
+    {
+        auto const parsed = canonicaljson::parse_lossless(event.json);
+        if (parsed.error != canonicaljson::ParseError::none)
+        {
+            return {};
+        }
+        auto const* obj = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+        if (obj == nullptr)
+        {
+            return {};
+        }
+        auto const* type = string_member(*obj, "type");
+        return type == nullptr ? std::string{} : *type;
+    }
+
+    // Builds a ClientEvent array from an explicit list of state event IDs
+    // (e.g. from federation::resolve_state_event_ids_at), applying the same
+    // RoomEventFilter type/sender predicate build_current_state_events_array
+    // applies to the room's current state. Unknown event IDs are skipped.
+    [[nodiscard]] auto build_state_events_array_for_ids(database::PersistentStore const& store,
+                                                        sync::EventTypeFilter const& filter,
+                                                        std::vector<std::string> const& state_event_ids)
+        -> canonicaljson::Array
+    {
+        auto state_events = canonicaljson::Array{};
+        for (auto const& event_id : state_event_ids)
+        {
+            auto const event = std::ranges::find_if(store.events, [&](database::PersistentEvent const& candidate) {
+                return candidate.event_id == event_id;
+            });
+            if (event == store.events.end() ||
+                !sync::event_passes_filter(filter, stored_event_type(*event), event->sender_user_id))
+            {
+                continue;
+            }
+            state_events.push_back(client_event_with_id(store, *event));
+        }
+        return state_events;
+    }
+
+    // Builds the GET /rooms/{roomId}/context/{eventId} response body.
+    // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3roomsroomidcontexteventid
+    //
+    // `target` is a room event already confirmed to belong to `room_id`; the
+    // caller has also already applied the membership gate. `filter` is a
+    // parsed RoomEventFilter (see sync::parse_room_event_filter_argument) —
+    // it is applied to events_before/events_after/state but, per spec, never
+    // to `event` itself. `limit` is the already-clamped total cap shared
+    // between events_before and events_after.
+    //
+    // `start`/`end` reuse the plain-stream-ordering token format GET
+    // /messages produces (see messages_json above) so a client can continue
+    // paginating with GET /messages?from=<start|end>&dir=<b|f>.
+    [[nodiscard]] auto room_context_json(ClientServerRuntime const& rt, std::string_view room_id,
+                                         database::PersistentEvent const& target, sync::RoomFilter const& filter,
+                                         std::size_t limit, std::string_view user_id) -> std::string
+    {
+        auto const& store = rt.homeserver.database.persistent_store;
+
+        // Ignoring Users: resolved once for this request and applied only to
+        // events_before/events_after below — never to `target` itself. The
+        // caller asked for context around this specific event_id (e.g. a
+        // permalink); returning something other than the event they named
+        // would be a worse outcome than showing one message from an ignored
+        // sender they explicitly navigated to.
+        auto const ignored_senders = trust_safety::resolve_ignored_users(store, user_id);
+
+        auto entries = std::vector<database::PersistentEvent const*>{};
+        for (auto const& event : store.events)
+        {
+            if (event.room_id == room_id)
+            {
+                entries.push_back(&event);
+            }
+        }
+        std::ranges::sort(entries, [](auto const* lhs, auto const* rhs) noexcept {
+            return lhs->stream_ordering < rhs->stream_ordering;
+        });
+        auto const target_it = std::ranges::find_if(entries, [&](database::PersistentEvent const* candidate) {
+            return candidate->event_id == target.event_id;
+        });
+        auto const target_index = static_cast<std::size_t>(target_it - entries.begin());
+
+        // RoomEventFilter.rooms/not_rooms gate the whole response: this
+        // endpoint is inherently single-room, so a room list that excludes
+        // `room_id` empties events_before/events_after/state (but `event`
+        // itself is still returned — spec: the filter is not applied to it).
+        auto const room_allowed = sync::room_passes_filter(filter, room_id);
+
+        auto const before_limit = limit / 2U;
+        auto const after_limit = limit - before_limit;
+
+        auto events_before = canonicaljson::Array{};
+        auto start_token = std::to_string(target.stream_ordering);
+        if (room_allowed && target_index > 0U)
+        {
+            for (auto i = target_index; i > 0U && events_before.size() < before_limit; --i)
+            {
+                auto const* candidate = entries[i - 1U];
+                if (!sync::event_passes_filter(filter.timeline, stored_event_type(*candidate),
+                                               candidate->sender_user_id))
+                {
+                    continue;
+                }
+                if (trust_safety::is_delivery_suppressed(ignored_senders, candidate->sender_user_id,
+                                                         trust_safety::event_json_is_state_event(candidate->json)))
+                {
+                    continue;
+                }
+                events_before.push_back(client_event_with_id(store, *candidate));
+                start_token = std::to_string(candidate->stream_ordering);
+            }
+        }
+
+        auto events_after = canonicaljson::Array{};
+        auto end_token = std::to_string(target.stream_ordering);
+        // The event_id of the last event actually placed in events_after, or
+        // `target` itself when events_after ends up empty (room not allowed by
+        // the filter, no later events, or all later events filtered/ignored
+        // out). This is "the last event returned" the spec's `state` field is
+        // defined relative to -- see below.
+        auto last_returned_event_id = target.event_id;
+        if (room_allowed)
+        {
+            for (auto i = target_index + 1U; i < entries.size() && events_after.size() < after_limit; ++i)
+            {
+                auto const* candidate = entries[i];
+                if (!sync::event_passes_filter(filter.timeline, stored_event_type(*candidate),
+                                               candidate->sender_user_id))
+                {
+                    continue;
+                }
+                if (trust_safety::is_delivery_suppressed(ignored_senders, candidate->sender_user_id,
+                                                         trust_safety::event_json_is_state_event(candidate->json)))
+                {
+                    continue;
+                }
+                events_after.push_back(client_event_with_id(store, *candidate));
+                end_token = std::to_string(candidate->stream_ordering);
+                last_returned_event_id = candidate->event_id;
+            }
+        }
+
+        // Spec: "state" is "The state of the room at the last event returned"
+        // -- not the room's current state, which would be temporally wrong
+        // once anything paginated past has changed room state (e.g. the name
+        // or a member's membership) since. Reconstructed via the same
+        // event-DAG walk the federation /state and /state_ids endpoints use
+        // (federation::resolve_state_event_ids_at), pinned to
+        // `last_returned_event_id` rather than left at "current".
+        auto state = room_allowed ? build_state_events_array_for_ids(
+                                        store, filter.timeline,
+                                        federation::resolve_state_event_ids_at(store, room_id, last_returned_event_id))
+                                  : canonicaljson::Array{};
+
+        return json_serialize(json_obj({
+            json_member("start", json_str(start_token)),
+            json_member("events_before", json_arr(std::move(events_before))),
+            json_member("event", client_event_with_id(store, target)),
+            json_member("events_after", json_arr(std::move(events_after))),
+            json_member("end", json_str(end_token)),
+            json_member("state", json_arr(std::move(state))),
+        }));
+    }
+
+    // ── POST /_matrix/client/v3/search ──────────────────────────────────────
+    // Spec: Matrix CS API v1.19 §Server Side Search
+    // URL: ../../docs/matrix-v1.19-spec/client-server-api.md#server-side-search
+    //
+    // Searches `content.body` (m.room.message), `content.name` (m.room.name),
+    // and `content.topic` (m.room.topic) across rooms the caller is currently
+    // joined to. Encrypted rooms are never searched (spec: "The search will
+    // not include rooms that are end to end encrypted"). Matching is a
+    // case-insensitive substring test, not stemmed/tokenised full text search
+    // -- see docs/todos/capability-gaps.md for that and the other spec
+    // corners deliberately left out (rooms the caller has left; the MSC3765
+    // `content['m.topic']` extensible-topic representation).
+
+    // Page-size and event-context bounds. `kSearchMaxPageLimit` is smaller
+    // than /messages'/context's 100-event ceiling because each result also
+    // pays for its own event-context scan (see build_search_event_context),
+    // so the worst case per request is roughly
+    // kSearchMaxPageLimit * (kSearchMaxEventContextLimit * 2) context events
+    // on top of the `max_search_events_scanned` matching budget.
+    constexpr std::size_t kSearchDefaultPageLimit = 10U;
+    constexpr std::size_t kSearchMaxPageLimit = 25U;
+    constexpr std::size_t kSearchMaxEventContextLimit = 50U;
+
+    struct SearchMatch final
+    {
+        database::PersistentEvent const* event{nullptr};
+        double rank{0.0};
+    };
+
+    // Counts non-overlapping occurrences of `needle` in `haystack` (both
+    // already lower-cased by the caller). Used both to decide whether an
+    // event matches at all and as its `rank` -- more hits of the search term
+    // rank higher, a simple monotonic proxy for relevance given this is a
+    // substring scan rather than a real text index.
+    [[nodiscard]] auto count_occurrences(std::string_view haystack, std::string_view needle) noexcept -> std::size_t
+    {
+        if (needle.empty())
+        {
+            return 0U;
+        }
+        auto count = std::size_t{0U};
+        auto pos = std::size_t{0U};
+        while ((pos = haystack.find(needle, pos)) != std::string_view::npos)
+        {
+            ++count;
+            pos += needle.size();
+        }
+        return count;
+    }
+
+    // Extracts the searchable texts for one event, filtered to `keys` when
+    // the caller supplied a non-empty subset (spec: "keys ... Defaults to
+    // all"). Only the three spec-listed keys are considered.
+    [[nodiscard]] auto search_texts_for_event(std::string_view event_type, canonicaljson::Object const& content,
+                                              std::vector<std::string> const& keys) -> std::vector<std::string const*>
+    {
+        auto const wanted = [&](std::string_view key) {
+            return keys.empty() || std::ranges::find(keys, key) != keys.end();
+        };
+        auto out = std::vector<std::string const*>{};
+        if (event_type == "m.room.message" && wanted("content.body"))
+        {
+            if (auto const* body = string_member(content, "body"); body != nullptr)
+            {
+                out.push_back(body);
+            }
+        }
+        else if (event_type == "m.room.name" && wanted("content.name"))
+        {
+            if (auto const* name = string_member(content, "name"); name != nullptr)
+            {
+                out.push_back(name);
+            }
+        }
+        else if (event_type == "m.room.topic" && wanted("content.topic"))
+        {
+            if (auto const* topic = string_member(content, "topic"); topic != nullptr)
+            {
+                out.push_back(topic);
+            }
+        }
+        return out;
+    }
+
+    // Returns the event's rank (sum of case-insensitive `term_lower`
+    // occurrences across its searchable, key-filtered text) or nullopt when
+    // it does not match at all.
+    [[nodiscard]] auto search_event_rank(std::string_view event_type, canonicaljson::Object const& content,
+                                         std::vector<std::string> const& keys, std::string_view term_lower)
+        -> std::optional<double>
+    {
+        auto total = std::size_t{0U};
+        for (auto const* text : search_texts_for_event(event_type, content, keys))
+        {
+            total += count_occurrences(to_lower(*text), term_lower);
+        }
+        return total > 0U ? std::optional<double>{static_cast<double>(total)} : std::nullopt;
+    }
+
+    [[nodiscard]] auto room_is_encrypted(database::PersistentStore const& store, StateIndex const& index,
+                                         std::string_view room_id) -> bool
+    {
+        return room_state_string(store, index, room_id, "m.room.encryption", "algorithm").has_value();
+    }
+
+    struct SearchRequest final
+    {
+        std::string search_term{};
+        std::vector<std::string> keys{};
+        bool order_recent{false}; // false == "rank", the spec default
+        sync::RoomFilter filter{};
+        std::optional<bool> contains_url{};
+        std::size_t before_limit{5U};
+        std::size_t after_limit{5U};
+        bool include_profile{false};
+        bool include_state{false};
+        std::vector<std::string> group_by{}; // "room_id" and/or "sender"
+        std::size_t page_limit{kSearchDefaultPageLimit};
+    };
+
+    // Parses `search_categories.room_events` into a SearchRequest. Returns
+    // nullopt when the shape is invalid JSON for a known sub-field (caller
+    // responds 400 M_BAD_JSON) -- distinct from an empty/missing
+    // `search_term`, which the caller checks separately so it can return the
+    // more specific 400 M_MISSING_PARAM.
+    [[nodiscard]] auto parse_search_request(canonicaljson::Object const& room_events) -> std::optional<SearchRequest>
+    {
+        auto out = SearchRequest{};
+        if (auto const* term = string_member(room_events, "search_term"); term != nullptr)
+        {
+            out.search_term = *term;
+        }
+        out.keys = string_array_member(room_events, "keys");
+        if (auto const* order = string_member(room_events, "order_by"); order != nullptr && *order == "recent")
+        {
+            out.order_recent = true;
+        }
+        if (auto const* filter_val = object_member(room_events, "filter"); filter_val != nullptr)
+        {
+            auto const* filter_obj = std::get_if<canonicaljson::Object>(&filter_val->storage());
+            if (filter_obj == nullptr)
+            {
+                return std::nullopt;
+            }
+            // Reuse the RoomEventFilter parser GET /messages and GET /context
+            // already share rather than a second hand-rolled parser: search's
+            // `filter` field is spec'd as the same Filter/RoomEventFilter
+            // shape, just embedded in a JSON body instead of a query string.
+            auto const serialized = json_serialize(canonicaljson::Value{*filter_obj});
+            auto const parsed = sync::parse_room_event_filter_argument(serialized);
+            if (!parsed.has_value())
+            {
+                return std::nullopt;
+            }
+            out.filter = *parsed;
+            if (auto const* cu = boolean_member(*filter_obj, "contains_url"); cu != nullptr)
+            {
+                out.contains_url = *cu;
+            }
+            if (out.filter.timeline.limit > 0U)
+            {
+                out.page_limit = std::min(out.filter.timeline.limit, kSearchMaxPageLimit);
+            }
+        }
+        if (auto const* ec = object_member(room_events, "event_context"); ec != nullptr)
+        {
+            auto const* ec_obj = std::get_if<canonicaljson::Object>(&ec->storage());
+            if (ec_obj == nullptr)
+            {
+                return std::nullopt;
+            }
+            if (auto const* bl = integer_member(*ec_obj, "before_limit"); bl != nullptr && *bl >= 0)
+            {
+                out.before_limit = std::min<std::size_t>(static_cast<std::size_t>(*bl), kSearchMaxEventContextLimit);
+            }
+            if (auto const* al = integer_member(*ec_obj, "after_limit"); al != nullptr && *al >= 0)
+            {
+                out.after_limit = std::min<std::size_t>(static_cast<std::size_t>(*al), kSearchMaxEventContextLimit);
+            }
+            if (auto const* ip = boolean_member(*ec_obj, "include_profile"); ip != nullptr)
+            {
+                out.include_profile = *ip;
+            }
+        }
+        if (auto const* is = boolean_member(room_events, "include_state"); is != nullptr)
+        {
+            out.include_state = *is;
+        }
+        if (auto const* groupings = object_member(room_events, "groupings"); groupings != nullptr)
+        {
+            auto const* g_obj = std::get_if<canonicaljson::Object>(&groupings->storage());
+            if (g_obj == nullptr)
+            {
+                return std::nullopt;
+            }
+            if (auto const* group_by = object_member(*g_obj, "group_by"); group_by != nullptr)
+            {
+                auto const* arr = std::get_if<canonicaljson::Array>(&group_by->storage());
+                if (arr == nullptr)
+                {
+                    return std::nullopt;
+                }
+                for (auto const& entry : *arr)
+                {
+                    auto const* entry_obj = std::get_if<canonicaljson::Object>(&entry.storage());
+                    auto const* key = entry_obj != nullptr ? string_member(*entry_obj, "key") : nullptr;
+                    if (key != nullptr && (*key == "room_id" || *key == "sender") &&
+                        std::ranges::find(out.group_by, *key) == out.group_by.end())
+                    {
+                        out.group_by.push_back(*key);
+                    }
+                }
+            }
+        }
+        return out;
+    }
+
+    // Builds the "context" object for one search result: events_before/after
+    // (bounded by request.before_limit/after_limit, filtered the same way
+    // GET /context filters events_before/events_after -- the RoomEventFilter
+    // type/sender predicates and the ignore list; the matched event itself is
+    // never subject to either), optionally per-sender profile info (in
+    // practice each sender's *current* profile, not a point-in-time
+    // snapshot -- see capability-gaps.md), and start/end pagination tokens in
+    // the same plain stream-ordering format /messages produces.
+    [[nodiscard]] auto build_search_event_context(ClientServerRuntime const& rt,
+                                                  database::PersistentEvent const& target, SearchRequest const& request,
+                                                  std::unordered_set<std::string> const& ignored_senders)
+        -> canonicaljson::Value
+    {
+        auto const& store = rt.homeserver.database.persistent_store;
+        auto entries = std::vector<database::PersistentEvent const*>{};
+        for (auto const& event : store.events)
+        {
+            if (event.room_id == target.room_id)
+            {
+                entries.push_back(&event);
+            }
+        }
+        std::ranges::sort(entries, [](auto const* lhs, auto const* rhs) noexcept {
+            return lhs->stream_ordering < rhs->stream_ordering;
+        });
+        auto const target_it = std::ranges::find_if(entries, [&](database::PersistentEvent const* candidate) {
+            return candidate->event_id == target.event_id;
+        });
+        auto const target_index = static_cast<std::size_t>(target_it - entries.begin());
+
+        auto events_before = canonicaljson::Array{};
+        auto start_token = std::to_string(target.stream_ordering);
+        auto senders_in_context = std::unordered_set<std::string>{};
+        for (auto i = target_index; i > 0U && events_before.size() < request.before_limit; --i)
+        {
+            auto const* candidate = entries[i - 1U];
+            if (!sync::event_passes_filter(request.filter.timeline, stored_event_type(*candidate),
+                                           candidate->sender_user_id))
+            {
+                continue;
+            }
+            if (trust_safety::is_delivery_suppressed(ignored_senders, candidate->sender_user_id,
+                                                     trust_safety::event_json_is_state_event(candidate->json)))
+            {
+                continue;
+            }
+            events_before.push_back(client_event_with_id(store, *candidate));
+            senders_in_context.insert(candidate->sender_user_id);
+            start_token = std::to_string(candidate->stream_ordering);
+        }
+
+        auto events_after = canonicaljson::Array{};
+        auto end_token = std::to_string(target.stream_ordering);
+        for (auto i = target_index + 1U; i < entries.size() && events_after.size() < request.after_limit; ++i)
+        {
+            auto const* candidate = entries[i];
+            if (!sync::event_passes_filter(request.filter.timeline, stored_event_type(*candidate),
+                                           candidate->sender_user_id))
+            {
+                continue;
+            }
+            if (trust_safety::is_delivery_suppressed(ignored_senders, candidate->sender_user_id,
+                                                     trust_safety::event_json_is_state_event(candidate->json)))
+            {
+                continue;
+            }
+            events_after.push_back(client_event_with_id(store, *candidate));
+            senders_in_context.insert(candidate->sender_user_id);
+            end_token = std::to_string(candidate->stream_ordering);
+        }
+
+        auto members = canonicaljson::Object{};
+        members.push_back(json_member("start", json_str(start_token)));
+        members.push_back(json_member("events_before", json_arr(std::move(events_before))));
+        members.push_back(json_member("events_after", json_arr(std::move(events_after))));
+        members.push_back(json_member("end", json_str(end_token)));
+        if (request.include_profile)
+        {
+            auto profile_info = canonicaljson::Object{};
+            for (auto const& sender : senders_in_context)
+            {
+                if (auto const profile = database::find_profile(store, sender); profile.has_value())
+                {
+                    profile_info.push_back(
+                        json_member(sender, json_obj({
+                                                json_member("avatar_url", json_str(profile->avatar_url)),
+                                                json_member("displayname", json_str(profile->displayname)),
+                                            })));
+                }
+            }
+            members.push_back(json_member("profile_info", json_obj(std::move(profile_info))));
+        }
+        return json_obj(std::move(members));
+    }
+
+    // Builds the 200 response body for POST /search. `user_id` has already
+    // been authenticated by the caller; `resume_before` is the parsed
+    // `next_batch` query parameter (a stream_ordering boundary -- resume
+    // strictly before it), or nullopt for the first page.
+    //
+    // Bounding (see ClientApiLimits::max_search_events_scanned): candidate
+    // events -- the caller's joined, filter-allowed, unencrypted rooms -- are
+    // gathered and sorted newest-first once per request. That gather is
+    // O(k log k) where k is the caller's own visible event count: the same
+    // scope /messages already reads per room, just summed across every
+    // joined room, which is exactly the spec's defined search scope, and
+    // uses only cheap field comparisons (no JSON parsing). From the resume
+    // point, at most `max_search_events_scanned` candidates are JSON-parsed
+    // and text-matched per request -- the genuinely expensive step -- and the
+    // scan also stops early once a full page of matches has been collected.
+    // Matches beyond either limit are left for a later page via `next_batch`.
+    [[nodiscard]] auto search_room_events_json(ClientServerRuntime const& rt, std::string_view user_id,
+                                               SearchRequest const& request, std::optional<std::uint64_t> resume_before)
+        -> std::string
+    {
+        auto const& store = rt.homeserver.database.persistent_store;
+
+        auto joined_rooms = std::unordered_set<std::string>{};
+        for (auto const& membership : store.memberships)
+        {
+            if (membership.user_id == user_id && membership.membership == "join")
+            {
+                joined_rooms.insert(membership.room_id);
+            }
+        }
+
+        auto const state_index = build_state_index(store);
+        auto encrypted_rooms_cache = std::unordered_map<std::string, bool>{};
+        auto const room_encrypted = [&](std::string const& room_id) -> bool {
+            auto const cached = encrypted_rooms_cache.find(room_id);
+            if (cached != encrypted_rooms_cache.end())
+            {
+                return cached->second;
+            }
+            auto const encrypted = room_is_encrypted(store, state_index, room_id);
+            encrypted_rooms_cache.emplace(room_id, encrypted);
+            return encrypted;
+        };
+
+        // Ignoring Users: resolved once for the whole request, not per event
+        // (trust_safety/ignore_list.hpp's documented contract).
+        auto const ignored_senders = trust_safety::resolve_ignored_users(store, user_id);
+
+        auto candidates = std::vector<database::PersistentEvent const*>{};
+        for (auto const& event : store.events)
+        {
+            // Access control: never a room the caller is not currently joined
+            // to -- see the capability-gaps.md note on why this is join-only
+            // rather than the spec's full "including rooms you have left"
+            // scope. This is the single gate standing between this endpoint
+            // and a server-wide event disclosure, since unlike /messages the
+            // scan is not otherwise bounded to one room by the request path.
+            if (!joined_rooms.contains(event.room_id))
+            {
+                continue;
+            }
+            if (!sync::room_passes_filter(request.filter, event.room_id))
+            {
+                continue;
+            }
+            if (room_encrypted(event.room_id))
+            {
+                continue;
+            }
+            candidates.push_back(&event);
+        }
+        std::ranges::sort(candidates, [](auto const* lhs, auto const* rhs) noexcept {
+            return lhs->stream_ordering > rhs->stream_ordering; // newest first
+        });
+
+        auto const term_lower = to_lower(request.search_term);
+
+        auto start_index = std::size_t{0U};
+        if (resume_before.has_value())
+        {
+            while (start_index < candidates.size() && candidates[start_index]->stream_ordering >= *resume_before)
+            {
+                ++start_index;
+            }
+        }
+
+        auto matches = std::vector<SearchMatch>{};
+        auto examined = std::size_t{0U};
+        auto index = start_index;
+        auto last_examined_ordering = std::optional<std::uint64_t>{};
+        for (; index < candidates.size(); ++index)
+        {
+            if (matches.size() >= request.page_limit || examined >= rt.limits.max_search_events_scanned)
+            {
+                break;
+            }
+            auto const* candidate = candidates[index];
+            ++examined;
+            last_examined_ordering = candidate->stream_ordering;
+
+            auto const parsed = canonicaljson::parse_lossless(candidate->json);
+            auto const* event_obj = parsed.error == canonicaljson::ParseError::none
+                                        ? std::get_if<canonicaljson::Object>(&parsed.value.storage())
+                                        : nullptr;
+            if (event_obj == nullptr)
+            {
+                continue;
+            }
+            auto const* type = string_member(*event_obj, "type");
+            if (type == nullptr || (*type != "m.room.message" && *type != "m.room.name" && *type != "m.room.topic"))
+            {
+                continue;
+            }
+            // RoomEventFilter types/not_types/senders/not_senders -- silently
+            // ignoring this would return matches the caller explicitly
+            // excluded.
+            if (!sync::event_passes_filter(request.filter.timeline, *type, candidate->sender_user_id))
+            {
+                continue;
+            }
+            if (trust_safety::is_delivery_suppressed(ignored_senders, candidate->sender_user_id,
+                                                     trust_safety::event_json_is_state_event(candidate->json)))
+            {
+                continue;
+            }
+            auto const* content_val = object_member(*event_obj, "content");
+            auto const* content_obj =
+                content_val != nullptr ? std::get_if<canonicaljson::Object>(&content_val->storage()) : nullptr;
+            if (content_obj == nullptr)
+            {
+                continue;
+            }
+            if (request.contains_url.has_value())
+            {
+                auto const has_url = string_member(*content_obj, "url") != nullptr;
+                if (has_url != *request.contains_url)
+                {
+                    continue;
+                }
+            }
+            auto const rank = search_event_rank(*type, *content_obj, request.keys, term_lower);
+            if (!rank.has_value())
+            {
+                continue;
+            }
+            matches.push_back(SearchMatch{candidate, *rank});
+        }
+
+        auto const more_remaining = index < candidates.size();
+
+        if (request.order_recent)
+        {
+            // Traversal order is already newest-first stream_ordering, i.e.
+            // exactly "recent" order; the explicit sort here is defensive
+            // documentation, not a behaviour change.
+            std::ranges::stable_sort(matches, [](SearchMatch const& lhs, SearchMatch const& rhs) noexcept {
+                return lhs.event->stream_ordering > rhs.event->stream_ordering;
+            });
+        }
+        else
+        {
+            // Default order: "rank" -- highest rank first, ties broken by
+            // recency for determinism. Rank ordering is only accurate within
+            // this request's examined window (see the function comment
+            // above), not a global top-K across the caller's entire matching
+            // history -- a documented limitation of the bounded scan.
+            std::ranges::stable_sort(matches, [](SearchMatch const& lhs, SearchMatch const& rhs) noexcept {
+                if (lhs.rank != rhs.rank)
+                {
+                    return lhs.rank > rhs.rank;
+                }
+                return lhs.event->stream_ordering > rhs.event->stream_ordering;
+            });
+        }
+
+        // Highlights: whitespace-tokenised, lower-cased, de-duplicated words
+        // from the search term (spec: "useful for stemming which may change
+        // the query terms" -- no stemming is performed; see
+        // capability-gaps.md).
+        auto highlights = canonicaljson::Array{};
+        {
+            auto seen = std::unordered_set<std::string>{};
+            auto word = std::string{};
+            auto const flush = [&]() {
+                if (!word.empty() && seen.insert(word).second)
+                {
+                    highlights.push_back(json_str(word));
+                }
+                word.clear();
+            };
+            for (auto const ch : term_lower)
+            {
+                if (ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r')
+                {
+                    flush();
+                }
+                else
+                {
+                    word.push_back(ch);
+                }
+            }
+            flush();
+        }
+
+        auto results = canonicaljson::Array{};
+        auto rooms_in_page = std::vector<std::string>{};
+        auto by_room = std::unordered_map<std::string, std::vector<std::string>>{};   // room_id -> event_ids
+        auto by_sender = std::unordered_map<std::string, std::vector<std::string>>{}; // sender -> event_ids
+        for (auto const& match : matches)
+        {
+            auto const& event = *match.event;
+            if (std::ranges::find(rooms_in_page, event.room_id) == rooms_in_page.end())
+            {
+                rooms_in_page.push_back(event.room_id);
+            }
+            by_room[event.room_id].push_back(event.event_id);
+            by_sender[event.sender_user_id].push_back(event.event_id);
+
+            auto context = build_search_event_context(rt, event, request, ignored_senders);
+            results.push_back(json_obj({
+                json_member("rank", canonicaljson::Value{match.rank}),
+                json_member("result", client_event_with_id(store, event)),
+                json_member("context", std::move(context)),
+            }));
+        }
+
+        auto response = canonicaljson::Object{};
+        response.push_back(json_member("count", json_int(static_cast<std::int64_t>(matches.size()))));
+
+        if (!request.group_by.empty())
+        {
+            auto groups_by_key = canonicaljson::Object{};
+            for (auto const& group_key : request.group_by)
+            {
+                auto const& source = group_key == "room_id" ? by_room : by_sender;
+                auto group_ids = canonicaljson::Object{};
+                auto order = std::int64_t{0};
+                // First-appearance (== page) order, not hash-map iteration
+                // order, so `order` is deterministic.
+                auto seen_group_ids = std::vector<std::string>{};
+                for (auto const& match : matches)
+                {
+                    auto const& group_id = group_key == "room_id" ? match.event->room_id : match.event->sender_user_id;
+                    if (std::ranges::find(seen_group_ids, group_id) != seen_group_ids.end())
+                    {
+                        continue;
+                    }
+                    seen_group_ids.push_back(group_id);
+                    auto event_ids = canonicaljson::Array{};
+                    for (auto const& id : source.at(group_id))
+                    {
+                        event_ids.push_back(json_str(id));
+                    }
+                    group_ids.push_back(
+                        json_member(group_id, json_obj({
+                                                  json_member("order", json_int(order)),
+                                                  json_member("results", json_arr(std::move(event_ids))),
+                                              })));
+                    ++order;
+                }
+                groups_by_key.push_back(json_member(group_key, json_obj(std::move(group_ids))));
+            }
+            response.push_back(json_member("groups", json_obj(std::move(groups_by_key))));
+        }
+
+        response.push_back(json_member("highlights", json_arr(std::move(highlights))));
+        if (more_remaining && last_examined_ordering.has_value())
+        {
+            // Spec: "If this field is absent, there are no more results."
+            response.push_back(json_member("next_batch", json_str(std::to_string(*last_examined_ordering))));
+        }
+        response.push_back(json_member("results", json_arr(std::move(results))));
+
+        if (request.include_state)
+        {
+            auto state = canonicaljson::Object{};
+            for (auto const& room_id : rooms_in_page)
+            {
+                state.push_back(json_member(
+                    room_id, json_arr(build_current_state_events_array(store, sync::EventTypeFilter{}, room_id))));
+            }
+            response.push_back(json_member("state", json_obj(std::move(state))));
+        }
+
+        return json_serialize(json_obj({
+            json_member("search_categories", json_obj({
+                                                 json_member("room_events", json_obj(std::move(response))),
+                                             })),
         }));
     }
 
@@ -8983,25 +9714,230 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             req, rt, 200U, json_serialize(json_obj({json_member("id_server_unbind_result", json_str(local_result))})));
     }
     // Spec: GET /pushers returns the push notification pushers for the
-    // authenticated user. Merovingian does not yet support push
-    // subscriptions, so return the spec-required empty list so Element's
-    // settings UI does not show a spurious error.
+    // authenticated user (Matrix v1.19 CS API §push-notifications).
     if (req.method == "GET" && req.target == "/_matrix/client/v3/pushers")
     {
-        return dispatch_resp(req, rt, 200U, R"({"pushers":[]})");
+        auto const pushers = database::list_pushers_for_user(rt.homeserver.database.persistent_store, *user);
+        auto pusher_array = canonicaljson::Array{};
+        for (auto const& pusher : pushers)
+        {
+            auto data = canonicaljson::Object{};
+            if (!pusher.data_format.empty())
+            {
+                data.push_back(json_member("format", json_str(pusher.data_format)));
+            }
+            if (!pusher.data_url.empty())
+            {
+                data.push_back(json_member("url", json_str(pusher.data_url)));
+            }
+            append_pusher_data_extra(data, pusher.data_extra_json);
+            pusher_array.push_back(json_obj({
+                json_member("app_display_name", json_str(pusher.app_display_name)),
+                json_member("app_id", json_str(pusher.app_id)),
+                json_member("data", json_obj(std::move(data))),
+                json_member("device_display_name", json_str(pusher.device_display_name)),
+                json_member("kind", json_str(pusher.kind)),
+                json_member("lang", json_str(pusher.lang)),
+                json_member("profile_tag", json_str(pusher.profile_tag)),
+                json_member("pushkey", json_str(pusher.pushkey)),
+            }));
+        }
+        return dispatch_resp(req, rt, 200U,
+                             json_serialize(json_obj({json_member("pushers", json_arr(std::move(pusher_array)))})));
     }
     // Spec: POST /pushers/set creates, updates, or deletes a pusher for the
-    // authenticated user. Merovingian does not yet deliver push notifications,
-    // but accepts and validates the request so clients can register without
-    // error. Real delivery will be implemented later.
+    // authenticated user. "If kind is not null, the pusher with this app_id
+    // and pushkey for this user is updated, or it is created if it doesn't
+    // exist. If kind is null, the pusher ... is deleted." append:false (the
+    // default) additionally removes any OTHER user's pusher sharing the same
+    // app_id+pushkey ("the homeserver must remove any other pushers with the
+    // same App ID and pushkey for different users"); append:true skips that
+    // removal.
     if (req.method == "POST" && req.target == "/_matrix/client/v3/pushers/set")
     {
-        if (!parse_pusher_set_body(req.body).has_value())
+        auto const body = parse_pusher_set_body(req.body);
+        if (!body.has_value())
         {
             return dispatch_err(req, rt, 400U, "M_BAD_JSON",
                                 "pusher body must contain app_id, pushkey, and kind with required fields");
         }
+        auto& store = rt.homeserver.database.persistent_store;
+        if (!body->kind.has_value())
+        {
+            // Deleting a pusher that never existed is a no-op per spec ("the
+            // pusher ... is deleted") and matches this endpoint's established
+            // idempotent-retry behaviour — only a genuine backend failure on
+            // an EXISTING pusher is reported. Reviewer finding (PR #479,
+            // client_server.cpp:9071): the previous std::ignore here meant a
+            // client was told "done" even when the delete failed and the
+            // pusher stayed live, still receiving pushes despite the user
+            // believing they had disabled notifications.
+            auto const existed = database::find_pusher(store, *user, body->app_id, body->pushkey).has_value();
+            if (existed && !database::delete_pusher(store, *user, body->app_id, body->pushkey))
+            {
+                return dispatch_err(req, rt, 500U, "M_UNKNOWN", "failed to delete pusher");
+            }
+            return dispatch_resp(req, rt, 200U, "{}");
+        }
+        // Reviewer finding (PR #479, client_server.cpp:9089): persist the
+        // replacement pusher BEFORE removing any other users' pushers that
+        // share this app_id+pushkey. append:false's removal reaches pushers
+        // belonging to OTHER users, so doing it first meant a store_pusher
+        // failure after a successful removal left those unrelated users'
+        // notifications silently disabled with no replacement ever created.
+        // Persisting first means a store_pusher failure now returns 500
+        // having touched nothing; there is no store-level API for wrapping
+        // this upsert and the other-user deletes in one atomic transaction
+        // (store_pusher/delete_pusher each commit and update the in-memory
+        // mirror independently), so ordering is the fix rather than a new
+        // transaction primitive.
+        auto const stored = database::store_pusher(
+            store, database::PersistentPusher{*user, body->app_id, body->pushkey, *body->kind, body->app_display_name,
+                                              body->device_display_name, body->profile_tag, body->lang, body->data_url,
+                                              body->data_format, body->data_extra_json});
+        if (!stored)
+        {
+            return dispatch_err(req, rt, 500U, "M_UNKNOWN", "failed to store pusher");
+        }
+        if (!body->append)
+        {
+            // Snapshot the matching (user_id) list first: delete_pusher can
+            // reallocate/erase from store.pushers, which would invalidate an
+            // iterator into it if we deleted while iterating directly.
+            auto other_users = std::vector<std::string>{};
+            for (auto const& existing : store.pushers)
+            {
+                if (existing.user_id != *user && existing.app_id == body->app_id && existing.pushkey == body->pushkey)
+                {
+                    other_users.push_back(existing.user_id);
+                }
+            }
+            for (auto const& other_user : other_users)
+            {
+                // The replacement above already succeeded, so a failure here
+                // only leaves a stale duplicate pusher for another user (an
+                // extra delivery, not a lost one) rather than the reviewer's
+                // "deleted with no replacement" scenario.
+                std::ignore = database::delete_pusher(store, other_user, body->app_id, body->pushkey);
+            }
+        }
         return dispatch_resp(req, rt, 200U, "{}");
+    }
+    // GET /_matrix/client/v3/notifications
+    // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3notifications
+    // Paginates through events the user "has been, or would have been,
+    // notified about". Notification history is recorded independently of
+    // pushers/push.enabled -- see room_service.cpp's build_pending_push_
+    // deliveries doc comment -- so this works the same whether or not the
+    // user has push notifications configured.
+    if (req.method == "GET" && request_path == "/_matrix/client/v3/notifications")
+    {
+        auto const& store = rt.homeserver.database.persistent_store;
+        auto notifications = database::list_notifications_for_user(store, *user);
+
+        // "only: ... Supply highlight to return only events where the
+        // notification had the highlight tweak set."
+        if (messages_query_value(req.target, "only") == "highlight")
+        {
+            std::erase_if(notifications, [](database::PersistentNotification const& entry) {
+                return !entry.highlight;
+            });
+        }
+
+        // Newest-first: stream_ordering mirrors the triggering event's global
+        // stream position, unique per row (see PersistentNotification), so
+        // sorting by it descending gives a stable, gap/overlap-free order to
+        // paginate over exactly like GET /messages' backward direction does.
+        std::ranges::sort(notifications,
+                          [](database::PersistentNotification const& lhs, database::PersistentNotification const& rhs) {
+                              return lhs.stream_ordering > rhs.stream_ordering;
+                          });
+
+        auto const from_token = parse_u64(messages_query_value(req.target, "from"));
+        // Spec leaves the default unspecified; 50 balances a useful first
+        // page against response size, clamped to bound a hostile/careless
+        // limit= value the same way GET /messages clamps its own.
+        auto limit = std::size_t{50U};
+        if (auto const parsed = parse_u64(messages_query_value(req.target, "limit")); parsed.has_value())
+        {
+            limit = static_cast<std::size_t>(std::min<std::uint64_t>(*parsed, std::uint64_t{1000U}));
+        }
+
+        // Memoizes read_receipt_ordering per room_id: a user can have many
+        // notifications in the same room across one response, and the
+        // receipt lookup scans every receipt the user has ever sent.
+        auto read_ordering_by_room = std::unordered_map<std::string, std::uint64_t>{};
+        auto const read_ordering_for_room = [&](std::string const& room_id) -> std::uint64_t {
+            auto const cached = read_ordering_by_room.find(room_id);
+            if (cached != read_ordering_by_room.end())
+            {
+                return cached->second;
+            }
+            auto const ordering = sync::read_receipt_ordering(rt.homeserver, store, room_id, *user);
+            read_ordering_by_room.emplace(room_id, ordering);
+            return ordering;
+        };
+
+        auto array = canonicaljson::Array{};
+        auto next_token = std::string{};
+        for (auto const& notification : notifications)
+        {
+            // Strictly-greater, not >=: `next_token` names the first
+            // notification this page did NOT consume, so the next request must
+            // *include* it. Using >= would skip exactly that entry and silently
+            // drop one notification per page boundary.
+            if (from_token.has_value() && notification.stream_ordering > *from_token)
+            {
+                continue;
+            }
+            if (array.size() >= limit)
+            {
+                // Not consumed this page: the next request's `from` must
+                // name this notification so pagination has no gap or overlap.
+                next_token = std::to_string(notification.stream_ordering);
+                break;
+            }
+            auto const event_it = std::ranges::find_if(store.events, [&](database::PersistentEvent const& event) {
+                return event.event_id == notification.event_id;
+            });
+            if (event_it == store.events.end())
+            {
+                // Defensive: the event row is gone (should not normally
+                // happen) -- skip rather than emit a notification with no
+                // underlying event, since `event` is spec-required.
+                continue;
+            }
+
+            // Spec: "read: Indicates whether the user has sent a read
+            // receipt indicating that they have read this message." Computed
+            // from the user's current m.read/m.read.private baseline in this
+            // room (see "Marking notifications as read"), not stored on the
+            // row, so it always reflects the latest receipt.
+            auto const read = notification.stream_ordering <= read_ordering_for_room(notification.room_id);
+
+            auto actions_parsed = canonicaljson::parse_lossless(notification.actions);
+            auto actions_value = actions_parsed.error == canonicaljson::ParseError::none
+                                     ? std::move(actions_parsed.value)
+                                     : canonicaljson::Value{canonicaljson::Array{}};
+
+            array.push_back(json_obj({
+                json_member("actions", std::move(actions_value)),
+                json_member("event", client_event_with_id(store, *event_it)),
+                json_member("profile_tag", json_str(notification.profile_tag)),
+                json_member("read", json_bool(read)),
+                json_member("room_id", json_str(notification.room_id)),
+                json_member("ts", json_int(static_cast<std::int64_t>(notification.ts))),
+            }));
+        }
+
+        auto response = canonicaljson::Object{};
+        if (!next_token.empty())
+        {
+            // "If this is absent, there are no more results."
+            response.push_back(json_member("next_token", json_str(next_token)));
+        }
+        response.push_back(json_member("notifications", json_arr(std::move(array))));
+        return dispatch_resp(req, rt, 200U, json_serialize(json_obj(std::move(response))));
     }
     // Clients (Cinny, Element) fetch /capabilities immediately after login to
     // discover what the server supports. Return a minimal stable set; extend
@@ -9920,6 +10856,56 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 return complete({200U, serialized.output});
             }
         }
+        // GET /_matrix/client/v3/rooms/{roomId}/context/{eventId}
+        // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3roomsroomidcontexteventid
+        // Returns the events immediately before/after a given event plus room
+        // state, for permalink resolution. Same membership gate as GET
+        // .../event/{eventId} above; an unknown event id, or one that belongs
+        // to a different room than roomId, both fail closed with the same 404
+        // so a member cannot learn whether the event exists elsewhere.
+        if (req.method == "GET")
+        {
+            if (auto const path = room_context_path_parts(req.target); path.has_value())
+            {
+                auto const& store = rt.homeserver.database.persistent_store;
+                auto const is_joined =
+                    std::ranges::any_of(store.memberships, [&](database::PersistentMembership const& membership) {
+                        return membership.room_id == path->room_id && membership.user_id == *user &&
+                               membership.membership == "join";
+                    });
+                if (!is_joined)
+                {
+                    return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "not a member of this room");
+                }
+                auto const event = std::ranges::find_if(store.events, [&](database::PersistentEvent const& current) {
+                    return current.room_id == path->room_id && current.event_id == path->event_id;
+                });
+                if (event == store.events.end())
+                {
+                    return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "event not found");
+                }
+
+                auto const filter_argument = messages_query_value(req.target, "filter");
+                auto const parsed_filter = sync::parse_room_event_filter_argument(filter_argument);
+                if (!parsed_filter.has_value())
+                {
+                    return dispatch_err(req, rt, 400U, "M_BAD_JSON", "filter parameter is not valid JSON");
+                }
+
+                // Spec: limit applies to the sum of events_before and
+                // events_after; defaults to 10. Clamp to the same maximum
+                // GET /messages uses to bound resource usage.
+                auto limit = std::size_t{10U};
+                if (auto const parsed_limit = parse_u64(messages_query_value(req.target, "limit"));
+                    parsed_limit.has_value())
+                {
+                    limit = static_cast<std::size_t>(std::min<std::uint64_t>(*parsed_limit, std::uint64_t{100U}));
+                }
+
+                return dispatch_resp(req, rt, 200U,
+                                     room_context_json(rt, path->room_id, *event, *parsed_filter, limit, *user));
+            }
+        }
         // GET /rooms/{roomId}/state/{eventType}/{stateKey}
         // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3roomsroomidstateeventtypestatekey
         // Returns the content object of a single named state event.
@@ -10443,7 +11429,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                    {"actor",   *user,          false},
                                    {"room_id", *messages_room, false}
                 });
-                return dispatch_resp(req, rt, 200U, messages_json(rt, *messages_room, req.target));
+                return dispatch_resp(req, rt, 200U, messages_json(rt, *messages_room, req.target, *user));
             }
         }
         if (req.method == "POST" && suffix.size() > invite_s.size() &&
@@ -10911,6 +11897,41 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                              })));
     }
 
+    // POST /_matrix/client/v3/search
+    // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3search
+    // Full-text search across every room the caller is currently joined to
+    // (see search_room_events_json's doc comment for the join-only scope and
+    // other deliberately-left-out spec corners, recorded in
+    // docs/todos/capability-gaps.md), restricted to
+    // m.room.message/content.body, m.room.name/content.name, and
+    // m.room.topic/content.topic, and never searching encrypted rooms.
+    if (req.method == "POST" && request_path == "/_matrix/client/v3/search")
+    {
+        auto const body = canonicaljson::parse_lossless(req.body);
+        auto const* body_obj = std::get_if<canonicaljson::Object>(&body.value.storage());
+        auto const* categories = body_obj != nullptr ? object_member(*body_obj, "search_categories") : nullptr;
+        auto const* categories_obj =
+            categories != nullptr ? std::get_if<canonicaljson::Object>(&categories->storage()) : nullptr;
+        auto const* room_events = categories_obj != nullptr ? object_member(*categories_obj, "room_events") : nullptr;
+        auto const* room_events_obj =
+            room_events != nullptr ? std::get_if<canonicaljson::Object>(&room_events->storage()) : nullptr;
+        if (room_events_obj == nullptr)
+        {
+            return dispatch_err(req, rt, 400U, "M_BAD_JSON", "search_categories.room_events is required");
+        }
+        auto const parsed_request = parse_search_request(*room_events_obj);
+        if (!parsed_request.has_value())
+        {
+            return dispatch_err(req, rt, 400U, "M_BAD_JSON", "search_categories.room_events is malformed");
+        }
+        if (parsed_request->search_term.empty())
+        {
+            return dispatch_err(req, rt, 400U, "M_MISSING_PARAM", "search_term is required");
+        }
+        auto const resume_before = parse_u64(messages_query_value(req.target, "next_batch"));
+        return dispatch_resp(req, rt, 200U, search_room_events_json(rt, *user, *parsed_request, resume_before));
+    }
+
     // PUT /_matrix/client/v3/presence/{userId}/status
     // Sets the presence state for the authenticated user.
     auto constexpr presence_prefix = std::string_view{"/_matrix/client/v3/presence/"};
@@ -11103,6 +12124,38 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         auto const suffix = std::string_view{req.target}.substr(user_prefix.size());
         auto constexpr filter_s = std::string_view{"/filter"};
         auto constexpr filter_m = std::string_view{"/filter/"};
+        auto constexpr openid_request_token_s = std::string_view{"/openid/request_token"};
+
+        // POST /_matrix/client/v3/user/{userId}/openid/request_token
+        // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3useruseridopenidrequest_token
+        // Mints a short-lived OpenID token redeemable at the federation
+        // `GET /openid/userinfo` endpoint -- and nowhere else (see
+        // request_openid_token's doc comment and docs/threat-model.md).
+        if (req.method == "POST" && ends_with(suffix, openid_request_token_s))
+        {
+            auto const encoded_user = suffix.substr(0U, suffix.size() - openid_request_token_s.size());
+            auto const path_user = core::percent_decode_path_component(encoded_user);
+            if (path_user != *user)
+            {
+                // Fail closed on a pure string compare against the already-
+                // authenticated caller: this can never reveal whether some
+                // other userId exists on this server.
+                return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "cannot request an OpenID token for another user");
+            }
+            auto const result = request_openid_token(rt.homeserver, path_user);
+            if (!result.ok)
+            {
+                return dispatch_err(req, rt, result.status, "M_UNKNOWN", result.reason);
+            }
+            return dispatch_resp(
+                req, rt, 200U,
+                json_serialize(json_obj({
+                    json_member("access_token", json_str(result.access_token)),
+                    json_member("expires_in", json_int(static_cast<std::int64_t>(result.expires_in_seconds))),
+                    json_member("matrix_server_name", json_str(result.matrix_server_name)),
+                    json_member("token_type", json_str("Bearer")),
+                })));
+        }
 
         if (req.method == "POST" && ends_with(suffix, filter_s))
         {

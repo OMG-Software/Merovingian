@@ -160,6 +160,7 @@ shell = find_program('sh')
       'unit/test_runtime_listeners.cpp',
       'unit/test_runtime_signing_key_store.cpp',
       'unit/test_runtime_media.cpp',
+      'unit/test_runtime_orphan_futures.cpp',
       'unit/test_secret_buffer.cpp',
       'unit/test_shutdown_signal.cpp',
       'unit/test_state_resolution.cpp',
@@ -175,6 +176,7 @@ shell = find_program('sh')
       'unit/test_tcp_acceptor.cpp',
       'unit/test_thread_pool.cpp',
       'unit/test_trust_safety_policy.cpp',
+      'unit/test_trust_safety_ignore_list.cpp',
       'unit/test_database_schema.cpp',
       'unit/test_homeserver_error_paths.cpp',
       'unit/test_homeserver_auth_service.cpp',
@@ -191,10 +193,15 @@ shell = find_program('sh')
       'unit/test_worker_event_loop.cpp',
       'unit/test_ipc_stream_cipher.cpp',
       'unit/test_identity_client.cpp',
+      'unit/test_push_rules.cpp',
+      'unit/test_default_push_ruleset.cpp',
+      'unit/test_push_gateway_client.cpp',
+      'unit/test_push_pusher_store.cpp',
+      'unit/test_openid_token_store.cpp',
     ),
     include_directories: inc,
     dependencies: [catch2_dep, thread_dep, libsodium_dep, openssl_dep, libpq_dep, sqlite_dep, libcurl_dep, resolv_dep],
-    link_with: [auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, events_lib, federation_lib, federation_worker_lib, homeserver_lib, http_lib, identity_lib, ipc_lib, media_lib, net_lib, observability_lib, platform_lib, rooms_lib, sync_lib, trust_safety_lib],
+    link_with: [auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, events_lib, federation_lib, federation_worker_lib, homeserver_lib, http_lib, identity_lib, ipc_lib, media_lib, net_lib, observability_lib, platform_lib, push_lib, rooms_lib, sync_lib, trust_safety_lib],
   )
 
   test('unit-tests', unit_tests, timeout: 600)
@@ -220,14 +227,18 @@ shell = find_program('sh')
       'conformance/test_admin_safety_review_conformance.cpp',
       'conformance/test_outbound_delivery_conformance.cpp',
       'conformance/test_identifier_grammar.cpp',
+      'conformance/test_ignoring_users_conformance.cpp',
       'conformance/test_key_publication_conformance.cpp',
       'conformance/test_pdu_format_conformance.cpp',
       'conformance/test_presence_conformance.cpp',
+      'conformance/test_push_notifications_conformance.cpp',
+      'conformance/test_notifications_conformance.cpp',
       'conformance/test_redaction_conformance.cpp',
       'conformance/test_room_version_table_conformance.cpp',
       'conformance/test_read_markers_conformance.cpp',
       'conformance/test_receipt_conformance.cpp',
       'conformance/test_safety_report_conformance.cpp',
+      'conformance/test_search_conformance.cpp',
       'conformance/test_server_discovery.cpp',
       'conformance/test_signing_json_conformance.cpp',
       'conformance/test_state_resolution_conformance.cpp',
@@ -238,7 +249,7 @@ shell = find_program('sh')
     ),
     include_directories: inc,
     dependencies: [catch2_dep, thread_dep, libsodium_dep, openssl_dep, libpq_dep, sqlite_dep, libcurl_dep, resolv_dep],
-    link_with: [auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, events_lib, federation_lib, homeserver_lib, http_lib, identity_lib, ipc_lib, media_lib, net_lib, observability_lib, platform_lib, rooms_lib, sync_lib, trust_safety_lib],
+    link_with: [auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, events_lib, federation_lib, homeserver_lib, http_lib, identity_lib, ipc_lib, media_lib, net_lib, observability_lib, platform_lib, push_lib, rooms_lib, sync_lib, trust_safety_lib],
   )
 
   test('conformance-tests', conformance_tests, timeout: 600)
@@ -278,6 +289,7 @@ shell = find_program('sh')
       'integration/test_observability_flow.cpp',
       'integration/test_persistent_homeserver_flow.cpp',
       'integration/test_postgresql_persistence_flow.cpp',
+      'integration/test_push_delivery_flow.cpp',
       'integration/test_runtime_hardening_flow.cpp',
       'integration/test_seccomp_sqlite_flow.cpp',
       'integration/test_server_startup_hardening_flow.cpp',
@@ -287,7 +299,7 @@ shell = find_program('sh')
     ),
     include_directories: inc,
     dependencies: [catch2_dep, thread_dep, libsodium_dep, openssl_dep, libpq_dep, sqlite_dep, libcurl_dep, resolv_dep],
-    link_with: [auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, events_lib, federation_lib, federation_worker_lib, homeserver_lib, http_lib, identity_lib, ipc_lib, media_lib, net_lib, observability_lib, platform_lib, rooms_lib, sync_lib, trust_safety_lib],
+    link_with: [auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, events_lib, federation_lib, federation_worker_lib, homeserver_lib, http_lib, identity_lib, ipc_lib, media_lib, net_lib, observability_lib, platform_lib, push_lib, rooms_lib, sync_lib, trust_safety_lib],
     cpp_args: [thumbnail_test_args, federation_worker_test_args, server_test_args],
   )
 
@@ -305,7 +317,7 @@ shell = find_program('sh')
       ),
       include_directories: inc,
       dependencies: [catch2_dep, thread_dep, libsodium_dep, openssl_dep, libpq_dep, sqlite_dep, libcurl_dep, resolv_dep],
-      link_with: [auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, events_lib, federation_lib, homeserver_lib, http_lib, identity_lib, ipc_lib, media_lib, net_lib, observability_lib, platform_lib, rooms_lib, sync_lib, trust_safety_lib],
+      link_with: [auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, events_lib, federation_lib, homeserver_lib, http_lib, identity_lib, ipc_lib, media_lib, net_lib, observability_lib, platform_lib, push_lib, rooms_lib, sync_lib, trust_safety_lib],
     )
 
     test('live-integration-tests', live_integration_tests)

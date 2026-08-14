@@ -278,6 +278,51 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected positive integer");
             }
         }
+        else if (key == "server.push.enabled")
+        {
+            if (!parse_bool_value(value, server.push.enabled))
+            {
+                add_parse_finding(findings, std::string{key}, "expected boolean value");
+            }
+        }
+        else if (key == "server.push.connect_timeout_seconds")
+        {
+            try
+            {
+                auto const parsed = std::stoul(std::string{value});
+                if (parsed == 0U || parsed > std::numeric_limits<std::uint32_t>::max())
+                {
+                    add_parse_finding(findings, std::string{key}, "expected positive integer");
+                }
+                else
+                {
+                    server.push.connect_timeout_seconds = static_cast<std::uint32_t>(parsed);
+                }
+            }
+            catch (...)
+            {
+                add_parse_finding(findings, std::string{key}, "expected positive integer");
+            }
+        }
+        else if (key == "server.push.total_timeout_seconds")
+        {
+            try
+            {
+                auto const parsed = std::stoul(std::string{value});
+                if (parsed == 0U || parsed > std::numeric_limits<std::uint32_t>::max())
+                {
+                    add_parse_finding(findings, std::string{key}, "expected positive integer");
+                }
+                else
+                {
+                    server.push.total_timeout_seconds = static_cast<std::uint32_t>(parsed);
+                }
+            }
+            catch (...)
+            {
+                add_parse_finding(findings, std::string{key}, "expected positive integer");
+            }
+        }
         else if (key == "listeners.client.bind")
         {
             listeners.client.bind = std::string{value};

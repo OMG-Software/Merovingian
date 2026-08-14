@@ -398,6 +398,79 @@ struct PersistentClientTxnRecord final
     std::string event_id{};
 };
 
+// A push notification pusher registered via `POST
+// /_matrix/client/v3/pushers/set` (Matrix v1.19 CS API §push-notifications).
+// Keyed by (user_id, app_id, pushkey) — the spec's uniqueness rule: setting a
+// pusher with the same app_id and pushkey for the same user replaces it
+// in-place rather than creating a second row. `kind` is "http" or "email".
+// `data_url` and `data_format` mirror the pusher's `data` dictionary (the
+// `url` and `format` keys); `data_url` is required for kind "http" and
+// empty for "email". `profile_tag` is optional per spec and empty when unset.
+// `data_extra_json` is a canonical-JSON-serialized object holding every
+// OTHER member of the pusher's `data` dictionary at registration time (i.e.
+// excluding `url`/`format`, which already have dedicated columns above) —
+// Matrix v1.19 Push Gateway API requires the homeserver to forward the
+// whole `data` dictionary minus `url` to the gateway, not just `format`.
+// Empty string means "no extra members" (equivalent to serialized `{}`).
+struct PersistentPusher final
+{
+    std::string user_id{};
+    std::string app_id{};
+    std::string pushkey{};
+    std::string kind{};
+    std::string app_display_name{};
+    std::string device_display_name{};
+    std::string profile_tag{};
+    std::string lang{};
+    std::string data_url{};
+    std::string data_format{};
+    std::string data_extra_json{};
+};
+
+// A recorded notification for `GET /_matrix/client/v3/notifications` (Matrix
+// v1.19 CS API §push-notifications). Recorded once per (user_id, event_id)
+// whenever push rule evaluation resolves `notify: true` for that recipient --
+// independent of whether the recipient has a registered pusher or whether
+// `server.push.enabled` is set (a user with push notifications turned off
+// must still see their notification history when they open the client; see
+// room_service.cpp's build_pending_push_deliveries). `actions` is the
+// canonical-JSON-serialized actions array the matched rule produced;
+// `highlight` mirrors its `set_tweak: highlight` action so `GET
+// /notifications?only=highlight` can filter without re-parsing `actions`.
+// `stream_ordering` is the triggering event's global stream position --
+// unique per (user_id, event_id) row, since a recipient gets at most one
+// notification per event -- and doubles as this table's pagination key,
+// exactly like `events.stream_ordering` already does for GET /messages.
+struct PersistentNotification final
+{
+    std::string user_id{};
+    std::string room_id{};
+    std::string event_id{};
+    std::uint64_t stream_ordering{0U};
+    std::uint64_t ts{0U};
+    std::string actions{};
+    std::string profile_tag{};
+    bool highlight{false};
+};
+
+// A short-lived OpenID token minted by `POST
+// /_matrix/client/v3/user/{userId}/openid/request_token` (Matrix v1.19 CS
+// API §OpenID) and redeemed by `GET /_matrix/federation/v1/openid/userinfo`
+// (SS API §OpenID). Deliberately a table of its own, disjoint from
+// PersistentAccessToken/access_tokens: this token authenticates nothing on
+// the client-server surface -- its only valid use is the federation
+// userinfo lookup -- so keeping it out of the access-token store and its
+// lookup path is what prevents it from being replayed as a client-server
+// bearer credential (see docs/threat-model.md). Unlike access tokens, every
+// row has a finite expiry (the spec's `expires_in` is required), so
+// expires_at is a plain time_point rather than optional.
+struct PersistentOpenidToken final
+{
+    std::string user_id{};
+    std::string token_hash{};
+    std::chrono::system_clock::time_point expires_at{};
+};
+
 struct PersistentStore final
 {
     PersistentStore() = default;
@@ -444,6 +517,9 @@ struct PersistentStore final
         , account_threepids{other.account_threepids}
         , room_aliases{other.room_aliases}
         , client_txn_ids{other.client_txn_ids}
+        , pushers{other.pushers}
+        , notifications{other.notifications}
+        , openid_tokens{other.openid_tokens}
         , prepared_statements{other.prepared_statements}
         , prepared_statements_mutex{std::make_unique<std::mutex>()}
         , next_sync_stream_id{other.next_sync_stream_id}
@@ -499,6 +575,9 @@ struct PersistentStore final
         account_threepids = other.account_threepids;
         room_aliases = other.room_aliases;
         client_txn_ids = other.client_txn_ids;
+        pushers = other.pushers;
+        notifications = other.notifications;
+        openid_tokens = other.openid_tokens;
         prepared_statements = other.prepared_statements;
         prepared_statements_mutex = std::make_unique<std::mutex>();
         next_sync_stream_id = other.next_sync_stream_id;
@@ -554,6 +633,9 @@ struct PersistentStore final
     std::vector<PersistentThreePidBinding> account_threepids{};
     std::vector<PersistentRoomAlias> room_aliases{};
     std::vector<PersistentClientTxnRecord> client_txn_ids{};
+    std::vector<PersistentPusher> pushers{};
+    std::vector<PersistentNotification> notifications{};
+    std::vector<PersistentOpenidToken> openid_tokens{};
     std::vector<PreparedStatement> prepared_statements{};
     // Guards prepared_statements, which is appended to by
     // commit_persistent_transaction from multiple concurrent room-stripe paths
@@ -800,6 +882,42 @@ auto apply_store_event_with_state(PersistentStore& store, PreparedStateUpdate co
 // such binding exists or the backend delete fails.
 [[nodiscard]] auto delete_account_threepid(PersistentStore& store, std::string_view user_id, std::string_view medium,
                                            std::string_view address) -> bool;
+// Upsert a pusher keyed by (user_id, app_id, pushkey). Persists the row and
+// mirrors it into the in-memory vector (replacing any existing entry with the
+// same key). Returns false on an empty user_id/app_id/pushkey/kind or a
+// backend write failure.
+[[nodiscard]] auto store_pusher(PersistentStore& store, PersistentPusher pusher) -> bool;
+// Return the pusher for (user_id, app_id, pushkey), or nullopt.
+[[nodiscard]] auto find_pusher(PersistentStore const& store, std::string_view user_id, std::string_view app_id,
+                               std::string_view pushkey) -> std::optional<PersistentPusher>;
+// Remove the pusher for (user_id, app_id, pushkey). Returns false if no such
+// pusher exists or the backend delete fails.
+[[nodiscard]] auto delete_pusher(PersistentStore& store, std::string_view user_id, std::string_view app_id,
+                                 std::string_view pushkey) -> bool;
+// Return every pusher registered for user_id, in insertion order.
+[[nodiscard]] auto list_pushers_for_user(PersistentStore const& store, std::string_view user_id)
+    -> std::vector<PersistentPusher>;
+// Upsert a notification keyed by (user_id, event_id) -- see
+// PersistentNotification. Persists the row, mirrors it into the in-memory
+// vector, and then prunes user_id's oldest rows beyond a fixed per-user
+// retention cap (see k_max_notifications_per_user in persistent_store.cpp)
+// so `notifications` cannot grow without bound under sustained message
+// volume. Returns false on an empty user_id/room_id/event_id or a backend
+// write failure.
+[[nodiscard]] auto store_notification(PersistentStore& store, PersistentNotification notification) -> bool;
+// Return every notification recorded for user_id, in insertion
+// (stream_ordering) order ascending. Callers apply from/limit/only
+// pagination and filtering.
+[[nodiscard]] auto list_notifications_for_user(PersistentStore const& store, std::string_view user_id)
+    -> std::vector<PersistentNotification>;
+// Insert an OpenID token row. Persists it, mirrors it into the in-memory
+// vector, and then prunes every already-expired row (across all users) so
+// `openid_tokens` cannot grow without bound -- the time-based analogue of
+// store_notification's per-user count cap, appropriate here because an
+// OpenID token's natural retention bound is its own short expiry rather
+// than a row count. Returns false on an empty user_id/token_hash or a
+// backend write failure.
+[[nodiscard]] auto store_openid_token(PersistentStore& store, PersistentOpenidToken token) -> bool;
 // Look up a previous idempotent send result. Returns the stored event_id
 // (or empty string for to-device sends) if the (user_id, room_id,
 // event_type, txn_id) tuple was already committed; nullopt otherwise.

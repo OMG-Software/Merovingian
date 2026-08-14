@@ -11,7 +11,7 @@ namespace merovingian::database
 namespace
 {
 
-    constexpr auto schema_version = std::uint32_t{7U};
+    constexpr auto schema_version = std::uint32_t{11U};
 
     // Tables introduced after the v1 initial schema are listed here so the
     // bootstrap path can create the original v1 shape and then apply numbered
@@ -32,16 +32,32 @@ namespace
         std::string_view{"account_threepids"},
     };
 
+    constexpr auto v8_table_names = std::array{
+        std::string_view{"pushers"},
+    };
+
+    constexpr auto v9_table_names = std::array{
+        std::string_view{"notifications"},
+    };
+
+    constexpr auto v10_table_names = std::array{
+        std::string_view{"openid_tokens"},
+    };
+
     [[nodiscard]] auto table_is_post_v1(std::string_view table_name) noexcept -> bool
     {
         return std::ranges::find(v2_table_names, table_name) != v2_table_names.end() ||
                std::ranges::find(v3_table_names, table_name) != v3_table_names.end() ||
                std::ranges::find(v4_table_names, table_name) != v4_table_names.end() ||
-               std::ranges::find(v6_table_names, table_name) != v6_table_names.end();
+               std::ranges::find(v6_table_names, table_name) != v6_table_names.end() ||
+               std::ranges::find(v8_table_names, table_name) != v8_table_names.end() ||
+               std::ranges::find(v9_table_names, table_name) != v9_table_names.end() ||
+               std::ranges::find(v10_table_names, table_name) != v10_table_names.end();
     }
 
-    constexpr auto post_v1_table_count =
-        v2_table_names.size() + v3_table_names.size() + v4_table_names.size() + v6_table_names.size();
+    constexpr auto post_v1_table_count = v2_table_names.size() + v3_table_names.size() + v4_table_names.size() +
+                                         v6_table_names.size() + v8_table_names.size() + v9_table_names.size() +
+                                         v10_table_names.size();
 
     constexpr auto core_tables = std::array{
         SchemaTableDefinition{"schema_migrations",
@@ -172,6 +188,19 @@ namespace
                               "user_id TEXT NOT NULL, room_id TEXT NOT NULL, event_type TEXT NOT NULL, "
                               "txn_id TEXT NOT NULL, event_id TEXT NOT NULL, "
                               "PRIMARY KEY (user_id, room_id, event_type, txn_id)"                                                                                      },
+        SchemaTableDefinition{"pushers",
+                              "user_id TEXT NOT NULL, app_id TEXT NOT NULL, pushkey TEXT NOT NULL, "
+                              "kind TEXT NOT NULL, app_display_name TEXT NOT NULL DEFAULT '', "
+                              "device_display_name TEXT NOT NULL DEFAULT '', profile_tag TEXT NOT NULL DEFAULT '', "
+                              "lang TEXT NOT NULL DEFAULT '', data_url TEXT NOT NULL DEFAULT '', "
+                              "data_format TEXT NOT NULL DEFAULT '', PRIMARY KEY (user_id, app_id, pushkey)"                                                            },
+        SchemaTableDefinition{"notifications",
+                              "user_id TEXT NOT NULL, room_id TEXT NOT NULL, event_id TEXT NOT NULL, "
+                              "stream_ordering TEXT NOT NULL DEFAULT '0', ts TEXT NOT NULL DEFAULT '0', "
+                              "actions TEXT NOT NULL DEFAULT '[]', profile_tag TEXT NOT NULL DEFAULT '', "
+                              "highlight TEXT NOT NULL DEFAULT 'false', PRIMARY KEY (user_id, event_id)"                                                                },
+        SchemaTableDefinition{"openid_tokens",           "user_id TEXT NOT NULL, token_hash TEXT PRIMARY KEY, "
+                                               "expires_at TEXT NOT NULL DEFAULT '0'"                                     },
     };
 
 } // namespace

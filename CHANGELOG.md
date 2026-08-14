@@ -1,3 +1,700 @@
+## 0.11.11
+
+Started as a documentation-only audit of the routed client-server surface
+against Matrix v1.19, recorded in `docs/todos/capability-gaps.md`; the branch
+then closed one of the gaps the audit found.
+
+- Routed `POST /_matrix/client/v3/search` (server-side event search), the
+  last previously-unrouted endpoint the 0.11.11 audit found in the
+  Client-Server API. Searches `content.body` (m.room.message), `content.name`
+  (m.room.name), and `content.topic` (m.room.topic) — a case-insensitive
+  substring match, not stemmed/tokenised full text search — across rooms the
+  caller is currently joined to, never searching end-to-end encrypted rooms
+  (spec MUST). `filter` (`RoomEventFilter`), `keys`, `order_by`
+  (`rank`/`recent`), `event_context` (`before_limit`/`after_limit`/
+  `include_profile`), `include_state`, and `groupings` (`room_id`/`sender`)
+  are all honoured rather than silently ignored. `m.ignored_user_list` is
+  applied via the shared `trust_safety::ignore_list` helper, resolved once
+  per request. Unlike `/messages`, this endpoint has no per-room scope, so a
+  new `ClientApiLimits::max_search_events_scanned` (2000) bounds how many
+  candidate events a single request will JSON-parse and text-match before it
+  must hand back a `next_batch` continuation instead of scanning further;
+  `/_matrix/client/v3/search` also gets its own 20/min-per-IP rate-limit
+  tier (the same tier as media) rather than the generic 90/min fallback.
+  Known gaps, recorded in `docs/todos/capability-gaps.md`: only rooms the
+  caller is currently joined to are searched (the spec's fuller "including
+  rooms you have left" scope is not implemented — the same join-only
+  membership gate `/messages`/`/context`/`/event/{eventId}` already use);
+  `order_by: rank` is only locally accurate within a request's bounded scan
+  window, not a global top-K across the caller's entire matching history;
+  per-group `next_batch` pagination is not implemented (spec allows this);
+  and the MSC3765 extensible-topic `content['m.topic']` representation is
+  not indexed.
+- Routed `GET /_matrix/client/v3/rooms/{roomId}/context/{eventId}` (event
+  context for permalink resolution). Requires authentication and the same
+  joined-membership gate as `/messages` and `/event/{eventId}`; an unknown
+  event id and an event id belonging to a different room both fail closed
+  with an identical 404 `M_NOT_FOUND` so a member cannot tell the two cases
+  apart. `limit` (spec default 10, applied to the combined size of
+  `events_before` and `events_after`) is clamped to the same maximum
+  `/messages` uses. `filter` accepts a JSON `RoomEventFilter`, reusing the
+  existing `sync::EventTypeFilter`/`RoomFilter` machinery via a new
+  `sync::parse_room_event_filter_argument()` rather than a second filter
+  implementation; a non-empty value that fails to parse as a JSON object is
+  rejected with 400 `M_BAD_JSON` instead of being silently ignored. `start`
+  and `end` reuse the plain stream-ordering token format `GET /messages`
+  already produces, so a client can continue paginating from a context
+  response with `GET /messages?from=<token>&dir=<b|f>`.
+
+- Two whole spec sections were absent while going untracked, so they were
+  invisible in our own planning: the **Application Service API** (no
+  `as_token`/`hs_token`, no `/_matrix/app/v1/*` outbound calls, no
+  `m.login.application_service`, no namespace exclusivity — bridges and bots
+  cannot be run against this homeserver) and the **Push Gateway API**. Both now
+  have their own sections with per-surface rows.
+- **Push was the most misleading entry.** Push-*rule* CRUD is genuinely
+  `spec-covered`, but `GET /_matrix/client/v3/pushers` returns a hardcoded
+  `{"pushers":[]}`, `POST /pushers/set` validates the body and discards it, and
+  nothing ever posts to a gateway's `/_matrix/push/v1/notify` — the sole
+  reference to that path is an outbound-URL validator. **No user can receive a
+  push notification.** The capability row now carries a split status and the
+  endpoint rows are marked `scaffolded`.
+- Newly recorded as unrouted: `POST /search` (full-text event search; only the
+  unrelated `user_directory/search` exists), `GET /notifications`,
+  `GET /rooms/{roomId}/context/{eventId}` (permalink resolution, user-visible in
+  Element — since routed, see above), `POST /user/{userId}/openid/request_token`,
+  SSO login (`m.login.sso` is not advertised), and `m.ignored_user_list`
+  enforcement — the account-data key is storable because that store is generic,
+  but ignored users are never filtered from `/sync`, so the ignore silently does
+  nothing.
+- The document gained a "Reading this document" note recording the two failure
+  modes this audit exposed: silence in the ledger does not imply coverage, and a
+  routed endpoint returning 200 does not imply an implemented one.
+- **Step 1 of closing the push gap**: a new `push` module (pusher persistence,
+  push-rule evaluation, and a Push Gateway API client), built but not yet wired
+  into the client-server router — routing is a follow-on. Delivery is disabled
+  by default (`server.push.enabled = false`) so merging this cannot cause an
+  existing deployment to start sending gateway traffic on upgrade.
+  - New `008_pushers` migration (schema version 8) adds a `pushers` table
+    keyed on `(user_id, app_id, pushkey)` per the spec's uniqueness rule, with
+    `store_pusher`/`find_pusher`/`delete_pusher`/`list_pushers_for_user` on
+    `PersistentStore`, following the `PersistentThreePidBinding` pattern.
+  - `merovingian::push` (`include/merovingian/push/push_rules.hpp`,
+    `src/push/push_rules.cpp`): a pure, side-effect-free push-rule evaluator.
+    `parse_push_ruleset()` parses a stored ruleset once into a typed
+    `PushRuleset`; `evaluate_push_rules()` evaluates one event per call against
+    it, honouring override > content > room > sender > underride precedence,
+    `.m.rule.master`'s absolute priority, the "never notify for your own
+    events" rule, and all six spec condition kinds: `event_match`,
+    `contains_display_name`, `room_member_count`,
+    `sender_notification_permission`, `event_property_is`, and
+    `event_property_contains`. The latter two were initially stubbed to
+    `PushConditionKind::unknown` (never-match) — closed in the same branch,
+    since `.m.rule.is_user_mention`/`.m.rule.is_room_mention` are built on
+    exactly these two kinds and would otherwise never fire, silently
+    disabling @-mentions. Both share the evaluator's existing
+    dot-separated-path resolver (`resolve_event_property`, refactored out of
+    `event_match`'s string-only lookup) so the `\.`/`\\` escaping rules
+    (docs/matrix-v1.19-spec/appendices.md#dot-separated-property-paths) are
+    honoured identically across all three key-based condition kinds; `value`
+    comparison is exact-type (a string `"true"` never equals boolean `true`,
+    per spec) and fails closed on unresolvable paths or non-array targets.
+  - `merovingian::push::PushGatewayClient`
+    (`include/merovingian/push/push_gateway_client.hpp`,
+    `src/push/push_gateway_client.cpp`): an outbound `POST
+    /_matrix/push/v1/notify` client built on the SSRF-safe
+    `http::OutboundClient` + `CachedServerDiscovery` pattern used by
+    `IdentityServerClient` — a pusher's gateway URL is client-supplied,
+    attacker-influenced data, so it is resolved the same fail-closed way
+    federation and identity-server traffic is, never via ad-hoc DNS. `notify()`
+    fails closed with no network call at all when `server.push.enabled` is
+    false, and surfaces the spec's `rejected` pushkey list to the caller
+    without touching the database itself.
+  - New `config::PushConfig` (`server.push.*`: `enabled`, connect/total
+    timeouts), modelled on `OidcConfig`/`IdentityServerConfig`; restart-required
+    on change, same lifecycle as the identity-server client.
+
+- **Step 2: wired the `push` module into the homeserver — push notifications
+  are now actually delivered.** `GET /pushers` and `POST /pushers/set` no
+  longer lie to the client, and a sent event can now reach a real Push
+  Gateway.
+  - `GET /pushers` returns the caller's persisted pushers in the spec's
+    `Pusher` shape instead of a hardcoded empty array.
+  - `POST /pushers/set` persists via `store_pusher`; `kind: null` now
+    deletes via `delete_pusher` instead of being a silent no-op. Implemented
+    the `append` field per spec: `append: false` (the default) removes any
+    other user's pusher sharing the same `app_id`+`pushkey` before storing
+    this one; `append: true` leaves it in place. The existing body
+    validation, including the `https` + `/_matrix/push/v1/notify`
+    pusher-URL check, is unchanged.
+  - **Delivery**: `room_service.cpp`'s `send_event()` — the single choke
+    point for both `PUT .../send/{eventType}/{txnId}` and
+    `PUT .../state/{eventType}/{stateKey}` (both rewrite to it) — now, after
+    persisting an event, evaluates that event against every local joined
+    recipient's push rules (`default_push_ruleset()`, the exact ruleset
+    `GET /pushrules` already serves — moved to a new shared
+    `homeserver/default_push_ruleset.{hpp,cpp}` so the two can never drift
+    apart) and builds one Push Gateway notification per (recipient, "http"
+    pusher) pair whose evaluation says "notify". `counts.unread` reuses
+    `sync::count_notifications`/`sync::read_receipt_ordering` (the same
+    unread baseline `/sync` already computes) summed across every room the
+    recipient is joined to, rather than a second implementation.
+    "email" pushers are accepted and persisted but not yet deliverable — no
+    email transport exists — and are simply skipped at delivery time.
+  - **Gated and off the request path.** All of this is skipped entirely —
+    no rule evaluation, no pusher lookup, no thread — when
+    `server.push.enabled` is `false` (the default), so merging this cannot
+    cause an existing deployment to start sending gateway traffic on
+    upgrade. When enabled, the actual `PushGatewayClient::notify()` calls
+    run on a detached `std::async` task parked in
+    `HomeserverRuntime::orphan_futures_` — the same mechanism `join_room`'s
+    background member-fill task already uses — so a slow, hostile, or
+    unreachable gateway can never block or fail the request that triggered
+    it; `runtime.mutex` is only briefly re-acquired to delete a pusher whose
+    pushkey the gateway reports in its `rejected` array.
+  - New `push::TestForcedPushGatewayResolution` test-only seam on
+    `PushGatewayClient` (mirrors `identity::TestForcedIdentityResolution`
+    exactly) so integration tests can drive a real local HTTPS mock gateway
+    without weakening the production SSRF/discovery boundary; wired onto
+    `HomeserverRuntime::test_forced_push_gateway_resolution` (always empty in
+    production).
+  - New conformance coverage
+    (`tests/conformance/test_push_notifications_conformance.cpp`): the
+    set/get round-trip, `kind: null` delete, `append` cross-user removal
+    semantics, and the https/notify-path URL rejection. New integration
+    coverage (`tests/integration/test_push_delivery_flow.cpp`, against a real
+    local TLS mock gateway): delivery is skipped while `push.enabled` is
+    false; an enabled gateway receives a correctly-shaped notify request for
+    a message that matches a push rule; a rejected pushkey is deleted; and
+    message sending still succeeds — promptly, without blocking — when the
+    recipient's gateway is unreachable.
+  - **Known gap, recorded honestly**: `GET /notifications` remains unrouted,
+    "email" pushers are accepted and persisted but never delivered (no email
+    transport exists), and there is no gateway retry/backoff (spec SHOULD,
+    not MUST — a failed delivery attempt today is not retried). See
+    `docs/todos/capability-gaps.md`.
+- **Two follow-on fixes to the push delivery path landed in the same
+  branch**, closing the gaps the paragraphs above recorded:
+  - **Bounded the background delivery tasks (resource-exhaustion fix).**
+    `dispatch_push_deliveries` parked one future per qualifying event in
+    `HomeserverRuntime::orphan_futures_` and never reaped a completed one —
+    unlike `join_room`'s make_join race, which already reaps before parking.
+    With `push.enabled = true` this was an unbounded memory leak (one entry
+    per event, forever) and unbounded OS thread creation under sustained
+    message volume or a hostile client. Fixed by two changes shared with the
+    join-race path via one helper, `reap_completed_futures()`
+    (`runtime.hpp`/`.cpp`): completed futures are removed from
+    `orphan_futures_` before a new one is parked (checked with a
+    non-blocking `wait_for(0s)`, never `.get()`/`.wait()` on a still-running
+    one), and a new counter, `HomeserverRuntime::push_delivery_in_flight_`
+    (guarded by the existing `orphan_futures_mutex_`, tracked separately
+    from the join race so the two cannot starve each other), is checked
+    against a fixed cap, `k_max_in_flight_push_deliveries` (128), before a
+    task is spawned. At capacity the delivery is dropped and logged at
+    `WARN` rather than spawned or blocked on: a missed push is recoverable
+    (the client still sees the event on its next `/sync`), an exhausted
+    thread pool is not. New `tests/unit/test_runtime_orphan_futures.cpp`
+    exercises `reap_completed_futures()` and the pure cap-boundary check
+    (`at_background_task_capacity()`) deterministically via `std::promise`,
+    with no real threads or timing dependence; new integration coverage in
+    `tests/integration/test_push_delivery_flow.cpp` proves the real call
+    site reaps before parking and drops (rather than spawns) once the
+    real counter is saturated.
+  - **Membership transitions now notify.** Delivery previously fired only
+    from `send_event()`. `persist_membership_transition` — the shared
+    helper behind invite/ban/kick/leave/knock — plus `join_room` and
+    `invite_user_by_threepid` now route through the same pipeline via a new
+    `dispatch_membership_push_notification()`. The one correctness
+    subtlety: `build_pending_push_deliveries()` only evaluated rules
+    against `LocalRoom::members`, i.e. joined members, but an invitee is by
+    definition not (yet) joined, so `.m.rule.invite_for_me` — a default,
+    enabled rule whose entire purpose is to notify an invite recipient —
+    could never have fired even once the pipeline was reachable.
+    `build_pending_push_deliveries()` now accepts an `extra_recipients` span
+    for exactly this case; an entry equal to the sender or already a joined
+    member is silently absorbed, so every call site passes the membership
+    target unconditionally rather than special-casing which transitions
+    have a real, distinct recipient. New integration coverage proves an
+    invited user's pusher receives the notification, and that a failing
+    gateway never fails or blocks the invite itself.
+  - See `docs/threat-model.md` ("Push delivery background tasks were
+    unbounded" and "Membership transitions never reached push delivery")
+    and `docs/architecture.md`'s "Fire-and-forget background work" section
+    for the full design writeup.
+- **Follow-up fix: the in-flight counter introduced above deadlocked runtime
+  shutdown whenever a push delivery was still running.** `dispatch_push_
+  deliveries`'s background task decremented `push_delivery_in_flight_` as its
+  final action while holding `orphan_futures_mutex_` — the same mutex
+  `HomeserverRuntime::~HomeserverRuntime()` (and the integration test helper
+  `wait_for_background_tasks()`) held for their *entire* drain, including the
+  blocking `future.wait()` calls. A waiter that already held the mutex could
+  never see the task finish, because the task could never acquire the mutex
+  it needed to finish — a classic deadlock. Push delivery is disabled by
+  default, so no running deployment was affected, but any deployment that
+  enables it would hang on server shutdown with a delivery in flight; the
+  integration suite hit this directly (a 583s timeout in "a completed
+  push-delivery task is reaped before the next one is parked").
+  - `HomeserverRuntime::push_delivery_in_flight_` is now `std::atomic<std::
+    size_t>` (`runtime.hpp`). The dispatcher-side check-and-increment stays
+    under `orphan_futures_mutex_` (already held there to reap
+    `orphan_futures_`), keeping that read-modify-write correct against the
+    cap; the background task's decrement no longer takes the mutex at all,
+    so its completion can never depend on it. The move constructor and move
+    assignment operator (`runtime.cpp`) switch from `std::exchange` (not
+    valid on a non-movable `std::atomic`) to `.exchange(0U)`.
+  - `HomeserverRuntime::~HomeserverRuntime()` and
+    `wait_for_background_tasks()` (`tests/integration/
+    test_push_delivery_flow.cpp`) now hold `orphan_futures_mutex_` only long
+    enough to move the parked futures out of `orphan_futures_`, then wait on
+    the moved-out copies with the mutex released — never holding a lock
+    across a blocking wait. This also stops a runtime shutdown (or a test's
+    background-task wait) from needlessly blocking a concurrent
+    `dispatch_push_deliveries` call trying to reap or park a future while the
+    drain is in progress. Audited every other site that parks or reaps
+    `orphan_futures_` (the make_join race in `room_service.cpp`'s
+    `join_room`, twice) and confirmed none of them wait on a future while
+    holding the mutex — this pattern was unique to the two fixed call sites.
+  - New `tests/unit/test_runtime_orphan_futures.cpp` scenario, "HomeserverRuntime's
+    destructor releases orphan_futures_mutex_ before blocking on a
+    still-running background task": parks a background task gated on an
+    external promise (so it stays in flight, unable to finish, for the whole
+    test), destroys the runtime on another thread, and polls
+    `orphan_futures_mutex_` with `try_lock()` for up to 2 seconds to prove it
+    becomes available again while the task is still blocked — deterministic,
+    since the task's gate is never opened until after the poll, so a
+    destructor that still held the mutex across its wait would show the
+    mutex held for the *entire* window, not just possibly missed by a race.
+  - Reviewed "exceeding the in-flight push-delivery cap drops the
+    notification instead of spawning it" (`test_push_delivery_flow.cpp`):
+    it already asserts the cap policy by setting
+    `push_delivery_in_flight_` directly to a value at the cap rather than
+    physically spawning 128 real concurrent deliveries against a mock
+    gateway, so it stays fast; no change needed there. The pure
+    `at_background_task_capacity()` cap-boundary check remains covered
+    separately in `tests/unit/test_runtime_orphan_futures.cpp`.
+- **Closed the `m.ignored_user_list` gap the audit above found**: the
+  account-data key was storable but the server never acted on it. Implemented
+  server-side enforcement per Matrix v1.19 CS API §Ignoring Users.
+  - New `merovingian::trust_safety::ignore_list` module
+    (`include/merovingian/trust_safety/ignore_list.hpp`,
+    `src/trust_safety/ignore_list.cpp`): `parse_ignored_user_list()` parses an
+    `m.ignored_user_list` account-data body into a `std::unordered_set`,
+    failing safe to an empty set on malformed/absent content;
+    `resolve_ignored_users()` reads a user's global ignore-list row from the
+    store; `is_delivery_suppressed()` is the pure decision function — non-state
+    events from an ignored sender are withheld, state events are exempt
+    (spec: "Servers must still send state events sent by ignored users to
+    clients"), and a room invite is suppressed regardless of the state-event
+    exemption (spec: "Servers must not send room invites from ignored users
+    to clients"). One shared predicate, called from every delivery surface
+    rather than reimplemented per call site.
+  - Wired into `GET /sync` (`client_server.cpp`): the timeline-matching loop,
+    the invite section (looked up via the inviter's `PersistentInvite::
+    sender_user_id`), and `build_room_ephemeral_events_array()`'s typing and
+    receipt entries. The ignore set is resolved once per request and reused,
+    not re-read per event.
+  - Wired into MSC4186 sliding sync: `build_room_response()`
+    (`sliding_sync_room_builder.cpp`) filters the per-room timeline and, since
+    MSC4186 has no separate invite-state surface like legacy `/sync`'s
+    `rooms.invite.<room_id>.invite_state`, applies the same invite override
+    inside `required_state` for the one case a client can still observe an
+    invite: an explicit `room_subscriptions` entry naming a room the caller
+    was invited to. `build_extensions()` (`sliding_sync_extensions.cpp`)
+    applies the same filter to the receipts and typing extensions. Both take
+    the caller's resolved ignore set as a parameter, resolved once by
+    `sliding_sync_json()` rather than per room/extension.
+  - Wired into `GET /messages` (`messages_json`) and
+    `GET /context/{eventId}` (`room_context_json`): both now take the
+    requesting user's mxid and drop non-state events from an ignored sender.
+    `/context` deliberately never filters the requested `event` field itself
+    — the caller asked for context around that exact event_id (e.g. a
+    permalink); only `events_before`/`events_after` are filtered.
+  - Wired into push delivery: `build_pending_push_deliveries()`
+    (`room_service.cpp`) checks each recipient's ignore list before even
+    looking up their pushers, so an ignored sender's message — or a
+    membership/invite push routed through the same function via
+    `dispatch_membership_push_notification` — never reaches
+    `dispatch_push_deliveries` and never queues a background delivery task.
+  - Judgement calls: ephemeral typing/receipt entries are treated as ordinary
+    (non-state) "events sent by that user" and suppressed the same as
+    messages, since the spec's client-behaviour clause is written in those
+    general terms and neither is a state event. Sliding sync's room *list*
+    only ever enumerates joined rooms (pre-existing, unrelated to this
+    change) — invite suppression there is provable only via `room_
+    subscriptions`, which is what the new test exercises.
+  - New `tests/conformance/test_ignoring_users_conformance.cpp`: an ignored
+    sender's message is absent from `/sync` while an unignored sender's is
+    present; a state event from an ignored sender is still delivered; a room
+    invite from an ignored sender is withheld from `/sync` while another
+    user's invite is not; un-ignoring restores delivery of events sent
+    afterward; a malformed `m.ignored_user_list` is treated as empty;
+    `/messages` and `/context` apply the same filter (with `/context`'s
+    target-event exemption).
+  - New `tests/unit/test_trust_safety_ignore_list.cpp`: pure-function coverage
+    of `parse_ignored_user_list`, `resolve_ignored_users`,
+    `is_delivery_suppressed` (including the state-event and invite-override
+    cases and fail-safe behaviour with an empty ignore set), and
+    `event_json_is_state_event`'s state_key-presence discriminator.
+  - New scenarios in `tests/integration/test_sliding_sync_flow.cpp` (timeline
+    suppression; invite suppression via `room_subscriptions`) and
+    `tests/integration/test_push_delivery_flow.cpp` (an ignored sender's
+    message, and an ignored inviter's invite, never queue a background push
+    task).
+
+- Routed `GET /_matrix/client/v3/notifications`, the last unimplemented piece
+  of this branch's push notification work. Requires authentication;
+  paginates via `from`/`next_token`, reusing the plain-stream-ordering token
+  format `GET /messages` already established (`next_token` is the
+  `stream_ordering` of the first not-yet-returned notification, so a
+  follow-up request with `from=<next_token>` continues without gap or
+  overlap); `only=highlight` filters to notifications whose matched rule set
+  the highlight tweak; `limit` defaults to 50 and clamps to 1000; `read`
+  reflects the caller's own `m.read`/`m.read.private` receipt in that room,
+  computed at request time via the existing `sync::read_receipt_ordering()`
+  rather than stored on the row.
+  - New `notifications` table (`migrations/009_notifications.sql`, schema
+    version 9): `user_id`, `room_id`, `event_id`, `stream_ordering`, `ts`,
+    `actions`, `profile_tag`, `highlight`, primary key `(user_id, event_id)`.
+    `PersistentNotification` plus `store_notification`/
+    `list_notifications_for_user` on `PersistentStore`, hydrated for both
+    SQLite and PostgreSQL, following the `PersistentPusher` pattern.
+  - Notifications are recorded in `room_service.cpp`'s
+    `build_pending_push_deliveries()` — the point where an event is already
+    evaluated against each recipient's push rules — for every local
+    recipient whose evaluation resolves `notify: true`. Recording is
+    **unconditional** on `server.push.enabled` and on the recipient having a
+    registered pusher: the spec says the endpoint returns events the user
+    "has been, or would have been, notified about," so a user with push
+    turned off, or never configured a pusher, still needs their history.
+    Only the Push Gateway delivery half of that function (building a
+    `PendingPushDelivery` and dispatching it to a real gateway) stays gated
+    on `push.enabled` + a pusher. Suppression for an ignored sender is
+    unchanged — recording happens after the same
+    `trust_safety::is_delivery_suppressed` check the gateway path already
+    used, so an ignored sender's event is invisible to `/notifications` too,
+    not a separate code path that could drift.
+  - `PushEvaluationResult` (`push_rules.hpp`) resolves a matched rule down to
+    `notify`/`tweak_sound`/`tweak_highlight` rather than keeping its raw
+    `actions` array, so a new `push_notification_actions_json()` helper
+    reconstructs the conventional shape (`["notify", {"set_tweak": ...}]`)
+    for storage — `profile_tag` is left empty, since recording happens once
+    per `(user, event)` rather than once per pusher and so cannot name one
+    pusher's configured tag.
+  - Retention: `store_notification` prunes the oldest rows for a `user_id`
+    beyond a fixed cap, `k_max_notifications_per_user` (200,
+    `persistent_store.cpp`), after every insert — the same "bound all
+    resources" policy already applied to `orphan_futures_`/
+    `k_max_in_flight_push_deliveries` for push delivery's background tasks,
+    now applied to this table's row count.
+  - New `tests/conformance/test_notifications_conformance.cpp`: a
+    notification appears with every required field after a matching event;
+    `only=highlight` filters to the highlight-tweaked notification (with the
+    unfiltered response as the positive counterpart); `limit` bounds the
+    page and `next_token` appears only when more results remain; `from`/
+    `next_token` pagination collects every notification exactly once with no
+    gap or overlap; `read` reflects an `m.read` receipt (notifications at or
+    before the receipted event become read, later ones stay unread).
+  - New scenarios in `tests/conformance/test_client_server_conformance.cpp`
+    replacing the two stale "404 M_UNRECOGNIZED (implementation gap)"
+    placeholders: routed-response shape, and unauthenticated access rejected
+    with 401 `M_MISSING_TOKEN`.
+  - New scenarios in `tests/integration/test_push_delivery_flow.cpp`: a
+    message from an ignored sender never appears in the ignoring recipient's
+    `GET /notifications` (with a non-ignored sender's message as the positive
+    counterpart), and a notification is recorded even when `push.enabled` is
+    false and the recipient has no pusher registered.
+  - `tests/unit/test_database_persistence.cpp` and
+    `tests/integration/test_persistent_homeserver_flow.cpp`: updated the
+    hardcoded migration-step/schema-version assertions for the new schema
+    version 9 and the `notifications` migration step.
+
+- Implemented Matrix v1.19 OpenID, both halves: `POST
+  /_matrix/client/v3/user/{userId}/openid/request_token` (client-server, mints
+  a token) and `GET /_matrix/federation/v1/openid/userinfo` (federation,
+  redeems it). Closes the last unrouted client-server endpoint this branch's
+  audit had flagged (`docs/todos/capability-gaps.md`).
+  - **Security-critical design constraint:** an OpenID token must never be
+    usable as a client-server access token. Kept structurally separate rather
+    than relying on a runtime check: a new `openid_tokens` table (never
+    `access_tokens`), a dedicated mint path (`homeserver::request_openid_
+    token`) and a dedicated redeem path (`homeserver::federation_openid_
+    userinfo`) that are the only functions touching that table. The ordinary
+    client-server auth gate (`authenticated_user`) never reads `openid_
+    tokens`; `federation_openid_userinfo` never reads `access_tokens`/
+    `sessions`. See `docs/threat-model.md` ("OpenID token confusion") and
+    `docs/auth-identity.md` ("OpenID tokens").
+  - New `openid_tokens` table (`migrations/010_openid_tokens.sql`, schema
+    version 10): `user_id`, `token_hash` (primary key), `expires_at` (epoch
+    milliseconds, always finite — unlike access tokens, an OpenID token never
+    has "no expiry"). `PersistentOpenidToken` plus `store_openid_token` on
+    `PersistentStore`, hydrated for both SQLite and PostgreSQL, following the
+    `PersistentPusher`/`PersistentAccessToken` pattern. Retention:
+    `store_openid_token` sweeps every already-expired row (across all users)
+    on each insert, since an OpenID token's natural bound is its own expiry
+    rather than a per-user row count.
+  - `POST /user/{userId}/openid/request_token`: authenticated, and the path
+    `userId` must equal the caller — a mismatch fails closed 403
+    `M_FORBIDDEN` via a pure string compare against the already-authenticated
+    user, so the response cannot reveal whether some other `userId` exists on
+    this server (verified against both a real other user and a nonexistent
+    one, asserting byte-identical responses). Mints a token good for one
+    hour (hardcoded — not operator-configurable, since a longer-lived OpenID
+    token still cannot reach the client-server surface) and returns the
+    spec's four required fields: `access_token`, `token_type` (`"Bearer"`),
+    `matrix_server_name`, `expires_in` (seconds). Rate-limited under the same
+    default per-IP bucket every other authenticated non-enumerated endpoint
+    (filter, account_data, pushers) uses.
+  - `GET /openid/userinfo`: per spec, requires no authentication and is not
+    rate-limited — the caller may be any third-party service, not
+    necessarily a homeserver — so it is dispatched entirely outside
+    `federation::handle_inbound_federation_request`'s X-Matrix
+    signature-required path, alongside the existing `GET
+    /_matrix/key/v2/server` bypass, in `src/homeserver/local_http_router.cpp`
+    / `src/homeserver/federation_proxy.cpp`
+    (`is_federation_openid_userinfo_endpoint`,
+    `federation_openid_userinfo_response`). An unknown or expired token gets
+    the identical `401 M_UNKNOWN_TOKEN` / "Access token unknown or expired"
+    body in both cases, matching the spec's own error shape, so a caller
+    cannot distinguish "never issued" from "expired".
+  - New `tests/unit/test_openid_token_store.cpp`: `store_openid_token`
+    persists, rejects empty `user_id`/malformed `token_hash`, and sweeps
+    already-expired rows on the next insert while leaving still-valid rows
+    (for other users) untouched.
+  - New scenarios in `tests/unit/test_homeserver_auth_service.cpp`:
+    `request_openid_token` returns all spec-required fields;
+    `federation_openid_userinfo` redeems a minted token, fails closed for an
+    unknown token, and fails closed identically for an expired one (asserted
+    against a real unknown-token call, not just "returns false"); an OpenID
+    token is rejected by `authenticated_user` and an ordinary access token is
+    rejected by `federation_openid_userinfo` — the two security-critical
+    separation directions.
+  - New scenarios in `tests/conformance/test_client_server_conformance.cpp`:
+    successful mint returns all four fields; unauthenticated request rejected
+    401; requesting a token for another user (both a real user and a
+    nonexistent one) rejected 403 with identical bodies; `GET
+    /openid/userinfo` returns the correct `sub` for a token minted through the
+    real client-server endpoint (full round trip); unknown token rejected
+    401 `M_UNKNOWN_TOKEN`; an ordinary access token rejected 401
+    `M_UNKNOWN_TOKEN` at `/openid/userinfo`.
+  - `tests/unit/test_database_persistence.cpp`: updated the hardcoded
+    migration-step/schema-version assertions for the new schema version 10
+    and the `openid_tokens` migration step.
+- **Three PR #479 review findings closed in the push delivery path** — two
+  P1, one P2.
+  - **P1: push notifications never fired for federated-room messages.**
+    Delivery was wired into `send_event()` (locally composed events) and the
+    membership paths, but an event accepted over federation persists through
+    `ingest_pdu_event()` (called from the `runtime.federation.pdu_sink`
+    callback wired by `wire_federation_callbacks_impl` in
+    `local_http_router.cpp`) and only ever published the sync token — it
+    never reached `build_pending_push_deliveries`/`dispatch_push_deliveries`.
+    A message from a remote room member, the ordinary federated-room case,
+    therefore produced no `/notifications` row and no Push Gateway request
+    for a local recipient. Fixed with a new
+    `homeserver::deliver_federation_push_notifications()` (`room_service.
+    cpp`/`.hpp`), called from the `pdu_sink` lambda after a PDU is accepted —
+    the single convergence point for both the direct main-process federation
+    path and the worker-relayed path, so it cannot double-fire. Reuses
+    `build_pending_push_deliveries`/`dispatch_push_deliveries` unchanged
+    rather than a second delivery path; passes the event's `state_key` as an
+    extra recipient for `m.room.member` PDUs the same way
+    `dispatch_membership_push_notification` already does, so a federated
+    invite can also fire `.m.rule.invite_for_me`. New integration coverage
+    in `tests/integration/test_push_delivery_flow.cpp`: a federation-accepted
+    message reaches a local recipient's pusher and `/notifications` history;
+    a locally composed event is still delivered exactly once now that the
+    federation path also dispatches push notifications.
+  - **P1: unbounded pushers per recipient.** `POST /pushers/set` has no
+    per-user limit on distinct `(app_id, pushkey)` pairs, and every
+    notify-worthy event copied and processed a recipient's *entire* pusher
+    list sequentially inside one background task — up to
+    `server.push.total_timeout_seconds` (default 30s) per pusher — so a
+    large enough list could keep a task, and repeated across events one of
+    the 128 in-flight slots, occupied for minutes to hours; the existing
+    128-task cap only bounds task *count*, not the work inside one task.
+    Fixed by bounding delivery, not registration: `room_service.cpp`'s new
+    `k_max_pushers_per_delivery` (10, comfortably above a real user's device
+    count) truncates the pusher list actually contacted per event, logging
+    `push.pushers.truncated` at `WARN` (never silently) the same way the
+    128-task cap logs `push.delivery.dropped`. Registration itself
+    (`POST /pushers/set`, `client_server.cpp`) is unchanged — out of this
+    branch's scope, owned by other in-flight work on this PR — so this is a
+    delivery-side bound, not a registration-side rejection; notification
+    history recording is unaffected (still unconditional per recipient,
+    independent of the pusher cap). New integration coverage: a recipient
+    with 12 registered pushers has only the first 10 actually contacted for
+    one event.
+  - **P2: `contains_display_name` read the wrong display name.** Spec: the
+    condition "matches messages where `content.body` contains the owner's
+    display name **in that room**" — a per-room value. `build_pending_push_
+    deliveries` instead read the recipient's account-wide profile row
+    (`database::find_profile`), so a room-specific membership display name,
+    or a stale account-wide one, evaluated the wrong text — missing a real
+    mention or matching an unrelated one. Fixed with a new
+    `room_member_display_name()` helper (`room_service.cpp`) that resolves
+    the recipient's current `m.room.member` state event content in that
+    room, falling back to the account-wide profile only when the membership
+    event carries no `displayname` at all. This resolver remains live
+    infrastructure feeding `PushEvaluationContext::receiving_user_display_
+    name` on every evaluation (see the P2 finding below, which removes the
+    only default rule that consumed it); a follow-on PR #479 review pass
+    found and closed three further defects in this same area — P1 below,
+    plus two more P2s.
+  - **P1 (PR #479 review): custom pusher `data` members were silently
+    dropped, both at delivery and at rest.** `push_gateway_client.cpp`
+    rebuilt the notify request's `data` object from only `data_format`,
+    discarding every other member the pusher's `data` dictionary carried at
+    registration — Push Gateway API v1.19: the Device object's `data` is "the
+    data dictionary passed in at pusher creation **minus the url key**",
+    i.e. everything else must reach the gateway verbatim (gateways commonly
+    use custom `data` members for routing/credentials). The `pushers` table
+    only ever stored `data_url`/`data_format`, so the loss actually started
+    at registration time. Added `data_extra_json` to `PersistentPusher` and
+    the `pushers` table (`migrations/011_pushers_data_extra.sql`, schema
+    version `11`) to store the rest of the dictionary, and a
+    `PushGatewayDevice::data_extra` field that `build_device_object()` now
+    merges into the outgoing `data` object (defensively skipping any stray
+    `url`/`format` member so the routing URL can never leak into the body
+    and `format` can never duplicate). **Gap closed:** `parse_pusher_set_
+    body()` (`client_server.cpp`) now captures every member of the request's
+    `data` object besides `url`/`format` into `MatrixPusherSetBody::data_
+    extra_json`, the `POST /pushers/set` handler persists it via
+    `PersistentPusher::data_extra_json`, `GET /pushers` echoes it back in the
+    pusher's `data` object, and `room_service.cpp`'s pusher-to-
+    `PushGatewayDevice` conversion threads it into `PushGatewayDevice::
+    data_extra` so a live delivery actually carries it. New coverage:
+    `build_notify_request_body` forwards custom `data_extra` members verbatim
+    and excludes/deduplicates `url`/`format`; `store_pusher`/`find_pusher`
+    round-trip `data_extra_json` including an upsert replacing it;
+    `test_client_server.cpp` proves `POST /pushers/set` → `GET /pushers`
+    round-trips a custom string and integer `data` member; `test_push_
+    delivery_flow.cpp`'s "custom pusher data members survive registration,
+    GET /pushers, and reach the push gateway's notify request" scenario
+    proves the full path end to end against a real mock gateway.
+  - **P2 (PR #479 review, `client_server.cpp:9071`): a failed `delete_pusher`
+    was reported to the client as success.** The `kind:null` branch of
+    `POST /pushers/set` discarded `delete_pusher`'s return value with
+    `std::ignore`, so a backend failure on an existing pusher still returned
+    `200 {}` — the client believes it disabled notifications while the
+    pusher stays live and keeps receiving pushes. Now checks whether the
+    pusher exists first (`find_pusher`); deleting a pusher that was never
+    registered remains a 200 no-op, matching the endpoint's existing
+    idempotent-retry behaviour and the spec's plain "the pusher ... is
+    deleted" wording, but a `delete_pusher` failure on one that DOES exist
+    now returns `500 M_UNKNOWN`. New unit coverage
+    (`tests/unit/test_client_server.cpp`): forcing the persistence backend to
+    fail (flipping `PersistentStoreBackend::sqlite` with an empty
+    `sqlite_path`, which `persist_transaction_to_backend` already fails
+    closed on) on an existing pusher returns an error instead of `200`, and
+    the pusher remains registered afterward.
+  - **P2 (PR #479 review, `client_server.cpp:9089`): cross-user pusher
+    replacement was not atomic.** `append:false` (the default) deleted every
+    OTHER user's pusher sharing the target `app_id`+`pushkey` BEFORE the
+    replacement pusher was persisted; a `store_pusher` failure after those
+    deletions left unrelated users' pushers gone with no replacement ever
+    created, silently disabling their notifications. Reordered: the
+    replacement is persisted first, and the other-user removals only run
+    once that succeeds, so a `store_pusher` failure now returns `500` having
+    deleted nothing. (No store-level API exists for wrapping this upsert and
+    the other-user deletes in one transaction — `store_pusher`/
+    `delete_pusher` each commit and update the in-memory mirror
+    independently — so reordering is the fix rather than a new transaction
+    primitive; see the reasoning in `client_server.cpp`'s comment at the call
+    site.) New unit coverage (`tests/unit/test_client_server.cpp`): with the
+    same forced-backend-failure seam, a `append:false` registration that
+    fails to store leaves another user's already-registered pusher for that
+    `app_id`+`pushkey` untouched.
+  - **P2 (PR #479 review): `contains_display_name` matched the display name
+    as a glob pattern, not literal text.** A display name is data supplied
+    by an arbitrary user, not an author-written pattern — matching it with
+    the same glob engine content-rule patterns use meant a display name of
+    literally `*` matched every message in every room (forcing a highlight
+    regardless of whether the message named that user at all), and `?`
+    matched any single character. Fixed with a new
+    `contains_literal_word_boundary_substring()` (`push_rules.cpp`) that
+    performs the same word-boundary substring search but compares the
+    candidate substring to the display name byte-for-byte, with no glob
+    interpretation. New unit coverage: a display name of `*` or containing
+    `?` no longer matches unrelated message bodies, but does match the
+    literal character; the ordinary case (a plain display name at a word
+    boundary) still matches.
+  - **P2 (PR #479 review): `.m.rule.roomnotif` and `.m.rule.contains_
+    display_name` were not spec-defined server defaults.** CS API v1.19
+    §push-notifications, "Predefined Rules": "[Changed in v1.17]: the legacy
+    default push rules that looked for mentions in the body of the event
+    were removed." The current spec's complete "Default Override Rules" list
+    has ten entries and does not include either rule_id; both were
+    pre-`m.mentions`-module rules that scanned `content.body` for literal
+    text (a display name, or `"@room"`) — exactly the false-positive pattern
+    `.m.rule.is_user_mention`/`.m.rule.is_room_mention` (structured
+    `m.mentions`, added v1.7) replaced: a message merely containing someone's
+    name, or the literal text `"@room"`, as ordinary prose highlighted the
+    recipient even when the sender's event carried no `m.mentions` at all
+    and the correct mentions rule did not match. Both were previously added
+    as server defaults (0.11.11) citing an Element SDK client-side warning
+    and claiming they are "MUST per the Matrix v1.18 CS API" — that claim
+    does not hold up against the checked-in v1.18/v1.19 spec text, so both
+    are removed from `default_push_ruleset.cpp`. The `contains_display_name`
+    *condition kind* itself remains spec-valid (deprecated, not removed) and
+    its evaluator is unaffected — only the two default rules that fired it
+    (and the `@room` body scan) unconditionally for every recipient are
+    gone. New unit coverage
+    (`tests/unit/test_default_push_ruleset.cpp`): the default ruleset no
+    longer contains either rule_id; a message body naming the recipient or
+    containing literal `"@room"` text still notifies via `.m.rule.message`
+    but is never highlighted. Conformance and integration coverage updated
+    to match (`test_client_server_conformance.cpp`'s `/pushrules/` default
+    ruleset assertion; `test_push_delivery_flow.cpp`'s display-name
+    scenario, which now proves the highlight does NOT fire rather than that
+    it does).
+- **P2 (PR #479 review, `client_server.cpp:6261`): `GET /rooms/{roomId}/context/{eventId}`
+  returned the room's *current* state, not "the state of the room at the
+  last event returned"** (CS API v1.19). When a room's name, membership,
+  power levels, or other state changed after the event a client asked for
+  context around, the response's `state` array leaked present-day values
+  into what was supposed to be a point-in-time view — a documented deviation
+  when `/context` landed, now fixed properly. New
+  `federation::resolve_state_event_ids_at()` (`event_query.hpp`/`.cpp`)
+  reuses the backward event-DAG walk `build_state_response`/
+  `build_state_ids_response` already use to answer the federation
+  `GET /state`/`/state_ids` endpoints (landed 0.8.10) rather than
+  reimplementing state reconstruction, then folds the pinned event's own
+  state contribution back in when it is itself a state event — the
+  federation endpoints deliberately stop one step short of that (SS API
+  `GET /state`: "prior to considering any state changes induced by the
+  requested event"), while CS API `/context` wants the state inclusive of
+  the last event returned. `room_context_json()` now tracks the event_id of
+  the last event actually placed in `events_after` (falling back to the
+  requested event itself when `events_after` is empty) and reconstructs
+  `state` at that position instead of calling
+  `build_current_state_events_array()`. New conformance coverage
+  (`test_client_server_conformance.cpp`): a room's name changes strictly
+  after the last event a bounded `limit` admits into `events_after`; `state`
+  still reports the pre-rename name, not the room's present-day one.
+  **`GET /messages` was deliberately left unchanged** and is now explicitly
+  tracked in `docs/todos/capability-gaps.md` as a divergence rather than
+  silently inconsistent: its `state` field is spec'd around chunk-relevance/
+  lazy-loading ("a list of state events relevant to showing the `chunk`"),
+  not a DAG position, so this fix's shape does not apply there — it would
+  need its own lazy-loading-aware implementation, which remains unstarted.
+- **P2 (PR #479 review, `config.hpp:107`): the `server.push.*` config keys
+  were undocumented.** Push delivery defaults to disabled
+  (`server.push.enabled=false`), and the only prior documentation change was
+  a wildcard entry in the reloadability table — an operator had no
+  discoverable way to turn on the delivery path this PR spent considerable
+  effort building. `docs/user-manual.md`'s configuration parameter reference
+  gained a "Push notifications — `server.push.*`" table (`enabled`,
+  `connect_timeout_seconds` default `10`, `total_timeout_seconds` default
+  `30`, read from `include/merovingian/config/config.hpp`) and
+  `config/merovingian.conf.example` gained a matching commented-out example
+  section. While in there, `server.oidc.*` and `server.identity_server.*`
+  were found to have the same gap (implemented, config-parseable, but never
+  in the parameter reference table) — an earlier task had matched that
+  precedent instead of fixing it. Both gained their own reference tables too
+  (`server.oidc.*`'s reloadability was also missing from the reloadability
+  policy table entirely; added as `Reloadable`, matching `reload_policy.cpp`'s
+  default fallthrough for keys with no explicit rule).
+
 ## 0.11.10
 
 Four follow-ons to the 0.11.9 identity-server work: a discovery test-seam for

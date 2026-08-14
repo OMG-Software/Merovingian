@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.11.10
+Version:        0.11.11
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -97,6 +97,8 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Mon Aug 10 2026 James Chapman <claude@ping.me.uk> - 0.11.11-1
+- Documentation only: Matrix v1.19 gap audit recorded in docs/todos/capability-gaps.md (Application Service API and Push Gateway API were absent and untracked; push delivery is a stub). No behaviour change.
 * Fri Aug 08 2026 James Chapman <claude@ping.me.uk> - 0.11.10-1
 - Discovery test-seam for hermetic identity-server mocking; bind/unbind/requestToken now drive the remote IS (mode-2 unbind via stored client_secret+sid); MSC4186 multi-list sliding-sync combination.
 * Fri Aug 07 2026 James Chapman <claude@ping.me.uk> - 0.11.9-1

@@ -656,6 +656,25 @@ namespace
                                                              column_text(row, 2), column_text(row, 3),
                                                              column_text(row, 4)});
                          }) &&
+               load_rows(connection,
+                         "SELECT user_id, app_id, pushkey, kind, app_display_name, device_display_name, "
+                         "profile_tag, lang, data_url, data_format, data_extra_json FROM pushers ORDER BY user_id, "
+                         "app_id, pushkey",
+                         [&store](sqlite3_stmt& row) {
+                             PersistentPusher entry{};
+                             entry.user_id = column_text(row, 0);
+                             entry.app_id = column_text(row, 1);
+                             entry.pushkey = column_text(row, 2);
+                             entry.kind = column_text(row, 3);
+                             entry.app_display_name = column_text(row, 4);
+                             entry.device_display_name = column_text(row, 5);
+                             entry.profile_tag = column_text(row, 6);
+                             entry.lang = column_text(row, 7);
+                             entry.data_url = column_text(row, 8);
+                             entry.data_format = column_text(row, 9);
+                             entry.data_extra_json = column_text(row, 10);
+                             store.pushers.push_back(std::move(entry));
+                         }) &&
                load_rows(connection, "SELECT watermark FROM sync_stream_watermark",
                          [&store](sqlite3_stmt& row) {
                              store.next_sync_stream_id = parse_u64(column_text(row, 0));
@@ -685,6 +704,30 @@ namespace
                              auto const sid = column_text(row, 9);
                              entry.sid = sid.empty() ? std::nullopt : std::optional<std::string>{sid};
                              store.account_threepids.push_back(std::move(entry));
+                         }) &&
+               load_rows(connection,
+                         "SELECT user_id, room_id, event_id, stream_ordering, ts, actions, profile_tag, highlight "
+                         "FROM notifications ORDER BY user_id, stream_ordering",
+                         [&store](sqlite3_stmt& row) {
+                             PersistentNotification entry{};
+                             entry.user_id = column_text(row, 0);
+                             entry.room_id = column_text(row, 1);
+                             entry.event_id = column_text(row, 2);
+                             entry.stream_ordering = parse_u64(column_text(row, 3));
+                             entry.ts = parse_u64(column_text(row, 4));
+                             entry.actions = column_text(row, 5);
+                             entry.profile_tag = column_text(row, 6);
+                             entry.highlight = text_is_true(column_text(row, 7));
+                             store.notifications.push_back(std::move(entry));
+                         }) &&
+               load_rows(connection, "SELECT user_id, token_hash, expires_at FROM openid_tokens ORDER BY user_id",
+                         [&store](sqlite3_stmt& row) {
+                             PersistentOpenidToken entry{};
+                             entry.user_id = column_text(row, 0);
+                             entry.token_hash = column_text(row, 1);
+                             entry.expires_at = std::chrono::system_clock::time_point{
+                                 std::chrono::milliseconds{parse_u64(column_text(row, 2))}};
+                             store.openid_tokens.push_back(std::move(entry));
                          });
     }
 

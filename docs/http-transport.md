@@ -262,6 +262,7 @@ cap applies regardless of which room, device, or media ID appears in the URL:
 | Login / registration | 20/60s per IP; 5/60s per user on `/login` |
 | Device and key APIs | 30/60s per IP |
 | Media APIs | 20/60s per IP |
+| Search API (`/_matrix/client/v3/search`) | 20/60s per IP — same tier as media; each request does real work (a bounded in-memory scan, see `ClientApiLimits::max_search_events_scanned`) rather than a cheap lookup |
 | Federation APIs | 120/60s per IP |
 | Admin routes (`/_merovingian/admin/*`) | 30/60s per IP |
 | Generic client APIs | 90/60s per IP fallback |

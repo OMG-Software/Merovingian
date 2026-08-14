@@ -631,6 +631,266 @@ threat it closes; the controls above are the standing defences these reinforce.
   mode-2 unbind body), fail closed with `502`/`403`, and release
   `runtime.mutex` for the network call.
 
+- **Outbound Push Gateway `notify` SSRF surface (v0.11.11, routed):** a
+  pusher's gateway URL (`data.url` on `POST /_matrix/client/v3/pushers/set`)
+  is supplied entirely by the registering client — unlike the identity-server
+  URL above, there is no operator allowlist for push gateways; any Matrix
+  client can point a pusher at any host. `merovingian::push::PushGatewayClient::notify()`
+  is therefore treated as hostile input from construction and fails closed the
+  same way the identity-server and federation outbound paths do: (1) **SSRF**
+  — the gateway host is resolved through `federation::CachedServerDiscovery`
+  (`ServerDiscoveryNetwork::lookup_addresses`), which applies the operator's
+  `deny_ip_ranges` (private/loopback ranges rejected) before returning pinned
+  addresses; the client never performs its own DNS lookup and never hands the
+  transport a client-supplied address directly — `http::OutboundClient` binds
+  the connection to the pinned address via `CURLOPT_RESOLVE`. (2) **URL shape
+  gate** — the gateway URL is independently re-validated as `https://` with a
+  path of exactly `/_matrix/push/v1/notify` before any resolution is
+  attempted (mirroring the registration-time check in `client_server.cpp`'s
+  `matrix_pusher_url_is_valid`), so this module does not rely solely on
+  upstream validation holding. (3) **Config gate, disabled by default,
+  enforced at both call sites** — `notify()` checks `config::PushConfig::enabled`
+  before doing anything else, and `room_service.cpp`'s
+  `build_pending_push_deliveries()` re-checks the same flag before reading a
+  single pusher row or building a gateway-bound `PendingPushDelivery` (rule
+  evaluation and `GET /_matrix/client/v3/notifications` history recording now
+  run unconditionally, ahead of this check — see the "Notification history"
+  entry below — but that is a local, in-process read/write with no network
+  reach; the gate that decides whether a byte can leave the process is
+  unchanged), so a deployment that has not opted into gateway delivery still
+  pays no DNS lookup, connection, or outbound byte per sent event. (4) **No
+  lock held
+  across network I/O** — like the identity and federation clients,
+  `PushGatewayClient` holds no lock of its own, and the routing that calls it
+  (`room_service.cpp`'s `run_pending_push_deliveries`) never holds
+  `runtime.mutex` while it runs: gateway calls happen entirely on a detached
+  `std::async` task parked in `HomeserverRuntime::orphan_futures_` (the same
+  mechanism `join_room`'s background member-fill task uses — see
+  `architecture.md`), so a slow or unreachable gateway cannot block or fail
+  the client-server request that triggered the notification. (5) **Rejection
+  handling stays narrow** — a `rejected` pushkey deletes exactly the one
+  `(user_id, app_id, pushkey)` row that pusher call targeted (one HTTP
+  request is sent per pusher, never a bundled multi-device request), so a
+  malicious or buggy gateway response cannot cause deletion of a pusher it
+  was never asked to notify. `runtime.mutex` is re-acquired only for the
+  duration of that single `delete_pusher` call, mirroring the identity-client
+  pattern of dropping the lock for the network round trip and re-acquiring it
+  only to persist the outcome.
+
+- **Notification history storage (v0.11.11, routed):** `GET
+  /_matrix/client/v3/notifications` needs history to serve, so
+  `build_pending_push_deliveries()` records one `PersistentNotification` row
+  (`database::store_notification`) per local recipient whose push rule
+  evaluation resolves `notify: true` — deliberately unconditional on
+  `push.enabled` and on the recipient having any pusher at all (the endpoint
+  returns events the user "has been, or would have been, notified about";
+  a user with push turned off must still see this history). This is a
+  same-server, in-memory-plus-local-database write triggered by an event the
+  requesting user was already authorized to see (the recipient is already a
+  room member or the invite target) — it opens no new network path and adds
+  no new trust boundary. Two properties bound its own resource cost: (1)
+  **per-user retention** — `store_notification` prunes the oldest rows for
+  that `user_id` beyond a fixed cap (`k_max_notifications_per_user`, 200,
+  `persistent_store.cpp`) after every insert, so the table cannot grow
+  without bound under sustained message volume, mirroring the fix applied to
+  `orphan_futures_` below; (2) **ignore-list suppression applies first** — a
+  notification is recorded only after the same
+  `trust_safety::is_delivery_suppressed` check the gateway path uses, so an
+  event from a sender the recipient has ignored is invisible to
+  `GET /notifications` exactly as it is to Push Gateway delivery, not a
+  separate code path that could drift out of sync.
+
+- **Push delivery background tasks were unbounded (v0.11.11, fixed):**
+  `dispatch_push_deliveries` parked one `std::async` future in
+  `HomeserverRuntime::orphan_futures_` per qualifying event and never reaped
+  a completed one, unlike `join_room`'s make_join race, which already reaps
+  before parking (see `architecture.md`). With `push.enabled = true`, this
+  was an unbounded memory leak proportional to message volume (one
+  `orphan_futures_` entry per event, forever) and unbounded thread creation
+  — a busy room, or a client sending many events in a burst, drove one OS
+  thread per event with no ceiling. Fixed by two changes shared with the
+  join-race path via a single helper: `reap_completed_futures()` removes
+  every already-finished future from `orphan_futures_` (via a non-blocking
+  `wait_for(0s)`, never `.get()`/`.wait()` on a still-running one) before a
+  new one is parked, and a dedicated counter,
+  `HomeserverRuntime::push_delivery_in_flight_` (a `std::atomic<std::size_t>`,
+  tracked separately from the shared vector's total size so a large join
+  race cannot starve push delivery or vice versa — see the deadlock note
+  below for why it is atomic rather than mutex-guarded), is
+  checked against a fixed cap, `k_max_in_flight_push_deliveries` (128,
+  `room_service.cpp`) before a task is spawned. At capacity the delivery is
+  dropped — never spawned, never blocked on — and a warning is logged: a
+  missed push is recoverable (the client still sees the event on its next
+  `/sync`), an exhausted thread pool is not. This is the same "bound all
+  resources, fail closed toward availability" trade-off as the `via`-list
+  bound above.
+
+- **Membership transitions never reached push delivery (v0.11.11, fixed):**
+  delivery previously fired only from `send_event()` (`/send` and `/state`
+  PUTs); the membership-mutating endpoints (invite/join/leave/kick/ban, and
+  the 3PID invite) each go through their own dedicated functions in
+  `room_service.cpp` and never called `build_pending_push_deliveries()` /
+  `dispatch_push_deliveries()` at all. The concrete consequence: the default,
+  enabled-by-default rule `.m.rule.invite_for_me` — whose entire purpose is
+  to notify a user they were invited — could never fire, since nothing ever
+  evaluated push rules for a membership event. Fixed by routing every
+  membership transition through the same pipeline
+  (`dispatch_membership_push_notification()`, called from
+  `persist_membership_transition` — the shared helper behind invite/ban/
+  kick/leave/knock — and from `join_room` and `invite_user_by_threepid`
+  directly). The one correctness subtlety: `build_pending_push_deliveries()`
+  only evaluates rules for `LocalRoom::members`, i.e. *joined* members, but
+  an invitee is by definition not yet joined
+  (`apply_runtime_membership` only adds to `members` on `"join"`), so an
+  invite target was invisible to the old membership-only loop even where the
+  loop *was* reachable. `build_pending_push_deliveries()` now accepts an
+  `extra_recipients` span for exactly this case; entries equal to the sender
+  or already a joined member are silently absorbed, so every call site can
+  pass the membership target unconditionally. This is a same-server-only,
+  in-memory routing change — it does not alter the SSRF/URL/config gates
+  above, all of which still apply per delivery.
+
+- **The in-flight counter above deadlocked runtime shutdown (v0.11.11,
+  fixed):** `push_delivery_in_flight_` was originally a plain `std::size_t`,
+  and the background task decremented it as its *final action* while holding
+  `orphan_futures_mutex_`. `HomeserverRuntime::~HomeserverRuntime()` (and the
+  integration test helper `wait_for_background_tasks()`) held that same
+  mutex for their entire drain, including the blocking `future.wait()` calls
+  on every parked future. A destructor that already held the mutex could
+  never see the task finish, because the task could never acquire the mutex
+  it needed to finish first — deadlock. Push delivery is disabled by default
+  so no running deployment was exposed, but any deployment that enables it
+  would hang indefinitely on shutdown with a delivery still in flight. Fixed
+  two ways: `push_delivery_in_flight_` is now a `std::atomic<std::size_t>`,
+  so the background task's decrement never takes `orphan_futures_mutex_` at
+  all (the dispatcher-side check-and-increment still does, since that
+  read-modify-write against the cap must stay correct across concurrent
+  dispatchers); and both waiters now hold `orphan_futures_mutex_` only long
+  enough to move the parked futures out of `orphan_futures_`, waiting on the
+  moved-out copies with the mutex released. This also means a runtime
+  shutdown no longer blocks a concurrent `dispatch_push_deliveries` call
+  trying to reap or park a future while the drain is in progress. Every
+  other site that parks or reaps `orphan_futures_` (the make_join race in
+  `room_service.cpp`'s `join_room`) was audited and does not wait on a
+  future while holding the mutex — this failure mode was unique to the two
+  fixed call sites.
+
+- **`m.ignored_user_list` was storable but never enforced (v0.11.11, fixed):**
+  a client could set the account-data key (account data is generic storage)
+  but the server never filtered anything by it — every /sync, /messages,
+  /context, sliding sync, and push-notification response ignored it
+  entirely, so a user who ignored an abuser kept receiving that abuser's
+  messages, invites, and push notifications regardless. This is a
+  safety-relevant gap for a homeserver whose stated design goal is user
+  safety: the *only* client-facing control a harassed user has short of
+  leaving a room or blocking at the OS/network level did nothing. Fixed by
+  `merovingian::trust_safety::ignore_list` — a single shared predicate
+  (`is_delivery_suppressed`) called from every delivery surface: `GET /sync`
+  (timeline, invite list, ephemeral typing/receipts), MSC4186 sliding sync
+  (timeline, required_state, receipts/typing extensions),
+  `GET /messages`, `GET /context/{eventId}`, and
+  `build_pending_push_deliveries()` (message and membership/invite push).
+  Scope, deliberately narrow per spec: this is a **delivery-side filter
+  only** — it does not touch event persistence, authorization, state
+  resolution, or federation acceptance (an ignored user's events are still
+  fully valid room state, exactly as the spec requires: "Servers must still
+  send state events sent by ignored users to clients"), it does not hide
+  history already delivered to the client, and it does not stop the ignored
+  user from continuing to send into a shared room — see
+  `docs/trust-safety.md` "What ignoring a user does NOT protect against" for
+  the full boundary. A malformed or absent `m.ignored_user_list` fails safe
+  to "nothing ignored" (`parse_ignored_user_list` never throws and treats
+  any parse failure as an empty set) rather than either erroring or
+  over-suppressing.
+
+- **Federated events never reached push delivery (v0.11.11, fixed):** the
+  fixes above wired delivery into `send_event()` (locally composed events)
+  and every membership-mutating path, but an event accepted over federation
+  persists through a different function, `ingest_pdu_event()`, called from
+  the `runtime.federation.pdu_sink` callback — which only ever published the
+  sync token and never called `build_pending_push_deliveries()`/
+  `dispatch_push_deliveries()`. The practical consequence: a message from a
+  remote room member, the ordinary case for any room with federated
+  membership, produced no `/notifications` history row and no Push Gateway
+  request for a local recipient — push notifications silently did not work
+  for federated rooms at all. Fixed with `deliver_federation_push_
+  notifications()` (`room_service.cpp`), called from the `pdu_sink` lambda
+  (`local_http_router.cpp`'s `wire_federation_callbacks_impl`) immediately
+  after a PDU is accepted. This lambda is the single convergence point for
+  every accepted PDU regardless of origin — both the direct main-process
+  federation path (`inbound_request.cpp` calling `runtime.pdu_sink`
+  synchronously) and the worker-relayed path (`worker_pool.cpp`'s
+  `pdu_ingest` IPC handler calling the same `runtime_.federation.pdu_sink`
+  on main) — so wiring the call in exactly one place cannot result in a PDU
+  being delivered twice. Reuses `build_pending_push_deliveries`/
+  `dispatch_push_deliveries` unchanged rather than a second delivery
+  implementation that could drift from the local one; carries the same
+  `push.enabled` gate, the same off-request-path `std::async` dispatch, and
+  the same `k_max_in_flight_push_deliveries` cap as the local path.
+
+- **Unbounded pushers per recipient (v0.11.11, fixed):** `POST /pushers/set`
+  has no per-user limit on the number of distinct `(app_id, pushkey)` pairs
+  a user may register. Before this fix, every notify-worthy event copied a
+  recipient's *entire* pusher list (`database::list_pushers_for_user`) and
+  processed it sequentially inside a single `dispatch_push_deliveries`
+  background task — up to `server.push.total_timeout_seconds` (default 30s)
+  per pusher. `k_max_in_flight_push_deliveries` (128) bounds how many
+  *tasks* may run concurrently, but nothing bounded the work inside one
+  task: an authenticated user (no special privilege required — any account
+  can call `POST /pushers/set` repeatedly) registering, say, 500 pushers
+  could keep a single delivery task — and, since every subsequent message
+  to that user repeats the same cost, potentially many of the 128 in-flight
+  slots over time — occupied for tens of minutes to hours, materially
+  degrading push delivery for every other user on a shared server. Fixed by
+  bounding delivery rather than registration: `room_service.cpp`'s
+  `k_max_pushers_per_delivery` (10) caps how many of a recipient's pushers
+  are actually contacted per event; the rest are skipped, logged at `WARN`
+  (`push.pushers.truncated`, mirroring the existing `push.delivery.dropped`
+  log for the task-level cap) rather than dropped silently. Registration
+  itself (`POST /pushers/set`) still accepts an unbounded number of pushers
+  — this is a delivery-side mitigation, not a registration-side limit — so
+  a user's excess pushers beyond the tenth are simply never contacted for
+  any given event rather than being rejected up front; a future
+  registration-time cap remains open work (see `docs/todos/capability-gaps.md`).
+  Notification-history recording (`GET /notifications`) is unaffected by
+  this cap — it happens once per `(user, event)` before the pusher list is
+  even read, so a user with more than ten pushers still sees every
+  notification in their history even though not every pusher is contacted.
+
+- **OpenID token confusion (identified and mitigated during implementation,
+  v0.11.11):** `POST /_matrix/client/v3/user/{userId}/openid/request_token`
+  (Matrix v1.19 CS API §OpenID) mints a bearer credential meant for exactly
+  one purpose — proving identity to a third party via the federation `GET
+  /_matrix/federation/v1/openid/userinfo` endpoint. The risk: reusing the
+  existing access-token machinery carelessly (the same table, the same
+  lookup function, the same hash-and-compare path used for
+  `Authorization: Bearer`) would mint something that also authenticates the
+  full client-server API — handing every third-party service a user logs
+  into via OpenID a privilege-escalation path into that user's account. This
+  is a token-confusion vulnerability class, not a hypothetical: the two
+  token kinds are byte-for-byte indistinguishable opaque strings, so nothing
+  short of a structural separation prevents one being presented as the
+  other. Mitigated by keeping OpenID tokens in a table (`openid_tokens`,
+  migration `010_openid_tokens.sql`) and a lookup path
+  (`homeserver::federation_openid_userinfo`) fully disjoint from
+  `access_tokens` and `authenticated_user` — see `docs/auth-identity.md`
+  ("OpenID tokens") for the full design and `docs/database-persistence.md`
+  for the schema. The two directions are conformance- and unit-tested
+  explicitly: an OpenID token presented to `authenticated_user` (the gate
+  behind every ordinary `Authorization: Bearer` check) is rejected, and an
+  ordinary access token presented to `federation_openid_userinfo` is
+  rejected — both fail exactly as if the token had never been issued, so a
+  probing caller cannot even learn that token-kind confusion was attempted.
+  A secondary, smaller risk in the same feature: the redeem endpoint is
+  spec-mandated to require no authentication at all (it must be reachable by
+  arbitrary third parties, not just other homeservers), so it must never be
+  routed through the federation module's X-Matrix signature-required
+  dispatch path — doing so by accident would either wrongly reject every
+  legitimate caller or, worse, create an incentive to weaken that path's
+  authentication requirement generally. Mitigated by dispatching it
+  entirely outside `federation::handle_inbound_federation_request`, in the
+  same homeserver-router bypass used for `GET /_matrix/key/v2/server`.
+
 ## Security principles
 
 - Fail closed.

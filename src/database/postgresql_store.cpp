@@ -1012,6 +1012,81 @@ namespace
             }
         }
 
+        auto pushers = query_rows(connection, "postgresql_load_pushers",
+                                  "SELECT user_id, app_id, pushkey, kind, app_display_name, device_display_name, "
+                                  "profile_tag, lang, data_url, data_format, data_extra_json FROM pushers "
+                                  "ORDER BY user_id, app_id, pushkey");
+        if (!pushers.ok)
+        {
+            return false;
+        }
+        for (auto const& row : pushers.rows)
+        {
+            if (row.size() >= 10U)
+            {
+                PersistentPusher entry{};
+                entry.user_id = row[0];
+                entry.app_id = row[1];
+                entry.pushkey = row[2];
+                entry.kind = row[3];
+                entry.app_display_name = row[4];
+                entry.device_display_name = row[5];
+                entry.profile_tag = row[6];
+                entry.lang = row[7];
+                entry.data_url = row[8];
+                entry.data_format = row[9];
+                if (row.size() >= 11U)
+                {
+                    entry.data_extra_json = row[10];
+                }
+                store.pushers.push_back(std::move(entry));
+            }
+        }
+
+        auto notifications_result = query_rows(connection, "postgresql_load_notifications",
+                                               "SELECT user_id, room_id, event_id, stream_ordering, ts, actions, "
+                                               "profile_tag, highlight FROM notifications "
+                                               "ORDER BY user_id, stream_ordering");
+        if (!notifications_result.ok)
+        {
+            return false;
+        }
+        for (auto const& row : notifications_result.rows)
+        {
+            if (row.size() >= 8U)
+            {
+                PersistentNotification entry{};
+                entry.user_id = row[0];
+                entry.room_id = row[1];
+                entry.event_id = row[2];
+                entry.stream_ordering = parse_u64(row[3]);
+                entry.ts = parse_u64(row[4]);
+                entry.actions = row[5];
+                entry.profile_tag = row[6];
+                entry.highlight = text_is_true(row[7]);
+                store.notifications.push_back(std::move(entry));
+            }
+        }
+
+        auto openid_tokens_result = query_rows(connection, "postgresql_load_openid_tokens",
+                                               "SELECT user_id, token_hash, expires_at FROM openid_tokens "
+                                               "ORDER BY user_id");
+        if (!openid_tokens_result.ok)
+        {
+            return false;
+        }
+        for (auto const& row : openid_tokens_result.rows)
+        {
+            if (row.size() >= 3U)
+            {
+                PersistentOpenidToken entry{};
+                entry.user_id = row[0];
+                entry.token_hash = row[1];
+                entry.expires_at = std::chrono::system_clock::time_point{std::chrono::milliseconds{parse_u64(row[2])}};
+                store.openid_tokens.push_back(std::move(entry));
+            }
+        }
+
         auto const watermark = query_rows(connection, "postgresql_load_sync_stream_watermark",
                                           "SELECT watermark FROM sync_stream_watermark");
         if (!watermark.ok)

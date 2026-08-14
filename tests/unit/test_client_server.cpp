@@ -4303,6 +4303,237 @@ SCENARIO("Pushers set endpoint accepts registrations and deletions from authenti
     }
 }
 
+// PR #479 review finding P1: parse_pusher_set_body discarded every member of
+// the request's `data` object beyond url/format, so a client-supplied
+// routing/credential field could never reach the push gateway even though
+// PersistentPusher::data_extra_json and PushGatewayDevice::data_extra already
+// existed to carry it. Proves the client-facing half of the round trip:
+// registration captures the custom members and GET /pushers echoes them back
+// alongside url/format. See test_push_delivery_flow.cpp for the other half
+// (the mock gateway actually receiving them on notify).
+SCENARIO("POST /pushers/set persists custom data members and GET /pushers returns them",
+         "[homeserver][client-server][pushers]")
+{
+    GIVEN("a started runtime with a registered and logged-in user")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const reg = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST",
+                      "/_matrix/client/v3/register",
+                      {},
+                      merovingian::tests::registration_json("alice", "CorrectHorse7!")});
+        REQUIRE(reg.response.status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+
+        WHEN("she registers a pusher whose data object carries custom members beyond url/format")
+        {
+            auto constexpr pusher_with_extra_data =
+                R"({"app_display_name":"Example App","app_id":"org.example.app.ios",)"
+                R"("data":{"url":"https://push.example.org/_matrix/push/v1/notify","format":"event_id_only",)"
+                R"("routing_key":"custom-routing-value","priority":5},)"
+                R"("device_display_name":"iPhone","kind":"http","lang":"en","pushkey":"custom-data-pushkey"})";
+            auto const set_response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/pushers/set", token, pusher_with_extra_data});
+            REQUIRE(set_response.response.status == 200U);
+
+            THEN("GET /pushers returns the pusher with its custom data members intact, alongside url/format")
+            {
+                auto const get_response = merovingian::homeserver::handle_client_server_request(
+                    runtime, {"GET", "/_matrix/client/v3/pushers", token, {}});
+                REQUIRE(get_response.response.status == 200U);
+                auto const body = merovingian::tests::parse_object(get_response.response.body);
+                auto const* pushers = merovingian::tests::object_member_as_array(body, "pushers");
+                REQUIRE(pushers != nullptr);
+                REQUIRE(pushers->size() == 1U);
+                auto const* pusher_object =
+                    std::get_if<merovingian::canonicaljson::Object>(&pushers->front().storage());
+                REQUIRE(pusher_object != nullptr);
+                auto const* data = merovingian::tests::object_member_as_object(*pusher_object, "data");
+                REQUIRE(data != nullptr);
+                auto const* url = merovingian::tests::string_member(*data, "url");
+                auto const* format = merovingian::tests::string_member(*data, "format");
+                auto const* routing_key = merovingian::tests::string_member(*data, "routing_key");
+                auto const* priority = merovingian::tests::int_member(*data, "priority");
+                REQUIRE(url != nullptr);
+                REQUIRE(*url == "https://push.example.org/_matrix/push/v1/notify");
+                REQUIRE(format != nullptr);
+                REQUIRE(*format == "event_id_only");
+                REQUIRE(routing_key != nullptr);
+                REQUIRE(*routing_key == "custom-routing-value");
+                REQUIRE(priority != nullptr);
+                REQUIRE(*priority == 5);
+            }
+        }
+    }
+}
+
+// PR #479 review finding P2 (client_server.cpp:9071): the kind:null delete
+// branch discarded delete_pusher's return value with std::ignore, so a
+// backend failure on an EXISTING pusher was still reported to the client as
+// 200 {} — the client believes notifications are off while the pusher stays
+// live. Forces that failure via the same seam
+// test_database_backend_config.cpp-style tests use: flipping the store to
+// PersistentStoreBackend::sqlite with an empty sqlite_path makes
+// persist_transaction_to_backend (src/database/sqlite_store.cpp) fail
+// closed without touching disk. No finer-grained "fail just this one call"
+// seam exists at the handler level.
+SCENARIO("POST /pushers/set with kind:null reports a backend delete failure instead of 200",
+         "[homeserver][client-server][pushers]")
+{
+    GIVEN("a started runtime with a registered pusher")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const reg = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST",
+                      "/_matrix/client/v3/register",
+                      {},
+                      merovingian::tests::registration_json("alice", "CorrectHorse7!")});
+        REQUIRE(reg.response.status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+
+        auto constexpr pusher_body =
+            R"({"app_display_name":"Example App","app_id":"org.example.app.ios",)"
+            R"("data":{"url":"https://push.example.org/_matrix/push/v1/notify"},)"
+            R"("device_display_name":"iPhone","kind":"http","lang":"en","pushkey":"fail-delete-pushkey"})";
+        auto const set_response = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/pushers/set", token, pusher_body});
+        REQUIRE(set_response.response.status == 200U);
+
+        WHEN("the persistence backend fails and she requests kind:null to delete that pusher")
+        {
+            runtime.homeserver.database.persistent_store.backend =
+                merovingian::database::PersistentStoreBackend::sqlite;
+            runtime.homeserver.database.persistent_store.sqlite_path.clear();
+
+            auto const delete_response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/pushers/set", token,
+                          R"({"app_id":"org.example.app.ios","kind":null,"pushkey":"fail-delete-pushkey"})"});
+
+            THEN("the response reports failure, not 200, and the pusher is still registered")
+            {
+                REQUIRE(delete_response.response.status == 500U);
+                REQUIRE(delete_response.response.body.find("M_UNKNOWN") != std::string::npos);
+
+                // Restore the memory backend so GET /pushers below reads the
+                // still-registered pusher back through the normal path.
+                runtime.homeserver.database.persistent_store.backend =
+                    merovingian::database::PersistentStoreBackend::memory;
+                auto const get_response = merovingian::homeserver::handle_client_server_request(
+                    runtime, {"GET", "/_matrix/client/v3/pushers", token, {}});
+                REQUIRE(get_response.response.status == 200U);
+                auto const body = merovingian::tests::parse_object(get_response.response.body);
+                auto const* pushers = merovingian::tests::object_member_as_array(body, "pushers");
+                REQUIRE(pushers != nullptr);
+                REQUIRE(pushers->size() == 1U);
+            }
+        }
+    }
+}
+
+// PR #479 review finding P2 (client_server.cpp:9089): append:false deleted
+// OTHER users' pushers sharing this app_id+pushkey BEFORE the replacement
+// pusher was persisted, so a store_pusher failure after those deletions left
+// unrelated users' notifications silently disabled with no replacement ever
+// created. The fix reorders: persist the replacement first, only then remove
+// stale pushers for other users. This proves the ordering: a forced
+// store_pusher failure (same backend-flip seam as the delete-failure test
+// above) must leave alice's already-registered pusher untouched.
+SCENARIO("POST /pushers/set append:false leaves other users' pushers intact when the replacement fails to store",
+         "[homeserver][client-server][pushers]")
+{
+    GIVEN("alice already has a pusher registered under an app_id+pushkey that bob is about to reuse")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const alice_reg = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST",
+                      "/_matrix/client/v3/register",
+                      {},
+                      merovingian::tests::registration_json("alice", "CorrectHorse7!")});
+        REQUIRE(alice_reg.response.status == 200U);
+        auto const alice_login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"ADEV"})"});
+        REQUIRE(alice_login.response.status == 200U);
+        auto const alice_token = login_token(alice_login.response.body);
+
+        auto const bob_reg = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST",
+                      "/_matrix/client/v3/register",
+                      {},
+                      merovingian::tests::registration_json("bob", "CorrectHorse7!")});
+        REQUIRE(bob_reg.response.status == 200U);
+        auto const bob_login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@bob:example.org"},"password":"CorrectHorse7!","device_id":"BDEV"})"});
+        REQUIRE(bob_login.response.status == 200U);
+        auto const bob_token = login_token(bob_login.response.body);
+
+        auto constexpr shared_pusher_body =
+            R"({"app_display_name":"Shared App","app_id":"org.example.shared",)"
+            R"("data":{"url":"https://push.example.org/_matrix/push/v1/notify"},)"
+            R"("device_display_name":"Device","kind":"http","lang":"en","pushkey":"shared-pushkey"})";
+        auto const alice_set = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/pushers/set", alice_token, shared_pusher_body});
+        REQUIRE(alice_set.response.status == 200U);
+
+        WHEN("bob registers append:false for the same app_id+pushkey while the backend is failing")
+        {
+            runtime.homeserver.database.persistent_store.backend =
+                merovingian::database::PersistentStoreBackend::sqlite;
+            runtime.homeserver.database.persistent_store.sqlite_path.clear();
+
+            auto const bob_set = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/pushers/set", bob_token, shared_pusher_body});
+
+            THEN("bob's registration fails, and alice's pusher was never deleted")
+            {
+                REQUIRE(bob_set.response.status == 500U);
+
+                // Restore the memory backend so GET /pushers below reads
+                // alice's pusher back through the normal path.
+                runtime.homeserver.database.persistent_store.backend =
+                    merovingian::database::PersistentStoreBackend::memory;
+                auto const alice_get = merovingian::homeserver::handle_client_server_request(
+                    runtime, {"GET", "/_matrix/client/v3/pushers", alice_token, {}});
+                REQUIRE(alice_get.response.status == 200U);
+                auto const body = merovingian::tests::parse_object(alice_get.response.body);
+                auto const* pushers = merovingian::tests::object_member_as_array(body, "pushers");
+                REQUIRE(pushers != nullptr);
+                REQUIRE(pushers->size() == 1U);
+            }
+        }
+    }
+}
+
 SCENARIO("Keys upload accepts bodies larger than 4 KiB", "[homeserver][client-server][key-api]")
 {
     GIVEN("a started runtime with a registered and logged-in user")

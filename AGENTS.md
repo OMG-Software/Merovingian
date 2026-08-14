@@ -37,7 +37,7 @@ The most secure Matrix Protocol homeserver ever created. Secure by design, imple
 - Tests should test behaviour and state rather than specific outcomes.
 - Create a new test(s) for the desired outcome prior to making the code change.
 - Spec conformance tests should be implemented wherever possible.
-- After code change, run the new test(s).
+- After code change, run the new test(s). See "Verifying Work" below — a run you did not read the result of does not count.
 - Before creating a new branch from main, pull from origin so that main is up to date.
 - Bump the version number on creating a new branch. See versioning doc for all the places where the version number needs updating.
 - Update the docs when code change invalidates something.
@@ -48,6 +48,34 @@ The most secure Matrix Protocol homeserver ever created. Secure by design, imple
 - Always work in feature or bug branches, never main.
 - Make the correct change for the ask, not the smallest.
 - Update `CHANGELOG.md` on every change.
+
+## Verifying Work
+
+Claims about tests are only worth what they were checked against. These rules exist
+because each one has already cost this project real time.
+
+- **A run still in progress is not a result.** Never report success while a build is
+  running, and never say you will "follow up with results later" — a session that ends
+  does not follow up, and the work lands unverified. Run the suite, wait for it, read
+  the outcome, *then* report.
+- **`python build.py wsl` exceeds a 10-minute foreground limit.** Run it in the
+  background and wait for it to finish.
+- **Read the real summary** from `build-wsl/meson-logs/testlog.txt` — the `Ok:` /
+  `Fail:` / `Timeout:` counts at the end. Report those numbers, not an impression.
+- **A TIMEOUT is a FAILURE.** "48 Ok, 0 Fail, 1 Timeout" is a failing suite. A hang is
+  usually a deadlock, and a deadlock in a background task is a production shutdown bug,
+  not a flaky test.
+- **`testlog.txt` only captures output for *failing* tests.** Grepping it for a scenario
+  name therefore cannot prove that scenario ran. To confirm a passing test executed, run
+  the binary directly with a filter.
+- **Catch2 registers `SCENARIO("x")` as `"Scenario: x"`**, so filtering on the raw
+  scenario string matches nothing. Filter by tag instead:
+  `./build-wsl/tests/merovingian-unit-tests "[push]"`.
+- **Do not poll with `pgrep -f "meson test"` in a shell loop.** The loop's own command
+  line contains that string, so it matches itself and spins forever. Bracket the first
+  character (`pgrep -f "[m]eson test"`) or poll the log file's modification time.
+- **Verify delegated work yourself.** When a subagent reports green, confirm it from the
+  log before committing. Trust the change, check the claim.
 
 ## Ignore list
 Ignore these dirs:

@@ -38,7 +38,23 @@ remaining work before PostgreSQL-backed production operation.
   `client_secret` and `sid` TEXT columns to `account_threepids` via
   `migrations/007_account_threepids_columns.sql` so an IS-bound 3PID can be
   remotely unbound via IS unbind auth mode 2 (the stored pair is replayed in the
-  unbind body; empty for local-only bindings).
+  unbind body; empty for local-only bindings), and schema version `8` adds the
+  `pushers` table via `migrations/008_pushers.sql` so push notification
+  pushers registered via `POST /_matrix/client/v3/pushers/set` survive
+  restarts, and schema version `9` adds the `notifications` table via
+  `migrations/009_notifications.sql` so `GET /_matrix/client/v3/notifications`
+  history survives restarts (see "Notification history" below for the
+  retention policy that keeps it bounded), and schema version `10` adds the
+  `openid_tokens` table via `migrations/010_openid_tokens.sql` so tokens
+  minted by `POST /_matrix/client/v3/user/{userId}/openid/request_token`
+  survive restarts and can be redeemed by
+  `GET /_matrix/federation/v1/openid/userinfo` (see "OpenID tokens" below),
+  and schema version `11` ALTERs a `data_extra_json` column onto the
+  existing `pushers` table via `migrations/011_pushers_data_extra.sql` (no
+  new table) so custom members of a pusher's registration-time `data`
+  dictionary — beyond the `url`/`format` keys already stored as dedicated
+  columns — survive restarts and can be forwarded to the Push Gateway (see
+  "Pushers" below).
   After the project reaches production-ready `v1.0.0`, every schema change
   must add a forward migration and keep deployed databases compatible.
 - SQLite RAII wrappers around database connections and prepared statements.
@@ -151,7 +167,7 @@ remaining work before PostgreSQL-backed production operation.
   uses the compiled catalog in `src/database/migration.cpp` (upgrade step
   version `7` "account_threepids_columns"; downgrade step version `6`
   "drop_account_threepids_columns" — column drop precedes the v5 table drop
-  on the downgrade walk); `schema::current_schema_version()` returns `7U`.
+  on the downgrade walk).
 - `PersistentThreePidBinding` struct (now carrying optional `client_secret`
   and `sid`) and the
   `store_account_threepid` / `find_account_threepid` /
@@ -161,6 +177,121 @@ remaining work before PostgreSQL-backed production operation.
   (`sqlite_store.cpp`) and PostgreSQL (`postgresql_store.cpp`); rows are
   hydrated into the in-memory store on backend open so existing bindings are
   visible immediately after restart.
+- `pushers` table (schema version `8`, migration `migrations/008_pushers.sql`)
+  records the push notification pushers a user has registered via
+  `POST /_matrix/client/v3/pushers/set`. Columns are `user_id`, `app_id`,
+  `pushkey`, `kind`, `app_display_name`, `device_display_name`,
+  `profile_tag`, `lang`, `data_url`, `data_format` (the pusher's `data`
+  dictionary's `url`/`format` keys, stored as plain columns rather than
+  nested JSON), and — since schema version `11`, migration
+  `migrations/011_pushers_data_extra.sql` — `data_extra_json` (a
+  canonical-JSON-serialized object holding every OTHER member of the
+  pusher's `data` dictionary at registration time; PR #479 review finding
+  P1: the Push Gateway API's notify Device object is defined as "the data
+  dictionary passed in at pusher creation minus the url key", so a custom
+  member beyond `url`/`format` must survive a restart and reach the gateway,
+  not just be discarded), with a primary key on `(user_id, app_id,
+  pushkey)` — the spec's uniqueness rule: setting a pusher with the same
+  `app_id` and `pushkey` for the same user replaces it in place. The
+  runtime migration path uses the compiled catalog in
+  `src/database/migration.cpp` (upgrade step version `8` "pushers", version
+  `11` "pushers_data_extra"; downgrade step version `7` "drop_pushers",
+  version `10` "drop_pushers_data_extra"); `schema::current_schema_
+  version()` returns `11U`. The `PersistentPusher` struct and the
+  `store_pusher` / `find_pusher` / `delete_pusher` / `list_pushers_for_user`
+  store functions
+  ([persistent_store.hpp](../include/merovingian/database/persistent_store.hpp))
+  persist, look up, list, and remove pushers, following the same pattern as
+  `PersistentThreePidBinding` above; implemented for both SQLite and
+  PostgreSQL, hydrated on backend open. `merovingian::push::PushGatewayClient`
+  (`push_gateway_client.hpp`) forwards a device's `data_extra` members
+  verbatim into the notify request body, and — since the PR #479 follow-up —
+  `client_server.cpp`'s `parse_pusher_set_body()` captures every `data`
+  member beyond `url`/`format` at registration time and `room_service.cpp`'s
+  pusher-to-`PushGatewayDevice` conversion threads it through to a live
+  delivery, so the gap noted above is closed end to end; see
+  `docs/todos/capability-gaps.md`.
+- `notifications` table (schema version `9`, migration
+  `migrations/009_notifications.sql`) records the history
+  `GET /_matrix/client/v3/notifications` serves. Columns are `user_id`,
+  `room_id`, `event_id`, `stream_ordering` (the triggering event's global
+  stream position — unique per row, since a recipient gets at most one
+  notification per event, and doubles as this table's pagination key exactly
+  like `events.stream_ordering` already does for `GET /messages`), `ts` (the
+  event's `origin_server_ts`, milliseconds), `actions` (the canonical-JSON
+  actions array reconstructed from the matched push rule's resolved outcome —
+  `push_rules.hpp`'s `PushEvaluationResult` does not keep the rule's raw
+  actions array, so `room_service.cpp`'s `push_notification_actions_json`
+  rebuilds the conventional `["notify", {"set_tweak": ...}, ...]` shape),
+  `profile_tag` (left empty: this recording happens once per `(user, event)`
+  rather than once per pusher, so it cannot name one pusher's configured
+  tag), and `highlight` (`"true"`/`"false"`, mirroring the matched rule's
+  `set_tweak: highlight` action, so `?only=highlight` can filter without
+  re-parsing `actions`), with a primary key on `(user_id, event_id)`. The
+  runtime migration path uses the compiled catalog in
+  `src/database/migration.cpp` (upgrade step version `9` "notifications";
+  downgrade step version `8` "drop_notifications").
+  The `PersistentNotification`
+  struct and the `store_notification` / `list_notifications_for_user` store
+  functions
+  ([persistent_store.hpp](../include/merovingian/database/persistent_store.hpp))
+  persist and list rows, following the same pattern as `PersistentPusher`
+  above; implemented for both SQLite and PostgreSQL, hydrated on backend
+  open. `room_service.cpp`'s `build_pending_push_deliveries()` calls
+  `store_notification` for every local recipient whose push rule evaluation
+  resolves `notify: true` — **unconditionally**, regardless of
+  `server.push.enabled` or whether that recipient has a registered pusher:
+  `GET /notifications` returns events the user "has been, or would have
+  been, notified about" (spec), so a user with push turned off must still
+  see their history. Only the Push Gateway delivery half of that function
+  (building a `PendingPushDelivery` and dispatching it) stays gated on
+  `push.enabled` + a registered pusher. The `read` field the endpoint reports
+  is *not* stored on the row — it is computed at request time from
+  `sync::read_receipt_ordering()` against the caller's current `m.read`/
+  `m.read.private` receipt in that room, so it always reflects the latest
+  receipt without a write-side update on every receipt change.
+  **Retention:** `store_notification` prunes the oldest rows for that
+  `user_id` beyond a fixed cap, `k_max_notifications_per_user` (200,
+  `persistent_store.cpp`), after every insert — chosen to cover many
+  multiples of the endpoint's own default page size while keeping even a
+  very active user's history table small; chosen independently of
+  `room_service.cpp`'s `k_max_in_flight_push_deliveries` (that bounds
+  concurrent background threads, this bounds persisted rows). This closes
+  the same class of unbounded-growth vector `k_max_in_flight_push_deliveries`
+  fixed for push delivery's background-task count.
+- `openid_tokens` table (schema version `10`, migration
+  `migrations/010_openid_tokens.sql`) stores the short-lived tokens minted by
+  `POST /_matrix/client/v3/user/{userId}/openid/request_token` (Matrix v1.19
+  CS API §OpenID) and redeemed by `GET /_matrix/federation/v1/openid/userinfo`
+  (SS API §OpenID). Columns are `user_id`, `token_hash` (primary key), and
+  `expires_at` (epoch milliseconds, encoded the same way as
+  `access_tokens.expires_at` / `refresh_tokens.expires_at` via
+  `expires_at_text`/`parse_expires_at`). Unlike an access token's expiry,
+  `expires_at` is never optional here — every OpenID token has a finite
+  lifetime. The runtime migration path uses the compiled catalog in
+  `src/database/migration.cpp` (upgrade step version `10` "openid_tokens";
+  downgrade step version `9` "drop_openid_tokens"); `schema::current_schema_
+  version()` returns `10U`. This is a **separate table from `access_tokens`**,
+  by design — see `docs/auth-identity.md` ("OpenID tokens") and
+  `docs/threat-model.md` for why that separation is the entire security
+  property this feature depends on. The `PersistentOpenidToken` struct and
+  the `store_openid_token` store function
+  ([persistent_store.hpp](../include/merovingian/database/persistent_store.hpp))
+  persist rows, following the same hashed-token pattern as
+  `PersistentAccessToken`; implemented for both SQLite and PostgreSQL,
+  hydrated on backend open. `homeserver::request_openid_token` (`src/
+  homeserver/auth_service.cpp`) mints and hashes the token — reusing the same
+  keyed-hash machinery (`issue_token_hash`, preferring the master-key-derived
+  v4 HMAC) access tokens use, since the hash *algorithm* is not the security
+  boundary here — and `homeserver::federation_openid_userinfo` is the only
+  function that ever reads this table back; the ordinary client-server auth
+  gate (`authenticated_user`) never consults it, and `federation_openid_
+  userinfo` never consults `access_tokens`/`sessions`. **Retention:**
+  `store_openid_token` sweeps every already-expired row (across all users, not
+  just the one being inserted) on each insert — appropriate because an OpenID
+  token's natural bound is its own short expiry (one hour; see
+  `docs/auth-identity.md`) rather than a per-user row count, unlike
+  `notifications`' count-based cap above.
 - `/sync` calls `database::ensure_sync_stream_id_ahead_of()` when the client's
   `since` token is ahead of the server's counter. This recovers live deployments
   whose counter rolled back below a stored token (for example, when the watermark

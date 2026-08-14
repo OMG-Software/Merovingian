@@ -1055,6 +1055,267 @@ SCENARIO("GET /whoami returns required spec fields", "[conformance][client-serve
     }
 }
 
+// --- OpenID (Matrix v1.19 CS API §OpenID / SS API §OpenID) ------------------------
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3useruseridopenidrequest_token
+//       ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1openiduserinfo
+//
+// Covers both halves together because the token minted by the client-server
+// endpoint is meaningless without the federation endpoint that redeems it,
+// and vice versa -- neither half is independently testable against the spec.
+
+SCENARIO("POST /user/{userId}/openid/request_token returns required spec fields",
+         "[conformance][client-server][openid]")
+{
+    GIVEN("a logged-in user")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+
+        WHEN("alice requests an OpenID token for herself")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/user/@alice:example.org/openid/request_token", token, "{}"});
+
+            THEN("the response is 200 with all spec-required fields")
+            {
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+
+                // Spec MUST: access_token is present and non-empty.
+                auto const* access_token = string_member(body, "access_token");
+                REQUIRE(access_token != nullptr);
+                REQUIRE(!access_token->empty());
+
+                // Spec MUST: token_type is the literal string "Bearer".
+                auto const* token_type = string_member(body, "token_type");
+                REQUIRE(token_type != nullptr);
+                REQUIRE(*token_type == "Bearer");
+
+                // Spec MUST: matrix_server_name identifies this homeserver.
+                auto const* server_name = string_member(body, "matrix_server_name");
+                REQUIRE(server_name != nullptr);
+                REQUIRE(*server_name == "example.org");
+
+                // Spec MUST: expires_in is a required integer field.
+                auto const* expires_in = int_member(body, "expires_in");
+                REQUIRE(expires_in != nullptr);
+                REQUIRE(*expires_in > 0);
+            }
+        }
+    }
+}
+
+SCENARIO("POST /user/{userId}/openid/request_token without authentication is rejected",
+         "[conformance][client-server][openid]")
+{
+    GIVEN("a running homeserver")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+
+        WHEN("the request carries no access token")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"POST", "/_matrix/client/v3/user/@alice:example.org/openid/request_token", {}, "{}"});
+
+            THEN("the request is rejected as unauthenticated")
+            {
+                // Spec MUST: "Requires authentication: Yes".
+                REQUIRE(response.response.status == 401U);
+            }
+        }
+    }
+}
+
+SCENARIO("POST /user/{userId}/openid/request_token for a mismatched userId fails closed without revealing "
+         "whether that user exists",
+         "[conformance][client-server][openid][security]")
+{
+    GIVEN("alice is logged in, bob is a real registered user, and carol does not exist")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const alice_token = logged_in_token(started.runtime);
+        REQUIRE(!register_and_login(started.runtime, "bob").empty());
+
+        WHEN("alice requests a token naming bob, an existing other user")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/user/@bob:example.org/openid/request_token", alice_token, "{}"});
+
+            THEN("the request is rejected 403 M_FORBIDDEN")
+            {
+                REQUIRE(response.response.status == 403U);
+                auto const body = parse_object(response.response.body);
+                auto const* errcode = string_member(body, "errcode");
+                REQUIRE(errcode != nullptr);
+                REQUIRE(*errcode == "M_FORBIDDEN");
+            }
+        }
+
+        WHEN("alice requests a token naming carol, who does not exist on this server")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/user/@carol:example.org/openid/request_token", alice_token, "{}"});
+
+            THEN("the request is rejected with the identical 403 M_FORBIDDEN response as for a real other user")
+            {
+                // Security: the response must not let a caller distinguish
+                // "not you" from "no such user" -- both are the same status
+                // and errcode as the bob case above.
+                REQUIRE(response.response.status == 403U);
+                auto const body = parse_object(response.response.body);
+                auto const* errcode = string_member(body, "errcode");
+                REQUIRE(errcode != nullptr);
+                REQUIRE(*errcode == "M_FORBIDDEN");
+            }
+        }
+    }
+}
+
+SCENARIO("GET /_matrix/federation/v1/openid/userinfo returns sub for a token minted by request_token",
+         "[conformance][federation][openid]")
+{
+    GIVEN("alice has minted an OpenID token via the client-server endpoint")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+        auto const mint = merovingian::homeserver::handle_client_server_request(
+            started.runtime, {"POST", "/_matrix/client/v3/user/@alice:example.org/openid/request_token", token, "{}"});
+        REQUIRE(mint.response.status == 200U);
+        auto const mint_body = parse_object(mint.response.body);
+        auto const* openid_token = string_member(mint_body, "access_token");
+        REQUIRE(openid_token != nullptr);
+
+        WHEN("a third party redeems it at the federation userinfo endpoint")
+        {
+            auto const userinfo = merovingian::homeserver::handle_federation_http_request(
+                started.runtime.homeserver,
+                {"GET", "/_matrix/federation/v1/openid/userinfo?access_token=" + *openid_token, {}, {}});
+
+            THEN("the response is 200 with the owning Matrix user ID")
+            {
+                // Spec MUST: sub is the Matrix User ID who generated the token.
+                REQUIRE(userinfo.status == 200U);
+                auto const body = parse_object(userinfo.body);
+                auto const* sub = string_member(body, "sub");
+                REQUIRE(sub != nullptr);
+                REQUIRE(*sub == "@alice:example.org");
+            }
+        }
+    }
+}
+
+SCENARIO("GET /_matrix/federation/v1/openid/userinfo fails closed for an unknown token",
+         "[conformance][federation][openid][error]")
+{
+    GIVEN("a running homeserver")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+
+        WHEN("a token that was never issued is presented")
+        {
+            auto const userinfo = merovingian::homeserver::handle_federation_http_request(
+                started.runtime.homeserver,
+                {"GET", "/_matrix/federation/v1/openid/userinfo?access_token=mvo_never_issued", {}, {}});
+
+            THEN("the response is 401 M_UNKNOWN_TOKEN")
+            {
+                // Spec MUST: "401 The token was not recognized or has expired."
+                REQUIRE(userinfo.status == 401U);
+                auto const body = parse_object(userinfo.body);
+                auto const* errcode = string_member(body, "errcode");
+                REQUIRE(errcode != nullptr);
+                REQUIRE(*errcode == "M_UNKNOWN_TOKEN");
+            }
+        }
+    }
+}
+
+SCENARIO("GET /_matrix/federation/v1/openid/userinfo rejects an ordinary client-server access token",
+         "[conformance][federation][openid][security]")
+{
+    GIVEN("alice's ordinary client-server access token")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+
+        WHEN("it is presented to the federation userinfo endpoint as if it were an OpenID token")
+        {
+            auto const userinfo = merovingian::homeserver::handle_federation_http_request(
+                started.runtime.homeserver,
+                {"GET", "/_matrix/federation/v1/openid/userinfo?access_token=" + token, {}, {}});
+
+            THEN("it is rejected exactly like an unknown token")
+            {
+                // Security-critical: an access token must never redeem as an
+                // OpenID token (see docs/threat-model.md).
+                REQUIRE(userinfo.status == 401U);
+                auto const body = parse_object(userinfo.body);
+                auto const* errcode = string_member(body, "errcode");
+                REQUIRE(errcode != nullptr);
+                REQUIRE(*errcode == "M_UNKNOWN_TOKEN");
+            }
+        }
+    }
+}
+
+SCENARIO("An OpenID token is rejected as a client-server access token",
+         "[conformance][client-server][openid][security]")
+{
+    GIVEN("alice has minted an OpenID token via the client-server endpoint")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const real_token = logged_in_token(started.runtime);
+        auto const mint = merovingian::homeserver::handle_client_server_request(
+            started.runtime,
+            {"POST", "/_matrix/client/v3/user/@alice:example.org/openid/request_token", real_token, "{}"});
+        REQUIRE(mint.response.status == 200U);
+        auto const mint_body = parse_object(mint.response.body);
+        auto const* openid_token = string_member(mint_body, "access_token");
+        REQUIRE(openid_token != nullptr);
+        // Sanity: confirm this is genuinely a live OpenID token before
+        // proving it cannot double as an access token below -- otherwise a
+        // rejection here would be meaningless (any garbage string is
+        // "rejected").
+        auto const userinfo_sanity = merovingian::homeserver::handle_federation_http_request(
+            started.runtime.homeserver,
+            {"GET", "/_matrix/federation/v1/openid/userinfo?access_token=" + *openid_token, {}, {}});
+        REQUIRE(userinfo_sanity.status == 200U);
+
+        WHEN("the OpenID token is presented as an Authorization: Bearer credential to GET /account/whoami")
+        {
+            auto const whoami = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v3/account/whoami", *openid_token, {}});
+
+            THEN("it is rejected exactly like an unknown access token, and does not authenticate as alice")
+            {
+                // Security-critical: an OpenID token lives only in
+                // openid_tokens, never access_tokens, so it must never pass
+                // the ordinary client-server auth gate (see
+                // docs/threat-model.md, "OpenID token confusion"). If this
+                // ever authenticated, every third-party service alice logged
+                // into via OpenID would gain full control of her account.
+                REQUIRE(whoami.response.status == 401U);
+                auto const body = parse_object(whoami.response.body);
+                auto const* errcode = string_member(body, "errcode");
+                REQUIRE(errcode != nullptr);
+                REQUIRE(*errcode == "M_UNKNOWN_TOKEN");
+                // The response must not carry alice's identity anywhere.
+                REQUIRE(whoami.response.body.find("@alice:example.org") == std::string::npos);
+            }
+        }
+    }
+}
+
 SCENARIO("Registration-issued session reports its device and can upload device keys for that device",
          "[conformance][client-server][whoami][e2ee][keys]")
 {
@@ -9510,8 +9771,322 @@ SCENARIO("GET /rooms/{roomId}/event/{eventId} returns the requested event",
 
 // --- GET /_matrix/client/v3/rooms/{roomId}/context/{eventId} -----------------
 // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3roomsroomidcontexteventid
-// IMPLEMENTATION GAP: event context not yet implemented.
-SCENARIO("GET /rooms/{roomId}/context/{eventId} returns 404 M_UNRECOGNIZED (implementation gap)",
+// Summary: returns the events immediately before/after a given event plus
+// room state, for permalink resolution.
+SCENARIO("GET /rooms/{roomId}/context/{eventId} returns events_before/event/events_after/state in order",
+         "[conformance][client-server][room-participation]")
+{
+    GIVEN("a running client-server and a logged-in user with a room and three messages")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+        auto const room_id = create_room(started.runtime, token);
+        auto const first = send_text(started.runtime, token, room_id, "ctx-1", "first");
+        auto const middle = send_text(started.runtime, token, room_id, "ctx-2", "middle");
+        auto const last = send_text(started.runtime, token, room_id, "ctx-3", "last");
+
+        WHEN("GET /rooms/{roomId}/context/{eventId} is called for the middle event")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v3/rooms/" + room_id + "/context/" + middle, token, {}});
+
+            THEN("the response carries events_before, event, events_after and state in spec order")
+            {
+                // Spec MUST: events_before is reverse-chronological, events_after
+                // is chronological, and `event` is the requested event itself.
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+
+                auto const* event_obj = object_member_as_object(body, "event");
+                REQUIRE(event_obj != nullptr);
+                auto const* event_id = string_member(*event_obj, "event_id");
+                REQUIRE(event_id != nullptr);
+                REQUIRE(*event_id == middle);
+
+                // events_before also carries the room's own creation events
+                // (m.room.create, m.room.member, ...), which precede `first`
+                // in the timeline — only the nearest neighbour is pinned down
+                // here; the "limit" scenario below checks the count.
+                auto const* before = object_member_as_array(body, "events_before");
+                REQUIRE(before != nullptr);
+                REQUIRE(!before->empty());
+                auto const* before_event = std::get_if<merovingian::canonicaljson::Object>(&(*before)[0U].storage());
+                REQUIRE(before_event != nullptr);
+                auto const* before_id = string_member(*before_event, "event_id");
+                REQUIRE(before_id != nullptr);
+                REQUIRE(*before_id == first);
+
+                auto const* after = object_member_as_array(body, "events_after");
+                REQUIRE(after != nullptr);
+                REQUIRE(after->size() == 1U);
+                auto const* after_event = std::get_if<merovingian::canonicaljson::Object>(&(*after)[0U].storage());
+                REQUIRE(after_event != nullptr);
+                auto const* after_id = string_member(*after_event, "event_id");
+                REQUIRE(after_id != nullptr);
+                REQUIRE(*after_id == last);
+
+                auto const* state = object_member_as_array(body, "state");
+                REQUIRE(state != nullptr);
+                REQUIRE(!state->empty());
+                for (auto const& value : *state)
+                {
+                    auto const* state_event = std::get_if<merovingian::canonicaljson::Object>(&value.storage());
+                    REQUIRE(state_event != nullptr);
+                    auto const* state_event_id = string_member(*state_event, "event_id");
+                    REQUIRE(state_event_id != nullptr);
+                    REQUIRE(!state_event_id->empty());
+                }
+
+                // Spec MUST: start/end are pagination tokens for GET /messages.
+                auto const* start = string_member(body, "start");
+                REQUIRE(start != nullptr);
+                REQUIRE(!start->empty());
+                auto const* end = string_member(body, "end");
+                REQUIRE(end != nullptr);
+                REQUIRE(!end->empty());
+            }
+        }
+    }
+}
+
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3roomsroomidcontexteventid
+// Summary: `state` is "The state of the room at the last event returned" --
+// not the room's *current* state. This is only observable when something
+// paginated *past* the returned window has since changed room state: the
+// last event actually placed in events_after (bounded by `limit`) must
+// predate the state change for the two to diverge.
+SCENARIO("GET /rooms/{roomId}/context/{eventId} returns state at the last event returned, not current state",
+         "[conformance][client-server][room-participation]")
+{
+    GIVEN("a room whose name changes after the messages a bounded context window returns")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+        auto const room_id = create_room(started.runtime, token);
+
+        auto const name_response = merovingian::homeserver::handle_client_server_request(
+            started.runtime, {"PUT", "/_matrix/client/v3/rooms/" + room_id + "/state/m.room.name", token,
+                              R"({"name":"Original Name"})"});
+        REQUIRE(name_response.response.status == 200U);
+
+        auto const target = send_text(started.runtime, token, room_id, "ctx-state-target", "target");
+        // Two events after `target`; with limit=2 (after_limit=1) only the
+        // nearer one (after1) lands inside the returned window.
+        auto const after1 = send_text(started.runtime, token, room_id, "ctx-state-after1", "after one");
+        auto const after2 = send_text(started.runtime, token, room_id, "ctx-state-after2", "after two");
+        std::ignore = after2;
+
+        // The room name changes only after both `after1` and `after2` -- i.e.
+        // strictly after the last event the bounded context window below will
+        // actually return.
+        auto const renamed_response = merovingian::homeserver::handle_client_server_request(
+            started.runtime,
+            {"PUT", "/_matrix/client/v3/rooms/" + room_id + "/state/m.room.name", token, R"({"name":"Changed Name"})"});
+        REQUIRE(renamed_response.response.status == 200U);
+
+        WHEN("GET context/{eventId}?limit=2 is called for the target event")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"GET", "/_matrix/client/v3/rooms/" + room_id + "/context/" + target + "?limit=2", token, {}});
+
+            THEN("state carries the room name as of the last returned event, not the room's current name")
+            {
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+
+                // Confirm the test's premise: events_after is bounded to
+                // exactly `after1`, so the name change (which happened after
+                // `after2`) falls outside the returned window.
+                auto const* after = object_member_as_array(body, "events_after");
+                REQUIRE(after != nullptr);
+                REQUIRE(after->size() == 1U);
+                auto const* after_event = std::get_if<merovingian::canonicaljson::Object>(&(*after)[0U].storage());
+                REQUIRE(after_event != nullptr);
+                REQUIRE(*string_member(*after_event, "event_id") == after1);
+
+                auto const* state = object_member_as_array(body, "state");
+                REQUIRE(state != nullptr);
+                auto found_name_event = false;
+                for (auto const& value : *state)
+                {
+                    auto const* state_event = std::get_if<merovingian::canonicaljson::Object>(&value.storage());
+                    REQUIRE(state_event != nullptr);
+                    auto const* type = string_member(*state_event, "type");
+                    REQUIRE(type != nullptr);
+                    if (*type != "m.room.name")
+                    {
+                        continue;
+                    }
+                    found_name_event = true;
+                    auto const* content = object_member_as_object(*state_event, "content");
+                    REQUIRE(content != nullptr);
+                    auto const* name = string_member(*content, "name");
+                    REQUIRE(name != nullptr);
+                    // Spec MUST: state at the last event returned (after1),
+                    // which predates the rename -- must read "Original Name",
+                    // not the room's present-day "Changed Name".
+                    REQUIRE(*name == "Original Name");
+                }
+                REQUIRE(found_name_event);
+            }
+        }
+    }
+}
+
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3roomsroomidcontexteventid
+// Summary: "limit" bounds the combined size of events_before and events_after.
+SCENARIO("GET /rooms/{roomId}/context/{eventId} honours the limit query parameter",
+         "[conformance][client-server][room-participation]")
+{
+    GIVEN("a running client-server and a logged-in user with a room and five messages")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+        auto const room_id = create_room(started.runtime, token);
+        auto const e1 = send_text(started.runtime, token, room_id, "ctx-limit-1", "one");
+        std::ignore = e1;
+        auto const e2 = send_text(started.runtime, token, room_id, "ctx-limit-2", "two");
+        auto const e3 = send_text(started.runtime, token, room_id, "ctx-limit-3", "three");
+        auto const e4 = send_text(started.runtime, token, room_id, "ctx-limit-4", "four");
+        auto const e5 = send_text(started.runtime, token, room_id, "ctx-limit-5", "five");
+        std::ignore = e5;
+
+        WHEN("GET context/{eventId}?limit=2 is called for the middle event")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"GET", "/_matrix/client/v3/rooms/" + room_id + "/context/" + e3 + "?limit=2", token, {}});
+
+            THEN("events_before plus events_after never exceed the requested limit")
+            {
+                // Spec MUST: "The limit applies to the sum of the events_before
+                // and events_after arrays."
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+                auto const* before = object_member_as_array(body, "events_before");
+                auto const* after = object_member_as_array(body, "events_after");
+                REQUIRE(before != nullptr);
+                REQUIRE(after != nullptr);
+                REQUIRE(before->size() + after->size() == 2U);
+
+                // The two closest neighbours (e2, e4) must be the ones returned;
+                // the limit must not admit the farther events (e1, e5).
+                REQUIRE(before->size() == 1U);
+                auto const* before_event = std::get_if<merovingian::canonicaljson::Object>(&(*before)[0U].storage());
+                REQUIRE(before_event != nullptr);
+                REQUIRE(*string_member(*before_event, "event_id") == e2);
+
+                REQUIRE(after->size() == 1U);
+                auto const* after_event = std::get_if<merovingian::canonicaljson::Object>(&(*after)[0U].storage());
+                REQUIRE(after_event != nullptr);
+                REQUIRE(*string_member(*after_event, "event_id") == e4);
+            }
+        }
+    }
+}
+
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3roomsroomidcontexteventid
+// "Requires authentication: Yes" plus the same room-visibility gate as the
+// sibling /messages and /event/{eventId} endpoints (joined members only).
+SCENARIO("GET /rooms/{roomId}/context/{eventId} returns 403 M_FORBIDDEN for a non-member",
+         "[conformance][client-server][room-participation]")
+{
+    GIVEN("a room with a message and a second user who never joined it")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const alice = logged_in_token(started.runtime);
+        auto const bob = register_and_login(started.runtime, "bob");
+        auto const room_id = create_room(started.runtime, alice);
+        auto const event_id = send_message(started.runtime, alice, room_id);
+
+        WHEN("the non-member requests context for the event")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v3/rooms/" + room_id + "/context/" + event_id, bob, {}});
+
+            THEN("the server rejects the request with 403 M_FORBIDDEN")
+            {
+                // Spec MUST: only a user permitted to see the event (here: a
+                // joined member) may retrieve its context.
+                REQUIRE(response.response.status == 403U);
+                auto const body = parse_object(response.response.body);
+                auto const* errcode = string_member(body, "errcode");
+                REQUIRE(errcode != nullptr);
+                REQUIRE(*errcode == "M_FORBIDDEN");
+            }
+        }
+    }
+}
+
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3roomsroomidcontexteventid
+SCENARIO("GET /rooms/{roomId}/context/{eventId} returns 404 M_NOT_FOUND for an unknown event id",
+         "[conformance][client-server][room-participation]")
+{
+    GIVEN("a running client-server and a logged-in user with a room")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+        auto const room_id = create_room(started.runtime, token);
+
+        WHEN("GET context/{eventId} is called with an event id that was never sent")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"GET", "/_matrix/client/v3/rooms/" + room_id + "/context/%24nonexistent%3Aexample.org", token, {}});
+
+            THEN("the server returns 404 M_NOT_FOUND")
+            {
+                REQUIRE(response.response.status == 404U);
+                auto const body = parse_object(response.response.body);
+                auto const* errcode = string_member(body, "errcode");
+                REQUIRE(errcode != nullptr);
+                REQUIRE(*errcode == "M_NOT_FOUND");
+            }
+        }
+    }
+}
+
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3roomsroomidcontexteventid
+// An event id from a different room must fail exactly like an unknown one —
+// the response must not leak that the event exists elsewhere.
+SCENARIO("GET /rooms/{roomId}/context/{eventId} returns 404 M_NOT_FOUND for an event in a different room",
+         "[conformance][client-server][room-participation]")
+{
+    GIVEN("two rooms owned by the same user, with a message only in the second room")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+        auto const room_a = create_room(started.runtime, token);
+        auto const room_b = create_room(started.runtime, token);
+        auto const event_in_b = send_message(started.runtime, token, room_b);
+
+        WHEN("GET /rooms/{roomA}/context/{eventId} is called with roomB's event id")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v3/rooms/" + room_a + "/context/" + event_in_b, token, {}});
+
+            THEN("the server returns 404 M_NOT_FOUND, identical to an unknown event id")
+            {
+                REQUIRE(response.response.status == 404U);
+                auto const body = parse_object(response.response.body);
+                auto const* errcode = string_member(body, "errcode");
+                REQUIRE(errcode != nullptr);
+                REQUIRE(*errcode == "M_NOT_FOUND");
+            }
+        }
+    }
+}
+
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3roomsroomidcontexteventid
+// "filter: A JSON RoomEventFilter to filter the returned events with."
+SCENARIO("GET /rooms/{roomId}/context/{eventId} rejects a malformed filter with 400 M_BAD_JSON",
          "[conformance][client-server][room-participation]")
 {
     GIVEN("a running client-server and a logged-in user with a room and a message")
@@ -9522,19 +10097,98 @@ SCENARIO("GET /rooms/{roomId}/context/{eventId} returns 404 M_UNRECOGNIZED (impl
         auto const room_id = create_room(started.runtime, token);
         auto const event_id = send_message(started.runtime, token, room_id);
 
-        WHEN("GET /rooms/{roomId}/context/{eventId} is called")
+        WHEN("GET context/{eventId}?filter=<invalid JSON> is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime, {"GET", "/_matrix/client/v3/rooms/" + room_id + "/context/" + event_id, token, {}});
+                started.runtime,
+                {"GET",
+                 "/_matrix/client/v3/rooms/" + room_id + "/context/" + event_id + "?filter=%7Bnot-json",
+                 token,
+                 {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("the server rejects the request with 400 M_BAD_JSON rather than ignoring the filter")
             {
-                // IMPLEMENTATION GAP: event context not supported.
-                REQUIRE(response.response.status == 404U);
+                REQUIRE(response.response.status == 400U);
                 auto const body = parse_object(response.response.body);
                 auto const* errcode = string_member(body, "errcode");
                 REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
+                REQUIRE(*errcode == "M_BAD_JSON");
+            }
+        }
+    }
+}
+
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3roomsroomidcontexteventid
+// "start: A token that can be used to paginate backwards with using GET
+// /messages." / "end: ... paginate forwards ... GET /messages."
+SCENARIO("GET /rooms/{roomId}/context/{eventId} start/end tokens page onward via GET /messages",
+         "[conformance][client-server][room-participation]")
+{
+    GIVEN("a room with four messages, context requested for the third with limit=2")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+        auto const room_id = create_room(started.runtime, token);
+        // m1 immediately precedes m2, and m4 immediately follows m3 — chosen so
+        // start/end (derived from limit=2's single before/after neighbour) name
+        // an exact stream position regardless of how many room-creation events
+        // (m.room.create, m.room.member, ...) also sit earlier in the timeline.
+        auto const m1 = send_text(started.runtime, token, room_id, "ctx-page-1", "m1");
+        auto const m2 = send_text(started.runtime, token, room_id, "ctx-page-2", "m2");
+        auto const m3 = send_text(started.runtime, token, room_id, "ctx-page-3", "m3");
+        auto const m4 = send_text(started.runtime, token, room_id, "ctx-page-4", "m4");
+
+        auto const context_response = merovingian::homeserver::handle_client_server_request(
+            started.runtime, {"GET", "/_matrix/client/v3/rooms/" + room_id + "/context/" + m3 + "?limit=2", token, {}});
+        REQUIRE(context_response.response.status == 200U);
+        auto const context_body = parse_object(context_response.response.body);
+        auto const* start = string_member(context_body, "start");
+        auto const* end = string_member(context_body, "end");
+        REQUIRE(start != nullptr);
+        REQUIRE(end != nullptr);
+
+        WHEN("GET /messages?from=<start>&dir=b is called")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"GET", "/_matrix/client/v3/rooms/" + room_id + "/messages?dir=b&from=" + *start, token, {}});
+
+            THEN("pagination continues backwards from the context response's nearest before-event (m2) to m1")
+            {
+                // Spec MUST: `start` paginates backwards with GET /messages.
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+                auto const* chunk = object_member_as_array(body, "chunk");
+                REQUIRE(chunk != nullptr);
+                REQUIRE(!chunk->empty());
+                auto const* first_returned = std::get_if<merovingian::canonicaljson::Object>(&(*chunk)[0U].storage());
+                REQUIRE(first_returned != nullptr);
+                REQUIRE(*string_member(*first_returned, "event_id") == m1);
+            }
+        }
+
+        WHEN("a fifth message is sent and GET /messages?from=<end>&dir=f is called")
+        {
+            // Sent after the context call so forward pagination from `end`
+            // (m4's position) has somewhere new to reach.
+            auto const m5 = send_text(started.runtime, token, room_id, "ctx-page-5", "m5");
+
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"GET", "/_matrix/client/v3/rooms/" + room_id + "/messages?dir=f&from=" + *end, token, {}});
+
+            THEN("pagination continues forwards from the context response's nearest after-event (m4) to m5")
+            {
+                // Spec MUST: `end` paginates forwards with GET /messages.
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+                auto const* chunk = object_member_as_array(body, "chunk");
+                REQUIRE(chunk != nullptr);
+                REQUIRE(!chunk->empty());
+                auto const* first_returned = std::get_if<merovingian::canonicaljson::Object>(&(*chunk)[0U].storage());
+                REQUIRE(first_returned != nullptr);
+                REQUIRE(*string_member(*first_returned, "event_id") == m5);
             }
         }
     }
@@ -10481,10 +11135,24 @@ SCENARIO("GET /pushrules/ returns a global push rules object", "[conformance][cl
                 REQUIRE(push_rule_by_id(*override_rules, ".m.rule.reaction") != nullptr);
                 REQUIRE(push_rule_by_id(*override_rules, ".m.rule.room.server_acl") != nullptr);
                 REQUIRE(push_rule_by_id(*override_rules, ".m.rule.suppress_edits") != nullptr);
-                // Spec MUST: legacy mention/notify rules — absent from this server caused
-                // Element SDK to log "Missing default global override push rule" on login.
-                REQUIRE(push_rule_by_id(*override_rules, ".m.rule.contains_display_name") != nullptr);
-                REQUIRE(push_rule_by_id(*override_rules, ".m.rule.roomnotif") != nullptr);
+                // Spec change (PR #479 review finding P2, v1.17): CS API v1.19
+                // §push-notifications, "Predefined Rules" — "[Changed in v1.17]:
+                // the legacy default push rules that looked for mentions in the
+                // body of the event were removed." The complete "Default
+                // Override Rules" list above (ten entries) is exhaustive in the
+                // current spec; `.m.rule.contains_display_name` and
+                // `.m.rule.roomnotif` are not in it. A previous revision of
+                // this assertion required their presence, citing an Element
+                // SDK client-side warning and claiming both are "MUST per the
+                // Matrix v1.18 CS API" — neither rule_id appears anywhere in
+                // the checked-in v1.18 or v1.19 spec text, so that claim does
+                // not hold up; both were the pre-m.mentions body-text-scanning
+                // rules the v1.17 change removed (matching literal display-name
+                // text / "@room" in the body regardless of the sender's actual
+                // m.mentions intent — exactly the false-positive class
+                // .m.rule.is_user_mention/.m.rule.is_room_mention replaced).
+                REQUIRE(push_rule_by_id(*override_rules, ".m.rule.contains_display_name") == nullptr);
+                REQUIRE(push_rule_by_id(*override_rules, ".m.rule.roomnotif") == nullptr);
                 // Spec MUST: underride rules
                 REQUIRE(push_rule_by_id(*underride_rules, ".m.rule.call") != nullptr);
                 REQUIRE(push_rule_by_id(*underride_rules, ".m.rule.encrypted_room_one_to_one") != nullptr);
@@ -10719,8 +11387,11 @@ SCENARIO("PUT /pushrules/{scope}/{kind}/{ruleId}/enabled returns 404 M_UNRECOGNI
 
 // --- GET /_matrix/client/v3/notifications ------------------------------------
 // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3notifications
-// IMPLEMENTATION GAP: notification list not yet implemented.
-SCENARIO("GET /notifications returns 404 M_UNRECOGNIZED (implementation gap)", "[conformance][client-server][push]")
+// Full behavioural coverage (highlight filter, limit, pagination, read
+// reflecting receipts, ignored senders) lives in
+// tests/conformance/test_notifications_conformance.cpp; this scenario only
+// pins down that the route is wired up and the response shape is correct.
+SCENARIO("GET /notifications returns 200 with a notifications array", "[conformance][client-server][push]")
 {
     GIVEN("a running client-server and a logged-in user")
     {
@@ -10733,14 +11404,16 @@ SCENARIO("GET /notifications returns 404 M_UNRECOGNIZED (implementation gap)", "
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"GET", "/_matrix/client/v3/notifications", token, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("the server returns 200 with an empty notifications array and no next_token")
             {
-                // IMPLEMENTATION GAP: notifications list not supported.
-                REQUIRE(response.response.status == 404U);
+                // Spec MUST: notifications is Required; next_token is absent
+                // "If this is absent, there are no more results."
+                REQUIRE(response.response.status == 200U);
                 auto const body = parse_object(response.response.body);
-                auto const* errcode = string_member(body, "errcode");
-                REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
+                auto const* notifications = object_member_as_array(body, "notifications");
+                REQUIRE(notifications != nullptr);
+                REQUIRE(notifications->empty());
+                REQUIRE(string_member(body, "next_token") == nullptr);
             }
         }
     }
@@ -10965,28 +11638,30 @@ SCENARIO("GET /presence/{userId}/status conformance")
 // 13.7   Push notifications — GET /notifications
 // ============================================================================
 // Spec: Matrix v1.19 §13.7 GET /_matrix/client/v3/notifications
-//       IMPLEMENTATION GAP: not yet implemented. Must return 404 M_UNRECOGNIZED.
+// Behavioural coverage lives in test_notifications_conformance.cpp; this
+// scenario is the "unauthenticated" companion to the routed-response check
+// above -- "Requires authentication: Yes".
 
 SCENARIO("GET /notifications conformance")
 {
-    GIVEN("a started homeserver with an authenticated user")
+    GIVEN("a started homeserver with no authenticated user")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
-        auto const token = logged_in_token(started.runtime);
 
-        WHEN("GET /notifications is called")
+        WHEN("GET /notifications is called with no access token")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime, {"GET", "/_matrix/client/v3/notifications", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v3/notifications", {}, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED")
+            THEN("the server returns 401 M_MISSING_TOKEN")
             {
-                REQUIRE(response.response.status == 404);
+                // Spec MUST: "Requires authentication: Yes."
+                REQUIRE(response.response.status == 401);
                 auto const body = parse_object(response.response.body);
                 auto const* err = string_member(body, "errcode");
                 REQUIRE(err != nullptr);
-                REQUIRE(*err == "M_UNRECOGNIZED");
+                REQUIRE(*err == "M_MISSING_TOKEN");
             }
         }
     }
@@ -11765,7 +12440,11 @@ SCENARIO("GET /v1/rooms/{roomId}/relations/{eventId}/{relType}/{eventType} confo
 // 16     Search — POST /search
 // ============================================================================
 // Spec: Matrix v1.19 §16 POST /_matrix/client/v3/search
-//       IMPLEMENTATION GAP: not yet implemented. Must return 404 M_UNRECOGNIZED.
+//       Routed in 0.11.11 (see tests/conformance/test_search_conformance.cpp
+//       for the full behavioural/access-control suite). This scenario is the
+//       routing/shape smoke test: a well-formed request against an empty
+//       store returns 200 with the spec-required
+//       search_categories.room_events.{count,results} fields.
 
 SCENARIO("POST /search conformance")
 {
@@ -11775,20 +12454,27 @@ SCENARIO("POST /search conformance")
         REQUIRE(started.started);
         auto const token = logged_in_token(started.runtime);
 
-        WHEN("POST /search is called")
+        WHEN("POST /search is called with a well-formed body")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
                 {"POST", "/_matrix/client/v3/search", token,
                  R"({"search_categories":{"room_events":{"search_term":"test","filter":{"limit":10}}}})"});
 
-            THEN("the server returns 404 M_UNRECOGNIZED")
+            THEN("the server returns 200 with the spec-required response shape")
             {
-                REQUIRE(response.response.status == 404);
+                REQUIRE(response.response.status == 200); // Spec: 200 "Results of the search."
                 auto const body = parse_object(response.response.body);
-                auto const* err = string_member(body, "errcode");
-                REQUIRE(err != nullptr);
-                REQUIRE(*err == "M_UNRECOGNIZED");
+                auto const* categories = object_member_as_object(body, "search_categories");
+                REQUIRE(categories != nullptr); // Spec: search_categories is Required
+                auto const* room_events = object_member_as_object(*categories, "room_events");
+                REQUIRE(room_events != nullptr);
+                auto const* count = int_member(*room_events, "count");
+                REQUIRE(count != nullptr);
+                REQUIRE(*count == 0); // no events exist yet in this fresh store
+                auto const* results = object_member_as_array(*room_events, "results");
+                REQUIRE(results != nullptr);
+                REQUIRE(results->empty());
             }
         }
     }
@@ -12549,7 +13235,9 @@ SCENARIO("GET /v1/rooms/{roomId}/threads conformance")
 // 23     OpenID — POST /user/{userId}/openid/request_token
 // ============================================================================
 // Spec: Matrix v1.19 §23 POST /_matrix/client/v3/user/{userId}/openid/request_token
-//       IMPLEMENTATION GAP: not yet implemented. Must return 404 M_UNRECOGNIZED.
+//       IMPLEMENTATION LANDED: routed. See the dedicated OpenID scenarios
+//       above for full response-shape, auth, and security coverage; this
+//       sweep entry now proves the route is live rather than 404.
 
 SCENARIO("POST /user/{userId}/openid/request_token conformance")
 {
@@ -12565,13 +13253,16 @@ SCENARIO("POST /user/{userId}/openid/request_token conformance")
                 started.runtime,
                 {"POST", "/_matrix/client/v3/user/%40alice%3Aexample.org/openid/request_token", token, "{}"});
 
-            THEN("the server returns 404 M_UNRECOGNIZED")
+            THEN("the server returns 200 with a usable OpenID access_token, not the M_UNRECOGNIZED an unrouted "
+                 "endpoint would return")
             {
-                REQUIRE(response.response.status == 404);
+                // The route is implemented (see the dedicated scenarios above);
+                // percent-encoded userId resolves the same as the plain form.
+                REQUIRE(response.response.status == 200);
                 auto const body = parse_object(response.response.body);
-                auto const* err = string_member(body, "errcode");
-                REQUIRE(err != nullptr);
-                REQUIRE(*err == "M_UNRECOGNIZED");
+                auto const* access_token = string_member(body, "access_token");
+                REQUIRE(access_token != nullptr);
+                REQUIRE(!access_token->empty());
             }
         }
     }
@@ -12750,18 +13441,21 @@ SCENARIO("GET /rooms/{roomId}/context/{eventId} conformance")
         auto const token = logged_in_token(started.runtime);
         auto const room_id = create_room(started.runtime, token);
 
-        WHEN("GET /rooms/{roomId}/context/$eventId is called")
+        WHEN("GET /rooms/{roomId}/context/$eventId is called with an event id that was never sent")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"GET", "/_matrix/client/v3/rooms/" + room_id + "/context/$event_id", token, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED")
+            THEN("the server returns 404 M_NOT_FOUND")
             {
+                // The route is implemented (see the dedicated scenarios above);
+                // an event id that was never sent to this room is 404, not the
+                // M_UNRECOGNIZED an unrouted endpoint would return.
                 REQUIRE(response.response.status == 404);
                 auto const body = parse_object(response.response.body);
                 auto const* err = string_member(body, "errcode");
                 REQUIRE(err != nullptr);
-                REQUIRE(*err == "M_UNRECOGNIZED");
+                REQUIRE(*err == "M_NOT_FOUND");
             }
         }
     }

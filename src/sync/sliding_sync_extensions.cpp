@@ -7,12 +7,14 @@
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/database/persistent_store.hpp"
+#include "merovingian/trust_safety/ignore_list.hpp"
 
 #include <algorithm>
 #include <cstdint>
 #include <map>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -228,7 +230,8 @@ namespace
 
     [[nodiscard]] auto build_receipts(homeserver::HomeserverRuntime const& rt, std::uint64_t since_sync_stream_id,
                                       std::vector<std::string> const& ext_rooms,
-                                      std::vector<std::string> const& response_room_ids) -> ExtReceiptsResponse
+                                      std::vector<std::string> const& response_room_ids,
+                                      std::unordered_set<std::string> const& ignored_senders) -> ExtReceiptsResponse
     {
         auto const& rooms = effective_rooms(ext_rooms, response_room_ids);
         auto resp = ExtReceiptsResponse{};
@@ -241,6 +244,13 @@ namespace
             for (auto const& receipt : rt.receipts)
             {
                 if (receipt.room_id != room_id || receipt.stream_id <= since_sync_stream_id)
+                {
+                    continue;
+                }
+                // Ignoring Users: a read receipt is an event sent by its
+                // `user_id`, not a state event, so it is withheld the same
+                // way a timeline message from an ignored sender would be.
+                if (trust_safety::is_delivery_suppressed(ignored_senders, receipt.user_id, /*is_state_event=*/false))
                 {
                     continue;
                 }
@@ -288,7 +298,8 @@ namespace
 
     [[nodiscard]] auto build_typing(homeserver::HomeserverRuntime const& rt, std::uint64_t since_sync_stream_id,
                                     std::vector<std::string> const& ext_rooms,
-                                    std::vector<std::string> const& response_room_ids) -> ExtTypingResponse
+                                    std::vector<std::string> const& response_room_ids,
+                                    std::unordered_set<std::string> const& ignored_senders) -> ExtTypingResponse
     {
         auto const& rooms = effective_rooms(ext_rooms, response_room_ids);
         auto resp = ExtTypingResponse{};
@@ -304,6 +315,13 @@ namespace
             for (auto const& entry : rt.typing_users)
             {
                 if (entry.room_id != room_id || !entry.typing)
+                {
+                    continue;
+                }
+                // Ignoring Users: typing is not a state event, so it is
+                // withheld the same way a timeline message would be — see
+                // build_receipts above for the identical reasoning.
+                if (trust_safety::is_delivery_suppressed(ignored_senders, entry.user_id, /*is_state_event=*/false))
                 {
                     continue;
                 }
@@ -339,7 +357,8 @@ namespace
 auto build_extensions(homeserver::HomeserverRuntime const& rt, std::string_view user, std::string_view device_id,
                       SlidingSyncExtensionRequests const& ext_req, std::uint64_t since_sync_stream_id,
                       std::uint64_t current_sync_stream_id, database::PersistentStore& store,
-                      std::vector<std::string> const& response_room_ids) -> SlidingSyncExtensionResponses
+                      std::vector<std::string> const& response_room_ids,
+                      std::unordered_set<std::string> const& ignored_senders) -> SlidingSyncExtensionResponses
 {
     auto resp = SlidingSyncExtensionResponses{};
 
@@ -360,12 +379,13 @@ auto build_extensions(homeserver::HomeserverRuntime const& rt, std::string_view 
 
     if (ext_req.receipts.has_value() && ext_req.receipts->enabled)
     {
-        resp.receipts = build_receipts(rt, since_sync_stream_id, ext_req.receipts->rooms, response_room_ids);
+        resp.receipts =
+            build_receipts(rt, since_sync_stream_id, ext_req.receipts->rooms, response_room_ids, ignored_senders);
     }
 
     if (ext_req.typing.has_value() && ext_req.typing->enabled)
     {
-        resp.typing = build_typing(rt, since_sync_stream_id, ext_req.typing->rooms, response_room_ids);
+        resp.typing = build_typing(rt, since_sync_stream_id, ext_req.typing->rooms, response_room_ids, ignored_senders);
     }
 
     return resp;

@@ -339,6 +339,70 @@ auto downgrade_initial_schema_migration() -> MigrationStep
     return {7U, "account_threepids_columns", std::move(statements), MigrationDirection::upgrade};
 }
 
+// v8: durable pushers table (Matrix v1.19 CS API Push Notifications module).
+// Persists the pusher fields the spec defines — pushkey, kind, app_id,
+// app_display_name, device_display_name, profile_tag, lang, and the `data`
+// dictionary's `url`/`format` keys — keyed on (user_id, app_id, pushkey) per
+// the spec's "same app_id and pushkey for this user is updated" rule.
+[[nodiscard]] auto upgrade_pushers_migration() -> MigrationStep
+{
+    auto statements = std::vector<PreparedStatement>{};
+    statements.push_back(make_create_table_statement(schema_table_definition("pushers").value()).value());
+    return {8U, "pushers", std::move(statements), MigrationDirection::upgrade};
+}
+
+// v9: durable notification history for `GET /_matrix/client/v3/notifications`
+// (Matrix v1.19 CS API §push-notifications). Recorded whenever push rule
+// evaluation resolves `notify: true` for a local recipient -- independent of
+// whether that recipient has a registered pusher or `server.push.enabled` is
+// set (see room_service.cpp's build_pending_push_deliveries), so a user with
+// push notifications turned off still sees their notification history.
+// `stream_ordering` mirrors the triggering event's stream position and
+// doubles as this table's pagination key, exactly like `events.stream_
+// ordering` already does for GET /messages. Retention: pruned per-user at
+// write time (see database::store_notification), so the table cannot grow
+// without bound.
+[[nodiscard]] auto upgrade_notifications_migration() -> MigrationStep
+{
+    auto statements = std::vector<PreparedStatement>{};
+    statements.push_back(make_create_table_statement(schema_table_definition("notifications").value()).value());
+    return {9U, "notifications", std::move(statements), MigrationDirection::upgrade};
+}
+
+// v10: durable OpenID token store for `POST
+// /_matrix/client/v3/user/{userId}/openid/request_token` (Matrix v1.19 CS
+// API §OpenID). Deliberately a table of its own, never the `access_tokens`
+// table: an OpenID token is a narrow, short-lived credential that is only
+// ever redeemed by `GET /_matrix/federation/v1/openid/userinfo` (SS API
+// §OpenID) and must never be usable to authenticate an ordinary
+// client-server request (see docs/threat-model.md). Every row has a finite
+// `expires_at`; expired rows are pruned at write time (see
+// database::store_openid_token), so the table cannot grow without bound.
+[[nodiscard]] auto upgrade_openid_tokens_migration() -> MigrationStep
+{
+    auto statements = std::vector<PreparedStatement>{};
+    statements.push_back(make_create_table_statement(schema_table_definition("openid_tokens").value()).value());
+    return {10U, "openid_tokens", std::move(statements), MigrationDirection::upgrade};
+}
+
+// v11: add `data_extra_json` onto `pushers` (Matrix v1.19 Push Gateway API,
+// PR #479 review finding P1). The Push Gateway API's notify Device object
+// carries "the data dictionary passed in at pusher creation minus the url
+// key" -- previously only `url`/`format` were persisted, so any other
+// custom member a client's `data` dictionary carried at registration was
+// discarded before it ever reached the gateway. This ALTERs the existing
+// `pushers` table (created at v8) exactly like v7's `account_threepids_
+// columns` step ALTERs `account_threepids` (created at v6) -- the base
+// CREATE TABLE stays historically intact and fresh installs, which run
+// every upgrade step in order, still end at the same v11 shape.
+[[nodiscard]] auto upgrade_pushers_data_extra_migration() -> MigrationStep
+{
+    auto statements = std::vector<PreparedStatement>{};
+    statements.push_back(PreparedStatement{
+        "add_data_extra_json_column", "ALTER TABLE pushers ADD COLUMN data_extra_json TEXT NOT NULL DEFAULT ''", {}});
+    return {11U, "pushers_data_extra", std::move(statements), MigrationDirection::upgrade};
+}
+
 auto upgrade_migration_catalog() -> std::vector<MigrationStep>
 {
     return {initial_schema_migration(),
@@ -347,7 +411,11 @@ auto upgrade_migration_catalog() -> std::vector<MigrationStep>
             upgrade_state_transitions_migration(),
             upgrade_backfill_state_transitions_migration(),
             upgrade_account_threepids_migration(),
-            upgrade_account_threepids_columns_migration()};
+            upgrade_account_threepids_columns_migration(),
+            upgrade_pushers_migration(),
+            upgrade_notifications_migration(),
+            upgrade_openid_tokens_migration(),
+            upgrade_pushers_data_extra_migration()};
 }
 
 [[nodiscard]] auto downgrade_backfill_state_transitions_migration() -> MigrationStep
@@ -378,6 +446,39 @@ auto upgrade_migration_catalog() -> std::vector<MigrationStep>
     return {6U, "drop_account_threepids_columns", std::move(statements), MigrationDirection::downgrade};
 }
 
+// v8 -> v7: drop the pushers table.
+[[nodiscard]] auto downgrade_pushers_migration() -> MigrationStep
+{
+    auto statements = std::vector<PreparedStatement>{};
+    statements.push_back(make_drop_table_statement("pushers").value());
+    return {7U, "drop_pushers", std::move(statements), MigrationDirection::downgrade};
+}
+
+// v9 -> v8: drop the notifications table.
+[[nodiscard]] auto downgrade_notifications_migration() -> MigrationStep
+{
+    auto statements = std::vector<PreparedStatement>{};
+    statements.push_back(make_drop_table_statement("notifications").value());
+    return {8U, "drop_notifications", std::move(statements), MigrationDirection::downgrade};
+}
+
+// v10 -> v9: drop the openid_tokens table.
+[[nodiscard]] auto downgrade_openid_tokens_migration() -> MigrationStep
+{
+    auto statements = std::vector<PreparedStatement>{};
+    statements.push_back(make_drop_table_statement("openid_tokens").value());
+    return {9U, "drop_openid_tokens", std::move(statements), MigrationDirection::downgrade};
+}
+
+// v11 -> v10: drop the data_extra_json column added onto pushers.
+[[nodiscard]] auto downgrade_pushers_data_extra_migration() -> MigrationStep
+{
+    auto statements = std::vector<PreparedStatement>{};
+    statements.push_back(
+        PreparedStatement{"drop_data_extra_json_column", "ALTER TABLE pushers DROP COLUMN data_extra_json", {}});
+    return {10U, "drop_pushers_data_extra", std::move(statements), MigrationDirection::downgrade};
+}
+
 [[nodiscard]] auto downgrade_sync_stream_watermark_migration() -> MigrationStep
 {
     auto statements = std::vector<PreparedStatement>{};
@@ -401,7 +502,11 @@ auto upgrade_migration_catalog() -> std::vector<MigrationStep>
 
 auto downgrade_migration_catalog() -> std::vector<MigrationStep>
 {
-    return {downgrade_account_threepids_columns_migration(),
+    return {downgrade_pushers_data_extra_migration(),
+            downgrade_openid_tokens_migration(),
+            downgrade_notifications_migration(),
+            downgrade_pushers_migration(),
+            downgrade_account_threepids_columns_migration(),
             downgrade_account_threepids_migration(),
             downgrade_backfill_state_transitions_migration(),
             downgrade_state_transitions_migration(),

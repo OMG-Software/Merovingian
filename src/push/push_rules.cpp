@@ -1,0 +1,748 @@
+// SPDX-FileCopyrightText: 2026 James Chapman
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#include "merovingian/push/push_rules.hpp"
+
+#include <algorithm>
+#include <cctype>
+#include <charconv>
+#include <variant>
+
+namespace merovingian::push
+{
+namespace
+{
+
+    // Splits a Matrix "dot-separated property path"
+    // (docs/matrix-v1.19-spec/appendices.md#dot-separated-property-paths)
+    // into its segments. A literal '.' or '\' inside a property name is
+    // escaped as "\." / "\\"; any other backslash sequence is left as-is.
+    [[nodiscard]] auto split_property_path(std::string_view key) -> std::vector<std::string>
+    {
+        auto segments = std::vector<std::string>{};
+        auto current = std::string{};
+        for (auto index = std::size_t{0U}; index < key.size(); ++index)
+        {
+            auto const character = key[index];
+            if (character == '\\' && index + 1U < key.size() && (key[index + 1U] == '.' || key[index + 1U] == '\\'))
+            {
+                current.push_back(key[index + 1U]);
+                ++index;
+            }
+            else if (character == '.')
+            {
+                segments.push_back(std::move(current));
+                current.clear();
+            }
+            else
+            {
+                current.push_back(character);
+            }
+        }
+        segments.push_back(std::move(current));
+        return segments;
+    }
+
+    [[nodiscard]] auto object_member(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> canonicaljson::Value const*
+    {
+        auto const it = std::ranges::find_if(object, [key](canonicaljson::ObjectMember const& member) {
+            return member.key == key;
+        });
+        return it == object.end() ? nullptr : it->value.get();
+    }
+
+    // Walks `event` following a dot-separated property path (with the `\.`
+    // / `\\` segment escaping split_property_path already decodes) and
+    // returns the leaf value, or nullptr when any intermediate segment is
+    // absent or not an object, or the leaf itself is absent. Shared by every
+    // condition kind that resolves a `key` path: `event_match`,
+    // `event_property_is`, and `event_property_contains`.
+    [[nodiscard]] auto resolve_event_property(canonicaljson::Value const& event, std::string_view key) noexcept
+        -> canonicaljson::Value const*
+    {
+        auto const segments = split_property_path(key);
+        auto const* current = &event;
+        for (auto const& segment : segments)
+        {
+            auto const* object = std::get_if<canonicaljson::Object>(&current->storage());
+            if (object == nullptr)
+            {
+                return nullptr;
+            }
+            auto const* member = object_member(*object, segment);
+            if (member == nullptr)
+            {
+                return nullptr;
+            }
+            current = member;
+        }
+        return current;
+    }
+
+    // Returns the leaf value as a string. Returns nullopt when the path is
+    // unresolvable (see resolve_event_property) or the leaf is not a
+    // string — matching the spec's "If the property ... is completely
+    // absent ... or does not have a string value, then the condition will
+    // not match" rule for event_match.
+    [[nodiscard]] auto event_property_as_string(canonicaljson::Value const& event, std::string_view key)
+        -> std::optional<std::string>
+    {
+        auto const* current = resolve_event_property(event, key);
+        if (current == nullptr)
+        {
+            return std::nullopt;
+        }
+        auto const* value = std::get_if<std::string>(&current->storage());
+        return value == nullptr ? std::nullopt : std::optional<std::string>{*value};
+    }
+
+    // Exact-value, exact-type comparison for the `value` parameter of
+    // `event_property_is` / `event_property_contains`. Per spec the
+    // condition's `value` is "A non-compound canonical JSON value" — string,
+    // integer, boolean, or null — so only those alternatives are compared;
+    // anything else (array, object, or a stray double) never matches,
+    // including two values that happen to share the same alternative index
+    // via `std::variant::operator==` semantics we deliberately avoid, since
+    // that would require `Array`/`Object` equality that `Value` does not
+    // define. A type mismatch (e.g. string "true" vs. boolean true) always
+    // fails, per the spec's `m.federate` example.
+    [[nodiscard]] auto scalar_values_equal(canonicaljson::Value const& lhs, canonicaljson::Value const& rhs) noexcept
+        -> bool
+    {
+        if (std::holds_alternative<std::nullptr_t>(lhs.storage()))
+        {
+            return std::holds_alternative<std::nullptr_t>(rhs.storage());
+        }
+        if (auto const* lhs_bool = std::get_if<bool>(&lhs.storage()); lhs_bool != nullptr)
+        {
+            auto const* rhs_bool = std::get_if<bool>(&rhs.storage());
+            return rhs_bool != nullptr && *lhs_bool == *rhs_bool;
+        }
+        if (auto const* lhs_int = std::get_if<std::int64_t>(&lhs.storage()); lhs_int != nullptr)
+        {
+            auto const* rhs_int = std::get_if<std::int64_t>(&rhs.storage());
+            return rhs_int != nullptr && *lhs_int == *rhs_int;
+        }
+        if (auto const* lhs_string = std::get_if<std::string>(&lhs.storage()); lhs_string != nullptr)
+        {
+            auto const* rhs_string = std::get_if<std::string>(&rhs.storage());
+            return rhs_string != nullptr && *lhs_string == *rhs_string;
+        }
+        return false;
+    }
+
+    [[nodiscard]] auto ascii_lower(std::string_view value) -> std::string
+    {
+        auto result = std::string{value};
+        std::ranges::transform(result, result.begin(), [](unsigned char character) {
+            return static_cast<char>(std::tolower(character));
+        });
+        return result;
+    }
+
+    // Glob-style match per docs/matrix-v1.19-spec/appendices.md#glob-style-matching:
+    // '*' matches zero or more characters, '?' matches exactly one. Matching
+    // is against the *entire* value (callers wanting substring matching, as
+    // content.body requires, drive this per-candidate-substring instead).
+    // Standard O(n*m) DP wildcard match; both inputs are already lowercased
+    // by the caller so this is effectively case-insensitive.
+    [[nodiscard]] auto glob_matches_full(std::string_view value, std::string_view pattern) -> bool
+    {
+        auto const value_len = value.size();
+        auto const pattern_len = pattern.size();
+        // dp[i][j] == true means value[0..i) matches pattern[0..j)
+        auto dp = std::vector<std::vector<bool>>(value_len + 1U, std::vector<bool>(pattern_len + 1U, false));
+        dp[0U][0U] = true;
+        for (auto pattern_index = std::size_t{0U}; pattern_index < pattern_len; ++pattern_index)
+        {
+            if (pattern[pattern_index] == '*')
+            {
+                dp[0U][pattern_index + 1U] = dp[0U][pattern_index];
+            }
+        }
+        for (auto value_index = std::size_t{0U}; value_index < value_len; ++value_index)
+        {
+            for (auto pattern_index = std::size_t{0U}; pattern_index < pattern_len; ++pattern_index)
+            {
+                auto const pattern_character = pattern[pattern_index];
+                if (pattern_character == '*')
+                {
+                    dp[value_index + 1U][pattern_index + 1U] =
+                        dp[value_index][pattern_index + 1U] || dp[value_index + 1U][pattern_index];
+                }
+                else if (pattern_character == '?' || pattern_character == value[value_index])
+                {
+                    dp[value_index + 1U][pattern_index + 1U] = dp[value_index][pattern_index];
+                }
+            }
+        }
+        return dp[value_len][pattern_len];
+    }
+
+    [[nodiscard]] auto is_word_character(char character) noexcept -> bool
+    {
+        return (character >= 'A' && character <= 'Z') || (character >= 'a' && character <= 'z') ||
+               (character >= '0' && character <= '9') || character == '_';
+    }
+
+    // content.body matching per spec: the pattern must match "any substring
+    // of the value ... which starts and ends at a word boundary." Tries
+    // every boundary-delimited substring rather than assuming word-splitting
+    // on whitespace, since the spec's word-boundary definition is broader
+    // (any non [A-Za-z0-9_] character, not just whitespace).
+    [[nodiscard]] auto glob_matches_word_boundary_substring(std::string_view value, std::string_view pattern) -> bool
+    {
+        auto const lowered_value = ascii_lower(value);
+        auto const lowered_pattern = ascii_lower(pattern);
+        auto const length = lowered_value.size();
+
+        auto starts = std::vector<std::size_t>{};
+        for (auto index = std::size_t{0U}; index <= length; ++index)
+        {
+            if (index == 0U || !is_word_character(lowered_value[index - 1U]))
+            {
+                starts.push_back(index);
+            }
+        }
+        auto ends = std::vector<std::size_t>{};
+        for (auto index = std::size_t{0U}; index <= length; ++index)
+        {
+            if (index == length || !is_word_character(lowered_value[index]))
+            {
+                ends.push_back(index);
+            }
+        }
+
+        for (auto const start : starts)
+        {
+            for (auto const end : ends)
+            {
+                if (end < start)
+                {
+                    continue;
+                }
+                if (glob_matches_full(std::string_view{lowered_value}.substr(start, end - start), lowered_pattern))
+                {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    // Literal-text word-boundary substring match, used for
+    // `contains_display_name` instead of glob_matches_word_boundary_substring.
+    // A display name is *data*, not a user-authored glob pattern: a display
+    // name of literally "*" or containing "?" must never be interpreted as a
+    // wildcard, or a user could force a highlight on every message (or any
+    // message containing a single arbitrary character) just by picking such a
+    // display name. `literal` is compared byte-for-byte (case-insensitively,
+    // matching glob_matches_word_boundary_substring's behaviour) against
+    // every word-boundary-delimited substring of `value`, with no glob
+    // semantics at all.
+    [[nodiscard]] auto contains_literal_word_boundary_substring(std::string_view value, std::string_view literal)
+        -> bool
+    {
+        if (literal.empty())
+        {
+            return false;
+        }
+        auto const lowered_value = ascii_lower(value);
+        auto const lowered_literal = ascii_lower(literal);
+        auto const length = lowered_value.size();
+
+        auto search_from = std::size_t{0U};
+        while (true)
+        {
+            auto const found = lowered_value.find(lowered_literal, search_from);
+            if (found == std::string::npos)
+            {
+                return false;
+            }
+            auto const end = found + lowered_literal.size();
+            auto const starts_at_boundary = found == 0U || !is_word_character(lowered_value[found - 1U]);
+            auto const ends_at_boundary = end == length || !is_word_character(lowered_value[end]);
+            if (starts_at_boundary && ends_at_boundary)
+            {
+                return true;
+            }
+            // Advance past this occurrence's start (not its end) so
+            // overlapping candidate substrings are not skipped.
+            search_from = found + 1U;
+        }
+    }
+
+    // Parses the `is` parameter of a room_member_count condition: an
+    // optional comparison prefix (==, <, >, <=, >=; default ==) followed by a
+    // decimal integer. Returns nullopt for a malformed value so the caller
+    // fails closed (the condition does not match).
+    struct RoomMemberCountComparison final
+    {
+        std::string_view op{"=="};
+        std::uint64_t value{0U};
+    };
+
+    [[nodiscard]] auto parse_room_member_count(std::string_view is) -> std::optional<RoomMemberCountComparison>
+    {
+        auto op = std::string_view{"=="};
+        auto digits = is;
+        if (is.starts_with("<=") || is.starts_with(">="))
+        {
+            op = is.substr(0U, 2U);
+            digits = is.substr(2U);
+        }
+        else if (is.starts_with("=="))
+        {
+            op = std::string_view{"=="};
+            digits = is.substr(2U);
+        }
+        else if (is.starts_with("<") || is.starts_with(">"))
+        {
+            op = is.substr(0U, 1U);
+            digits = is.substr(1U);
+        }
+        if (digits.empty())
+        {
+            return std::nullopt;
+        }
+        auto value = std::uint64_t{0U};
+        auto const result = std::from_chars(digits.data(), digits.data() + digits.size(), value);
+        if (result.ec != std::errc{} || result.ptr != digits.data() + digits.size())
+        {
+            return std::nullopt;
+        }
+        return RoomMemberCountComparison{op, value};
+    }
+
+    [[nodiscard]] auto room_member_count_matches(std::string_view is, std::uint64_t actual) -> bool
+    {
+        auto const comparison = parse_room_member_count(is);
+        if (!comparison.has_value())
+        {
+            return false;
+        }
+        if (comparison->op == "<=")
+        {
+            return actual <= comparison->value;
+        }
+        if (comparison->op == ">=")
+        {
+            return actual >= comparison->value;
+        }
+        if (comparison->op == "<")
+        {
+            return actual < comparison->value;
+        }
+        if (comparison->op == ">")
+        {
+            return actual > comparison->value;
+        }
+        return actual == comparison->value;
+    }
+
+    [[nodiscard]] auto condition_matches(PushCondition const& condition, canonicaljson::Value const& event,
+                                         PushEvaluationContext const& context) -> bool
+    {
+        switch (condition.kind)
+        {
+        case PushConditionKind::event_match: {
+            auto const value = event_property_as_string(event, condition.key);
+            if (!value.has_value())
+            {
+                return false;
+            }
+            return condition.key == "content.body"
+                       ? glob_matches_word_boundary_substring(*value, condition.pattern)
+                       : glob_matches_full(ascii_lower(*value), ascii_lower(condition.pattern));
+        }
+        case PushConditionKind::contains_display_name: {
+            if (context.receiving_user_display_name.empty())
+            {
+                return false;
+            }
+            auto const body = event_property_as_string(event, "content.body");
+            if (!body.has_value())
+            {
+                return false;
+            }
+            // The display name is matched as a word-boundary-delimited
+            // substring, case insensitively — but as literal text, never as
+            // a glob pattern. A display name is data supplied by (or on
+            // behalf of) an arbitrary user, not an author-written pattern;
+            // treating '*'/'?' in it as wildcards would let a display name
+            // of "*" match every message in the room (or "?" match any
+            // message containing an arbitrary single character), forcing a
+            // highlight regardless of whether the message actually names
+            // that user. contains_literal_word_boundary_substring performs
+            // no glob interpretation at all.
+            return contains_literal_word_boundary_substring(*body, context.receiving_user_display_name);
+        }
+        case PushConditionKind::room_member_count:
+            return room_member_count_matches(condition.is, context.room_member_count);
+        case PushConditionKind::sender_notification_permission: {
+            auto const it = context.notification_power_levels.find(condition.key);
+            auto const required =
+                it != context.notification_power_levels.end() ? it->second : context.default_notification_power_level;
+            return context.sender_power_level >= required;
+        }
+        case PushConditionKind::event_property_is: {
+            if (!condition.value.has_value())
+            {
+                return false;
+            }
+            auto const* actual = resolve_event_property(event, condition.key);
+            return actual != nullptr && scalar_values_equal(*actual, *condition.value);
+        }
+        case PushConditionKind::event_property_contains: {
+            if (!condition.value.has_value())
+            {
+                return false;
+            }
+            auto const* actual = resolve_event_property(event, condition.key);
+            auto const* array = actual == nullptr ? nullptr : std::get_if<canonicaljson::Array>(&actual->storage());
+            if (array == nullptr)
+            {
+                return false;
+            }
+            return std::ranges::any_of(*array, [&condition](canonicaljson::Value const& element) {
+                return scalar_values_equal(element, *condition.value);
+            });
+        }
+        case PushConditionKind::unknown:
+        default:
+            // Per spec: "Unrecognised conditions MUST NOT match any events."
+            return false;
+        }
+    }
+
+    [[nodiscard]] auto rule_conditions_match(PushRule const& rule, canonicaljson::Value const& event,
+                                             PushEvaluationContext const& context) -> bool
+    {
+        // "A rule with no conditions always matches."
+        return std::ranges::all_of(rule.conditions, [&](PushCondition const& condition) {
+            return condition_matches(condition, event, context);
+        });
+    }
+
+    [[nodiscard]] auto rule_matches_content(PushRule const& rule, canonicaljson::Value const& event) -> bool
+    {
+        if (rule.content_pattern.empty())
+        {
+            return false;
+        }
+        auto const body = event_property_as_string(event, "content.body");
+        return body.has_value() && glob_matches_word_boundary_substring(*body, rule.content_pattern);
+    }
+
+    [[nodiscard]] auto parse_condition_kind(std::string_view kind) noexcept -> PushConditionKind
+    {
+        if (kind == "event_match")
+        {
+            return PushConditionKind::event_match;
+        }
+        if (kind == "contains_display_name")
+        {
+            return PushConditionKind::contains_display_name;
+        }
+        if (kind == "room_member_count")
+        {
+            return PushConditionKind::room_member_count;
+        }
+        if (kind == "sender_notification_permission")
+        {
+            return PushConditionKind::sender_notification_permission;
+        }
+        if (kind == "event_property_is")
+        {
+            return PushConditionKind::event_property_is;
+        }
+        if (kind == "event_property_contains")
+        {
+            return PushConditionKind::event_property_contains;
+        }
+        return PushConditionKind::unknown;
+    }
+
+    [[nodiscard]] auto parse_condition(canonicaljson::Object const& object) -> PushCondition
+    {
+        auto condition = PushCondition{};
+        if (auto const* kind_value = object_member(object, "kind"); kind_value != nullptr)
+        {
+            if (auto const* kind_string = std::get_if<std::string>(&kind_value->storage()); kind_string != nullptr)
+            {
+                condition.kind = parse_condition_kind(*kind_string);
+            }
+        }
+        if (auto const* key_value = object_member(object, "key"); key_value != nullptr)
+        {
+            if (auto const* key_string = std::get_if<std::string>(&key_value->storage()); key_string != nullptr)
+            {
+                condition.key = *key_string;
+            }
+        }
+        if (auto const* pattern_value = object_member(object, "pattern"); pattern_value != nullptr)
+        {
+            if (auto const* pattern_string = std::get_if<std::string>(&pattern_value->storage());
+                pattern_string != nullptr)
+            {
+                condition.pattern = *pattern_string;
+            }
+        }
+        if (auto const* is_value = object_member(object, "is"); is_value != nullptr)
+        {
+            if (auto const* is_string = std::get_if<std::string>(&is_value->storage()); is_string != nullptr)
+            {
+                condition.is = *is_string;
+            }
+        }
+        if (auto const* value_value = object_member(object, "value"); value_value != nullptr)
+        {
+            condition.value = *value_value;
+        }
+        return condition;
+    }
+
+    // Resolves an `actions` array (strings and `set_tweak` objects) into the
+    // pre-computed notify/tweak fields stored on PushRule.
+    auto apply_actions(canonicaljson::Array const& actions, PushRule& rule) -> void
+    {
+        for (auto const& action : actions)
+        {
+            if (auto const* action_string = std::get_if<std::string>(&action.storage()); action_string != nullptr)
+            {
+                if (*action_string == "notify")
+                {
+                    rule.notify = true;
+                }
+                // "dont_notify"/"coalesce" and any other bare string action
+                // are historical/unknown and ignored per spec.
+                continue;
+            }
+            auto const* action_object = std::get_if<canonicaljson::Object>(&action.storage());
+            if (action_object == nullptr)
+            {
+                continue;
+            }
+            auto const* tweak_value = object_member(*action_object, "set_tweak");
+            auto const* tweak_name =
+                tweak_value == nullptr ? nullptr : std::get_if<std::string>(&tweak_value->storage());
+            if (tweak_name == nullptr)
+            {
+                continue;
+            }
+            auto const* value_member = object_member(*action_object, "value");
+            if (*tweak_name == "sound")
+            {
+                if (value_member != nullptr)
+                {
+                    if (auto const* sound_string = std::get_if<std::string>(&value_member->storage());
+                        sound_string != nullptr)
+                    {
+                        rule.tweak_sound = *sound_string;
+                    }
+                }
+            }
+            else if (*tweak_name == "highlight")
+            {
+                // "If a highlight tweak is given with no value, its value is
+                // defined to be true."
+                if (value_member == nullptr)
+                {
+                    rule.tweak_highlight = true;
+                }
+                else if (auto const* highlight_bool = std::get_if<bool>(&value_member->storage());
+                         highlight_bool != nullptr)
+                {
+                    rule.tweak_highlight = *highlight_bool;
+                }
+            }
+        }
+    }
+
+    [[nodiscard]] auto parse_rule(canonicaljson::Object const& object, PushRuleKind kind) -> std::optional<PushRule>
+    {
+        auto const* rule_id_value = object_member(object, "rule_id");
+        auto const* rule_id_string =
+            rule_id_value == nullptr ? nullptr : std::get_if<std::string>(&rule_id_value->storage());
+        if (rule_id_string == nullptr || rule_id_string->empty())
+        {
+            return std::nullopt;
+        }
+
+        auto rule = PushRule{};
+        rule.rule_id = *rule_id_string;
+        rule.kind = kind;
+        // "enabled" defaults to true when absent — the default ruleset
+        // always includes it explicitly, but a hand-authored rule need not.
+        rule.enabled = true;
+        if (auto const* enabled_value = object_member(object, "enabled"); enabled_value != nullptr)
+        {
+            if (auto const* enabled_bool = std::get_if<bool>(&enabled_value->storage()); enabled_bool != nullptr)
+            {
+                rule.enabled = *enabled_bool;
+            }
+        }
+        if (auto const* default_value = object_member(object, "default"); default_value != nullptr)
+        {
+            if (auto const* default_bool = std::get_if<bool>(&default_value->storage()); default_bool != nullptr)
+            {
+                rule.is_default = *default_bool;
+            }
+        }
+        if (kind == PushRuleKind::override_kind || kind == PushRuleKind::underride)
+        {
+            if (auto const* conditions_value = object_member(object, "conditions"); conditions_value != nullptr)
+            {
+                if (auto const* conditions_array = std::get_if<canonicaljson::Array>(&conditions_value->storage());
+                    conditions_array != nullptr)
+                {
+                    for (auto const& entry : *conditions_array)
+                    {
+                        if (auto const* entry_object = std::get_if<canonicaljson::Object>(&entry.storage());
+                            entry_object != nullptr)
+                        {
+                            rule.conditions.push_back(parse_condition(*entry_object));
+                        }
+                    }
+                }
+            }
+        }
+        if (kind == PushRuleKind::content)
+        {
+            if (auto const* pattern_value = object_member(object, "pattern"); pattern_value != nullptr)
+            {
+                if (auto const* pattern_string = std::get_if<std::string>(&pattern_value->storage());
+                    pattern_string != nullptr)
+                {
+                    rule.content_pattern = *pattern_string;
+                }
+            }
+        }
+        if (auto const* actions_value = object_member(object, "actions"); actions_value != nullptr)
+        {
+            if (auto const* actions_array = std::get_if<canonicaljson::Array>(&actions_value->storage());
+                actions_array != nullptr)
+            {
+                apply_actions(*actions_array, rule);
+            }
+        }
+        return rule;
+    }
+
+    auto parse_rule_array(canonicaljson::Object const& ruleset, std::string_view member_name, PushRuleKind kind,
+                          std::vector<PushRule>& out) -> void
+    {
+        auto const* array_value = object_member(ruleset, member_name);
+        if (array_value == nullptr)
+        {
+            return;
+        }
+        auto const* array = std::get_if<canonicaljson::Array>(&array_value->storage());
+        if (array == nullptr)
+        {
+            return;
+        }
+        for (auto const& entry : *array)
+        {
+            auto const* entry_object = std::get_if<canonicaljson::Object>(&entry.storage());
+            if (entry_object == nullptr)
+            {
+                continue;
+            }
+            if (auto rule = parse_rule(*entry_object, kind); rule.has_value())
+            {
+                out.push_back(std::move(*rule));
+            }
+        }
+    }
+
+    [[nodiscard]] auto make_result(PushRule const& rule) -> PushEvaluationResult
+    {
+        return {rule.notify, rule.tweak_sound, rule.tweak_highlight, rule.rule_id};
+    }
+
+} // namespace
+
+auto parse_push_ruleset(canonicaljson::Object const& ruleset) -> PushRuleset
+{
+    auto result = PushRuleset{};
+    parse_rule_array(ruleset, "override", PushRuleKind::override_kind, result.override_rules);
+    parse_rule_array(ruleset, "content", PushRuleKind::content, result.content_rules);
+    parse_rule_array(ruleset, "room", PushRuleKind::room, result.room_rules);
+    parse_rule_array(ruleset, "sender", PushRuleKind::sender, result.sender_rules);
+    parse_rule_array(ruleset, "underride", PushRuleKind::underride, result.underride_rules);
+    return result;
+}
+
+auto evaluate_push_rules(PushRuleset const& ruleset, canonicaljson::Value const& event,
+                         PushEvaluationContext const& context) -> PushEvaluationResult
+{
+    auto const sender = event_property_as_string(event, "sender").value_or(std::string{});
+    // "Homeservers MUST NOT notify the Push Gateway for events that the
+    // user has sent themselves."
+    if (!sender.empty() && sender == context.receiving_user_id)
+    {
+        return {};
+    }
+
+    // .m.rule.master always has the highest priority, "even user defined
+    // ones", regardless of where it sits in the override list.
+    auto const master = std::ranges::find_if(ruleset.override_rules, [](PushRule const& rule) {
+        return rule.rule_id == ".m.rule.master";
+    });
+    if (master != ruleset.override_rules.end() && master->enabled)
+    {
+        return make_result(*master);
+    }
+
+    for (auto const& rule : ruleset.override_rules)
+    {
+        if (rule.rule_id == ".m.rule.master" || !rule.enabled)
+        {
+            continue;
+        }
+        if (rule_conditions_match(rule, event, context))
+        {
+            return make_result(rule);
+        }
+    }
+    for (auto const& rule : ruleset.content_rules)
+    {
+        if (rule.enabled && rule_matches_content(rule, event))
+        {
+            return make_result(rule);
+        }
+    }
+    for (auto const& rule : ruleset.room_rules)
+    {
+        if (!rule.enabled)
+        {
+            continue;
+        }
+        auto const room_id = event_property_as_string(event, "room_id");
+        if (room_id.has_value() && *room_id == rule.rule_id)
+        {
+            return make_result(rule);
+        }
+    }
+    for (auto const& rule : ruleset.sender_rules)
+    {
+        if (rule.enabled && sender == rule.rule_id)
+        {
+            return make_result(rule);
+        }
+    }
+    for (auto const& rule : ruleset.underride_rules)
+    {
+        if (rule.enabled && rule_conditions_match(rule, event, context))
+        {
+            return make_result(rule);
+        }
+    }
+
+    // No rule matched: "the homeserver MUST NOT notify the Push Gateway".
+    return {};
+}
+
+} // namespace merovingian::push

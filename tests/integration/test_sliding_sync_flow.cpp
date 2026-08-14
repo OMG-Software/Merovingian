@@ -3,6 +3,7 @@
 
 #include "../support/json_test_support.hpp"
 #include "../support/registration_token.hpp"
+#include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
@@ -15,6 +16,7 @@
 #include <string>
 #include <string_view>
 #include <tuple>
+#include <vector>
 
 namespace
 {
@@ -197,6 +199,40 @@ auto constexpr element_x_required_state =
 [[nodiscard]] auto element_x_encryption_body() -> std::string
 {
     return R"({"conn_id":"encryption","extensions":{"to_device":{"enabled":true},"e2ee":{"enabled":true}}})";
+}
+
+// PUT the caller's own m.ignored_user_list account-data event. Spec:
+// docs/matrix-v1.19-spec/client-server-api.md#ignoring-users.
+// `percent_encoded_user_id` is the caller's own mxid, percent-encoded for
+// the path segment (PUT /user/{userId}/account_data/{type} requires userId
+// == the authenticated caller).
+auto set_ignored_users(merovingian::homeserver::ClientServerRuntime& rt, std::string const& token,
+                       std::string const& percent_encoded_user_id, std::string const& ignored_users_body) -> void
+{
+    auto const resp = merovingian::homeserver::handle_client_server_request(
+        rt, {"PUT", "/_matrix/client/v3/user/" + percent_encoded_user_id + "/account_data/m.ignored_user_list", token,
+             ignored_users_body});
+    REQUIRE(resp.response.status == 200U);
+}
+
+// True when some event in `events` has the given top-level "event_id" — i.e.
+// that exact event was actually delivered as an element of the array, not
+// merely referenced by another (legitimately delivered) event's
+// "prev_events"/"auth_events" DAG-linkage fields. Ignoring is a
+// client-delivery filter, not an event-graph rewrite: a correctly-delivered
+// event sent AFTER a suppressed one still names the suppressed event's
+// event_id verbatim in its own prev_events, so a raw substring search over
+// the serialized timeline array would find an ignored sender's event_id even
+// when their event object was withheld. Checking the per-event top-level
+// field is the only sound way to assert "this event was/was not delivered".
+[[nodiscard]] auto array_has_event_id(merovingian::canonicaljson::Array const& events, std::string const& event_id)
+    -> bool
+{
+    return std::ranges::any_of(events, [&](merovingian::canonicaljson::Value const& value) {
+        auto const* obj = std::get_if<merovingian::canonicaljson::Object>(&value.storage());
+        auto const* id = obj != nullptr ? string_member(*obj, "event_id") : nullptr;
+        return id != nullptr && *id == event_id;
+    });
 }
 
 } // namespace
@@ -1623,6 +1659,148 @@ SCENARIO("MSC4186 sliding sync timeline and required_state events carry event_id
                     return event_id != nullptr && !event_id->empty();
                 });
                 REQUIRE(found_alice_member);
+            }
+        }
+    }
+}
+
+// ── Ignoring Users (spec: docs/matrix-v1.19-spec/client-server-api.md
+// #ignoring-users) — sliding sync builds its own timeline independently of
+// legacy /sync, so it must not bypass the same server-side filter.
+
+SCENARIO("MSC4186 sliding sync withholds a non-state timeline event from an ignored sender, but not from an "
+         "unignored one",
+         "[homeserver][sliding-sync][integration][ignoring-users]")
+{
+    GIVEN("alice, bob, and carol joined to a room, and alice has ignored bob")
+    {
+        auto const config = sliding_sync_config();
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const alice_token = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
+        auto const bob_token = register_and_login(rt, "bob", "CorrectHorse7!", "BOB");
+        auto const carol_token = register_and_login(rt, "carol", "CorrectHorse7!", "CAROL");
+        auto const room_id = create_room(rt, alice_token);
+
+        for (auto const& user_id : std::vector<std::string>{"@bob:example.org", "@carol:example.org"})
+        {
+            auto const invite_resp = merovingian::homeserver::handle_client_server_request(
+                rt, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/invite", alice_token,
+                     R"({"user_id":")" + user_id + R"("})"});
+            REQUIRE(invite_resp.response.status == 200U);
+        }
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    rt, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/join", bob_token, "{}"})
+                    .response.status == 200U);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    rt, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/join", carol_token, "{}"})
+                    .response.status == 200U);
+
+        set_ignored_users(rt, alice_token, "%40alice%3Aexample.org", R"({"ignored_users":{"@bob:example.org":{}}})");
+
+        WHEN("bob and carol each send a message and alice polls sliding sync")
+        {
+            auto const bob_event_id = send_message_get_id(rt, bob_token, room_id, "hello from bob");
+            auto const carol_event_id = send_message_get_id(rt, carol_token, room_id, "hello from carol");
+
+            auto const result =
+                sliding_sync(rt, alice_token, R"({"lists":{"rooms":{"ranges":[[0,9]],"timeline_limit":10}}})");
+            REQUIRE(result.response.status == 200U);
+
+            THEN("the timeline contains carol's message but not bob's")
+            {
+                auto const rooms = rooms_object(result.response.body);
+                auto const* room = object_member_as_object(rooms, room_id);
+                REQUIRE(room != nullptr);
+                auto const* timeline = object_member_as_array(*room, "timeline");
+                REQUIRE(timeline != nullptr);
+
+                // Structural check, not a substring search over the
+                // serialized array — see array_has_event_id's comment: carol's
+                // message legitimately names bob's event_id in its own
+                // "prev_events" field, so a raw text search would find bob's
+                // event_id even when his event object was correctly withheld.
+                REQUIRE(array_has_event_id(*timeline, carol_event_id));
+                REQUIRE_FALSE(array_has_event_id(*timeline, bob_event_id));
+            }
+        }
+    }
+}
+
+// Spec MUST (Server behaviour): "Servers must not send room invites from
+// ignored users to clients." MSC4186 has no separate invite-state surface
+// like legacy /sync's rooms.invite.<room_id>.invite_state; an invite reaches
+// a sliding sync client through an explicit room_subscription's
+// required_state (a client that already knows the room_id — e.g. from a
+// push notification — can subscribe to it before "joining" it). This proves
+// the same suppression applies there.
+SCENARIO("MSC4186 sliding sync withholds an ignored user's room invite from an explicitly-subscribed room's "
+         "required_state",
+         "[homeserver][sliding-sync][integration][ignoring-users]")
+{
+    GIVEN("alice has ignored bob, and both bob and carol have invited her to a room")
+    {
+        auto const config = sliding_sync_config();
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const alice_token = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
+        auto const bob_token = register_and_login(rt, "bob", "CorrectHorse7!", "BOB");
+        auto const carol_token = register_and_login(rt, "carol", "CorrectHorse7!", "CAROL");
+
+        set_ignored_users(rt, alice_token, "%40alice%3Aexample.org", R"({"ignored_users":{"@bob:example.org":{}}})");
+
+        auto const bob_room = create_room(rt, bob_token);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    rt, {"POST", "/_matrix/client/v3/rooms/" + bob_room + "/invite", bob_token,
+                         R"({"user_id":"@alice:example.org"})"})
+                    .response.status == 200U);
+        auto const carol_room = create_room(rt, carol_token);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    rt, {"POST", "/_matrix/client/v3/rooms/" + carol_room + "/invite", carol_token,
+                         R"({"user_id":"@alice:example.org"})"})
+                    .response.status == 200U);
+
+        WHEN("alice subscribes to both rooms with required_state naming her own membership")
+        {
+            auto const body = R"({"room_subscriptions":{")" + bob_room +
+                              R"(":{"required_state":[["m.room.member","$ME"]],"timeline_limit":0},")" + carol_room +
+                              R"(":{"required_state":[["m.room.member","$ME"]],"timeline_limit":0}}})";
+            auto const result = sliding_sync(rt, alice_token, body);
+            REQUIRE(result.response.status == 200U);
+
+            THEN("bob's invite is withheld from required_state while carol's is present")
+            {
+                auto const rooms = rooms_object(result.response.body);
+
+                auto const* bob_room_obj = object_member_as_object(rooms, bob_room);
+                REQUIRE(bob_room_obj != nullptr);
+                auto const* bob_required_state = object_member_as_array(*bob_room_obj, "required_state");
+                auto const bob_has_own_member =
+                    bob_required_state != nullptr &&
+                    std::ranges::any_of(*bob_required_state, [](merovingian::canonicaljson::Value const& v) {
+                        auto const* ev = std::get_if<merovingian::canonicaljson::Object>(&v.storage());
+                        if (ev == nullptr)
+                            return false;
+                        auto const* state_key = string_member(*ev, "state_key");
+                        return state_key != nullptr && *state_key == "@alice:example.org";
+                    });
+                REQUIRE_FALSE(bob_has_own_member);
+
+                auto const* carol_room_obj = object_member_as_object(rooms, carol_room);
+                REQUIRE(carol_room_obj != nullptr);
+                auto const* carol_required_state = object_member_as_array(*carol_room_obj, "required_state");
+                REQUIRE(carol_required_state != nullptr);
+                auto const carol_has_own_member =
+                    std::ranges::any_of(*carol_required_state, [](merovingian::canonicaljson::Value const& v) {
+                        auto const* ev = std::get_if<merovingian::canonicaljson::Object>(&v.storage());
+                        if (ev == nullptr)
+                            return false;
+                        auto const* state_key = string_member(*ev, "state_key");
+                        return state_key != nullptr && *state_key == "@alice:example.org";
+                    });
+                REQUIRE(carol_has_own_member);
             }
         }
     }

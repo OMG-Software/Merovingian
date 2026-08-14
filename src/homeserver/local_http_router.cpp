@@ -163,6 +163,69 @@ namespace
         return response(result.status, result.ok ? result.value : result.reason);
     }
 
+    // Extracts `access_token` from a request target's query string
+    // (`?access_token=...`), percent-decoded. Used by the federation OpenID
+    // userinfo endpoint, which -- unlike every other federation route --
+    // carries its credential as a query parameter rather than an X-Matrix
+    // Authorization header (Matrix v1.19 SS API §OpenID).
+    [[nodiscard]] auto access_token_from_query(std::string_view target) -> std::string
+    {
+        auto const query_pos = target.find('?');
+        if (query_pos == std::string_view::npos)
+        {
+            return {};
+        }
+        auto query = target.substr(query_pos + 1U);
+        while (!query.empty())
+        {
+            auto const amp = query.find('&');
+            auto const pair = query.substr(0U, amp);
+            auto const eq = pair.find('=');
+            if (eq != std::string_view::npos && pair.substr(0U, eq) == "access_token")
+            {
+                return core::percent_decode(pair.substr(eq + 1U));
+            }
+            if (amp == std::string_view::npos)
+            {
+                break;
+            }
+            query = query.substr(amp + 1U);
+        }
+        return {};
+    }
+
+    // Serves GET /_matrix/federation/v1/openid/userinfo (Matrix v1.19 SS API
+    // §OpenID). Deliberately bypasses the X-Matrix signed-request machinery
+    // entirely -- the spec marks this endpoint "Requires authentication: No"
+    // because the caller may be any third-party service, not necessarily a
+    // homeserver -- and consults only auth_service's federation_openid_
+    // userinfo, which in turn only ever reads the openid_tokens table (never
+    // access_tokens/sessions; see docs/threat-model.md). "Unknown" and
+    // "expired" tokens are intentionally indistinguishable: both hit the
+    // std::nullopt branch and get the spec's one 401 M_UNKNOWN_TOKEN body.
+    [[nodiscard]] auto federation_openid_userinfo_response(HomeserverRuntime const& runtime,
+                                                           LocalHttpRequest const& request) -> LocalHttpResponse
+    {
+        auto const token = access_token_from_query(request.target);
+        auto const user_id = federation_openid_userinfo(runtime, token);
+        if (!user_id.has_value())
+        {
+            auto error_object = canonicaljson::Object{};
+            error_object.push_back(
+                canonicaljson::make_member("errcode", canonicaljson::Value{std::string{"M_UNKNOWN_TOKEN"}}));
+            error_object.push_back(canonicaljson::make_member(
+                "error", canonicaljson::Value{std::string{"Access token unknown or expired"}}));
+            auto const serialized = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(error_object)});
+            return response(401U, serialized.error == canonicaljson::CanonicalJsonError::none ? serialized.output
+                                                                                              : std::string{});
+        }
+        auto sub_object = canonicaljson::Object{};
+        sub_object.push_back(canonicaljson::make_member("sub", canonicaljson::Value{*user_id}));
+        auto const serialized = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(sub_object)});
+        return response(200U, serialized.error == canonicaljson::CanonicalJsonError::none ? serialized.output
+                                                                                          : std::string{});
+    }
+
     // Admin-route auth gate for `/_merovingian/admin/*`. Returns std::nullopt
     // when the caller is a confirmed admin (the route proceeds and builds its
     // own success response); otherwise returns the 401/403 denial response —
@@ -842,9 +905,27 @@ namespace
             // serializes on the room stripe, and releases only the global mutex
             // for the backend commit so independent rooms can persist in parallel.
             auto result = ingest_pdu_event(*rt, envelope);
-            if (result.status == federation::PduIngestionStatus::accepted && rt->sync_notifier != nullptr)
+            if (result.status == federation::PduIngestionStatus::accepted)
             {
-                rt->sync_notifier->publish(result.accepted_stream_ordering, result.accepted_sync_stream_id);
+                if (rt->sync_notifier != nullptr)
+                {
+                    rt->sync_notifier->publish(result.accepted_stream_ordering, result.accepted_sync_stream_id);
+                }
+                // #479 P1 fix: this is the single convergence point for every
+                // accepted federation PDU — both the direct main-process path
+                // (inbound_request.cpp calling runtime.pdu_sink) and the
+                // worker-relayed path (worker_pool.cpp's pdu_ingest handler
+                // calling this same runtime_.federation.pdu_sink) land here
+                // exactly once per accepted PDU, so this cannot double-deliver.
+                // Without this call, an event from a remote room member never
+                // reached the push pipeline at all: send_event() (the only
+                // other caller of build_pending_push_deliveries) only runs for
+                // locally composed events, so a message from a federated room
+                // member produced no /notifications row and no Push Gateway
+                // request for a local recipient — the normal federated-room
+                // case. See room_service.hpp's deliver_federation_push_
+                // notifications doc comment.
+                deliver_federation_push_notifications(*rt, envelope, result.accepted_stream_ordering);
             }
             return result;
         };
@@ -1995,6 +2076,11 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
     {
         return response_from_operation(publish_server_signing_keys(runtime));
     }
+    if (request.method == "GET" &&
+        request.target.substr(0U, request.target.find('?')) == "/_matrix/federation/v1/openid/userinfo")
+    {
+        return federation_openid_userinfo_response(runtime, request);
+    }
     if (starts_with(request.target, "/_matrix/federation/"))
     {
         auto signed_request = parse_signed_federation_request(request);
@@ -2310,6 +2396,11 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         if (request.method == "GET" && request.target.substr(0U, request.target.find('?')) == "/_matrix/key/v2/server")
         {
             return response_from_operation(publish_server_signing_keys(runtime));
+        }
+        if (request.method == "GET" &&
+            request.target.substr(0U, request.target.find('?')) == "/_matrix/federation/v1/openid/userinfo")
+        {
+            return federation_openid_userinfo_response(runtime, request);
         }
         if (!starts_with(request.target, "/_matrix/federation/"))
         {

@@ -11,7 +11,7 @@ NNN_snake_case_description.sql
 
 `NNN` is a zero-padded three-digit integer: `001`, `002`, ..., `010`, `011`, ...
 The next migration number is always `max(existing) + 1`.
-Current highest: `007`.
+Current highest: `011`.
 
 Schema version `2` introduced the `sync_stream_watermark` table via
 `002_sync_stream_watermark.sql` to support live pre-production deployments that
@@ -28,10 +28,33 @@ validation/bound timestamps) survive restarts. Schema version `7`
 (`007_account_threepids_columns.sql`) adds the `client_secret` and `sid`
 TEXT columns onto `account_threepids` so the homeserver can persist the
 identity-server credentials needed for IS-delegated unbind (auth mode 2:
-sid + client_secret); it adds no new tables. After
-`v1.0.0`, deployed databases become a strict compatibility boundary and schema
-changes must be added as new forward migration files instead of modifying
-already-applied migrations.
+sid + client_secret); it adds no new tables. Schema version `8`
+(`008_pushers.sql`) adds the `pushers` table so push notification pushers
+registered via `POST /_matrix/client/v3/pushers/set` survive restarts, keyed
+on `(user_id, app_id, pushkey)` per the spec's uniqueness rule. Schema
+version `9` (`009_notifications.sql`) adds the `notifications` table so
+`GET /_matrix/client/v3/notifications` history survives restarts, keyed on
+`(user_id, event_id)`; `stream_ordering` doubles as the endpoint's `from`/
+`next_token` pagination key, and rows are pruned per-user at write time (see
+`docs/database-persistence.md`) so the table cannot grow without bound.
+Schema version `10` (`010_openid_tokens.sql`) adds the `openid_tokens` table
+so tokens minted by `POST /_matrix/client/v3/user/{userId}/openid/request_token`
+(Matrix v1.19 CS API §OpenID) survive restarts and can be redeemed by `GET
+/_matrix/federation/v1/openid/userinfo` (SS API §OpenID). It is deliberately
+a separate table from `access_tokens`: an OpenID token is a narrow,
+short-lived credential good only for the federation userinfo lookup, and
+must never be usable as a client-server bearer token — see
+`docs/threat-model.md`. Every row has a finite `expires_at`; expired rows
+are pruned at write time (see `docs/database-persistence.md`) so the table
+cannot grow without bound. Schema version `11` (`011_pushers_data_extra.sql`)
+ALTERs `data_extra_json` onto `pushers` (no new table): a canonical-JSON
+object holding every member of a pusher's registration-time `data`
+dictionary beyond `url`/`format`, which already have dedicated columns.
+Matrix v1.19 Push Gateway API requires forwarding the pusher's whole `data`
+dictionary minus `url` to the gateway, not just `format`; see
+`docs/database-persistence.md`. After `v1.0.0`, deployed databases become a
+strict compatibility boundary and schema changes must be added as new
+forward migration files instead of modifying already-applied migrations.
 
 ## File format
 

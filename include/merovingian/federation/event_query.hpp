@@ -40,6 +40,22 @@ namespace merovingian::federation
 [[nodiscard]] auto build_state_ids_response(database::PersistentStore const& store, std::string_view room_id,
                                             std::string_view at_event_id = {}) -> std::string;
 
+// Resolves the state event IDs describing "the room state at `at_event_id`"
+// -- state that includes any change `at_event_id` itself induces when it is a
+// state event. This is the sense the client-server API's `GET /messages`-
+// adjacent endpoints need (e.g. CS API `GET /rooms/{roomId}/context/{eventId}`:
+// "The state of the room at the last event returned"), which is distinct from
+// `build_state_response`'s federation-facing "state prior to this event"
+// (SS API `GET /state/{roomId}`: "prior to considering any state changes
+// induced by the requested event"). Reuses the same backward DAG walk from
+// `at_event_id`'s `prev_events` that `build_state_response`/
+// `build_state_ids_response` use, then folds `at_event_id` itself back in as
+// the winning entry for its own (type, state_key) when it is a state event.
+// Falls back to the room's current recorded state when `at_event_id` is empty
+// or does not name a stored event belonging to `room_id`.
+[[nodiscard]] auto resolve_state_event_ids_at(database::PersistentStore const& store, std::string_view room_id,
+                                              std::string_view at_event_id = {}) -> std::vector<std::string>;
+
 // Builds the PDU list for `GET /_matrix/federation/v1/backfill/{roomId}` by
 // starting at each requested event ID and walking `prev_events` until `limit`
 // PDUs have been collected. Missing events and events outside `room_id` are

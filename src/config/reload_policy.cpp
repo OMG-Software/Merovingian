@@ -65,6 +65,14 @@ auto reload_policy_for_key(std::string_view key) noexcept -> ReloadPolicy
         return ReloadPolicy::restart_required;
     }
 
+    // Push Gateway API: the outbound push client and its SSRF-safe resolver
+    // are constructed at startup from this block, the same lifecycle as the
+    // identity-server client above. SIGHUP does not rebuild them.
+    if (starts_with(key, "server.push."))
+    {
+        return ReloadPolicy::restart_required;
+    }
+
     return ReloadPolicy::reloadable;
 }
 

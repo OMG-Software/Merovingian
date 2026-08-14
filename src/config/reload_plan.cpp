@@ -401,6 +401,22 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
         add_change(plan, "server.identity_server.total_timeout_seconds");
     }
 
+    // Push Gateway API. Same reasoning as the identity_server block above:
+    // every field is diffed and every change is restart_required (see
+    // reload_policy.cpp) because the outbound push client is built at startup.
+    if (current.server().push.enabled != next.server().push.enabled)
+    {
+        add_change(plan, "server.push.enabled");
+    }
+    if (current.server().push.connect_timeout_seconds != next.server().push.connect_timeout_seconds)
+    {
+        add_change(plan, "server.push.connect_timeout_seconds");
+    }
+    if (current.server().push.total_timeout_seconds != next.server().push.total_timeout_seconds)
+    {
+        add_change(plan, "server.push.total_timeout_seconds");
+    }
+
     if (current.security().secrets.master_key_file != next.security().secrets.master_key_file)
     {
         add_change(plan, "security.secrets.master_key_file");

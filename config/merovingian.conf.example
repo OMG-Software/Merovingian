@@ -258,6 +258,15 @@ security.media.decode_in_sandbox=true
 # security.trust_safety.policy_server_timeout=5s
 # security.trust_safety.policy_server_allow_without_result=false
 
+# Push notifications (Push Gateway API / CS API push-notifications module)
+# Commented out by default: server.push.enabled=false means pushers can still
+# be registered via POST /pushers/set, but no notification is ever delivered
+# to a gateway until this is turned on. The timeouts bound outbound calls to a
+# pusher's gateway URL, which is client-supplied and therefore untrusted.
+# server.push.enabled=true
+# server.push.connect_timeout_seconds=10
+# server.push.total_timeout_seconds=30
+
 # Logging redaction
 # Structured logs are enabled, but token values and event content stay redacted
 # so operational logs do not become a credential or message-content sink.
