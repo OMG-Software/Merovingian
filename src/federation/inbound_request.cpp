@@ -22,6 +22,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <chrono>
 #include <cstdint>
 #include <future>
@@ -39,6 +40,17 @@ namespace merovingian::federation
 {
 namespace
 {
+
+    // RFC 9110 §5.6.2 tchar: the characters allowed in an unquoted `token`.
+    // The X-Matrix Authorization header lets a sender leave a token-shaped
+    // parameter value unquoted, so the parser needs the same character set the
+    // sender used to decide whether quoting was required.
+    [[nodiscard]] auto is_rfc9110_tchar(char ch) noexcept -> bool
+    {
+        auto constexpr punctuation = std::string_view{"!#$%&'*+-.^_`|~"};
+        auto const unsigned_ch = static_cast<unsigned char>(ch);
+        return std::isalnum(unsigned_ch) != 0 || punctuation.find(ch) != std::string_view::npos;
+    }
 
     // Bounds FederationRuntimeState::accepted_transactions (#416). Sized well
     // above any plausible legitimate transaction volume between dedup entries
@@ -1523,44 +1535,77 @@ auto parse_x_matrix_authorization_header(std::string_view header_value) -> std::
         {
             remaining = remaining.substr(1U);
         }
-        if (remaining.empty() || remaining.front() != '"')
+        if (remaining.empty())
         {
             return std::nullopt;
         }
-        remaining = remaining.substr(1U);
-        // Scan the quoted value per RFC 7230 §3.2.6: a backslash escapes the
-        // next character, so an embedded `\"` is part of the value, not the
-        // closing delimiter. Decode `\"`→`"` and `\\`→`\` (and any other
-        // quoted-pair by dropping the backslash and keeping the following
-        // char). A trailing lone backslash is malformed → reject (issue #321).
         auto value = std::string{};
-        auto closed = false;
-        auto i = std::size_t{0U};
-        for (; i < remaining.size(); ++i)
+        if (remaining.front() == '"')
         {
-            auto const ch = remaining[i];
-            if (ch == '"')
+            remaining = remaining.substr(1U);
+            // Scan the quoted value per RFC 7230 §3.2.6: a backslash escapes the
+            // next character, so an embedded `\"` is part of the value, not the
+            // closing delimiter. Decode `\"`→`"` and `\\`→`\` (and any other
+            // quoted-pair by dropping the backslash and keeping the following
+            // char). A trailing lone backslash is malformed → reject (issue #321).
+            auto closed = false;
+            auto i = std::size_t{0U};
+            for (; i < remaining.size(); ++i)
             {
-                closed = true;
-                break;
-            }
-            if (ch == '\\')
-            {
-                if (i + 1U >= remaining.size())
+                auto const ch = remaining[i];
+                if (ch == '"')
                 {
-                    return std::nullopt; // lone trailing backslash
+                    closed = true;
+                    break;
                 }
-                value.push_back(remaining[i + 1U]);
-                ++i;
-                continue;
+                if (ch == '\\')
+                {
+                    if (i + 1U >= remaining.size())
+                    {
+                        return std::nullopt; // lone trailing backslash
+                    }
+                    value.push_back(remaining[i + 1U]);
+                    ++i;
+                    continue;
+                }
+                value.push_back(ch);
             }
-            value.push_back(ch);
+            if (!closed)
+            {
+                return std::nullopt;
+            }
+            remaining = remaining.substr(i + 1U);
         }
-        if (!closed)
+        else
         {
-            return std::nullopt;
+            // Unquoted parameter value. Spec (Request Authentication): values "must be
+            // enclosed in quotes if they contain characters that are not allowed in
+            // `token`s ... if a value is a valid `token`, it may or may not be enclosed
+            // in quotes." A bare token is therefore legal and MUST be accepted —
+            // rejecting it discards the entire request, which for
+            // PUT /_matrix/federation/v1/send/{txnId} silently drops a peer's PDUs.
+            // Anything outside the RFC 9110 §5.6.2 tchar set was required to be quoted,
+            // so it is still malformed here.
+            auto length = std::size_t{0U};
+            while (length < remaining.size() && is_rfc9110_tchar(remaining[length]))
+            {
+                ++length;
+            }
+            if (length == 0U)
+            {
+                // `token` is 1*tchar, so an empty or illegal-first-character value is
+                // malformed however it is delimited.
+                return std::nullopt;
+            }
+            value = std::string{remaining.substr(0U, length)};
+            remaining = remaining.substr(length);
+            // A token ends at a comma or at whitespace before one. Anything else means
+            // the value carried a character the sender was obliged to quote.
+            if (!remaining.empty() && remaining.front() != ',' && remaining.front() != ' ' && remaining.front() != '\t')
+            {
+                return std::nullopt;
+            }
         }
-        remaining = remaining.substr(i + 1U);
         if (name == "origin")
         {
             credentials.origin = value;

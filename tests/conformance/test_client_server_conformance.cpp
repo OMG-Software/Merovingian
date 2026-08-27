@@ -13203,7 +13203,11 @@ SCENARIO("GET /thirdparty/user/{protocol} conformance")
 // 22     Threads — GET /v1/rooms/{roomId}/threads
 // ============================================================================
 // Spec: Matrix v1.19 §22 GET /_matrix/client/v1/rooms/{roomId}/threads
-//       IMPLEMENTATION GAP: not yet implemented. Must return 404 M_UNRECOGNIZED.
+//       Implemented in 0.11.12. This scenario previously asserted the
+//       404 M_UNRECOGNIZED of an unrouted endpoint; the endpoint now exists, so
+//       it asserts the response contract instead. Ordering, bundled m.thread
+//       aggregations, the include filter, and pagination are covered in
+//       tests/conformance/test_event_relationships_conformance.cpp.
 
 SCENARIO("GET /v1/rooms/{roomId}/threads conformance")
 {
@@ -13219,25 +13223,22 @@ SCENARIO("GET /v1/rooms/{roomId}/threads conformance")
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"GET", "/_matrix/client/v1/rooms/" + room_id + "/threads", token, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED")
+            THEN("the server returns 200 with a chunk array and no next_batch")
             {
-                REQUIRE(response.response.status == 404);
+                REQUIRE(response.response.status == 200);
                 auto const body = parse_object(response.response.body);
-                auto const* err = string_member(body, "errcode");
-                REQUIRE(err != nullptr);
-                REQUIRE(*err == "M_UNRECOGNIZED");
+                // Spec MUST: chunk is required, even when the room has no threads.
+                auto const* chunk_value = object_member(body, "chunk");
+                REQUIRE(chunk_value != nullptr);
+                auto const* chunk = std::get_if<merovingian::canonicaljson::Array>(&chunk_value->storage());
+                REQUIRE(chunk != nullptr);
+                REQUIRE(chunk->empty());
+                // Spec: next_batch is "not present when there are no further results".
+                REQUIRE(string_member(body, "next_batch") == nullptr);
             }
         }
     }
 }
-
-// ============================================================================
-// 23     OpenID — POST /user/{userId}/openid/request_token
-// ============================================================================
-// Spec: Matrix v1.19 §23 POST /_matrix/client/v3/user/{userId}/openid/request_token
-//       IMPLEMENTATION LANDED: routed. See the dedicated OpenID scenarios
-//       above for full response-shape, auth, and security coverage; this
-//       sweep entry now proves the route is live rather than 404.
 
 SCENARIO("POST /user/{userId}/openid/request_token conformance")
 {

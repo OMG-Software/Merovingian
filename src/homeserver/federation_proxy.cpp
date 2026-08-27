@@ -84,6 +84,20 @@ auto FederationProxy::handle(LocalHttpRequest const& request) -> LocalHttpRespon
     }
     if (!signed_request_opt.has_value())
     {
+        // Log enough to identify WHICH peer and shape of header failed, without
+        // ever recording the header itself: it carries the peer's reusable
+        // origin/key/signature credential. Without this the rejection is an
+        // opaque 502 in the access log and a peer whose PDUs are being dropped
+        // is indistinguishable from one that never called.
+        auto constexpr scheme = std::string_view{"X-Matrix "};
+        observability::log_diagnostic(
+            "federation_proxy", "federation_proxy.authorization_unparsed",
+            {
+                {"target",       observability::sanitized_http_target(request.target),        false},
+                {"header_bytes", std::to_string(request.access_token.size()),                 false},
+                {"scheme_ok",    request.access_token.starts_with(scheme) ? "true" : "false", false}
+        },
+            observability::LogEventSeverity::warning);
         // 502 rather than 401: Synapse propagates 401 from federation responses
         // to the client, triggering an automatic logout. 502 signals a
         // server-side failure instead.

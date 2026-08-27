@@ -41,6 +41,26 @@ This capability note describes runtime-wired observability and audit behavior.
   returned `EduDispositionStatus::accepted` regardless of what actually
   persisted, so a lost megolm room-key share left no trace anywhere in the
   logs (issue #464).
+- `federation_proxy.authorization_unparsed` (warning severity, via
+  `log_diagnostic`) fires when an inbound federation request's `Authorization`
+  header cannot be parsed as X-Matrix credentials, which the proxy answers with
+  `502 malformed federation authorization`. Fields: `target` (sanitized),
+  `header_bytes`, `scheme_ok`. The header value itself is never logged — it
+  carries the peer's reusable origin/key/signature credential. Previously this
+  rejection produced no log line at all, so a peer whose PDUs were being dropped
+  was indistinguishable from one that never called.
+- Server signing-key lifecycle diagnostics. `signing_key.window_refreshed`
+  (info) fires when the published `valid_until_ts` of the active key is rolled
+  forward; `signing_key.window_refresh_failed` (warning) fires when that write
+  does not persist, meaning peers keep re-fetching against the stale window;
+  `signing_key.provider_rebuilt` (info) fires when the runtime signing provider
+  is rebuilt because it did not hold the preferred key; and
+  `dispatch.signing_identity_refreshed` (info) fires from
+  `rotate_server_signing_key` when the federation dispatch worker is handed the
+  rotated key. `signing_key.loaded` is debug, not
+  info: it runs on every request path that needs the signing identity. Fields
+  carry `server_name`, `key_id`, `public_key`, and `valid_until_ts` — never
+  secret material (`secret_size` is a length only).
 - `federation.acl_rejected` (warning severity, via `audit_federation`) fires
   when an inbound federation request, PDU, or room-local EDU is denied by the
   room's `m.room.server_acl` (MSC4436). Diagnostic companions `pdu.acl_rejected`

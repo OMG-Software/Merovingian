@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.11.11
+Version:        0.11.12
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -112,6 +112,8 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Mon Aug 24 2026 James Chapman <claude@ping.me.uk> - 0.11.12-1
+- Fix: the server signing key is no longer silently replaced when its published valid_until_ts window lapses, which left the runtime signing provider unable to sign any locally composed event (403 on every room send) and peers rejecting the unpublished key.
 * Mon Aug 10 2026 James Chapman <claude@ping.me.uk> - 0.11.11-1
 - Documentation only: Matrix v1.19 gap audit recorded in docs/todos/capability-gaps.md (Application Service API and Push Gateway API were absent and untracked; push delivery is a stub). No behaviour change.
 * Fri Aug 08 2026 James Chapman <claude@ping.me.uk> - 0.11.10-1

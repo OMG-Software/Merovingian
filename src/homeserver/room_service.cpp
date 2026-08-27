@@ -18,6 +18,7 @@
 #include "merovingian/events/event.hpp"
 #include "merovingian/events/event_id.hpp"
 #include "merovingian/events/event_signer.hpp"
+#include "merovingian/events/redaction.hpp"
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/membership_endpoints.hpp"
 #include "merovingian/federation/outbound_membership.hpp"
@@ -1701,6 +1702,58 @@ namespace
     return {true, outcome.response.body};
 }
 
+// How long a published signing key advertises itself as valid. Federation peers
+// cap any advertised window at seven days (spec: server-server-api.md, "Publishing
+// Keys"), so a longer window buys nothing, and a far-future sentinel would let a
+// compromised key live in peer caches forever. The window is rolled forward while
+// the key is in use — it bounds how long peers may cache the key, not how long the
+// server keeps its identity.
+constexpr auto signing_key_validity_ms = std::uint64_t{7U * 24U * 60U * 60U * 1000U};
+
+// How long a published key document may be served from the lock-free cache before
+// it is re-published. Well inside signing_key_validity_ms so the advertised
+// valid_until_ts of a served document is always comfortably in the future.
+constexpr auto key_server_cache_refresh_interval_ms = std::uint64_t{60U * 60U * 1000U};
+
+// Guarantees the runtime signing provider can actually sign with `key_id`.
+//
+// Callers sign locally composed events with the key id returned by
+// ensure_runtime_server_signing_key, but the provider is a separate object built
+// from the active secrets. If the two drift apart, every signature attempt fails
+// with "signing key not held" and the server can no longer originate any event,
+// even though the key material itself is intact. Rebuilding the provider is cheap
+// and only happens when the key it was built from is no longer the preferred one.
+auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_view key_id) -> void
+{
+    // The federation worker signs over IPC and holds no local secrets to rebuild from.
+    if (runtime.crypto_provider_overridden)
+    {
+        return;
+    }
+    auto const held = runtime.crypto_provider != nullptr &&
+                      std::ranges::any_of(runtime.database.signing_secret_keys,
+                                          [key_id](std::pair<std::string, core::SecretBuffer> const& entry) {
+                                              return entry.first == key_id;
+                                          });
+    if (held)
+    {
+        return;
+    }
+    // A null provider is the first build during startup, not a drift between the
+    // stored key and the provider — only the latter is worth an info line.
+    auto const was_built = runtime.crypto_provider != nullptr;
+    reset_runtime_crypto_provider(runtime);
+    if (was_built)
+    {
+        log_diagnostic("signing_key.provider_rebuilt",
+                       {
+                           {"key_id",    std::string{key_id},                                   false},
+                           {"available", runtime.crypto_provider != nullptr ? "true" : "false", false}
+        },
+                       observability::LogEventSeverity::info);
+    }
+}
+
 [[nodiscard]] auto derive_ed25519_key_id(std::span<unsigned char const> public_key) -> std::string
 {
     static constexpr auto hex_digits = std::string_view{"0123456789abcdef"};
@@ -1770,34 +1823,30 @@ namespace
     auto const& server_name = runtime.config.server().server_name;
     auto const& all_keys = runtime.database.persistent_store.server_signing_keys;
 
-    // A usable key must not have expired. Use the same wall-clock basis as
-    // collect_active_server_signing_keys so the runtime preferred key is always
-    // one that will be published as active.
     auto const now_ms = static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
             .count());
 
-    // Find any signing key for this server that uses a derived key_id (not the legacy
-    // "ed25519:auto" sentinel). The sentinel was used before key-ids were derived from
-    // the public key bytes; federation notary servers (e.g. matrix.org) that cached it
-    // with a far-future valid_until_ts will never re-fetch it, causing BadSignatureError
-    // on every outbound request. Ignoring "ed25519:auto" forces generation of a new
-    // key whose key_id is unknown to any stale notary cache.
+    // Select the newest usable signing key for this server, whether or not its
+    // published window has lapsed. `valid_until_ts` tells federation peers when to
+    // re-fetch the key list (spec: server-server-api.md#publishing-keys); it is not a
+    // lease after which the server may adopt a different identity. A lapsed window is
+    // republished below, never replaced: a key minted behind the running signing
+    // provider cannot sign anything (the provider does not hold it), and no peer has
+    // ever seen it, so both local sends and outbound federation break at once.
     //
-    // Expired keys are also skipped. Otherwise the runtime would load a key whose
-    // valid_until_ts is in the past, collect_active_server_signing_keys would reject
-    // it as inactive, and reset_runtime_crypto_provider would build no provider. That
-    // leaves /_matrix/key/v2/server returning 500 and outbound federation unsigned.
-    // Select the usable key with the greatest valid_until_ts. After a rotation the
-    // store holds both the retired key (valid_until_ts == "now") and the freshly
-    // activated key (valid_until_ts == now + 7 days); choosing the furthest expiry
-    // guarantees the new key is loaded as active and the retired one is left for
-    // publication under old_verify_keys.
+    // The legacy "ed25519:auto" sentinel is still excluded. Notary servers (e.g.
+    // matrix.org) cached it with a far-future valid_until_ts and will never re-fetch,
+    // so it can only be retired by generating a key with an id they have not cached.
+    //
+    // Selecting the greatest valid_until_ts also picks the correct key after a
+    // rotation: the retired key was stamped with "now" while the new key carries a
+    // full window, so the new key wins and the retired one is left for old_verify_keys.
     auto it = all_keys.end();
     for (auto candidate = all_keys.begin(); candidate != all_keys.end(); ++candidate)
     {
         if (candidate->server_name != server_name || candidate->key_id == "ed25519:auto" ||
-            candidate->secret_key.empty() || candidate->valid_until_ts <= now_ms)
+            candidate->secret_key.empty())
         {
             continue;
         }
@@ -1809,54 +1858,97 @@ namespace
 
     if (it != all_keys.end())
     {
+        // Copy the record before any store write: persisting a key can append to the
+        // backing vector and invalidate `it`.
+        auto record = *it;
+
         // Decrypt (or decode legacy plaintext) the stored secret and validate its
         // size before trusting it.  Fail closed if the secret cannot hydrate into a
         // full Ed25519 secret key — attempting to sign with wrong-length material
         // produces corrupt signatures.
         auto constexpr expected_secret_bytes = crypto::Ed25519Keypair{}.secret_key.size();
-        auto const raw_secret = decrypt_stored_signing_secret(runtime, it->secret_key);
+        auto const raw_secret = decrypt_stored_signing_secret(runtime, record.secret_key);
         if (!raw_secret.has_value() || raw_secret->size() != expected_secret_bytes)
         {
             log_diagnostic(
                 "signing_key.rejected",
                 {
                     {"server_name", std::string{server_name},                                                false},
-                    {"key_id",      it->key_id,                                                              false},
+                    {"key_id",      record.key_id,                                                           false},
                     {"reason",      "secret_size_invalid",                                                   false},
                     {"secret_size", std::to_string(raw_secret.value_or(std::vector<std::uint8_t>{}).size()), false},
                     {"expected",    std::to_string(expected_secret_bytes),                                   false}
             });
             return std::nullopt;
         }
+
+        // Roll the published window forward once the key is past the halfway point of
+        // its advertised validity. Without this the window simply lapses on any server
+        // whose uptime exceeds it, and every peer that re-fetches /_matrix/key/v2/server
+        // sees a valid_until_ts in the past and rejects the server's signatures.
+        if (record.valid_until_ts <= now_ms + signing_key_validity_ms / 2U)
+        {
+            auto const refreshed_valid_until_ts = now_ms + signing_key_validity_ms;
+            // An empty secret preserves the stored one; only the window changes.
+            auto refreshed = database::PersistentServerSigningKey{record.server_name, record.key_id, record.public_key,
+                                                                  refreshed_valid_until_ts, std::string{}};
+            if (database::store_server_signing_key(runtime.database.persistent_store, std::move(refreshed)))
+            {
+                record.valid_until_ts = refreshed_valid_until_ts;
+                log_diagnostic("signing_key.window_refreshed",
+                               {
+                                   {"server_name",    std::string{server_name},                 false},
+                                   {"key_id",         record.key_id,                            false},
+                                   {"valid_until_ts", std::to_string(refreshed_valid_until_ts), false}
+                },
+                               observability::LogEventSeverity::info);
+            }
+            else
+            {
+                // Degrade rather than fail closed: the key itself is intact and still
+                // signs. Peers just re-fetch sooner because the advertised window is
+                // the stale one.
+                log_diagnostic("signing_key.window_refresh_failed",
+                               {
+                                   {"server_name", std::string{server_name}, false},
+                                   {"key_id",      record.key_id,            false},
+                                   {"reason",      "persist_failed",         false}
+                },
+                               observability::LogEventSeverity::warning);
+            }
+        }
+
         runtime.database.signing_secret_key = core::SecretBuffer{raw_secret->size()};
         std::copy(raw_secret->begin(), raw_secret->end(), runtime.database.signing_secret_key.bytes().begin());
-        log_diagnostic("signing_key.loaded",
-                       {
-                           {"server_name", std::string{server_name},           false},
-                           {"key_id",      it->key_id,                         false},
-                           {"public_key",  it->public_key,                     false},
-                           {"secret_size", std::to_string(raw_secret->size()), false}
-        },
-                       observability::LogEventSeverity::info);
-        return *it;
+        // Debug, not info: this runs on every request path that needs the signing
+        // identity, so at info it drowns the log. The state-changing events
+        // (window refreshed, key generated, provider rebuilt) are the info-level ones.
+        log_diagnostic("signing_key.loaded", {
+                                                 {"server_name", std::string{server_name},           false},
+                                                 {"key_id",      record.key_id,                      false},
+                                                 {"public_key",  record.public_key,                  false},
+                                                 {"secret_size", std::to_string(raw_secret->size()), false}
+        });
+        ensure_crypto_provider_holds_key(runtime, record.key_id);
+        return record;
     }
 
-    // No usable derived-format key found. Log whether a legacy or expired entry
-    // exists (for ops visibility) then generate a fresh Ed25519 keypair with a
-    // derived key_id.
+    // This server has no usable signing key at all — first boot, or a store holding
+    // only the legacy sentinel / secret-less records. Log what was there (for ops
+    // visibility) then generate a fresh Ed25519 keypair with a derived key_id. This
+    // is the ONLY path that mints a key outside an explicit rotation.
     auto const has_legacy =
         std::ranges::any_of(all_keys, [&server_name](database::PersistentServerSigningKey const& k) {
             return k.server_name == server_name && k.key_id == "ed25519:auto";
         });
-    auto const has_expired =
-        std::ranges::any_of(all_keys, [&server_name, now_ms](database::PersistentServerSigningKey const& k) {
-            return k.server_name == server_name && k.key_id != "ed25519:auto" && !k.secret_key.empty() &&
-                   k.valid_until_ts <= now_ms;
+    auto const stored_for_server =
+        std::ranges::count_if(all_keys, [&server_name](database::PersistentServerSigningKey const& k) {
+            return k.server_name == server_name;
         });
     log_diagnostic("signing_key.generating", {
-                                                 {"server_name",    std::string{server_name},       false},
-                                                 {"has_legacy_key", has_legacy ? "true" : "false",  false},
-                                                 {"has_expired",    has_expired ? "true" : "false", false}
+                                                 {"server_name",    std::string{server_name},          false},
+                                                 {"has_legacy_key", has_legacy ? "true" : "false",     false},
+                                                 {"stored_keys",    std::to_string(stored_for_server), false}
     });
 
     auto const keypair = crypto::generate_ed25519_keypair();
@@ -1868,12 +1960,6 @@ namespace
     // Derive the key_id from the public key material so each new key gets a unique
     // id; stale notary-cache entries for old ids become irrelevant after rotation.
     auto const key_id = derive_ed25519_key_id(keypair->public_key);
-
-    // Publish now + 7 days as valid_until_ts so federation peers periodically
-    // re-fetch the key rather than caching it indefinitely. The top-level now_ms
-    // was also used to reject any expired stored key, so it is reused here for
-    // consistency.
-    auto constexpr seven_days_ms = std::uint64_t{7U * 24U * 60U * 60U * 1000U};
 
     // Encrypt the secret at rest when a master key is configured.  For backwards
     // compatibility a server without a configured master key falls back to the
@@ -1912,7 +1998,7 @@ namespace
         key_id,
         events::matrix_base64_from_bytes(
             std::string_view{reinterpret_cast<char const*>(keypair->public_key.data()), keypair->public_key.size()}),
-        now_ms + seven_days_ms,
+        now_ms + signing_key_validity_ms,
         *stored_secret,
     };
     log_diagnostic("signing_key.generated",
@@ -1930,14 +2016,18 @@ namespace
     runtime.database.signing_secret_key = core::SecretBuffer{keypair->secret_key.size()};
     std::copy(keypair->secret_key.begin(), keypair->secret_key.end(),
               runtime.database.signing_secret_key.bytes().begin());
+    ensure_crypto_provider_holds_key(runtime, key.key_id);
     return key;
 }
 
-// Collect every currently-active signing-key record for this server. A key is
-// active when it is not the legacy "ed25519:auto" sentinel, has a non-empty
-// public key and secret, and its valid_until_ts is still in the future. The
-// returned vector is sorted by valid_until_ts descending so the preferred key
-// (the one used for new signatures) is always front().
+// Collect every signing-key record this server may currently sign or publish
+// with. The preferred key — the newest non-legacy record holding a secret, i.e.
+// exactly the record ensure_runtime_server_signing_key returns — is always
+// included: it is the server's identity, so it stays signable even when its
+// published window has lapsed and could not be refreshed. Every other key is
+// active only while its valid_until_ts is in the future, which is what retires a
+// key stamped with "now" by rotate_server_signing_key. The returned vector is
+// sorted by valid_until_ts descending so the preferred key is always front().
 [[nodiscard]] auto collect_active_server_signing_keys(HomeserverRuntime const& runtime)
     -> std::vector<database::PersistentServerSigningKey>
 {
@@ -1948,11 +2038,33 @@ namespace
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
             .count());
 
+    // The preferred key is the newest usable record — the same selection
+    // ensure_runtime_server_signing_key makes — and is always active.
+    auto preferred_key_id = std::string{};
+    auto preferred_valid_until_ts = std::uint64_t{0U};
+    for (auto const& candidate : all_keys)
+    {
+        if (candidate.server_name != server_name || candidate.key_id == "ed25519:auto" ||
+            candidate.secret_key.empty() || candidate.public_key.empty())
+        {
+            continue;
+        }
+        if (preferred_key_id.empty() || candidate.valid_until_ts > preferred_valid_until_ts)
+        {
+            preferred_key_id = candidate.key_id;
+            preferred_valid_until_ts = candidate.valid_until_ts;
+        }
+    }
+
     auto active = std::vector<database::PersistentServerSigningKey>{};
     for (auto const& candidate : all_keys)
     {
         if (candidate.server_name != server_name || candidate.key_id == "ed25519:auto" ||
-            candidate.secret_key.empty() || candidate.public_key.empty() || candidate.valid_until_ts <= now_ms)
+            candidate.secret_key.empty() || candidate.public_key.empty())
+        {
+            continue;
+        }
+        if (candidate.key_id != preferred_key_id && candidate.valid_until_ts <= now_ms)
         {
             continue;
         }
@@ -2033,15 +2145,14 @@ namespace
         return make_operation_result(false, {}, "server signing provider unavailable", 500U);
     }
 
-    // Publish a rolling valid_until_ts of now + 7 days. A far-future sentinel (year 2999) is
-    // problematic because federation peers cache the key permanently and will never re-fetch if
-    // the key changes — for example after a migration bug that rotated the key on every restart.
-    // Seven days gives peers a window to notice the new key without hammering our endpoint.
-    auto constexpr seven_days_ms = std::uint64_t{7U * 24U * 60U * 60U * 1000U};
     auto const now_ms = static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
             .count());
-    auto const rolling_valid_until_ts = now_ms + seven_days_ms;
+    // Advertise exactly the window the server has persisted for its preferred key
+    // (ensure_runtime_server_signing_key rolled it forward above if it was over
+    // halfway through). Advertising a longer window than the server itself records
+    // is what let peers cache a key the server had already stopped honouring.
+    auto const published_valid_until_ts = preferred->valid_until_ts;
 
     // Advertise every currently-active key in verify_keys. Multiple active keys are
     // supported during rotation windows or when the operator has pre-staged keys.
@@ -2093,7 +2204,7 @@ namespace
         canonicaljson::make_member("old_verify_keys", canonicaljson::Value{std::move(old_verify_keys_obj)}));
     response.push_back(canonicaljson::make_member("server_name", canonicaljson::Value{preferred->server_name}));
     response.push_back(canonicaljson::make_member(
-        "valid_until_ts", canonicaljson::Value{static_cast<std::int64_t>(rolling_valid_until_ts)}));
+        "valid_until_ts", canonicaljson::Value{static_cast<std::int64_t>(published_valid_until_ts)}));
     response.push_back(canonicaljson::make_member("verify_keys", canonicaljson::Value{std::move(verify_keys)}));
 
     auto payload = canonicaljson::serialize_canonical(canonicaljson::Value{response});
@@ -2125,9 +2236,13 @@ namespace
 
     // Atomically update the lock-free cache so dispatch_local_http_request can
     // serve subsequent key server requests without acquiring the runtime mutex.
+    // The cached document carries a valid_until_ts, so it is only servable for part
+    // of that window: past the refresh deadline the fast path falls through here
+    // again and re-publishes, instead of serving a document whose advertised window
+    // has quietly elapsed on a long-running server.
     if (runtime.database.key_server_cache)
     {
-        runtime.database.key_server_cache->store(signed_response.output);
+        runtime.database.key_server_cache->store(signed_response.output, now_ms + key_server_cache_refresh_interval_ms);
     }
 
     return make_operation_result(true, std::move(signed_response.output));
@@ -2168,7 +2283,6 @@ namespace
         return make_operation_result(false, {}, "signing key generation failed", 500U);
     }
     auto const key_id = derive_ed25519_key_id(keypair->public_key);
-    auto constexpr seven_days_ms = std::uint64_t{7U * 24U * 60U * 60U * 1000U};
 
     auto stored_secret = encrypt_signing_secret(
         runtime, std::span<std::uint8_t const>{keypair->secret_key.data(), keypair->secret_key.size()});
@@ -2192,7 +2306,7 @@ namespace
         key_id,
         events::matrix_base64_from_bytes(
             std::string_view{reinterpret_cast<char const*>(keypair->public_key.data()), keypair->public_key.size()}),
-        now_ms + seven_days_ms,
+        now_ms + signing_key_validity_ms,
         *stored_secret,
     };
     if (!database::store_server_signing_key(runtime.database.persistent_store, new_key))
@@ -2203,6 +2317,22 @@ namespace
     std::copy(keypair->secret_key.begin(), keypair->secret_key.end(),
               runtime.database.signing_secret_key.bytes().begin());
     reset_runtime_crypto_provider(runtime);
+
+    // The dispatch worker snapshots the signing identity when it is constructed, and
+    // wire_federation_callbacks returns early once the callbacks exist — so nothing
+    // else hands it the new key. Without this it keeps signing outbound transactions
+    // with the key this rotation just retired, which peers reject.
+    if (runtime.dispatch_worker != nullptr)
+    {
+        runtime.dispatch_worker->update_signing_identity(
+            key_id, core::SecretBuffer{runtime.database.signing_secret_key.bytes()});
+        log_diagnostic("dispatch.signing_identity_refreshed",
+                       {
+                           {"key_id", key_id, false}
+        },
+                       observability::LogEventSeverity::info);
+    }
+
     log_diagnostic("signing_key.rotated",
                    {
                        {"server_name",    current->server_name, false},
@@ -5954,6 +6084,277 @@ namespace
     if (serialized.error != canonicaljson::CanonicalJsonError::none)
     {
         return make_operation_result(false, {}, "relations serialization failed", 500U);
+    }
+    return make_operation_result(true, std::move(serialized.output));
+}
+
+[[nodiscard]] auto fetch_room_threads(HomeserverRuntime const& runtime, std::string_view access_token,
+                                      FetchThreadsRequest const& request) -> OperationResult
+{
+    // `authenticated_user` is non-const because the audit-routing helper writes
+    // a row on token rejection; the const cast is safe for the read-only path.
+    auto const user_id = authenticated_user(const_cast<HomeserverRuntime&>(runtime), access_token);
+    if (!user_id.has_value())
+    {
+        return make_operation_result(false, {}, "unauthenticated", 401U);
+    }
+
+    // Spec: "include ... One of: [all, participated]". A value outside the enum
+    // is a bad request, not a silent fallback to "all" — a client asking for the
+    // filtered view must never be handed the unfiltered one.
+    auto const participated_only = request.include.has_value() && *request.include == "participated";
+    if (request.include.has_value() && *request.include != "all" && !participated_only)
+    {
+        return make_operation_result(false, {}, "include must be one of: all, participated", 400U);
+    }
+
+    // Spec: "limit ... Must be an integer greater than zero."
+    if (request.limit.has_value() && *request.limit == 0U)
+    {
+        return make_operation_result(false, {}, "limit must be greater than zero", 400U);
+    }
+
+    // Spec 403: "The user cannot view or peek on the room ... The room does not
+    // exist."
+    auto const* room = find_room(runtime.database, request.room_id);
+    if (room == nullptr || !room_has_member(*room, *user_id))
+    {
+        return make_operation_result(false, {}, "cannot view threads in this room", 403U);
+    }
+
+    auto const& store = runtime.database.persistent_store;
+    // Resolved once for the whole request, never inside the per-event loop.
+    auto const ignored_senders = trust_safety::resolve_ignored_users(store, *user_id);
+
+    // One pass over the room's events collects, for every thread root, the number
+    // of m.thread children, the most recent child, and whether the caller
+    // participated.
+    struct ThreadAggregate final
+    {
+        database::PersistentEvent const* root{nullptr};
+        database::PersistentEvent const* latest_child{nullptr};
+        std::int64_t count{0};
+        bool participated{false};
+    };
+    auto aggregates = std::vector<std::pair<std::string, ThreadAggregate>>{};
+    auto const find_aggregate = [&aggregates](std::string_view root_id) -> ThreadAggregate* {
+        auto const found = std::ranges::find(aggregates, root_id, &std::pair<std::string, ThreadAggregate>::first);
+        return found == aggregates.end() ? nullptr : &found->second;
+    };
+
+    for (auto const& event : store.events)
+    {
+        if (event.room_id != request.room_id)
+        {
+            continue;
+        }
+        // Spec: "Servers must additionally ensure they do not consider child events
+        // from ignored users when preparing an aggregation for the client."
+        if (trust_safety::is_delivery_suppressed(ignored_senders, event.sender_user_id, false))
+        {
+            continue;
+        }
+        auto const parsed = canonicaljson::parse_lossless(event.json);
+        if (parsed.error != canonicaljson::ParseError::none)
+        {
+            continue;
+        }
+        auto const* event_obj = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+        if (event_obj == nullptr)
+        {
+            continue;
+        }
+        auto const* content_value = object_member(*event_obj, "content");
+        auto const* content_obj =
+            content_value == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&content_value->storage());
+        if (content_obj == nullptr)
+        {
+            continue;
+        }
+        auto const* relates_value = object_member(*content_obj, "m.relates_to");
+        auto const* relates_obj =
+            relates_value == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&relates_value->storage());
+        if (relates_obj == nullptr)
+        {
+            continue;
+        }
+        auto const* rel_type = string_member(*relates_obj, "rel_type");
+        auto const* root_id = string_member(*relates_obj, "event_id");
+        if (rel_type == nullptr || *rel_type != "m.thread" || root_id == nullptr || root_id->empty())
+        {
+            continue;
+        }
+
+        auto* aggregate = find_aggregate(*root_id);
+        if (aggregate == nullptr)
+        {
+            aggregates.emplace_back(*root_id, ThreadAggregate{});
+            aggregate = &aggregates.back().second;
+        }
+        ++aggregate->count;
+        if (aggregate->latest_child == nullptr || event.stream_ordering > aggregate->latest_child->stream_ordering)
+        {
+            aggregate->latest_child = &event;
+        }
+        // Spec: participated when the caller is "the sender of an event which
+        // references the thread root with a rel_type of m.thread".
+        if (event.sender_user_id == *user_id)
+        {
+            aggregate->participated = true;
+        }
+    }
+
+    // Attach each root event. A relation naming an event this server does not
+    // hold (or one in another room) is not a thread we can list.
+    for (auto const& event : store.events)
+    {
+        if (event.room_id != request.room_id)
+        {
+            continue;
+        }
+        auto* aggregate = find_aggregate(event.event_id);
+        if (aggregate == nullptr)
+        {
+            continue;
+        }
+        aggregate->root = &event;
+        // Spec: participated is also true when the caller is "the sender of the
+        // thread root event".
+        if (event.sender_user_id == *user_id)
+        {
+            aggregate->participated = true;
+        }
+    }
+
+    auto listed = std::vector<ThreadAggregate>{};
+    listed.reserve(aggregates.size());
+    for (auto const& [root_id, aggregate] : aggregates)
+    {
+        std::ignore = root_id;
+        if (aggregate.root == nullptr || aggregate.latest_child == nullptr)
+        {
+            continue;
+        }
+        if (participated_only && !aggregate.participated)
+        {
+            continue;
+        }
+        listed.push_back(aggregate);
+    }
+
+    // Spec: "The thread roots, ordered by the latest_event in each event's
+    // aggregated children" — most recent first, matching the default "start from
+    // the most recent event" pagination direction.
+    std::ranges::sort(listed, std::ranges::greater{}, [](ThreadAggregate const& aggregate) {
+        return aggregate.latest_child->stream_ordering;
+    });
+
+    // `from` is the latest_event stream ordering of the next root to return, as
+    // handed out in a previous response's next_batch. Spec 400: "The from token
+    // is unknown to the server."
+    auto start = std::size_t{0U};
+    if (request.from.has_value())
+    {
+        auto const from_token = parse_stream_ordering_token(request.from);
+        if (!from_token.has_value())
+        {
+            return make_operation_result(false, {}, "invalid from token", 400U);
+        }
+        while (start < listed.size() && listed[start].latest_child->stream_ordering > *from_token)
+        {
+            ++start;
+        }
+    }
+
+    auto constexpr default_limit = std::uint64_t{50U};
+    auto constexpr max_limit = std::uint64_t{500U};
+    auto const limit = std::min(request.limit.value_or(default_limit), max_limit);
+    auto end = listed.size();
+    if (end - start > static_cast<std::size_t>(limit))
+    {
+        end = start + static_cast<std::size_t>(limit);
+    }
+
+    auto const* version_policy =
+        rooms::find_room_version_policy(room_version_for_room(runtime.database.persistent_store, request.room_id));
+
+    auto chunk = canonicaljson::Array{};
+    chunk.reserve(end - start);
+    for (auto index = start; index < end; ++index)
+    {
+        auto const& aggregate = listed[index];
+        auto root_event = client_event_with_id(store, *aggregate.root);
+        // Spec: "If the thread root event was sent by an ignored user, the event is
+        // returned redacted to the caller." The thread itself still exists, so the
+        // root is listed — stripped rather than omitted.
+        if (version_policy != nullptr &&
+            trust_safety::is_delivery_suppressed(ignored_senders, aggregate.root->sender_user_id, false))
+        {
+            auto redacted = events::redact_event(root_event, *version_policy);
+            if (redacted.error.empty())
+            {
+                root_event = std::move(redacted.event);
+            }
+        }
+        // Value exposes its storage as const, so mutate a copy of the object and
+        // rebuild the Value from it rather than writing through the accessor.
+        auto const* root_source = std::get_if<canonicaljson::Object>(&root_event.storage());
+        if (root_source == nullptr)
+        {
+            continue;
+        }
+        auto root_obj = *root_source;
+
+        auto thread_bundle = canonicaljson::Object{};
+        thread_bundle.push_back(
+            canonicaljson::make_member("latest_event", client_event_with_id(store, *aggregate.latest_child)));
+        thread_bundle.push_back(canonicaljson::make_member("count", canonicaljson::Value{aggregate.count}));
+        thread_bundle.push_back(
+            canonicaljson::make_member("current_user_participated", canonicaljson::Value{aggregate.participated}));
+
+        auto relations = canonicaljson::Object{};
+        relations.push_back(canonicaljson::make_member("m.thread", canonicaljson::Value{std::move(thread_bundle)}));
+
+        // Merge into any unsigned block the event already carries rather than
+        // replacing it: client_event_with_id may have populated prev_content there.
+        auto unsigned_obj = canonicaljson::Object{};
+        for (auto const& member : root_obj)
+        {
+            if (member.key != "unsigned")
+            {
+                continue;
+            }
+            if (auto const* existing = std::get_if<canonicaljson::Object>(&member.value->storage());
+                existing != nullptr)
+            {
+                unsigned_obj = *existing;
+            }
+        }
+        std::erase_if(unsigned_obj, [](canonicaljson::ObjectMember const& member) {
+            return member.key == "m.relations";
+        });
+        unsigned_obj.push_back(canonicaljson::make_member("m.relations", canonicaljson::Value{std::move(relations)}));
+        std::erase_if(root_obj, [](canonicaljson::ObjectMember const& member) {
+            return member.key == "unsigned";
+        });
+        root_obj.push_back(canonicaljson::make_member("unsigned", canonicaljson::Value{std::move(unsigned_obj)}));
+
+        chunk.push_back(canonicaljson::Value{std::move(root_obj)});
+    }
+
+    auto response = canonicaljson::Object{};
+    response.push_back(canonicaljson::make_member("chunk", canonicaljson::Value{std::move(chunk)}));
+    // Spec: next_batch is "Not present when there are no further results."
+    if (end < listed.size())
+    {
+        response.push_back(canonicaljson::make_member(
+            "next_batch", canonicaljson::Value{std::to_string(listed[end].latest_child->stream_ordering)}));
+    }
+
+    auto serialized = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(response)});
+    if (serialized.error != canonicaljson::CanonicalJsonError::none)
+    {
+        return make_operation_result(false, {}, "threads serialization failed", 500U);
     }
     return make_operation_result(true, std::move(serialized.output));
 }

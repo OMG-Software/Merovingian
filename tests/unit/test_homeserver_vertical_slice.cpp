@@ -23,7 +23,9 @@
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "merovingian/config/config.hpp"
+#include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/database/persistent_store.hpp"
+#include "merovingian/federation/dispatch_worker.hpp"
 #include "merovingian/federation/server_discovery.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/client_server.hpp"
@@ -1052,6 +1054,44 @@ SCENARIO("join_room advertises room versions 10 11 and 12 all of which have regi
     }
 }
 
+// Merovingian invariant (rotation reaches the outbound path):
+// wire_federation_callbacks builds the dispatch worker with a snapshot of the
+// signing key. Nothing rebuilds the worker on rotation, so without an explicit
+// refresh it keeps signing outbound transactions with the retired key — which
+// the rotation just published under old_verify_keys with a past expired_ts, so
+// every peer rejects it.
+SCENARIO("Rotating the signing key updates the dispatch worker's signing identity",
+         "[homeserver][vertical][federation][dispatch][signing]")
+{
+    GIVEN("a started runtime whose federation callbacks built a dispatch worker")
+    {
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+        REQUIRE(runtime.dispatch_worker != nullptr);
+        auto const original_key_id = runtime.dispatch_worker->signing_key_id();
+        REQUIRE(!original_key_id.empty());
+
+        WHEN("the signing key is rotated")
+        {
+            // Rotation alone must reach the worker: wire_federation_callbacks returns
+            // early once the callbacks exist, so re-wiring is not a refresh path.
+            auto const rotation = merovingian::homeserver::rotate_server_signing_key(runtime);
+            REQUIRE(rotation.ok);
+            REQUIRE(rotation.value != original_key_id);
+            merovingian::homeserver::wire_federation_callbacks(runtime);
+
+            THEN("the worker signs with the rotated key rather than the retired one")
+            {
+                REQUIRE(runtime.dispatch_worker != nullptr);
+                REQUIRE(runtime.dispatch_worker->signing_key_id() == rotation.value);
+                REQUIRE(runtime.dispatch_worker->signing_key_id() != original_key_id);
+            }
+        }
+    }
+}
+
 SCENARIO("Federation callbacks refuse to start the dispatch worker with an unusable signing key",
          "[homeserver][vertical][federation][dispatch]")
 {
@@ -1358,7 +1398,10 @@ SCENARIO("start_runtime pre-warms the key server response cache", "[homeserver][
             REQUIRE(runtime.database.key_server_cache != nullptr);
 
             // load() returns an optional - must be populated by the startup pre-warm.
-            auto const cached = runtime.database.key_server_cache->load();
+            auto const cached = runtime.database.key_server_cache->load(static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::system_clock::now().time_since_epoch())
+                    .count()));
             REQUIRE(cached.has_value());
             REQUIRE_FALSE(cached->empty());
 
@@ -1371,51 +1414,64 @@ SCENARIO("start_runtime pre-warms the key server response cache", "[homeserver][
     }
 }
 
-SCENARIO("ensure_runtime_server_signing_key rotates an expired derived signing key and rebuilds the provider",
+// Expectation changed in 0.11.12. This scenario previously required a lapsed key to
+// be REPLACED by a freshly generated one. That is wrong against the spec —
+// valid_until_ts is when peers should refresh the published key list
+// (server-server-api.md#publishing-keys), not a lease on the server's identity — and
+// it broke production: the replacement key was minted behind the already-built
+// signing provider, so every locally composed event failed to sign, and no peer had
+// ever seen the new key. The key is now kept and its window republished.
+SCENARIO("ensure_runtime_server_signing_key refreshes a lapsed derived signing key instead of replacing it",
          "[homeserver][vertical][signing][rotation]")
 {
-    GIVEN("a runtime whose only derived signing key has expired")
+    GIVEN("a runtime whose only derived signing key has a lapsed window")
     {
         auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
         REQUIRE(started.started);
         auto& runtime = started.runtime;
-        auto const server_name = runtime.config.server().server_name;
         REQUIRE(runtime.database.persistent_store.server_signing_keys.size() == 1U);
 
         auto& stored_key = runtime.database.persistent_store.server_signing_keys.front();
         auto const original_key_id = stored_key.key_id;
-        // Expire the key so that ensure_runtime_server_signing_key cannot select it.
-        stored_key.valid_until_ts = 0U;
+        // A past valid_until_ts: the window peers were told to refresh at has elapsed.
+        stored_key.valid_until_ts = 1U;
 
         WHEN("the signing key is ensured after clearing the runtime secret")
         {
+            auto const now_ms = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                               std::chrono::system_clock::now().time_since_epoch())
+                                                               .count());
             runtime.database.signing_secret_key = merovingian::core::SecretBuffer{};
             auto const key = merovingian::homeserver::ensure_runtime_server_signing_key(runtime);
 
-            THEN("a fresh derived-key is generated and the expired key is retired")
+            THEN("the same key is returned with a refreshed window and no second key appears")
             {
                 REQUIRE(key.has_value());
-                REQUIRE(key->key_id != original_key_id);
-                REQUIRE(key->key_id.starts_with("ed25519:"));
-                REQUIRE(key->valid_until_ts > 0U);
-                // Two keys in the store: the expired original and the fresh active key.
-                REQUIRE(runtime.database.persistent_store.server_signing_keys.size() == 2U);
+                REQUIRE(key->key_id == original_key_id);
+                REQUIRE(key->valid_until_ts > now_ms);
+                // Still one key: the server's identity did not change.
+                REQUIRE(runtime.database.persistent_store.server_signing_keys.size() == 1U);
                 REQUIRE(runtime.database.signing_secret_key.bytes().size() == crypto_sign_SECRETKEYBYTES);
             }
 
-            AND_THEN("rebuilding the crypto provider from the rotated store creates a usable provider")
+            AND_THEN("the runtime signing provider can sign with the returned key")
             {
-                merovingian::homeserver::reset_runtime_crypto_provider(runtime);
+                REQUIRE(key.has_value());
                 REQUIRE(runtime.crypto_provider != nullptr);
+                auto const signed_payload = runtime.crypto_provider->sign(
+                    merovingian::crypto::Ed25519SecretKeyHandle{key->key_id}, "payload");
+                REQUIRE(signed_payload.error.empty());
             }
         }
     }
 }
 
-SCENARIO("start_runtime recovers from an expired signing key and pre-warms the cache",
+// Expectation changed in 0.11.12 for the same reason as the scenario above: a server
+// restarting with a lapsed window keeps its identity and republishes the window.
+SCENARIO("start_runtime recovers from a lapsed signing key window and pre-warms the cache",
          "[homeserver][vertical][signing][startup]")
 {
-    GIVEN("a persisted signing key that expired before startup")
+    GIVEN("a persisted signing key whose window lapsed before startup")
     {
         auto const sqlite_path =
             merovingian::tests::temporary_directory() /
@@ -1428,41 +1484,42 @@ SCENARIO("start_runtime recovers from an expired signing key and pre-warms the c
             auto& runtime = started.runtime;
             REQUIRE(runtime.database.persistent_store.server_signing_keys.size() == 1U);
 
-            // Simulate a clock jump or lapsed 7-day window: mark the only key expired.
-            // Use a past timestamp (not zero, which the store rejects) and persist the
-            // update so the next runtime sees the expired key when it loads from SQLite.
-            auto expired_key = runtime.database.persistent_store.server_signing_keys.front();
-            expired_key.valid_until_ts = 1U;
-            expired_key.secret_key.clear();
-            REQUIRE(merovingian::database::store_server_signing_key(runtime.database.persistent_store, expired_key));
-            original_key_id = expired_key.key_id;
+            // Simulate a clock jump or lapsed 7-day window. Use a past timestamp (not
+            // zero, which the store rejects) and persist the update so the next runtime
+            // sees the lapsed window when it loads from SQLite. An empty secret_key
+            // preserves the stored secret.
+            auto lapsed_key = runtime.database.persistent_store.server_signing_keys.front();
+            lapsed_key.valid_until_ts = 1U;
+            lapsed_key.secret_key.clear();
+            REQUIRE(merovingian::database::store_server_signing_key(runtime.database.persistent_store, lapsed_key));
+            original_key_id = lapsed_key.key_id;
         }
 
         WHEN("a new runtime starts against the same on-disk SQLite store")
         {
+            auto const now_ms = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                               std::chrono::system_clock::now().time_since_epoch())
+                                                               .count());
             auto restarted =
                 merovingian::homeserver::start_runtime(registration_enabled_config_with_sqlite(sqlite_path));
 
-            THEN("startup succeeds, the expired key is rotated, and the provider is ready")
+            THEN("startup succeeds, the key keeps its identity with a refreshed window, and the provider is ready")
             {
                 REQUIRE(restarted.started);
                 auto& new_runtime = restarted.runtime;
                 REQUIRE(new_runtime.crypto_provider != nullptr);
-                REQUIRE(new_runtime.database.persistent_store.server_signing_keys.size() == 2U);
+                REQUIRE(new_runtime.database.persistent_store.server_signing_keys.size() == 1U);
 
-                auto const active =
-                    std::ranges::max_element(new_runtime.database.persistent_store.server_signing_keys, {},
-                                             &merovingian::database::PersistentServerSigningKey::valid_until_ts);
-                REQUIRE(active != new_runtime.database.persistent_store.server_signing_keys.end());
-                REQUIRE(active->key_id != original_key_id);
-                REQUIRE(active->valid_until_ts > 0U);
+                auto const& active = new_runtime.database.persistent_store.server_signing_keys.front();
+                REQUIRE(active.key_id == original_key_id);
+                REQUIRE(active.valid_until_ts > now_ms);
 
-                // The key server endpoint must be pre-warmed and publish the new key.
+                // The key server endpoint must be pre-warmed and publish that key.
                 REQUIRE(new_runtime.database.key_server_cache != nullptr);
-                auto const cached = new_runtime.database.key_server_cache->load();
+                auto const cached = new_runtime.database.key_server_cache->load(now_ms);
                 REQUIRE(cached.has_value());
                 REQUIRE(cached->find("\"verify_keys\"") != std::string::npos);
-                REQUIRE(cached->find(active->key_id) != std::string::npos);
+                REQUIRE(cached->find(active.key_id) != std::string::npos);
             }
         }
 

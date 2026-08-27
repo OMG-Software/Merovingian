@@ -1775,6 +1775,10 @@ namespace
                     return;
                 }
             }
+            // No refresh branch here: this function returns early once the federation
+            // callbacks exist, so a second call after a rotation never reaches this
+            // point. rotate_server_signing_key hands the worker its new identity
+            // directly instead.
         }
     }
 

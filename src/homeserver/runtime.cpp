@@ -258,6 +258,14 @@ namespace
 // use by rotate_server_signing_key.
 auto reset_runtime_crypto_provider(HomeserverRuntime& runtime) -> void
 {
+    // The federation worker signs over IPC and holds no signing secret of its own.
+    // Rebuilding from local secrets there would swap the IPC provider for an empty
+    // one and silently disable every outbound signature.
+    if (runtime.crypto_provider_overridden)
+    {
+        return;
+    }
+
     auto secrets = active_server_signing_key_secrets(runtime);
     if (secrets.empty())
     {
@@ -275,7 +283,10 @@ auto reset_runtime_crypto_provider(HomeserverRuntime& runtime) -> void
     {
         auto array = std::array<unsigned char, expected_secret_bytes>{};
         std::copy(entry.secret.bytes().begin(), entry.secret.bytes().end(), array.begin());
-        key_entries.emplace_back(std::move(entry.key_id), std::move(array));
+        // Copy, do not move, the key_id: the second loop below stores the same id
+        // in runtime.database.signing_secret_keys. Moving it here left that vector
+        // holding empty key ids, so any lookup by key_id silently missed.
+        key_entries.emplace_back(entry.key_id, std::move(array));
     }
 
     runtime.database.signing_secret_keys.clear();
@@ -375,6 +386,7 @@ HomeserverRuntime::HomeserverRuntime(HomeserverRuntime&& other) noexcept
     , federation_proxy(std::move(other.federation_proxy))
     , crypto_provider_owned(std::move(other.crypto_provider_owned))
     , crypto_provider(other.crypto_provider)
+    , crypto_provider_overridden(other.crypto_provider_overridden)
     , sync_notifier(std::exchange(other.sync_notifier, nullptr))
     , typing_users(std::move(other.typing_users))
     , receipts(std::move(other.receipts))
@@ -414,6 +426,7 @@ auto HomeserverRuntime::operator=(HomeserverRuntime&& other) noexcept -> Homeser
     federation_proxy = std::move(other.federation_proxy);
     crypto_provider_owned = std::move(other.crypto_provider_owned);
     crypto_provider = other.crypto_provider;
+    crypto_provider_overridden = other.crypto_provider_overridden;
     other.crypto_provider = nullptr;
     sync_notifier = std::exchange(other.sync_notifier, nullptr);
     typing_users = std::move(other.typing_users);
@@ -697,6 +710,7 @@ auto start_runtime(RuntimeStartOptions opts) -> RuntimeStartResult
     if (opts.signing_override != nullptr)
     {
         runtime.crypto_provider = opts.signing_override;
+        runtime.crypto_provider_overridden = true;
         log_diagnostic("start.crypto_provider_override",
                        {
                            {"reason", "IPC-backed signing provider", false}

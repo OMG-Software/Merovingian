@@ -324,11 +324,17 @@ auto DispatchWorker::run_once() -> bool
     call.resolved_host = resolution->resolved_host;
     call.resolved_port = resolution->resolved_port;
     call.pinned_addresses = resolution->pinned_addresses;
-    call.key_id = config_.key_id;
-    // Borrow the owned, mlocked signing key for the duration of this synchronous
-    // signing+send operation. The OutboundCall is stack-local and discarded
-    // before config_.secret_key can be released, so the span never dangles.
-    call.secret_key = config_.secret_key.bytes();
+    // Take a private copy of the signing identity under the lock: update_signing_identity
+    // may replace config_.secret_key while this attempt is mid-flight, which would leave
+    // a borrowed span dangling. The copy is an owned, mlocked SecretBuffer that outlives
+    // the stack-local OutboundCall borrowing it.
+    auto signing_key = core::SecretBuffer{};
+    {
+        auto lock = std::lock_guard{mutex_};
+        call.key_id = config_.key_id;
+        signing_key = core::SecretBuffer{config_.secret_key.bytes()};
+    }
+    call.secret_key = signing_key.bytes();
 
     auto& destination = find_or_create_destination(transaction.destination);
     auto const result = perform_outbound_transaction(client_, call, destination, now);
@@ -496,6 +502,19 @@ auto DispatchWorker::loop() -> void
             break;
         }
     }
+}
+
+auto DispatchWorker::signing_key_id() const -> std::string
+{
+    auto lock = std::lock_guard{mutex_};
+    return config_.key_id;
+}
+
+auto DispatchWorker::update_signing_identity(std::string key_id, core::SecretBuffer secret_key) -> void
+{
+    auto lock = std::lock_guard{mutex_};
+    config_.key_id = std::move(key_id);
+    config_.secret_key = std::move(secret_key);
 }
 
 auto DispatchWorker::summary() const noexcept -> DispatchWorkerSummary
