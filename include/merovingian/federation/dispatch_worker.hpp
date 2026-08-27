@@ -127,6 +127,17 @@ public:
     [[nodiscard]] auto replay_pending() -> std::size_t;
     [[nodiscard]] auto summary() const noexcept -> DispatchWorkerSummary;
 
+    // Key id the worker currently signs outbound traffic with.
+    [[nodiscard]] auto signing_key_id() const -> std::string;
+
+    // Replaces the signing identity used for subsequent attempts. The worker
+    // snapshots the server signing key when it is constructed, so without this a
+    // key rotation leaves it signing with the retired key while the rest of the
+    // runtime has moved on — peers then reject every transaction it sends. Safe to
+    // call while the worker thread is running; an attempt already in flight
+    // completes with the identity it started with.
+    auto update_signing_identity(std::string key_id, core::SecretBuffer secret_key) -> void;
+
 private:
     auto loop() -> void;
     auto take_next(OutboundTransaction& out) -> bool;

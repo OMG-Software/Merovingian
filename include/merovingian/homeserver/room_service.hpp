@@ -239,6 +239,24 @@ struct FetchRelationsRequest final
 [[nodiscard]] auto fetch_relations(HomeserverRuntime const& runtime, std::string_view access_token,
                                    FetchRelationsRequest const& request) -> OperationResult;
 
+struct FetchThreadsRequest final
+{
+    std::string room_id{};
+    // "all" (default) or "participated". Any other value is rejected with 400
+    // rather than silently treated as "all".
+    std::optional<std::string> include{};
+    std::optional<std::string> from{};
+    std::optional<std::uint64_t> limit{};
+};
+
+// Lists the thread roots in a room, most recently active first, each carrying its
+// bundled `m.thread` aggregation (latest_event / count / current_user_participated).
+// Implements GET /_matrix/client/v1/rooms/{roomId}/threads from Matrix v1.19
+// ("Querying threads in a room"). Events from users the caller ignores are excluded
+// from the aggregation, and a root sent by an ignored user is returned redacted.
+[[nodiscard]] auto fetch_room_threads(HomeserverRuntime const& runtime, std::string_view access_token,
+                                      FetchThreadsRequest const& request) -> OperationResult;
+
 [[nodiscard]] auto audit_event_count(HomeserverRuntime const& runtime) noexcept -> std::size_t;
 
 } // namespace merovingian::homeserver

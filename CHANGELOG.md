@@ -1,3 +1,83 @@
+## 0.11.12
+
+Fixes a class of bug where the server's Ed25519 signing key and the thing that
+actually signs with it drifted apart, which on a long-running server broke every
+locally composed event.
+
+- **A signing key is no longer silently replaced when its published window
+  lapses.** `valid_until_ts` tells federation peers when to re-fetch the key
+  list; it was being treated as a lease on the server's own identity. Once a
+  server's uptime exceeded the seven-day window, `ensure_runtime_server_signing_key`
+  skipped the (now "expired") key and generated a brand-new one. Two things then
+  went wrong at once: the runtime signing provider had been built at startup from
+  the old key and was never rebuilt, so every locally composed event failed with
+  `signing key not held: <new key id>` — clients saw `403 M_FORBIDDEN "event
+  authorization or signing failed"` on every `PUT /rooms/{roomId}/send/...`,
+  including mobile clients that could otherwise sync normally — and the new key
+  had never been published, so peers rejected requests signed with it (`401` on
+  `POST /_matrix/federation/v1/user/keys/query`). The key is now selected
+  regardless of its window, and a window that is more than halfway elapsed is
+  rolled forward and persisted instead. A key is generated only on first boot or
+  through an explicit `rotate_server_signing_key`.
+- **`ensure_runtime_server_signing_key` now guarantees the runtime signing
+  provider holds the key it returns**, rebuilding the provider when it does not.
+  The preferred key is also always treated as active by
+  `collect_active_server_signing_keys`, so a window that could not be refreshed
+  (database write failure) degrades to peers re-fetching sooner rather than to a
+  server that cannot sign at all.
+- **`GET /_matrix/key/v2/server` no longer advertises a validity the server does
+  not honour.** The published `valid_until_ts` is now exactly the window
+  persisted for the key, rather than an unconditional "now + 7 days" that the
+  store never recorded.
+- **The cached key-server document is refreshed.** It was published once at
+  startup and served from the lock-free cache forever, so after seven days of
+  uptime every peer that re-fetched it saw a `valid_until_ts` already in the
+  past. The cache entry now carries a one-hour refresh deadline; past it the
+  fast path re-publishes before serving.
+- **`reset_runtime_crypto_provider` honours its documented no-op under an
+  external signing override.** It previously replaced the federation worker's
+  IPC-backed provider with one built from local secrets the worker does not have.
+- **Inbound federation requests whose X-Matrix parameters are unquoted are no
+  longer rejected.** `parse_x_matrix_authorization_header` required every value
+  to be a quoted string, but the spec (Server-Server API, Request
+  Authentication) says values "must be enclosed in quotes if they contain
+  characters that are not allowed in `token`s ... if a value is a valid `token`,
+  it may or may not be enclosed in quotes". A peer sending a bare token had its
+  whole request refused — for `PUT /_matrix/federation/v1/send/{txnId}` that
+  silently discarded its PDUs behind a `502 malformed federation authorization`.
+  Unquoted RFC 9110 §5.6.2 tokens are now accepted; a value carrying anything
+  outside the tchar set is still rejected, because the sender was required to
+  quote it.
+- **A rejected federation Authorization header is now diagnosable.** The 502
+  above was logged as nothing but a status code, so a peer whose traffic was
+  being dropped looked identical to one that never called. A
+  `federation_proxy.authorization_unparsed` warning now records the target,
+  the header's length, and whether it carried the `X-Matrix` scheme — never the
+  header itself, which is the peer's reusable credential.
+- **`GET /_matrix/client/v1/rooms/{roomId}/threads` is implemented** (spec v1.4+,
+  previously 404 — Element X calls it on every room open). Returns the room's
+  thread roots ordered by each thread's `latest_event`, most recently active
+  first, each carrying its bundled `m.thread` aggregation (`latest_event`,
+  `count`, `current_user_participated`). `include=all|participated` is honoured
+  and any other value is a 400 `M_INVALID_PARAM` rather than a silent fallback
+  to `all`; `limit` defaults to 50, caps at 500, and rejects zero; `from` /
+  `next_batch` paginate on the latest-event stream ordering, with `next_batch`
+  omitted on the last page. Child events from ignored senders are excluded from
+  the aggregation (spec MUST) and a root sent by an ignored user is returned
+  redacted rather than omitted. Known gap recorded in
+  `docs/todos/capability-gaps.md`: bundled aggregations are still produced only
+  by this endpoint, not by `/sync`, `/messages`, `/context`, `/relations`, or
+  `/event/{eventId}`.
+- **`reset_runtime_crypto_provider` no longer moves each `key_id` twice**, which
+  left `runtime.database.signing_secret_keys` — documented as "keyed by key_id" —
+  holding empty ids, so every lookup by key id silently missed. Found while
+  verifying the provider-consistency check above, which the empty ids would have
+  reduced to an unconditional rebuild on every request.
+- **The federation dispatch worker's signing identity follows key rotation.** It
+  snapshotted the key when constructed and kept signing with the retired key
+  afterwards; `wire_federation_callbacks` now hands it the current key whenever
+  the active key id changes.
+
 ## 0.11.11
 
 Started as a documentation-only audit of the routed client-server surface

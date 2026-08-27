@@ -105,13 +105,42 @@ operator; this fallback preserves backward compatibility with existing
 deployments and test configurations. An explicit rotation is available via
 `rotate_server_signing_key`: it retires the active key (setting its
 `valid_until_ts` to now so it publishes under `old_verify_keys` with a past
-`expired_ts`) and activates a freshly generated key. `ensure_runtime_server_signing_key`
-selects the usable key with the greatest future `valid_until_ts`, skipping both the
-legacy `ed25519:auto` sentinel and any key whose `valid_until_ts` is not in the future.
-This prevents the server from starting with an expired key, which would leave
-`/_matrix/key/v2/server` returning 500 and outbound federation unsigned. If every
-stored key is expired, a fresh key is generated automatically so the runtime always
-has an active provider. A single key is active at a time.
+`expired_ts`) and activates a freshly generated key.
+
+### Key lifetime
+
+A signing key is the server's federation identity, and `valid_until_ts` is only
+the point at which peers should re-fetch the published key list — not a lease
+after which the server may adopt a different identity. The rules that follow from
+that:
+
+- `ensure_runtime_server_signing_key` selects the usable key with the greatest
+  `valid_until_ts`, skipping the legacy `ed25519:auto` sentinel (which notary
+  servers cached with a far-future expiry and therefore can only be retired by
+  minting a new key id). A lapsed window does **not** disqualify a key.
+- Once a key is more than halfway through its advertised window, the window is
+  rolled forward to now + 7 days and persisted. `GET /_matrix/key/v2/server`
+  advertises exactly the persisted window, so the server never claims a validity
+  it does not itself honour.
+- A new key is generated only on first boot (no usable key stored) or through an
+  explicit rotation. Silent regeneration is prohibited: a key minted behind the
+  running signing provider cannot sign anything (`signing key not held`), and no
+  peer has ever seen it, so both local event composition and outbound federation
+  fail at once.
+- `ensure_runtime_server_signing_key` guarantees the runtime signing provider
+  holds the key it returns, rebuilding the provider if it does not. The preferred
+  key is always treated as active by `collect_active_server_signing_keys`, so a
+  window that could not be refreshed (e.g. a database write failure) degrades to
+  peers re-fetching sooner rather than to a server that cannot sign.
+- The cached `/_matrix/key/v2/server` document carries a refresh deadline (one
+  hour); past it the fast path re-publishes rather than serving a document whose
+  advertised `valid_until_ts` has elapsed.
+- The federation dispatch worker snapshots the signing identity when it is
+  constructed; `wire_federation_callbacks` hands it the current key whenever the
+  active key id has changed, so a rotation cannot leave it signing with the
+  retired key.
+
+A single key is active at a time.
 Comma-delimited PDUs without JSON are rejected when a signing key is available,
 closing the legacy-verification bypass.
 

@@ -554,7 +554,13 @@ namespace
             auto& cache = runtime.homeserver.database.key_server_cache;
             if (cache)
             {
-                if (auto cached = cache->load())
+                auto const now_ms = static_cast<std::uint64_t>(
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::system_clock::now().time_since_epoch())
+                        .count());
+                // A stale document falls through to the slow path, which re-publishes
+                // it with a fresh valid_until_ts before serving.
+                if (auto cached = cache->load(now_ms))
                 {
                     return {
                         DispatchResult::Status::complete, {200U, *cached},

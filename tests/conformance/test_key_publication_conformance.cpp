@@ -8,6 +8,7 @@
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/crypto/ed25519.hpp"
+#include "merovingian/database/persistent_store.hpp"
 #include "merovingian/events/event_signer.hpp"
 #include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/homeserver/http_server.hpp"
@@ -225,6 +226,79 @@ SCENARIO("GET /_matrix/key/v2/server valid_until_ts is strictly in the future",
                 REQUIRE(valid_until != nullptr);
                 // Spec MUST: valid_until_ts MUST NOT be in the past.
                 REQUIRE(*valid_until > now_ms);
+            }
+        }
+    }
+}
+
+// Spec: Matrix Server-Server API v1.19
+// Endpoint: GET /_matrix/key/v2/server
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#publishing-keys
+//
+// valid_until_ts is the point at which peers should refresh the key list, not a
+// lifetime for the server's identity. A server whose uptime exceeds the window it
+// last published MUST still publish the same key under verify_keys, with a refreshed
+// valid_until_ts - not a different key. Publishing a new key id without an
+// old_verify_keys hand-over invalidates every signature its peers can currently
+// verify.
+SCENARIO("GET /_matrix/key/v2/server keeps the same key with a refreshed window after its window lapses",
+         "[federation][conformance][key_publishing][key_rotation]")
+{
+    GIVEN("a started runtime whose stored key window has moved into the past")
+    {
+        auto started = merovingian::homeserver::start_client_server(key_publication_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const before = merovingian::homeserver::dispatch_local_http_request(
+            runtime, {"GET", "/_matrix/key/v2/server", {}, {}}, merovingian::homeserver::HttpDispatchMode::federation);
+        REQUIRE(before.status == 200U);
+        auto const before_parsed = merovingian::canonicaljson::parse_lossless(before.body);
+        auto const* before_root = std::get_if<merovingian::canonicaljson::Object>(&before_parsed.value.storage());
+        REQUIRE(before_root != nullptr);
+        auto const* before_verify_keys = get_object(*before_root, "verify_keys");
+        REQUIRE(before_verify_keys != nullptr);
+        REQUIRE(before_verify_keys->size() == 1U);
+        auto const original_key_id = before_verify_keys->front().key;
+
+        auto const now_ms = static_cast<std::int64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                          std::chrono::system_clock::now().time_since_epoch())
+                                                          .count());
+        for (auto& stored : runtime.homeserver.database.persistent_store.server_signing_keys)
+        {
+            stored.valid_until_ts = static_cast<std::uint64_t>(now_ms) - std::uint64_t{60U * 1000U};
+        }
+
+        WHEN("the key server document is served again")
+        {
+            auto const after = merovingian::homeserver::dispatch_local_http_request(
+                runtime, {"GET", "/_matrix/key/v2/server", {}, {}},
+                merovingian::homeserver::HttpDispatchMode::federation);
+
+            THEN("the same key is published with a valid_until_ts back in the future")
+            {
+                REQUIRE(after.status == 200U);
+                auto const parsed = merovingian::canonicaljson::parse_lossless(after.body);
+                auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                REQUIRE(root != nullptr);
+
+                auto const* verify_keys = get_object(*root, "verify_keys");
+                REQUIRE(verify_keys != nullptr);
+                REQUIRE(verify_keys->size() == 1U);
+                // Spec MUST: the server's identity is unchanged - no silent new key id.
+                REQUIRE(verify_keys->front().key == original_key_id);
+
+                auto const* valid_until_val = json_get(*root, "valid_until_ts");
+                REQUIRE(valid_until_val != nullptr);
+                auto const* valid_until = std::get_if<std::int64_t>(&valid_until_val->storage());
+                REQUIRE(valid_until != nullptr);
+                // Spec MUST: valid_until_ts MUST NOT be in the past.
+                REQUIRE(*valid_until > now_ms);
+
+                // The retired-key list stays empty: nothing was rotated.
+                auto const* old_keys = get_object(*root, "old_verify_keys");
+                REQUIRE(old_keys != nullptr);
+                REQUIRE(old_keys->empty());
             }
         }
     }

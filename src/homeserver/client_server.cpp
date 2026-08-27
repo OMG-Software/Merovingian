@@ -5904,6 +5904,26 @@ namespace
                                     core::percent_decode_path_component(event_id)};
     }
 
+    // GET /_matrix/client/v1/rooms/{roomId}/threads — returns the (percent-decoded)
+    // room id, or nullopt when the target is some other v1 room endpoint.
+    [[nodiscard]] auto room_threads_room_id(std::string_view target) -> std::optional<std::string>
+    {
+        auto constexpr prefix = std::string_view{"/_matrix/client/v1/rooms/"};
+        auto constexpr marker = std::string_view{"/threads"};
+        auto const path = target.substr(0U, target.find('?'));
+        auto const suffix = route_suffix(path, prefix);
+        if (suffix.size() <= marker.size() || !suffix.ends_with(marker))
+        {
+            return std::nullopt;
+        }
+        auto const room_id = suffix.substr(0U, suffix.size() - marker.size());
+        if (room_id.empty() || room_id.find('/') != std::string_view::npos)
+        {
+            return std::nullopt;
+        }
+        return core::percent_decode_path_component(room_id);
+    }
+
     [[nodiscard]] auto room_relations_path_parts(std::string_view target) -> std::optional<RoomRelationsPathParts>
     {
         auto constexpr prefix = std::string_view{"/_matrix/client/v1/rooms/"};
@@ -10593,6 +10613,32 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                                     {"device_id", device_id_4186, false}
         });
         return sliding_sync_json(rt, *user, device_id_4186, *sliding_req, pos, timeout, can_wait);
+    }
+
+    // GET /_matrix/client/v1/rooms/{roomId}/threads
+    // Spec: list the thread roots in a room, most recently active first.
+    auto constexpr rooms_v1_prefix = std::string_view{"/_matrix/client/v1/rooms/"};
+    if (req.method == "GET" && starts_with(req.target, rooms_v1_prefix))
+    {
+        if (auto const threads_room_id = room_threads_room_id(req.target); threads_room_id.has_value())
+        {
+            auto const request = FetchThreadsRequest{
+                *threads_room_id,
+                query_param_value(req.target, "include"),
+                query_param_value(req.target, "from"),
+                parse_query_uint(query_param_value(req.target, "limit")),
+            };
+            auto const result = fetch_room_threads(rt.homeserver, req.access_token, request);
+            if (!result.ok)
+            {
+                // A rejected include/limit/from is a malformed parameter, which
+                // M_UNKNOWN would not tell the client anything useful about.
+                auto const code =
+                    result.status == 400U ? std::string_view{"M_INVALID_PARAM"} : error_code_for_status(result.status);
+                return dispatch_err(req, rt, result.status, code, result.reason);
+            }
+            return complete({200U, result.value});
+        }
     }
 
     // GET /_matrix/client/v1/rooms/{roomId}/relations/{eventId}[/{relType}[/{eventType}]]

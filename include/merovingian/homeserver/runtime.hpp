@@ -51,27 +51,37 @@ class FederationProxy;
 // Wrapped in unique_ptr by callers so containing structs stay moveable.
 struct KeyServerCache final
 {
-    // Returns the cached response, or nullopt if the cache is empty.
-    [[nodiscard]] auto load() const -> std::optional<std::string>
+    // Returns the cached response, or nullopt if the cache is empty or the
+    // document is due for re-publication. `now_ms` is the current wall clock in
+    // milliseconds. Staleness matters because the cached document carries a
+    // valid_until_ts: a server that keeps serving one document forever ends up
+    // advertising a window that has already elapsed, and peers then reject every
+    // signature it makes. Returning nullopt sends the caller down the slow path,
+    // which re-publishes and re-fills the cache.
+    [[nodiscard]] auto load(std::uint64_t now_ms) const -> std::optional<std::string>
     {
         auto const lk = std::lock_guard{mutex_};
-        if (value_.empty())
+        if (value_.empty() || now_ms > refresh_after_ms_)
         {
             return std::nullopt;
         }
         return value_;
     }
 
-    // Atomically replaces the cached response.
-    auto store(std::string value) -> void
+    // Atomically replaces the cached response. `refresh_after_ms` is the wall
+    // clock after which the document must be re-published before it is served
+    // again.
+    auto store(std::string value, std::uint64_t refresh_after_ms) -> void
     {
         auto const lk = std::lock_guard{mutex_};
         value_ = std::move(value);
+        refresh_after_ms_ = refresh_after_ms;
     }
 
 private:
     mutable std::mutex mutex_{};
     std::string value_{};
+    std::uint64_t refresh_after_ms_{0U};
 };
 
 struct LocalUser final
@@ -272,6 +282,11 @@ struct HomeserverRuntime final
     // crypto_provider_owned for the main process and to the override in
     // worker contexts. Check for nullptr before signing.
     crypto::Ed25519Provider* crypto_provider{nullptr};
+    // True when crypto_provider points at an external override supplied through
+    // RuntimeStartOptions::signing_override. The signing secret is not present in
+    // this process, so reset_runtime_crypto_provider must leave the override
+    // alone instead of replacing it with a provider built from local secrets.
+    bool crypto_provider_overridden{false};
     sync::SyncNotifier* sync_notifier{nullptr};
     std::vector<InboundTypingUser> typing_users{};
     std::vector<InboundReceipt> receipts{};

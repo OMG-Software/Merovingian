@@ -169,6 +169,7 @@ shell = find_program('sh')
       'unit/test_sliding_sync_room_builder.cpp',
       'unit/test_sliding_sync_surfaces.cpp',
       'unit/test_space_hierarchy.cpp',
+      'unit/test_server_signing_key_lifecycle.cpp',
       'unit/test_sync_filter.cpp',
       'unit/test_sync_handler.cpp',
       'unit/test_sync_notifier.cpp',

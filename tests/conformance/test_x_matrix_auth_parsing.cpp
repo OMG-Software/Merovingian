@@ -129,7 +129,10 @@ SCENARIO("X-Matrix Authorization header is parsed into credentials", "[federatio
         auto const empty_value = std::string_view{""};
         auto const bearer = std::string_view{"Bearer token123"};
         auto const wrong_case = std::string_view{"x-matrix origin=\"a.org\",key=\"ed25519:k\",sig=\"s\""};
-        auto const unquoted = std::string_view{"X-Matrix origin=matrix.org,key=ed25519:auto,sig=abc"};
+        // Rejected because ':' and '=' are not tchars, so these values were required to
+        // be quoted — not because unquoted values are categorically invalid. See the
+        // unquoted-token scenario above for the values a sender may legally leave bare.
+        auto const unquoted_non_token = std::string_view{"X-Matrix origin=matrix.org,key=ed25519:auto,sig=abc"};
         auto const unclosed_quote = std::string_view{"X-Matrix origin=\"matrix.org,key=\"ed25519:auto\",sig=\"abc\""};
 
         WHEN("each value is parsed")
@@ -137,7 +140,7 @@ SCENARIO("X-Matrix Authorization header is parsed into credentials", "[federatio
             auto const r_empty = merovingian::federation::parse_x_matrix_authorization_header(empty_value);
             auto const r_bearer = merovingian::federation::parse_x_matrix_authorization_header(bearer);
             auto const r_case = merovingian::federation::parse_x_matrix_authorization_header(wrong_case);
-            auto const r_unquoted = merovingian::federation::parse_x_matrix_authorization_header(unquoted);
+            auto const r_unquoted = merovingian::federation::parse_x_matrix_authorization_header(unquoted_non_token);
             auto const r_unclosed = merovingian::federation::parse_x_matrix_authorization_header(unclosed_quote);
 
             THEN("all return nullopt")
@@ -165,6 +168,85 @@ SCENARIO("X-Matrix Authorization header is parsed into credentials", "[federatio
                 REQUIRE(result->origin == "matrix.org");
                 REQUIRE(result->key_id == "ed25519:auto");
                 REQUIRE(result->signature == "abc==");
+            }
+        }
+    }
+}
+
+// Spec: Matrix Server-Server API v1.19
+// Endpoint / Section: Request Authentication (X-Matrix)
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#request-authentication
+//
+// "The values must be enclosed in quotes if they contain characters that are not
+// allowed in `token`s, as defined in Section 5.6.2 of RFC 9110; if a value is a
+// valid `token`, it may or may not be enclosed in quotes."
+//
+// So a sender is entitled to leave token-shaped values unquoted, and the recipient
+// MUST accept them. Rejecting the header outright drops the request — for
+// PUT /_matrix/federation/v1/send/{txnId} that silently discards a peer's PDUs.
+SCENARIO("X-Matrix parameter values that are valid RFC 9110 tokens may be unquoted",
+         "[federation][x-matrix][parsing]")
+{
+    GIVEN("a header with an unquoted origin and quoted non-token values")
+    {
+        // "matrix.example.org" is a valid token (ALPHA/DIGIT and '.'), so it needs no
+        // quotes. "ed25519:key1" contains ':' and the signature contains '/' and '=',
+        // none of which are tchars, so those stay quoted.
+        auto const header =
+            std::string_view{R"(X-Matrix origin=matrix.example.org,key="ed25519:key1",sig="ab/c+d==")"};
+
+        WHEN("the header is parsed")
+        {
+            auto const result = merovingian::federation::parse_x_matrix_authorization_header(header);
+
+            THEN("every field is extracted")
+            {
+                REQUIRE(result.has_value());
+                REQUIRE(result->origin == "matrix.example.org");
+                REQUIRE(result->key_id == "ed25519:key1");
+                REQUIRE(result->signature == "ab/c+d==");
+            }
+        }
+    }
+
+    GIVEN("a header whose unquoted values are separated by spaces around the commas")
+    {
+        auto const header =
+            std::string_view{R"(X-Matrix origin=matrix.example.org , destination=local.example.org , )"
+                             R"(key="ed25519:key1" , sig="abc==")"};
+
+        WHEN("the header is parsed")
+        {
+            auto const result = merovingian::federation::parse_x_matrix_authorization_header(header);
+
+            THEN("the unquoted values are extracted without the surrounding whitespace")
+            {
+                REQUIRE(result.has_value());
+                REQUIRE(result->origin == "matrix.example.org");
+                REQUIRE(result->destination == "local.example.org");
+                REQUIRE(result->key_id == "ed25519:key1");
+                REQUIRE(result->signature == "abc==");
+            }
+        }
+    }
+
+    GIVEN("headers whose unquoted values are not valid tokens")
+    {
+        // ':' is not a tchar, so an unquoted key_id is malformed, not merely
+        // unfashionable — the sender was required to quote it.
+        auto const unquoted_key = std::string_view{R"(X-Matrix origin=matrix.org,key=ed25519:auto,sig="abc==")"};
+        // An empty value is never a token: 'token' is 1*tchar.
+        auto const empty_origin = std::string_view{R"(X-Matrix origin=,key="ed25519:k",sig="abc==")"};
+
+        WHEN("each header is parsed")
+        {
+            auto const r_key = merovingian::federation::parse_x_matrix_authorization_header(unquoted_key);
+            auto const r_empty = merovingian::federation::parse_x_matrix_authorization_header(empty_origin);
+
+            THEN("both are rejected")
+            {
+                REQUIRE_FALSE(r_key.has_value());
+                REQUIRE_FALSE(r_empty.has_value());
             }
         }
     }
