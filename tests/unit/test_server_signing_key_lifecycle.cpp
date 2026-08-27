@@ -20,6 +20,7 @@
 #include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/crypto/runtime_multikey_ed25519_provider.hpp"
 #include "merovingian/homeserver/client_server.hpp"
+#include "merovingian/homeserver/http_server.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/room_service.hpp"
 #include "merovingian/homeserver/runtime.hpp"
@@ -311,6 +312,127 @@ SCENARIO("The key server cache stops serving a document past its refresh deadlin
                 REQUIRE(fresh.has_value());
                 REQUIRE(*fresh == "{\"published\":true}");
                 REQUIRE(!stale.has_value());
+            }
+        }
+    }
+}
+
+// Spec: Matrix Server-Server API v1.19 - Publishing Keys
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#publishing-keys
+//
+// The window must be rolled forward BEFORE it lapses. A server that only
+// refreshes once the window has already elapsed spends the gap advertising a
+// valid_until_ts in the past, and peers reject its signatures for exactly as
+// long as it takes something to touch the key again — the condition that
+// produced the original outage. Refreshing once the key is past the halfway
+// point of its validity keeps a live server's advertised window permanently in
+// the future.
+SCENARIO("A signing key past the halfway point of its window is refreshed "
+         "before it lapses",
+         "[homeserver][signing][federation][key_publishing]")
+{
+    GIVEN("a started runtime whose key window is nearly elapsed but still in the "
+          "future")
+    {
+        auto started = merovingian::homeserver::start_runtime(signing_lifecycle_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        REQUIRE(runtime.database.persistent_store.server_signing_keys.size() == 1U);
+        auto const original_key_id = runtime.database.persistent_store.server_signing_keys.front().key_id;
+        // One hour left of a seven-day window: not lapsed, but well past halfway.
+        auto const nearly_elapsed = now_ms() + std::uint64_t{60U * 60U * 1000U};
+        runtime.database.persistent_store.server_signing_keys.front().valid_until_ts = nearly_elapsed;
+
+        WHEN("the signing key is ensured")
+        {
+            auto const key = merovingian::homeserver::ensure_runtime_server_signing_key(runtime);
+
+            THEN("the same key is kept and its window is extended well beyond the "
+                 "old expiry")
+            {
+                REQUIRE(key.has_value());
+                REQUIRE(key->key_id == original_key_id);
+                REQUIRE(key->valid_until_ts > nearly_elapsed);
+                REQUIRE(runtime.database.persistent_store.server_signing_keys.size() == 1U);
+                REQUIRE(runtime.database.persistent_store.server_signing_keys.front().valid_until_ts ==
+                        key->valid_until_ts);
+            }
+        }
+    }
+}
+
+// The other half of the threshold: a key with most of its window still ahead
+// must NOT be rewritten on every request. The refresh persists to the database,
+// so an unconditional roll-forward would issue a write on every path that needs
+// the signing identity.
+SCENARIO("A signing key with most of its window remaining is left untouched",
+         "[homeserver][signing][federation][key_publishing]")
+{
+    GIVEN("a started runtime whose key was just published with a full window")
+    {
+        auto started = merovingian::homeserver::start_runtime(signing_lifecycle_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        REQUIRE(runtime.database.persistent_store.server_signing_keys.size() == 1U);
+        auto const original = runtime.database.persistent_store.server_signing_keys.front();
+        REQUIRE(original.valid_until_ts > now_ms());
+
+        WHEN("the signing key is ensured again")
+        {
+            auto const key = merovingian::homeserver::ensure_runtime_server_signing_key(runtime);
+
+            THEN("the stored window is unchanged")
+            {
+                REQUIRE(key.has_value());
+                REQUIRE(key->key_id == original.key_id);
+                REQUIRE(key->valid_until_ts == original.valid_until_ts);
+                REQUIRE(runtime.database.persistent_store.server_signing_keys.front().valid_until_ts ==
+                        original.valid_until_ts);
+            }
+        }
+    }
+}
+
+// Merovingian invariant (served document freshness):
+// GET /_matrix/key/v2/server is answered from a lock-free cache. The cached
+// document carries a valid_until_ts, so serving one indefinitely means
+// eventually advertising a window that has already elapsed. Past its refresh
+// deadline the fast path must fall through and re-publish rather than serve
+// what it holds.
+SCENARIO("The key server fast path re-publishes a cached document past its "
+         "refresh deadline",
+         "[homeserver][signing][federation][key_publishing]")
+{
+    GIVEN("a runtime whose cached key document is past its refresh deadline")
+    {
+        auto started = merovingian::homeserver::start_client_server(signing_lifecycle_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        REQUIRE(runtime.homeserver.database.key_server_cache != nullptr);
+
+        auto const stale_document = std::string{R"({"stale":true})"};
+        runtime.homeserver.database.key_server_cache->store(stale_document, now_ms() - std::uint64_t{1U});
+
+        WHEN("the federation key endpoint is served")
+        {
+            auto const response = merovingian::homeserver::dispatch_local_http_request(
+                runtime, {"GET", "/_matrix/key/v2/server", {}, {}},
+                merovingian::homeserver::HttpDispatchMode::federation);
+
+            THEN("the stale document is not served and a freshly signed one is "
+                 "published")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(response.body != stale_document);
+                REQUIRE(response.body.find("\"verify_keys\"") != std::string::npos);
+                REQUIRE(response.body.find("\"signatures\"") != std::string::npos);
+            }
+
+            AND_THEN("the refreshed document is cached again for subsequent requests")
+            {
+                auto const cached = runtime.homeserver.database.key_server_cache->load(now_ms());
+                REQUIRE(cached.has_value());
+                REQUIRE(*cached != stale_document);
             }
         }
     }

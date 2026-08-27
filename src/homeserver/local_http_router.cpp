@@ -1775,19 +1775,10 @@ namespace
                     return;
                 }
             }
-            else if (runtime.dispatch_worker->signing_key_id() != key->key_id)
-            {
-                // The worker snapshotted the signing identity when it was built. A
-                // rotation since then would leave it signing with the retired key —
-                // peers reject those signatures — so hand it the current key.
-                runtime.dispatch_worker->update_signing_identity(
-                    key->key_id, core::SecretBuffer{runtime.database.signing_secret_key.bytes()});
-                log_diagnostic("dispatch.signing_identity_refreshed",
-                               {
-                                   {"key_id", key->key_id, false}
-                },
-                               observability::LogEventSeverity::info);
-            }
+            // No refresh branch here: this function returns early once the federation
+            // callbacks exist, so a second call after a rotation never reaches this
+            // point. rotate_server_signing_key hands the worker its new identity
+            // directly instead.
         }
     }
 

@@ -701,3 +701,201 @@ SCENARIO("GET /rooms/{roomId}/threads refuses a room the caller cannot view",
         }
     }
 }
+
+// Spec: Matrix Client-Server API v1.19 — Ignoring users / Aggregations of child
+// events URL:
+// ../../docs/matrix-v1.19-spec/client-server-api.md#server-side-aggregation-of-mthread-relationships
+//
+// "Servers must additionally ensure they do not consider child events from
+// ignored users when preparing an aggregation for the client." And for the
+// thread list itself: "If the thread root event was sent by an ignored user,
+// the event is returned redacted to the caller."
+SCENARIO("GET /rooms/{roomId}/threads applies the caller's ignore list to "
+         "aggregations and roots",
+         "[event-relationships][conformance][threads][ignoring-users]")
+{
+    GIVEN("a room where an ignored member replied in the caller's thread and "
+          "started one of their own")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+        auto const room_id = create_room(started.runtime, token);
+
+        auto const own_root = send_text_message(started.runtime, token, room_id, "txn_ign_root");
+        std::ignore = send_thread_reply(started.runtime, token, room_id, own_root, "txn_ign_own_reply");
+
+        auto const other_reg = merovingian::homeserver::handle_client_server_request(
+            started.runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("mallory_rel", "CorrectHorse7!")});
+        REQUIRE(other_reg.response.status == 200U);
+        auto const other_login = merovingian::homeserver::handle_client_server_request(
+            started.runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@mallory_rel:example.org"},"password":"CorrectHorse7!","device_id":"REL_DEVICE_M"})"});
+        REQUIRE(other_login.response.status == 200U);
+        auto const other_body = parse_object(other_login.response.body);
+        auto const* other_token_value = string_member(other_body, "access_token");
+        REQUIRE(other_token_value != nullptr);
+        auto const other_token = *other_token_value;
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/join", other_token, "{}"})
+                    .response.status == 200U);
+
+        // The ignored user replies in the caller's thread and starts a thread of
+        // their own.
+        std::ignore = send_thread_reply(started.runtime, other_token, room_id, own_root, "txn_ign_other_reply");
+        auto const ignored_root = send_text_message(started.runtime, other_token, room_id, "txn_ign_other_root");
+        std::ignore = send_thread_reply(started.runtime, token, room_id, ignored_root, "txn_ign_reply_to_other");
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"PUT",
+                                      "/_matrix/client/v3/user/@alice_rel:example.org/account_data/"
+                                      "m.ignored_user_list",
+                                      token, R"({"ignored_users":{"@mallory_rel:example.org":{}}})"})
+                    .response.status == 200U);
+
+        WHEN("the caller lists the room's threads")
+        {
+            auto const resp = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v1/rooms/" + room_id + "/threads", token, {}});
+
+            THEN("the ignored user's reply is excluded from the aggregation and "
+                 "their root is redacted")
+            {
+                REQUIRE(resp.response.status == 200U);
+                auto const body = parse_object(resp.response.body);
+                auto const* chunk_value = object_member(body, "chunk");
+                REQUIRE(chunk_value != nullptr);
+                auto const* chunk = std::get_if<merovingian::canonicaljson::Array>(&chunk_value->storage());
+                REQUIRE(chunk != nullptr);
+                REQUIRE(chunk->size() == 2U);
+
+                auto own_count = std::int64_t{-1};
+                auto ignored_root_seen = false;
+                for (auto const& entry_value : *chunk)
+                {
+                    auto const* entry = std::get_if<merovingian::canonicaljson::Object>(&entry_value.storage());
+                    REQUIRE(entry != nullptr);
+                    auto const* entry_id = string_member(*entry, "event_id");
+                    REQUIRE(entry_id != nullptr);
+
+                    auto const* unsigned_value = object_member(*entry, "unsigned");
+                    REQUIRE(unsigned_value != nullptr);
+                    auto const* unsigned_obj =
+                        std::get_if<merovingian::canonicaljson::Object>(&unsigned_value->storage());
+                    REQUIRE(unsigned_obj != nullptr);
+                    auto const* relations_value = object_member(*unsigned_obj, "m.relations");
+                    REQUIRE(relations_value != nullptr);
+                    auto const* relations =
+                        std::get_if<merovingian::canonicaljson::Object>(&relations_value->storage());
+                    REQUIRE(relations != nullptr);
+                    auto const* thread_value = object_member(*relations, "m.thread");
+                    REQUIRE(thread_value != nullptr);
+                    auto const* thread = std::get_if<merovingian::canonicaljson::Object>(&thread_value->storage());
+                    REQUIRE(thread != nullptr);
+                    auto const* count_value = object_member(*thread, "count");
+                    REQUIRE(count_value != nullptr);
+                    auto const* count = std::get_if<std::int64_t>(&count_value->storage());
+                    REQUIRE(count != nullptr);
+
+                    if (*entry_id == own_root)
+                    {
+                        own_count = *count;
+                    }
+                    if (*entry_id == ignored_root)
+                    {
+                        ignored_root_seen = true;
+                        // Spec MUST: a root from an ignored user is returned redacted —
+                        // its content is stripped, but the thread is still listed.
+                        auto const* content_value = object_member(*entry, "content");
+                        REQUIRE(content_value != nullptr);
+                        auto const* content =
+                            std::get_if<merovingian::canonicaljson::Object>(&content_value->storage());
+                        REQUIRE(content != nullptr);
+                        REQUIRE(string_member(*content, "body") == nullptr);
+                    }
+                }
+
+                // Spec MUST: the ignored user's m.thread child is not counted. The
+                // caller sent one reply of their own, so the count is 1, not 2.
+                REQUIRE(own_count == std::int64_t{1});
+                REQUIRE(ignored_root_seen);
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.19 — Querying threads in a room
+// URL:
+// ../../docs/matrix-v1.19-spec/client-server-api.md#querying-threads-in-a-room
+//
+// "limit ... Must be an integer greater than zero." / "400: The request was
+// invalid in some way ... The from token is unknown to the server."
+SCENARIO("GET /rooms/{roomId}/threads rejects a zero limit and an unusable "
+         "from token",
+         "[event-relationships][conformance][threads]")
+{
+    GIVEN("a room with a thread")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+        auto const room_id = create_room(started.runtime, token);
+        auto const root = send_text_message(started.runtime, token, room_id, "txn_bad_param_root");
+        std::ignore = send_thread_reply(started.runtime, token, room_id, root, "txn_bad_param_reply");
+
+        WHEN("limit=0 is supplied")
+        {
+            auto const resp = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v1/rooms/" + room_id + "/threads?limit=0", token, {}});
+
+            THEN("the request is rejected as invalid")
+            {
+                REQUIRE(resp.response.status == 400U);
+                auto const body = parse_object(resp.response.body);
+                auto const* errcode = string_member(body, "errcode");
+                REQUIRE(errcode != nullptr);
+                REQUIRE(*errcode == "M_INVALID_PARAM");
+            }
+        }
+
+        WHEN("a from token the server never issued is supplied")
+        {
+            auto const resp = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"GET", "/_matrix/client/v1/rooms/" + room_id + "/threads?from=not-a-token", token, {}});
+
+            THEN("the request is rejected rather than silently paginating from the "
+                 "start")
+            {
+                REQUIRE(resp.response.status == 400U);
+                auto const body = parse_object(resp.response.body);
+                auto const* errcode = string_member(body, "errcode");
+                REQUIRE(errcode != nullptr);
+                REQUIRE(*errcode == "M_INVALID_PARAM");
+            }
+        }
+
+        WHEN("no limit is supplied at all")
+        {
+            auto const resp = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v1/rooms/" + room_id + "/threads", token, {}});
+
+            THEN("the server applies its own default and returns the thread")
+            {
+                REQUIRE(resp.response.status == 200U);
+                auto const body = parse_object(resp.response.body);
+                auto const* chunk_value = object_member(body, "chunk");
+                REQUIRE(chunk_value != nullptr);
+                auto const* chunk = std::get_if<merovingian::canonicaljson::Array>(&chunk_value->storage());
+                REQUIRE(chunk != nullptr);
+                REQUIRE(chunk->size() == 1U);
+            }
+        }
+    }
+}

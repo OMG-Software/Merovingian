@@ -136,9 +136,10 @@ that:
   hour); past it the fast path re-publishes rather than serving a document whose
   advertised `valid_until_ts` has elapsed.
 - The federation dispatch worker snapshots the signing identity when it is
-  constructed; `wire_federation_callbacks` hands it the current key whenever the
-  active key id has changed, so a rotation cannot leave it signing with the
-  retired key.
+  constructed, so `rotate_server_signing_key` hands it the new key directly. The
+  refresh cannot live in `wire_federation_callbacks`: that function returns early
+  once the federation callbacks exist, so a second call after a rotation never
+  reaches the worker.
 
 A single key is active at a time.
 Comma-delimited PDUs without JSON are rejected when a signing key is available,

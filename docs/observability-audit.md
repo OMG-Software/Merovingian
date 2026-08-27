@@ -55,8 +55,9 @@ This capability note describes runtime-wired observability and audit behavior.
   does not persist, meaning peers keep re-fetching against the stale window;
   `signing_key.provider_rebuilt` (info) fires when the runtime signing provider
   is rebuilt because it did not hold the preferred key; and
-  `dispatch.signing_identity_refreshed` (info) fires when the federation
-  dispatch worker is handed a rotated key. `signing_key.loaded` is debug, not
+  `dispatch.signing_identity_refreshed` (info) fires from
+  `rotate_server_signing_key` when the federation dispatch worker is handed the
+  rotated key. `signing_key.loaded` is debug, not
   info: it runs on every request path that needs the signing identity. Fields
   carry `server_name`, `key_id`, `public_key`, and `valid_until_ts` — never
   secret material (`secret_size` is a length only).

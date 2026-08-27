@@ -1747,7 +1747,7 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
     {
         log_diagnostic("signing_key.provider_rebuilt",
                        {
-                           {"key_id",    std::string{key_id},                                  false},
+                           {"key_id",    std::string{key_id},                                   false},
                            {"available", runtime.crypto_provider != nullptr ? "true" : "false", false}
         },
                        observability::LogEventSeverity::info);
@@ -1890,17 +1890,16 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
         {
             auto const refreshed_valid_until_ts = now_ms + signing_key_validity_ms;
             // An empty secret preserves the stored one; only the window changes.
-            auto refreshed = database::PersistentServerSigningKey{record.server_name, record.key_id,
-                                                                  record.public_key, refreshed_valid_until_ts,
-                                                                  std::string{}};
+            auto refreshed = database::PersistentServerSigningKey{record.server_name, record.key_id, record.public_key,
+                                                                  refreshed_valid_until_ts, std::string{}};
             if (database::store_server_signing_key(runtime.database.persistent_store, std::move(refreshed)))
             {
                 record.valid_until_ts = refreshed_valid_until_ts;
                 log_diagnostic("signing_key.window_refreshed",
                                {
-                                   {"server_name",    std::string{server_name},                     false},
-                                   {"key_id",         record.key_id,                                false},
-                                   {"valid_until_ts", std::to_string(refreshed_valid_until_ts),     false}
+                                   {"server_name",    std::string{server_name},                 false},
+                                   {"key_id",         record.key_id,                            false},
+                                   {"valid_until_ts", std::to_string(refreshed_valid_until_ts), false}
                 },
                                observability::LogEventSeverity::info);
             }
@@ -1946,11 +1945,10 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
         std::ranges::count_if(all_keys, [&server_name](database::PersistentServerSigningKey const& k) {
             return k.server_name == server_name;
         });
-    log_diagnostic("signing_key.generating",
-                   {
-                       {"server_name",    std::string{server_name},           false},
-                       {"has_legacy_key", has_legacy ? "true" : "false",      false},
-                       {"stored_keys",    std::to_string(stored_for_server),  false}
+    log_diagnostic("signing_key.generating", {
+                                                 {"server_name",    std::string{server_name},          false},
+                                                 {"has_legacy_key", has_legacy ? "true" : "false",     false},
+                                                 {"stored_keys",    std::to_string(stored_for_server), false}
     });
 
     auto const keypair = crypto::generate_ed25519_keypair();
@@ -1962,7 +1960,6 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
     // Derive the key_id from the public key material so each new key gets a unique
     // id; stale notary-cache entries for old ids become irrelevant after rotation.
     auto const key_id = derive_ed25519_key_id(keypair->public_key);
-
 
     // Encrypt the secret at rest when a master key is configured.  For backwards
     // compatibility a server without a configured master key falls back to the
@@ -2245,8 +2242,7 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
     // has quietly elapsed on a long-running server.
     if (runtime.database.key_server_cache)
     {
-        runtime.database.key_server_cache->store(signed_response.output,
-                                                 now_ms + key_server_cache_refresh_interval_ms);
+        runtime.database.key_server_cache->store(signed_response.output, now_ms + key_server_cache_refresh_interval_ms);
     }
 
     return make_operation_result(true, std::move(signed_response.output));
@@ -2321,6 +2317,22 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
     std::copy(keypair->secret_key.begin(), keypair->secret_key.end(),
               runtime.database.signing_secret_key.bytes().begin());
     reset_runtime_crypto_provider(runtime);
+
+    // The dispatch worker snapshots the signing identity when it is constructed, and
+    // wire_federation_callbacks returns early once the callbacks exist — so nothing
+    // else hands it the new key. Without this it keeps signing outbound transactions
+    // with the key this rotation just retired, which peers reject.
+    if (runtime.dispatch_worker != nullptr)
+    {
+        runtime.dispatch_worker->update_signing_identity(
+            key_id, core::SecretBuffer{runtime.database.signing_secret_key.bytes()});
+        log_diagnostic("dispatch.signing_identity_refreshed",
+                       {
+                           {"key_id", key_id, false}
+        },
+                       observability::LogEventSeverity::info);
+    }
+
     log_diagnostic("signing_key.rotated",
                    {
                        {"server_name",    current->server_name, false},

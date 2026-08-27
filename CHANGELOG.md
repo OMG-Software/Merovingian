@@ -75,8 +75,11 @@ locally composed event.
   reduced to an unconditional rebuild on every request.
 - **The federation dispatch worker's signing identity follows key rotation.** It
   snapshotted the key when constructed and kept signing with the retired key
-  afterwards; `wire_federation_callbacks` now hands it the current key whenever
-  the active key id changes.
+  afterwards, which peers reject because the rotation publishes that key under
+  `old_verify_keys` with a past `expired_ts`. `rotate_server_signing_key` now
+  hands the worker its new identity directly — not `wire_federation_callbacks`,
+  which returns early once the callbacks exist and so would never have run the
+  refresh.
 
 ## 0.11.11
 

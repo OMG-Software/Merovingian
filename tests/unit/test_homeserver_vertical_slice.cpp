@@ -25,6 +25,7 @@
 #include "merovingian/config/config.hpp"
 #include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/database/persistent_store.hpp"
+#include "merovingian/federation/dispatch_worker.hpp"
 #include "merovingian/federation/server_discovery.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/client_server.hpp"
@@ -1049,6 +1050,44 @@ SCENARIO("join_room advertises room versions 10 11 and 12 all of which have regi
             REQUIRE(merovingian::rooms::find_room_version_policy("10") != nullptr);
             REQUIRE(merovingian::rooms::find_room_version_policy("11") != nullptr);
             REQUIRE(merovingian::rooms::find_room_version_policy("12") != nullptr);
+        }
+    }
+}
+
+// Merovingian invariant (rotation reaches the outbound path):
+// wire_federation_callbacks builds the dispatch worker with a snapshot of the
+// signing key. Nothing rebuilds the worker on rotation, so without an explicit
+// refresh it keeps signing outbound transactions with the retired key — which
+// the rotation just published under old_verify_keys with a past expired_ts, so
+// every peer rejects it.
+SCENARIO("Rotating the signing key updates the dispatch worker's signing identity",
+         "[homeserver][vertical][federation][dispatch][signing]")
+{
+    GIVEN("a started runtime whose federation callbacks built a dispatch worker")
+    {
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+        REQUIRE(runtime.dispatch_worker != nullptr);
+        auto const original_key_id = runtime.dispatch_worker->signing_key_id();
+        REQUIRE(!original_key_id.empty());
+
+        WHEN("the signing key is rotated")
+        {
+            // Rotation alone must reach the worker: wire_federation_callbacks returns
+            // early once the callbacks exist, so re-wiring is not a refresh path.
+            auto const rotation = merovingian::homeserver::rotate_server_signing_key(runtime);
+            REQUIRE(rotation.ok);
+            REQUIRE(rotation.value != original_key_id);
+            merovingian::homeserver::wire_federation_callbacks(runtime);
+
+            THEN("the worker signs with the rotated key rather than the retired one")
+            {
+                REQUIRE(runtime.dispatch_worker != nullptr);
+                REQUIRE(runtime.dispatch_worker->signing_key_id() == rotation.value);
+                REQUIRE(runtime.dispatch_worker->signing_key_id() != original_key_id);
+            }
         }
     }
 }

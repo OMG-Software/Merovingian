@@ -383,3 +383,45 @@ SCENARIO("Dispatch worker enforces queue depth", "[federation][dispatch-worker][
         }
     }
 }
+
+// Merovingian invariant (signing identity follows rotation):
+// The worker snapshots the server signing key when it is constructed. After a
+// key rotation the rest of the runtime signs with the new key while the worker
+// would still be holding the retired one, and peers reject every transaction
+// signed with a key published under old_verify_keys with a past expired_ts. The
+// identity must therefore be replaceable on a live worker.
+SCENARIO("Dispatch worker signing identity can be replaced after construction",
+         "[federation][dispatch-worker][signing]")
+{
+    GIVEN("a dispatch worker constructed with an initial signing identity")
+    {
+        auto client = merovingian::http::OutboundClient{};
+        auto resolver = merovingian::federation::DispatchResolver{[](std::string_view) {
+            return std::optional<merovingian::federation::ServerDiscoveryResult>{};
+        }};
+        auto worker = merovingian::federation::DispatchWorker{worker_config(), client, std::move(resolver), {}, {}};
+        REQUIRE(worker.signing_key_id() == "ed25519:auto");
+
+        WHEN("a rotated identity is handed to the worker")
+        {
+            auto rotated_secret = merovingian::federation::test::secret_key_buffer(
+                merovingian::federation::test::keypair_from_seed("rotated-test-token"));
+            worker.update_signing_identity("ed25519:b1656160", std::move(rotated_secret));
+
+            THEN("subsequent traffic is attributed to the new key id")
+            {
+                REQUIRE(worker.signing_key_id() == "ed25519:b1656160");
+            }
+
+            AND_THEN("the worker still accepts and queues transactions")
+            {
+                // The update must not disturb queue state: an identity swap is not a
+                // reason to start dropping traffic.
+                REQUIRE(worker.enqueue(sample_transaction("remote.example.org")));
+                auto const summary = worker.summary();
+                REQUIRE(summary.enqueued == 1U);
+                REQUIRE(summary.pending == 1U);
+            }
+        }
+    }
+}

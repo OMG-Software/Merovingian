@@ -268,6 +268,11 @@ SCENARIO("GET /_matrix/key/v2/server keeps the same key with a refreshed window 
         {
             stored.valid_until_ts = static_cast<std::uint64_t>(now_ms) - std::uint64_t{60U * 1000U};
         }
+        // Expire the cached key document too. The federation route answers from a
+        // lock-free cache, so without this the second request would be served the
+        // document published at startup and would assert nothing about the refresh.
+        REQUIRE(runtime.homeserver.database.key_server_cache != nullptr);
+        runtime.homeserver.database.key_server_cache->store("{}", static_cast<std::uint64_t>(now_ms) - 1U);
 
         WHEN("the key server document is served again")
         {
