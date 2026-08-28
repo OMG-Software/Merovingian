@@ -891,6 +891,19 @@ threat it closes; the controls above are the standing defences these reinforce.
   entirely outside `federation::handle_inbound_federation_request`, in the
   same homeserver-router bypass used for `GET /_matrix/key/v2/server`.
 
+- **Self-inflicted denial of service through the global runtime lock.**
+  `HomeserverRuntime::mutex` serialises every client-server request and every
+  inbound federation transaction. Any blocking outbound call made while holding
+  it lets a single remote server — one it takes no privilege to operate, and no
+  more effort than accepting a TCP connection and never answering — halt the
+  entire homeserver for the length of that call's timeout. Two paths were
+  reachable this way by an unauthenticated remote: a `/keys/query` naming a user
+  on the attacker's server, and any media reference pointing at it. Mitigated by
+  releasing the mutex for the duration of every outbound network call
+  (`homeserver::NetworkIoUnlock`) so a stalled peer costs one request rather than
+  the process, and covered by a regression test that holds a real TLS peer open
+  and asserts unrelated requests still complete.
+
 ## Security principles
 
 - Fail closed.

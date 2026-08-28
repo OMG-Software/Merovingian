@@ -9,6 +9,7 @@ homeserver_sources = files(
   'local_http_router.cpp',
   'local_services.cpp',
   'media_service.cpp',
+  'request_lock.cpp',
   'room_service.cpp',
   'runtime.cpp',
   'runtime_signing_key_store.cpp',

@@ -340,6 +340,36 @@ starving federation and other short-lived requests. See
 layout and [`src/sync/AGENTS.md`](../src/sync/AGENTS.md) for sync-specific
 conventions.
 
+## Request lock and blocking network calls
+
+Both request entry points — `handle_client_server_request` and
+`handle_local_http_request` — take `HomeserverRuntime::mutex` for the whole
+request. That single mutex also guards inbound federation handling, so anything
+holding it blocks every other client and every inbound `/send` transaction.
+
+A synchronous outbound call made while holding it therefore stalls the whole
+process for the length of the remote's timeout. Two paths used to do exactly
+that: `POST /_matrix/client/v3/keys/query` (one federation `/user/keys/query`
+per remote server, each budgeted `remote_timeout_seconds`) and remote media
+download/thumbnail fetches. One unreachable peer was enough to freeze local
+reads for 20–44 seconds at a time.
+
+The entry points now publish their guard through
+`homeserver::RequestLockScope`, and each blocking network call runs inside a
+`homeserver::NetworkIoUnlock` scope that releases the mutex for the round trip
+and re-acquires it on exit — including when the call throws. Both types live in
+[`include/merovingian/homeserver/request_lock.hpp`](../include/merovingian/homeserver/request_lock.hpp).
+
+Rules for anything added to these paths:
+
+- Only the network call goes inside the unlock scope. Reads and mutations of
+  runtime state stay outside it, before or after.
+- Request signing stays under the lock: `OutboundCall::secret_key` borrows a
+  span into the runtime's `SecretBuffer`, which the lock protects.
+- The scope is a no-op when no guard is published (the federation worker, a test
+  calling a service function directly) or when a caller already released the
+  lock by hand, so it composes with the existing `unlock()`/`lock()` pairs.
+
 ## Fuzzing
 
 `fuzz-http-request` exercises the request-head parser against arbitrary input. It is registered with the existing fuzz target group.

@@ -29,6 +29,7 @@
 #include "merovingian/homeserver/federation_proxy.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/local_services.hpp"
+#include "merovingian/homeserver/request_lock.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/homeserver/runtime_signing_key_store.hpp"
 #include "merovingian/identity/identity_client.hpp"
@@ -1618,8 +1619,12 @@ namespace
             });
             return {false, "federation not available"};
         }
-        auto const resolution =
-            federation::discover_server(transaction.destination, *discovery_network, timeout_seconds);
+        // Discovery is a DNS/well-known cascade that can burn the full timeout
+        // against an unreachable peer, so it must not run under runtime.mutex.
+        auto const resolution = [&]() {
+            auto const unlocked = NetworkIoUnlock{};
+            return federation::discover_server(transaction.destination, *discovery_network, timeout_seconds);
+        }();
         if (!resolution.discovery_allowed)
         {
             log_diagnostic(diagnostic_event, {
@@ -1668,14 +1673,20 @@ namespace
     // Sign the request in-process — the Ed25519 secret never crosses the IPC boundary.
     auto const request = federation::build_outbound_request(call);
 
-    // Route via worker if available; fall back to direct outbound client.
+    // Route via worker if available; fall back to direct outbound client. The
+    // request is fully built and signed above, so nothing inside this block
+    // reads runtime state that the lock protects — which is what makes it safe
+    // to run with runtime.mutex released. Signing deliberately stays above:
+    // `call.secret_key` borrows a span into the runtime's SecretBuffer.
     auto outcome = http::OutboundResult{};
     if (runtime.federation_proxy)
     {
+        auto const unlocked = NetworkIoUnlock{};
         outcome = runtime.federation_proxy->send_outbound_request(request, room_id);
     }
     else if (runtime.outbound_client)
     {
+        auto const unlocked = NetworkIoUnlock{};
         outcome = runtime.outbound_client->perform(request);
     }
     else

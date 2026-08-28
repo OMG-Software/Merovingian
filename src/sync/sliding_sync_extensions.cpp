@@ -7,6 +7,7 @@
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/database/persistent_store.hpp"
+#include "merovingian/sync/device_list_delta.hpp"
 #include "merovingian/trust_safety/ignore_list.hpp"
 
 #include <algorithm>
@@ -121,22 +122,13 @@ namespace
     {
         auto resp = ExtE2eeResponse{};
 
-        // Device list changed / left.
-        for (auto const& change : store.device_list_changes)
-        {
-            if (change.observer_user_id != user || change.stream_id <= since_sync_stream_id)
-            {
-                continue;
-            }
-            if (change.change_type == "left")
-            {
-                resp.left.push_back(change.subject_user_id);
-            }
-            else
-            {
-                resp.changed.push_back(change.subject_user_id);
-            }
-        }
+        // Device list changed / left. The collector reports each subject user
+        // once, however many rows the change log holds for it; appending per
+        // row instead made an initial response repeat the same handful of user
+        // IDs thousands of times.
+        auto delta = collect_device_list_delta(store, user, since_sync_stream_id);
+        resp.changed = std::move(delta.changed);
+        resp.left = std::move(delta.left);
 
         // One-time key counts — seed with zero for signed_curve25519 so the
         // client knows it must upload keys even on a fresh device.

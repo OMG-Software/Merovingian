@@ -33,6 +33,7 @@
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/homeserver/media_service.hpp"
+#include "merovingian/homeserver/request_lock.hpp"
 #include "merovingian/homeserver/room_service.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/homeserver/space_hierarchy.hpp"
@@ -43,6 +44,7 @@
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
+#include "merovingian/sync/device_list_delta.hpp"
 #include "merovingian/sync/sliding_sync.hpp"
 #include "merovingian/sync/sliding_sync_extensions.hpp"
 #include "merovingian/sync/sliding_sync_parser.hpp"
@@ -3209,31 +3211,32 @@ namespace
         return events;
     }
 
+    // Spec (client-server-api.md, "Extensions to /sync"): `changed` and `left`
+    // name the users whose devices changed since the previous sync response —
+    // each user at most once, however many change rows the store holds. An
+    // initial sync deliberately reports the full set rather than nothing, so a
+    // freshly-logged-in device is prompted to /keys/query its own user's
+    // devices straight away; see the initial-sync assertions in
+    // tests/unit/test_sync_handler.cpp.
     [[nodiscard]] auto build_device_list_arrays(database::PersistentStore const& store, std::string_view user,
                                                 std::uint64_t since_sync_stream_id,
                                                 std::uint64_t& max_observed_stream_id)
         -> std::pair<canonicaljson::Array, canonicaljson::Array>
     {
+        auto const delta = sync::collect_device_list_delta(store, user, since_sync_stream_id);
+        if (delta.max_stream_id > max_observed_stream_id)
+        {
+            max_observed_stream_id = delta.max_stream_id;
+        }
         auto changed = canonicaljson::Array{};
         auto left = canonicaljson::Array{};
-        for (auto const& change : store.device_list_changes)
+        for (auto const& subject : delta.changed)
         {
-            if (change.observer_user_id != user || change.stream_id <= since_sync_stream_id)
-            {
-                continue;
-            }
-            if (change.change_type == "left")
-            {
-                left.push_back(json_str(change.subject_user_id));
-            }
-            else
-            {
-                changed.push_back(json_str(change.subject_user_id));
-            }
-            if (change.stream_id > max_observed_stream_id)
-            {
-                max_observed_stream_id = change.stream_id;
-            }
+            changed.push_back(json_str(subject));
+        }
+        for (auto const& subject : delta.left)
+        {
+            left.push_back(json_str(subject));
         }
         return {std::move(changed), std::move(left)};
     }
@@ -5749,16 +5752,19 @@ namespace
         auto const to_id = to_decoded->sync_stream_id;
 
         auto const& store = rt.homeserver.database.persistent_store;
+        // Spec §11.11.2: `changed` and `left` name the users whose device keys
+        // changed in the range — a user appears once, however many change rows
+        // the range covers for it.
+        auto const delta = sync::collect_device_list_delta(store, user, from_id, to_id);
         auto changed = canonicaljson::Array{};
         auto left = canonicaljson::Array{};
-        for (auto const& change : store.device_list_changes)
+        for (auto const& subject : delta.changed)
         {
-            if (change.observer_user_id != user || change.stream_id <= from_id || change.stream_id > to_id)
-            {
-                continue;
-            }
-            auto& bucket = (change.change_type == "left") ? left : changed;
-            bucket.push_back(canonicaljson::Value{change.subject_user_id});
+            changed.push_back(canonicaljson::Value{subject});
+        }
+        for (auto const& subject : delta.left)
+        {
+            left.push_back(canonicaljson::Value{subject});
         }
         return resp(200U, json_serialize(json_obj({
                               json_member("changed", json_arr(std::move(changed))),
@@ -8205,6 +8211,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     }
 
     auto guard = std::unique_lock<std::recursive_mutex>{rt.homeserver.mutex};
+    // Publish the guard so a blocking network call further down the stack can
+    // release it for the duration (see NetworkIoUnlock). Without this every
+    // outbound federation call made while serving a client request freezes all
+    // other client and federation traffic until the remote answers or times out.
+    auto const lock_scope = RequestLockScope{guard};
     auto const rate_limit_decision = allow(rt, req);
     if (!rate_limit_decision.allowed)
     {

@@ -33,6 +33,28 @@ MSC4186 tracks per-connection state keyed by `conn_id`. On a no-`pos` poll, the 
 uses `conn.last_event_ordering` as the since-baseline so repeated `timeout=0` polls return
 a delta (empty rooms, same pos) rather than re-sending the full initial sync.
 
+## Device lists
+
+`changed` and `left` name *users*, not change events: a user appears at most
+once across both lists however many rows the store holds for it in the range —
+spec: client-server-api.md, "Extensions to /sync".
+
+An initial sync (`since` absent, or a sliding sync with no `pos`) deliberately
+reports the full set rather than nothing, so a freshly logged-in device is
+prompted to `/keys/query` its own user's devices straight away. The spec permits
+either ("the server need only populate this property for an incremental
+`/sync`"); this project chose to populate, and
+`tests/unit/test_sync_handler.cpp` pins that behaviour. Deduplication is what
+keeps the initial response bounded.
+
+All three surfaces that report device-list changes — `/sync`, the MSC4186 e2ee
+extension, and `GET /_matrix/client/v3/keys/changes` — go through
+`collect_device_list_delta` (`sync/device_list_delta.hpp`). It collapses the
+store's append-only change log to one entry per subject user, so a subject is
+never repeated however many rows the range covers, and resolves a subject that
+both changed and left to whichever came last. Do not walk
+`store.device_list_changes` directly.
+
 ## Long-poll behaviour
 
 `sync_notifier` holds requests until an event arrives or `timeout` expires.

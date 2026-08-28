@@ -417,6 +417,18 @@ quickly finding everything a given `AGENTS.md` file contributed.
   vulnerability (see `docs/threat-model.md`).
   Source: `src/homeserver/AGENTS.md`, `src/media/AGENTS.md`.
 
+- **Never hold `HomeserverRuntime::mutex` across a blocking network call.** Wrap the call
+  in a `homeserver::NetworkIoUnlock` scope (`homeserver/request_lock.hpp`) and keep every
+  read and mutation of runtime state outside it.
+  Why: that one mutex serialises every client-server request and every inbound federation
+  transaction, so a network call held across it turns any remote server into a
+  denial-of-service lever — accepting a TCP connection and then never answering is enough
+  to halt the whole homeserver for the length of the timeout, and both a `/keys/query`
+  naming a user on the attacker's server and any media reference pointing at it reach that
+  path without privilege. Request signing must stay *inside* the lock: `OutboundCall::secret_key`
+  borrows a span into the runtime's `SecretBuffer`.
+  Source: `src/homeserver/AGENTS.md`.
+
 ## Database
 
 - **Never interpolate values into SQL strings — always use prepared statements with bound

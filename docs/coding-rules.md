@@ -20,6 +20,12 @@ Rules:
   1. local project includes
   2. third-party includes
   3. standard library includes
+- Never hold `HomeserverRuntime::mutex` across a blocking network call. That one
+  mutex serialises every client-server request and every inbound federation
+  transaction, so a call held across it converts one slow peer into a
+  whole-process stall. Wrap the network call in a
+  `homeserver::NetworkIoUnlock` scope (`homeserver/request_lock.hpp`) and keep
+  every read and mutation of runtime state outside it.
 
 
 ## Tests

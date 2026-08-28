@@ -201,6 +201,21 @@ The local HTTP router preserves the media repository status code instead of flat
 - `502` when the remote media fetch transport is not available (outbound client or
   discovery network not configured in the runtime).
 
+## Remote fetches and the runtime lock
+
+Remote download and thumbnail requests arrive through
+`handle_local_http_request`, which holds `HomeserverRuntime::mutex` for the
+whole request. The federation fetch, its `Location` redirect follow, and the
+server-discovery cascade all release that mutex for the network round trip via
+`homeserver::NetworkIoUnlock`, and re-acquire it before touching repository
+metrics, the audit log, or the blob store.
+
+This matters because the same mutex serialises inbound federation traffic: a
+remote that accepted the connection and then went quiet used to freeze every
+other client and every inbound `/send` transaction for the fetch's full
+120-second budget. See [`http-transport.md`](http-transport.md) "Request lock
+and blocking network calls".
+
 ## Deduplication
 
 Local media deduplication uses a LibSodium `crypto_generichash` (`blake2b`) digest and byte size. Removed blobs with a zero reference count are not reused for future uploads, because their bytes have been cleared and reusing them would corrupt successful reuploads.

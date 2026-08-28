@@ -41,6 +41,32 @@ is `declared_mime|sniffed_mime|scanner_clean|bytes` — the pipe-delimited wrapp
 4. Add a unit test in `tests/unit/test_client_server.cpp`
 5. Update `docs/matrix-v1.19-client-server-api.md` with the new endpoint
 
+## The runtime lock and blocking calls
+
+`handle_client_server_request` and `handle_local_http_request` each take
+`HomeserverRuntime::mutex` for the whole request, and that same mutex guards
+inbound federation handling. Anything holding it blocks every other client and
+every inbound `/send`.
+
+Never make a blocking network call while holding it. Both entry points publish
+their guard through `homeserver::RequestLockScope`, so wrap the call — and only
+the call — in a `homeserver::NetworkIoUnlock` scope
+(`merovingian/homeserver/request_lock.hpp`):
+
+```cpp
+auto const result = [&]() {
+    auto const unlocked = NetworkIoUnlock{};   // runtime.mutex released here
+    return runtime.outbound_client->perform(request);
+}();                                          // and re-acquired here
+```
+
+Keep every read and mutation of runtime state outside the scope. In particular
+request signing stays under the lock, because `OutboundCall::secret_key` borrows
+a span into the runtime's `SecretBuffer`.
+
+See [`docs/http-transport.md`](../../docs/http-transport.md) "Request lock and
+blocking network calls".
+
 ## Body size limits
 
 - **Default cap**: `rt.limits.max_body_bytes` (64 KiB) — applied at the top of the dispatch function
