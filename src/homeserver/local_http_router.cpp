@@ -21,6 +21,7 @@
 #include "merovingian/federation/server_acl.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/media_service.hpp"
+#include "merovingian/homeserver/request_lock.hpp"
 #include "merovingian/homeserver/room_service.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/homeserver/runtime_signing_key_store.hpp"
@@ -1989,6 +1990,10 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
     -> LocalHttpResponse
 {
     auto guard = std::unique_lock<std::recursive_mutex>{runtime.mutex};
+    // Publish the guard so a blocking network call further down the stack —
+    // notably a remote media fetch — can release it for the duration. See
+    // NetworkIoUnlock in request_lock.hpp.
+    auto const lock_scope = RequestLockScope{guard};
     auto const correlation = observability::make_correlation_context(runtime.next_request_sequence++);
     [[maybe_unused]] auto const correlation_scope = observability::CorrelationScope{correlation};
     log_diagnostic("request.received",

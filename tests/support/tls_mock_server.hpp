@@ -17,6 +17,8 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -360,6 +362,82 @@ inline auto run_path_dispatch_tls_server(merovingian::net::TcpAcceptor& acceptor
         served[chosen] = true;
         static_cast<void>(connection.write(path_responses[chosen].second));
     }
+}
+
+// Observable state for run_stalling_tls_server below. `request_received` is set
+// once the server has read a complete request; `released` is the test's signal
+// that the server may finally answer.
+struct StallingTlsServerState final
+{
+    std::atomic<bool> request_received{false};
+    std::atomic<bool> released{false};
+};
+
+// One-shot TLS server that accepts a request, announces that it has arrived,
+// and then holds the connection open until the test releases it — modelling a
+// peer that is reachable but slow. It exists so a test can observe what the
+// rest of the process is able to do while an outbound call is still in flight.
+//
+// The stall is bounded: the server answers anyway once `max_stall` elapses, so
+// the thread always terminates and a failed assertion is reported as a failure
+// rather than escalating into a whole-suite timeout.
+inline auto run_stalling_tls_server(merovingian::net::TcpAcceptor& acceptor,
+                                    merovingian::homeserver::TlsServerContext& tls_context,
+                                    StallingTlsServerState& state, std::string const& http_response,
+                                    std::chrono::milliseconds max_stall) noexcept -> void
+{
+    auto const client_fd = accept_loopback(acceptor, 5000);
+    if (client_fd < 0)
+    {
+        state.request_received.store(true);
+        return;
+    }
+    auto tls_result = merovingian::homeserver::accept_tls_connection(tls_context, client_fd, 5000);
+    if (!tls_result.connection.has_value())
+    {
+        ::close(client_fd);
+        state.request_received.store(true);
+        return;
+    }
+    auto& tls_connection = *tls_result.connection;
+    auto buffer = std::array<char, 8192>{};
+    auto request_bytes = std::string{};
+    while (request_bytes.find("\r\n\r\n") == std::string::npos)
+    {
+        auto const bytes_read = tls_connection.read(buffer.data(), buffer.size());
+        if (bytes_read <= 0)
+        {
+            break;
+        }
+        request_bytes.append(buffer.data(), static_cast<std::size_t>(bytes_read));
+        if (static_cast<std::size_t>(bytes_read) < buffer.size())
+        {
+            break;
+        }
+    }
+    state.request_received.store(true);
+    auto const deadline = std::chrono::steady_clock::now() + max_stall;
+    while (!state.released.load() && std::chrono::steady_clock::now() < deadline)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds{10});
+    }
+    static_cast<void>(tls_connection.write(http_response));
+}
+
+// Spins until `flag` is set or `timeout` elapses. Returns whether the flag was
+// observed set, so the caller can assert on it from the main thread.
+[[nodiscard]] inline auto wait_for_flag(std::atomic<bool> const& flag, std::chrono::milliseconds timeout) -> bool
+{
+    auto const deadline = std::chrono::steady_clock::now() + timeout;
+    while (std::chrono::steady_clock::now() < deadline)
+    {
+        if (flag.load())
+        {
+            return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    }
+    return flag.load();
 }
 
 } // namespace merovingian::tests::tls_mock

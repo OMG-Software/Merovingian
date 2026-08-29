@@ -172,6 +172,20 @@ Request flow:
 5. In-process requests (room creation that needs both auth and federation) go through `handle_local_http_request()`.
 6. For `/sync` long-polls: if no new data exists, `DispatchResult::needs_wait` is returned with `SyncWaitParams`. The HTTP server releases the runtime mutex, calls `SyncNotifier::wait_for_change()`, then re-acquires the lock and rebuilds the response. This offloading keeps the main pool free for real requests.
 
+**Blocking network calls under the runtime mutex.** The recursive mutex above
+is held for the whole of each client-server and local-router request, and it
+also guards inbound federation handling — so whatever holds it stalls every
+other client and every inbound `/send`. Synchronous outbound calls made from a
+request handler (remote device-key queries, remote media fetches, and the
+server-discovery cascade feeding both) therefore release it for the duration of
+the network round trip and re-acquire it before touching runtime state again.
+The release is RAII: the entry points publish their guard through
+`homeserver::RequestLockScope`, and each network call sits inside a
+`homeserver::NetworkIoUnlock` scope. Signing stays under the lock, because the
+outbound call borrows a span into the runtime's `SecretBuffer`. See
+[`http-transport.md`](http-transport.md) "Request lock and blocking network
+calls".
+
 **Fire-and-forget background work.** Some work must start from inside a
 request handler but must not make the client wait on it: `join_room`'s
 background member-fill (deferred verification of the bulk member list after

@@ -1,4 +1,5 @@
 sync_sources = files(
+  'device_list_delta.cpp',
   'sliding_sync_extensions.cpp',
   'sliding_sync_parser.cpp',
   'sliding_sync_room_builder.cpp',

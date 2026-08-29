@@ -10,6 +10,7 @@
 #include "merovingian/federation/server_discovery.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/local_services.hpp"
+#include "merovingian/homeserver/request_lock.hpp"
 #include "merovingian/homeserver/room_service.hpp"
 #include "merovingian/http/outbound_client.hpp"
 #include "merovingian/media/repository.hpp"
@@ -551,7 +552,13 @@ namespace
         call.max_response_body_bytes = static_cast<std::size_t>(max_bytes) + multipart_envelope_overhead;
 
         auto const request = federation::build_outbound_request(call);
-        auto const out_result = runtime.outbound_client->perform(request);
+        // Release runtime.mutex for the network round trip: a remote that
+        // accepts the connection and then stalls would otherwise freeze every
+        // other client and federation request for up to total_timeout_seconds.
+        auto const out_result = [&]() {
+            auto const unlocked = NetworkIoUnlock{};
+            return runtime.outbound_client->perform(request);
+        }();
 
         if (!out_result.ok)
         {
@@ -626,7 +633,11 @@ namespace
                                observability::LogEventSeverity::warning);
                 return std::nullopt;
             }
-            auto const redirect_resolution = resolve_media_redirect_url(parsed.location, *runtime.discovery_network);
+            // DNS resolution of the redirect target is network-bound too.
+            auto const redirect_resolution = [&]() {
+                auto const unlocked = NetworkIoUnlock{};
+                return resolve_media_redirect_url(parsed.location, *runtime.discovery_network);
+            }();
             if (!redirect_resolution.ok)
             {
                 log_diagnostic("remote_fetch.federation_endpoint.location_rejected",
@@ -648,7 +659,10 @@ namespace
             redirect_req.total_timeout_seconds = 120U;
             redirect_req.max_response_body_bytes = static_cast<std::size_t>(max_bytes);
 
-            auto const redirect_result = runtime.outbound_client->perform(redirect_req);
+            auto const redirect_result = [&]() {
+                auto const unlocked = NetworkIoUnlock{};
+                return runtime.outbound_client->perform(redirect_req);
+            }();
             if (!redirect_result.ok || redirect_result.response.status < 200U ||
                 redirect_result.response.status >= 300U)
             {
@@ -720,6 +734,7 @@ namespace
         else
         {
             auto constexpr discovery_timeout = std::uint32_t{30U};
+            auto const unlocked = NetworkIoUnlock{};
             resolution = federation::discover_server(origin_server, *discovery_network, discovery_timeout);
         }
         if (!resolution.discovery_allowed)
@@ -768,7 +783,10 @@ namespace
         out_req.total_timeout_seconds = 120U;
         out_req.max_response_body_bytes = static_cast<std::size_t>(max_bytes);
 
-        auto const out_result = outbound_client->perform(out_req);
+        auto const out_result = [&]() {
+            auto const unlocked = NetworkIoUnlock{};
+            return outbound_client->perform(out_req);
+        }();
         if (!out_result.ok || out_result.response.status < 200U || out_result.response.status >= 300U)
         {
             auto const reason = out_result.error_detail.empty()

@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.11.12
+Version:        0.11.13
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -97,6 +97,10 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Fri Aug 28 2026 James Chapman <claude@ping.me.uk> - 0.11.13-1
+- Release runtime.mutex across blocking outbound federation calls
+- Report each user at most once in sync device_lists
+
 * Mon Aug 24 2026 James Chapman <claude@ping.me.uk> - 0.11.12-1
 - Fix: the server signing key is no longer silently replaced when its published valid_until_ts window lapses, which left the runtime signing provider unable to sign any locally composed event (403 on every room send) and peers rejecting the unpublished key.
 * Mon Aug 10 2026 James Chapman <claude@ping.me.uk> - 0.11.11-1

@@ -104,7 +104,9 @@ production-gated.
   policy helper.
 - Device-list stream tokens and cross-device key update semantics: `build_device_list_arrays()`
   populates `/sync`'s `device_lists.changed`/`left` from `store.device_list_changes` filtered
-  by `since_sync_stream_id`, and `broadcast_device_list_updates()` emits `m.device_list_update`
+  by `since_sync_stream_id` — through `sync::collect_device_list_delta()`, which reports each
+  subject user once however many change rows the range covers, since both fields name users
+  rather than change events — and `broadcast_device_list_updates()` emits `m.device_list_update`
   EDUs on cross-signing/key changes. Per-algorithm `device_one_time_keys_count` is wired into
   `/sync` as well. A `device_lists.changed` self-notification is recorded at two trigger points
   so a user's own devices discover each other without relying on room co-membership: on

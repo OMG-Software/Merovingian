@@ -8,6 +8,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -427,6 +428,61 @@ SCENARIO("Sliding sync extensions build scoped to-device e2ee account-data recei
                 auto const* typing_user = std::get_if<std::string>(&(*user_ids)[0].storage());
                 REQUIRE(typing_user != nullptr);
                 REQUIRE(*typing_user == "@bob:example.org");
+            }
+        }
+    }
+}
+
+SCENARIO("Sliding sync collapses a repeated device-list subject to a single entry",
+         "[sync][sliding-sync][extensions][device-lists]")
+{
+    GIVEN("a long-lived change log holding many rows for the same subject user")
+    {
+        auto runtime = merovingian::homeserver::HomeserverRuntime{};
+        auto store = merovingian::database::PersistentStore{};
+        for (auto stream_id = std::uint64_t{1U}; stream_id <= 50U; ++stream_id)
+        {
+            store.device_list_changes.push_back({stream_id, "@alice:example.org", "@bob:example.org", "changed"});
+        }
+        store.one_time_keys = {
+            {"@alice:example.org", "ALICE", "signed_curve25519:AAAA", "{}"},
+        };
+
+        auto requests = merovingian::sync::SlidingSyncExtensionRequests{};
+        requests.e2ee = merovingian::sync::ExtE2eeRequest{true};
+
+        WHEN("the e2ee extension is built for an initial request")
+        {
+            auto const responses = merovingian::sync::build_extensions(runtime, "@alice:example.org", "ALICE", requests,
+                                                                       0U, 50U, store, {});
+
+            THEN("the subject is reported once rather than once per change row")
+            {
+                // The initial response still reports the change — a freshly
+                // logged-in device must know to /keys/query — but repeating the
+                // same user ID for every row is what made these responses grow
+                // into hundreds of kilobytes.
+                REQUIRE(responses.e2ee.has_value());
+                REQUIRE(responses.e2ee->changed == std::vector<std::string>{"@bob:example.org"});
+                REQUIRE(responses.e2ee->left.empty());
+            }
+
+            THEN("one-time key counts are still reported alongside it")
+            {
+                REQUIRE(responses.e2ee.has_value());
+                REQUIRE(responses.e2ee->device_one_time_keys_count.at("signed_curve25519") == 1U);
+            }
+        }
+
+        WHEN("the e2ee extension is built for an incremental request")
+        {
+            auto const responses = merovingian::sync::build_extensions(runtime, "@alice:example.org", "ALICE", requests,
+                                                                       10U, 50U, store, {});
+
+            THEN("the subject is still collapsed to a single entry")
+            {
+                REQUIRE(responses.e2ee.has_value());
+                REQUIRE(responses.e2ee->changed == std::vector<std::string>{"@bob:example.org"});
             }
         }
     }

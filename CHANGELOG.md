@@ -1,3 +1,38 @@
+## 0.11.13
+
+Fixes a production stall where one slow federation peer froze the whole
+server, and a sync response that grew without bound.
+
+- **`runtime.mutex` is no longer held across blocking outbound federation
+  calls.** Every client-server request and every inbound federation transaction
+  contends on that single mutex, and two request paths were making synchronous
+  network calls while holding it: `POST /_matrix/client/v3/keys/query` (one
+  federation `/user/keys/query` per remote server, each budgeted
+  `remote_timeout_seconds`, default 60) and remote media download/thumbnail
+  fetches. A peer that accepted the connection and then went quiet therefore
+  froze the entire process for the duration of the timeout — local reads such as
+  `GET /profile` and `GET /media/config` took 20 seconds, and inbound `/send`
+  transactions from unrelated servers queued for 44 seconds behind a single
+  thumbnail fetch. Server discovery, the outbound perform, and the media
+  redirect resolution now release the mutex for the network round trip and
+  re-acquire it before touching runtime state again. Signing still happens under
+  the lock, so the Ed25519 secret span is never read unsynchronised. Added
+  `RequestLockScope` / `NetworkIoUnlock` (`homeserver/request_lock.hpp`) to make
+  the release RAII rather than hand-written `unlock()`/`lock()` pairs.
+- **A user is reported at most once in `device_lists`.** `changed` and `left`
+  were appended to once per change row, so a subject with N recorded changes
+  appeared N times — and because an initial sync reports every change from
+  stream position zero, that set grew for the lifetime of the account. One
+  observed sliding sync response was 769 KB of repeated user IDs while carrying
+  zero rooms and zero to-device messages. A new shared collector
+  (`sync/device_list_delta.hpp`) collapses the change log to one entry per
+  subject, resolves a subject that both changed and left to its most recent
+  change type, and sorts the result so identical store state always produces
+  identical response bytes. Applied to `/sync`, the MSC4186 e2ee extension, and
+  `GET /_matrix/client/v3/keys/changes`. Initial syncs still report the full
+  deduplicated set, which is what prompts a freshly logged-in device to
+  `/keys/query` its own user's devices.
+
 ## 0.11.12
 
 Fixes a class of bug where the server's Ed25519 signing key and the thing that
