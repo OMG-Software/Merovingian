@@ -4,19 +4,26 @@
 
 Merovingian uses **`0.MINOR.PATCH`** before `1.0`.
 
-The `MINOR` digit is a **phase marker**, not a per-change counter:
+`PATCH` is the working counter: **every** branch — feature, fix, packaging, or
+documentation-only — increments it by one.
 
-- `0.8.PATCH` — current pre-beta phase. **All** changes (features, fixes,
-  packaging) bump only `PATCH` while in this phase.
-- `0.9.0` — cut when the project reaches **beta**.
-- `1.0.0` — cut when the project reaches **production**.
+`MINOR` is a **series marker, not a milestone.** It rolls over when a `PATCH`
+series has grown long enough to be unwieldy, or at a natural grouping of work.
+A new series does **not** restart at `.0`; it continues from wherever the
+rollover happened. Both rollovers to date worked that way — `0.9.25` → `0.10.1`
+and `0.10.63` → `0.11.4` — and no `0.10.0` or `0.11.0` was ever cut.
 
-So within the 0.8 phase a branch increments `PATCH` (e.g. `0.8.9` → `0.8.10`)
-regardless of whether it adds behaviour; do not advance `MINOR` for a feature.
-`MINOR` only moves at the beta and production milestones.
+`1.0.0` is the one version number that carries a meaning: it is cut when the
+project reaches **production**, as defined by
+[`todos/production-milestone.md`](todos/production-milestone.md).
+
+**Project phase is declared in `README.md` and `CHANGELOG.md`, never encoded in
+the version number.** Beta was declared at `v0.10.59` — mid-series, which is
+what the rules above imply. Do not read a phase transition into a `MINOR`
+rollover, and do not hold a rollover back waiting for one.
 
 The version is a plain string — there is no pre-release suffix, build metadata,
-or epoch. All three numbers are always present (e.g. `0.2.6`, never `0.2`).
+or epoch. All three numbers are always present (e.g. `0.11.4`, never `0.11`).
 
 ## Bump policy
 
@@ -81,5 +88,5 @@ than the others.
 5. Raise a PR. CI builds all three packages and runs the test suite.
 6. Merge to `main`. The `publish-latest` CI job replaces the rolling GitHub
    `latest` pre-release with the new artifacts automatically.
-7. For tagged alpha releases, push a `vX.Y.Z` tag — a separate CI workflow
-   creates the versioned GitHub release.
+7. For a tagged release, push a `vX.Y.Z` tag — a separate CI workflow creates
+   the versioned GitHub release.

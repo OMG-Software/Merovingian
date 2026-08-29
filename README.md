@@ -46,7 +46,7 @@ That combination — a narrow, memory-safe-by-construction attack surface, proce
 
 Merovingian has reached **beta** (v0.10.59). Federation, persistence, packaging, and runtime security controls are implemented and covered by CI. The project is suitable for evaluation and testing; it should not be treated as production-ready until the blocking items in [docs/todos/production-milestone.md](docs/todos/production-milestone.md) are closed.
 
-Open work items, capability gaps, and milestone blockers live in [docs/todos/](docs/todos/). See `priorities.md` for the ordered short list, `capability-gaps.md` for per-area gaps, and `beta-milestone.md` / `production-milestone.md` for milestone gates.
+Open work items, capability gaps, and milestone blockers live in [docs/todos/](docs/todos/): [capability-gaps.md](docs/todos/capability-gaps.md) for per-area gaps and their status on the `not-started → … → production-gated` ladder, and [production-milestone.md](docs/todos/production-milestone.md) for the gates that must close before a `1.0.0` production release.
 
 ## Why C++ and not Rust?
 
