@@ -474,6 +474,47 @@ for the regression coverage (registration, room creation, and media
 download, each gated on a blocking policy-server hook while an unrelated
 request is asserted to complete promptly).
 
+### `NetworkIoUnlock` was incomplete for recursive acquisitions (0.12.1)
+
+`HomeserverRuntime::mutex` is a `std::recursive_mutex` specifically so that a
+service function such as `create_room` can take its own lock and remain
+independently callable outside a request handler (`local_smoke_flow.cpp` does
+exactly this). But `create_room` is *also* called directly from
+`client_server.cpp`, which already holds its own outer guard for the whole
+request. `std::recursive_mutex` permits that nested acquisition silently — the
+same thread simply increments a recursion count — so nothing failed loudly.
+
+The problem: `NetworkIoUnlock` releases exactly one `std::unique_lock`, the
+one published via `RequestLockScope`. When the room-creation regression test
+above gated `create_room`'s call into `resolve_policy_server_hook`, the
+outer guard (published) got released, but `create_room`'s own inner guard —
+the second, nested acquisition, and the one actually in lexical scope at the
+point of the network call — was never touched. The mutex stayed held by that
+thread for the full duration of the (attempted) unlock, and a concurrent
+request on another thread blocked forever waiting for the same
+`recursive_mutex`. **This means the `NetworkIoUnlock` mechanism, as shipped
+in 0.11.13, was correct only for call chains with exactly one lock
+acquisition on the stack; it silently did nothing for any chain that passed
+through a second, self-locking function.** The room-creation regression test
+caught this by deadlocking rather than by a failed assertion — the strongest
+possible signal that a lock invariant, not just a status code, was wrong.
+
+Fixed by publishing `RequestLockScope` around `create_room`'s own guard
+(`room_service.cpp`) and releasing the caller's outer guard with
+`guard.unlock()` before delegating to `create_room` — `guard.lock()`
+afterward, when later code still needs the lock — at all three call sites
+(`client_server.cpp` ×2: create and room-upgrade; `local_http_router.cpp` ×1).
+This is the same unlock/call/relock idiom `local_http_router.cpp` already
+used for `join_room`, so `create_room`'s own guard becomes the *only* lock in
+scope and the one `NetworkIoUnlock` actually finds and releases.
+
+**`join_room` and `leave_room` have the identical self-locking shape** and
+very likely the same latent gap for their own outbound federation calls
+(`perform_sync_outbound_call`'s `NetworkIoUnlock` sites). Fixing them needs
+its own regression coverage per function and was deliberately left as
+follow-up work rather than folded into this change — see the task tracker
+entry created alongside this fix.
+
 ## Load/soak evidence
 
 `tests/integration/test_runtime_lock_soak_flow.cpp` (gated behind the

@@ -55,6 +55,37 @@ production gates. This section is updated as each closure lands.
   `tests/integration/test_request_lock_contention_flow.cpp` (registration,
   room creation, media download, each gated on a blocking policy-server hook
   while an unrelated request is asserted to complete promptly).
+- **`create_room` was silently double-locking `HomeserverRuntime::mutex`,
+  which made `NetworkIoUnlock` a no-op for anything blocking inside it —
+  found by the new regression coverage above, not by inspection.**
+  `HomeserverRuntime::mutex` is a `std::recursive_mutex`, and `create_room`
+  takes its own lock on it (it must stay independently callable outside a
+  request handler — see `local_smoke_flow.cpp`). Called from
+  `client_server.cpp`, which already held its own outer guard for the whole
+  request, this recursively re-locked the *same* mutex a second time — legal
+  for a `recursive_mutex`, and therefore silent. `NetworkIoUnlock`'s single
+  `unlock()` call only undoes one level of that recursion: it released the
+  outer guard (the one `RequestLockScope` had published) while `create_room`'s
+  own, inner guard — the one actually in scope at the point of the network
+  call — stayed locked. The mutex was therefore never really available to
+  another thread during the (now-unlocked-in-theory) policy-server round
+  trip. This means **the `NetworkIoUnlock` mechanism introduced in 0.11.13
+  was incomplete for any call chain that passed through a self-locking
+  function**: it correctly modelled "the caller holds one lock, release it,"
+  but not "the caller holds one lock, a callee recursively takes a second
+  one, release the one actually in scope." The room-creation regression test
+  added alongside the `resolve_policy_server_hook` fix above caught this
+  immediately — it deadlocked rather than passing, exactly as a lock bug
+  should. Fixed by publishing `RequestLockScope` around `create_room`'s own
+  guard (`room_service.cpp`) and releasing the caller's outer guard before
+  delegating to it at all three call sites (`client_server.cpp` ×2,
+  `local_http_router.cpp` ×1) — the unlock/call/relock idiom already used for
+  `join_room` — so `create_room`'s own guard becomes the only lock in scope
+  and is the one `NetworkIoUnlock` actually finds and releases.
+  `join_room`/`leave_room` share the identical self-locking shape and very
+  likely have the same latent gap for their own outbound federation calls;
+  fixing them is tracked as separate follow-up work, deliberately out of
+  scope here to avoid last-minute scope creep on a lock-correctness change.
 - **New load/soak evidence harness for the global runtime lock**
   (`tests/integration/test_runtime_lock_soak_flow.cpp`, opt-in behind the
   `build_load_tests` Meson option). Drives concurrent `/sync` long-polls,

@@ -188,6 +188,17 @@ because the outbound call borrows a span into the runtime's `SecretBuffer`. See
 [`http-transport.md`](http-transport.md) "Request lock and blocking network
 calls".
 
+**`NetworkIoUnlock` only releases one lock level.** `HomeserverRuntime::mutex`
+is a `std::recursive_mutex` so that self-locking service functions (`create_room`,
+`join_room`, `leave_room`) stay independently callable, but when such a
+function is called from a request handler that already holds its own guard,
+the recursive acquisition is silent — and `NetworkIoUnlock` releases only the
+*published* (outer) guard, leaving the callee's own (inner, actually-in-scope)
+guard held. 0.12.1 found and fixed this for `create_room` (see
+[`http-transport.md`](http-transport.md) "`NetworkIoUnlock` was incomplete for
+recursive acquisitions"); `join_room`/`leave_room` share the same shape and are
+tracked as follow-up.
+
 **Load/soak evidence for the remaining critical section.**
 `tests/integration/test_runtime_lock_soak_flow.cpp` (opt-in, `build_load_tests`)
 drives concurrent `/sync` long-polls, ordinary reads, message sends, and
