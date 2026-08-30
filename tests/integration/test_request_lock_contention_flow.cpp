@@ -272,15 +272,21 @@ SCENARIO("A stalled trust-safety policy-server hook during registration leaves t
 
             THEN("an unrelated client request still completes promptly")
             {
+                // No user is registered yet at this point (registration is
+                // the very thing blocked in flight), so the concurrent probe
+                // must be an endpoint that does not require an access token.
+                // GET /_matrix/client/versions is the unauthenticated
+                // discovery endpoint (client_server.cpp answers it before
+                // any auth check).
                 auto const start = std::chrono::steady_clock::now();
-                auto const capabilities = merovingian::homeserver::handle_client_server_request(
-                    runtime, {"GET", "/_matrix/client/v3/capabilities", {}, {}});
+                auto const versions = merovingian::homeserver::handle_client_server_request(
+                    runtime, {"GET", "/_matrix/client/versions", {}, {}});
                 auto const elapsed = std::chrono::steady_clock::now() - start;
 
                 release_gate(gate);
                 registration_thread.join();
 
-                REQUIRE(capabilities.response.status == 200U);
+                REQUIRE(versions.response.status == 200U);
                 REQUIRE(elapsed < responsive_budget);
                 // The stalled registration still succeeds once the policy
                 // server answers — releasing the lock must not have broken
