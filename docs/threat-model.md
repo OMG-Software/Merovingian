@@ -891,6 +891,35 @@ threat it closes; the controls above are the standing defences these reinforce.
   entirely outside `federation::handle_inbound_federation_request`, in the
   same homeserver-router bypass used for `GET /_matrix/key/v2/server`.
 
+- **Open redirect and login-token exfiltration via SSO `redirectUrl`
+  (identified and mitigated during implementation, v0.12.1):** `GET
+  /_matrix/client/v3/login/sso/redirect[/{idpId}]` (Matrix v1.19 CS API
+  §"Client login via SSO") takes an attacker-controlled `redirectUrl` query
+  parameter directly from an unauthenticated request and, after a
+  successful SSO round trip, sends the user's browser there carrying a
+  freshly minted `loginToken` — a credential a client can redeem for a full
+  access token. The spec's own security-considerations section documents
+  the exact attack: a link like
+  `.../login/sso/redirect?redirectUrl=https://evil.example.com` tricks a
+  victim into having their login token delivered to an attacker-controlled
+  site. Mitigated by validating `redirectUrl` against an
+  operator-configured HTTPS prefix allowlist
+  (`server.sso.redirect_url_allowlist`, `config::SsoConfig`) before ever
+  building a redirect — both at the initial `/login/sso/redirect` request
+  (`homeserver::sso_redirect_target`) and again at
+  `homeserver::complete_sso_login`, since the latter is called from a
+  separate integration boundary (the operator's external SSO adapter) and
+  must not trust a redirect target handed to it a second time without
+  re-checking. An empty or non-matching `redirectUrl` is rejected with `400
+  M_INVALID_PARAM` rather than falling back to any default destination.
+  Config-parse validation additionally fails closed: `server.sso.enabled =
+  true` with an empty allowlist (or missing `authorization_url`) is
+  rejected outright at startup rather than shipping a half-configured SSO
+  flow that advertises `m.login.sso` while every redirect 400s. See
+  `docs/auth-identity.md` ("SSO login") for the full design and the
+  dedicated `[security]`-tagged test that proves an off-allowlist
+  `redirectUrl` is rejected.
+
 - **Self-inflicted denial of service through the global runtime lock.**
   `HomeserverRuntime::mutex` serialises every client-server request and every
   inbound federation transaction. Any blocking outbound call made while holding

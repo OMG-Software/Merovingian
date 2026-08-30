@@ -258,6 +258,83 @@ so it has its own, deliberately separate, lifecycle:
 See `docs/threat-model.md` ("OpenID token confusion") for the
 privilege-escalation risk this separation exists to prevent.
 
+## SSO login
+
+Matrix v1.19 CS API §"Client login via SSO" describes a six-step flow: a
+client discovers `m.login.sso` via `GET /login`, sends the user's browser to
+`GET /login/sso/redirect[/{idpId}]`, the homeserver redirects to an external
+SSO system, that system authenticates the user and hands control back to the
+homeserver, the homeserver mints a short-lived login token and redirects the
+browser to the client's `redirectUrl` with `?loginToken=...`, and finally the
+client exchanges that token for an access token via `POST /login` with
+`type: m.login.token`.
+
+Merovingian implements every homeserver-side piece of that flow **except**
+the external SSO protocol itself (CAS/SAML/OIDC) — integrating a specific
+external protocol is left to the operator's own SSO gateway, configured via
+`server.sso.authorization_url`. What is implemented and enforced:
+
+- **Config surface** (`config::SsoConfig`, `server.sso.*`): `enabled`
+  (default `false`), `authorization_url` (the external SSO system's HTTPS
+  entry point), `identity_providers` (a list of `{id, name, icon?, brand?}`
+  — the spec's `IdP` shape, parsed from `server.sso.identity_providers.
+  <idpId>.<name|icon|brand>` keys, `<idpId>` itself carrying the id), and
+  `redirect_url_allowlist` (HTTPS URL prefixes a client's `redirectUrl` is
+  validated against). Parse-time validation (`config::validate_config`)
+  fails closed: `enabled = true` with an empty `authorization_url` or an
+  empty `redirect_url_allowlist` is rejected outright, as is a duplicate or
+  empty identity-provider `id`, an empty `name`, or a non-`mxc://` `icon`.
+- **`GET /login` flow advertisement**: `m.login.sso` (with an
+  `identity_providers` array when any are configured) is advertised only
+  when `homeserver::sso_is_configured` holds — the same fail-closed
+  condition the redirect endpoints check, shared through one function so
+  the two paths cannot drift apart into "advertised but half-served" or
+  vice versa.
+- **`GET /login/sso/redirect[/{idpId}]`** (`homeserver::sso_redirect_target`):
+  validates `redirectUrl` against `redirect_url_allowlist` (see
+  `docs/threat-model.md`, "Open redirect and login-token exfiltration via
+  SSO redirectUrl" — this is the control that keeps the endpoint from being
+  an open redirect), validates `idpId` against the configured
+  `identity_providers` when present (`404 M_NOT_FOUND` for an unrecognised
+  IdP, per spec), and on success responds `302` with `Location` set to
+  `authorization_url` carrying `idp`/`action`/`redirectUrl` query
+  parameters through to the operator's external SSO system.
+- **Completing the round trip** (`homeserver::complete_sso_login`): the
+  integration point an operator's external SSO adapter calls once it has
+  authenticated the user and mapped them to a local Matrix user id (spec
+  steps 1-2 of "Handling the callback from the Authentication server" —
+  identity mapping and, where applicable, JIT registration — are the
+  adapter's responsibility, not Merovingian's, since they are inherently
+  specific to the external protocol in use). It re-validates `redirectUrl`
+  against the allowlist (never trust a value handed across an integration
+  boundary a second time without re-checking it), mints a login token via
+  the same `issue_token_hash` machinery access tokens use, persists it to
+  the dedicated `login_tokens` table (never `access_tokens` — see
+  "OpenID tokens" above for why that separation matters, and
+  `docs/database-persistence.md` for the schema) with a fixed ~30-second
+  expiry (spec: "SHOULD be limited to around five seconds" — Merovingian
+  uses a slightly larger fixed window to tolerate real-world redirect
+  latency without weakening the single-use guarantee that actually bounds
+  the exposure), and returns `redirectUrl` with any pre-existing
+  `loginToken` query parameters stripped (per spec step 4) and the new one
+  appended.
+- **`POST /login` with `type: m.login.token`**
+  (`homeserver::redeem_login_token`): consults only the `login_tokens`
+  table — deliberately independent of `authenticated_user`/`find_session`,
+  mirroring `federation_openid_userinfo`'s structural separation from the
+  access-token store — and consumes the token atomically
+  (`database::consume_login_token`) so it cannot be redeemed twice. On
+  success, session issuance (device-id validation, the account
+  lock/suspend gate, access-token minting and persistence) is shared with
+  password login via `homeserver::login_local_user_by_id`, the second half
+  of `login_local_user` factored out so both callers get the exact same
+  account-state enforcement — SSO login cannot bypass a locked or
+  suspended account's gate just because it skipped the password check.
+  Unknown, expired, and already-used tokens are indistinguishable to the
+  caller (`403 M_FORBIDDEN`), matching how password login already
+  collapses "unknown user" and "bad password" into the same external
+  result.
+
 ## Security posture
 
 The core auth policy module deliberately stays free of cryptographic password

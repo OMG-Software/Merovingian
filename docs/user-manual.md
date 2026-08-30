@@ -459,6 +459,43 @@ client-supplied gateway URLs on upgrade.
 | `server.push.connect_timeout_seconds` | `10` | Outbound connect timeout when contacting a pusher's gateway URL (client-supplied, untrusted). |
 | `server.push.total_timeout_seconds` | `30` | Outbound total timeout for a gateway push request. Must be `>=` `connect_timeout_seconds`. |
 
+#### SSO login — `server.sso.*`
+
+`m.login.sso` is **disabled by default**; `GET /login` does not advertise it
+and `GET /login/sso/redirect[/{idpId}]` returns 404 until `server.sso.
+enabled=true` *and* both `authorization_url` and `redirect_url_allowlist`
+are populated — a half-configured setup (e.g. `enabled=true` with an empty
+allowlist) is rejected at config-parse time rather than shipping a flow
+that advertises itself but then 400s every redirect. Merovingian does not
+itself implement an external SSO protocol (CAS/SAML/OIDC) —
+`authorization_url` points at that external system, and completing the
+round trip into a usable login token is the job of the operator's own
+external-IdP adapter calling `homeserver::complete_sso_login`; see
+`docs/auth-identity.md` ("SSO login").
+
+`redirect_url_allowlist` is a **security-critical** setting: a client's
+`redirectUrl` query parameter on `/login/sso/redirect` is attacker
+-controlled input, and every entry not covered by this allowlist is
+rejected before any redirect (or later, a login token) is ever sent there —
+see `docs/threat-model.md` ("Open redirect and login-token exfiltration via
+SSO redirectUrl"). List HTTPS URL prefixes, not bare domains — an entry
+matches any `redirectUrl` that starts with it.
+
+`identity_providers` entries are configured with dotted keys of the form
+`server.sso.identity_providers.<idpId>.<field>`, where `<idpId>` is the
+opaque provider id (may itself contain dots, e.g.
+`com.example.idp.github`) and `<field>` is one of `name` (required),
+`icon` (optional `mxc://` URI), or `brand` (optional).
+
+| Key | Default | When to change |
+|---|---|---|
+| `server.sso.enabled` | `false` | Set `true` once `authorization_url` and `redirect_url_allowlist` are configured. |
+| `server.sso.authorization_url` | (empty) | **Required when enabled.** HTTPS entry point of the external SSO system `/login/sso/redirect[/{idpId}]` redirects the browser to. |
+| `server.sso.redirect_url_allowlist` | (empty) | **Required when enabled.** Comma-separated HTTPS URL prefixes a client's `redirectUrl` must start with to be accepted. |
+| `server.sso.identity_providers.<idpId>.name` | (empty) | **Required per IdP.** Human-readable name shown to the user. |
+| `server.sso.identity_providers.<idpId>.icon` | (empty) | Optional `mxc://` URI for the IdP's icon. |
+| `server.sso.identity_providers.<idpId>.brand` | (empty) | Optional UI brand hint (see the spec's IdP brand registry). |
+
 #### Listeners — `listeners.client.*` and `listeners.federation.*`
 
 | Key | Default | When to change |
@@ -870,6 +907,7 @@ only reports what *would* happen.
 | `security.media.*` | Reloadable |
 | `security.logging.*` | Reloadable |
 | `server.oidc.*` | Reloadable |
+| `server.sso.*` | Reloadable |
 
 `--plan-config-reload <current> <next>` compares two validated configs and
 reports the reload action:

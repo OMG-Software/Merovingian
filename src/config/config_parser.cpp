@@ -6,6 +6,7 @@
 #include "merovingian/http/rate_limit.hpp"
 #include "merovingian/observability/logger.hpp"
 
+#include <algorithm>
 #include <limits>
 #include <optional>
 #include <string>
@@ -321,6 +322,64 @@ namespace
             catch (...)
             {
                 add_parse_finding(findings, std::string{key}, "expected positive integer");
+            }
+        }
+        else if (key == "server.sso.enabled")
+        {
+            if (!parse_bool_value(value, server.sso.enabled))
+            {
+                add_parse_finding(findings, std::string{key}, "expected boolean value");
+            }
+        }
+        else if (key == "server.sso.authorization_url")
+        {
+            server.sso.authorization_url = std::string{value};
+        }
+        else if (key == "server.sso.redirect_url_allowlist")
+        {
+            server.sso.redirect_url_allowlist = parse_string_list(value);
+        }
+        else if (starts_with(key, "server.sso.identity_providers."))
+        {
+            // Keyed as server.sso.identity_providers.<idpId>.<field>. idpId
+            // is an opaque identifier (spec: Opaque identifier Grammar) that
+            // may itself contain dots (reverse-DNS-style, e.g.
+            // "com.example.idp.github"), so the *last* dot-delimited segment
+            // is always the field name and everything before it is the id.
+            auto const rest = key.substr(std::string_view{"server.sso.identity_providers."}.size());
+            auto const last_dot = rest.rfind('.');
+            if (last_dot == std::string_view::npos || last_dot == 0U || last_dot + 1U >= rest.size())
+            {
+                add_parse_finding(findings, std::string{key},
+                                  "expected server.sso.identity_providers.<idpId>.<name|icon|brand>");
+                return;
+            }
+            auto const idp_id = std::string{rest.substr(0U, last_dot)};
+            auto const field = rest.substr(last_dot + 1U);
+            auto existing =
+                std::ranges::find_if(server.sso.identity_providers, [&idp_id](SsoIdentityProvider const& idp) {
+                    return idp.id == idp_id;
+                });
+            if (existing == server.sso.identity_providers.end())
+            {
+                server.sso.identity_providers.push_back(SsoIdentityProvider{idp_id, {}, {}, {}});
+                existing = std::prev(server.sso.identity_providers.end());
+            }
+            if (field == "name")
+            {
+                existing->name = std::string{value};
+            }
+            else if (field == "icon")
+            {
+                existing->icon = std::string{value};
+            }
+            else if (field == "brand")
+            {
+                existing->brand = std::string{value};
+            }
+            else
+            {
+                add_parse_finding(findings, std::string{key}, "expected field name|icon|brand");
             }
         }
         else if (key == "listeners.client.bind")

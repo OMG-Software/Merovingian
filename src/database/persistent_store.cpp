@@ -2948,6 +2948,88 @@ auto restore_sync_stream_id(PersistentStore& store) -> void
     return true;
 }
 
+[[nodiscard]] auto store_login_token(PersistentStore& store, PersistentLoginToken token) -> bool
+{
+    if (token.user_id.empty() || !token_is_hash(token.token_hash))
+    {
+        return false;
+    }
+    auto const expires_at_ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(token.expires_at.time_since_epoch()).count();
+    if (!record_and_persist(
+            store, record_statement("insert_login_token",
+                                    "INSERT INTO login_tokens (user_id, token_hash, expires_at, used) VALUES ($1, "
+                                    "$2, $3, $4)",
+                                    {public_value(token.user_id), sensitive_value(token.token_hash),
+                                     public_value(std::to_string(expires_at_ms)),
+                                     public_value(token.used ? "true" : "false")})))
+    {
+        return false;
+    }
+    store.login_tokens.push_back(token);
+
+    // Retention: mirrors store_openid_token -- every insert sweeps every
+    // already-expired-or-used row (not just this user's), since a login
+    // token's natural retention bound is its own ~seconds-long expiry (or
+    // single use) rather than a row count.
+    auto const now = std::chrono::system_clock::now();
+    auto stale_hashes = std::vector<std::string>{};
+    for (auto const& row : store.login_tokens)
+    {
+        if (row.expires_at <= now || row.used)
+        {
+            stale_hashes.push_back(row.token_hash);
+        }
+    }
+    for (auto const& stale_hash : stale_hashes)
+    {
+        std::ignore = record_and_persist(store, record_statement("prune_login_token",
+                                                                 "DELETE FROM login_tokens WHERE token_hash = $1",
+                                                                 {sensitive_value(stale_hash)}));
+        auto const stale = std::ranges::find_if(store.login_tokens, [&](PersistentLoginToken const& current) {
+            return current.token_hash == stale_hash;
+        });
+        if (stale != store.login_tokens.end())
+        {
+            store.login_tokens.erase(stale);
+        }
+    }
+    return true;
+}
+
+[[nodiscard]] auto consume_login_token(PersistentStore& store, std::vector<std::string> const& candidate_hashes)
+    -> std::optional<std::string>
+{
+    auto const now = std::chrono::system_clock::now();
+    auto const matched = std::ranges::find_if(store.login_tokens, [&](PersistentLoginToken const& row) {
+        if (row.used || row.expires_at <= now)
+        {
+            return false;
+        }
+        return std::ranges::any_of(candidate_hashes, [&](std::string const& candidate) {
+            return crypto::constant_time_equal(row.token_hash, candidate);
+        });
+    });
+    if (matched == store.login_tokens.end())
+    {
+        return std::nullopt;
+    }
+    // Mark used in the backend first; only flip the in-memory row (and hand
+    // back the user_id) if that succeeds, so a persistence failure can never
+    // leave the token silently redeemable a second time from memory alone.
+    if (!record_and_persist(store, record_statement("consume_login_token",
+                                                    "UPDATE login_tokens SET used = $1 WHERE token_hash = $2",
+                                                    {
+                                                        public_value("true"),
+                                                        sensitive_value(matched->token_hash),
+                                                    })))
+    {
+        return std::nullopt;
+    }
+    matched->used = true;
+    return matched->user_id;
+}
+
 [[nodiscard]] auto update_profile_displayname(PersistentStore& store, std::string_view user_id,
                                               std::string_view displayname) -> bool
 {

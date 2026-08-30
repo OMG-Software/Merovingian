@@ -403,6 +403,22 @@ auto downgrade_initial_schema_migration() -> MigrationStep
     return {11U, "pushers_data_extra", std::move(statements), MigrationDirection::upgrade};
 }
 
+// v12: durable single-use SSO login token store for the `m.login.token`
+// exchange (Matrix v1.19 CS API §"Client login via SSO"). Deliberately a
+// table of its own, never `access_tokens`: a login token is a narrow,
+// short-lived credential whose only valid use is a single `POST /login`
+// exchange for an access token, so it must never itself authenticate a
+// client-server request (see docs/threat-model.md). Every row has a finite
+// `expires_at` (spec recommends ~5s lifetime) and a `used` flag enforcing
+// single use; consumed/expired rows are pruned at write time (see
+// database::store_login_token), so the table cannot grow without bound.
+[[nodiscard]] auto upgrade_login_tokens_migration() -> MigrationStep
+{
+    auto statements = std::vector<PreparedStatement>{};
+    statements.push_back(make_create_table_statement(schema_table_definition("login_tokens").value()).value());
+    return {12U, "login_tokens", std::move(statements), MigrationDirection::upgrade};
+}
+
 auto upgrade_migration_catalog() -> std::vector<MigrationStep>
 {
     return {initial_schema_migration(),
@@ -415,7 +431,8 @@ auto upgrade_migration_catalog() -> std::vector<MigrationStep>
             upgrade_pushers_migration(),
             upgrade_notifications_migration(),
             upgrade_openid_tokens_migration(),
-            upgrade_pushers_data_extra_migration()};
+            upgrade_pushers_data_extra_migration(),
+            upgrade_login_tokens_migration()};
 }
 
 [[nodiscard]] auto downgrade_backfill_state_transitions_migration() -> MigrationStep
@@ -486,6 +503,14 @@ auto upgrade_migration_catalog() -> std::vector<MigrationStep>
     return {1U, "drop_sync_stream_watermark", std::move(statements), MigrationDirection::downgrade};
 }
 
+// v12 -> v11: drop the login_tokens table.
+[[nodiscard]] auto downgrade_login_tokens_migration() -> MigrationStep
+{
+    auto statements = std::vector<PreparedStatement>{};
+    statements.push_back(make_drop_table_statement("login_tokens").value());
+    return {11U, "drop_login_tokens", std::move(statements), MigrationDirection::downgrade};
+}
+
 [[nodiscard]] auto downgrade_event_stream_watermark_migration() -> MigrationStep
 {
     auto statements = std::vector<PreparedStatement>{};
@@ -502,7 +527,8 @@ auto upgrade_migration_catalog() -> std::vector<MigrationStep>
 
 auto downgrade_migration_catalog() -> std::vector<MigrationStep>
 {
-    return {downgrade_pushers_data_extra_migration(),
+    return {downgrade_login_tokens_migration(),
+            downgrade_pushers_data_extra_migration(),
             downgrade_openid_tokens_migration(),
             downgrade_notifications_migration(),
             downgrade_pushers_migration(),

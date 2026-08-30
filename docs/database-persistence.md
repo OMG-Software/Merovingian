@@ -54,7 +54,11 @@ remaining work before PostgreSQL-backed production operation.
   new table) so custom members of a pusher's registration-time `data`
   dictionary — beyond the `url`/`format` keys already stored as dedicated
   columns — survive restarts and can be forwarded to the Push Gateway (see
-  "Pushers" below).
+  "Pushers" below), and schema version `12` adds the `login_tokens` table
+  via `migrations/012_login_tokens.sql` so short-lived, single-use SSO login
+  tokens minted by `homeserver::complete_sso_login` survive restarts and can
+  be redeemed exactly once by `POST /_matrix/client/v3/login` with `type:
+  m.login.token` (see "SSO login tokens" below).
   After the project reaches production-ready `v1.0.0`, every schema change
   must add a forward migration and keep deployed databases compatible.
 - SQLite RAII wrappers around database connections and prepared statements.
@@ -292,6 +296,36 @@ remaining work before PostgreSQL-backed production operation.
   token's natural bound is its own short expiry (one hour; see
   `docs/auth-identity.md`) rather than a per-user row count, unlike
   `notifications`' count-based cap above.
+- `login_tokens` table (schema version `12`, migration
+  `migrations/012_login_tokens.sql`) stores the short-lived, single-use
+  tokens minted by `homeserver::complete_sso_login` when an SSO
+  authentication completes (Matrix v1.19 CS API §"Client login via SSO")
+  and redeemed exactly once by `POST /_matrix/client/v3/login` with `type:
+  m.login.token` (`homeserver::redeem_login_token`). Columns are `user_id`,
+  `token_hash` (primary key), `expires_at` (epoch milliseconds, same
+  encoding as `openid_tokens.expires_at`), and `used` (`TEXT NOT NULL
+  DEFAULT 'false'`, following the `revoked`-column boolean-as-text
+  convention `access_tokens`/`refresh_tokens` already use). The runtime
+  migration path uses the compiled catalog in `src/database/migration.cpp`
+  (upgrade step version `12` "login_tokens"; downgrade step version `11`
+  "drop_login_tokens"); `schema::current_schema_version()` returns `12U`.
+  This is a **separate table from `access_tokens`**, for the same
+  token-confusion reason `openid_tokens` is — see `docs/auth-identity.md`
+  ("SSO login") and `docs/threat-model.md` ("Open redirect and login-token
+  exfiltration via SSO redirectUrl"). `database::store_login_token` persists
+  a row (reusing `issue_token_hash`, the same keyed-hash machinery access
+  tokens use) and mirrors the openid-token retention strategy: every insert
+  sweeps every already-expired-or-used row, not just the one just inserted,
+  since a login token's natural bound is its own ~30s expiry or single use
+  rather than a row count. `database::consume_login_token` is the only
+  function that ever reads this table back and is the sole redemption path:
+  it finds an unused, unexpired row matching one of the candidate hashes
+  (constant-time compared via `crypto::constant_time_equal`), marks it used
+  in the backend *before* returning the owning `user_id` so a persistence
+  failure can never leave a token silently redeemable twice from memory
+  alone, and returns `nullopt` on any miss (unknown, expired, or
+  already-used token are indistinguishable to the caller). Implemented for
+  both SQLite and PostgreSQL, hydrated on backend open.
 - `/sync` calls `database::ensure_sync_stream_id_ahead_of()` when the client's
   `since` token is ahead of the server's counter. This recovers live deployments
   whose counter rolled back below a stored token (for example, when the watermark

@@ -103,6 +103,7 @@ shell = find_program('sh')
       'unit/test_config_client_rate_limits.cpp',
       'unit/test_config_log_modules.cpp',
       'unit/test_config_oidc_validation.cpp',
+      'unit/test_config_sso.cpp',
       'unit/test_config_identity_server.cpp',
       'unit/test_config_parser.cpp',
       'unit/test_config_reload_plan.cpp',

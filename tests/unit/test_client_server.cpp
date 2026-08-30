@@ -86,6 +86,21 @@ namespace
     };
 }
 
+[[nodiscard]] auto sso_enabled_config() -> merovingian::config::Config
+{
+    auto security = merovingian::config::SecurityConfig{};
+    merovingian::tests::enable_token_registration(security);
+    auto server = merovingian::config::ServerConfig{};
+    server.sso.enabled = true;
+    server.sso.authorization_url = "https://sso.example.org/authorize";
+    server.sso.redirect_url_allowlist = {"https://client.example.com/"};
+    server.sso.identity_providers.push_back({"com.example.idp.github", "GitHub", "mxc://example.com/abc123", "github"});
+    return {
+        std::move(server),   merovingian::config::ListenersConfig{},        merovingian::config::DatabaseConfig{},
+        std::move(security), merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+    };
+}
+
 [[nodiscard]] auto login_token(std::string const& body) -> std::string
 {
     auto const key = std::string{"\"access_token\":\""};
@@ -4666,6 +4681,256 @@ SCENARIO("GET /_matrix/client/v1/auth_metadata returns OIDC metadata when config
                 REQUIRE(response.response.body.find(
                             "\"authorization_endpoint\":\"https://account.example.com/oauth2/auth\"") !=
                         std::string::npos);
+            }
+        }
+    }
+}
+
+// Matrix v1.19 CS API §"Client login via SSO"
+SCENARIO("GET /login does not advertise m.login.sso when SSO is not configured", "[homeserver][client-server][sso]")
+{
+    GIVEN("a started runtime with SSO left at its default (disabled) config")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        WHEN("GET /login is called")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/login", {}, {}});
+
+            THEN("only m.login.password is advertised")
+            {
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(response.response.body.find("m.login.password") != std::string::npos);
+                REQUIRE(response.response.body.find("m.login.sso") == std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("GET /login advertises m.login.sso with identity_providers when SSO is configured",
+         "[homeserver][client-server][sso]")
+{
+    GIVEN("a started runtime with SSO fully configured")
+    {
+        auto started = merovingian::homeserver::start_client_server(sso_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        WHEN("GET /login is called")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/login", {}, {}});
+
+            THEN("m.login.sso is advertised with the configured identity provider")
+            {
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(response.response.body.find("\"type\":\"m.login.sso\"") != std::string::npos);
+                REQUIRE(response.response.body.find("\"id\":\"com.example.idp.github\"") != std::string::npos);
+                REQUIRE(response.response.body.find("\"name\":\"GitHub\"") != std::string::npos);
+                REQUIRE(response.response.body.find("\"brand\":\"github\"") != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("GET /login/sso/redirect rejects a redirectUrl outside the operator allowlist",
+         "[homeserver][client-server][sso][security]")
+{
+    GIVEN("a started runtime with SSO configured and an allowlist of trusted client origins")
+    {
+        auto started = merovingian::homeserver::start_client_server(sso_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        WHEN("redirectUrl points at an attacker-controlled origin not on the allowlist")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"GET", "/_matrix/client/v3/login/sso/redirect?redirectUrl=https://evil.example.com/steal", {}, {}});
+
+            THEN("the homeserver refuses to redirect there (never an open redirect)")
+            {
+                REQUIRE(response.response.status == 400U);
+                REQUIRE(response.response.body.find("M_INVALID_PARAM") != std::string::npos);
+            }
+        }
+
+        WHEN("redirectUrl is missing entirely")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/login/sso/redirect", {}, {}});
+
+            THEN("the request is rejected rather than defaulting anywhere")
+            {
+                REQUIRE(response.response.status == 400U);
+            }
+        }
+
+        WHEN("redirectUrl matches an allowlisted origin")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"GET",
+                 "/_matrix/client/v3/login/sso/redirect?redirectUrl=https%3A%2F%2Fclient.example.com%2Fapp%3Fx%3D1",
+                 {},
+                 {}});
+
+            THEN("the server responds 302 with a Location pointing at the configured SSO authorization endpoint")
+            {
+                REQUIRE(response.response.status == 302U);
+                auto const location = std::ranges::find_if(response.response.headers, [](auto const& header) {
+                    return header.first == "Location";
+                });
+                REQUIRE(location != response.response.headers.end());
+                REQUIRE(location->second.starts_with("https://sso.example.org/authorize"));
+                REQUIRE(location->second.find("redirectUrl=") != std::string::npos);
+            }
+        }
+    }
+
+    GIVEN("a started runtime with SSO disabled")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        WHEN("the redirect endpoint is called anyway, even with an otherwise-valid redirectUrl")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET",
+                          "/_matrix/client/v3/login/sso/redirect?redirectUrl=https%3A%2F%2Fclient.example.com%2F",
+                          {},
+                          {}});
+
+            THEN("the endpoint behaves as if it does not exist (fail closed, not half-served)")
+            {
+                REQUIRE(response.response.status == 404U);
+            }
+        }
+    }
+}
+
+SCENARIO("GET /login/sso/redirect/{idpId} 404s for an unrecognised IdP", "[homeserver][client-server][sso]")
+{
+    GIVEN("a started runtime with SSO configured and one known IdP")
+    {
+        auto started = merovingian::homeserver::start_client_server(sso_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        WHEN("the client selects an idpId the server never advertised")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET",
+                          "/_matrix/client/v3/login/sso/redirect/does.not.exist?redirectUrl=https%3A%2F%2Fclient."
+                          "example.com%2F",
+                          {},
+                          {}});
+
+            THEN("the response is 404 M_NOT_FOUND per spec")
+            {
+                REQUIRE(response.response.status == 404U);
+                REQUIRE(response.response.body.find("M_NOT_FOUND") != std::string::npos);
+            }
+        }
+
+        WHEN("the client selects the advertised IdP")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET",
+                          "/_matrix/client/v3/login/sso/redirect/com.example.idp.github?redirectUrl=https%3A%2F%2F"
+                          "client.example.com%2F",
+                          {},
+                          {}});
+
+            THEN("the server redirects, carrying the selected idp through to the authorization endpoint")
+            {
+                REQUIRE(response.response.status == 302U);
+                auto const location = std::ranges::find_if(response.response.headers, [](auto const& header) {
+                    return header.first == "Location";
+                });
+                REQUIRE(location != response.response.headers.end());
+                REQUIRE(location->second.find("idp=com.example.idp.github") != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("POST /login with m.login.token completes an SSO round trip into a usable access token",
+         "[homeserver][client-server][sso]")
+{
+    GIVEN("a started runtime with SSO configured and a registered local user")
+    {
+        auto started = merovingian::homeserver::start_client_server(sso_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const reg = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST",
+                      "/_matrix/client/v3/register",
+                      {},
+                      merovingian::tests::registration_json("alice", "CorrectHorse7!")});
+        REQUIRE(reg.response.status == 200U);
+        auto const user_id = std::string{"@alice:example.org"};
+
+        WHEN("the SSO adapter completes authentication for that user (spec step 3-5) and the client "
+             "exchanges the resulting loginToken (spec step 6)")
+        {
+            // Stands in for the external SSO round trip: an operator's IdP
+            // adapter would call complete_sso_login after verifying the
+            // user's identity out-of-band (see docs/auth-identity.md). What
+            // matters here is that the token this mints is genuinely usable
+            // through the ordinary POST /login m.login.token path.
+            auto const completed = merovingian::homeserver::complete_sso_login(runtime.homeserver, user_id,
+                                                                               "https://client.example.com/app");
+            REQUIRE(completed.ok);
+            auto const login_token_key = std::string{"loginToken="};
+            auto const token_pos = completed.value.find(login_token_key);
+            REQUIRE(token_pos != std::string::npos);
+            auto const sso_login_token = completed.value.substr(token_pos + login_token_key.size());
+
+            auto const exchange = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST",
+                          "/_matrix/client/v3/login",
+                          {},
+                          R"({"type":"m.login.token","token":")" + sso_login_token + R"(","device_id":"SSODEVICE1"})"});
+
+            THEN("the exchange succeeds and yields a real, usable access token for that user")
+            {
+                REQUIRE(exchange.response.status == 200U);
+                REQUIRE(exchange.response.body.find("\"user_id\":\"@alice:example.org\"") != std::string::npos);
+                auto const access_token = login_token(exchange.response.body);
+
+                auto const whoami = merovingian::homeserver::handle_client_server_request(
+                    runtime, {"GET", "/_matrix/client/v3/account/whoami", access_token, {}});
+                REQUIRE(whoami.response.status == 200U);
+                REQUIRE(whoami.response.body.find(user_id) != std::string::npos);
+            }
+
+            AND_THEN("the same login token cannot be redeemed a second time (single use)")
+            {
+                auto const replay = merovingian::homeserver::handle_client_server_request(
+                    runtime,
+                    {"POST",
+                     "/_matrix/client/v3/login",
+                     {},
+                     R"({"type":"m.login.token","token":")" + sso_login_token + R"(","device_id":"SSODEVICE2"})"});
+                REQUIRE(replay.response.status == 403U);
+            }
+        }
+
+        WHEN("the client presents a token that was never minted")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST", "/_matrix/client/v3/login", {}, R"({"type":"m.login.token","token":"not-a-real-token"})"});
+
+            THEN("the exchange is rejected, matching the spec's login-failure status")
+            {
+                REQUIRE(response.response.status == 403U);
             }
         }
     }
