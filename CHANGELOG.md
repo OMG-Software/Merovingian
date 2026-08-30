@@ -1,3 +1,17 @@
+## 0.12.1
+
+Release-blocker closures branch (`feature/release-blockers`). The audit that
+defines this branch is recorded in
+[`docs/todos/production-milestone.md`](docs/todos/production-milestone.md)
+"Release-blocking functional holes" — eight functional holes plus the still-open
+production gates. This section is updated as each closure lands.
+
+- Documented the release-blocking audit: the functional-hole table in
+  `docs/todos/production-milestone.md`, and a new "Runtime concurrency" ledger
+  row in `docs/todos/capability-gaps.md` recording that `HomeserverRuntime::mutex`
+  serialises every client-server request and inbound federation transaction, and
+  that every HTTP response carries `Connection: close`.
+
 ## 0.11.13
 
 Fixes a production stall where one slow federation peer froze the whole
