@@ -538,6 +538,20 @@ See `docs/todos/production-milestone.md`, "Global runtime lock", for the
 measured before/after numbers this harness produced and the resulting
 narrowing decision.
 
+**This harness is a manual tool, not a CI job — deliberately, matching the
+existing `build_live_tests` precedent** (also gated behind an opt-in Meson
+option with zero `.github/workflows/` wiring; see
+`docs/testing-standards.md`). A real measurement run needs tens of seconds to
+minutes of wall-clock time to be meaningful, which does not fit a per-PR CI
+budget, and headline throughput/latency numbers on shared CI runners are
+noisy and non-reproducible in a way that would make a regression gate here
+more misleading than useful. Its default (unset `MEROVINGIAN_LOCK_SOAK_SECONDS`)
+2-second run does stay CI-safe as a *correctness* check — nothing deadlocks
+or starves — and CAN be added as a fast job later if that is wanted, but that
+is a distinct decision from running it as a soak/perf gate. Use it manually,
+locally or on a dedicated benchmarking host, whenever a future lock-narrowing
+change needs before/after evidence.
+
 ## Fuzzing
 
 `fuzz-http-request` exercises the request-head parser against arbitrary input. It is registered with the existing fuzz target group.

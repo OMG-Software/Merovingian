@@ -88,14 +88,27 @@ production gates. This section is updated as each closure lands.
   scope here to avoid last-minute scope creep on a lock-correctness change.
 - **New load/soak evidence harness for the global runtime lock**
   (`tests/integration/test_runtime_lock_soak_flow.cpp`, opt-in behind the
-  `build_load_tests` Meson option). Drives concurrent `/sync` long-polls,
-  ordinary reads, message sends, and signed X-Matrix-authenticated inbound
-  federation transactions — all over real sockets with HTTP/1.1 keep-alive —
-  and reports throughput and p50/p95/p99 latency per category, so the
-  "Global runtime lock" release blocker in
+  `build_load_tests` Meson option — a manual tool with no CI wiring, matching
+  the existing `build_live_tests` precedent). Drives concurrent `/sync`
+  long-polls, ordinary reads, message sends, and signed
+  X-Matrix-authenticated inbound federation transactions — all over real
+  sockets with HTTP/1.1 keep-alive — and reports throughput and p50/p95/p99
+  latency per category, so the "Global runtime lock" release blocker in
   `docs/todos/production-milestone.md` can be closed (or kept open) on
-  measurement rather than intuition. See `docs/http-transport.md`,
-  "Load/soak evidence", for how to run it and the measured results.
+  measurement rather than intuition. **Measured, 20 s runs, 6 simulated users
+  + 2 simulated federation peers, before (pre-fix source reverted to a
+  scratch copy) vs. after this change**: reads ~385→374 req/s (p50 7.2→7.4 ms,
+  p95 25.0→26.4 ms), sends ~478→469 req/s (p50 6.7→7.0 ms, p95 21.4→21.8 ms),
+  federation transactions ~208→204 req/s (p50 6.4→6.7 ms, p95 22.6→23.0 ms,
+  capped by the federation per-origin transaction rate limiter, not lock
+  contention) — statistically indistinguishable, as expected: this change's
+  two fixes (below) do not touch that hot path when `trust_safety` is
+  disabled. The direct evidence for those two fixes is instead the
+  regression tests themselves: before, the affected request deadlocks
+  (unbounded — confirmed by direct reproduction under a bounded external
+  timeout); after, `--durations yes` shows registration/room-creation/media
+  scenarios completing in 66–132 microseconds. See `docs/http-transport.md`,
+  "Load/soak evidence", for how to run it and the full measured results.
 
 ## 0.11.13
 
