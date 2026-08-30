@@ -4,6 +4,7 @@
 #include "merovingian/config/config.hpp"
 
 #include "merovingian/config/config_parser.hpp"
+#include "merovingian/http/keep_alive.hpp"
 
 #include <algorithm>
 #include <limits>
@@ -555,6 +556,26 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
                                     "(CORS spec violation; list explicit origins instead)"});
                 break;
             }
+        }
+    }
+
+    // HTTP keep-alive transport policy. Range-validate here so bad config is
+    // rejected at startup rather than silently closing every connection at
+    // request time (http::keep_alive_policy_is_valid is fail-closed, but the
+    // operator should hear about the bad value, not just see connections die).
+    auto const& http_transport = config.server().http;
+    if (!http::keep_alive_policy_is_valid({http_transport.keep_alive, http_transport.keep_alive_idle_seconds,
+                                           http_transport.keep_alive_max_connections}))
+    {
+        if (http_transport.keep_alive_idle_seconds == 0U || http_transport.keep_alive_idle_seconds > 300U)
+        {
+            findings.push_back(
+                {"server.http.keep_alive_idle_seconds", "keep-alive idle window must be 1..300 seconds"});
+        }
+        if (http_transport.keep_alive_max_connections == 0U || http_transport.keep_alive_max_connections > 4096U)
+        {
+            findings.push_back(
+                {"server.http.keep_alive_max_connections", "keep-alive parked-connection cap must be 1..4096"});
         }
     }
 

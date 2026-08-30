@@ -31,6 +31,15 @@ struct Header final
     std::string value{};
 };
 
+// HTTP protocol version of a request's start line. Drives the persistent
+// connection decision: HTTP/1.1 defaults to keep-alive, HTTP/1.0 defaults to
+// close (RFC 9112 §9.3 "Connection").
+enum class HttpVersion : std::uint8_t
+{
+    http_1_0,
+    http_1_1,
+};
+
 struct RequestHead final
 {
     std::string method{};
@@ -38,6 +47,7 @@ struct RequestHead final
     std::vector<Header> headers{};
     std::uint64_t content_length{0U};
     bool has_content_length{false};
+    HttpVersion version{HttpVersion::http_1_1};
 };
 
 struct RequestParseResult final

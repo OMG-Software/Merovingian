@@ -96,3 +96,38 @@ be published as production releases while any blocking gate remains open.
   alongside the existing checksums. Sanitizer logs are cross-referenced to
   the separate `sanitizers.yml` workflow run rather than duplicated (this
   release build does not itself run under a sanitizer).
+- Run Complement against CI; add property, load, and chaos tests to lift the
+  fuzzing-and-conformance capability off the `integrated` rung. **Audited
+  (0.12.1), not implemented — out of budget for this pass:** `tests/fixtures/complement/`
+  is this project's own lightweight JSON-fixture flow test, not the upstream
+  `matrix-org/complement` Go suite this bullet means. A root `Dockerfile`
+  exists but is not Complement-compatible (no `SERVER_NAME`-driven config, no
+  federation TLS via Complement's CA, no fixed ports); there is no Go
+  toolchain, blueprint registration, or CI wiring anywhere in the repo. This
+  remains the largest single piece of unstarted work in this charter.
+
+## Release-blocking functional holes (audited 2026-08-30, 0.12.1 branch)
+
+These outrank the gate list in severity: they are why the server cannot ship,
+not paperwork that must accompany shipping. Recorded after the 0.11.13 review
+found the capability ladder overstating readiness — `runtime-wired` measures
+spec coverage, not transport efficiency or concurrency.
+
+| Blocker | Current state (verified) | Fix required |
+| --- | --- | --- |
+| No HTTP keep-alive | **Closed on `feature/release-blockers`** — `src/homeserver/http_server.cpp` now serves persistent HTTP/1.1 connections as sequential request rounds: keep-alive by default for 1.1, `Connection: close` honoured and echoed, 1.0 only on explicit request; each request's body is drained exactly so request boundaries are never lost (pipelining buffered and answered in order, out of scope); idle parking bounded by `server.http.keep_alive_idle_seconds` (default 15) plus a process-wide parked-connection cap `server.http.keep_alive_max_connections` (default 8); the phase-aware `connection_guard` (`connection_should_close`) keeps the slowloris kill for mid-request slow clients while exempting idle parks | Closed — see CHANGELOG 0.12.1 |
+| Global runtime lock | `HomeserverRuntime::mutex` is held for the whole of every client-server request and every inbound federation transaction (`src/homeserver/AGENTS.md`); 0.11.13 released only the outbound-call offenders via `NetworkIoUnlock` | Narrow the critical section for hot paths and produce load/soak evidence that the remaining critical section holds under concurrency |
+| Rate limiting not production-grade | Per-endpoint accounting missing; no remote-IP buckets for unauthenticated routes; no operator-tunable policy overrides (in-memory counters remain by design — operator sign-off recorded in `docs/http-transport.md`) | Per-endpoint accounting, remote-IP buckets for unauthenticated routes, operator-tunable overrides |
+| Application Service API | Entire API unimplemented — no `as_token`/`hs_token`, no registration files, no `/_matrix/app/v1/*` outbound calls, no `m.login.application_service`, no namespace exclusivity; `/_matrix/client/v3/thirdparty/protocols` returns `{}` as a placeholder. No bridges or bots can operate | Full API: registration files, token handling, login type, `?user_id=` masquerading, outbound transactions with at-least-once delivery, user/room query hooks, `/thirdparty/*` |
+| SSO login | `m.login.sso` not advertised; `GET /_matrix/client/v3/login/sso/redirect` unrouted. Password and token login only | SSO login flow routed and advertised |
+| Push not production-ready | Delivery-side caps only (128 tasks, 10 pushers/recipient); no per-user pusher *registration* cap; no gateway retry/backoff (spec SHOULD); email pushers accepted and persisted but silently never delivered | Registration-side cap, retry/backoff, and fail-loud handling of unsupported pusher kinds |
+| `/messages` state divergence | Returns the room's *current* full state rather than chunk-relevant lazy-loaded state (documented divergence, deliberately not fixed alongside `/context` in 0.11.11) | Chunk-relevance-filtered state for lazy-loading |
+| `/search` at scale | In-memory bounded scan over `PersistentStore::events`, joined-rooms-only scope, substring match (no index) | Scale decision: a real index or a recorded production sign-off on the bounded scan |
+
+Of the gate list above, listener CI coverage, fail-closed hardening, mandatory
+fuzz execution, and release evidence are now closed as of 0.12.1 (see the
+struck-through bullets above). Still blocking the v1.0.0 tag: PostgreSQL
+live-role wiring (packaging provisioning landed; the runtime connection path
+does not yet `SET ROLE`), config-profile capability-gate naming, and
+Complement/property/load/chaos conformance — plus every row in the functional-
+holes table above other than HTTP keep-alive.

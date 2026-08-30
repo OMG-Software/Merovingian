@@ -37,6 +37,7 @@
 #include <openssl/rsa.h>
 #include <openssl/ssl.h>
 #include <openssl/x509.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -167,20 +168,124 @@ auto send_all_tls(SSL& connection, std::string_view data) -> bool
     return output;
 }
 
-[[nodiscard]] auto receive_tls_until_close(SSL& connection) -> std::string
+// Readers that consume exactly one Content-Length framed response per call,
+// keeping any pipelined bytes buffered for the next call. With HTTP
+// keep-alive the server no longer closes the connection after a response, so
+// "read until EOF" cannot delimit one response — the frame boundary comes from
+// the Content-Length header the server always writes.
+struct PlainResponseReader final
 {
-    auto output = std::string{};
+    std::string pending{};
+};
+
+struct TlsResponseReader final
+{
+    std::string pending{};
+};
+
+// Returns the total byte length (head + body) of the first complete
+// Content-Length framed response in `pending`, or std::string::npos when the
+// buffered bytes do not yet contain a complete response.
+[[nodiscard]] auto framed_response_length(std::string const& pending) -> std::size_t
+{
+    constexpr auto npos = std::string::npos;
+    auto const head_end = pending.find("\r\n\r\n");
+    if (head_end == npos)
+    {
+        return npos;
+    }
+    constexpr auto length_prefix = std::string_view{"\r\nContent-Length: "};
+    auto const length_header = pending.find(length_prefix);
+    if (length_header == npos || length_header > head_end)
+    {
+        return npos;
+    }
+    auto const digits_begin = length_header + length_prefix.size();
+    auto const digits_end = pending.find("\r\n", digits_begin);
+    if (digits_end == npos || digits_end > head_end)
+    {
+        return npos;
+    }
+    auto length = std::size_t{0U};
+    for (auto index = digits_begin; index < digits_end; ++index)
+    {
+        auto const character = pending[index];
+        if (character < '0' || character > '9')
+        {
+            return npos;
+        }
+        length = (length * 10U) + static_cast<std::size_t>(character - '0');
+    }
+    return head_end + 4U + length;
+}
+
+// Reads one framed response from the socket. Returns the complete response
+// (status line, headers, body) or an empty string when the peer closes
+// before a complete response arrives. Bytes belonging to a following
+// (pipelined) response stay buffered in the reader.
+[[nodiscard]] auto receive_response(int fd, PlainResponseReader& reader) -> std::string
+{
     auto buffer = std::array<char, 4096U>{};
     while (true)
     {
+        auto const total = framed_response_length(reader.pending);
+        if (total != std::string::npos && reader.pending.size() >= total)
+        {
+            auto response = reader.pending.substr(0U, total);
+            reader.pending.erase(0U, total);
+            return response;
+        }
+        auto const received = ::recv(fd, buffer.data(), buffer.size(), 0);
+        if (received <= 0)
+        {
+            // Peer closed (or errored) before a complete response: surface
+            // whatever was buffered so assertions name what was received.
+            auto partial = std::move(reader.pending);
+            reader.pending.clear();
+            return partial;
+        }
+        reader.pending.append(buffer.data(), static_cast<std::size_t>(received));
+    }
+}
+
+[[nodiscard]] auto receive_tls_response(SSL& connection, TlsResponseReader& reader) -> std::string
+{
+    auto buffer = std::array<char, 4096U>{};
+    while (true)
+    {
+        auto const total = framed_response_length(reader.pending);
+        if (total != std::string::npos && reader.pending.size() >= total)
+        {
+            auto response = reader.pending.substr(0U, total);
+            reader.pending.erase(0U, total);
+            return response;
+        }
         auto received = std::size_t{0U};
         if (SSL_read_ex(&connection, buffer.data(), buffer.size(), &received) != 1 || received == 0U)
         {
-            break;
+            auto partial = std::move(reader.pending);
+            reader.pending.clear();
+            return partial;
         }
-        output.append(buffer.data(), received);
+        reader.pending.append(buffer.data(), received);
     }
-    return output;
+}
+
+// Waits until the socket is readable, then reports whether the peer has
+// closed it (recv returns 0). Bounded: returns false if nothing arrives
+// within `timeout_ms`, so a server that never closes cannot hang a test.
+[[nodiscard]] auto peer_closed_within(int fd, int timeout_ms) -> bool
+{
+    auto entry = pollfd{};
+    entry.fd = fd;
+    entry.events = POLLIN;
+    auto const poll_result = ::poll(&entry, 1U, timeout_ms);
+    if (poll_result <= 0 || (entry.revents & POLLIN) == 0)
+    {
+        return false;
+    }
+    auto probe = std::array<char, 1U>{};
+    return ::recv(fd, probe.data(), probe.size(), MSG_PEEK | MSG_DONTWAIT) == 0;
 }
 
 struct TlsTestCertificate final
@@ -356,7 +461,8 @@ SCENARIO("merovingian-server accepts an HTTP request and returns the router's re
             auto const client_fd = connect_loopback(port);
             REQUIRE(client_fd >= 0);
 
-            auto const request = std::string{"GET /no-such-route HTTP/1.1\r\nHost: localhost\r\n\r\n"};
+            auto const request =
+                std::string{"GET /no-such-route HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"};
             REQUIRE(send_all(client_fd, request));
 
             auto const response = receive_until_close(client_fd);
@@ -465,7 +571,8 @@ SCENARIO("merovingian-server marks accepted client sockets close-on-exec",
             // Complete the request so the server thread can finish and be
             // joined cleanly by server_thread_guard's destructor below.
             REQUIRE(send_all(client_fd, "\r\n"));
-            std::ignore = receive_until_close(client_fd);
+            auto reader = PlainResponseReader{};
+            std::ignore = receive_response(client_fd, reader);
             ::close(client_fd);
 
             THEN("the accepted socket carries FD_CLOEXEC")
@@ -529,7 +636,8 @@ SCENARIO("merovingian-server accepts Matrix JSON requests over a configured TLS 
             auto const request = "POST /_matrix/client/v3/register HTTP/1.1\r\nHost: localhost\r\nContent-Length: " +
                                  std::to_string(body.size()) + "\r\n\r\n" + body;
             REQUIRE(send_all_tls(*client_tls, request));
-            auto const response = receive_tls_until_close(*client_tls);
+            auto tls_reader = TlsResponseReader{};
+            auto const response = receive_tls_response(*client_tls, tls_reader);
 
             shutdown.fire();
             server_thread.join();
@@ -572,7 +680,10 @@ SCENARIO("merovingian-server routes client listener traffic through the Matrix J
             }};
 
             auto const body = merovingian::tests::registration_json("alice", "CorrectHorse7!");
-            auto const request = "POST /_matrix/client/v3/register HTTP/1.1\r\nHost: localhost\r\nContent-Length: " +
+            // Connection: close keeps the read-until-close below valid now that
+            // the listener defaults to HTTP/1.1 persistent connections.
+            auto const request = "POST /_matrix/client/v3/register HTTP/1.1\r\nHost: localhost\r\nConnection: "
+                                 "close\r\nContent-Length: " +
                                  std::to_string(body.size()) + "\r\n\r\n" + body;
 
             auto const client_fd = connect_loopback(port);
@@ -633,7 +744,8 @@ SCENARIO("merovingian-server rejects an oversized request head with a 4xx status
             auto const follow_fd = connect_loopback(port);
             REQUIRE(follow_fd >= 0);
             REQUIRE(send_all(follow_fd, "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n"));
-            auto const follow_response = receive_until_close(follow_fd);
+            auto follow_reader = PlainResponseReader{};
+            auto const follow_response = receive_response(follow_fd, follow_reader);
             ::close(follow_fd);
 
             shutdown.fire();
@@ -646,6 +758,355 @@ SCENARIO("merovingian-server rejects an oversized request head with a 4xx status
                 REQUIRE_FALSE(follow_response.empty());
                 REQUIRE(follow_response.starts_with("HTTP/1.1 "));
                 REQUIRE(stats.rejected_requests >= 1U);
+            }
+        }
+    }
+}
+
+SCENARIO("merovingian-server serves sequential requests over one persistent HTTP/1.1 connection",
+         "[homeserver][http][listener][keep-alive][integration]")
+{
+    GIVEN("a started runtime and a TCP acceptor bound to an ephemeral loopback port")
+    {
+        auto const config = registration_enabled_config();
+        auto runtime_result = merovingian::homeserver::start_client_server(config);
+        REQUIRE(runtime_result.started);
+
+        auto acceptor = merovingian::net::TcpAcceptor{};
+        REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+        auto const port = acceptor.bound_port();
+        REQUIRE(port > 0U);
+
+        auto shutdown = merovingian::net::ShutdownSignal{};
+        auto stats = merovingian::homeserver::HttpServeStats{};
+        auto pool = merovingian::net::ThreadPool{4U};
+        auto runtime = std::move(runtime_result.runtime);
+
+        WHEN("a client sends two sequential requests over the same connection")
+        {
+            auto server_thread = std::thread{[&]() {
+                merovingian::homeserver::serve_http(acceptor, runtime, shutdown, stats,
+                                                    merovingian::homeserver::HttpDispatchMode::local_router, pool);
+            }};
+
+            auto const client_fd = connect_loopback(port);
+            REQUIRE(client_fd >= 0);
+            auto reader = PlainResponseReader{};
+
+            auto const request = std::string{"GET /no-such-route HTTP/1.1\r\nHost: localhost\r\n\r\n"};
+            REQUIRE(send_all(client_fd, request));
+            auto const first_response = receive_response(client_fd, reader);
+
+            // The connection is held open after the first response; the second
+            // request must be served without a reconnect or a second accept.
+            REQUIRE(send_all(client_fd, request));
+            auto const second_response = receive_response(client_fd, reader);
+            ::close(client_fd);
+
+            shutdown.fire();
+            server_thread.join();
+
+            THEN("both responses are served over the single accepted connection")
+            {
+                REQUIRE(first_response.starts_with("HTTP/1.1 404"));
+                REQUIRE(first_response.find("Connection: keep-alive") != std::string::npos);
+                REQUIRE(first_response.find("Keep-Alive: timeout=") != std::string::npos);
+                REQUIRE(second_response.starts_with("HTTP/1.1 404"));
+                REQUIRE(stats.accepted_connections == 1U);
+                REQUIRE(stats.completed_requests >= 2U);
+            }
+        }
+    }
+}
+
+SCENARIO("merovingian-server drains a request body exactly before serving the next pipelined request",
+         "[homeserver][http][listener][keep-alive][integration]")
+{
+    GIVEN("a started runtime and a TCP acceptor bound to an ephemeral loopback port")
+    {
+        auto const config = registration_enabled_config();
+        auto runtime_result = merovingian::homeserver::start_client_server(config);
+        REQUIRE(runtime_result.started);
+
+        auto acceptor = merovingian::net::TcpAcceptor{};
+        REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+        auto const port = acceptor.bound_port();
+        REQUIRE(port > 0U);
+
+        auto shutdown = merovingian::net::ShutdownSignal{};
+        auto stats = merovingian::homeserver::HttpServeStats{};
+        auto pool = merovingian::net::ThreadPool{4U};
+        auto runtime = std::move(runtime_result.runtime);
+
+        WHEN("a client pipelines a POST body and a follow-up request in one write")
+        {
+            auto server_thread = std::thread{[&]() {
+                merovingian::homeserver::serve_http(acceptor, runtime, shutdown, stats,
+                                                    merovingian::homeserver::HttpDispatchMode::local_router, pool);
+            }};
+
+            auto const client_fd = connect_loopback(port);
+            REQUIRE(client_fd >= 0);
+
+            auto const request =
+                std::string{"POST /no-such-route HTTP/1.1\r\nHost: localhost\r\nContent-Length: 5\r\n\r\nHELLO"
+                            "GET /also-no-route HTTP/1.1\r\nHost: localhost\r\n\r\n"};
+            REQUIRE(send_all(client_fd, request));
+
+            auto reader = PlainResponseReader{};
+            auto const first_response = receive_response(client_fd, reader);
+            auto const second_response = receive_response(client_fd, reader);
+            ::close(client_fd);
+
+            shutdown.fire();
+            server_thread.join();
+
+            THEN("the full body is drained and the follow-up request is served on the same connection")
+            {
+                REQUIRE(first_response.starts_with("HTTP/1.1 404"));
+                REQUIRE(second_response.starts_with("HTTP/1.1 404"));
+                REQUIRE(stats.accepted_connections == 1U);
+                REQUIRE(stats.completed_requests >= 2U);
+            }
+        }
+    }
+}
+
+SCENARIO("merovingian-server honours a client Connection close request and closes after the response",
+         "[homeserver][http][listener][keep-alive][integration]")
+{
+    GIVEN("a started runtime and a TCP acceptor bound to an ephemeral loopback port")
+    {
+        auto const config = registration_enabled_config();
+        auto runtime_result = merovingian::homeserver::start_client_server(config);
+        REQUIRE(runtime_result.started);
+
+        auto acceptor = merovingian::net::TcpAcceptor{};
+        REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+        auto const port = acceptor.bound_port();
+        REQUIRE(port > 0U);
+
+        auto shutdown = merovingian::net::ShutdownSignal{};
+        auto stats = merovingian::homeserver::HttpServeStats{};
+        auto pool = merovingian::net::ThreadPool{4U};
+        auto runtime = std::move(runtime_result.runtime);
+
+        WHEN("a client sends a request carrying Connection: close")
+        {
+            auto server_thread = std::thread{[&]() {
+                merovingian::homeserver::serve_http(acceptor, runtime, shutdown, stats,
+                                                    merovingian::homeserver::HttpDispatchMode::local_router, pool);
+            }};
+
+            auto const client_fd = connect_loopback(port);
+            REQUIRE(client_fd >= 0);
+            REQUIRE(send_all(client_fd, "GET /no-such-route HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"));
+
+            auto reader = PlainResponseReader{};
+            auto const response = receive_response(client_fd, reader);
+            auto const server_closed = peer_closed_within(client_fd, 5000);
+            ::close(client_fd);
+
+            shutdown.fire();
+            server_thread.join();
+
+            THEN("the response echoes Connection: close and the server closes the connection")
+            {
+                REQUIRE(response.starts_with("HTTP/1.1 404"));
+                REQUIRE(response.find("Connection: close") != std::string::npos);
+                REQUIRE(server_closed);
+                REQUIRE(stats.completed_requests >= 1U);
+            }
+        }
+    }
+}
+
+SCENARIO("merovingian-server closes a kept-alive connection after the configured idle window",
+         "[homeserver][http][listener][keep-alive][integration]")
+{
+    GIVEN("a runtime configured with a one-second keep-alive idle window")
+    {
+        auto config = registration_enabled_config();
+        config.server().http.keep_alive_idle_seconds = 1U;
+        auto runtime_result = merovingian::homeserver::start_client_server(config);
+        REQUIRE(runtime_result.started);
+
+        auto acceptor = merovingian::net::TcpAcceptor{};
+        REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+        auto const port = acceptor.bound_port();
+        REQUIRE(port > 0U);
+
+        auto shutdown = merovingian::net::ShutdownSignal{};
+        auto stats = merovingian::homeserver::HttpServeStats{};
+        auto pool = merovingian::net::ThreadPool{4U};
+        auto runtime = std::move(runtime_result.runtime);
+
+        WHEN("a client sends one request and then goes idle on the kept-alive connection")
+        {
+            auto server_thread = std::thread{[&]() {
+                merovingian::homeserver::serve_http(acceptor, runtime, shutdown, stats,
+                                                    merovingian::homeserver::HttpDispatchMode::local_router, pool);
+            }};
+
+            auto const client_fd = connect_loopback(port);
+            REQUIRE(client_fd >= 0);
+            REQUIRE(send_all(client_fd, "GET /no-such-route HTTP/1.1\r\nHost: localhost\r\n\r\n"));
+
+            auto reader = PlainResponseReader{};
+            auto const response = receive_response(client_fd, reader);
+            // The server must close the idle connection within a bounded
+            // window around the configured one-second idle timeout.
+            auto const server_closed = peer_closed_within(client_fd, 5000);
+            ::close(client_fd);
+
+            shutdown.fire();
+            server_thread.join();
+
+            THEN("the response keeps the connection alive and the idle window closes it afterwards")
+            {
+                REQUIRE(response.starts_with("HTTP/1.1 404"));
+                REQUIRE(response.find("Connection: keep-alive") != std::string::npos);
+                REQUIRE(server_closed);
+                REQUIRE(stats.accepted_connections == 1U);
+                REQUIRE(stats.completed_requests >= 1U);
+            }
+        }
+    }
+}
+
+SCENARIO("merovingian-server caps how many connections it holds open waiting for keep-alive requests",
+         "[homeserver][http][listener][keep-alive][integration][security]")
+{
+    GIVEN("a runtime configured with a keep-alive cap of two connections")
+    {
+        auto config = registration_enabled_config();
+        config.server().http.keep_alive_max_connections = 2U;
+        auto runtime_result = merovingian::homeserver::start_client_server(config);
+        REQUIRE(runtime_result.started);
+
+        auto acceptor = merovingian::net::TcpAcceptor{};
+        REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+        auto const port = acceptor.bound_port();
+        REQUIRE(port > 0U);
+
+        auto shutdown = merovingian::net::ShutdownSignal{};
+        auto stats = merovingian::homeserver::HttpServeStats{};
+        auto pool = merovingian::net::ThreadPool{4U};
+        auto runtime = std::move(runtime_result.runtime);
+
+        WHEN("three clients each hold a connection open after their first request")
+        {
+            auto server_thread = std::thread{[&]() {
+                merovingian::homeserver::serve_http(acceptor, runtime, shutdown, stats,
+                                                    merovingian::homeserver::HttpDispatchMode::local_router, pool);
+            }};
+
+            auto request = std::string{"GET /no-such-route HTTP/1.1\r\nHost: localhost\r\n\r\n"};
+
+            auto const first_fd = connect_loopback(port);
+            REQUIRE(first_fd >= 0);
+            auto first_reader = PlainResponseReader{};
+            REQUIRE(send_all(first_fd, request));
+            auto const first_response = receive_response(first_fd, first_reader);
+            // Give the server time to park the connection in the idle wait
+            // before the next one is served, so the cap is observed exactly.
+            std::this_thread::sleep_for(std::chrono::milliseconds{150});
+
+            auto const second_fd = connect_loopback(port);
+            REQUIRE(second_fd >= 0);
+            auto second_reader = PlainResponseReader{};
+            REQUIRE(send_all(second_fd, request));
+            auto const second_response = receive_response(second_fd, second_reader);
+            std::this_thread::sleep_for(std::chrono::milliseconds{150});
+
+            auto const third_fd = connect_loopback(port);
+            REQUIRE(third_fd >= 0);
+            auto third_reader = PlainResponseReader{};
+            REQUIRE(send_all(third_fd, request));
+            auto const third_response = receive_response(third_fd, third_reader);
+
+            ::close(first_fd);
+            ::close(second_fd);
+            ::close(third_fd);
+
+            shutdown.fire();
+            server_thread.join();
+
+            THEN("the first two connections are kept alive and the third is closed instead of parked")
+            {
+                REQUIRE(first_response.find("Connection: keep-alive") != std::string::npos);
+                REQUIRE(second_response.find("Connection: keep-alive") != std::string::npos);
+                REQUIRE(third_response.find("Connection: close") != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("merovingian-server serves two sequential requests over one persistent TLS connection",
+         "[homeserver][http][listener][tls][keep-alive][integration]")
+{
+    GIVEN("a TLS server context and a registration-enabled runtime")
+    {
+        auto const certificate = write_test_tls_certificate();
+        auto tls_context = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
+                                                                            certificate.private_key_file);
+        REQUIRE(tls_context.ok());
+
+        auto const config = registration_enabled_config();
+        auto runtime_result = merovingian::homeserver::start_client_server(config);
+        REQUIRE(runtime_result.started);
+
+        auto acceptor = merovingian::net::TcpAcceptor{};
+        REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+        auto const port = acceptor.bound_port();
+        REQUIRE(port > 0U);
+
+        auto shutdown = merovingian::net::ShutdownSignal{};
+        auto stats = merovingian::homeserver::HttpServeStats{};
+        auto pool = merovingian::net::ThreadPool{4U};
+        auto runtime = std::move(runtime_result.runtime);
+
+        WHEN("a TLS client sends two sequential requests over the same TLS connection")
+        {
+            auto server_thread = std::thread{[&]() {
+                merovingian::homeserver::serve_tls_http(*tls_context.context, acceptor, runtime, shutdown, stats,
+                                                        merovingian::homeserver::HttpDispatchMode::client_server, pool);
+            }};
+
+            auto client_context = std::unique_ptr<SSL_CTX, SslContextDeleter>{SSL_CTX_new(TLS_client_method())};
+            REQUIRE(client_context != nullptr);
+            SSL_CTX_set_verify(client_context.get(), SSL_VERIFY_NONE, nullptr);
+
+            auto const client_fd = connect_loopback(port);
+            REQUIRE(client_fd >= 0);
+            auto client_socket = merovingian::core::SocketHandle{client_fd};
+            auto client_tls = std::unique_ptr<SSL, SslDeleter>{SSL_new(client_context.get())};
+            REQUIRE(client_tls != nullptr);
+            REQUIRE(SSL_set_fd(client_tls.get(), client_socket.native_handle()) == 1);
+            REQUIRE(SSL_connect(client_tls.get()) == 1);
+
+            auto const request = std::string{"GET /no-such-route HTTP/1.1\r\nHost: localhost\r\n\r\n"};
+            auto tls_reader = TlsResponseReader{};
+            REQUIRE(send_all_tls(*client_tls, request));
+            auto const first_response = receive_tls_response(*client_tls, tls_reader);
+
+            // One TLS handshake must now serve both requests.
+            REQUIRE(send_all_tls(*client_tls, request));
+            auto const second_response = receive_tls_response(*client_tls, tls_reader);
+
+            shutdown.fire();
+            server_thread.join();
+
+            THEN("both responses are served over the single accepted TLS connection")
+            {
+                // The client-server dispatcher authenticates before routing,
+                // so an unauthenticated unknown route answers 401 — what is
+                // under test here is the connection reuse, not the route.
+                REQUIRE(first_response.starts_with("HTTP/1.1 401"));
+                REQUIRE(first_response.find("Connection: keep-alive") != std::string::npos);
+                REQUIRE(second_response.starts_with("HTTP/1.1 401"));
+                REQUIRE(stats.accepted_connections == 1U);
+                REQUIRE(stats.completed_requests >= 2U);
             }
         }
     }
