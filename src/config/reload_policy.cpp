@@ -47,11 +47,11 @@ auto reload_policy_for_key(std::string_view key) noexcept -> ReloadPolicy
 
     // The master key is loaded and zeroised at startup, the federation
     // worker processes are spawned (with their thread pools, shard count and
-    // hardening) at startup, and CORS headers are wired when the listeners
-    // start — SIGHUP cannot re-apply any of these (#421, and the
-    // docs/user-manual.md Reloadability policy).
+    // hardening) at startup, and CORS headers and the keep-alive connection
+    // policy are wired when the listeners start — SIGHUP cannot re-apply any
+    // of these (#421, and the docs/user-manual.md Reloadability policy).
     if (key == "security.secrets.master_key_file" || starts_with(key, "federation.worker.") ||
-        starts_with(key, "server.cors."))
+        starts_with(key, "server.cors.") || starts_with(key, "server.http."))
     {
         return ReloadPolicy::restart_required;
     }

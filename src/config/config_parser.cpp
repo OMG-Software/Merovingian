@@ -159,6 +159,51 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected non-negative integer");
             }
         }
+        else if (key == "server.http.keep_alive")
+        {
+            if (!parse_bool_value(value, server.http.keep_alive))
+            {
+                add_parse_finding(findings, std::string{key}, "expected boolean value");
+            }
+        }
+        else if (key == "server.http.keep_alive_idle_seconds")
+        {
+            try
+            {
+                auto const parsed = std::stoul(std::string{value});
+                if (parsed == 0U || parsed > std::numeric_limits<std::uint32_t>::max())
+                {
+                    add_parse_finding(findings, std::string{key}, "expected positive integer");
+                }
+                else
+                {
+                    server.http.keep_alive_idle_seconds = static_cast<std::uint32_t>(parsed);
+                }
+            }
+            catch (...)
+            {
+                add_parse_finding(findings, std::string{key}, "expected positive integer");
+            }
+        }
+        else if (key == "server.http.keep_alive_max_connections")
+        {
+            try
+            {
+                auto const parsed = std::stoul(std::string{value});
+                if (parsed == 0U || parsed > std::numeric_limits<std::uint32_t>::max())
+                {
+                    add_parse_finding(findings, std::string{key}, "expected positive integer");
+                }
+                else
+                {
+                    server.http.keep_alive_max_connections = static_cast<std::uint32_t>(parsed);
+                }
+            }
+            catch (...)
+            {
+                add_parse_finding(findings, std::string{key}, "expected positive integer");
+            }
+        }
         else if (key == "server.turn.server")
         {
             server.turn.server = std::string{value};

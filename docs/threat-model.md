@@ -62,7 +62,7 @@ flowchart TB
 |---|---|---|
 | Malicious local user | Client-server API | Access-token auth, login-enumeration-resistant errors, rate limits, bounded parsers |
 | Malicious federated server | Federation transactions | X-Matrix verification, per-PDU content-hash + sender-domain Ed25519 checks, auth rules before persist, EDU origin-ownership checks, and per-room `m.room.server_acl` enforcement on protected endpoints and inbound PDUs/EDUs |
-| Remote exhaustion attacker | Listeners, queues, parsers | Bounded queues, rate limiting, resource limits, circuit breakers |
+| Remote exhaustion attacker | Listeners, queues, parsers | Bounded queues, rate limiting, resource limits, circuit breakers, bounded keep-alive idle parking (per-connection idle window + process-wide parked-connection cap) |
 | Media upload attacker | Image decoding | Out-of-process seccomp/rlimit-sandboxed worker, pixel-count decode-bomb guard, MIME sniffing, quarantine |
 | Malicious reverse proxy | Header/transport trust | Production listener rejects test-only credential encodings; response header validation; public listeners require TLS and cannot declare a local reverse proxy, while loopback cleartext requires an explicit `reverse_proxy=true` declaration |
 | Malicious local process | IPC channel sniffing | Master-key-authenticated `crypto_kx` handshake (#318) + AEAD encryption; no filesystem socket path; signing key never loaded in worker and never forwarded over IPC (#317); main verifies inbound X-Matrix signatures and forwards only the verified peer identity — the raw peer `access_token`/`Authorization` never crosses IPC (#323) |
@@ -932,6 +932,30 @@ threat it closes; the controls above are the standing defences these reinforce.
   (`homeserver::NetworkIoUnlock`) so a stalled peer costs one request rather than
   the process, and covered by a regression test that holds a real TLS peer open
   and asserts unrelated requests still complete.
+
+- **Idle-connection thread holding through HTTP keep-alive parking.** With
+  HTTP/1.1 persistent connections (RFC 9112 §9.3) a client that has received
+  its response can leave the connection open and simply never send the next
+  request; a naive keep-alive loop would then park one main-pool worker
+  thread per connection for as long as the client cares to wait, and an
+  attacker needs nothing more than N open sockets to stall all request
+  handling. Three bounds compose to close this: (1) each park is limited to
+  the operator-tunable idle window (`server.http.keep_alive_idle_seconds`,
+  default 15 s — strictly shorter than the 30 s slowloris head deadline that
+  already bounds a worker per connection, so the parking surface is no wider
+  than the pre-existing one), polled in one-second slices so shutdown stays
+  bounded; (2) a process-wide CAS counter caps how many connections may be
+  parked at once (`server.http.keep_alive_max_connections`, default 8) —
+  beyond the cap the server answers `Connection: close` instead of parking,
+  so a single client cannot convert open sockets into held worker threads
+  beyond the operator's budget; and (3) the slowloris guard is phase-aware
+  (`http::connection_should_close`): an idle park is bounded only by the
+  idle window — a quiet connection is not a slow client — while the full
+  slowloris rate policy applies unchanged to the request head/body read the
+  moment bytes arrive, so an attacker cannot use keep-alive to outlive the
+  per-request slowloris kill. The parked slot is held only while no request
+  is in flight; it is released the moment the next request's first bytes
+  arrive, so the cap bounds parked threads, not active requests.
 
 ## Security principles
 

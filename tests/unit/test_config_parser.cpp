@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <limits>
 #include <string>
+#include <vector>
 
 SCENARIO("Key-value config parser preserves secure defaults for empty input", "[config][parser]")
 {
@@ -627,6 +628,90 @@ SCENARIO("Key-value config parser still rejects i64 values beyond the representa
             {
                 REQUIRE_FALSE(negative_result.findings.empty());
                 REQUIRE_FALSE(positive_result.findings.empty());
+            }
+        }
+    }
+}
+
+SCENARIO("Key-value config parser applies the HTTP keep-alive transport policy", "[config][parser][keep-alive]")
+{
+    GIVEN("config input overriding the keep-alive transport keys")
+    {
+        auto const input = std::string{"server.http.keep_alive=false\n"
+                                       "server.http.keep_alive_idle_seconds=45\n"
+                                       "server.http.keep_alive_max_connections=64\n"};
+
+        WHEN("the config is parsed")
+        {
+            auto const result = merovingian::config::parse_key_value_config(input);
+
+            THEN("the keep-alive policy values are applied")
+            {
+                REQUIRE(result.findings.empty());
+                REQUIRE_FALSE(result.config.server().http.keep_alive);
+                REQUIRE(result.config.server().http.keep_alive_idle_seconds == 45U);
+                REQUIRE(result.config.server().http.keep_alive_max_connections == 64U);
+                REQUIRE(merovingian::config::is_valid(result.config));
+            }
+        }
+    }
+
+    GIVEN("config input with a zero-valued keep-alive bound")
+    {
+        auto const zero_idle = std::string{"server.http.keep_alive_idle_seconds=0\n"};
+        auto const zero_max = std::string{"server.http.keep_alive_max_connections=0\n"};
+
+        WHEN("the configs are parsed")
+        {
+            auto const zero_idle_result = merovingian::config::parse_key_value_config(zero_idle);
+            auto const zero_max_result = merovingian::config::parse_key_value_config(zero_max);
+
+            THEN("the zero values are rejected at parse time and the defaults are kept")
+            {
+                auto has_finding = [](std::vector<merovingian::config::ConfigValidationFinding> const& findings,
+                                      std::string const& field) {
+                    for (auto const& finding : findings)
+                    {
+                        if (finding.field == field)
+                        {
+                            return true;
+                        }
+                    }
+                    return false;
+                };
+                REQUIRE(has_finding(zero_idle_result.findings, "server.http.keep_alive_idle_seconds"));
+                REQUIRE(zero_idle_result.config.server().http.keep_alive_idle_seconds == 15U);
+                REQUIRE(has_finding(zero_max_result.findings, "server.http.keep_alive_max_connections"));
+                REQUIRE(zero_max_result.config.server().http.keep_alive_max_connections == 8U);
+            }
+        }
+    }
+
+    GIVEN("config input with an over-cap keep-alive idle window")
+    {
+        auto const over_cap_idle = std::string{"server.http.keep_alive_idle_seconds=301\n"};
+
+        WHEN("the config is parsed and validated")
+        {
+            auto const over_cap_idle_result = merovingian::config::parse_key_value_config(over_cap_idle);
+
+            THEN("the over-cap window is applied by the parser and rejected by validation")
+            {
+                REQUIRE(over_cap_idle_result.config.server().http.keep_alive_idle_seconds == 301U);
+                auto has_finding = [](std::vector<merovingian::config::ConfigValidationFinding> const& findings,
+                                      std::string const& field) {
+                    for (auto const& finding : findings)
+                    {
+                        if (finding.field == field)
+                        {
+                            return true;
+                        }
+                    }
+                    return false;
+                };
+                REQUIRE(has_finding(merovingian::config::validate(over_cap_idle_result.config),
+                                    "server.http.keep_alive_idle_seconds"));
+                REQUIRE_FALSE(merovingian::config::is_valid(over_cap_idle_result.config));
             }
         }
     }
