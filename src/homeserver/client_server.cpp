@@ -9449,7 +9449,14 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         return r.ok ? dispatch_resp(req, rt, 200U, "{}")
                     : dispatch_err(req, rt, r.status, r.status == 401U ? "M_UNKNOWN_TOKEN" : "M_UNKNOWN", r.reason);
     }
-    if (req.method == "GET" && req.target == "/_matrix/client/v3/account/whoami")
+    // Matched on `request_path` (query string already stripped), not
+    // `req.target`, because this is the Application Service API's own
+    // worked example of `?user_id=`/`?device_id=` masquerade (Matrix v1.19
+    // Application Service API §"Identity assertion": "GET
+    // /_matrix/client/v3/account/whoami?user_id=@_irc_user:example.org
+    // &device_id=ABC123") — an exact `req.target` match would 404 the
+    // instant a query string is present.
+    if (req.method == "GET" && request_path == "/_matrix/client/v3/account/whoami")
     {
         auto const whoami_device = authenticated_request_device_id(rt, req.access_token);
         log_diagnostic("account.whoami", {

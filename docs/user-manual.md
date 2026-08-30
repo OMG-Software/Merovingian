@@ -702,6 +702,30 @@ client access tokens are stripped from every request before forwarding. If
 the worker crashes, the supervisor restarts it with exponential back-off
 (1s, 2s, 4s, 8s, capped at 30s).
 
+#### Application Service API — `appservice.*`
+
+Matrix v1.19 Application Service API (bridges and bots). **Empty by
+default** — with no registration files configured, the entire appservice
+surface (as_token auth, `m.login.application_service`, namespace
+exclusivity) is inert.
+
+| Key | Default | When to change |
+|---|---|---|
+| `appservice.registration_files` | (empty) | Comma-separated list of paths to appservice registration documents. Each is parsed as JSON (a strict subset of the YAML the spec describes — anchors, comments, and unquoted scalars are not supported); see a real bridge's own documentation for its registration file's required `as_token`/`hs_token`/`sender_localpart`/`namespaces` fields, or the example in `docs/matrix-v1.19-spec/application-service-api.md#registration`. **Requires restart** — the registry is parsed once at startup and never re-read on `SIGHUP`. |
+
+A registration file with a duplicate `id` or `as_token` against another
+configured registration is rejected — per spec this MUST be unique — and
+drops every registration from the batch rather than guessing which one
+should win; check the startup log for `start.appservice_registration_rejected`
+events. `as_token`/`hs_token` are held in an mlocked `core::SecretBuffer` and
+never appear in logs or diagnostics.
+
+Outbound delivery (`PUT /_matrix/app/v1/transactions/{txnId}`), the outbound
+query hooks (`GET /_matrix/app/v1/users/{userId}`,
+`GET /_matrix/app/v1/rooms/{roomAlias}`), and `/_matrix/client/v3/thirdparty/*`
+are not yet implemented — see `docs/todos/capability-gaps.md`, "Application
+Service API".
+
 #### Media repository — `security.media.*`
 
 | Key | Default | When to change |

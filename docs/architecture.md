@@ -54,6 +54,7 @@ header-only public boundary.
 
 | Module | Purpose |
 |--------|---------|
+| `appservice` | Application Service API (Matrix v1.19): registration-file parsing, namespace matching/exclusivity, `AppserviceRegistry`, the internal as_token-masquerade token |
 | `auth` | Sessions, tokens, key API |
 | `bootstrap` | Public bootstrap boundary for startup integration |
 | `canonicaljson` | Matrix canonical JSON parser, serializer, signing |
@@ -98,6 +99,7 @@ flowchart TB
         fedworker_mod["federation_worker<br/>worker event loop"]
     end
     subgraph services["Protocol & domain services"]
+        appservice["appservice<br/>registration, namespaces"]
         auth["auth"]
         rooms["rooms"]
         events["events"]
@@ -120,7 +122,7 @@ flowchart TB
 
     net --> homeserver
     fedworker_mod --> homeserver & federation & ipc & net
-    homeserver --> auth & rooms & events & federation & media & push & sync & trust_safety & identity
+    homeserver --> auth & rooms & events & federation & media & push & sync & trust_safety & identity & appservice
     federation --> http
     identity --> http
     push --> http & federation

@@ -1,3 +1,59 @@
+## 0.12.1
+
+Begins closing the Application Service API gap (Matrix v1.19): the entire
+surface was previously unimplemented (see `docs/todos/capability-gaps.md`).
+This entry covers the registration/auth layer; outbound transactions, query
+hooks, and `/thirdparty/*` land in follow-up entries under this same section.
+
+- **Appservice registration files.** New `merovingian::appservice` module
+  (`include/merovingian/appservice/`, `src/appservice/`) parses registration
+  documents (`as_token`, `hs_token`, `id`, `url`, `sender_localpart`,
+  `namespaces.{users,aliases,rooms}` with per-entry `exclusive`/`regex`) and
+  builds an in-memory `AppserviceRegistry` at startup from the new
+  `appservice.registration_files` config key (`config::AppserviceConfig`,
+  restart-required). Registration files are parsed as JSON — a strict subset
+  of the YAML the spec describes — rather than pulling in a new YAML
+  dependency; see the doc comment on `AppserviceRegistration` for the
+  rationale. `as_token`/`hs_token` are held in `core::SecretBuffer` and
+  compared with `crypto::constant_time_equal_variable_length`, never `==`.
+  Duplicate `id`/`as_token` across registrations is rejected at load time
+  (spec MUST) and drops the whole set rather than guessing a winner.
+- **as_token bearer auth + `?user_id=`/`?device_id=` masquerade.** A
+  client-server request bearing a registered appservice's `as_token` now
+  authenticates as that appservice's `sender_localpart` user by default, or
+  as the user named by `?user_id=` when it falls within the appservice's
+  `users` namespace (403 otherwise); `?device_id=` is honoured when it names
+  a device already known to belong to that user (400 `M_UNKNOWN_DEVICE`
+  otherwise). Resolved once per request in
+  `handle_client_server_request_impl` via an internal, never-on-the-wire
+  token substitution (`appservice/masquerade_token.hpp`) so every existing
+  `authenticated_user`/`authenticated_session`/`authenticated_admin_user`
+  call site, and every deeper handler that re-derives identity from a bare
+  `access_token`, works unmodified for both ordinary sessions and appservice
+  masquerades. A raw incoming token already in the internal reserved shape
+  is rejected before any auth logic runs, closing the obvious forgery path.
+- **`m.login.application_service`.** `POST /register` and `POST /login`
+  accept `type: m.login.application_service` (bearer-authenticated with
+  `as_token`), bypassing the ordinary registration flow entirely per spec
+  ("Server admin style permissions") — no registration token, no UIA. New
+  passwordless account creation (`register_appservice_user`) and
+  passwordless login (`login_appservice_user`) in `auth_service.cpp`, sharing
+  the existing session/token-issuance tail with the password path via a new
+  `complete_login` helper. `GET /login` now advertises
+  `m.login.application_service` alongside `m.login.password`.
+- **Namespace exclusivity.** An appservice's `exclusive` namespace now
+  blocks entity creation by anyone else: ordinary `POST /register` and
+  `m.login.application_service` registration both reject a username inside
+  another appservice's exclusive `users` namespace with `M_EXCLUSIVE`, and
+  `PUT /_matrix/client/v3/directory/room/{roomAlias}` and `POST /createRoom`
+  (`room_alias_name`) both reject an alias inside an exclusive `aliases`
+  namespace the same way — except for the owning appservice itself.
+- **Known gaps, tracked in `docs/todos/capability-gaps.md`:** outbound
+  `PUT /_matrix/app/v1/transactions/{txnId}` delivery, the outbound
+  `GET /_matrix/app/v1/users/{userId}` / `/rooms/{roomAlias}` query hooks,
+  the `/_matrix/app/v1/ping` ↔ `POST /_matrix/client/v1/appservice/{id}/ping`
+  round trip, and `/_matrix/client/v3/thirdparty/*` remain unimplemented.
+
 ## 0.11.13
 
 Fixes a production stall where one slow federation peer froze the whole

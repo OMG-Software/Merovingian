@@ -397,14 +397,24 @@ namespace
     }
 
     [[nodiscard]] auto make_user(HomeserverRuntime& runtime, std::string_view localpart, std::string_view password,
-                                 bool admin, std::string_view audit_outcome) -> OperationResult
+                                 bool admin, std::string_view audit_outcome, bool enforce_password_policy = true)
+        -> OperationResult
     {
         auto const user_id = user_id_from_localpart(runtime.config.server().server_name, localpart);
         if (!auth::user_id_is_valid(user_id))
         {
             return make_operation_result(false, {}, "invalid user id");
         }
-        if (!auth::password_is_acceptable(password))
+        // Application Service API registrations (register_appservice_user)
+        // pass enforce_password_policy=false: the generated credential is a
+        // random secret the appservice never sees and password login is
+        // never the intended auth path for that account (masquerade/
+        // m.login.application_service only), so the human-facing
+        // upper/lower/digit/symbol complexity policy in
+        // auth::password_is_acceptable does not apply — it exists to push
+        // back on weak choices a HUMAN makes, not to gate an
+        // internally-generated placeholder.
+        if (enforce_password_policy && !auth::password_is_acceptable(password))
         {
             return make_operation_result(false, {}, "password rejected");
         }
@@ -671,7 +681,8 @@ auto register_appservice_user(HomeserverRuntime& runtime, std::string_view local
     {
         return make_operation_result(false, {}, "password hashing failed");
     }
-    return make_user(runtime, localpart, *random_password, false, "created_by_appservice");
+    return make_user(runtime, localpart, *random_password, false, "created_by_appservice",
+                     /*enforce_password_policy=*/false);
 }
 
 // NOLINTBEGIN(bugprone-easily-swappable-parameters)
