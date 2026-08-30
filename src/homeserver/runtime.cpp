@@ -3,6 +3,7 @@
 
 #include "merovingian/homeserver/runtime.hpp"
 
+#include "merovingian/appservice/registration.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/crypto/ed25519.hpp"
@@ -382,6 +383,7 @@ HomeserverRuntime::HomeserverRuntime(HomeserverRuntime&& other) noexcept
     , trust_safety_policy_server(std::move(other.trust_safety_policy_server))
     , discovery_network(std::move(other.discovery_network))
     , cached_discovery(std::move(other.cached_discovery))
+    , appservices(std::move(other.appservices))
     , dispatch_worker(std::move(other.dispatch_worker))
     , federation_proxy(std::move(other.federation_proxy))
     , crypto_provider_owned(std::move(other.crypto_provider_owned))
@@ -422,6 +424,7 @@ auto HomeserverRuntime::operator=(HomeserverRuntime&& other) noexcept -> Homeser
     trust_safety_policy_server = std::move(other.trust_safety_policy_server);
     discovery_network = std::move(other.discovery_network);
     cached_discovery = std::move(other.cached_discovery);
+    appservices = std::move(other.appservices);
     dispatch_worker = std::move(other.dispatch_worker);
     federation_proxy = std::move(other.federation_proxy);
     crypto_provider_owned = std::move(other.crypto_provider_owned);
@@ -763,6 +766,34 @@ auto start_runtime(RuntimeStartOptions opts) -> RuntimeStartResult
     }
     runtime.media_repository = media::make_local_media_repository(media::make_runtime_media_config(config));
     hydrate_media_repository(runtime.media_repository, runtime.database.persistent_store);
+
+    // Application Service API (Matrix v1.19): parse every configured
+    // registration file once, up front. A per-file problem (bad JSON, a
+    // missing required field, an unreadable path) is logged and that one
+    // appservice is dropped rather than failing the whole server — an
+    // operator typo in one bridge's registration must not take down every
+    // other appservice or the homeserver itself. A cross-file problem
+    // (duplicate id/as_token, which the spec says the homeserver MUST
+    // enforce) drops every registration, since routing would otherwise be
+    // ambiguous.
+    {
+        auto loaded = appservice::load_registrations(config.appservice().registration_files);
+        for (auto const& finding : loaded.findings)
+        {
+            log_diagnostic("start.appservice_registration_rejected",
+                           {
+                               {"source",  finding.source,  false},
+                               {"message", finding.message, false}
+            },
+                           observability::LogEventSeverity::warning);
+        }
+        log_diagnostic("start.appservices_ready",
+                       {
+                           {"count", std::to_string(loaded.registry.size()), false}
+        },
+                       observability::LogEventSeverity::info);
+        runtime.appservices = std::move(loaded.registry);
+    }
     // Tests run in a long-lived Catch2 process. Applying seccomp/pledge/unveil
     // there would permanently restrict that process and break every subsequent
     // test. The build scripts set MEROVINGIAN_TEST_DISABLE_HARDENING=1 when they

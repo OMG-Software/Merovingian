@@ -9,6 +9,8 @@
 
 #include "merovingian/homeserver/client_server.hpp"
 
+#include "merovingian/appservice/masquerade_token.hpp"
+#include "merovingian/appservice/registration.hpp"
 #include "merovingian/auth/identity.hpp"
 #include "merovingian/auth/key_api.hpp"
 #include "merovingian/auth/oidc_discovery.hpp"
@@ -600,6 +602,11 @@ namespace
         std::string device_id{};
         std::string display_name{};
         bool inhibit_login{false};
+        // Matrix v1.19 Application Service API §"Server admin style
+        // permissions": `type: m.login.application_service`. When true,
+        // `password` is empty and irrelevant — the handler takes an
+        // entirely separate, as_token-authenticated path.
+        bool is_appservice_registration{false};
     };
 
     struct MatrixRegisterEmailRequestBody final
@@ -656,6 +663,11 @@ namespace
         std::string device_id{};
         std::string display_name{};
         bool supports_refresh_tokens{false};
+        // Matrix v1.19 Application Service API §"Server admin style
+        // permissions": `type: m.login.application_service`. When true,
+        // `password` is empty and irrelevant — the caller authenticates via
+        // as_token instead (see login_appservice_user()).
+        bool is_appservice_login{false};
     };
 
     struct MatrixRefreshBody final
@@ -1365,13 +1377,17 @@ namespace
         {
             return std::nullopt;
         }
+        auto const* type = string_member(*object, "type");
+        auto const is_appservice_registration = type != nullptr && *type == "m.login.application_service";
         auto const* username = string_member(*object, "username");
         if (username == nullptr)
         {
             username = string_member(*object, "user");
         }
         auto const* password = string_member(*object, "password");
-        if (username == nullptr || password == nullptr)
+        // Application Service registrations are passwordless — see
+        // MatrixRegisterBody::is_appservice_registration.
+        if (username == nullptr || (password == nullptr && !is_appservice_registration))
         {
             return std::nullopt;
         }
@@ -1387,11 +1403,12 @@ namespace
         auto const* display_name = string_member(*object, "initial_device_display_name");
         auto const* inhibit_login = boolean_member(*object, "inhibit_login");
         return MatrixRegisterBody{*username,
-                                  *password,
+                                  password == nullptr ? std::string{} : *password,
                                   token == nullptr ? std::string{} : *token,
                                   device_id == nullptr ? std::string{} : *device_id,
                                   display_name == nullptr ? std::string{} : *display_name,
-                                  inhibit_login != nullptr && *inhibit_login};
+                                  inhibit_login != nullptr && *inhibit_login,
+                                  is_appservice_registration};
     }
 
     [[nodiscard]] auto query_param_value(std::string_view target, std::string_view key) -> std::optional<std::string>
@@ -2008,7 +2025,8 @@ namespace
             return std::nullopt;
         }
         auto const* type = string_member(*object, "type");
-        if (type != nullptr && *type != "m.login.password")
+        auto const is_appservice_login = type != nullptr && *type == "m.login.application_service";
+        if (type != nullptr && *type != "m.login.password" && !is_appservice_login)
         {
             return std::nullopt;
         }
@@ -2023,17 +2041,21 @@ namespace
             }
             user = string_member(*identifier, "user");
         }
-        if (password == nullptr || user == nullptr)
+        // Application Service logins authenticate via as_token, not password
+        // — see MatrixLoginBody::is_appservice_login.
+        if (user == nullptr || (password == nullptr && !is_appservice_login))
         {
             return std::nullopt;
         }
         auto const* device_id = string_member(*object, "device_id");
         auto const* display_name = string_member(*object, "initial_device_display_name");
         auto const* supports_refresh_tokens = boolean_member(*object, "refresh_token");
-        return MatrixLoginBody{matrix_user_id(server_name, *user), *password,
+        return MatrixLoginBody{matrix_user_id(server_name, *user),
+                               password == nullptr ? std::string{} : *password,
                                device_id == nullptr ? std::string{} : *device_id,
                                display_name == nullptr ? std::string{} : *display_name,
-                               supports_refresh_tokens != nullptr && *supports_refresh_tokens};
+                               supports_refresh_tokens != nullptr && *supports_refresh_tokens,
+                               is_appservice_login};
     }
 
     [[nodiscard]] auto parse_refresh_body(std::string_view body) -> std::optional<MatrixRefreshBody>
@@ -8143,9 +8165,66 @@ auto handle_client_server_http_request(ClientServerRuntime& rt, std::string_view
 // path (complete() and sync_json() build raw DispatchResult structs).
 // All callers MUST go through the public handle_client_server_request wrapper
 // which applies CORS at the boundary unconditionally.
-static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttpRequest const& req, bool can_wait)
+static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttpRequest const& raw_req, bool can_wait)
     -> DispatchResult
 {
+    // `req` shadows the parameter with a mutable local copy for the rest of
+    // this function. Application Service API (Matrix v1.19) as_token bearer
+    // auth + `?user_id=`/`?device_id=` identity-assertion masquerade (see
+    // appservice/masquerade_token.hpp) is resolved exactly once, here, by
+    // rewriting `req.access_token` before any route below sees it — every
+    // downstream call that re-derives identity from a bare access_token
+    // string (auth(), authenticated_user/session/admin_user, and every
+    // `merovingian::homeserver::*` handler that takes `req.access_token`)
+    // then works completely unmodified, whether the caller presented an
+    // ordinary session token or an appservice's as_token.
+    auto req = raw_req;
+    if (appservice::is_masquerade_token(req.access_token))
+    {
+        // A raw token in this internal reserved shape must NEVER be trusted
+        // as authentic: this format is only ever synthesized below, in
+        // process, for the remainder of THIS call, after the presented
+        // as_token has already been verified — see the doc comment on
+        // is_masquerade_token(). Clearing it makes such a request behave
+        // exactly like any other request bearing an unknown token.
+        req.access_token.clear();
+    }
+    else if (auto const* appservice_registration = rt.homeserver.appservices.find_by_as_token(req.access_token);
+             appservice_registration != nullptr)
+    {
+        auto const& server_name = rt.homeserver.config.server().server_name;
+        auto const requested_user_id = query_param_value(req.target, "user_id");
+        auto const effective_user_id = requested_user_id.has_value() && !requested_user_id->empty()
+                                           ? *requested_user_id
+                                           : appservice::sender_user_id(*appservice_registration, server_name);
+        if (!appservice::appservice_owns_user(*appservice_registration, server_name, effective_user_id))
+        {
+            // Spec: "The user specified in the query string must be covered
+            // by one of the application service's `user` namespaces."
+            return dispatch_err(req, rt, 403U, "M_FORBIDDEN",
+                                "user_id is not within this appservice's registered namespace");
+        }
+        auto const requested_device_id = query_param_value(req.target, "device_id");
+        if (requested_device_id.has_value() && !requested_device_id->empty())
+        {
+            // Spec (v1.17): "If the given device ID is not known to belong
+            // to the user, the server will return a 400 M_UNKNOWN_DEVICE
+            // error."
+            auto const device_known = std::ranges::any_of(
+                rt.homeserver.database.persistent_store.devices,
+                [&effective_user_id, &requested_device_id](database::PersistentDevice const& device) {
+                    return device.user_id == effective_user_id && device.device_id == *requested_device_id;
+                });
+            if (!device_known)
+            {
+                return dispatch_err(req, rt, 400U, "M_UNKNOWN_DEVICE",
+                                    "device_id is not known to belong to the asserted user");
+            }
+        }
+        req.access_token = appservice::encode_masquerade_token(
+            {appservice_registration->id, effective_user_id, requested_device_id.value_or(std::string{})});
+    }
+
     log_diagnostic("request.received", {
                                            {"method",           req.method,                                       false},
                                            {"target",           observability::sanitized_http_target(req.target), false},
@@ -8689,6 +8768,81 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             return dispatch_err(req, rt, 400U, "M_BAD_JSON", "registration body must be Matrix JSON");
         }
+        // Matrix v1.19 Application Service API §"Server admin style
+        // permissions": `type: m.login.application_service` bypasses the
+        // ordinary registration flow (UIA, registration-token requirement,
+        // trust-safety policy) entirely. Checked before the UIA gate below
+        // so an appservice never has to satisfy a registration-token
+        // challenge it has no way to answer.
+        if (auto const* type_value = string_member(*registration_object, "type");
+            type_value != nullptr && *type_value == "m.login.application_service")
+        {
+            // The dispatcher's top-of-function appservice resolution has
+            // already turned a valid as_token into this internal
+            // masquerade-token shape; anything else means no valid as_token
+            // was presented (spec: 401 M_MISSING_TOKEN/M_UNKNOWN_TOKEN, same
+            // as ordinary invalid client-server auth).
+            auto const masquerade = appservice::decode_masquerade_token(req.access_token);
+            auto const* registration =
+                masquerade.has_value() ? rt.homeserver.appservices.find_by_id(masquerade->appservice_id) : nullptr;
+            if (registration == nullptr)
+            {
+                auto const errcode = req.access_token.empty() ? "M_MISSING_TOKEN" : "M_UNKNOWN_TOKEN";
+                return dispatch_err(req, rt, 401U, errcode,
+                                    "m.login.application_service requires a valid appservice as_token");
+            }
+            auto const* username = string_member(*registration_object, "username");
+            if (username == nullptr)
+            {
+                username = string_member(*registration_object, "user");
+            }
+            if (username == nullptr || !auth::localpart_is_valid_new(*username))
+            {
+                return dispatch_err(req, rt, 400U, "M_INVALID_USERNAME", "desired username is not valid");
+            }
+            auto const& server_name = rt.homeserver.config.server().server_name;
+            auto const desired_user_id = "@" + *username + ":" + server_name;
+            if (!appservice::appservice_owns_user(*registration, server_name, desired_user_id))
+            {
+                // Spec: "Application services which attempt to create users
+                // ... outside of their defined namespaces ... will receive
+                // an error code M_EXCLUSIVE."
+                return dispatch_err(req, rt, 403U, "M_EXCLUSIVE",
+                                    "username is outside this appservice's registered namespace");
+            }
+            auto const result = register_appservice_user(rt.homeserver, *username);
+            if (!result.ok)
+            {
+                return dispatch_err(req, rt, result.status, registration_error_code(result.status, result.reason),
+                                    result.reason);
+            }
+            auto const full_user_id = result.value;
+            auto const* inhibit_login_value = boolean_member(*registration_object, "inhibit_login");
+            if (inhibit_login_value != nullptr && *inhibit_login_value)
+            {
+                return dispatch_resp(req, rt, 200U,
+                                     json_serialize(json_obj({json_member("user_id", json_str(full_user_id))})));
+            }
+            auto const* device_id_value = string_member(*registration_object, "device_id");
+            auto const reg_device_id =
+                (device_id_value == nullptr || device_id_value->empty()) ? generate_device_id() : *device_id_value;
+            auto const session = login_appservice_user(rt.homeserver, full_user_id, reg_device_id);
+            if (!session.ok)
+            {
+                return dispatch_resp(req, rt, 200U,
+                                     json_serialize(json_obj({json_member("user_id", json_str(full_user_id))})));
+            }
+            if (find_device(rt, full_user_id, reg_device_id) == nullptr)
+            {
+                rt.devices.push_back({full_user_id, reg_device_id, reg_device_id});
+            }
+            return dispatch_resp(req, rt, 200U,
+                                 json_serialize(json_obj({
+                                     json_member("access_token", json_str(session.value)),
+                                     json_member("user_id", json_str(full_user_id)),
+                                     json_member("device_id", json_str(reg_device_id)),
+                                 })));
+        }
         // Spec §5.5.1: UIA is only required when the server is configured to
         // require a registration token. When require_token is false the client
         // may register without any auth block.
@@ -8727,6 +8881,17 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         if (!auth::localpart_is_valid_new(body->localpart))
         {
             return dispatch_err(req, rt, 400U, "M_INVALID_USERNAME", "desired username is not valid");
+        }
+        // Spec: "normal users who attempt to create users ... inside an
+        // application service-defined namespace will receive ... M_EXCLUSIVE
+        // ... but only if the application service has defined the namespace
+        // as exclusive." This path is reached only for an ordinary
+        // (non-appservice) registration — the m.login.application_service
+        // branch above already returned.
+        if (auto const desired_user_id = "@" + body->localpart + ":" + rt.homeserver.config.server().server_name;
+            rt.homeserver.appservices.user_namespace_exclusively_owned_by_other(desired_user_id, {}))
+        {
+            return dispatch_err(req, rt, 400U, "M_EXCLUSIVE", "this username is reserved for a registered appservice");
         }
         auto const result =
             register_local_user(rt.homeserver, body->localpart, body->password, body->registration_token);
@@ -8767,7 +8932,16 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         return dispatch_resp(
             req, rt, 200U,
             json_serialize(json_obj({
-                json_member("flows", json_arr({json_obj({json_member("type", json_str("m.login.password"))})})),
+                json_member("flows", json_arr({
+                                         json_obj({json_member("type", json_str("m.login.password"))}),
+                                         // Matrix v1.19 Application Service API
+                                         // §"Server admin style permissions". Usable
+                                         // only by a request presenting a valid
+                                         // as_token; harmless to advertise
+                                         // unconditionally, mirroring
+                                         // m.login.password's advertisement.
+                                         json_obj({json_member("type", json_str("m.login.application_service"))}),
+                                     })),
             })));
     }
     if (req.method == "POST" && req.target == "/_matrix/client/v3/login")
@@ -8780,6 +8954,45 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         if (body->device_id.empty())
         {
             body->device_id = generate_device_id();
+        }
+        if (body->is_appservice_login)
+        {
+            // See the identical pattern in the m.login.application_service
+            // branch of /register above.
+            auto const masquerade = appservice::decode_masquerade_token(req.access_token);
+            auto const* registration =
+                masquerade.has_value() ? rt.homeserver.appservices.find_by_id(masquerade->appservice_id) : nullptr;
+            if (registration == nullptr)
+            {
+                auto const errcode = req.access_token.empty() ? "M_MISSING_TOKEN" : "M_UNKNOWN_TOKEN";
+                return dispatch_err(req, rt, 401U, errcode,
+                                    "m.login.application_service requires a valid appservice as_token");
+            }
+            auto const& server_name = rt.homeserver.config.server().server_name;
+            if (!appservice::appservice_owns_user(*registration, server_name, body->user_id))
+            {
+                return dispatch_err(req, rt, 403U, "M_EXCLUSIVE",
+                                    "user is outside this appservice's registered namespace");
+            }
+            auto const as_result = login_appservice_user(rt.homeserver, body->user_id, body->device_id);
+            if (!as_result.ok)
+            {
+                return dispatch_err(req, rt, as_result.status, "M_FORBIDDEN", as_result.reason);
+            }
+            if (find_device(rt, body->user_id, body->device_id) == nullptr)
+            {
+                auto const dn = body->display_name.empty() ? body->device_id : body->display_name;
+                rt.devices.push_back({body->user_id, body->device_id, dn});
+                auto const self_change = database::PersistentDeviceListChange{0U, std::string{body->user_id},
+                                                                              std::string{body->user_id}, "changed"};
+                std::ignore = record_device_list_change(rt, self_change);
+            }
+            return dispatch_resp(req, rt, 200U,
+                                 json_serialize(json_obj({
+                                     json_member("access_token", json_str(as_result.value)),
+                                     json_member("user_id", json_str(body->user_id)),
+                                     json_member("device_id", json_str(body->device_id)),
+                                 })));
         }
         auto const result = login_local_user(rt.homeserver, body->user_id, body->password, body->device_id,
                                              body->supports_refresh_tokens);
@@ -9272,6 +9485,18 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "user is not a member of this room");
         }
         auto const room_alias = core::percent_decode_path_component(request_path.substr(directory_room_prefix.size()));
+        // Spec: an exclusive aliases namespace blocks alias creation by
+        // anyone other than the owning appservice, including another
+        // appservice. The owning appservice itself is exempt from its own
+        // exclusivity — decode_masquerade_token recovers which appservice
+        // (if any) is acting here, via the same substitution the dispatcher
+        // performs at the top of this function.
+        if (auto const masquerade = appservice::decode_masquerade_token(req.access_token);
+            rt.homeserver.appservices.alias_namespace_exclusively_owned_by_other(
+                room_alias, masquerade.has_value() ? masquerade->appservice_id : std::string{}))
+        {
+            return dispatch_err(req, rt, 400U, "M_EXCLUSIVE", "this alias is reserved for a registered appservice");
+        }
         auto const existing = database::find_room_alias(rt.homeserver.database.persistent_store, room_alias);
         if (existing.has_value())
         {
@@ -10398,6 +10623,13 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             if (database::find_room_alias(rt.homeserver.database.persistent_store, alias).has_value())
             {
                 return dispatch_err(req, rt, 400U, "M_ROOM_IN_USE", "room alias already in use");
+            }
+            // See the identical exclusivity check in PUT /directory/room/{alias}.
+            if (auto const masquerade = appservice::decode_masquerade_token(req.access_token);
+                rt.homeserver.appservices.alias_namespace_exclusively_owned_by_other(
+                    alias, masquerade.has_value() ? masquerade->appservice_id : std::string{}))
+            {
+                return dispatch_err(req, rt, 400U, "M_EXCLUSIVE", "this alias is reserved for a registered appservice");
             }
         }
 

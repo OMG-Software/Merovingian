@@ -3,6 +3,7 @@
 
 #include "merovingian/homeserver/auth_service.hpp"
 
+#include "merovingian/appservice/masquerade_token.hpp"
 #include "merovingian/auth/identity.hpp"
 #include "merovingian/auth/password.hpp"
 #include "merovingian/auth/session.hpp"
@@ -435,6 +436,124 @@ namespace
         return make_operation_result(true, user_id);
     }
 
+    // Shared tail of login_local_user() and login_appservice_user(): device
+    // validation, account-state (locked/suspended) policy, token issuance,
+    // and session persistence. The two callers differ only in how they got
+    // to a validated `user` — one via password verification, the other via
+    // as_token + namespace verification — everything after that point is
+    // identical, so it lives here once rather than being duplicated.
+    // NOLINTBEGIN(bugprone-easily-swappable-parameters)
+    [[nodiscard]] auto complete_login(HomeserverRuntime& runtime, LocalUser& user, std::string_view device_id,
+                                      bool with_ttl) -> OperationResult
+    {
+        if (!auth::device_id_is_valid(device_id))
+        {
+            log_diagnostic_audit(runtime.database, "auth", "login.rejected",
+                                 {
+                                     {"user_id",   user.user_id,           false},
+                                     {"device_id", std::string{device_id}, false},
+                                     {"reason",    "invalid device id",    false}
+            },
+                                 observability::LogEventSeverity::warning, observability::AuditCategory::auth,
+                                 "login.rejected", user.user_id, std::string{device_id}, "invalid device id");
+            return make_operation_result(false, {}, "invalid device id");
+        }
+
+        auto state = auth::AccountState::active;
+        if (user.locked)
+        {
+            state = auth::AccountState::locked;
+        }
+        if (user.suspended)
+        {
+            state = auth::AccountState::suspended;
+        }
+        auto const login = auth::login_policy({user.user_id, state});
+        if (!login.allowed)
+        {
+            // Account locked or suspended: still a 403, not a 400.
+            log_diagnostic_audit(runtime.database, "auth", "login.rejected",
+                                 {
+                                     {"user_id",   user.user_id,           false},
+                                     {"device_id", std::string{device_id}, false},
+                                     {"status",    "403",                  false},
+                                     {"reason",    login.reason,           false}
+            },
+                                 observability::LogEventSeverity::warning, observability::AuditCategory::auth,
+                                 "login.rejected", user.user_id, std::string{device_id}, "403:" + login.reason);
+            return make_operation_result(false, {}, "invalid login", 403U);
+        }
+
+        auto const token = issue_token();
+        if (!token.has_value())
+        {
+            log_diagnostic_audit(runtime.database, "auth", "login.rejected",
+                                 {
+                                     {"user_id",   user.user_id,              false},
+                                     {"device_id", std::string{device_id},    false},
+                                     {"reason",    "token generation failed", false}
+            },
+                                 observability::LogEventSeverity::warning, observability::AuditCategory::auth,
+                                 "login.rejected", user.user_id, std::string{device_id}, "token generation failed");
+            return make_operation_result(false, {}, "token generation failed");
+        }
+        auto const token_hash = issue_token_hash(runtime, *token);
+        if (!token_hash.has_value())
+        {
+            log_diagnostic_audit(runtime.database, "auth", "login.rejected",
+                                 {
+                                     {"user_id",   user.user_id,           false},
+                                     {"device_id", std::string{device_id}, false},
+                                     {"reason",    "token hashing failed", false}
+            },
+                                 observability::LogEventSeverity::warning, observability::AuditCategory::auth,
+                                 "login.rejected", user.user_id, std::string{device_id}, "token hashing failed");
+            return make_operation_result(false, {}, "token hashing failed");
+        }
+        auto const device_exists = std::ranges::any_of(
+            runtime.database.persistent_store.devices, [&user, device_id](database::PersistentDevice const& device) {
+                return device.user_id == user.user_id && device.device_id == device_id;
+            });
+        auto device = std::optional<database::PersistentDevice>{};
+        if (!device_exists)
+        {
+            device = database::PersistentDevice{user.user_id, std::string{device_id}, std::string{device_id}};
+        }
+        // Only honour the configured TTL when the client opted into refresh tokens.
+        // Spec §5.6.2: servers SHOULD NOT expire tokens without co-issuing a refresh token.
+        auto const access_expires_at =
+            token_expires_at(with_ttl ? runtime.config.security().access_token_lifetime_ms : 0LL);
+        if (!database::store_device_and_access_token(
+                runtime.database.persistent_store, std::move(device),
+                {user.user_id, std::string{device_id}, *token_hash, false, access_expires_at}))
+        {
+            log_diagnostic_audit(runtime.database, "auth", "login.rejected",
+                                 {
+                                     {"user_id",   user.user_id,               false},
+                                     {"device_id", std::string{device_id},     false},
+                                     {"status",    "500",                      false},
+                                     {"reason",    "login persistence failed", false}
+            },
+                                 observability::LogEventSeverity::warning, observability::AuditCategory::auth,
+                                 "login.rejected", user.user_id, std::string{device_id},
+                                 "500:login persistence failed");
+            return make_operation_result(false, {}, "login persistence failed", 500U);
+        }
+        ++runtime.database.next_session_id;
+        runtime.database.sessions.push_back(
+            {user.user_id, std::string{device_id}, *token_hash, false, access_expires_at});
+        append_local_audit(runtime.database, observability::AuditCategory::auth, "auth.login", user.user_id,
+                           std::string{device_id}, "accepted");
+        log_diagnostic("login.accepted",
+                       {
+                           {"user_id",   user.user_id,           false},
+                           {"device_id", std::string{device_id}, false}
+        },
+                       observability::LogEventSeverity::info);
+        return make_operation_result(true, *token);
+    }
+    // NOLINTEND(bugprone-easily-swappable-parameters)
+
 } // namespace
 
 // Load the registration token from disk once, hash it with Argon2id, and cache
@@ -526,6 +645,35 @@ auto bootstrap_admin_user(HomeserverRuntime& runtime, std::string_view localpart
     return make_user(runtime, localpart, password, true, "bootstrapped_admin");
 }
 
+// Application Service API (Matrix v1.19) §"Server admin style permissions":
+// `POST /register` with `type: m.login.application_service` bypasses the
+// ordinary registration flow entirely (no registration-token UIA, no
+// trust-safety registration policy hook, no captcha) — "This involves
+// bypassing the registration flows entirely." The caller (client_server.cpp)
+// has already verified the presented as_token and that `localpart` falls
+// within the appservice's namespace (or is its own sender_localpart) before
+// calling this.
+//
+// Passwordless per spec ("have a 'passwordless' user"): the account is
+// created with a freshly generated random password that is immediately
+// discarded and never returned to the caller, so `m.login.password` can
+// never succeed for it by chance — the appservice authenticates as this
+// user exclusively via its as_token (masquerade) or m.login.application_service.
+auto register_appservice_user(HomeserverRuntime& runtime, std::string_view localpart) -> OperationResult
+{
+    auto const user_id = user_id_from_localpart(runtime.config.server().server_name, localpart);
+    if (find_user(runtime.database, user_id) != nullptr)
+    {
+        return make_operation_result(false, {}, "user already exists");
+    }
+    auto const random_password = crypto::secure_random_hex(32U);
+    if (!random_password.has_value())
+    {
+        return make_operation_result(false, {}, "password hashing failed");
+    }
+    return make_user(runtime, localpart, *random_password, false, "created_by_appservice");
+}
+
 // NOLINTBEGIN(bugprone-easily-swappable-parameters)
 auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std::string_view password,
                       std::string_view device_id, bool with_ttl) -> OperationResult
@@ -554,111 +702,43 @@ auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std:
                              std::string{"403:"} + audit_reason);
         return make_operation_result(false, {}, "invalid login", 403U);
     }
-    if (!auth::device_id_is_valid(device_id))
+    return complete_login(runtime, *user, device_id, with_ttl);
+}
+// NOLINTEND(bugprone-easily-swappable-parameters)
+
+// Application Service API (Matrix v1.19) §"Server admin style permissions":
+// logs in as `user_id` WITHOUT a password check, for a `POST /login` call
+// authenticated with an appservice's `as_token` and
+// `type: m.login.application_service`. The caller (client_server.cpp) is
+// responsible for verifying the as_token and that `user_id` falls within
+// the appservice's namespace (or is its own sender_localpart) before
+// calling this — the same division of responsibility as
+// register_appservice_user below. Locked/suspended accounts are still
+// rejected: masquerading does not bypass account-state moderation.
+auto login_appservice_user(HomeserverRuntime& runtime, std::string_view user_id, std::string_view device_id)
+    -> OperationResult
+{
+    log_diagnostic("login.appservice.started",
+                   {
+                       {"user_id",   std::string{user_id},   false},
+                       {"device_id", std::string{device_id}, false}
+    });
+    auto* user = find_user(runtime.database, user_id);
+    if (user == nullptr)
     {
         log_diagnostic_audit(runtime.database, "auth", "login.rejected",
                              {
                                  {"user_id",   std::string{user_id},   false},
                                  {"device_id", std::string{device_id}, false},
-                                 {"reason",    "invalid device id",    false}
-        },
-                             observability::LogEventSeverity::warning, observability::AuditCategory::auth,
-                             "login.rejected", std::string{user_id}, std::string{device_id}, "invalid device id");
-        return make_operation_result(false, {}, "invalid device id");
-    }
-
-    auto state = auth::AccountState::active;
-    if (user->locked)
-    {
-        state = auth::AccountState::locked;
-    }
-    if (user->suspended)
-    {
-        state = auth::AccountState::suspended;
-    }
-    auto const login = auth::login_policy({user->user_id, state});
-    if (!login.allowed)
-    {
-        // Account locked or suspended: still a 403, not a 400.
-        log_diagnostic_audit(runtime.database, "auth", "login.rejected",
-                             {
-                                 {"user_id",   user->user_id,          false},
-                                 {"device_id", std::string{device_id}, false},
                                  {"status",    "403",                  false},
-                                 {"reason",    login.reason,           false}
+                                 {"reason",    "unknown user",         false}
         },
                              observability::LogEventSeverity::warning, observability::AuditCategory::auth,
-                             "login.rejected", user->user_id, std::string{device_id}, "403:" + login.reason);
+                             "login.rejected", std::string{user_id}, std::string{device_id}, "403:unknown user");
         return make_operation_result(false, {}, "invalid login", 403U);
     }
-
-    auto const token = issue_token();
-    if (!token.has_value())
-    {
-        log_diagnostic_audit(runtime.database, "auth", "login.rejected",
-                             {
-                                 {"user_id",   user->user_id,             false},
-                                 {"device_id", std::string{device_id},    false},
-                                 {"reason",    "token generation failed", false}
-        },
-                             observability::LogEventSeverity::warning, observability::AuditCategory::auth,
-                             "login.rejected", user->user_id, std::string{device_id}, "token generation failed");
-        return make_operation_result(false, {}, "token generation failed");
-    }
-    auto const token_hash = issue_token_hash(runtime, *token);
-    if (!token_hash.has_value())
-    {
-        log_diagnostic_audit(runtime.database, "auth", "login.rejected",
-                             {
-                                 {"user_id",   user->user_id,          false},
-                                 {"device_id", std::string{device_id}, false},
-                                 {"reason",    "token hashing failed", false}
-        },
-                             observability::LogEventSeverity::warning, observability::AuditCategory::auth,
-                             "login.rejected", user->user_id, std::string{device_id}, "token hashing failed");
-        return make_operation_result(false, {}, "token hashing failed");
-    }
-    auto const device_exists = std::ranges::any_of(
-        runtime.database.persistent_store.devices, [user, device_id](database::PersistentDevice const& device) {
-            return device.user_id == user->user_id && device.device_id == device_id;
-        });
-    auto device = std::optional<database::PersistentDevice>{};
-    if (!device_exists)
-    {
-        device = database::PersistentDevice{user->user_id, std::string{device_id}, std::string{device_id}};
-    }
-    // Only honour the configured TTL when the client opted into refresh tokens.
-    // Spec §5.6.2: servers SHOULD NOT expire tokens without co-issuing a refresh token.
-    auto const access_expires_at =
-        token_expires_at(with_ttl ? runtime.config.security().access_token_lifetime_ms : 0LL);
-    if (!database::store_device_and_access_token(
-            runtime.database.persistent_store, std::move(device),
-            {user->user_id, std::string{device_id}, *token_hash, false, access_expires_at}))
-    {
-        log_diagnostic_audit(runtime.database, "auth", "login.rejected",
-                             {
-                                 {"user_id",   user->user_id,              false},
-                                 {"device_id", std::string{device_id},     false},
-                                 {"status",    "500",                      false},
-                                 {"reason",    "login persistence failed", false}
-        },
-                             observability::LogEventSeverity::warning, observability::AuditCategory::auth,
-                             "login.rejected", user->user_id, std::string{device_id}, "500:login persistence failed");
-        return make_operation_result(false, {}, "login persistence failed", 500U);
-    }
-    ++runtime.database.next_session_id;
-    runtime.database.sessions.push_back({user->user_id, std::string{device_id}, *token_hash, false, access_expires_at});
-    append_local_audit(runtime.database, observability::AuditCategory::auth, "auth.login", user->user_id,
-                       std::string{device_id}, "accepted");
-    log_diagnostic("login.accepted",
-                   {
-                       {"user_id",   user->user_id,          false},
-                       {"device_id", std::string{device_id}, false}
-    },
-                   observability::LogEventSeverity::info);
-    return make_operation_result(true, *token);
+    return complete_login(runtime, *user, device_id, false);
 }
-// NOLINTEND(bugprone-easily-swappable-parameters)
 
 auto issue_refresh_token_for_session(HomeserverRuntime& runtime, std::string_view user_id, std::string_view device_id)
     -> OperationResult
@@ -757,6 +837,27 @@ auto refresh_local_session(HomeserverRuntime& runtime, std::string_view refresh_
 
 auto authenticated_user(HomeserverRuntime& runtime, std::string_view access_token) -> std::optional<std::string>
 {
+    // Application Service API (Matrix v1.19) identity-assertion masquerade.
+    // client_server.cpp's dispatch entry point synthesizes this internal
+    // token shape exactly once per request, only after verifying the
+    // presented as_token via constant-time comparison against the registry
+    // and validating the asserted user_id against the appservice's
+    // namespaces — see appservice/masquerade_token.hpp's doc comment for why
+    // a raw externally-supplied token in this shape can never reach here.
+    // Re-validated here anyway (appservice still registered, user_id still
+    // within its namespace) as defense in depth against a stale token
+    // surviving a config reload that removed/changed the appservice.
+    if (auto const identity = appservice::decode_masquerade_token(access_token); identity.has_value())
+    {
+        auto const* registration = runtime.appservices.find_by_id(identity->appservice_id);
+        if (registration == nullptr ||
+            !appservice::appservice_owns_user(*registration, runtime.config.server().server_name, identity->user_id))
+        {
+            return std::nullopt;
+        }
+        return identity->user_id;
+    }
+
     auto const token_hashes = lookup_token_hashes(runtime, access_token);
     if (token_hashes.empty())
     {
@@ -817,6 +918,22 @@ auto authenticated_user(HomeserverRuntime& runtime, std::string_view access_toke
 auto authenticated_session(HomeserverRuntime const& runtime, std::string_view access_token)
     -> std::optional<LocalSession>
 {
+    // See authenticated_user() above for why this branch is safe.
+    if (auto const identity = appservice::decode_masquerade_token(access_token); identity.has_value())
+    {
+        auto const* registration = runtime.appservices.find_by_id(identity->appservice_id);
+        if (registration == nullptr ||
+            !appservice::appservice_owns_user(*registration, runtime.config.server().server_name, identity->user_id))
+        {
+            return std::nullopt;
+        }
+        // No DB-backed access-token hash exists for a masquerade identity —
+        // it is not a real session row. access_token_hash is left empty;
+        // callers of authenticated_session must not treat it as a lookup
+        // key back into the session store.
+        return LocalSession{identity->user_id, identity->device_id, {}, false, std::nullopt};
+    }
+
     auto const token_hashes = lookup_token_hashes(runtime, access_token);
     if (token_hashes.empty())
     {

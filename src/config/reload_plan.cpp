@@ -474,6 +474,11 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
         add_change(plan, "federation.worker.apply_hardening");
     }
 
+    if (current.appservice().registration_files != next.appservice().registration_files)
+    {
+        add_change(plan, "appservice.registration_files");
+    }
+
     if (!(current.client_rate_limits().default_per_ip == next.client_rate_limits().default_per_ip))
     {
         add_change(plan, "client_rate_limits.default_per_ip");

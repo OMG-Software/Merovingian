@@ -20,6 +20,14 @@ namespace merovingian::homeserver
                                         std::string_view password) -> OperationResult;
 [[nodiscard]] auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std::string_view password,
                                     std::string_view device_id, bool with_ttl = false) -> OperationResult;
+// Application Service API (Matrix v1.19): see the .cpp definitions for the
+// full spec citation. The caller MUST have already verified the presented
+// as_token and that the target user_id/localpart is within the appservice's
+// namespace (or is its own sender_localpart) before calling either of these
+// — neither function re-derives that check itself.
+[[nodiscard]] auto register_appservice_user(HomeserverRuntime& runtime, std::string_view localpart) -> OperationResult;
+[[nodiscard]] auto login_appservice_user(HomeserverRuntime& runtime, std::string_view user_id,
+                                         std::string_view device_id) -> OperationResult;
 [[nodiscard]] auto issue_refresh_token_for_session(HomeserverRuntime& runtime, std::string_view user_id,
                                                    std::string_view device_id) -> OperationResult;
 [[nodiscard]] auto refresh_local_session(HomeserverRuntime& runtime, std::string_view refresh_token)

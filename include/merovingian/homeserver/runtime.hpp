@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/appservice/registration.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/core/secret_buffer.hpp"
 #include "merovingian/crypto/ed25519.hpp"
@@ -245,6 +246,13 @@ struct HomeserverRuntime final
     // PushGatewayClient::notify() to pin a local mock gateway + in-memory CA
     // bundle in tests (discovery rejects loopback and never sets a CA bundle).
     std::map<std::string, push::TestForcedPushGatewayResolution> test_forced_push_gateway_resolution{};
+    // Application Service API registry (Matrix v1.19). Built once at
+    // start_runtime() time from config.appservice().registration_files and
+    // never mutated afterward — every request reads it as an immutable,
+    // read-only snapshot without locking runtime.mutex. Empty when no
+    // registration files are configured, which leaves the entire AS surface
+    // inert (see docs/todos/capability-gaps.md, "Application service API").
+    appservice::AppserviceRegistry appservices{};
     std::unique_ptr<federation::DispatchWorker> dispatch_worker{};
     // Non-null when federation.worker.enabled = true. Intercepts inbound
     // federation requests and forwards them to the out-of-process worker.

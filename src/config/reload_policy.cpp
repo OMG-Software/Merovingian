@@ -73,6 +73,17 @@ auto reload_policy_for_key(std::string_view key) noexcept -> ReloadPolicy
         return ReloadPolicy::restart_required;
     }
 
+    // Application Service API: the AppserviceRegistry is parsed from the
+    // configured registration files once at start_runtime() time and handed
+    // out as an immutable, read-only snapshot to every request. SIGHUP does
+    // not re-parse or rebuild it, so a registration-file-path change (add,
+    // remove, or edit the list) requires a restart, the same lifecycle as
+    // federation.worker.* above.
+    if (starts_with(key, "appservice."))
+    {
+        return ReloadPolicy::restart_required;
+    }
+
     return ReloadPolicy::reloadable;
 }
 

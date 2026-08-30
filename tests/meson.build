@@ -91,6 +91,8 @@ shell = find_program('sh')
     'merovingian-unit-tests',
     sources: files(
       'unit/test_main.cpp',
+      'unit/test_appservice_masquerade_token.cpp',
+      'unit/test_appservice_registration.cpp',
       'unit/test_auth.cpp',
       'unit/test_auth_client_server_api.cpp',
       'unit/test_auth_oidc_discovery.cpp',
@@ -203,7 +205,7 @@ shell = find_program('sh')
     ),
     include_directories: inc,
     dependencies: [catch2_dep, thread_dep, libsodium_dep, openssl_dep, libpq_dep, sqlite_dep, libcurl_dep, resolv_dep],
-    link_with: [auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, events_lib, federation_lib, federation_worker_lib, homeserver_lib, http_lib, identity_lib, ipc_lib, media_lib, net_lib, observability_lib, platform_lib, push_lib, rooms_lib, sync_lib, trust_safety_lib],
+    link_with: [appservice_lib, auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, events_lib, federation_lib, federation_worker_lib, homeserver_lib, http_lib, identity_lib, ipc_lib, media_lib, net_lib, observability_lib, platform_lib, push_lib, rooms_lib, sync_lib, trust_safety_lib],
   )
 
   test('unit-tests', unit_tests, timeout: 600)
@@ -212,6 +214,7 @@ shell = find_program('sh')
     'merovingian-conformance-tests',
     sources: files(
       'conformance/test_main.cpp',
+      'conformance/test_appservice_conformance.cpp',
       'conformance/test_canonicaljson_parser.cpp',
       'conformance/test_canonicaljson_serializer.cpp',
       'conformance/test_client_server_conformance.cpp',
@@ -251,7 +254,7 @@ shell = find_program('sh')
     ),
     include_directories: inc,
     dependencies: [catch2_dep, thread_dep, libsodium_dep, openssl_dep, libpq_dep, sqlite_dep, libcurl_dep, resolv_dep],
-    link_with: [auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, events_lib, federation_lib, homeserver_lib, http_lib, identity_lib, ipc_lib, media_lib, net_lib, observability_lib, platform_lib, push_lib, rooms_lib, sync_lib, trust_safety_lib],
+    link_with: [appservice_lib, auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, events_lib, federation_lib, homeserver_lib, http_lib, identity_lib, ipc_lib, media_lib, net_lib, observability_lib, platform_lib, push_lib, rooms_lib, sync_lib, trust_safety_lib],
   )
 
   test('conformance-tests', conformance_tests, timeout: 600)
@@ -302,7 +305,7 @@ shell = find_program('sh')
     ),
     include_directories: inc,
     dependencies: [catch2_dep, thread_dep, libsodium_dep, openssl_dep, libpq_dep, sqlite_dep, libcurl_dep, resolv_dep],
-    link_with: [auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, events_lib, federation_lib, federation_worker_lib, homeserver_lib, http_lib, identity_lib, ipc_lib, media_lib, net_lib, observability_lib, platform_lib, push_lib, rooms_lib, sync_lib, trust_safety_lib],
+    link_with: [appservice_lib, auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, events_lib, federation_lib, federation_worker_lib, homeserver_lib, http_lib, identity_lib, ipc_lib, media_lib, net_lib, observability_lib, platform_lib, push_lib, rooms_lib, sync_lib, trust_safety_lib],
     cpp_args: [thumbnail_test_args, federation_worker_test_args, server_test_args],
   )
 
@@ -320,7 +323,7 @@ shell = find_program('sh')
       ),
       include_directories: inc,
       dependencies: [catch2_dep, thread_dep, libsodium_dep, openssl_dep, libpq_dep, sqlite_dep, libcurl_dep, resolv_dep],
-      link_with: [auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, events_lib, federation_lib, homeserver_lib, http_lib, identity_lib, ipc_lib, media_lib, net_lib, observability_lib, platform_lib, push_lib, rooms_lib, sync_lib, trust_safety_lib],
+      link_with: [appservice_lib, auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, events_lib, federation_lib, homeserver_lib, http_lib, identity_lib, ipc_lib, media_lib, net_lib, observability_lib, platform_lib, push_lib, rooms_lib, sync_lib, trust_safety_lib],
     )
 
     test('live-integration-tests', live_integration_tests)
