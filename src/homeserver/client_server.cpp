@@ -10428,7 +10428,20 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
         }
 
+        // create_room takes its own lock on rt.homeserver.mutex (it must
+        // remain independently callable — see room_service.cpp), so calling
+        // it while this handler's own guard is still held would recursively
+        // double-lock the mutex: NetworkIoUnlock inside
+        // resolve_policy_server_hook would then release only this outer
+        // level, leaving create_room's own (inner) guard — the one actually
+        // in scope at the point of the network call — still holding the
+        // mutex. Release this guard first, exactly like call_local does for
+        // the local-router delegation, so create_room's own guard is the
+        // only one active and its own RequestLockScope publication is what
+        // NetworkIoUnlock sees.
+        guard.unlock();
         auto const create_result = create_room(rt.homeserver, req.access_token, options);
+        guard.lock();
         if (!create_result.ok)
         {
             auto errcode = error_code_for_status(create_result.status);
@@ -11892,7 +11905,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             auto upgrade_options = CreateRoomOptions{};
             upgrade_options.room_version = *new_version_str;
             upgrade_options.creation_content.push_back(json_member("predecessor", json_obj(std::move(predecessor))));
+            // See the createRoom route above for why the outer guard must be
+            // released before calling create_room (which self-locks).
+            guard.unlock();
             auto const create_result = create_room(rt.homeserver, req.access_token, upgrade_options);
+            guard.lock();
             if (!create_result.ok)
             {
                 return dispatch_err(req, rt, create_result.status, error_code_for_status(create_result.status),
