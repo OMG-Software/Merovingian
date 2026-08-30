@@ -11,7 +11,7 @@ namespace merovingian::database
 namespace
 {
 
-    constexpr auto schema_version = std::uint32_t{12U};
+    constexpr auto schema_version = std::uint32_t{13U};
 
     // Tables introduced after the v1 initial schema are listed here so the
     // bootstrap path can create the original v1 shape and then apply numbered
@@ -44,7 +44,16 @@ namespace
         std::string_view{"openid_tokens"},
     };
 
+    // v12 (login_tokens) is owned by a sibling branch (SSO login,
+    // migrations/012_login_tokens.sql) not implemented here — this repo
+    // carries only the table registration so the migration chain stays
+    // contiguous; no login_tokens feature code (store/find/hydration)
+    // exists in this module.
     constexpr auto v12_table_names = std::array{
+        std::string_view{"login_tokens"},
+    };
+
+    constexpr auto v13_table_names = std::array{
         std::string_view{"appservice_txn_cursor"},
     };
 
@@ -57,12 +66,13 @@ namespace
                std::ranges::find(v8_table_names, table_name) != v8_table_names.end() ||
                std::ranges::find(v9_table_names, table_name) != v9_table_names.end() ||
                std::ranges::find(v10_table_names, table_name) != v10_table_names.end() ||
-               std::ranges::find(v12_table_names, table_name) != v12_table_names.end();
+               std::ranges::find(v12_table_names, table_name) != v12_table_names.end() ||
+               std::ranges::find(v13_table_names, table_name) != v13_table_names.end();
     }
 
     constexpr auto post_v1_table_count = v2_table_names.size() + v3_table_names.size() + v4_table_names.size() +
                                          v6_table_names.size() + v8_table_names.size() + v9_table_names.size() +
-                                         v10_table_names.size() + v12_table_names.size();
+                                         v10_table_names.size() + v12_table_names.size() + v13_table_names.size();
 
     constexpr auto core_tables = std::array{
         SchemaTableDefinition{"schema_migrations",
@@ -206,6 +216,11 @@ namespace
                               "highlight TEXT NOT NULL DEFAULT 'false', PRIMARY KEY (user_id, event_id)"                                                                },
         SchemaTableDefinition{"openid_tokens",           "user_id TEXT NOT NULL, token_hash TEXT PRIMARY KEY, "
                                                "expires_at TEXT NOT NULL DEFAULT '0'"                                     },
+        // Owned by the sibling SSO-login branch — see the v12_table_names
+        // comment above.
+        SchemaTableDefinition{"login_tokens",
+                              "user_id TEXT NOT NULL, token_hash TEXT PRIMARY KEY, expires_at TEXT NOT NULL "
+                              "DEFAULT '0', used TEXT NOT NULL DEFAULT 'false'"                                           },
         SchemaTableDefinition{"appservice_txn_cursor",
                               "appservice_id TEXT NOT NULL PRIMARY KEY, next_txn_id TEXT NOT NULL DEFAULT '1', "
                               "delivered_stream_ordering TEXT NOT NULL DEFAULT '0', pending_txn_id TEXT NOT NULL "

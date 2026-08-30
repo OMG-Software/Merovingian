@@ -1,9 +1,51 @@
 ## 0.12.1
 
+Release-blocker closures branch (`feature/release-blockers`). The audit that
+defines this branch is recorded in
+[`docs/todos/production-milestone.md`](docs/todos/production-milestone.md)
+"Release-blocking functional holes" — eight functional holes plus the still-open
+production gates. This section is updated as each closure lands.
+
+- Documented the release-blocking audit: the functional-hole table in
+  `docs/todos/production-milestone.md`, and a new "Runtime concurrency" ledger
+  row in `docs/todos/capability-gaps.md` recording that `HomeserverRuntime::mutex`
+  serialises every client-server request and inbound federation transaction, and
+  that every HTTP response carries `Connection: close`.
+- **HTTP/1.1 persistent connections (keep-alive, RFC 9112 §9.3).** Connections
+  are now served as a sequential loop of request rounds instead of
+  one-request-per-connection: HTTP/1.1 clients get persistent connections by
+  default, `Connection: close` is honoured and echoed, and HTTP/1.0 clients
+  are kept alive only on an explicit `Connection: keep-alive`. Each request's
+  body is drained exactly (Content-Length bytes) before the connection waits
+  for the next request, and surplus bytes are carried into the next round, so
+  request boundaries are never lost; pipelining itself stays out of scope —
+  pipelined requests are buffered and answered strictly in order. Kept-alive
+  responses carry `Connection: keep-alive` plus an advisory
+  `Keep-Alive: timeout=N` hint. Security composition: the connection guard is
+  now phase-aware (`http::connection_should_close`) — an idle parked
+  connection is bounded only by the operator-tunable idle window
+  (`server.http.keep_alive_idle_seconds`, default 15 s, 1..300, restart
+  required) and is never killed as "slow", while the full slowloris policy
+  applies unchanged once request bytes arrive; a process-wide CAS cap
+  (`server.http.keep_alive_max_connections`, default 8, 1..4096) bounds how
+  many connections may be parked waiting for a next request, so a client
+  cannot park a main-pool worker thread per connection beyond the operator's
+  budget. `/sync` long-polls still run on the dedicated sync pool, and a
+  kept-alive long-poll connection is handed back to the main pool for its
+  next round, preserving pool separation. New unit tests
+  (`tests/unit/test_http_keep_alive.cpp`) cover the framing decision, header
+  token parsing, policy validation, and the idle-vs-slow guard phases; new
+  integration scenarios
+  (`tests/integration/test_http_server_listener_flow.cpp`) exercise two
+  sequential requests over one real connection (plain and TLS), body-drain
+  framing across a pipelined send, `Connection: close` honouring, idle-window
+  expiry, and the parked-connection cap.
+
 Begins closing the Application Service API gap (Matrix v1.19): the entire
 surface was previously unimplemented (see `docs/todos/capability-gaps.md`).
-This entry covers the registration/auth layer; outbound transactions, query
-hooks, and `/thirdparty/*` land in follow-up entries under this same section.
+This entry covers the registration/auth layer and outbound transaction
+delivery; the outbound query hooks and `/thirdparty/*` remain and land in a
+follow-up entry under this same section.
 
 - **Appservice registration files.** New `merovingian::appservice` module
   (`include/merovingian/appservice/`, `src/appservice/`) parses registration
@@ -48,11 +90,34 @@ hooks, and `/thirdparty/*` land in follow-up entries under this same section.
   `PUT /_matrix/client/v3/directory/room/{roomAlias}` and `POST /createRoom`
   (`room_alias_name`) both reject an alias inside an exclusive `aliases`
   namespace the same way — except for the owning appservice itself.
-- **Known gaps, tracked in `docs/todos/capability-gaps.md`:** outbound
-  `PUT /_matrix/app/v1/transactions/{txnId}` delivery, the outbound
-  `GET /_matrix/app/v1/users/{userId}` / `/rooms/{roomAlias}` query hooks,
-  the `/_matrix/app/v1/ping` ↔ `POST /_matrix/client/v1/appservice/{id}/ping`
-  round trip, and `/_matrix/client/v3/thirdparty/*` remain unimplemented.
+- **Outbound `PUT /_matrix/app/v1/transactions/{txnId}` delivery.** New
+  `AppserviceClient` (`src/appservice/appservice_client.cpp`) PUTs one event
+  per transaction, authenticated with `Authorization: Bearer <hs_token>`.
+  Wired synchronously into `room_service.cpp`'s `dispatch_appservice_delivery`
+  from `send_event()`, local membership transitions, and the
+  federation-accepted-PDU path, for every registered appservice whose
+  namespaces match the event (`registration_interested_in_room_event`). The
+  delivery cursor (`next_txn_id`, `delivered_stream_ordering`, and the
+  currently in-flight `pending_txn_id`/`pending_stream_ordering`) is durable
+  in the new `appservice_txn_cursor` table (migration
+  `013_appservice_txn_cursor.sql`, schema version 13), so a retried
+  transaction reuses the exact same txn_id and event after a restart, per
+  spec ("Homeservers MUST NOT alter ... events they were going to send
+  within that transaction ID on retries"). Appservice URLs are
+  operator-configured (registration files), not attacker-influenced, so
+  `http::OutboundRequest` gained an opt-in `allow_cleartext_http` escape
+  hatch from its https-only invariant (default `false`, unchanged for every
+  other caller) — the spec's own canonical registration example, and most
+  real-world bridges, use plain `http://127.0.0.1:...`.
+- **Known gaps, tracked in `docs/todos/capability-gaps.md`:** the outbound
+  transaction delivery above sends one event per transaction synchronously
+  on the request path (no background dispatch, no retry/backoff timer
+  independent of new events, no `ephemeral` data); the outbound
+  `GET /_matrix/app/v1/users/{userId}` / `/rooms/{roomAlias}` query hooks
+  are scaffolded (client methods exist, unit-tested) but not invoked from
+  any local-miss call site; the `/_matrix/app/v1/ping` ↔
+  `POST /_matrix/client/v1/appservice/{id}/ping` round trip and
+  `/_matrix/client/v3/thirdparty/*` remain unimplemented.
 
 ## 0.11.13
 

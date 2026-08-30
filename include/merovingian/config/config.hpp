@@ -36,6 +36,28 @@ struct CorsConfig final
     std::string allow_headers{"authorization, content-type"};
 };
 
+// HTTP/1.1 persistent-connection (keep-alive) policy. Matrix v1.19 is served
+// over HTTP/1.1, where persistent connections are the default; keeping a
+// connection open saves a full TLS handshake per request. The fields mirror
+// `merovingian::http::KeepAlivePolicy` (validated by
+// `http::keep_alive_policy_is_valid()` and `config::validate()`):
+//   keep_alive              — master switch; false restores the historical
+//                             close-after-every-response behaviour.
+//   keep_alive_idle_seconds — how long a kept-alive connection may sit idle
+//                             (no next request) before the server closes it.
+//                             Range 1..300; restart required.
+//   keep_alive_max_connections — process-wide cap on connections parked idle
+//                             waiting for a next request. Each parked
+//                             connection occupies a main-pool worker thread,
+//                             so the cap bounds how many workers a client can
+//                             tie up. Range 1..4096; restart required.
+struct HttpTransportConfig final
+{
+    bool keep_alive{true};
+    std::uint32_t keep_alive_idle_seconds{15U};
+    std::uint32_t keep_alive_max_connections{8U};
+};
+
 struct TurnServerConfig final
 {
     // TURN server URI advertised to clients, e.g. "turn:turn.example.org:3478?transport=udp".
@@ -118,6 +140,10 @@ struct ServerConfig final
     // combined with `allow_credentials=true` is rejected at config-parse
     // time per the CORS spec.
     CorsConfig cors{};
+    // HTTP/1.1 persistent-connection (keep-alive) policy for the client and
+    // federation listeners. See merovingian/http/keep_alive.hpp for the
+    // semantics of each field; validation enforces the documented ranges.
+    HttpTransportConfig http{};
     // TURN relay configuration for GET /_matrix/client/v3/voip/turnServer.
     // Empty by default; when populated the endpoint returns real credentials.
     TurnServerConfig turn{};

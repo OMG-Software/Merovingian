@@ -391,6 +391,24 @@ Wildcard `*` is the safe default for Matrix because clients authenticate with
 forbids that combination. CORS is **not** hot-reloadable — a change to any
 `server.cors.*` key requires a restart.
 
+#### HTTP transport — `server.http.*`
+
+Controls HTTP/1.1 persistent connections (keep-alive). Connections are served
+as sequential request rounds; each kept-alive connection is parked for at most
+`keep_alive_idle_seconds` while waiting for the client's next request, and
+each parked connection holds one request-pool worker thread, so
+`keep_alive_max_connections` caps the process-wide total.
+
+| Key | Default | When to change |
+|---|---|---|
+| `server.http.keep_alive` | `true` | Set `false` to restore strict one-request-per-connection behaviour (e.g. in front of a proxy that pools upstream connections itself). |
+| `server.http.keep_alive_idle_seconds` | `15` | Idle window per kept-alive connection, seconds, 1..300. Raise for chatty API clients that re-use connections; lower to free worker threads sooner. |
+| `server.http.keep_alive_max_connections` | `8` | Process-wide cap on connections parked awaiting a next request, 1..4096. Beyond the cap the server answers `Connection: close`. Raise only alongside a larger request pool. |
+
+The parser rejects idle windows outside 1..300 seconds and caps outside
+1..4096. These keys are read when the listeners start and are **not**
+hot-reloadable — a change to any `server.http.*` key requires a restart.
+
 #### TURN server — `server.turn.*`
 
 VoIP clients request TURN relay credentials through
@@ -878,6 +896,7 @@ only reports what *would* happen.
 | `security.federation.join_response_max_size` | Restart required |
 | `federation.worker.*` | Restart required |
 | `server.cors.*` | Restart required |
+| `server.http.*` | Restart required |
 | `security.secrets.master_key_file` | Restart required |
 | `client_rate_limits.*` | Restart required |
 | `log_modules.*` | Restart required |

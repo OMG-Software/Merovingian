@@ -56,15 +56,87 @@ Implemented now:
   final wire formatter, dropping invalid header names/values instead of
   emitting them on the wire
 - `X-Content-Type-Options: nosniff` on every response
+- HTTP/1.1 persistent connections (keep-alive, RFC 9112 §9.3): sequential
+  request rounds over one connection, per-request framing with exact
+  Content-Length body draining, an operator-tunable idle window, and a
+  process-wide parked-connection cap — see "HTTP keep-alive" below
 
 Not implemented yet:
 
 - `llhttp` dependency wrapper
 - request body streaming implementation
 - per-endpoint rate-limit enforcement
-- runtime application of the slowloris progress policy
+- runtime application of the slowloris progress policy to the request-head
+  read deadline (the head deadline and inter-byte caps in `http_server.cpp`
+  are the inline enforcement of that policy)
 - HTTP/2
-- keep-alive (every connection currently sends `Connection: close`)
+- HTTP pipelining (more than one outstanding request per connection):
+  pipelined bytes are buffered and answered strictly in order, one response
+  at a time, so request boundaries are never lost
+
+## HTTP keep-alive
+
+Matrix v1.19 is served over HTTP/1.1, where persistent connections are the
+default. Merovingian serves each connection as a sequential loop of request
+rounds (`serve_connection` in `src/homeserver/http_server.cpp`): read one
+request head, drain exactly its Content-Length bytes, route, write one
+response, then either close or park the connection for the next request.
+
+Framing decisions (RFC 9112 §9.3, implemented in
+`merovingian::http::connection_preference_for_response`):
+
+- HTTP/1.1 requests default to `Connection: keep-alive`; a request carrying
+  the `close` token is answered with `Connection: close` and the connection
+  is closed after that response.
+- HTTP/1.0 requests default to close; only a request carrying the
+  `keep-alive` token keeps the connection open.
+- Kept-alive responses carry `Connection: keep-alive` and the advisory
+  `Keep-Alive: timeout=N` hint matching the configured idle window. The hint
+  is not a promise: the server may still close early (parked-connection cap
+  reached, shutdown) and the client must retry on a new connection.
+
+Connection lifecycle:
+
+1. **First request** — served immediately after accept; no parking, so no
+   worker thread is held without work.
+2. **Idle park** — before waiting for a subsequent request the connection
+   acquires one process-wide parked slot (CAS counter,
+   `parked_keep_alive_connections`). Beyond `server.http.keep_alive_max_connections`
+   the server closes after the current response instead of parking. The park
+   is bounded by `server.http.keep_alive_idle_seconds`, polled in one-second
+   slices so pool shutdown stays bounded to one slice regardless of the
+   configured window.
+3. **Next request** — when bytes arrive, the slot is released and the full
+   per-request machinery (slowloris head deadline and inter-byte caps, body
+   size caps, rate limits) applies to that request exactly as for a fresh
+   connection. Bytes read past a request's body (pipelined follow-up
+   requests) are carried into the next round, so request boundaries are
+   never lost.
+
+Slowloris composition: the phase-aware `connection_should_close` guard
+(`include/merovingian/http/connection_guard.hpp`) distinguishes
+`awaiting_request` (parked, bounded only by the idle window — a quiet
+connection is not a slow client) from `reading_request` (the slowloris
+rate policy applies in full). Mid-request slow clients are killed exactly as
+before; idle kept-alive connections are not.
+
+Sync-pool interaction: a `/sync` long-poll round is handed to the dedicated
+sync pool as before. When the long-poll response has been written and the
+client asked for keep-alive, the sync task submits the connection back to the
+main pool for its next round, preserving the pool separation (long-poll
+threads never serve ordinary request rounds).
+
+Configuration (`server.http.*`, restart required — read when listeners start):
+
+| Key | Default | Meaning |
+|---|---|---|
+| `server.http.keep_alive` | `true` | Enable persistent connections. `false` restores one-request-per-connection. |
+| `server.http.keep_alive_idle_seconds` | `15` | Idle window per parked connection, 1..300. |
+| `server.http.keep_alive_max_connections` | `8` | Process-wide cap on connections parked awaiting a request, 1..4096. Each parked connection occupies a main-pool worker thread. |
+
+Direct `serve_one_http_connection` callers (tests, one-off embeds) keep the
+historical one-request-per-call contract: with no owning pool the policy
+disables parking and the round is answered with `Connection: close`.
 
 ## Response-header safety
 
@@ -104,6 +176,24 @@ backend choice:
   does not resolve hostnames so the SSRF policy in
   `merovingian::federation::security` remains the single source of truth
 
+**`OutboundRequest::allow_cleartext_http`** (added 0.12.1) is a narrow,
+opt-in escape hatch from the https-only rule above, defaulting to `false`
+for every existing caller (federation, the push-gateway client, the
+identity-server client all stay https-only with no way to override it).
+Setting it to `true` additionally permits `http://` for that one request.
+The only sanctioned caller is `appservice::AppserviceClient`
+(`src/appservice/appservice_client.cpp`): an appservice registration file's
+`url` is operator-configured — a local filesystem artifact the operator
+wrote, not something a network peer can influence — and the Application
+Service API's own canonical registration example (and most real-world
+bridges) gives a plain `http://127.0.0.1:...` URL. When set, host
+resolution also intentionally bypasses `CachedServerDiscovery`'s
+private/loopback-address rejection (via `.upstream().lookup_addresses()`
+directly) for the same reason: that rejection exists specifically for
+attacker/client-influenced destinations, which an appservice URL is not.
+TLS verification (`CURLOPT_SSL_VERIFYPEER`/`VERIFYHOST`) is unaffected —
+still on unconditionally whenever the connection does end up being TLS.
+
 `perform()` is libcurl-backed. Each request runs with the following
 non-negotiable defaults so federation traffic cannot regress its security
 posture:
@@ -111,7 +201,9 @@ posture:
 - `CURLOPT_SSL_VERIFYPEER = 1` — reject untrusted certificate chains
 - `CURLOPT_SSL_VERIFYHOST = 2` — require the certificate to match the URL host
 - `CURLOPT_FOLLOWLOCATION = 0` — redirects are refused
-- `CURLOPT_PROTOCOLS_STR = "https"` — no cleartext fallback
+- `CURLOPT_PROTOCOLS_STR = "https"` — no cleartext fallback, unless the
+  request set `allow_cleartext_http = true` (see above), in which case
+  `"https,http"`
 - `CURLOPT_NOSIGNAL = 1` — signal-driven resolution disabled so timeouts
   remain safe across threads
 - `CURLOPT_CONNECTTIMEOUT` and `CURLOPT_TIMEOUT` driven by the request
@@ -236,7 +328,13 @@ The slowloris guard tracks bytes received versus elapsed time using:
 - grace period
 - header deadline
 
-This is currently a pure policy primitive. Runtime socket code must apply it when connection I/O exists.
+The request-head read applies the equivalent deadlines inline (`request_head_deadline`, inter-byte cap, per-`recv` poll timeout in `http_server.cpp`); a request head that dribbles bytes is dropped with a 408 once any bound is exceeded.
+
+Keep-alive parking composes with the guard phase-aware
+(`connection_should_close`): a connection `awaiting_request` (parked, no
+bytes in flight) is bounded only by the keep-alive idle window, never by the
+slowloris rate — a quiet connection is not a slow client. A connection
+`reading_request` is subject to the full slowloris policy.
 
 ## Rate-limit policy
 

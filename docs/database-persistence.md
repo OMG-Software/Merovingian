@@ -292,8 +292,14 @@ remaining work before PostgreSQL-backed production operation.
   token's natural bound is its own short expiry (one hour; see
   `docs/auth-identity.md`) rather than a per-user row count, unlike
   `notifications`' count-based cap above.
-- `appservice_txn_cursor` table (schema version `12`, migration
-  `migrations/012_appservice_txn_cursor.sql`) persists the outbound
+- `login_tokens` table (schema version `12`, migration
+  `migrations/012_login_tokens.sql`) belongs to a sibling feature branch
+  (SSO login) and carries no C++ store/find/hydration code in this codebase
+  — it is registered in `schema.cpp`/`migration.cpp` purely so this branch's
+  own migration chain has no version gap between the sibling branch's `12`
+  and this branch's `13` below.
+- `appservice_txn_cursor` table (schema version `13`, migration
+  `migrations/013_appservice_txn_cursor.sql`) persists the outbound
   `PUT /_matrix/app/v1/transactions/{txnId}` delivery cursor for each
   registered Application Service API (Matrix v1.19) appservice, keyed on
   `appservice_id` (one row per appservice). Columns: `next_txn_id` (the
