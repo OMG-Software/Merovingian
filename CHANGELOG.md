@@ -11,6 +11,35 @@ production gates. This section is updated as each closure lands.
   row in `docs/todos/capability-gaps.md` recording that `HomeserverRuntime::mutex`
   serialises every client-server request and inbound federation transaction, and
   that every HTTP response carries `Connection: close`.
+- **HTTP/1.1 persistent connections (keep-alive, RFC 9112 §9.3).** Connections
+  are now served as a sequential loop of request rounds instead of
+  one-request-per-connection: HTTP/1.1 clients get persistent connections by
+  default, `Connection: close` is honoured and echoed, and HTTP/1.0 clients
+  are kept alive only on an explicit `Connection: keep-alive`. Each request's
+  body is drained exactly (Content-Length bytes) before the connection waits
+  for the next request, and surplus bytes are carried into the next round, so
+  request boundaries are never lost; pipelining itself stays out of scope —
+  pipelined requests are buffered and answered strictly in order. Kept-alive
+  responses carry `Connection: keep-alive` plus an advisory
+  `Keep-Alive: timeout=N` hint. Security composition: the connection guard is
+  now phase-aware (`http::connection_should_close`) — an idle parked
+  connection is bounded only by the operator-tunable idle window
+  (`server.http.keep_alive_idle_seconds`, default 15 s, 1..300, restart
+  required) and is never killed as "slow", while the full slowloris policy
+  applies unchanged once request bytes arrive; a process-wide CAS cap
+  (`server.http.keep_alive_max_connections`, default 8, 1..4096) bounds how
+  many connections may be parked waiting for a next request, so a client
+  cannot park a main-pool worker thread per connection beyond the operator's
+  budget. `/sync` long-polls still run on the dedicated sync pool, and a
+  kept-alive long-poll connection is handed back to the main pool for its
+  next round, preserving pool separation. New unit tests
+  (`tests/unit/test_http_keep_alive.cpp`) cover the framing decision, header
+  token parsing, policy validation, and the idle-vs-slow guard phases; new
+  integration scenarios
+  (`tests/integration/test_http_server_listener_flow.cpp`) exercise two
+  sequential requests over one real connection (plain and TLS), body-drain
+  framing across a pipelined send, `Connection: close` honouring, idle-window
+  expiry, and the parked-connection cap.
 
 ## 0.11.13
 

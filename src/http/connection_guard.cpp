@@ -43,4 +43,27 @@ auto slowloris_policy_summary(SlowlorisPolicy const& policy) -> std::string
            " header_deadline_seconds=" + std::to_string(policy.header_deadline_seconds);
 }
 
+auto connection_should_close(ConnectionPhase phase, RequestProgress progress, SlowlorisPolicy const& slowloris,
+                             KeepAlivePolicy const& keep_alive) noexcept -> bool
+{
+    switch (phase)
+    {
+    case ConnectionPhase::awaiting_request:
+        // Idle-after-complete-request: bounded ONLY by the keep-alive idle
+        // window. The slowloris rate must not be applied here — a connection
+        // with no request in flight receives no bytes by design, so any
+        // bytes-per-second test would kill every keep-alive connection as
+        // "slow" at the end of its grace period.
+        if (!keep_alive_policy_is_valid(keep_alive))
+        {
+            return true;
+        }
+        return progress.elapsed_seconds > keep_alive.idle_timeout_seconds;
+    case ConnectionPhase::reading_request:
+        // Mid-request: the slowloris policy applies in full.
+        return request_progress_is_too_slow(progress, slowloris);
+    }
+    return true;
+}
+
 } // namespace merovingian::http
