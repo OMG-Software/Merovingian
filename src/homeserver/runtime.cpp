@@ -14,6 +14,7 @@
 #include "merovingian/federation/runtime_federation.hpp"
 #include "merovingian/homeserver/federation_proxy.hpp"
 #include "merovingian/homeserver/local_services.hpp"
+#include "merovingian/homeserver/request_lock.hpp"
 #include "merovingian/homeserver/room_service.hpp"
 #include "merovingian/media/repository.hpp"
 #include "merovingian/media/runtime_media.hpp"
@@ -951,8 +952,23 @@ auto resolve_policy_server_hook(HomeserverRuntime& runtime, trust_safety::Policy
     hook.timeout_milliseconds = static_cast<std::uint32_t>(
         std::min<std::uint64_t>(timeout_milliseconds, std::numeric_limits<std::uint32_t>::max()));
 
+    // Everything from here on is a synchronous round trip to the policy
+    // server — the real one via OutboundClient::perform below, or (in tests)
+    // the injectable trust_safety_policy_server hook standing in for it.
+    // handle_federation_http_request already released runtime.mutex before
+    // calling this function (#415: a slow or unreachable policy server must
+    // not freeze every runtime.mutex consumer for up to
+    // policy_server_timeout). register_local_user, create_room, and the
+    // media download/thumbnail policy check all call this function while
+    // still holding the lock, so releasing it here — not just at that one
+    // call site — is what actually closes the gap. Every value this
+    // function still reads (trust_safety_config, runtime.config, the
+    // request built below) is read above this point, while the lock is
+    // still held; nothing after NetworkIoUnlock touches runtime state. See
+    // NetworkIoUnlock in request_lock.hpp.
     if (runtime.trust_safety_policy_server)
     {
+        auto const unlocked = NetworkIoUnlock{};
         return runtime.trust_safety_policy_server(surface, entity);
     }
 
@@ -982,7 +998,10 @@ auto resolve_policy_server_hook(HomeserverRuntime& runtime, trust_safety::Policy
         {"Content-Type", "application/json"}
     };
     request.body = serialized.output;
-    auto const result = runtime.outbound_client->perform(request);
+    auto const result = [&]() {
+        auto const unlocked = NetworkIoUnlock{};
+        return runtime.outbound_client->perform(request);
+    }();
     if (!result.ok)
     {
         return hook;

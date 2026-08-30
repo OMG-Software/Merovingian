@@ -902,7 +902,19 @@ threat it closes; the controls above are the standing defences these reinforce.
   releasing the mutex for the duration of every outbound network call
   (`homeserver::NetworkIoUnlock`) so a stalled peer costs one request rather than
   the process, and covered by a regression test that holds a real TLS peer open
-  and asserts unrelated requests still complete.
+  and asserts unrelated requests still complete. A third instance of the same
+  bug (0.12.1): `resolve_policy_server_hook`'s call to `trust_safety.policy_server_url`
+  was fixed for inbound federation (#415) but still ran under the lock from
+  `register_local_user`, `create_room`, and the media download/thumbnail
+  policy check — an operator who enables `trust_safety.enabled` inherits a
+  policy server as a remote dependency that, if slow or unreachable, freezes
+  registration, room creation, and media reads for every other user, not just
+  the caller who tripped it. Closed the same way, and covered by the same
+  style of regression test using the injectable `trust_safety_policy_server`
+  hook to stand in for a stalled policy server (no outbound TLS pinning
+  mechanism exists for this particular call, unlike the federation path).
+  Load/soak evidence for the remaining critical section is tracked in
+  `docs/todos/production-milestone.md`, "Global runtime lock".
 
 - **Idle-connection thread holding through HTTP keep-alive parking.** With
   HTTP/1.1 persistent connections (RFC 9112 §9.3) a client that has received

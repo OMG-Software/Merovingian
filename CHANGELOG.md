@@ -40,6 +40,31 @@ production gates. This section is updated as each closure lands.
   sequential requests over one real connection (plain and TLS), body-drain
   framing across a pipelined send, `Connection: close` honouring, idle-window
   expiry, and the parked-connection cap.
+- **`resolve_policy_server_hook` no longer holds `HomeserverRuntime::mutex`
+  across the `trust_safety.policy_server_url` round trip.**
+  `handle_federation_http_request` was already fixed for this (#415), but
+  `register_local_user`, `create_room` (and room upgrade), and the media
+  download/thumbnail policy check all called the same function directly
+  while still holding the lock — an operator running with
+  `trust_safety.enabled` inherited a policy server that, if slow or
+  unreachable, froze registration, room creation, and media reads for every
+  other user for up to `policy_server_timeout`. The fix wraps the remainder
+  of `resolve_policy_server_hook` (the injectable test hook and the real
+  `OutboundClient::perform` call alike) in one `NetworkIoUnlock` scope, so
+  every call site is fixed at the source. New regression coverage in
+  `tests/integration/test_request_lock_contention_flow.cpp` (registration,
+  room creation, media download, each gated on a blocking policy-server hook
+  while an unrelated request is asserted to complete promptly).
+- **New load/soak evidence harness for the global runtime lock**
+  (`tests/integration/test_runtime_lock_soak_flow.cpp`, opt-in behind the
+  `build_load_tests` Meson option). Drives concurrent `/sync` long-polls,
+  ordinary reads, message sends, and signed X-Matrix-authenticated inbound
+  federation transactions — all over real sockets with HTTP/1.1 keep-alive —
+  and reports throughput and p50/p95/p99 latency per category, so the
+  "Global runtime lock" release blocker in
+  `docs/todos/production-milestone.md` can be closed (or kept open) on
+  measurement rather than intuition. See `docs/http-transport.md`,
+  "Load/soak evidence", for how to run it and the measured results.
 
 ## 0.11.13
 

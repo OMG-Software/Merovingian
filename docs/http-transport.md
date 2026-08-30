@@ -448,6 +448,55 @@ Rules for anything added to these paths:
   calling a service function directly) or when a caller already released the
   lock by hand, so it composes with the existing `unlock()`/`lock()` pairs.
 
+### `resolve_policy_server_hook` (0.12.1)
+
+`resolve_policy_server_hook` (`src/homeserver/runtime.cpp`) performs a
+synchronous outbound call to `trust_safety.policy_server_url` when
+`trust_safety.enabled` is set. `handle_federation_http_request` was already
+fixed (#415) to call it only after releasing the lock, but three other call
+sites called it directly while still holding `HomeserverRuntime::mutex`:
+`register_local_user` (client registration), `create_room` (room creation and
+room upgrade), and `media_policy_decision` (remote media download and
+thumbnail fetch — right before the *already*-unlocked remote fetch call that
+follows it). A slow or unreachable policy server therefore still froze every
+other client and federation request for up to `policy_server_timeout`,
+despite #415.
+
+The fix wraps the remainder of `resolve_policy_server_hook` — the injectable
+`trust_safety_policy_server` test hook and the real
+`OutboundClient::perform` call alike — in one `NetworkIoUnlock` scope, so
+every call site is fixed at the source rather than needing four separate
+call-site changes. Everything the function still reads
+(`trust_safety_config`, `runtime.config`, the request built from them) is
+read before that scope, while the lock is still held; nothing after it
+touches runtime state. See `tests/integration/test_request_lock_contention_flow.cpp`
+for the regression coverage (registration, room creation, and media
+download, each gated on a blocking policy-server hook while an unrelated
+request is asserted to complete promptly).
+
+## Load/soak evidence
+
+`tests/integration/test_runtime_lock_soak_flow.cpp` (gated behind the
+`build_load_tests` Meson option, parallel to `build_live_tests`) drives real
+concurrent traffic — over real TCP sockets, HTTP/1.1 keep-alive throughout —
+against a running server: several users each long-polling their own room's
+`/sync`, each doing ordinary authenticated reads, each sending messages into
+their own room, and several simulated remote servers sending signed,
+X-Matrix-authenticated inbound federation transactions, all at once. It
+reports throughput and p50/p95/p99 latency per category to stderr. Its own
+default duration is short enough to run safely as a CI correctness check
+(nothing deadlocks or starves); a real measurement run sets
+`MEROVINGIAN_LOCK_SOAK_SECONDS` to something longer:
+
+```bash
+meson configure build-wsl -Dbuild_load_tests=true
+MEROVINGIAN_LOCK_SOAK_SECONDS=60 ./build-wsl/tests/merovingian-load-tests "[load-soak]"
+```
+
+See `docs/todos/production-milestone.md`, "Global runtime lock", for the
+measured before/after numbers this harness produced and the resulting
+narrowing decision.
+
 ## Fuzzing
 
 `fuzz-http-request` exercises the request-head parser against arbitrary input. It is registered with the existing fuzz target group.

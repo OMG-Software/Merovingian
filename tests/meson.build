@@ -327,6 +327,25 @@ shell = find_program('sh')
     test('live-integration-tests', live_integration_tests)
   endif
 
+  if get_option('build_load_tests')
+    load_tests = executable(
+      'merovingian-load-tests',
+      sources: files(
+        'integration/test_main.cpp',
+        'integration/test_runtime_lock_soak_flow.cpp',
+      ),
+      include_directories: inc,
+      dependencies: [catch2_dep, thread_dep, libsodium_dep, openssl_dep, libpq_dep, sqlite_dep, libcurl_dep, resolv_dep],
+      link_with: [auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, events_lib, federation_lib, federation_worker_lib, homeserver_lib, http_lib, identity_lib, ipc_lib, media_lib, net_lib, observability_lib, platform_lib, push_lib, rooms_lib, sync_lib, trust_safety_lib],
+    )
+
+#The harness's own default duration is short (2 s, MEROVINGIAN_LOCK_SOAK_SECONDS
+#unset) so it is safe as a CI correctness gate; the meson timeout is generous
+#so an operator-invoked long soak run(MEROVINGIAN_LOCK_SOAK_SECONDS=300, say)
+#is not killed by the test runner itself.
+    test('load-tests', load_tests, timeout: 900)
+  endif
+
   subdir('smoke')
 endif
 
