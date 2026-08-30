@@ -11,7 +11,7 @@ NNN_snake_case_description.sql
 
 `NNN` is a zero-padded three-digit integer: `001`, `002`, ..., `010`, `011`, ...
 The next migration number is always `max(existing) + 1`.
-Current highest: `011`.
+Current highest: `012`.
 
 Schema version `2` introduced the `sync_stream_watermark` table via
 `002_sync_stream_watermark.sql` to support live pre-production deployments that
@@ -55,6 +55,16 @@ dictionary minus `url` to the gateway, not just `format`; see
 `docs/database-persistence.md`. After `v1.0.0`, deployed databases become a
 strict compatibility boundary and schema changes must be added as new
 forward migration files instead of modifying already-applied migrations.
+Schema version `12` (`012_appservice_txn_cursor.sql`) adds the
+`appservice_txn_cursor` table: one row per registered appservice, tracking
+the Application Service API's outbound `PUT /_matrix/app/v1/transactions/{txnId}`
+delivery cursor (`next_txn_id`, `delivered_stream_ordering`) plus the
+currently in-flight (unacknowledged) batch, if any
+(`pending_txn_id`/`pending_stream_ordering`) — see `docs/database-persistence.md`
+and `src/homeserver/room_service.cpp`'s appservice delivery dispatch for how
+retries reuse the same `pending_txn_id` and event range rather than growing
+it, per the spec's "Homeservers MUST NOT alter ... events they were going to
+send within that transaction ID on retries."
 
 ## File format
 

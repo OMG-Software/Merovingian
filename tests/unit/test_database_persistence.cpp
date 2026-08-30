@@ -1012,7 +1012,7 @@ SCENARIO("Database migration runner applies the current schema and the matching 
                 REQUIRE(upgrade_plan.direction == merovingian::database::MigrationDirection::upgrade);
                 REQUIRE(upgrade_plan.current_version == 0U);
                 REQUIRE(upgrade_plan.target_version == merovingian::database::current_schema_version());
-                REQUIRE(upgrade_plan.steps.size() == 11U);
+                REQUIRE(upgrade_plan.steps.size() == 12U);
                 REQUIRE(upgrade_plan.steps[0].version == 1U);
                 REQUIRE(upgrade_plan.steps[0].name == "initial_schema");
                 REQUIRE(upgrade_plan.steps[1].version == 2U);
@@ -1035,9 +1035,11 @@ SCENARIO("Database migration runner applies the current schema and the matching 
                 REQUIRE(upgrade_plan.steps[9].name == "openid_tokens");
                 REQUIRE(upgrade_plan.steps[10].version == 11U);
                 REQUIRE(upgrade_plan.steps[10].name == "pushers_data_extra");
+                REQUIRE(upgrade_plan.steps[11].version == 12U);
+                REQUIRE(upgrade_plan.steps[11].name == "appservice_txn_cursor");
                 REQUIRE(upgraded.ok);
                 REQUIRE(upgraded.state.version == merovingian::database::current_schema_version());
-                REQUIRE(upgraded.state.applied_migrations.size() == 11U);
+                REQUIRE(upgraded.state.applied_migrations.size() == 12U);
                 REQUIRE(upgraded.state.applied_migrations[0].name == "initial_schema");
                 REQUIRE(upgraded.state.applied_migrations[1].name == "sync_stream_watermark");
                 REQUIRE(upgraded.state.applied_migrations[2].name == "event_stream_watermark");
@@ -1049,26 +1051,29 @@ SCENARIO("Database migration runner applies the current schema and the matching 
                 REQUIRE(upgraded.state.applied_migrations[8].name == "notifications");
                 REQUIRE(upgraded.state.applied_migrations[9].name == "openid_tokens");
                 REQUIRE(upgraded.state.applied_migrations[10].name == "pushers_data_extra");
+                REQUIRE(upgraded.state.applied_migrations[11].name == "appservice_txn_cursor");
                 REQUIRE(upgraded.state.tables.size() == merovingian::database::current_schema_tables().size());
                 REQUIRE(compatible.valid);
                 REQUIRE(second_plan.steps.empty());
                 REQUIRE(downgrade_plan.direction == merovingian::database::MigrationDirection::downgrade);
-                REQUIRE(downgrade_plan.steps.size() == 11U);
-                // Downgrade walks v11->v0; the pushers_data_extra column
-                // drops first, then the openid_tokens table, then
-                // notifications, then pushers, then the account_threepids
-                // column drop must precede the account_threepids table drop.
-                REQUIRE(downgrade_plan.steps[0].name == "drop_pushers_data_extra");
-                REQUIRE(downgrade_plan.steps[1].name == "drop_openid_tokens");
-                REQUIRE(downgrade_plan.steps[2].name == "drop_notifications");
-                REQUIRE(downgrade_plan.steps[3].name == "drop_pushers");
-                REQUIRE(downgrade_plan.steps[4].name == "drop_account_threepids_columns");
-                REQUIRE(downgrade_plan.steps[5].name == "drop_account_threepids");
-                REQUIRE(downgrade_plan.steps[6].name == "drop_backfill_state_transitions");
-                REQUIRE(downgrade_plan.steps[7].name == "drop_state_transitions");
-                REQUIRE(downgrade_plan.steps[8].name == "drop_event_stream_watermark");
-                REQUIRE(downgrade_plan.steps[9].name == "drop_sync_stream_watermark");
-                REQUIRE(downgrade_plan.steps[10].name == "drop_initial_schema");
+                REQUIRE(downgrade_plan.steps.size() == 12U);
+                // Downgrade walks v12->v0; the appservice_txn_cursor table
+                // drops first, then the pushers_data_extra column, then the
+                // openid_tokens table, then notifications, then pushers,
+                // then the account_threepids column drop must precede the
+                // account_threepids table drop.
+                REQUIRE(downgrade_plan.steps[0].name == "drop_appservice_txn_cursor");
+                REQUIRE(downgrade_plan.steps[1].name == "drop_pushers_data_extra");
+                REQUIRE(downgrade_plan.steps[2].name == "drop_openid_tokens");
+                REQUIRE(downgrade_plan.steps[3].name == "drop_notifications");
+                REQUIRE(downgrade_plan.steps[4].name == "drop_pushers");
+                REQUIRE(downgrade_plan.steps[5].name == "drop_account_threepids_columns");
+                REQUIRE(downgrade_plan.steps[6].name == "drop_account_threepids");
+                REQUIRE(downgrade_plan.steps[7].name == "drop_backfill_state_transitions");
+                REQUIRE(downgrade_plan.steps[8].name == "drop_state_transitions");
+                REQUIRE(downgrade_plan.steps[9].name == "drop_event_stream_watermark");
+                REQUIRE(downgrade_plan.steps[10].name == "drop_sync_stream_watermark");
+                REQUIRE(downgrade_plan.steps[11].name == "drop_initial_schema");
                 REQUIRE(downgraded.ok);
                 REQUIRE(downgraded.state.version == 0U);
                 REQUIRE(downgraded.state.tables.empty());
@@ -1753,7 +1758,7 @@ SCENARIO("Checked-in migrations cover the v1 bootstrap and the v2/v3 stream wate
             THEN("the v1 bootstrap creates the initial schema and numbered migrations add post-v1 tables")
             {
                 REQUIRE(loaded.ok);
-                REQUIRE(loaded.steps.size() == 11U);
+                REQUIRE(loaded.steps.size() == 12U);
                 REQUIRE(loaded.steps[0].version == 1U);
                 REQUIRE(loaded.steps[0].name == "initial_schema");
                 REQUIRE(loaded.steps[0].statements.size() == merovingian::database::initial_schema_tables().size());
@@ -1789,6 +1794,9 @@ SCENARIO("Checked-in migrations cover the v1 bootstrap and the v2/v3 stream wate
                 REQUIRE(loaded.steps[10].name == "pushers_data_extra");
                 // v11 ALTERs one column onto the v8 pushers table.
                 REQUIRE(loaded.steps[10].statements.size() == 1U);
+                REQUIRE(loaded.steps[11].version == 12U);
+                REQUIRE(loaded.steps[11].name == "appservice_txn_cursor");
+                REQUIRE(loaded.steps[11].statements.size() == 1U);
 
                 for (auto const& statement : loaded.steps[0].statements)
                 {
@@ -1860,14 +1868,15 @@ SCENARIO("Database schema inventory covers the core Matrix tables", "[database][
                 // client_secret/sid columns onto account_threepids (no new table),
                 // migration v8 adds the pushers table, migration v9 adds
                 // the notifications table, migration v10 adds the
-                // openid_tokens table, and migration v11 adds the
-                // data_extra_json column onto pushers (no new table).
-                // The post-v1 tables (v2/v3/v4/v6/v8/v9/v10) are counted in
-                // the current schema inventory, while v5, v7, and v11 add no
-                // tables.
+                // openid_tokens table, migration v11 adds the
+                // data_extra_json column onto pushers (no new table), and
+                // migration v12 adds the appservice_txn_cursor table.
+                // The post-v1 tables (v2/v3/v4/v6/v8/v9/v10/v12) are counted
+                // in the current schema inventory, while v5, v7, and v11 add
+                // no tables.
                 REQUIRE(tables.size() == 45U);
-                REQUIRE(merovingian::database::current_schema_version() == 11U);
-                REQUIRE(merovingian::database::current_schema_tables().size() == 52U);
+                REQUIRE(merovingian::database::current_schema_version() == 12U);
+                REQUIRE(merovingian::database::current_schema_tables().size() == 53U);
                 REQUIRE(users_definition.has_value());
                 REQUIRE(current_state_definition.has_value());
                 REQUIRE(room_aliases_definition.has_value());

@@ -3,6 +3,8 @@
 
 #include "merovingian/homeserver/room_service.hpp"
 
+#include "merovingian/appservice/appservice_client.hpp"
+#include "merovingian/appservice/registration.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
@@ -32,6 +34,7 @@
 #include "merovingian/homeserver/request_lock.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/homeserver/runtime_signing_key_store.hpp"
+#include "merovingian/http/outbound_client.hpp"
 #include "merovingian/identity/identity_client.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
@@ -911,6 +914,13 @@ namespace
     auto dispatch_membership_push_notification(HomeserverRuntime& runtime, LocalRoom const& room,
                                                ComposedEvent const& composed, std::string_view sender,
                                                std::string_view extra_recipient) -> void;
+
+    // Application Service API (Matrix v1.19) outbound delivery — forward
+    // declared for the same reason as dispatch_membership_push_notification
+    // above (same call sites, defined later in the file where the types it
+    // needs are complete).
+    auto dispatch_appservice_delivery(HomeserverRuntime& runtime, LocalRoom const& room, ComposedEvent const& composed,
+                                      std::string_view sender) -> void;
 
     [[nodiscard]] auto persist_membership_transition(HomeserverRuntime& runtime, std::string_view room_id,
                                                      std::string_view sender_user_id, std::string_view target_user_id,
@@ -5491,6 +5501,217 @@ namespace
         runtime.orphan_futures_.push_back(std::move(push_future));
     }
 
+    // Builds one Application Service API ClientEvent from a persisted
+    // PersistentEvent row (used both for a fresh event and for retrying an
+    // already-queued pending one — see dispatch_appservice_delivery).
+    // Returns nullopt only for a corrupt/unparseable stored row, which
+    // should never happen for an event this server itself persisted.
+    [[nodiscard]] auto appservice_transaction_event_for(database::PersistentEvent const& event)
+        -> std::optional<appservice::AppserviceTransactionEvent>
+    {
+        auto const parsed = canonicaljson::parse_lossless(event.json);
+        if (parsed.error != canonicaljson::ParseError::none)
+        {
+            return std::nullopt;
+        }
+        auto const* root = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+        if (root == nullptr)
+        {
+            return std::nullopt;
+        }
+        auto out = appservice::AppserviceTransactionEvent{};
+        if (auto const* content = object_member(*root, "content"); content != nullptr)
+        {
+            out.content_json = serialize_canonical_string(*content).value_or(std::string{});
+        }
+        out.event_id = event.event_id;
+        if (auto const* ts = integer_member(*root, "origin_server_ts"); ts != nullptr && *ts > 0)
+        {
+            out.origin_server_ts = static_cast<std::uint64_t>(*ts);
+        }
+        out.room_id = event.room_id;
+        out.sender = event.sender_user_id;
+        if (auto const* type = string_member(*root, "type"); type != nullptr)
+        {
+            out.type = *type;
+        }
+        if (auto const* state_key = string_member(*root, "state_key"); state_key != nullptr)
+        {
+            out.state_key = *state_key;
+        }
+        return out;
+    }
+
+    // Sends a single-event transaction to `registration` and, on success (or
+    // on the appservice having url:null, which is a vacuous success — see
+    // AppserviceCallResult::disabled), advances `cursor` to reflect it.
+    // `cursor.pending_txn_id`/`pending_stream_ordering` are already set to
+    // this event by the caller before this runs, so this only ever needs to
+    // either commit (clear pending, raise delivered_stream_ordering) or
+    // leave the pending state exactly as it was for a later retry. Performs
+    // the network call outside runtime.mutex (NetworkIoUnlock) but is itself
+    // synchronous — the caller's request waits for it — see
+    // dispatch_appservice_delivery's doc comment for why.
+    auto attempt_appservice_batch(HomeserverRuntime& runtime, appservice::AppserviceRegistration const& registration,
+                                  database::PersistentAppserviceTxnCursor cursor,
+                                  appservice::AppserviceTransactionEvent event) -> void
+    {
+        auto transaction = appservice::AppserviceTransaction{};
+        transaction.txn_id = std::to_string(cursor.pending_txn_id);
+        transaction.events.push_back(std::move(event));
+
+        auto const result = [&]() {
+            auto const unlocked = NetworkIoUnlock{};
+            auto client = appservice::AppserviceClient{*runtime.outbound_client, *runtime.cached_discovery};
+            return client.send_transaction(registration, transaction);
+        }();
+
+        if (result.ok || result.disabled)
+        {
+            cursor.delivered_stream_ordering = cursor.pending_stream_ordering;
+            cursor.pending_txn_id = 0U;
+            cursor.pending_stream_ordering = 0U;
+            std::ignore = database::store_appservice_txn_cursor(runtime.database.persistent_store, cursor);
+            return;
+        }
+        log_diagnostic("appservice.delivery.failed",
+                       {
+                           {"appservice_id", registration.id,                                      false},
+                           {"txn_id",        transaction.txn_id,                                   false},
+                           {"error",         std::string{http::outbound_error_name(result.error)}, false},
+                           {"detail",        result.error_detail,                                  false}
+        },
+                       observability::LogEventSeverity::warning);
+        // Cursor is left exactly as the caller set it (pending, unchanged):
+        // the next event for this appservice retries this exact batch
+        // before anything newer is attempted — see dispatch_appservice_delivery.
+    }
+
+    // Application Service API (Matrix v1.19) outbound delivery: for every
+    // registered appservice interested in this event (namespace match —
+    // see appservice::registration_interested_in_room_event), pushes it via
+    // PUT /_matrix/app/v1/transactions/{txnId}, one event per transaction.
+    //
+    // Deliberately SYNCHRONOUS, unlike dispatch_push_deliveries's
+    // fire-and-forget std::async: the request that triggered this event
+    // waits for delivery (or failure) to complete before returning. This
+    // keeps the spec's linearisation guarantee ("Homeservers MUST NOT alter
+    // ... events they were going to send within that transaction ID on
+    // retries") and the persisted-cursor invariants simple and obviously
+    // correct, at the cost of adding one appservice's worth of network
+    // latency to the sender's request when appservices are configured.
+    // Appservice delivery is entirely opt-in (registration files must be
+    // configured) so a homeserver running none never reaches the network
+    // call below. A background, concurrent, retrying dispatcher — mirroring
+    // dispatch_push_deliveries — is a reasonable future optimisation, not
+    // yet implemented; see docs/todos/capability-gaps.md.
+    //
+    // Retry semantics: a registered appservice can have at most one
+    // in-flight (pending, unacknowledged) batch at a time. If one exists
+    // when this runs, it is retried FIRST, with the exact same txn_id and
+    // event — never growing it — before this function even looks at
+    // whether the CURRENT triggering event is new. This is what keeps
+    // delivery linearised across repeated calls: a newer event can never
+    // overtake an older, still-unacknowledged one for the same appservice.
+    auto dispatch_appservice_delivery(HomeserverRuntime& runtime, LocalRoom const& room, ComposedEvent const& composed,
+                                      std::string_view sender) -> void
+    {
+        if (runtime.appservices.empty() || runtime.outbound_client == nullptr || runtime.cached_discovery == nullptr)
+        {
+            return;
+        }
+        auto& store = runtime.database.persistent_store;
+        auto const& server_name = runtime.config.server().server_name;
+
+        auto const persisted_stream_ordering = [&]() -> std::uint64_t {
+            auto const event_row = std::ranges::find_if(store.events, [&](database::PersistentEvent const& event) {
+                return event.event_id == composed.event_id;
+            });
+            return event_row != store.events.end() ? event_row->stream_ordering : composed.stream_ordering;
+        }();
+        auto const room_alias = [&]() -> std::string {
+            auto const it = std::ranges::find_if(store.room_aliases, [&](database::PersistentRoomAlias const& alias) {
+                return alias.room_id == room.room_id;
+            });
+            return it == store.room_aliases.end() ? std::string{} : it->room_alias;
+        }();
+
+        for (auto const& registration : runtime.appservices.all())
+        {
+            if (!appservice::registration_interested_in_room_event(registration, server_name, room.room_id, room_alias,
+                                                                   sender, room.members))
+            {
+                continue;
+            }
+
+            auto cursor = database::find_appservice_txn_cursor(store, registration.id);
+            if (cursor.pending_txn_id != 0U)
+            {
+                // Retry the already-queued batch first — see this
+                // function's doc comment on retry semantics.
+                auto const pending_row =
+                    std::ranges::find_if(store.events, [&](database::PersistentEvent const& event) {
+                        return event.stream_ordering == cursor.pending_stream_ordering;
+                    });
+                if (pending_row == store.events.end())
+                {
+                    // The pending event vanished from the store (should not
+                    // happen — events are never deleted). Fail closed:
+                    // leave the cursor pending rather than silently
+                    // skipping it, and do not attempt the current event
+                    // either, to preserve linearisation.
+                    continue;
+                }
+                if (auto pending_event = appservice_transaction_event_for(*pending_row); pending_event.has_value())
+                {
+                    attempt_appservice_batch(runtime, registration, cursor, std::move(*pending_event));
+                }
+                // Re-read: attempt_appservice_batch persisted whatever the
+                // outcome was.
+                cursor = database::find_appservice_txn_cursor(store, registration.id);
+                if (cursor.pending_txn_id != 0U)
+                {
+                    // Still pending (the retry failed again) — do not
+                    // attempt the current event yet.
+                    continue;
+                }
+            }
+
+            if (persisted_stream_ordering <= cursor.delivered_stream_ordering)
+            {
+                continue; // already covered by a prior successful delivery
+            }
+
+            auto event = appservice::AppserviceTransactionEvent{};
+            event.event_id = composed.event_id;
+            event.room_id = room.room_id;
+            event.sender = std::string{sender};
+            event.type = composed.event_type;
+            event.state_key = composed.state_key;
+            {
+                auto const event_row = std::ranges::find_if(store.events, [&](database::PersistentEvent const& row) {
+                    return row.event_id == composed.event_id;
+                });
+                if (event_row != store.events.end())
+                {
+                    if (auto full = appservice_transaction_event_for(*event_row); full.has_value())
+                    {
+                        event = std::move(*full);
+                    }
+                }
+            }
+
+            cursor.pending_txn_id = cursor.next_txn_id;
+            cursor.next_txn_id += 1U;
+            cursor.pending_stream_ordering = persisted_stream_ordering;
+            if (!database::store_appservice_txn_cursor(store, cursor))
+            {
+                continue;
+            }
+            attempt_appservice_batch(runtime, registration, cursor, std::move(event));
+        }
+    }
+
     // Evaluates push rules and fires (off the request path) any notifications
     // triggered by `composed` for `room`, additionally considering
     // `extra_recipient` — a recipient who is not (yet) a joined member of
@@ -5516,6 +5737,7 @@ namespace
         {
             dispatch_push_deliveries(runtime, std::move(deliveries));
         }
+        dispatch_appservice_delivery(runtime, room, composed, sender);
     }
 
 } // namespace
@@ -5692,6 +5914,7 @@ namespace
     {
         dispatch_push_deliveries(runtime, std::move(deliveries));
     }
+    dispatch_appservice_delivery(runtime, *room, *composed, *user_id);
     return make_operation_result(true, composed->event_id);
 }
 // NOLINTEND(bugprone-easily-swappable-parameters)
@@ -5741,6 +5964,7 @@ auto deliver_federation_push_notifications(HomeserverRuntime& runtime, federatio
     {
         dispatch_push_deliveries(runtime, std::move(deliveries));
     }
+    dispatch_appservice_delivery(runtime, *room, composed, envelope.sender);
 }
 
 [[nodiscard]] auto fetch_room_state(HomeserverRuntime const& runtime, std::string_view access_token,

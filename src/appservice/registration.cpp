@@ -150,6 +150,28 @@ auto appservice_owns_user(AppserviceRegistration const& registration, std::strin
     return any_namespace_matches(registration.namespaces.users, user_id);
 }
 
+auto registration_interested_in_room_event(AppserviceRegistration const& registration, std::string_view server_name,
+                                           std::string_view room_id, std::string_view room_alias,
+                                           std::string_view sender,
+                                           std::vector<std::string> const& room_members) noexcept -> bool
+{
+    if (any_namespace_matches(registration.namespaces.rooms, room_id))
+    {
+        return true;
+    }
+    if (!room_alias.empty() && any_namespace_matches(registration.namespaces.aliases, room_alias))
+    {
+        return true;
+    }
+    if (appservice_owns_user(registration, server_name, sender))
+    {
+        return true;
+    }
+    return std::ranges::any_of(room_members, [&registration, server_name](std::string const& member) {
+        return appservice_owns_user(registration, server_name, member);
+    });
+}
+
 auto parse_registration_json(std::string_view json_text) -> AppserviceRegistrationParseResult
 {
     auto const parsed = canonicaljson::parse_json(json_text);

@@ -471,6 +471,36 @@ struct PersistentOpenidToken final
     std::chrono::system_clock::time_point expires_at{};
 };
 
+// The Application Service API's (Matrix v1.19) outbound
+// `PUT /_matrix/app/v1/transactions/{txnId}` delivery cursor for one
+// registered appservice. One row per appservice, keyed on `appservice_id`
+// (the registration file's `id`, not a secret). Delivery replays forward
+// through the `events` table's `stream_ordering`, so this row -- not a
+// separate durable outbox -- is the entire persisted delivery state; see
+// `room_service.cpp`'s appservice dispatch for how it is used:
+//   - `next_txn_id`: the next FRESH transaction id to allocate. Monotonic,
+//     never reused, so a retried transaction always carries the exact id
+//     the appservice may have already partially processed.
+//   - `delivered_stream_ordering`: high-water mark. Every event with
+//     stream_ordering <= this value has been acknowledged (HTTP 200) by the
+//     appservice.
+//   - `pending_txn_id` / `pending_stream_ordering`: the currently in-flight
+//     (sent, not yet acknowledged) batch, if any. `pending_txn_id == 0`
+//     means no batch is in flight. A retry of that SAME batch reuses this
+//     id and re-derives the identical event range
+//     (delivered_stream_ordering, pending_stream_ordering] rather than
+//     growing it -- the spec's "Homeservers MUST NOT alter (e.g. add more)
+//     events they were going to send within that transaction ID on
+//     retries."
+struct PersistentAppserviceTxnCursor final
+{
+    std::string appservice_id{};
+    std::uint64_t next_txn_id{1U};
+    std::uint64_t delivered_stream_ordering{0U};
+    std::uint64_t pending_txn_id{0U};
+    std::uint64_t pending_stream_ordering{0U};
+};
+
 struct PersistentStore final
 {
     PersistentStore() = default;
@@ -520,6 +550,7 @@ struct PersistentStore final
         , pushers{other.pushers}
         , notifications{other.notifications}
         , openid_tokens{other.openid_tokens}
+        , appservice_txn_cursors{other.appservice_txn_cursors}
         , prepared_statements{other.prepared_statements}
         , prepared_statements_mutex{std::make_unique<std::mutex>()}
         , next_sync_stream_id{other.next_sync_stream_id}
@@ -578,6 +609,7 @@ struct PersistentStore final
         pushers = other.pushers;
         notifications = other.notifications;
         openid_tokens = other.openid_tokens;
+        appservice_txn_cursors = other.appservice_txn_cursors;
         prepared_statements = other.prepared_statements;
         prepared_statements_mutex = std::make_unique<std::mutex>();
         next_sync_stream_id = other.next_sync_stream_id;
@@ -636,6 +668,7 @@ struct PersistentStore final
     std::vector<PersistentPusher> pushers{};
     std::vector<PersistentNotification> notifications{};
     std::vector<PersistentOpenidToken> openid_tokens{};
+    std::vector<PersistentAppserviceTxnCursor> appservice_txn_cursors{};
     std::vector<PreparedStatement> prepared_statements{};
     // Guards prepared_statements, which is appended to by
     // commit_persistent_transaction from multiple concurrent room-stripe paths
@@ -918,6 +951,16 @@ auto apply_store_event_with_state(PersistentStore& store, PreparedStateUpdate co
 // than a row count. Returns false on an empty user_id/token_hash or a
 // backend write failure.
 [[nodiscard]] auto store_openid_token(PersistentStore& store, PersistentOpenidToken token) -> bool;
+// Returns the persisted delivery cursor for `appservice_id`, or a
+// default-constructed PersistentAppserviceTxnCursor (next_txn_id=1,
+// everything else 0/absent) if no row exists yet -- the "never delivered
+// anything" starting state, not an error.
+[[nodiscard]] auto find_appservice_txn_cursor(PersistentStore const& store, std::string_view appservice_id)
+    -> PersistentAppserviceTxnCursor;
+// Upserts the full cursor row for one appservice (keyed on appservice_id).
+// Callers pass the complete desired state; this is not an incremental
+// update.
+[[nodiscard]] auto store_appservice_txn_cursor(PersistentStore& store, PersistentAppserviceTxnCursor cursor) -> bool;
 // Look up a previous idempotent send result. Returns the stored event_id
 // (or empty string for to-device sends) if the (user_id, room_id,
 // event_type, txn_id) tuple was already committed; nullopt otherwise.

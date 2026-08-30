@@ -28,6 +28,7 @@ using merovingian::appservice::load_registrations;
 using merovingian::appservice::Namespace;
 using merovingian::appservice::namespace_matches;
 using merovingian::appservice::parse_registration_json;
+using merovingian::appservice::registration_interested_in_room_event;
 using merovingian::appservice::sender_user_id;
 using merovingian::appservice::validate_registrations;
 
@@ -471,6 +472,65 @@ SCENARIO("AppserviceRegistry lookup and exclusivity checks", "[appservice][regis
             {
                 REQUIRE_FALSE(loaded.findings.empty());
                 CHECK(loaded.registry.empty());
+            }
+        }
+    }
+}
+
+SCENARIO("registration_interested_in_room_event matches per the spec's namespace/membership rules",
+         "[appservice][registration]")
+{
+    GIVEN("the IRC bridge registration (exclusive users namespace, non-exclusive aliases namespace)")
+    {
+        auto const parsed = parse_registration_json(irc_bridge_registration_json());
+        REQUIRE(parsed.value.has_value());
+        auto const& registration = *parsed.value;
+        auto const server_name = std::string_view{"example.org"};
+
+        WHEN("the room id itself is in the rooms namespace (empty here) but the sender is a namespaced user")
+        {
+            THEN("the appservice is interested via the sender")
+            {
+                CHECK(registration_interested_in_room_event(registration, server_name, "!room:example.org", "",
+                                                            "@_irc_bridge_alice:example.org", {}));
+            }
+        }
+
+        WHEN("the room has a matching canonical alias")
+        {
+            THEN("the appservice is interested via the alias namespace, regardless of sender/members")
+            {
+                CHECK(registration_interested_in_room_event(registration, server_name, "!room:example.org",
+                                                            "#_irc_bridge_channel:example.org", "@carol:example.org",
+                                                            {}));
+            }
+        }
+
+        WHEN("a namespaced user is a joined member but neither the sender nor the alias match")
+        {
+            THEN("the appservice is interested via room_members")
+            {
+                CHECK(registration_interested_in_room_event(registration, server_name, "!room:example.org", "",
+                                                            "@carol:example.org",
+                                                            {"@carol:example.org", "@_irc_bridge_dave:example.org"}));
+            }
+        }
+
+        WHEN("nothing about the event touches the appservice's namespaces at all")
+        {
+            THEN("the appservice is not interested")
+            {
+                CHECK_FALSE(registration_interested_in_room_event(registration, server_name, "!room:example.org", "",
+                                                                  "@carol:example.org", {"@carol:example.org"}));
+            }
+        }
+
+        WHEN("the sender is the appservice's own sender_localpart user")
+        {
+            THEN("the appservice is interested (sender_localpart is always implicitly covered)")
+            {
+                CHECK(registration_interested_in_room_event(registration, server_name, "!room:example.org", "",
+                                                            "@_irc_bot:example.org", {}));
             }
         }
     }

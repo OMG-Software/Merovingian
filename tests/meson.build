@@ -91,6 +91,7 @@ shell = find_program('sh')
     'merovingian-unit-tests',
     sources: files(
       'unit/test_main.cpp',
+      'unit/test_appservice_client.cpp',
       'unit/test_appservice_masquerade_token.cpp',
       'unit/test_appservice_registration.cpp',
       'unit/test_auth.cpp',

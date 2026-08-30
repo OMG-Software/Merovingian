@@ -129,6 +129,23 @@ struct AppserviceRegistrationParseResult final
 [[nodiscard]] auto appservice_owns_user(AppserviceRegistration const& registration, std::string_view server_name,
                                         std::string_view user_id) noexcept -> bool;
 
+// True when `registration` is interested in an event that occurred in a
+// room, per Matrix v1.19 Application Service API §"Registration": "An
+// application service is said to be 'interested' in a given event if it
+// matches any of the namespaces" — `rooms`/`aliases` namespaces match "all
+// events in a matching room"; the `users` namespace (and the appservice's
+// own sender_localpart, which is always implicitly covered — see
+// appservice_owns_user) matches when "a local user matching one of the
+// namespaces is the target of the event, or is a joined member of the room
+// where the event occurred." `room_alias` may be empty (room has no
+// canonical alias); `room_members` is every user CURRENTLY joined to the
+// room (the sender, if already a member, should be included by the
+// caller — this function does not special-case it against `sender`).
+[[nodiscard]] auto registration_interested_in_room_event(AppserviceRegistration const& registration,
+                                                         std::string_view server_name, std::string_view room_id,
+                                                         std::string_view room_alias, std::string_view sender,
+                                                         std::vector<std::string> const& room_members) noexcept -> bool;
+
 // Immutable, load-once collection of every registered appservice. Built at
 // startup from `config::AppserviceConfig::registration_files` (see
 // `load_registry`). Registrations are looked up by `as_token` under

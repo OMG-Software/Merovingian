@@ -403,6 +403,20 @@ auto downgrade_initial_schema_migration() -> MigrationStep
     return {11U, "pushers_data_extra", std::move(statements), MigrationDirection::upgrade};
 }
 
+// v12: add the appservice_txn_cursor table (Matrix v1.19 Application
+// Service API, outbound PUT /_matrix/app/v1/transactions/{txnId} delivery).
+// One row per registered appservice, tracking the delivery cursor and any
+// currently in-flight (unacknowledged) batch -- see
+// PersistentAppserviceTxnCursor's doc comment
+// (include/merovingian/database/persistent_store.hpp) for the full field
+// semantics and docs/database-persistence.md.
+[[nodiscard]] auto upgrade_appservice_txn_cursor_migration() -> MigrationStep
+{
+    auto statements = std::vector<PreparedStatement>{};
+    statements.push_back(make_create_table_statement(schema_table_definition("appservice_txn_cursor").value()).value());
+    return {12U, "appservice_txn_cursor", std::move(statements), MigrationDirection::upgrade};
+}
+
 auto upgrade_migration_catalog() -> std::vector<MigrationStep>
 {
     return {initial_schema_migration(),
@@ -415,7 +429,8 @@ auto upgrade_migration_catalog() -> std::vector<MigrationStep>
             upgrade_pushers_migration(),
             upgrade_notifications_migration(),
             upgrade_openid_tokens_migration(),
-            upgrade_pushers_data_extra_migration()};
+            upgrade_pushers_data_extra_migration(),
+            upgrade_appservice_txn_cursor_migration()};
 }
 
 [[nodiscard]] auto downgrade_backfill_state_transitions_migration() -> MigrationStep
@@ -479,6 +494,14 @@ auto upgrade_migration_catalog() -> std::vector<MigrationStep>
     return {10U, "drop_pushers_data_extra", std::move(statements), MigrationDirection::downgrade};
 }
 
+// v12 -> v11: drop the appservice_txn_cursor table.
+[[nodiscard]] auto downgrade_appservice_txn_cursor_migration() -> MigrationStep
+{
+    auto statements = std::vector<PreparedStatement>{};
+    statements.push_back(make_drop_table_statement("appservice_txn_cursor").value());
+    return {11U, "drop_appservice_txn_cursor", std::move(statements), MigrationDirection::downgrade};
+}
+
 [[nodiscard]] auto downgrade_sync_stream_watermark_migration() -> MigrationStep
 {
     auto statements = std::vector<PreparedStatement>{};
@@ -502,7 +525,8 @@ auto upgrade_migration_catalog() -> std::vector<MigrationStep>
 
 auto downgrade_migration_catalog() -> std::vector<MigrationStep>
 {
-    return {downgrade_pushers_data_extra_migration(),
+    return {downgrade_appservice_txn_cursor_migration(),
+            downgrade_pushers_data_extra_migration(),
             downgrade_openid_tokens_migration(),
             downgrade_notifications_migration(),
             downgrade_pushers_migration(),

@@ -1087,6 +1087,28 @@ namespace
             }
         }
 
+        auto appservice_txn_cursor_result =
+            query_rows(connection, "postgresql_load_appservice_txn_cursor",
+                       "SELECT appservice_id, next_txn_id, delivered_stream_ordering, pending_txn_id, "
+                       "pending_stream_ordering FROM appservice_txn_cursor ORDER BY appservice_id");
+        if (!appservice_txn_cursor_result.ok)
+        {
+            return false;
+        }
+        for (auto const& row : appservice_txn_cursor_result.rows)
+        {
+            if (row.size() >= 5U)
+            {
+                PersistentAppserviceTxnCursor entry{};
+                entry.appservice_id = row[0];
+                entry.next_txn_id = parse_u64(row[1]);
+                entry.delivered_stream_ordering = parse_u64(row[2]);
+                entry.pending_txn_id = parse_u64(row[3]);
+                entry.pending_stream_ordering = parse_u64(row[4]);
+                store.appservice_txn_cursors.push_back(std::move(entry));
+            }
+        }
+
         auto const watermark = query_rows(connection, "postgresql_load_sync_stream_watermark",
                                           "SELECT watermark FROM sync_stream_watermark");
         if (!watermark.ok)

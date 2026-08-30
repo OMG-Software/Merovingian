@@ -292,6 +292,35 @@ remaining work before PostgreSQL-backed production operation.
   token's natural bound is its own short expiry (one hour; see
   `docs/auth-identity.md`) rather than a per-user row count, unlike
   `notifications`' count-based cap above.
+- `appservice_txn_cursor` table (schema version `12`, migration
+  `migrations/012_appservice_txn_cursor.sql`) persists the outbound
+  `PUT /_matrix/app/v1/transactions/{txnId}` delivery cursor for each
+  registered Application Service API (Matrix v1.19) appservice, keyed on
+  `appservice_id` (one row per appservice). Columns: `next_txn_id` (the
+  next fresh transaction id to allocate — monotonic, never reused),
+  `delivered_stream_ordering` (high-water mark: every event up to and
+  including this position has been acknowledged), `pending_txn_id` and
+  `pending_stream_ordering` (the currently in-flight, unacknowledged batch,
+  if any — `pending_txn_id == 0` means none). Every field is stored as
+  `TEXT`, matching this table's `pushers`/`notifications`/`openid_tokens`
+  neighbours, and parsed back to `std::uint64_t` at hydration. The
+  `PersistentAppserviceTxnCursor` struct and the
+  `find_appservice_txn_cursor`/`store_appservice_txn_cursor` store functions
+  ([persistent_store.hpp](../include/merovingian/database/persistent_store.hpp))
+  are implemented for both SQLite and PostgreSQL, hydrated on backend open.
+  Delivery itself (`room_service.cpp`'s `dispatch_appservice_delivery`,
+  called from `send_event()`, `dispatch_membership_push_notification()`, and
+  the federation `deliver_federation_push_notifications()` path) replays
+  forward through the existing `events` table by `stream_ordering` rather
+  than maintaining a separate durable outbox — this row is the *entire*
+  persisted delivery state. A retry of an in-flight batch reuses the exact
+  same `pending_txn_id` and re-derives the identical single event from
+  `events`, never growing it, per the spec's "Homeservers MUST NOT alter
+  ... events they were going to send within that transaction ID on
+  retries." Delivery is synchronous (on the request path that produced the
+  triggering event), not a background/async dispatch like push notification
+  delivery — see `dispatch_appservice_delivery`'s doc comment for why, and
+  `docs/todos/capability-gaps.md` for the documented follow-up.
 - `/sync` calls `database::ensure_sync_stream_id_ahead_of()` when the client's
   `since` token is ahead of the server's counter. This recovers live deployments
   whose counter rolled back below a stored token (for example, when the watermark
