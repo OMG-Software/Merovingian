@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.11.13
+Version:        0.12.1
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -101,6 +101,13 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Mon Aug 31 2026 James Chapman <claude@ping.me.uk> - 0.12.1-1
+- HTTP/1.1 keep-alive and tiered production rate limiting
+- Application Service API: registration, auth, transactions, third-party lookups
+- SSO login (m.login.sso) and the m.login.token exchange
+- Fail-closed federation worker hardening on non-Linux platforms
+- Runtime lock: deadlock fix and exception-safe release
+
 * Fri Aug 28 2026 James Chapman <claude@ping.me.uk> - 0.11.13-1
 - Release runtime.mutex across blocking outbound federation calls
 - Report each user at most once in sync device_lists
