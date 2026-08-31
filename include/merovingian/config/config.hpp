@@ -446,6 +446,19 @@ struct FederationWorkerConfig final
     bool apply_hardening{true};
 };
 
+// Matrix v1.19 Application Service API configuration. `registration_files`
+// lists paths to appservice registration documents (see
+// `merovingian::appservice::load_registrations`), each describing one
+// bridge/bot's as_token/hs_token, namespaces, and outbound URL. Empty by
+// default: with no registration files, the Application Service surface
+// (as_token auth, transactions, query hooks, third-party endpoints) is
+// entirely inert. Restart required — see reload_policy.cpp: the registry is
+// built once at start_runtime() time.
+struct AppserviceConfig final
+{
+    std::vector<std::string> registration_files{};
+};
+
 struct SecurityConfig final
 {
     RegistrationSecurityConfig registration{};
@@ -470,7 +483,7 @@ public:
 
     Config(ServerConfig server, ListenersConfig listeners, DatabaseConfig database, SecurityConfig security,
            ClientRateLimitsConfig client_rate_limits, LogModulesConfig log_modules,
-           FederationWorkerConfig federation_worker = {});
+           FederationWorkerConfig federation_worker = {}, AppserviceConfig appservice = {});
 
     [[nodiscard]] auto server() const noexcept -> ServerConfig const&;
     [[nodiscard]] auto server() noexcept -> ServerConfig&;
@@ -486,6 +499,8 @@ public:
     [[nodiscard]] auto log_modules() noexcept -> LogModulesConfig&;
     [[nodiscard]] auto federation_worker() const noexcept -> FederationWorkerConfig const&;
     [[nodiscard]] auto federation_worker() noexcept -> FederationWorkerConfig&;
+    [[nodiscard]] auto appservice() const noexcept -> AppserviceConfig const&;
+    [[nodiscard]] auto appservice() noexcept -> AppserviceConfig&;
 
 private:
     ServerConfig m_server{};
@@ -495,6 +510,7 @@ private:
     ClientRateLimitsConfig m_client_rate_limits{};
     LogModulesConfig m_log_modules{};
     FederationWorkerConfig m_federation_worker{};
+    AppserviceConfig m_appservice{};
 };
 
 struct ConfigValidationFinding final

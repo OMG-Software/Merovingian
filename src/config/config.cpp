@@ -43,7 +43,7 @@ namespace
 
 Config::Config(ServerConfig server, ListenersConfig listeners, DatabaseConfig database, SecurityConfig security,
                ClientRateLimitsConfig client_rate_limits, LogModulesConfig log_modules,
-               FederationWorkerConfig federation_worker)
+               FederationWorkerConfig federation_worker, AppserviceConfig appservice)
     : m_server{std::move(server)}
     , m_listeners{std::move(listeners)}
     , m_database{std::move(database)}
@@ -51,6 +51,7 @@ Config::Config(ServerConfig server, ListenersConfig listeners, DatabaseConfig da
     , m_client_rate_limits{std::move(client_rate_limits)}
     , m_log_modules{std::move(log_modules)}
     , m_federation_worker{std::move(federation_worker)}
+    , m_appservice{std::move(appservice)}
 {
 }
 
@@ -122,6 +123,16 @@ auto Config::federation_worker() const noexcept -> FederationWorkerConfig const&
 auto Config::federation_worker() noexcept -> FederationWorkerConfig&
 {
     return m_federation_worker;
+}
+
+auto Config::appservice() const noexcept -> AppserviceConfig const&
+{
+    return m_appservice;
+}
+
+auto Config::appservice() noexcept -> AppserviceConfig&
+{
+    return m_appservice;
 }
 
 auto is_ascii_digit(char value) noexcept -> bool

@@ -1,0 +1,88 @@
+diff --git a/src/homeserver/runtime.cpp b/src/homeserver/runtime.cpp
+index 10fe3405..ab964082 100644
+--- a/src/homeserver/runtime.cpp
++++ b/src/homeserver/runtime.cpp
+@@ -24,9 +24,11 @@
+ 
+ #include <algorithm>
+ #include <array>
++#include <chrono>
+ #include <cstddef>
+ #include <cstdlib>
+ #include <fstream>
++#include <future>
+ #include <limits>
+ #include <memory>
+ #include <optional>
+@@ -301,17 +303,46 @@ HomeserverRuntime::HomeserverRuntime()
+ {
+ }
+ 
++auto reap_completed_futures(std::vector<std::future<void>>& futures) -> void
++{
++    auto kept = std::vector<std::future<void>>{};
++    kept.reserve(futures.size());
++    for (auto& future : futures)
++    {
++        if (future.valid() && future.wait_for(std::chrono::seconds{0}) != std::future_status::ready)
++        {
++            kept.push_back(std::move(future));
++        }
++    }
++    futures = std::move(kept);
++}
++
+ HomeserverRuntime::~HomeserverRuntime()
+ {
+-    // Join any still-running loser tasks from a parallel make_join race before
+-    // other members (outbound_client, discovery_network, the signing SecretBuffer)
+-    // are destroyed. orphan_futures_ is declared last so it is destroyed first;
+-    // this explicit wait makes that ordering guarantee obvious and keeps the
+-    // tasks' captured `&runtime` reference valid for the duration of the drain.
+-    // The wait is bounded by each task's per-call timeout (join_timeout_seconds),
+-    // so a hung remote cannot pin runtime destruction indefinitely.
+-    auto const lk = std::lock_guard{orphan_futures_mutex_};
+-    for (auto& future : orphan_futures_)
++    // Join any still-running loser tasks from a parallel make_join race (and
++    // any still-running push-delivery task — see push_delivery_in_flight_)
++    // before other members (outbound_client, discovery_network, the signing
++    // SecretBuffer) are destroyed. orphan_futures_ is declared last so it is
++    // destroyed first; this explicit wait makes that ordering guarantee
++    // obvious and keeps the tasks' captured `&runtime` reference valid for
++    // the duration of the drain. The wait is bounded by each task's per-call
++    // timeout (join_timeout_seconds), so a hung remote cannot pin runtime
++    // destruction indefinitely.
++    //
++    // The mutex is held only long enough to move the futures out of
++    // orphan_futures_ — never across the blocking wait() below. A task's
++    // final action must never need to acquire orphan_futures_mutex_ to
++    // finish (push_delivery_in_flight_ is an atomic decrement for exactly
++    // this reason), but holding the lock across wait() would also needlessly
++    // block every other thread trying to reap or park a future (e.g. a
++    // concurrent dispatch_push_deliveries call) while this drain is in
++    // progress, so it is released regardless.
++    auto drained = std::vector<std::future<void>>{};
++    {
++        auto const lk = std::lock_guard{orphan_futures_mutex_};
++        drained = std::move(orphan_futures_);
++    }
++    for (auto& future : drained)
+     {
+         if (future.valid())
+         {
+@@ -349,6 +380,7 @@ HomeserverRuntime::HomeserverRuntime(HomeserverRuntime&& other) noexcept
+     , receipts(std::move(other.receipts))
+     , room_typing_stream_id(std::move(other.room_typing_stream_id))
+     , orphan_futures_(std::move(other.orphan_futures_))
++    , push_delivery_in_flight_(other.push_delivery_in_flight_.exchange(0U))
+ {
+     other.crypto_provider = nullptr;
+ }
+@@ -388,6 +420,7 @@ auto HomeserverRuntime::operator=(HomeserverRuntime&& other) noexcept -> Homeser
+     receipts = std::move(other.receipts);
+     room_typing_stream_id = std::move(other.room_typing_stream_id);
+     orphan_futures_ = std::move(other.orphan_futures_);
++    push_delivery_in_flight_ = other.push_delivery_in_flight_.exchange(0U);
+     return *this;
+ }
+ 

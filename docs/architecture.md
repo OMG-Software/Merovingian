@@ -54,6 +54,7 @@ header-only public boundary.
 
 | Module | Purpose |
 |--------|---------|
+| `appservice` | Application Service API (Matrix v1.19): registration-file parsing, namespace matching/exclusivity, `AppserviceRegistry`, the internal as_token-masquerade token |
 | `auth` | Sessions, tokens, key API |
 | `bootstrap` | Public bootstrap boundary for startup integration |
 | `canonicaljson` | Matrix canonical JSON parser, serializer, signing |
@@ -98,6 +99,7 @@ flowchart TB
         fedworker_mod["federation_worker<br/>worker event loop"]
     end
     subgraph services["Protocol & domain services"]
+        appservice["appservice<br/>registration, namespaces"]
         auth["auth"]
         rooms["rooms"]
         events["events"]
@@ -120,7 +122,7 @@ flowchart TB
 
     net --> homeserver
     fedworker_mod --> homeserver & federation & ipc & net
-    homeserver --> auth & rooms & events & federation & media & push & sync & trust_safety & identity
+    homeserver --> auth & rooms & events & federation & media & push & sync & trust_safety & identity & appservice
     federation --> http
     identity --> http
     push --> http & federation
@@ -176,15 +178,38 @@ Request flow:
 is held for the whole of each client-server and local-router request, and it
 also guards inbound federation handling — so whatever holds it stalls every
 other client and every inbound `/send`. Synchronous outbound calls made from a
-request handler (remote device-key queries, remote media fetches, and the
-server-discovery cascade feeding both) therefore release it for the duration of
-the network round trip and re-acquire it before touching runtime state again.
-The release is RAII: the entry points publish their guard through
-`homeserver::RequestLockScope`, and each network call sits inside a
-`homeserver::NetworkIoUnlock` scope. Signing stays under the lock, because the
-outbound call borrows a span into the runtime's `SecretBuffer`. See
+request handler (remote device-key queries, remote media fetches, the
+server-discovery cascade feeding both, and — since 0.12.1 — the
+`trust_safety.policy_server_url` round trip made by `resolve_policy_server_hook`
+on registration, room creation, and media download/thumbnail) therefore
+release it for the duration of the network round trip and re-acquire it before
+touching runtime state again. The release is RAII: the entry points publish
+their guard through `homeserver::RequestLockScope`, and each network call sits
+inside a `homeserver::NetworkIoUnlock` scope. Signing stays under the lock,
+because the outbound call borrows a span into the runtime's `SecretBuffer`. See
 [`http-transport.md`](http-transport.md) "Request lock and blocking network
 calls".
+
+**`NetworkIoUnlock` only releases one lock level.** `HomeserverRuntime::mutex`
+is a `std::recursive_mutex` so that self-locking service functions (`create_room`,
+`join_room`, `leave_room`) stay independently callable, but when such a
+function is called from a request handler that already holds its own guard,
+the recursive acquisition is silent — and `NetworkIoUnlock` releases only the
+*published* (outer) guard, leaving the callee's own (inner, actually-in-scope)
+guard held. 0.12.1 found and fixed this for `create_room` (see
+[`http-transport.md`](http-transport.md) "`NetworkIoUnlock` was incomplete for
+recursive acquisitions"); `join_room`/`leave_room` share the same shape and are
+tracked as follow-up.
+
+**Load/soak evidence for the remaining critical section.**
+`tests/integration/test_runtime_lock_soak_flow.cpp` (opt-in, `build_load_tests`)
+drives concurrent `/sync` long-polls, ordinary reads, message sends, and
+signed inbound federation transactions — all over real sockets with
+keep-alive — and reports throughput and latency percentiles, so any further
+narrowing decision is backed by measurement. See
+[`http-transport.md`](http-transport.md) "Load/soak evidence" and
+`docs/todos/production-milestone.md` "Global runtime lock" for how to run it
+and the numbers it produced.
 
 **Fire-and-forget background work.** Some work must start from inside a
 request handler but must not make the client wait on it: `join_room`'s

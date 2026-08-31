@@ -111,6 +111,246 @@ IdP adapter has a real integration point to call into.
   validation fails closed: `enabled=true` with a missing `authorization_url`
   or an empty `redirect_url_allowlist` is rejected outright, as is a
   duplicate/empty identity-provider id, an empty name, or a non-`mxc://` icon.
+Begins closing the Application Service API gap (Matrix v1.19): the entire
+surface was previously unimplemented (see `docs/todos/capability-gaps.md`).
+This entry covers the registration/auth layer and outbound transaction
+delivery; the outbound query hooks and `/thirdparty/*` remain and land in a
+follow-up entry under this same section.
+
+- **Appservice registration files.** New `merovingian::appservice` module
+  (`include/merovingian/appservice/`, `src/appservice/`) parses registration
+  documents (`as_token`, `hs_token`, `id`, `url`, `sender_localpart`,
+  `namespaces.{users,aliases,rooms}` with per-entry `exclusive`/`regex`) and
+  builds an in-memory `AppserviceRegistry` at startup from the new
+  `appservice.registration_files` config key (`config::AppserviceConfig`,
+  restart-required). Registration files are parsed as JSON — a strict subset
+  of the YAML the spec describes — rather than pulling in a new YAML
+  dependency; see the doc comment on `AppserviceRegistration` for the
+  rationale. `as_token`/`hs_token` are held in `core::SecretBuffer` and
+  compared with `crypto::constant_time_equal_variable_length`, never `==`.
+  Duplicate `id`/`as_token` across registrations is rejected at load time
+  (spec MUST) and drops the whole set rather than guessing a winner.
+- **as_token bearer auth + `?user_id=`/`?device_id=` masquerade.** A
+  client-server request bearing a registered appservice's `as_token` now
+  authenticates as that appservice's `sender_localpart` user by default, or
+  as the user named by `?user_id=` when it falls within the appservice's
+  `users` namespace (403 otherwise); `?device_id=` is honoured when it names
+  a device already known to belong to that user (400 `M_UNKNOWN_DEVICE`
+  otherwise). Resolved once per request in
+  `handle_client_server_request_impl` via an internal, never-on-the-wire
+  token substitution (`appservice/masquerade_token.hpp`) so every existing
+  `authenticated_user`/`authenticated_session`/`authenticated_admin_user`
+  call site, and every deeper handler that re-derives identity from a bare
+  `access_token`, works unmodified for both ordinary sessions and appservice
+  masquerades. A raw incoming token already in the internal reserved shape
+  is rejected before any auth logic runs, closing the obvious forgery path.
+- **`m.login.application_service`.** `POST /register` and `POST /login`
+  accept `type: m.login.application_service` (bearer-authenticated with
+  `as_token`), bypassing the ordinary registration flow entirely per spec
+  ("Server admin style permissions") — no registration token, no UIA. New
+  passwordless account creation (`register_appservice_user`) and
+  passwordless login (`login_appservice_user`) in `auth_service.cpp`, sharing
+  the existing session/token-issuance tail with the password path via a new
+  `complete_login` helper. `GET /login` now advertises
+  `m.login.application_service` alongside `m.login.password`.
+- **Namespace exclusivity.** An appservice's `exclusive` namespace now
+  blocks entity creation by anyone else: ordinary `POST /register` and
+  `m.login.application_service` registration both reject a username inside
+  another appservice's exclusive `users` namespace with `M_EXCLUSIVE`, and
+  `PUT /_matrix/client/v3/directory/room/{roomAlias}` and `POST /createRoom`
+  (`room_alias_name`) both reject an alias inside an exclusive `aliases`
+  namespace the same way — except for the owning appservice itself.
+- **Outbound `PUT /_matrix/app/v1/transactions/{txnId}` delivery.** New
+  `AppserviceClient` (`src/appservice/appservice_client.cpp`) PUTs one event
+  per transaction, authenticated with `Authorization: Bearer <hs_token>`.
+  Wired synchronously into `room_service.cpp`'s `dispatch_appservice_delivery`
+  from `send_event()`, local membership transitions, and the
+  federation-accepted-PDU path, for every registered appservice whose
+  namespaces match the event (`registration_interested_in_room_event`). The
+  delivery cursor (`next_txn_id`, `delivered_stream_ordering`, and the
+  currently in-flight `pending_txn_id`/`pending_stream_ordering`) is durable
+  in the new `appservice_txn_cursor` table (migration
+  `013_appservice_txn_cursor.sql`, schema version 13), so a retried
+  transaction reuses the exact same txn_id and event after a restart, per
+  spec ("Homeservers MUST NOT alter ... events they were going to send
+  within that transaction ID on retries"). Appservice URLs are
+  operator-configured (registration files), not attacker-influenced, so
+  `http::OutboundRequest` gained an opt-in `allow_cleartext_http` escape
+  hatch from its https-only invariant (default `false`, unchanged for every
+  other caller) — the spec's own canonical registration example, and most
+  real-world bridges, use plain `http://127.0.0.1:...`.
+- **Known gaps, tracked in `docs/todos/capability-gaps.md`:** the outbound
+  transaction delivery above sends one event per transaction synchronously
+  on the request path (no background dispatch, no retry/backoff timer
+  independent of new events, no `ephemeral` data); the outbound
+  `GET /_matrix/app/v1/users/{userId}` / `/rooms/{roomAlias}` query hooks
+  are scaffolded (client methods exist, unit-tested) but not invoked from
+  any local-miss call site; the `/_matrix/app/v1/ping` ↔
+  `POST /_matrix/client/v1/appservice/{id}/ping` round trip and
+  `/_matrix/client/v3/thirdparty/*` remain unimplemented.
+
+- **Application service registration files are now parsed as YAML.** The
+  module parsed JSON only, reasoning that JSON is a subset of YAML 1.2. That
+  is true and was not sufficient: the spec's own registration example and
+  every shipped bridge use block-style `registration.yaml`, so the homeserver
+  could not load a single real registration file. `registration_yaml.cpp` is a
+  strict bounded subset — 2-space block maps and lists, plain and quoted
+  scalars, `#` comments, `null`/`~` — where anchors, aliases, tags, block
+  scalars, tabs, document markers and unknown keys are parse failures rather
+  than silent coercion, with fail-closed input bounds (256 KiB file, 4 KiB
+  line, 64 namespace entries, 32 protocols). `load_registration_file()` tries
+  YAML first and falls back to JSON, so anything that loaded before still
+  loads. Covered by a test that parses the spec's example verbatim, trailing
+  comment and empty `rooms: []` included.
+- **An empty namespace list written as `rooms: []` is accepted.** The YAML
+  parser required every namespace key to carry an empty value with an indented
+  list beneath it, which rejected the spec's canonical example. Empty flow
+  sequences are now accepted — they carry no entries, so supporting them costs
+  nothing — while every other inline value, including non-empty flow sequences
+  the bounded subset cannot parse, is still rejected rather than silently
+  dropping entries.
+- **Namespace regexes are anchored to whole identifiers (security).**
+  `namespace_matches()` used `std::regex_search`, which is unanchored. A
+  namespace regex is a claim over an identifier, not a substring: the spec's
+  own example pattern `@_irc_.*` therefore also matched
+  `@evil@_irc_bob:example.org`, so one appservice's **exclusive** namespace
+  could claim unrelated local users and block their registration. Now
+  `std::regex_match`, with coverage for the genuine match, the substring
+  escape, and a shared-prefix non-match.
+- **`src/appservice/AGENTS.md` added**, recording the YAML-subset rules, the
+  anchored-matching requirement, the token-handling rules, and one known gap:
+  overlapping *exclusive* namespaces between different appservices are not
+  detected, so two registrations may both exclusively claim the same pattern.
+- **Third-party lookups implemented, closing the last functional gap in the
+  Application Service API.** All six client-server routes — `GET /_matrix/
+  client/v3/thirdparty/{protocols, protocol/{protocol}, location,
+  location/{protocol}, user, user/{protocol}}` — are now backed by the
+  corresponding outbound `GET /_matrix/app/v1/thirdparty/*` calls
+  (`AppserviceClient::query_thirdparty_*`, new in `appservice_client.cpp`).
+  A protocol name is owned by whichever registration lists it in
+  `protocols:`; an unrecognised protocol is `404 M_NOT_FOUND` with no
+  outbound call. The alias/userid lookups (`location`/`user` with no
+  protocol) have no such ownership signal, so they fan out to every
+  registered appservice and aggregate the results. An appservice that is
+  unreachable, times out, or answers with a non-200/malformed body
+  contributes nothing rather than failing the whole client request — only
+  when no appservice contributed anything does the route 404 (or, for
+  `/protocols`, return `{}`, matching the previous placeholder's behaviour
+  for the no-appservice case so Element does not resume its retry loop).
+  `instance_id` is minted by the homeserver per spec, never trusted from the
+  appservice reply. Every field taken from an appservice's JSON reply is
+  type-checked and bounded (dropped malformed array entries, non-string
+  `fields` members dropped, capped array/object sizes and string lengths)
+  before being echoed to a client — a bridge is not a trusted peer. Outbound
+  calls carry the `hs_token` as a Bearer credential exactly like the
+  existing transaction/query calls. All six routes bypass client-side rate
+  limiting and require authentication, matching the spec's per-endpoint
+  `Rate-limited: No` / `Requires authentication: Yes` flags exactly — the
+  previous `/protocols` placeholder was incorrectly rate-limited. New unit
+  tests (`tests/unit/test_appservice_client.cpp`, tag `[thirdparty]`) cover
+  the disabled (`url: null`) fast path and the bounded/defensive response
+  parsing in isolation; new conformance tests
+  (`tests/conformance/test_appservice_thirdparty_conformance.cpp`) cover the
+  documented status codes, the auth/rate-limit flags, and the
+  no-appservice-registered cases; new integration tests
+  (`tests/integration/test_appservice_thirdparty_flow.cpp`) drive the full
+  path against a real local mock appservice, including multi-appservice
+  aggregation and the unreachable-appservice degrade-not-fail guarantee.
+
+- **`resolve_policy_server_hook` no longer holds `HomeserverRuntime::mutex`
+  across the `trust_safety.policy_server_url` round trip.**
+  `handle_federation_http_request` was already fixed for this (#415), but
+  `register_local_user`, `create_room` (and room upgrade), and the media
+  download/thumbnail policy check all called the same function directly
+  while still holding the lock — an operator running with
+  `trust_safety.enabled` inherited a policy server that, if slow or
+  unreachable, froze registration, room creation, and media reads for every
+  other user for up to `policy_server_timeout`. The fix wraps the remainder
+  of `resolve_policy_server_hook` (the injectable test hook and the real
+  `OutboundClient::perform` call alike) in one `NetworkIoUnlock` scope, so
+  every call site is fixed at the source. New regression coverage in
+  `tests/integration/test_request_lock_contention_flow.cpp` (registration,
+  room creation, media download, each gated on a blocking policy-server hook
+  while an unrelated request is asserted to complete promptly).
+- **`create_room` was silently double-locking `HomeserverRuntime::mutex`,
+  which made `NetworkIoUnlock` a no-op for anything blocking inside it —
+  found by the new regression coverage above, not by inspection.**
+  `HomeserverRuntime::mutex` is a `std::recursive_mutex`, and `create_room`
+  takes its own lock on it (it must stay independently callable outside a
+  request handler — see `local_smoke_flow.cpp`). Called from
+  `client_server.cpp`, which already held its own outer guard for the whole
+  request, this recursively re-locked the *same* mutex a second time — legal
+  for a `recursive_mutex`, and therefore silent. `NetworkIoUnlock`'s single
+  `unlock()` call only undoes one level of that recursion: it released the
+  outer guard (the one `RequestLockScope` had published) while `create_room`'s
+  own, inner guard — the one actually in scope at the point of the network
+  call — stayed locked. The mutex was therefore never really available to
+  another thread during the (now-unlocked-in-theory) policy-server round
+  trip. This means **the `NetworkIoUnlock` mechanism introduced in 0.11.13
+  was incomplete for any call chain that passed through a self-locking
+  function**: it correctly modelled "the caller holds one lock, release it,"
+  but not "the caller holds one lock, a callee recursively takes a second
+  one, release the one actually in scope." The room-creation regression test
+  added alongside the `resolve_policy_server_hook` fix above caught this
+  immediately — it deadlocked rather than passing, exactly as a lock bug
+  should. Fixed by publishing `RequestLockScope` around `create_room`'s own
+  guard (`room_service.cpp`) and releasing the caller's outer guard before
+  delegating to it at all three call sites (`client_server.cpp` ×2,
+  `local_http_router.cpp` ×1) — the unlock/call/relock idiom already used for
+  `join_room` — so `create_room`'s own guard becomes the only lock in scope
+  and is the one `NetworkIoUnlock` actually finds and releases.
+  `join_room`/`leave_room` share the identical self-locking shape and very
+  likely have the same latent gap for their own outbound federation calls;
+  fixing them is tracked as separate follow-up work, deliberately out of
+  scope here to avoid last-minute scope creep on a lock-correctness change.
+- **New load/soak evidence harness for the global runtime lock**
+  (`tests/integration/test_runtime_lock_soak_flow.cpp`, opt-in behind the
+  `build_load_tests` Meson option — a manual tool with no CI wiring, matching
+  the existing `build_live_tests` precedent). Drives concurrent `/sync`
+  long-polls, ordinary reads, message sends, and signed
+  X-Matrix-authenticated inbound federation transactions — all over real
+  sockets with HTTP/1.1 keep-alive — and reports throughput and p50/p95/p99
+  latency per category, so the "Global runtime lock" release blocker in
+  `docs/todos/production-milestone.md` can be closed (or kept open) on
+  measurement rather than intuition. **Measured, 20 s runs, 6 simulated users
+  + 2 simulated federation peers, before (pre-fix source reverted to a
+  scratch copy) vs. after this change**: reads ~385→374 req/s (p50 7.2→7.4 ms,
+  p95 25.0→26.4 ms), sends ~478→469 req/s (p50 6.7→7.0 ms, p95 21.4→21.8 ms),
+  federation transactions ~208→204 req/s (p50 6.4→6.7 ms, p95 22.6→23.0 ms,
+  capped by the federation per-origin transaction rate limiter, not lock
+  contention) — statistically indistinguishable, as expected: this change's
+  two fixes (below) do not touch that hot path when `trust_safety` is
+  disabled. The direct evidence for those two fixes is instead the
+  regression tests themselves: before, the affected request deadlocks
+  (unbounded — confirmed by direct reproduction under a bounded external
+  timeout); after, `--durations yes` shows registration/room-creation/media
+  scenarios completing in 66–132 microseconds. See `docs/http-transport.md`,
+  "Load/soak evidence", for how to run it and the full measured results.
+
+- **Appservice user and room-alias query hooks are wired.** `query_user()` and
+  `query_room_alias()` were implemented but called from nowhere, so a bridge
+  that materialises users and rooms on demand got a flat 404 for exactly the
+  identifiers its namespace exists to claim. `GET /directory/room/{roomAlias}`
+  and `GET /profile/{userId}` now consult the appservice whose namespace covers
+  the identifier and re-check locally afterwards. Only the owning appservice is
+  queried — fanning out would leak which aliases and users clients look up — and
+  an unreachable or declining appservice is a miss, not an error, so a bridge
+  outage cannot turn a 404 into a 502.
+- **Exclusive namespaces claimed by two appservices are now boot-time
+  findings.** Nothing enforced the spec's exclusivity guarantee across
+  registrations: two could both exclusively claim `@_bridge_.*` and whichever
+  the registry consulted first silently won. Detection compares pattern strings
+  and is deliberately conservative — differing regexes with overlapping matches
+  are not reported, because a false conflict that refuses to start a correct
+  deployment would be worse than the gap.
+- **The request lock is restored on every path out of a released region.** The
+  dispatcher's `guard.unlock(); f(); guard.lock();` triples never re-acquired if
+  `f()` threw, leaving the request — and the next one on that thread — running
+  with the locking invariant broken. Adds `ScopedGuardRelease` and converts 8 of
+  21 sites. Three publicRooms/alias federation-proxy paths were worse: they
+  released the guard and returned through `dispatch_err`/`dispatch_resp` without
+  ever re-acquiring, reading `rt.cors` — which config hot-reload can replace —
+  unsynchronised.
 
 ## 0.11.13
 

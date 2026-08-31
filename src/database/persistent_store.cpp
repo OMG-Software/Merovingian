@@ -3030,6 +3030,56 @@ auto restore_sync_stream_id(PersistentStore& store) -> void
     return matched->user_id;
 }
 
+[[nodiscard]] auto find_appservice_txn_cursor(PersistentStore const& store, std::string_view appservice_id)
+    -> PersistentAppserviceTxnCursor
+{
+    auto const it =
+        std::ranges::find_if(store.appservice_txn_cursors, [appservice_id](PersistentAppserviceTxnCursor const& row) {
+            return row.appservice_id == appservice_id;
+        });
+    if (it == store.appservice_txn_cursors.end())
+    {
+        // No row yet: the spec-correct starting state is "nothing delivered,
+        // next fresh id is 1" -- not an error, since a freshly registered
+        // appservice has no cursor row until its first delivery attempt.
+        return PersistentAppserviceTxnCursor{std::string{appservice_id}, 1U, 0U, 0U, 0U};
+    }
+    return *it;
+}
+
+[[nodiscard]] auto store_appservice_txn_cursor(PersistentStore& store, PersistentAppserviceTxnCursor cursor) -> bool
+{
+    if (cursor.appservice_id.empty())
+    {
+        return false;
+    }
+    auto const statement = record_statement(
+        "upsert_appservice_txn_cursor",
+        "INSERT INTO appservice_txn_cursor (appservice_id, next_txn_id, delivered_stream_ordering, pending_txn_id, "
+        "pending_stream_ordering) VALUES ($1, $2, $3, $4, $5) "
+        "ON CONFLICT (appservice_id) DO UPDATE SET next_txn_id = $2, delivered_stream_ordering = $3, "
+        "pending_txn_id = $4, pending_stream_ordering = $5",
+        {public_value(cursor.appservice_id), public_value(std::to_string(cursor.next_txn_id)),
+         public_value(std::to_string(cursor.delivered_stream_ordering)),
+         public_value(std::to_string(cursor.pending_txn_id)),
+         public_value(std::to_string(cursor.pending_stream_ordering))});
+    if (!record_and_persist(store, statement))
+    {
+        return false;
+    }
+    auto const existing =
+        std::ranges::find_if(store.appservice_txn_cursors, [&cursor](PersistentAppserviceTxnCursor const& current) {
+            return current.appservice_id == cursor.appservice_id;
+        });
+    if (existing != store.appservice_txn_cursors.end())
+    {
+        *existing = std::move(cursor);
+        return true;
+    }
+    store.appservice_txn_cursors.push_back(std::move(cursor));
+    return true;
+}
+
 [[nodiscard]] auto update_profile_displayname(PersistentStore& store, std::string_view user_id,
                                               std::string_view displayname) -> bool
 {

@@ -84,6 +84,35 @@ production-gated.
 - Client-server auth/device/key actions append durable audit rows without
   logging plaintext credentials, bearer tokens, or key payloads.
 - `GET /_matrix/client/v1/auth_metadata` (MSC2965 OIDC discovery) returns RFC 8414 / Matrix v1.19 authorisation server metadata when `server.oidc.*` is configured; returns `404 M_UNRECOGNIZED` when OIDC is not configured. No OAuth 2.0 authorization-code / token / revocation flow is implemented yet.
+- **Application Service API identity (Matrix v1.19, `merovingian::appservice`).** Registration
+  files (`appservice.registration_files`, parsed as JSON) build an in-memory
+  `AppserviceRegistry` at startup; `as_token`/`hs_token` are held in a mlocked
+  `core::SecretBuffer` and only ever compared via
+  `crypto::constant_time_equal_variable_length`. A client-server request
+  bearing a registered `as_token` authenticates as the appservice's own
+  `sender_localpart` user by default, or as the user named by `?user_id=`
+  when that user falls within one of the appservice's `users` namespaces
+  (`403` otherwise); `?device_id=` must name a device already known to
+  belong to the asserted user (`400 M_UNKNOWN_DEVICE` otherwise). This
+  masquerade is resolved exactly once, at the top of
+  `handle_client_server_request_impl`, by substituting `req.access_token`
+  with an internal token (`appservice::encode_masquerade_token`,
+  `appservice/masquerade_token.hpp`) that `authenticated_user`/
+  `authenticated_session`/`authenticated_admin_user` in `auth_service.cpp`
+  recognise and re-validate — never a real DB-backed session row, and never
+  sent or logged. A raw client-presented token already in that internal
+  shape is rejected before any auth logic runs, so the format cannot be
+  forged from outside the process. `POST /register` and `POST /login` accept
+  `type: m.login.application_service` (bearer-authenticated with `as_token`,
+  restricted to the appservice's own namespace): registration is
+  passwordless and bypasses UIA entirely per spec, and login mints an
+  ordinary session with no password check, sharing the existing
+  token-issuance path (`complete_login`) with `m.login.password`. An
+  appservice's `exclusive` namespace blocks registration/alias creation by
+  anyone else (`M_EXCLUSIVE`) — enforced in the registration and
+  `PUT /directory/room/{roomAlias}` / `POST /createRoom` handlers. Outbound
+  delivery to appservices (transactions, query hooks, `/thirdparty/*`) is
+  not yet implemented — see `docs/todos/capability-gaps.md`.
 - Unit coverage for identity validation, account lock/suspension behavior, password policy, token activity, and log redaction.
 - Registration token verification using Argon2id (`crypto_pwhash_str` / `crypto_pwhash_str_verify`);
   only the password hash is retained, and the plaintext token is zeroised after hashing. The

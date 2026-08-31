@@ -37,7 +37,9 @@ namespace
     }
 
     constexpr auto https_scheme = "https://"sv;
+    constexpr auto http_scheme = "http://"sv;
     constexpr auto default_https_port = std::uint16_t{443U};
+    constexpr auto default_http_port = std::uint16_t{80U};
 
     // libcurl global init/cleanup guard. Constructed once on first use via a
     // function-local static (thread-safe per C++11+ magic statics) and torn
@@ -136,13 +138,36 @@ namespace
         return url.size() > https_scheme.size() && url.substr(0U, https_scheme.size()) == https_scheme;
     }
 
-    [[nodiscard]] auto url_host_segment_present(std::string_view url) noexcept -> bool
+    [[nodiscard]] auto starts_with_http(std::string_view url) noexcept -> bool
     {
-        if (!starts_with_https(url))
+        return url.size() > http_scheme.size() && url.substr(0U, http_scheme.size()) == http_scheme;
+    }
+
+    // Length of the scheme prefix this request is permitted to use: always
+    // "https://", and — only when the request has explicitly opted in via
+    // OutboundRequest::allow_cleartext_http — also "http://". Returns 0 for
+    // anything else, which every caller below treats as "reject".
+    [[nodiscard]] auto permitted_scheme_length(std::string_view url, bool allow_cleartext_http) noexcept -> std::size_t
+    {
+        if (starts_with_https(url))
+        {
+            return https_scheme.size();
+        }
+        if (allow_cleartext_http && starts_with_http(url))
+        {
+            return http_scheme.size();
+        }
+        return 0U;
+    }
+
+    [[nodiscard]] auto url_host_segment_present(std::string_view url, bool allow_cleartext_http) noexcept -> bool
+    {
+        auto const scheme_length = permitted_scheme_length(url, allow_cleartext_http);
+        if (scheme_length == 0U)
         {
             return false;
         }
-        auto const after_scheme = url.substr(https_scheme.size());
+        auto const after_scheme = url.substr(scheme_length);
         if (after_scheme.empty())
         {
             return false;
@@ -159,13 +184,16 @@ namespace
         std::uint16_t port{default_https_port};
     };
 
-    [[nodiscard]] auto parse_https_host_port(std::string_view url) -> std::optional<HostPort>
+    [[nodiscard]] auto parse_request_host_port(std::string_view url, bool allow_cleartext_http)
+        -> std::optional<HostPort>
     {
-        if (!starts_with_https(url))
+        auto const scheme_length = permitted_scheme_length(url, allow_cleartext_http);
+        if (scheme_length == 0U)
         {
             return std::nullopt;
         }
-        auto const after_scheme = url.substr(https_scheme.size());
+        auto const default_port = starts_with_https(url) ? default_https_port : default_http_port;
+        auto const after_scheme = url.substr(scheme_length);
         auto const slash_pos = after_scheme.find('/');
         auto const authority = slash_pos == std::string_view::npos ? after_scheme : after_scheme.substr(0U, slash_pos);
         if (authority.empty())
@@ -175,7 +203,7 @@ namespace
         auto const colon_pos = authority.find(':');
         if (colon_pos == std::string_view::npos)
         {
-            return HostPort{std::string{authority}, default_https_port};
+            return HostPort{std::string{authority}, default_port};
         }
         auto const host = authority.substr(0U, colon_pos);
         auto const port_str = authority.substr(colon_pos + 1U);
@@ -379,7 +407,7 @@ namespace
         return OutboundResult{false, OutboundResponse{}, error, std::move(detail)};
     }
 
-    [[nodiscard]] auto configure_security_options(CURL* handle) noexcept -> bool
+    [[nodiscard]] auto configure_security_options(CURL* handle, bool allow_cleartext_http) noexcept -> bool
     {
         // Treat any setopt failure on a security-critical option as fatal so
         // the request fails closed before a single byte hits the wire.
@@ -395,7 +423,12 @@ namespace
         {
             return false;
         }
-        if (curl_easy_setopt(handle, CURLOPT_PROTOCOLS_STR, "https") != CURLE_OK)
+        // Cleartext http is only ever added to the allowed protocol set for a
+        // request that explicitly opted in (OutboundRequest::allow_cleartext_http)
+        // — see that field's doc comment for the narrow, operator-configured-only
+        // destinations this is meant for. Every other caller keeps the
+        // https-only restriction unchanged.
+        if (curl_easy_setopt(handle, CURLOPT_PROTOCOLS_STR, allow_cleartext_http ? "https,http" : "https") != CURLE_OK)
         {
             return false;
         }
@@ -509,8 +542,7 @@ auto detect_system_ca_trust() -> SystemCaTrust
     };
     // OpenSSL hashed certificate directories.
     constexpr std::array<std::string_view, 4U> bundle_dirs{
-        "/etc/ssl/certs",
-        "/etc/pki/tls/certs",
+        "/etc/ssl/certs", "/etc/pki/tls/certs",
         "/etc/openssl/certs",         // NetBSD
         "/usr/pkg/etc/openssl/certs", // NetBSD pkgsrc prefix
     };
@@ -546,11 +578,11 @@ auto validate_outbound_request(OutboundRequest const& request) noexcept -> Outbo
     {
         return OutboundError::invalid_url;
     }
-    if (!starts_with_https(request.url))
+    if (permitted_scheme_length(request.url, request.allow_cleartext_http) == 0U)
     {
         return OutboundError::https_required;
     }
-    if (!url_host_segment_present(request.url))
+    if (!url_host_segment_present(request.url, request.allow_cleartext_http))
     {
         return OutboundError::invalid_url;
     }
@@ -582,7 +614,7 @@ auto OutboundClient::perform(OutboundRequest const& request) -> OutboundResult
         return fail(OutboundError::network_error, "curl handle unavailable");
     }
 
-    auto const host_port = parse_https_host_port(request.url);
+    auto const host_port = parse_request_host_port(request.url, request.allow_cleartext_http);
     if (!host_port.has_value())
     {
         return fail(OutboundError::invalid_url, std::string{outbound_error_name(OutboundError::invalid_url)});
@@ -590,7 +622,7 @@ auto OutboundClient::perform(OutboundRequest const& request) -> OutboundResult
 
     curl_easy_reset(handle);
 
-    if (!configure_security_options(handle))
+    if (!configure_security_options(handle, request.allow_cleartext_http))
     {
         return fail(OutboundError::network_error, "failed to configure curl security options");
     }

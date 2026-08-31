@@ -326,6 +326,40 @@ remaining work before PostgreSQL-backed production operation.
   alone, and returns `nullopt` on any miss (unknown, expired, or
   already-used token are indistinguishable to the caller). Implemented for
   both SQLite and PostgreSQL, hydrated on backend open.
+  `migrations/012_login_tokens.sql`) belongs to a sibling feature branch
+  (SSO login) and carries no C++ store/find/hydration code in this codebase
+  — it is registered in `schema.cpp`/`migration.cpp` purely so this branch's
+  own migration chain has no version gap between the sibling branch's `12`
+  and this branch's `13` below.
+- `appservice_txn_cursor` table (schema version `13`, migration
+  `migrations/013_appservice_txn_cursor.sql`) persists the outbound
+  `PUT /_matrix/app/v1/transactions/{txnId}` delivery cursor for each
+  registered Application Service API (Matrix v1.19) appservice, keyed on
+  `appservice_id` (one row per appservice). Columns: `next_txn_id` (the
+  next fresh transaction id to allocate — monotonic, never reused),
+  `delivered_stream_ordering` (high-water mark: every event up to and
+  including this position has been acknowledged), `pending_txn_id` and
+  `pending_stream_ordering` (the currently in-flight, unacknowledged batch,
+  if any — `pending_txn_id == 0` means none). Every field is stored as
+  `TEXT`, matching this table's `pushers`/`notifications`/`openid_tokens`
+  neighbours, and parsed back to `std::uint64_t` at hydration. The
+  `PersistentAppserviceTxnCursor` struct and the
+  `find_appservice_txn_cursor`/`store_appservice_txn_cursor` store functions
+  ([persistent_store.hpp](../include/merovingian/database/persistent_store.hpp))
+  are implemented for both SQLite and PostgreSQL, hydrated on backend open.
+  Delivery itself (`room_service.cpp`'s `dispatch_appservice_delivery`,
+  called from `send_event()`, `dispatch_membership_push_notification()`, and
+  the federation `deliver_federation_push_notifications()` path) replays
+  forward through the existing `events` table by `stream_ordering` rather
+  than maintaining a separate durable outbox — this row is the *entire*
+  persisted delivery state. A retry of an in-flight batch reuses the exact
+  same `pending_txn_id` and re-derives the identical single event from
+  `events`, never growing it, per the spec's "Homeservers MUST NOT alter
+  ... events they were going to send within that transaction ID on
+  retries." Delivery is synchronous (on the request path that produced the
+  triggering event), not a background/async dispatch like push notification
+  delivery — see `dispatch_appservice_delivery`'s doc comment for why, and
+  `docs/todos/capability-gaps.md` for the documented follow-up.
 - `/sync` calls `database::ensure_sync_stream_id_ahead_of()` when the client's
   `since` token is ahead of the server's counter. This recovers live deployments
   whose counter rolled back below a stored token (for example, when the watermark

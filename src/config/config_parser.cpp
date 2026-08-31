@@ -41,7 +41,7 @@ namespace
     inline auto apply_config_value(ServerConfig& server, ListenersConfig& listeners, DatabaseConfig& database,
                                    SecurityConfig& security, ClientRateLimitsConfig& client_rate_limits,
                                    LogModulesConfig& log_modules, FederationWorkerConfig& federation_worker,
-                                   std::string_view key, std::string_view value,
+                                   AppserviceConfig& appservice, std::string_view key, std::string_view value,
                                    std::vector<ConfigValidationFinding>& findings) -> void
     {
         // The client_rate_limits.per_ip, .per_user and .tier maps are keyed
@@ -894,6 +894,10 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected boolean (true/false)");
             }
         }
+        else if (key == "appservice.registration_files")
+        {
+            appservice.registration_files = parse_string_list(value);
+        }
         else
         {
             add_parse_finding(findings, std::string{key}, "unknown configuration key");
@@ -1040,6 +1044,7 @@ auto parse_key_value_config(std::string_view input) -> ConfigParseResult
     auto client_rate_limits = ClientRateLimitsConfig{};
     auto log_modules = LogModulesConfig{};
     auto federation_worker = FederationWorkerConfig{};
+    auto appservice = AppserviceConfig{};
     auto findings = std::vector<ConfigValidationFinding>{};
     auto seen_keys = std::vector<std::string>{};
 
@@ -1083,7 +1088,7 @@ auto parse_key_value_config(std::string_view input) -> ConfigParseResult
                 {
                     seen_keys.emplace_back(key);
                     apply_config_value(server, listeners, database, security, client_rate_limits, log_modules,
-                                       federation_worker, key, value, findings);
+                                       federation_worker, appservice, key, value, findings);
                 }
             }
         }
@@ -1096,7 +1101,8 @@ auto parse_key_value_config(std::string_view input) -> ConfigParseResult
         ++line_number;
     }
 
-    auto config = Config{server, listeners, database, security, client_rate_limits, log_modules, federation_worker};
+    auto config =
+        Config{server, listeners, database, security, client_rate_limits, log_modules, federation_worker, appservice};
     auto validation_findings = validate(config);
     findings.insert(findings.end(), validation_findings.begin(), validation_findings.end());
 

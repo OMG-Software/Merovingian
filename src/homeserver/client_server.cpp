@@ -9,6 +9,9 @@
 
 #include "merovingian/homeserver/client_server.hpp"
 
+#include "merovingian/appservice/appservice_client.hpp"
+#include "merovingian/appservice/masquerade_token.hpp"
+#include "merovingian/appservice/registration.hpp"
 #include "merovingian/auth/identity.hpp"
 #include "merovingian/auth/key_api.hpp"
 #include "merovingian/auth/oidc_discovery.hpp"
@@ -600,6 +603,11 @@ namespace
         std::string device_id{};
         std::string display_name{};
         bool inhibit_login{false};
+        // Matrix v1.19 Application Service API §"Server admin style
+        // permissions": `type: m.login.application_service`. When true,
+        // `password` is empty and irrelevant — the handler takes an
+        // entirely separate, as_token-authenticated path.
+        bool is_appservice_registration{false};
     };
 
     struct MatrixRegisterEmailRequestBody final
@@ -662,6 +670,11 @@ namespace
         // the opaque SSO login token and `user_id`/`password` are unused.
         std::string type{"m.login.password"};
         std::string login_token{};
+        // Matrix v1.19 Application Service API §"Server admin style
+        // permissions": `type: m.login.application_service`. When true,
+        // `password` is empty and irrelevant — the caller authenticates via
+        // as_token instead (see login_appservice_user()).
+        bool is_appservice_login{false};
     };
 
     struct MatrixRefreshBody final
@@ -1371,13 +1384,17 @@ namespace
         {
             return std::nullopt;
         }
+        auto const* type = string_member(*object, "type");
+        auto const is_appservice_registration = type != nullptr && *type == "m.login.application_service";
         auto const* username = string_member(*object, "username");
         if (username == nullptr)
         {
             username = string_member(*object, "user");
         }
         auto const* password = string_member(*object, "password");
-        if (username == nullptr || password == nullptr)
+        // Application Service registrations are passwordless — see
+        // MatrixRegisterBody::is_appservice_registration.
+        if (username == nullptr || (password == nullptr && !is_appservice_registration))
         {
             return std::nullopt;
         }
@@ -1393,11 +1410,12 @@ namespace
         auto const* display_name = string_member(*object, "initial_device_display_name");
         auto const* inhibit_login = boolean_member(*object, "inhibit_login");
         return MatrixRegisterBody{*username,
-                                  *password,
+                                  password == nullptr ? std::string{} : *password,
                                   token == nullptr ? std::string{} : *token,
                                   device_id == nullptr ? std::string{} : *device_id,
                                   display_name == nullptr ? std::string{} : *display_name,
-                                  inhibit_login != nullptr && *inhibit_login};
+                                  inhibit_login != nullptr && *inhibit_login,
+                                  is_appservice_registration};
     }
 
     [[nodiscard]] auto query_param_value(std::string_view target, std::string_view key) -> std::optional<std::string>
@@ -1428,6 +1446,49 @@ namespace
             query.remove_prefix(amp + 1U);
         }
         return std::nullopt;
+    }
+
+    // Every query parameter on the request target, percent-decoded, in
+    // original order. Used by GET /thirdparty/location/{protocol} and
+    // GET /thirdparty/user/{protocol}: the spec's `fields` query parameter
+    // (`{string: string}`) is, per real-world usage and the task this route
+    // exists for, the entire query string of protocol-defined search terms —
+    // e.g. `?network=freenode&channel=%23matrix` — forwarded to the owning
+    // appservice's matching `GET /_matrix/app/v1/thirdparty/*` call verbatim
+    // (Matrix v1.19 AS API "Third-party networks": "the search fields will
+    // be passed along to the application service for filtering"). Bounded to
+    // kMaxThirdPartyQueryFields entries so a client cannot use this route to
+    // fan an unbounded query string out to a downstream appservice.
+    [[nodiscard]] auto thirdparty_query_fields(std::string_view target)
+        -> std::vector<std::pair<std::string, std::string>>
+    {
+        constexpr auto kMaxThirdPartyQueryFields = std::size_t{32U};
+        auto fields = std::vector<std::pair<std::string, std::string>>{};
+        auto const query_pos = target.find('?');
+        if (query_pos == std::string_view::npos || query_pos + 1U >= target.size())
+        {
+            return fields;
+        }
+        auto query = target.substr(query_pos + 1U);
+        while (!query.empty() && fields.size() < kMaxThirdPartyQueryFields)
+        {
+            auto const amp = query.find('&');
+            auto const pair = query.substr(0U, amp);
+            auto const equals = pair.find('=');
+            auto const key = pair.substr(0U, equals);
+            if (!key.empty())
+            {
+                auto const encoded_value =
+                    equals == std::string_view::npos ? std::string_view{} : pair.substr(equals + 1U);
+                fields.emplace_back(core::percent_decode(key), core::percent_decode(encoded_value));
+            }
+            if (amp == std::string_view::npos)
+            {
+                break;
+            }
+            query.remove_prefix(amp + 1U);
+        }
+        return fields;
     }
 
     [[nodiscard]] auto server_name_from_room_alias(std::string_view room_alias) noexcept -> std::string_view
@@ -2040,6 +2101,8 @@ namespace
         }
 
         if (type != nullptr && *type != "m.login.password")
+        auto const is_appservice_login = type != nullptr && *type == "m.login.application_service";
+        if (type != nullptr && *type != "m.login.password" && !is_appservice_login)
         {
             return std::nullopt;
         }
@@ -2054,17 +2117,21 @@ namespace
             }
             user = string_member(*identifier, "user");
         }
-        if (password == nullptr || user == nullptr)
+        // Application Service logins authenticate via as_token, not password
+        // — see MatrixLoginBody::is_appservice_login.
+        if (user == nullptr || (password == nullptr && !is_appservice_login))
         {
             return std::nullopt;
         }
         auto const* device_id = string_member(*object, "device_id");
         auto const* display_name = string_member(*object, "initial_device_display_name");
         auto const* supports_refresh_tokens = boolean_member(*object, "refresh_token");
-        return MatrixLoginBody{matrix_user_id(server_name, *user), *password,
+        return MatrixLoginBody{matrix_user_id(server_name, *user),
+                               password == nullptr ? std::string{} : *password,
                                device_id == nullptr ? std::string{} : *device_id,
                                display_name == nullptr ? std::string{} : *display_name,
-                               supports_refresh_tokens != nullptr && *supports_refresh_tokens};
+                               supports_refresh_tokens != nullptr && *supports_refresh_tokens,
+                               is_appservice_login};
     }
 
     [[nodiscard]] auto parse_refresh_body(std::string_view body) -> std::optional<MatrixRefreshBody>
@@ -2431,6 +2498,18 @@ namespace
 
     [[nodiscard]] auto allow(ClientServerRuntime& rt, LocalHttpRequest const& req) -> http::RateLimitDecision
     {
+        // Matrix v1.19 CS API "Third-party Lookups" (client-server-api.md):
+        // every one of the six /thirdparty/* GET routes is documented
+        // "Rate-limited: No". These are read-only metadata lookups gated on
+        // the ordinary auth check below, not credential/enumeration surface,
+        // so bypassing the per-IP/per-user buckets here (rather than
+        // resolving them into a effectively-unbounded tier policy) matches
+        // the spec table exactly instead of approximating it.
+        auto const request_path_only = std::string_view{req.target}.substr(0U, req.target.find('?'));
+        if (req.method == "GET" && starts_with(request_path_only, "/_matrix/client/v3/thirdparty/"))
+        {
+            return http::RateLimitDecision{.allowed = true};
+        }
         if (rt.rate_limit_engine == nullptr)
         {
             // The runtime is in a test-only state with no engine installed
@@ -7970,6 +8049,91 @@ namespace
         return err(400U, "M_BAD_REQUEST", decision.reason.public_summary);
     }
 
+    // ── Third-party lookups response builders (Matrix v1.19 CS API
+    // "Third-party Lookups") ────────────────────────────────────────────
+    //
+    // Every field pulled from `appservice::ThirdParty*` here already passed
+    // through appservice_client.cpp's bounded, type-checked parsing of the
+    // untrusted appservice reply — these builders just shape it into the
+    // client-server wire format.
+
+    // Builds the client-server `Protocol` object, minting `instance_id` for
+    // each instance. Spec: "This field is added to the response ... by the
+    // homeserver" — `instance_id` therefore does not exist on
+    // ThirdPartyProtocolInstance at all (see its doc comment); it is
+    // `<registration id>:<instance index>`, which is unique across the whole
+    // homeserver because registration `id`s are enforced unique at load time
+    // (validate_registrations, appservice/AGENTS.md).
+    [[nodiscard]] auto thirdparty_protocol_json(appservice::ThirdPartyProtocol const& protocol,
+                                                std::string const& registration_id) -> canonicaljson::Value
+    {
+        auto field_types = canonicaljson::Object{};
+        for (auto const& [field_name, field_type] : protocol.field_types)
+        {
+            field_types.push_back(
+                json_member(field_name, json_obj({
+                                            json_member("placeholder", json_str(field_type.placeholder)),
+                                            json_member("regexp", json_str(field_type.regexp)),
+                                        })));
+        }
+
+        auto instances = canonicaljson::Array{};
+        for (auto index = std::size_t{0U}; index < protocol.instances.size(); ++index)
+        {
+            auto const& instance = protocol.instances[index];
+            auto instance_members = canonicaljson::Object{};
+            instance_members.push_back(json_member("desc", json_str(instance.desc)));
+            instance_members.push_back(canonicaljson::make_member("fields", canonicaljson::Value{instance.fields}));
+            if (!instance.icon.empty())
+            {
+                instance_members.push_back(json_member("icon", json_str(instance.icon)));
+            }
+            instance_members.push_back(
+                json_member("instance_id", json_str(registration_id + ":" + std::to_string(index))));
+            instance_members.push_back(json_member("network_id", json_str(instance.network_id)));
+            instances.emplace_back(json_obj(std::move(instance_members)));
+        }
+
+        auto location_fields = canonicaljson::Array{};
+        for (auto const& field_name : protocol.location_fields)
+        {
+            location_fields.emplace_back(json_str(field_name));
+        }
+        auto user_fields = canonicaljson::Array{};
+        for (auto const& field_name : protocol.user_fields)
+        {
+            user_fields.emplace_back(json_str(field_name));
+        }
+
+        return json_obj({
+            json_member("field_types", json_obj(std::move(field_types))),
+            json_member("icon", json_str(protocol.icon)),
+            json_member("instances", json_arr(std::move(instances))),
+            json_member("location_fields", json_arr(std::move(location_fields))),
+            json_member("user_fields", json_arr(std::move(user_fields))),
+        });
+    }
+
+    // Builds one entry of a `Location` array response.
+    [[nodiscard]] auto thirdparty_location_json(appservice::ThirdPartyLocation const& location) -> canonicaljson::Value
+    {
+        return json_obj({
+            json_member("alias", json_str(location.alias)),
+            canonicaljson::make_member("fields", canonicaljson::Value{location.fields}),
+            json_member("protocol", json_str(location.protocol)),
+        });
+    }
+
+    // Builds one entry of a `User` array response.
+    [[nodiscard]] auto thirdparty_user_json(appservice::ThirdPartyUser const& user) -> canonicaljson::Value
+    {
+        return json_obj({
+            canonicaljson::make_member("fields", canonicaljson::Value{user.fields}),
+            json_member("protocol", json_str(user.protocol)),
+            json_member("userid", json_str(user.userid)),
+        });
+    }
+
 } // namespace
 
 // Translate the operator-facing `config::ClientRateLimitsConfig` into the
@@ -8190,9 +8354,66 @@ auto handle_client_server_http_request(ClientServerRuntime& rt, std::string_view
 // path (complete() and sync_json() build raw DispatchResult structs).
 // All callers MUST go through the public handle_client_server_request wrapper
 // which applies CORS at the boundary unconditionally.
-static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttpRequest const& req, bool can_wait)
+static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttpRequest const& raw_req, bool can_wait)
     -> DispatchResult
 {
+    // `req` shadows the parameter with a mutable local copy for the rest of
+    // this function. Application Service API (Matrix v1.19) as_token bearer
+    // auth + `?user_id=`/`?device_id=` identity-assertion masquerade (see
+    // appservice/masquerade_token.hpp) is resolved exactly once, here, by
+    // rewriting `req.access_token` before any route below sees it — every
+    // downstream call that re-derives identity from a bare access_token
+    // string (auth(), authenticated_user/session/admin_user, and every
+    // `merovingian::homeserver::*` handler that takes `req.access_token`)
+    // then works completely unmodified, whether the caller presented an
+    // ordinary session token or an appservice's as_token.
+    auto req = raw_req;
+    if (appservice::is_masquerade_token(req.access_token))
+    {
+        // A raw token in this internal reserved shape must NEVER be trusted
+        // as authentic: this format is only ever synthesized below, in
+        // process, for the remainder of THIS call, after the presented
+        // as_token has already been verified — see the doc comment on
+        // is_masquerade_token(). Clearing it makes such a request behave
+        // exactly like any other request bearing an unknown token.
+        req.access_token.clear();
+    }
+    else if (auto const* appservice_registration = rt.homeserver.appservices.find_by_as_token(req.access_token);
+             appservice_registration != nullptr)
+    {
+        auto const& server_name = rt.homeserver.config.server().server_name;
+        auto const requested_user_id = query_param_value(req.target, "user_id");
+        auto const effective_user_id = requested_user_id.has_value() && !requested_user_id->empty()
+                                           ? *requested_user_id
+                                           : appservice::sender_user_id(*appservice_registration, server_name);
+        if (!appservice::appservice_owns_user(*appservice_registration, server_name, effective_user_id))
+        {
+            // Spec: "The user specified in the query string must be covered
+            // by one of the application service's `user` namespaces."
+            return dispatch_err(req, rt, 403U, "M_FORBIDDEN",
+                                "user_id is not within this appservice's registered namespace");
+        }
+        auto const requested_device_id = query_param_value(req.target, "device_id");
+        if (requested_device_id.has_value() && !requested_device_id->empty())
+        {
+            // Spec (v1.17): "If the given device ID is not known to belong
+            // to the user, the server will return a 400 M_UNKNOWN_DEVICE
+            // error."
+            auto const device_known = std::ranges::any_of(
+                rt.homeserver.database.persistent_store.devices,
+                [&effective_user_id, &requested_device_id](database::PersistentDevice const& device) {
+                    return device.user_id == effective_user_id && device.device_id == *requested_device_id;
+                });
+            if (!device_known)
+            {
+                return dispatch_err(req, rt, 400U, "M_UNKNOWN_DEVICE",
+                                    "device_id is not known to belong to the asserted user");
+            }
+        }
+        req.access_token = appservice::encode_masquerade_token(
+            {appservice_registration->id, effective_user_id, requested_device_id.value_or(std::string{})});
+    }
+
     log_diagnostic("request.received", {
                                            {"method",           req.method,                                       false},
                                            {"target",           observability::sanitized_http_target(req.target), false},
@@ -8279,9 +8500,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                             rate_limit_decision.retry_after_ms);
     }
     auto call_local = [&](LocalHttpRequest const& inner) {
-        guard.unlock();
-        auto response = handle_local_http_request(rt.homeserver, inner);
-        guard.lock();
+        auto response = [&] {
+            auto const released = merovingian::homeserver::ScopedGuardRelease{guard};
+            return handle_local_http_request(rt.homeserver, inner);
+        }();
         return response;
     };
 
@@ -8360,10 +8582,14 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             auto const since_sv = since.has_value() ? std::optional<std::string_view>{*since} : std::nullopt;
             auto const tx = federation::make_outbound_transaction(
                 *server_param, "GET", public_rooms_fed_target(limit, since_sv), our_server, {});
-            guard.unlock();
-            auto const [ok, body] =
-                perform_sync_outbound_call(rt.homeserver, {}, tx, key_id, secret, "public_rooms.proxy",
+            auto const [ok, body] = [&] {
+                // Re-acquire before returning: dispatch_resp/dispatch_err read
+                // reloadable runtime state (rt.cors), and every other return path
+                // from this handler leaves the guard held.
+                auto const released = merovingian::homeserver::ScopedGuardRelease{guard};
+                return perform_sync_outbound_call(rt.homeserver, {}, tx, key_id, secret, "public_rooms.proxy",
                                            rt.homeserver.federation.config.remote_timeout_seconds);
+            }();
             if (!ok)
                 return dispatch_err(req, rt, 502U, "M_UNKNOWN", "Failed to fetch public rooms from remote server");
             return dispatch_resp(req, rt, 200U, body);
@@ -8433,10 +8659,14 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
             auto const tx = federation::make_outbound_transaction(
                 *server_param, fed_method, public_rooms_fed_target(limit, opt_since), our_server, fed_body);
-            guard.unlock();
-            auto const [ok, body] =
-                perform_sync_outbound_call(rt.homeserver, {}, tx, key_id, secret, "public_rooms.proxy",
+            auto const [ok, body] = [&] {
+                // Re-acquire before returning: dispatch_resp/dispatch_err read
+                // reloadable runtime state (rt.cors), and every other return path
+                // from this handler leaves the guard held.
+                auto const released = merovingian::homeserver::ScopedGuardRelease{guard};
+                return perform_sync_outbound_call(rt.homeserver, {}, tx, key_id, secret, "public_rooms.proxy",
                                            rt.homeserver.federation.config.remote_timeout_seconds);
+            }();
             if (!ok)
                 return dispatch_err(req, rt, 502U, "M_UNKNOWN", "Failed to fetch public rooms from remote server");
             return dispatch_resp(req, rt, 200U, body);
@@ -8461,17 +8691,62 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                 core::percent_encode_path_component(room_alias);
             auto const tx =
                 federation::make_outbound_transaction(std::string{alias_server}, "GET", target, our_server, {});
-            guard.unlock();
-            auto const [ok, body] =
-                perform_sync_outbound_call(rt.homeserver, {}, tx, key_id, secret, "directory.room.proxy",
+            auto const [ok, body] = [&] {
+                // Re-acquire before returning: dispatch_resp/dispatch_err read
+                // reloadable runtime state (rt.cors), and every other return path
+                // from this handler leaves the guard held.
+                auto const released = merovingian::homeserver::ScopedGuardRelease{guard};
+                return perform_sync_outbound_call(rt.homeserver, {}, tx, key_id, secret, "directory.room.proxy",
                                            rt.homeserver.federation.config.remote_timeout_seconds);
+            }();
             if (!ok)
             {
                 return dispatch_err(req, rt, 502U, "M_UNKNOWN", "Failed to resolve room alias on remote server");
             }
             return dispatch_resp(req, rt, 200U, body);
         }
-        auto const found = database::find_room_alias(rt.homeserver.database.persistent_store, room_alias);
+        auto found = database::find_room_alias(rt.homeserver.database.persistent_store, room_alias);
+        if (!found.has_value())
+        {
+            // Matrix v1.19 Application Service API, "Room aliases": when an
+            // alias inside an appservice's namespace is unknown locally, the
+            // homeserver asks that appservice, which may create the room as a
+            // side effect; the alias is then looked up again. Without this the
+            // server 404s exactly the aliases a bridge creates on demand, which
+            // is the whole point of an alias namespace.
+            auto* const alias_outbound = rt.homeserver.outbound_client.get();
+            auto* const alias_discovery = rt.homeserver.cached_discovery.get();
+            if (alias_outbound != nullptr && alias_discovery != nullptr)
+            {
+                for (auto const& registration : rt.homeserver.appservices.all())
+                {
+                    // Spec: only query an appservice about aliases in its own
+                    // namespace. Asking one about another's alias would leak
+                    // which aliases clients are looking up.
+                    if (!appservice::any_namespace_matches(registration.namespaces.aliases, room_alias))
+                    {
+                        continue;
+                    }
+                    auto client = appservice::AppserviceClient{*alias_outbound, *alias_discovery};
+                    auto const query = [&] {
+                        auto const released = merovingian::homeserver::ScopedGuardRelease{guard};
+                        return client.query_room_alias(registration, room_alias);
+                    }();
+                    if (!query.ok || !query.exists)
+                    {
+                        // An unreachable or declining appservice is a miss, not
+                        // an error: another registration may still claim it, and
+                        // a bridge being down must not turn a 404 into a 502.
+                        continue;
+                    }
+                    found = database::find_room_alias(rt.homeserver.database.persistent_store, room_alias);
+                    if (found.has_value())
+                    {
+                        break;
+                    }
+                }
+            }
+        }
         if (!found.has_value())
         {
             return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "room alias not found");
@@ -8736,6 +9011,81 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             return dispatch_err(req, rt, 400U, "M_BAD_JSON", "registration body must be Matrix JSON");
         }
+        // Matrix v1.19 Application Service API §"Server admin style
+        // permissions": `type: m.login.application_service` bypasses the
+        // ordinary registration flow (UIA, registration-token requirement,
+        // trust-safety policy) entirely. Checked before the UIA gate below
+        // so an appservice never has to satisfy a registration-token
+        // challenge it has no way to answer.
+        if (auto const* type_value = string_member(*registration_object, "type");
+            type_value != nullptr && *type_value == "m.login.application_service")
+        {
+            // The dispatcher's top-of-function appservice resolution has
+            // already turned a valid as_token into this internal
+            // masquerade-token shape; anything else means no valid as_token
+            // was presented (spec: 401 M_MISSING_TOKEN/M_UNKNOWN_TOKEN, same
+            // as ordinary invalid client-server auth).
+            auto const masquerade = appservice::decode_masquerade_token(req.access_token);
+            auto const* registration =
+                masquerade.has_value() ? rt.homeserver.appservices.find_by_id(masquerade->appservice_id) : nullptr;
+            if (registration == nullptr)
+            {
+                auto const errcode = req.access_token.empty() ? "M_MISSING_TOKEN" : "M_UNKNOWN_TOKEN";
+                return dispatch_err(req, rt, 401U, errcode,
+                                    "m.login.application_service requires a valid appservice as_token");
+            }
+            auto const* username = string_member(*registration_object, "username");
+            if (username == nullptr)
+            {
+                username = string_member(*registration_object, "user");
+            }
+            if (username == nullptr || !auth::localpart_is_valid_new(*username))
+            {
+                return dispatch_err(req, rt, 400U, "M_INVALID_USERNAME", "desired username is not valid");
+            }
+            auto const& server_name = rt.homeserver.config.server().server_name;
+            auto const desired_user_id = "@" + *username + ":" + server_name;
+            if (!appservice::appservice_owns_user(*registration, server_name, desired_user_id))
+            {
+                // Spec: "Application services which attempt to create users
+                // ... outside of their defined namespaces ... will receive
+                // an error code M_EXCLUSIVE."
+                return dispatch_err(req, rt, 403U, "M_EXCLUSIVE",
+                                    "username is outside this appservice's registered namespace");
+            }
+            auto const result = register_appservice_user(rt.homeserver, *username);
+            if (!result.ok)
+            {
+                return dispatch_err(req, rt, result.status, registration_error_code(result.status, result.reason),
+                                    result.reason);
+            }
+            auto const full_user_id = result.value;
+            auto const* inhibit_login_value = boolean_member(*registration_object, "inhibit_login");
+            if (inhibit_login_value != nullptr && *inhibit_login_value)
+            {
+                return dispatch_resp(req, rt, 200U,
+                                     json_serialize(json_obj({json_member("user_id", json_str(full_user_id))})));
+            }
+            auto const* device_id_value = string_member(*registration_object, "device_id");
+            auto const reg_device_id =
+                (device_id_value == nullptr || device_id_value->empty()) ? generate_device_id() : *device_id_value;
+            auto const session = login_appservice_user(rt.homeserver, full_user_id, reg_device_id);
+            if (!session.ok)
+            {
+                return dispatch_resp(req, rt, 200U,
+                                     json_serialize(json_obj({json_member("user_id", json_str(full_user_id))})));
+            }
+            if (find_device(rt, full_user_id, reg_device_id) == nullptr)
+            {
+                rt.devices.push_back({full_user_id, reg_device_id, reg_device_id});
+            }
+            return dispatch_resp(req, rt, 200U,
+                                 json_serialize(json_obj({
+                                     json_member("access_token", json_str(session.value)),
+                                     json_member("user_id", json_str(full_user_id)),
+                                     json_member("device_id", json_str(reg_device_id)),
+                                 })));
+        }
         // Spec §5.5.1: UIA is only required when the server is configured to
         // require a registration token. When require_token is false the client
         // may register without any auth block.
@@ -8774,6 +9124,17 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         if (!auth::localpart_is_valid_new(body->localpart))
         {
             return dispatch_err(req, rt, 400U, "M_INVALID_USERNAME", "desired username is not valid");
+        }
+        // Spec: "normal users who attempt to create users ... inside an
+        // application service-defined namespace will receive ... M_EXCLUSIVE
+        // ... but only if the application service has defined the namespace
+        // as exclusive." This path is reached only for an ordinary
+        // (non-appservice) registration — the m.login.application_service
+        // branch above already returned.
+        if (auto const desired_user_id = "@" + body->localpart + ":" + rt.homeserver.config.server().server_name;
+            rt.homeserver.appservices.user_namespace_exclusively_owned_by_other(desired_user_id, {}))
+        {
+            return dispatch_err(req, rt, 400U, "M_EXCLUSIVE", "this username is reserved for a registered appservice");
         }
         auto const result =
             register_local_user(rt.homeserver, body->localpart, body->password, body->registration_token);
@@ -8889,6 +9250,20 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         auto response = LocalHttpResponse{result.status, {}, {{"Location", result.location}}};
         apply_cors_headers(req, response, rt.cors);
         return DispatchResult{DispatchResult::Status::complete, std::move(response), {}};
+        return dispatch_resp(
+            req, rt, 200U,
+            json_serialize(json_obj({
+                json_member("flows", json_arr({
+                                         json_obj({json_member("type", json_str("m.login.password"))}),
+                                         // Matrix v1.19 Application Service API
+                                         // §"Server admin style permissions". Usable
+                                         // only by a request presenting a valid
+                                         // as_token; harmless to advertise
+                                         // unconditionally, mirroring
+                                         // m.login.password's advertisement.
+                                         json_obj({json_member("type", json_str("m.login.application_service"))}),
+                                     })),
+            })));
     }
     if (req.method == "POST" && req.target == "/_matrix/client/v3/login")
     {
@@ -8923,6 +9298,47 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 ? login_local_user_by_id(rt.homeserver, body->user_id, body->device_id, body->supports_refresh_tokens)
                 : login_local_user(rt.homeserver, body->user_id, body->password, body->device_id,
                                    body->supports_refresh_tokens);
+        if (body->is_appservice_login)
+        {
+            // See the identical pattern in the m.login.application_service
+            // branch of /register above.
+            auto const masquerade = appservice::decode_masquerade_token(req.access_token);
+            auto const* registration =
+                masquerade.has_value() ? rt.homeserver.appservices.find_by_id(masquerade->appservice_id) : nullptr;
+            if (registration == nullptr)
+            {
+                auto const errcode = req.access_token.empty() ? "M_MISSING_TOKEN" : "M_UNKNOWN_TOKEN";
+                return dispatch_err(req, rt, 401U, errcode,
+                                    "m.login.application_service requires a valid appservice as_token");
+            }
+            auto const& server_name = rt.homeserver.config.server().server_name;
+            if (!appservice::appservice_owns_user(*registration, server_name, body->user_id))
+            {
+                return dispatch_err(req, rt, 403U, "M_EXCLUSIVE",
+                                    "user is outside this appservice's registered namespace");
+            }
+            auto const as_result = login_appservice_user(rt.homeserver, body->user_id, body->device_id);
+            if (!as_result.ok)
+            {
+                return dispatch_err(req, rt, as_result.status, "M_FORBIDDEN", as_result.reason);
+            }
+            if (find_device(rt, body->user_id, body->device_id) == nullptr)
+            {
+                auto const dn = body->display_name.empty() ? body->device_id : body->display_name;
+                rt.devices.push_back({body->user_id, body->device_id, dn});
+                auto const self_change = database::PersistentDeviceListChange{0U, std::string{body->user_id},
+                                                                              std::string{body->user_id}, "changed"};
+                std::ignore = record_device_list_change(rt, self_change);
+            }
+            return dispatch_resp(req, rt, 200U,
+                                 json_serialize(json_obj({
+                                     json_member("access_token", json_str(as_result.value)),
+                                     json_member("user_id", json_str(body->user_id)),
+                                     json_member("device_id", json_str(body->device_id)),
+                                 })));
+        }
+        auto const result = login_local_user(rt.homeserver, body->user_id, body->password, body->device_id,
+                                             body->supports_refresh_tokens);
         if (!result.ok)
         {
             return dispatch_err(req, rt, result.status, "M_FORBIDDEN", result.reason);
@@ -9056,9 +9472,50 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         auto const field = slash == std::string_view::npos ? std::string_view{} : path_remainder.substr(slash + 1U);
         auto const target_user = core::percent_decode_path_component(encoded_target);
         auto const& store = rt.homeserver.database.persistent_store;
-        auto const user_exists = std::ranges::any_of(store.users, [&target_user](database::PersistentUser const& u) {
+        auto user_exists = std::ranges::any_of(store.users, [&target_user](database::PersistentUser const& u) {
             return u.user_id == target_user;
         });
+        if (!user_exists)
+        {
+            // Matrix v1.19 Application Service API, "User IDs": when a user
+            // inside an appservice's namespace is unknown locally, the
+            // homeserver asks that appservice, which may create the user as a
+            // side effect; existence is then re-checked. Without this the
+            // server 404s exactly the users a bridge materialises on demand.
+            auto* const user_outbound = rt.homeserver.outbound_client.get();
+            auto* const user_discovery = rt.homeserver.cached_discovery.get();
+            if (user_outbound != nullptr && user_discovery != nullptr)
+            {
+                for (auto const& registration : rt.homeserver.appservices.all())
+                {
+                    // Spec: "The homeserver will only query user IDs inside the
+                    // application service's users namespace." Querying outside
+                    // it would also leak which users clients are looking up.
+                    if (!appservice::any_namespace_matches(registration.namespaces.users, target_user))
+                    {
+                        continue;
+                    }
+                    auto client = appservice::AppserviceClient{*user_outbound, *user_discovery};
+                    auto const query = [&] {
+                        auto const released = merovingian::homeserver::ScopedGuardRelease{guard};
+                        return client.query_user(registration, target_user);
+                    }();
+                    if (!query.ok || !query.exists)
+                    {
+                        // Unreachable or declining: a miss, not an error. A
+                        // bridge being down must not turn a 404 into a 502.
+                        continue;
+                    }
+                    user_exists = std::ranges::any_of(store.users, [&target_user](database::PersistentUser const& u) {
+                        return u.user_id == target_user;
+                    });
+                    if (user_exists)
+                    {
+                        break;
+                    }
+                }
+            }
+        }
         if (!user_exists)
         {
             return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "user not found");
@@ -9376,7 +9833,14 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         return r.ok ? dispatch_resp(req, rt, 200U, "{}")
                     : dispatch_err(req, rt, r.status, r.status == 401U ? "M_UNKNOWN_TOKEN" : "M_UNKNOWN", r.reason);
     }
-    if (req.method == "GET" && req.target == "/_matrix/client/v3/account/whoami")
+    // Matched on `request_path` (query string already stripped), not
+    // `req.target`, because this is the Application Service API's own
+    // worked example of `?user_id=`/`?device_id=` masquerade (Matrix v1.19
+    // Application Service API §"Identity assertion": "GET
+    // /_matrix/client/v3/account/whoami?user_id=@_irc_user:example.org
+    // &device_id=ABC123") — an exact `req.target` match would 404 the
+    // instant a query string is present.
+    if (req.method == "GET" && request_path == "/_matrix/client/v3/account/whoami")
     {
         auto const whoami_device = authenticated_request_device_id(rt, req.access_token);
         log_diagnostic("account.whoami", {
@@ -9412,6 +9876,18 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "user is not a member of this room");
         }
         auto const room_alias = core::percent_decode_path_component(request_path.substr(directory_room_prefix.size()));
+        // Spec: an exclusive aliases namespace blocks alias creation by
+        // anyone other than the owning appservice, including another
+        // appservice. The owning appservice itself is exempt from its own
+        // exclusivity — decode_masquerade_token recovers which appservice
+        // (if any) is acting here, via the same substitution the dispatcher
+        // performs at the top of this function.
+        if (auto const masquerade = appservice::decode_masquerade_token(req.access_token);
+            rt.homeserver.appservices.alias_namespace_exclusively_owned_by_other(
+                room_alias, masquerade.has_value() ? masquerade->appservice_id : std::string{}))
+        {
+            return dispatch_err(req, rt, 400U, "M_EXCLUSIVE", "this alias is reserved for a registered appservice");
+        }
         auto const existing = database::find_room_alias(rt.homeserver.database.persistent_store, room_alias);
         if (existing.has_value())
         {
@@ -10139,15 +10615,246 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                              })),
                              }))})));
     }
-    // GET /_matrix/client/v3/thirdparty/protocols
-    // Spec: CS API v1.19 §third party networks — returns the third-party
-    // protocols the server supports as a (possibly empty) JSON object. Merovingian
-    // runs no application services, so the map is empty. Returning 404 here made
-    // clients (Element) log repeated "Failed to check for protocol support"
-    // errors and retry; an empty 200 object is the conformant answer.
-    if (req.method == "GET" && request_path == "/_matrix/client/v3/thirdparty/protocols")
+    // GET /_matrix/client/v3/thirdparty/{protocols,protocol/{p},location,
+    // location/{p},user,user/{p}} — Matrix v1.19 CS API "Third-party
+    // Lookups" / AS API "Third-party networks". Every one of these six
+    // routes is documented "Rate-limited: No" (see the bypass in allow()
+    // above) and "Requires authentication: Yes" (satisfied by the shared
+    // `auth(...)` gate that already ran above this point in the dispatcher).
+    // Backed by the outbound `GET /_matrix/app/v1/thirdparty/*` calls in
+    // appservice_client.cpp. Returning `{}` (not 404) for `/protocols` when
+    // no appservice is registered matches the placeholder this replaces —
+    // Element retries in a loop on 404.
+    if (req.method == "GET" && starts_with(request_path, "/_matrix/client/v3/thirdparty/"))
     {
-        return dispatch_resp(req, rt, 200U, "{}");
+        // AppserviceRegistry is immutable after boot (see its class doc
+        // comment in registration.hpp) — these references into it stay
+        // valid across the guard.unlock()/guard.lock() pairs below, which
+        // release runtime.mutex for the actual outbound network calls per
+        // homeserver/AGENTS.md's "never make a blocking network call while
+        // holding it" rule.
+        auto const& registrations = rt.homeserver.appservices.all();
+        auto* outbound_client = rt.homeserver.outbound_client.get();
+        auto* cached_discovery = rt.homeserver.cached_discovery.get();
+        auto const can_call_appservices = outbound_client != nullptr && cached_discovery != nullptr;
+
+        if (request_path == "/_matrix/client/v3/thirdparty/protocols")
+        {
+            auto protocols_obj = canonicaljson::Object{};
+            if (can_call_appservices)
+            {
+                auto client = appservice::AppserviceClient{*outbound_client, *cached_discovery};
+                guard.unlock();
+                for (auto const& registration : registrations)
+                {
+                    for (auto const& protocol_name : registration.protocols)
+                    {
+                        auto const already_resolved =
+                            std::ranges::any_of(protocols_obj, [&protocol_name](canonicaljson::ObjectMember const& m) {
+                                return m.key == protocol_name;
+                            });
+                        if (already_resolved)
+                        {
+                            continue;
+                        }
+                        auto const result = client.query_thirdparty_protocol(registration, protocol_name);
+                        if (result.ok && result.found)
+                        {
+                            protocols_obj.push_back(
+                                json_member(protocol_name, thirdparty_protocol_json(result.protocol, registration.id)));
+                        }
+                    }
+                }
+                guard.lock();
+            }
+            return dispatch_resp(req, rt, 200U, json_serialize(json_obj(std::move(protocols_obj))));
+        }
+
+        auto constexpr protocol_prefix = std::string_view{"/_matrix/client/v3/thirdparty/protocol/"};
+        if (starts_with(request_path, protocol_prefix))
+        {
+            auto const protocol_name = core::percent_decode_path_component(request_path.substr(protocol_prefix.size()));
+            appservice::AppserviceRegistration const* owner = nullptr;
+            for (auto const& registration : registrations)
+            {
+                if (!protocol_name.empty() &&
+                    std::ranges::find(registration.protocols, protocol_name) != registration.protocols.end())
+                {
+                    owner = &registration;
+                    break;
+                }
+            }
+            if (owner == nullptr || !can_call_appservices)
+            {
+                return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "unknown third-party protocol");
+            }
+            auto client = appservice::AppserviceClient{*outbound_client, *cached_discovery};
+            auto const* owner_ptr = owner;
+            auto const result = [&] {
+                auto const released = merovingian::homeserver::ScopedGuardRelease{guard};
+                return client.query_thirdparty_protocol(*owner_ptr, protocol_name);
+            }();
+            if (!result.ok || !result.found)
+            {
+                return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "unknown third-party protocol");
+            }
+            return dispatch_resp(req, rt, 200U,
+                                 json_serialize(thirdparty_protocol_json(result.protocol, owner_ptr->id)));
+        }
+
+        auto constexpr location_protocol_prefix = std::string_view{"/_matrix/client/v3/thirdparty/location/"};
+        if (starts_with(request_path, location_protocol_prefix))
+        {
+            auto const protocol_name =
+                core::percent_decode_path_component(request_path.substr(location_protocol_prefix.size()));
+            auto owners = std::vector<appservice::AppserviceRegistration const*>{};
+            for (auto const& registration : registrations)
+            {
+                if (!protocol_name.empty() &&
+                    std::ranges::find(registration.protocols, protocol_name) != registration.protocols.end())
+                {
+                    owners.push_back(&registration);
+                }
+            }
+            if (owners.empty())
+            {
+                return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "unknown third-party protocol");
+            }
+            auto locations = canonicaljson::Array{};
+            if (can_call_appservices)
+            {
+                auto const fields = thirdparty_query_fields(req.target);
+                auto client = appservice::AppserviceClient{*outbound_client, *cached_discovery};
+                guard.unlock();
+                for (auto const* owner : owners)
+                {
+                    auto const result = client.query_thirdparty_location_by_protocol(*owner, protocol_name, fields);
+                    if (result.ok && result.found)
+                    {
+                        for (auto const& location : result.locations)
+                        {
+                            locations.push_back(thirdparty_location_json(location));
+                        }
+                    }
+                }
+                guard.lock();
+            }
+            if (locations.empty())
+            {
+                return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "no matching third-party portal rooms found");
+            }
+            return dispatch_resp(req, rt, 200U, json_serialize(json_arr(std::move(locations))));
+        }
+
+        if (request_path == "/_matrix/client/v3/thirdparty/location")
+        {
+            auto const alias = query_param_value(req.target, "alias");
+            if (!alias.has_value() || alias->empty())
+            {
+                return dispatch_err(req, rt, 400U, "M_MISSING_PARAM", "alias is required");
+            }
+            auto locations = canonicaljson::Array{};
+            if (can_call_appservices)
+            {
+                auto client = appservice::AppserviceClient{*outbound_client, *cached_discovery};
+                guard.unlock();
+                for (auto const& registration : registrations)
+                {
+                    auto const result = client.query_thirdparty_location_by_alias(registration, *alias);
+                    if (result.ok && result.found)
+                    {
+                        for (auto const& location : result.locations)
+                        {
+                            locations.push_back(thirdparty_location_json(location));
+                        }
+                    }
+                }
+                guard.lock();
+            }
+            if (locations.empty())
+            {
+                return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "no third-party locations found for that alias");
+            }
+            return dispatch_resp(req, rt, 200U, json_serialize(json_arr(std::move(locations))));
+        }
+
+        auto constexpr user_protocol_prefix = std::string_view{"/_matrix/client/v3/thirdparty/user/"};
+        if (starts_with(request_path, user_protocol_prefix))
+        {
+            auto const protocol_name =
+                core::percent_decode_path_component(request_path.substr(user_protocol_prefix.size()));
+            auto owners = std::vector<appservice::AppserviceRegistration const*>{};
+            for (auto const& registration : registrations)
+            {
+                if (!protocol_name.empty() &&
+                    std::ranges::find(registration.protocols, protocol_name) != registration.protocols.end())
+                {
+                    owners.push_back(&registration);
+                }
+            }
+            if (owners.empty())
+            {
+                return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "unknown third-party protocol");
+            }
+            auto users = canonicaljson::Array{};
+            if (can_call_appservices)
+            {
+                auto const fields = thirdparty_query_fields(req.target);
+                auto client = appservice::AppserviceClient{*outbound_client, *cached_discovery};
+                guard.unlock();
+                for (auto const* owner : owners)
+                {
+                    auto const result = client.query_thirdparty_user_by_protocol(*owner, protocol_name, fields);
+                    if (result.ok && result.found)
+                    {
+                        for (auto const& found_user : result.users)
+                        {
+                            users.push_back(thirdparty_user_json(found_user));
+                        }
+                    }
+                }
+                guard.lock();
+            }
+            if (users.empty())
+            {
+                return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "no matching third-party users found");
+            }
+            return dispatch_resp(req, rt, 200U, json_serialize(json_arr(std::move(users))));
+        }
+
+        if (request_path == "/_matrix/client/v3/thirdparty/user")
+        {
+            auto const userid = query_param_value(req.target, "userid");
+            if (!userid.has_value() || userid->empty())
+            {
+                return dispatch_err(req, rt, 400U, "M_MISSING_PARAM", "userid is required");
+            }
+            auto users = canonicaljson::Array{};
+            if (can_call_appservices)
+            {
+                auto client = appservice::AppserviceClient{*outbound_client, *cached_discovery};
+                guard.unlock();
+                for (auto const& registration : registrations)
+                {
+                    auto const result = client.query_thirdparty_user_by_userid(registration, *userid);
+                    if (result.ok && result.found)
+                    {
+                        for (auto const& found_user : result.users)
+                        {
+                            users.push_back(thirdparty_user_json(found_user));
+                        }
+                    }
+                }
+                guard.lock();
+            }
+            if (users.empty())
+            {
+                return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "no third-party users found for that user ID");
+            }
+            return dispatch_resp(req, rt, 200U, json_serialize(json_arr(std::move(users))));
+        }
+
+        return dispatch_err(req, rt, 404U, "M_UNRECOGNIZED", "route not found");
     }
     // Clients fetch /pushrules immediately after login to load the
     // server-default rules defined by Matrix v1.19.
@@ -10539,6 +11246,13 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             {
                 return dispatch_err(req, rt, 400U, "M_ROOM_IN_USE", "room alias already in use");
             }
+            // See the identical exclusivity check in PUT /directory/room/{alias}.
+            if (auto const masquerade = appservice::decode_masquerade_token(req.access_token);
+                rt.homeserver.appservices.alias_namespace_exclusively_owned_by_other(
+                    alias, masquerade.has_value() ? masquerade->appservice_id : std::string{}))
+            {
+                return dispatch_err(req, rt, 400U, "M_EXCLUSIVE", "this alias is reserved for a registered appservice");
+            }
         }
 
         auto options = CreateRoomOptions{};
@@ -10568,7 +11282,21 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
         }
 
-        auto const create_result = create_room(rt.homeserver, req.access_token, options);
+        // create_room takes its own lock on rt.homeserver.mutex (it must
+        // remain independently callable — see room_service.cpp), so calling
+        // it while this handler's own guard is still held would recursively
+        // double-lock the mutex: NetworkIoUnlock inside
+        // resolve_policy_server_hook would then release only this outer
+        // level, leaving create_room's own (inner) guard — the one actually
+        // in scope at the point of the network call — still holding the
+        // mutex. Release this guard first, exactly like call_local does for
+        // the local-router delegation, so create_room's own guard is the
+        // only one active and its own RequestLockScope publication is what
+        // NetworkIoUnlock sees.
+        auto const create_result = [&] {
+            auto const released = merovingian::homeserver::ScopedGuardRelease{guard};
+            return create_room(rt.homeserver, req.access_token, options);
+        }();
         if (!create_result.ok)
         {
             auto errcode = error_code_for_status(create_result.status);
@@ -12032,7 +12760,12 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             auto upgrade_options = CreateRoomOptions{};
             upgrade_options.room_version = *new_version_str;
             upgrade_options.creation_content.push_back(json_member("predecessor", json_obj(std::move(predecessor))));
-            auto const create_result = create_room(rt.homeserver, req.access_token, upgrade_options);
+            // See the createRoom route above for why the outer guard must be
+            // released before calling create_room (which self-locks).
+            auto const create_result = [&] {
+                auto const released = merovingian::homeserver::ScopedGuardRelease{guard};
+                return create_room(rt.homeserver, req.access_token, upgrade_options);
+            }();
             if (!create_result.ok)
             {
                 return dispatch_err(req, rt, create_result.status, error_code_for_status(create_result.status),
@@ -12234,11 +12967,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                     core::percent_encode_path_component(decoded_room_segment);
                 auto const tx =
                     federation::make_outbound_transaction(std::string{alias_server}, "GET", target, our_server, {});
-                guard.unlock();
-                auto const [ok, body] =
-                    perform_sync_outbound_call(rt.homeserver, {}, tx, key_id, secret, "room.join.alias_lookup_failed",
-                                               rt.homeserver.federation.config.remote_timeout_seconds);
-                guard.lock();
+                auto const [ok, body] = [&] {
+                    auto const released = merovingian::homeserver::ScopedGuardRelease{guard};
+                    return perform_sync_outbound_call(rt.homeserver, {}, tx, key_id, secret, "room.join.alias_lookup_failed",
+                                                   rt.homeserver.federation.config.remote_timeout_seconds);
+                }();
                 if (!ok)
                 {
                     return dispatch_err(req, rt, 502U, "M_UNKNOWN", "Failed to resolve room alias on remote server");
