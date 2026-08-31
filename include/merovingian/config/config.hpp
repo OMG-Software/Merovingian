@@ -113,6 +113,50 @@ struct OidcConfig final
     std::vector<std::string> account_management_actions_supported{};
 };
 
+// A single SSO identity provider advertised in the `m.login.sso` login flow
+// (Matrix v1.19 CS API §"Client login via SSO", `IdP` shape). `id` and
+// `name` are required by spec; `icon` (an `mxc://` URI) and `brand` are
+// optional UI hints and are omitted from the advertised flow when empty.
+struct SsoIdentityProvider final
+{
+    std::string id{};
+    std::string name{};
+    std::string icon{};
+    std::string brand{};
+};
+
+// SSO login configuration (Matrix v1.19 CS API §"Client login via SSO").
+// Disabled by default, mirroring OidcConfig's opt-in pattern. `enabled`
+// gates both advertising `m.login.sso` from `GET /login` and routing
+// `GET /login/sso/redirect[/{idpId}]` — a misconfigured or disabled SSO
+// setup fails closed (flow not advertised, redirect endpoints 404) rather
+// than half-serving the flow.
+//
+// Merovingian does not itself implement an external SSO protocol client
+// (CAS/SAML/OIDC) — `authorization_url` is the operator-configured HTTPS
+// endpoint of that external system, which `/login/sso/redirect[/{idpId}]`
+// redirects the browser to per spec step "redirect the user's browser to
+// the SSO login page". Once that external system has authenticated the
+// user, its own integration adapter maps the verified identity to a local
+// Matrix user id and calls `homeserver::complete_sso_login` to mint the
+// short-lived `m.login.token` login token and complete the redirect back
+// to the client's `redirectUrl` (spec steps "generate a short-term login
+// token" / "redirect the user's browser to the URI thus built"); see
+// docs/auth-identity.md for the full boundary.
+//
+// `redirect_url_allowlist` is the operator's allowlist of HTTPS URL
+// prefixes a client's `redirectUrl` query parameter is validated against
+// before the homeserver ever redirects a browser (and, later, a login
+// token) there — this is the control that prevents `/login/sso/redirect`
+// from being an open redirect (see docs/threat-model.md).
+struct SsoConfig final
+{
+    bool enabled{false};
+    std::string authorization_url{};
+    std::vector<SsoIdentityProvider> identity_providers{};
+    std::vector<std::string> redirect_url_allowlist{};
+};
+
 // Push Gateway API delivery configuration (Matrix v1.19 push-gateway-api /
 // CS API push-notifications module). `enabled` gates the entire outbound
 // delivery path and defaults to false, mirroring OidcConfig's pattern, so
@@ -156,6 +200,8 @@ struct ServerConfig final
     IdentityServerConfig identity_server{};
     // Push Gateway API delivery config. Disabled by default (see PushConfig).
     PushConfig push{};
+    // SSO login config. Disabled by default (see SsoConfig).
+    SsoConfig sso{};
 };
 
 struct ListenerConfig final

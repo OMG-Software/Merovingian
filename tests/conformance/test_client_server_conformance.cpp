@@ -15695,3 +15695,140 @@ SCENARIO("POST /pushers/set returns 200 with empty JSON object", "[conformance][
         }
     }
 }
+
+// --- SSO client login/authentication -------------------------------------
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#sso-client-loginauthentication
+// GET /_matrix/client/v3/login/sso/redirect[/{idpId}]
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3loginssoredirect
+//      ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3loginssoredirectidpid
+//
+// "The server MUST respond with an HTTP redirect to the SSO interface" (302),
+// and for the {idpId} variant "404 The IdP ID was not recognized by the
+// server." GET /login's m.login.sso flow schema requires `type` and, when
+// present, each identity_providers entry requires `id` and `name`.
+
+namespace
+{
+
+[[nodiscard]] auto sso_conformance_config() -> merovingian::config::Config
+{
+    auto security = merovingian::config::SecurityConfig{};
+    merovingian::tests::enable_token_registration(security);
+    auto server = merovingian::config::ServerConfig{};
+    server.sso.enabled = true;
+    server.sso.authorization_url = "https://sso.example.org/authorize";
+    server.sso.redirect_url_allowlist = {"https://client.example.com/"};
+    server.sso.identity_providers.push_back({"com.example.idp.github", "GitHub", {}, "github"});
+    return {
+        std::move(server),   merovingian::config::ListenersConfig{},        merovingian::config::DatabaseConfig{},
+        std::move(security), merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+    };
+}
+
+} // namespace
+
+SCENARIO("GET /login advertises the m.login.sso flow schema per spec", "[conformance][client-server][sso]")
+{
+    GIVEN("a homeserver with SSO configured")
+    {
+        auto started = merovingian::homeserver::start_client_server(sso_conformance_config());
+        REQUIRE(started.started);
+
+        WHEN("GET /login is called")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v3/login", {}, {}});
+
+            THEN("the flows array contains an m.login.sso entry with a well-formed identity_providers array")
+            {
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+                auto const* flows = object_member_as_array(body, "flows");
+                REQUIRE(flows != nullptr);
+                auto const sso_flow = std::ranges::find_if(*flows, [](merovingian::canonicaljson::Value const& flow) {
+                    auto const* flow_object = std::get_if<merovingian::canonicaljson::Object>(&flow.storage());
+                    if (flow_object == nullptr)
+                    {
+                        return false;
+                    }
+                    auto const* type = string_member(*flow_object, "type");
+                    return type != nullptr && *type == "m.login.sso";
+                });
+                // Spec MUST: a homeserver supporting SSO advertises "type": "m.login.sso".
+                REQUIRE(sso_flow != flows->end());
+
+                auto const* sso_flow_object = std::get_if<merovingian::canonicaljson::Object>(&sso_flow->storage());
+                REQUIRE(sso_flow_object != nullptr);
+                auto const* identity_providers = object_member_as_array(*sso_flow_object, "identity_providers");
+                REQUIRE(identity_providers != nullptr);
+                REQUIRE(identity_providers->size() == 1U);
+                auto const* idp_object =
+                    std::get_if<merovingian::canonicaljson::Object>(&(*identity_providers)[0].storage());
+                REQUIRE(idp_object != nullptr);
+                // Spec MUST: each IdP entry has required `id` and `name` fields.
+                auto const* idp_id = string_member(*idp_object, "id");
+                auto const* idp_name = string_member(*idp_object, "name");
+                REQUIRE(idp_id != nullptr);
+                REQUIRE(*idp_id == "com.example.idp.github");
+                REQUIRE(idp_name != nullptr);
+                REQUIRE(*idp_name == "GitHub");
+            }
+        }
+    }
+}
+
+SCENARIO("GET /login/sso/redirect responds with a 302 redirect to the SSO interface",
+         "[conformance][client-server][sso]")
+{
+    GIVEN("a homeserver with SSO configured")
+    {
+        auto started = merovingian::homeserver::start_client_server(sso_conformance_config());
+        REQUIRE(started.started);
+
+        WHEN("a client navigates the browser to /login/sso/redirect with a trusted redirectUrl")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"GET",
+                 "/_matrix/client/v3/login/sso/redirect?redirectUrl=https%3A%2F%2Fclient.example.com%2F",
+                 {},
+                 {}});
+
+            THEN("the response is 302, per spec 'The server MUST respond with an HTTP redirect'")
+            {
+                // Spec MUST: 302 -> "A redirect to the SSO interface."
+                REQUIRE(response.response.status == 302U);
+                auto const location = std::ranges::find_if(response.response.headers, [](auto const& header) {
+                    return header.first == "Location";
+                });
+                REQUIRE(location != response.response.headers.end());
+                REQUIRE(!location->second.empty());
+            }
+        }
+    }
+}
+
+SCENARIO("GET /login/sso/redirect/{idpId} returns 404 for an unrecognised IdP", "[conformance][client-server][sso]")
+{
+    GIVEN("a homeserver with SSO configured and one known IdP")
+    {
+        auto started = merovingian::homeserver::start_client_server(sso_conformance_config());
+        REQUIRE(started.started);
+
+        WHEN("the idpId does not match any configured identity provider")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"GET",
+                 "/_matrix/client/v3/login/sso/redirect/does.not.exist?redirectUrl=https%3A%2F%2Fclient.example.com%2F",
+                 {},
+                 {}});
+
+            THEN("the response is 404, per spec 'The IdP ID was not recognized by the server'")
+            {
+                // Spec MUST: 404 for an unrecognised idpId.
+                REQUIRE(response.response.status == 404U);
+            }
+        }
+    }
+}

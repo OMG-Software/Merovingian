@@ -1087,6 +1087,26 @@ namespace
             }
         }
 
+        auto login_tokens_result = query_rows(connection, "postgresql_load_login_tokens",
+                                              "SELECT user_id, token_hash, expires_at, used FROM login_tokens "
+                                              "ORDER BY user_id");
+        if (!login_tokens_result.ok)
+        {
+            return false;
+        }
+        for (auto const& row : login_tokens_result.rows)
+        {
+            if (row.size() >= 4U)
+            {
+                PersistentLoginToken entry{};
+                entry.user_id = row[0];
+                entry.token_hash = row[1];
+                entry.expires_at = std::chrono::system_clock::time_point{std::chrono::milliseconds{parse_u64(row[2])}};
+                entry.used = text_is_true(row[3]);
+                store.login_tokens.push_back(std::move(entry));
+            }
+        }
+
         auto const watermark = query_rows(connection, "postgresql_load_sync_stream_watermark",
                                           "SELECT watermark FROM sync_stream_watermark");
         if (!watermark.ok)

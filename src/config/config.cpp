@@ -676,6 +676,63 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
         findings.push_back({"server.push.total_timeout_seconds", "total timeout must be >= connect timeout"});
     }
 
+    // SSO login: when enabled, both the external authorization endpoint and
+    // at least one redirectUrl allowlist entry are required -- an enabled
+    // flow with an empty allowlist would advertise m.login.sso while every
+    // redirect request is rejected, which is confusing rather than secure,
+    // so we reject the config outright instead (fail closed at parse time).
+    auto const& sso = config.server().sso;
+    if (sso.enabled)
+    {
+        if (sso.authorization_url.empty())
+        {
+            findings.push_back({"server.sso.authorization_url", "SSO enabled but authorization_url is missing"});
+        }
+        else if (!is_valid_https_url(sso.authorization_url))
+        {
+            findings.push_back({"server.sso.authorization_url", "SSO authorization_url must use HTTPS"});
+        }
+        if (sso.redirect_url_allowlist.empty())
+        {
+            findings.push_back(
+                {"server.sso.redirect_url_allowlist", "SSO enabled but redirect_url_allowlist is empty"});
+        }
+    }
+    for (auto const& allowed : sso.redirect_url_allowlist)
+    {
+        if (!is_valid_https_url(allowed))
+        {
+            findings.push_back(
+                {"server.sso.redirect_url_allowlist", "each redirectUrl allowlist entry must use HTTPS"});
+        }
+    }
+    auto seen_idp_ids = std::vector<std::string>{};
+    for (auto const& idp : sso.identity_providers)
+    {
+        if (idp.id.empty())
+        {
+            findings.push_back({"server.sso.identity_providers", "identity provider id must not be empty"});
+        }
+        else if (std::ranges::find(seen_idp_ids, idp.id) != seen_idp_ids.end())
+        {
+            findings.push_back({"server.sso.identity_providers", "duplicate identity provider id: " + idp.id});
+        }
+        else
+        {
+            seen_idp_ids.push_back(idp.id);
+        }
+        if (idp.name.empty())
+        {
+            findings.push_back(
+                {"server.sso.identity_providers." + idp.id + ".name", "identity provider name must not be empty"});
+        }
+        if (!idp.icon.empty() && !idp.icon.starts_with("mxc://"))
+        {
+            findings.push_back(
+                {"server.sso.identity_providers." + idp.id + ".icon", "identity provider icon must be an mxc:// URI"});
+        }
+    }
+
     if (!is_valid_listener_bind(config.listeners().client.bind))
     {
         findings.push_back({"listeners.client.bind", "client listener bind address must be host:port"});

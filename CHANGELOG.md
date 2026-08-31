@@ -70,6 +70,48 @@ production gates. This section is updated as each closure lands.
   new integration scenario serves a 429 mid-pipeline on a kept-alive
   connection and recovery after the window.
 
+Adds SSO login (`m.login.sso`) per Matrix v1.19 CS API §"Client login via SSO":
+homeserver-side routing, redirect validation, and the `m.login.token` exchange.
+Merovingian does not itself speak an external SSO protocol (CAS/SAML/OIDC) —
+this closes the homeserver-side half of the flow so an operator's own external
+IdP adapter has a real integration point to call into.
+
+- **`m.login.sso` is now advertised** by `GET /_matrix/client/v3/login`,
+  including the configured `identity_providers` list, but only when
+  `server.sso.*` is fully configured (`homeserver::sso_is_configured`) —
+  otherwise the flow is silently omitted rather than half-advertised.
+- **`GET /_matrix/client/v3/login/sso/redirect[/{idpId}]` is now routed.**
+  Validates the client-supplied `redirectUrl` against an operator-configured
+  HTTPS allowlist (`server.sso.redirect_url_allowlist`) before ever building a
+  redirect — this is the control that prevents the endpoint from being an open
+  redirect (Matrix v1.19's own security-considerations section for this
+  endpoint documents the exact attack it closes). Validates `idpId` against
+  `identity_providers`, returning `404 M_NOT_FOUND` for an unrecognised IdP per
+  spec. On success, 302-redirects to the operator-configured
+  `server.sso.authorization_url`.
+- **`m.login.token` is now implemented** in `POST /_matrix/client/v3/login`
+  (previously entirely absent — only `m.login.password` was handled).
+  `homeserver::complete_sso_login` is the integration point an operator's
+  external SSO adapter calls once it has authenticated the user and mapped
+  them to a local Matrix user id: it re-validates `redirectUrl`, mints a
+  short-lived (~30s), single-use login token using the same keyed-hash
+  machinery access tokens use, and returns the client's `redirectUrl` with any
+  stale `loginToken` parameters stripped and the new one appended, per spec.
+  `homeserver::redeem_login_token` consumes the token exactly once (atomic
+  redeem, backend-first) and hands off to `homeserver::login_local_user_by_id`
+  — the same account lock/suspend gate and session-issuance path password
+  login uses, factored out of `login_local_user` so SSO login cannot bypass it.
+- **New durable `login_tokens` table** (schema version 12, migration
+  `012_login_tokens.sql`), structurally disjoint from `access_tokens` — the
+  same token-confusion mitigation already applied to `openid_tokens` — so a
+  login token can never authenticate an ordinary client-server request.
+- **New config surface**: `server.sso.enabled`, `server.sso.
+  authorization_url`, `server.sso.redirect_url_allowlist`, and
+  `server.sso.identity_providers.<idpId>.{name,icon,brand}`. Parse-time
+  validation fails closed: `enabled=true` with a missing `authorization_url`
+  or an empty `redirect_url_allowlist` is rejected outright, as is a
+  duplicate/empty identity-provider id, an empty name, or a non-`mxc://` icon.
+
 ## 0.11.13
 
 Fixes a production stall where one slow federation peer froze the whole

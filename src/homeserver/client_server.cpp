@@ -656,6 +656,12 @@ namespace
         std::string device_id{};
         std::string display_name{};
         bool supports_refresh_tokens{false};
+        // "m.login.password" (default, for back-compat with callers that
+        // never set this) or "m.login.token" (Matrix v1.19 CS API
+        // §"Client login via SSO"). When token-typed, `login_token` carries
+        // the opaque SSO login token and `user_id`/`password` are unused.
+        std::string type{"m.login.password"};
+        std::string login_token{};
     };
 
     struct MatrixRefreshBody final
@@ -2008,6 +2014,31 @@ namespace
             return std::nullopt;
         }
         auto const* type = string_member(*object, "type");
+
+        // Matrix v1.19 CS API §"Client login via SSO", step 6: "The client
+        // exchanges the login token for an access token by calling /login
+        // with a type of m.login.token." The token itself is opaque here --
+        // redeem_login_token (called by the POST /login handler)
+        // is what validates and consumes it.
+        if (type != nullptr && *type == "m.login.token")
+        {
+            auto const* login_token = string_member(*object, "token");
+            if (login_token == nullptr || login_token->empty())
+            {
+                return std::nullopt;
+            }
+            auto const* device_id = string_member(*object, "device_id");
+            auto const* display_name = string_member(*object, "initial_device_display_name");
+            auto const* supports_refresh_tokens = boolean_member(*object, "refresh_token");
+            return MatrixLoginBody{{},
+                                   {},
+                                   device_id == nullptr ? std::string{} : *device_id,
+                                   display_name == nullptr ? std::string{} : *display_name,
+                                   supports_refresh_tokens != nullptr && *supports_refresh_tokens,
+                                   "m.login.token",
+                                   *login_token};
+        }
+
         if (type != nullptr && *type != "m.login.password")
         {
             return std::nullopt;
@@ -8780,25 +8811,118 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     }
     if (req.method == "GET" && req.target == "/_matrix/client/v3/login")
     {
-        return dispatch_resp(
-            req, rt, 200U,
-            json_serialize(json_obj({
-                json_member("flows", json_arr({json_obj({json_member("type", json_str("m.login.password"))})})),
-            })));
+        auto flows = canonicaljson::Array{};
+        flows.emplace_back(json_obj({json_member("type", json_str("m.login.password"))}));
+        // Matrix v1.19 CS API §"Client login via SSO": advertise m.login.sso
+        // only when server.sso.* is fully configured (sso_is_configured
+        // shares the same fail-closed condition the redirect endpoints use
+        // below, so a half-configured SSO setup never gets advertised here
+        // only to 404 when the client follows it).
+        auto const& sso = rt.homeserver.config.server().sso;
+        if (sso_is_configured(sso))
+        {
+            auto sso_flow = canonicaljson::Object{json_member("type", json_str("m.login.sso"))};
+            if (!sso.identity_providers.empty())
+            {
+                auto idps = canonicaljson::Array{};
+                for (auto const& idp : sso.identity_providers)
+                {
+                    auto idp_fields = canonicaljson::Object{
+                        json_member("id", json_str(idp.id)),
+                        json_member("name", json_str(idp.name)),
+                    };
+                    if (!idp.icon.empty())
+                    {
+                        idp_fields.push_back(json_member("icon", json_str(idp.icon)));
+                    }
+                    if (!idp.brand.empty())
+                    {
+                        idp_fields.push_back(json_member("brand", json_str(idp.brand)));
+                    }
+                    idps.emplace_back(json_obj(std::move(idp_fields)));
+                }
+                sso_flow.push_back(json_member("identity_providers", json_arr(std::move(idps))));
+            }
+            flows.emplace_back(json_obj(std::move(sso_flow)));
+        }
+        return dispatch_resp(req, rt, 200U,
+                             json_serialize(json_obj({
+                                 json_member("flows", json_arr(std::move(flows))),
+                             })));
+    }
+    // Matrix v1.19 CS API §"Client login via SSO": a web-based client
+    // navigates the browser here to start the SSO flow (idpId absent for
+    // the generic redirect, present when the client selected one of the
+    // advertised identity_providers). Handled before the access-token gate
+    // -- like GET /login above -- because it is itself unauthenticated.
+    if (req.method == "GET" && (req.target == "/_matrix/client/v3/login/sso/redirect" ||
+                                starts_with(req.target, "/_matrix/client/v3/login/sso/redirect?")))
+    {
+        auto const redirect_url = query_param_value(req.target, "redirectUrl");
+        auto const action = query_param_value(req.target, "action");
+        auto const result = sso_redirect_target(rt.homeserver, {}, redirect_url.value_or(std::string{}),
+                                                action.value_or(std::string{}));
+        if (!result.ok)
+        {
+            return dispatch_err(req, rt, result.status, result.errcode, result.reason);
+        }
+        auto response = LocalHttpResponse{result.status, {}, {{"Location", result.location}}};
+        apply_cors_headers(req, response, rt.cors);
+        return DispatchResult{DispatchResult::Status::complete, std::move(response), {}};
+    }
+    if (req.method == "GET" && starts_with(req.target, "/_matrix/client/v3/login/sso/redirect/"))
+    {
+        auto path_and_idp = req.target.substr(std::string_view{"/_matrix/client/v3/login/sso/redirect/"}.size());
+        if (auto const query = path_and_idp.find('?'); query != std::string_view::npos)
+        {
+            path_and_idp = path_and_idp.substr(0U, query);
+        }
+        auto const idp_id = core::percent_decode_path_component(path_and_idp);
+        auto const redirect_url = query_param_value(req.target, "redirectUrl");
+        auto const action = query_param_value(req.target, "action");
+        auto const result = sso_redirect_target(rt.homeserver, idp_id, redirect_url.value_or(std::string{}),
+                                                action.value_or(std::string{}));
+        if (!result.ok)
+        {
+            return dispatch_err(req, rt, result.status, result.errcode, result.reason);
+        }
+        auto response = LocalHttpResponse{result.status, {}, {{"Location", result.location}}};
+        apply_cors_headers(req, response, rt.cors);
+        return DispatchResult{DispatchResult::Status::complete, std::move(response), {}};
     }
     if (req.method == "POST" && req.target == "/_matrix/client/v3/login")
     {
         auto body = parse_login_body(req.body, rt.homeserver.config.server().server_name);
         if (!body.has_value())
         {
-            return dispatch_err(req, rt, 400U, "M_BAD_JSON", "login body must be Matrix password JSON");
+            return dispatch_err(req, rt, 400U, "M_BAD_JSON",
+                                "login body must be valid m.login.password or m.login.token JSON");
         }
         if (body->device_id.empty())
         {
             body->device_id = generate_device_id();
         }
-        auto const result = login_local_user(rt.homeserver, body->user_id, body->password, body->device_id,
-                                             body->supports_refresh_tokens);
+        // Matrix v1.19 CS API §"Client login via SSO", step 6: m.login.token
+        // exchanges an SSO-minted login token (single-use, ~30s lifetime --
+        // see complete_sso_login) for an access token.
+        // redeem_login_token both validates and consumes the token; a
+        // 403 here is indistinguishable whether the token was unknown,
+        // expired, or already used, matching how password login collapses
+        // "unknown user" and "bad password" into the same external result.
+        if (body->type == "m.login.token")
+        {
+            auto const redeemed = redeem_login_token(rt.homeserver, body->login_token);
+            if (!redeemed.has_value())
+            {
+                return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "invalid login token");
+            }
+            body->user_id = *redeemed;
+        }
+        auto const result =
+            body->type == "m.login.token"
+                ? login_local_user_by_id(rt.homeserver, body->user_id, body->device_id, body->supports_refresh_tokens)
+                : login_local_user(rt.homeserver, body->user_id, body->password, body->device_id,
+                                   body->supports_refresh_tokens);
         if (!result.ok)
         {
             return dispatch_err(req, rt, result.status, "M_FORBIDDEN", result.reason);
