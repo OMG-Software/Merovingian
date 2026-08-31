@@ -165,8 +165,19 @@ struct HardeningGate final
 // PR_SET_NO_NEW_PRIVS, drop all capabilities from the bounding set, then
 // install the worker seccomp-bpf allowlist (which denies execve/execveat — the
 // worker never spawns). Fail-closed: returns rejected if any required control
-// fails. Non-Linux: accepted no-op (seccomp is Linux-only).
+// fails. Non-Linux: also fail-closed — see worker_hardening_unavailable_decision()
+// below. There is no in-process worker sandbox on non-Linux platforms, so a
+// caller that requested hardening cannot silently be told it succeeded.
 [[nodiscard]] auto apply_worker_hardening() -> HardeningPlanDecision;
+
+// Builds the fail-closed decision apply_worker_hardening() returns on
+// platforms without an in-process worker sandbox (seccomp-bpf, capability
+// bounding, core dump policy, and PR_SET_NO_NEW_PRIVS are Linux-only). Pure —
+// performs no syscalls and touches no process state — so it is safe to call
+// directly from tests on any platform to verify the fail-closed reason and
+// shape without installing a real sandbox on the calling process. Exposed for
+// testing.
+[[nodiscard]] auto worker_hardening_unavailable_decision() -> HardeningPlanDecision;
 
 // Probe: true when OpenBSD pledge(2) has been applied in this process.
 // On all non-OpenBSD platforms the inline stub returns false at compile time.

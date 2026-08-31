@@ -192,7 +192,20 @@ separate process on the same host:
   a stricter seccomp-bpf filter (on top of the inherited server filter) that
   denies `execve`/`execveat`/spawn-oriented `clone` — the worker never execs or
   spawns, so those syscalls are unreachable in normal operation and kill the
-  worker on attempted abuse.
+  worker on attempted abuse. This sequence (`apply_worker_hardening()` in
+  `src/platform/runtime_hardening.cpp`) is Linux-only, gated by
+  `federation.worker.apply_hardening` (default `true`). **Fail-closed on
+  other platforms (0.12.1):** on FreeBSD/OpenBSD/NetBSD there is no
+  in-process worker sandbox equivalent to seccomp, and until 0.12.1
+  `apply_worker_hardening()` silently reported success there regardless —
+  the worker logged "runtime hardening applied" and ran fully unsandboxed.
+  It now returns a fail-closed rejection
+  (`worker_hardening_unavailable_decision()`) naming the unavailable
+  controls, and the worker refuses to start; the `WorkerSupervisor` treats
+  this as a crash-looping child and federation degrades to 503 rather than
+  ever accepting unsandboxed federation traffic. An operator who accepts the
+  risk can still run the worker there by setting
+  `federation.worker.apply_hardening=false` explicitly.
 * **ASan exit-time leak check disabled in the worker (#319):** the worker
   filter denies `ptrace` — an escalation primitive a compromised worker must
   never possess. AddressSanitizer's exit-time LeakSanitizer suspends all
@@ -409,16 +422,41 @@ Hardening is exercised by automated tests:
   and `close_all_file_descriptors_except()`.
 * `tests/unit/test_media_thumbnailer.cpp` covers the CLOEXEC pipe path and the
   sandboxed worker round_trip.
-* `tests/unit/test_runtime_hardening.cpp` validates profile accept/reject logic.
+* `tests/unit/test_runtime_hardening.cpp` validates profile accept/reject logic,
+  including (0.12.1) `worker_hardening_unavailable_decision()` — the pure,
+  syscall-free decision builder `apply_worker_hardening()` falls back to on
+  non-Linux platforms — proving it is fail-closed rather than a silent
+  `accept()`, plus a non-Linux-only scenario exercising
+  `apply_worker_hardening()` itself end to end.
 * `tests/integration/test_server_startup_hardening_flow.cpp` spawns the real
   `merovingian-server` binary and verifies it either starts under full hardening
-  or refuses to start when a control cannot be enabled. The test skips in
-  environments that cannot satisfy every control (for example, a `debug` Meson
-  build omits `_FORTIFY_SOURCE`, or a non-root Linux process lacks `CAP_SETPCAP`
-  to drop the capability bounding set). To exercise the 10 s live-startup path,
-  build with `--buildtype debugoptimized` or `release` and run the test as a
-  non-root user that retains `CAP_SETPCAP` (ambient capability or a suitable
-  container/security profile).
+  or refuses to start when a control cannot be enabled. As of 0.12.1 the
+  "starts under full hardening" branch also issues a real HTTP GET over a
+  real TCP socket against the spawned process's client listener and asserts
+  a genuine 200 response, plus a post-shutdown connect-refused check — proof
+  the process actually serves traffic, not merely that it stays alive. The
+  test skips in environments that cannot satisfy every control (for example,
+  a `debug` Meson build omits `_FORTIFY_SOURCE`, or a non-root Linux process
+  lacks `CAP_SETPCAP` to drop the capability bounding set). To exercise the
+  live-serving path, build with `--buildtype debugoptimized` or `release`
+  (or `--profile hardened`, which implies `release` + `-Dhardening=true`) and
+  run the test as a non-root user that retains `CAP_SETPCAP` (ambient
+  capability, `sudo setcap cap_setpcap+ep` on the binary, or a suitable
+  container/security profile). **CI gate added in 0.12.1:** the
+  `ubuntu-hardened-listener-coverage` job in `.github/workflows/ci.yml`
+  builds the `hardened` profile and grants `merovingian-server`
+  `CAP_SETPCAP` via `sudo setcap` (GitHub-hosted runners provide passwordless
+  sudo) specifically so this scenario reaches its live-serving assertions in
+  CI instead of WARN-skipping, which every other CI job still does (root
+  containers fail the privilege-drop check instead).
+* `scripts/check-elf-hardening.sh` (0.12.1) statically inspects a built
+  binary's ELF headers (PIE, `PT_GNU_RELRO`, `DT_BIND_NOW`, non-executable
+  `PT_GNU_STACK`) and fails closed if any is missing — the CI-time
+  counterpart to the runtime ELF probe above, needing no live process so it
+  runs the same whether the job is root, non-root, or containerized. Run
+  against every shipped binary in the `ubuntu-hardened-listener-coverage`
+  CI job and per-platform in `.github/workflows/release.yml` via
+  `scripts/collect-release-evidence.sh`.
 
 Because seccomp/pledge/unveil are permanent in-process, the test suite sets
 `MEROVINGIAN_TEST_DISABLE_HARDENING=1` when invoking `meson test`. The build
@@ -436,6 +474,15 @@ in-process syscalls:
 * In-process Linux filesystem confinement (Landlock) — service-manager sandboxing
   (systemd/OpenRC/FreeBSD rc.d) enforces filesystem restrictions; the
   Merovingian hardening profile documents these requirements.
+* A platform-specific in-process sandbox for the **federation worker**
+  (`merovingian-fed-worker`) on FreeBSD/OpenBSD/NetBSD — unlike the main
+  server, the worker has no pledge/unveil- or Capsicum-equivalent hardening
+  sequence there. As of 0.12.1 this is a documented, fail-closed gap rather
+  than a silent one: `federation.worker.apply_hardening=true` (the
+  production default) makes the worker refuse to start on those platforms
+  instead of running unsandboxed. An operator can opt into running an
+  unsandboxed worker there with `federation.worker.apply_hardening=false`,
+  relying solely on service-manager confinement.
 
 OpenBSD `pledge`/`unveil` and FreeBSD `cap_enter()` are fully wired and exercised
 in CI. The startup readiness gate will not pass until every hardening check

@@ -351,6 +351,85 @@ follow-up entry under this same section.
   released the guard and returned through `dispatch_err`/`dispatch_resp` without
   ever re-acquiring, reading `rt.cors` — which config hot-reload can replace —
   unsynchronised.
+- **Federation worker hardening no longer fails open on non-Linux platforms.**
+  `apply_worker_hardening()` (`src/platform/runtime_hardening.cpp`)
+  unconditionally returned `accept()` on every non-Linux build regardless of
+  `federation.worker.apply_hardening` (default `true`), so the worker logged
+  "runtime hardening applied (seccomp filter active)" and handled untrusted
+  federation traffic completely unsandboxed on FreeBSD/OpenBSD/NetBSD, with
+  zero test coverage anywhere in the suite. It now returns a fail-closed
+  rejection (`worker_hardening_unavailable_decision()`, exposed for testing)
+  naming the unavailable controls and the `apply_hardening=false` escape
+  hatch, so the worker process refuses to start rather than run unsandboxed;
+  the `WorkerSupervisor` sees a crash-looping child and federation degrades
+  to 503 instead of ever accepting unsandboxed traffic. The main process's
+  own `hardening_self_check.cpp`/`is_ready()` gate was already correctly
+  fail-closed (any `unknown` or `disabled` control blocks startup) — this was
+  specifically a gap in the worker's separate hardening path.
+  `MEROVINGIAN_TEST_DISABLE_HARDENING` is untouched by this change and
+  continues to let the in-process test suite skip hardening in the shared
+  Catch2 process. New unit coverage in `tests/unit/test_runtime_hardening.cpp`
+  (`[worker]`) proves the fail-closed decision on every platform without
+  installing a real sandbox on the test process, plus a non-Linux-only
+  scenario exercising `apply_worker_hardening()` itself.
+- **Real listener coverage in CI.** Audited the only test that spawns the real
+  `merovingian-server` binary
+  (`tests/integration/test_server_startup_hardening_flow.cpp`) and found it
+  proved only "reaches the listening state and shuts down cleanly", never
+  that the server actually serves a request — and that every existing CI job
+  WARN-skipped before reaching even that, because the runtime hardening
+  self-check can only report `ready=true` on a hardened-profile build (debug
+  builds never advertise `_FORTIFY_SOURCE`) run by a process holding
+  `CAP_SETPCAP` (root containers fail the privilege-drop check instead), a
+  combination no existing job satisfied. Added a real HTTP GET over a real
+  TCP socket against the spawned process's client listener (asserting a
+  genuine 200 from `/_matrix/client/versions`) plus a post-shutdown
+  connect-refused check to that scenario, and a new
+  `ubuntu-hardened-listener-coverage` CI job (`.github/workflows/ci.yml`)
+  that builds the `hardened` profile and grants the built server binary
+  `CAP_SETPCAP` via `sudo setcap cap_setpcap+ep` so the scenario actually
+  reaches the live-serving assertions instead of skipping.
+- **Build-time link-time hardening enforcement.** Added
+  `scripts/check-elf-hardening.sh`, which statically inspects a built
+  binary's ELF headers (PIE, `PT_GNU_RELRO`, `DT_BIND_NOW`, non-executable
+  `PT_GNU_STACK`) and fails closed if any is missing — a CI-time counterpart
+  to the runtime ELF probe that needs no live process, so it runs
+  identically whether the job is root, non-root, or containerized. Wired
+  into the new `ubuntu-hardened-listener-coverage` CI job against every
+  shipped binary (server, federation worker, thumbnail worker, db-migrate).
+- **PostgreSQL role-provisioning script for deployments.** Audited the
+  "enforce runtime/migration PostgreSQL role grants" gate: the CI-level test
+  coverage (`postgres-integration.yml`, `test_postgresql_persistence_flow.cpp`)
+  proving transaction rollback, migration ordering, and runtime-role DDL
+  denial against a real temporary PostgreSQL database was already closed;
+  `packaging/` provisioned none of it for a real deployment. Added
+  `packaging/postgresql/provision-roles.sql`, the same
+  migration/runtime-role grant pattern CI already proves, for operators to
+  run. Documented the remaining gap precisely in
+  `docs/database-persistence.md` "Next starting points": nothing in the live
+  startup path calls `set_postgresql_role()` yet — `merovingian-db-migrate`
+  never opens a database connection (it only prints an offline plan) and
+  `bootstrap_local_database()` always applies migrations automatically
+  through the same connection/role that then serves runtime traffic.
+- **Release evidence recorded in release notes.** Added
+  `scripts/collect-release-evidence.sh`, run per-platform in
+  `.github/workflows/release.yml`, which records the actual compiler
+  version, confirms link-time hardening via `check-elf-hardening.sh`, lists
+  pinned dependency versions from `subprojects/*.wrap`, summarizes the test
+  log's Ok/Fail/Timeout counts, and lists the mandatory fuzz target names.
+  `publish-alpha-release` now folds every platform's evidence plus a package
+  checksums section into the published release notes, alongside the
+  existing GPG signatures.
+- **Audit findings recorded, not just fixes:** mandatory fuzz execution
+  (`.github/workflows/fuzz.yml` already ran `set -eu` + `-error_exitcode=77`
+  on every push/PR, no `continue-on-error`) was already closed and the
+  capability-gaps.md row describing it as missing was stale; Complement was
+  audited and found to mean the upstream `matrix-org/complement` Go suite,
+  not this repo's own `tests/fixtures/complement/` JSON-fixture flow test —
+  a root `Dockerfile` exists but is not Complement-compatible and no Go/CI
+  wiring exists anywhere, so this remains open and unstarted. Config-profile
+  CI-naming (`scripts/validate-phase1-config.sh` and its "Phase 1" step
+  name) also remains open — not touched this pass.
 
 ## 0.11.13
 

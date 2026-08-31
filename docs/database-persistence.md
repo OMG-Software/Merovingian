@@ -492,3 +492,27 @@ These remain deferred:
 1. Extend transaction helpers across federation queues, policy actions, and
    media metadata once those rows are runtime-wired.
 2. Persist push rules, federation queues, and media blob metadata.
+3. **Wire PostgreSQL migration/runtime role separation into the live
+   connection path (production-milestone.md release blocker).** Today the
+   role-enforcement mechanism (`set_postgresql_role`/`reset_postgresql_role`,
+   `docs/database-persistence.md` above) and its CI proof
+   (`postgres-integration.yml`) are real and passing, and
+   `packaging/postgresql/provision-roles.sql` provisions the two roles for an
+   operator — but nothing in the live startup path actually calls
+   `set_postgresql_role()`. `merovingian-db-migrate` (`src/db_migrate.cpp`)
+   never opens a database connection at all; it only prints an offline
+   migration *plan*. Schema migrations are applied automatically by
+   `bootstrap_local_database()`/`migration.hpp` on every server startup,
+   through the same connection pool that then serves runtime traffic, so
+   today the login role in `database.uri_file` always carries DDL privileges
+   whether or not `provision-roles.sql` has been run. Closing this needs: (a)
+   `merovingian-db-migrate` to become a real tool that connects, `SET ROLE`s
+   to the migration role, and applies migrations; (b) the server's own
+   runtime bootstrap to `SET ROLE` to the runtime role before serving traffic
+   and to refuse to auto-apply migrations itself when a migration role is
+   configured; (c) an integration test proving the *config-driven* startup
+   path (not just the primitive in isolation) rejects DDL through the
+   runtime connection. See `packaging/postgresql/provision-roles.sql` for
+   the interim operator-driven alternative (provision the roles, run
+   migrations out-of-band as the more privileged role, point
+   `database.uri_file` at a login restricted to the runtime role).

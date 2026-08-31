@@ -542,6 +542,16 @@ auto apply_runtime_hardening_controls(RuntimeHardeningProfile const& profile) ->
     return accept();
 }
 
+auto worker_hardening_unavailable_decision() -> HardeningPlanDecision
+{
+    return reject("worker hardening: in-process sandboxing (seccomp-bpf syscall filter, capability-bounding "
+                  "drop, core dump policy, PR_SET_NO_NEW_PRIVS) is only implemented on Linux; this platform "
+                  "cannot satisfy federation.worker.apply_hardening=true. Set "
+                  "federation.worker.apply_hardening=false to run the worker without an in-process sandbox "
+                  "(it then relies solely on service-manager confinement), or leave "
+                  "federation.worker.enabled=false to avoid running the worker on this platform.");
+}
+
 auto apply_worker_hardening() -> HardeningPlanDecision
 {
 #ifdef __linux__
@@ -568,9 +578,20 @@ auto apply_worker_hardening() -> HardeningPlanDecision
     }
     return accept();
 #else
-    // seccomp-bpf is Linux-only; on other platforms the worker hardening
-    // sequence is a no-op, mirroring apply_seccomp_filter()'s behaviour.
-    return accept();
+    // seccomp-bpf and the sibling Linux-only controls above are unavailable
+    // here. A caller only reaches apply_worker_hardening() when the operator
+    // requested worker hardening (federation.worker.apply_hardening=true, the
+    // production default) — this branch used to silently return accept(), so
+    // the worker logged "runtime hardening applied (seccomp filter active)"
+    // and went on to handle untrusted federation traffic completely
+    // unsandboxed on every non-Linux platform. Fail closed instead: refuse to
+    // run rather than pretend the control was applied. The worker's main()
+    // treats a rejected decision as fatal (LOG_CRITICAL + exit 1), which the
+    // WorkerSupervisor sees as a crash-looping child — federation degrades to
+    // 503 rather than the whole homeserver going down, but it never serves
+    // federation traffic through an unhardened worker. See docs/hardening.md
+    // "What is intentionally deferred".
+    return worker_hardening_unavailable_decision();
 #endif
 }
 

@@ -15,9 +15,20 @@
 // `enabled`, the test is skipped when the current build or runtime environment
 // cannot satisfy that requirement. The skip is detected from the server log
 // rather than by duplicating the readiness logic in the test runner.
+//
+// It also proves the listener actually serves: once "Listeners active" is
+// logged, it issues a real HTTP GET over a real TCP socket against the
+// spawned process's client listener and requires a genuine 200 response,
+// before requesting graceful shutdown via SIGTERM. This is deliberately not
+// an in-process test of the listener object (see
+// tests/integration/test_http_server_listener_flow.cpp for that) — it is the
+// only test in the suite that proves the actual `merovingian-server` binary,
+// spawned the way a service manager spawns it, answers real client traffic
+// and stops cleanly on the shutdown signal.
 
 #include "../support/master_key.hpp"
 #include "../support/temp_directory.hpp"
+#include "merovingian/core/file_descriptor.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -26,7 +37,9 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <random>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -377,6 +390,93 @@ struct ServerGuard final
     return result;
 }
 
+// Connects to 127.0.0.1:port, sends a minimal HTTP/1.1 GET request for `path`,
+// and returns the parsed status code from the response's status line, or
+// std::nullopt if the connection could not be established, the request could
+// not be sent, or no response arrived before `timeout`. This is a raw POSIX
+// socket client rather than the project's OutboundClient deliberately: the
+// point of this helper is to prove the *real, spawned merovingian-server
+// process* answers ordinary TCP connections the way any Matrix client would,
+// independent of anything else in this codebase.
+[[nodiscard]] auto http_get_status(std::string_view host, std::uint16_t port, std::string_view path,
+                                   std::chrono::seconds timeout) -> std::optional<int>
+{
+    auto const fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0)
+    {
+        return std::nullopt;
+    }
+    auto guard = merovingian::core::FileDescriptor{fd};
+
+    auto addr = sockaddr_in{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    if (::inet_pton(AF_INET, std::string{host}.c_str(), &addr.sin_addr) != 1)
+    {
+        return std::nullopt;
+    }
+    if (::connect(guard.get(), reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0)
+    {
+        return std::nullopt;
+    }
+
+    auto const request = "GET " + std::string{path} +
+                         " HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\nUser-Agent: "
+                         "merovingian-startup-flow-test\r\n\r\n";
+    if (::send(guard.get(), request.data(), request.size(), 0) < 0)
+    {
+        return std::nullopt;
+    }
+
+    auto response = std::string{};
+    auto chunk = std::array<char, 4096>{};
+    auto const deadline = std::chrono::steady_clock::now() + timeout;
+    while (response.find("\r\n") == std::string::npos && std::chrono::steady_clock::now() < deadline)
+    {
+        auto const remaining_ms =
+            std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count();
+        if (remaining_ms <= 0)
+        {
+            break;
+        }
+        auto tv = timeval{};
+        tv.tv_sec = static_cast<long>(std::min<long long>(remaining_ms / 1000LL, 1LL));
+        tv.tv_usec = static_cast<suseconds_t>((remaining_ms % 1000LL) * 1000LL);
+        auto rfds = fd_set{};
+        FD_ZERO(&rfds);
+        FD_SET(guard.get(), &rfds);
+        if (::select(guard.get() + 1, &rfds, nullptr, nullptr, &tv) <= 0)
+        {
+            continue;
+        }
+        auto const n = ::recv(guard.get(), chunk.data(), chunk.size(), 0);
+        if (n <= 0)
+        {
+            break;
+        }
+        response.append(chunk.data(), static_cast<std::size_t>(n));
+    }
+
+    // Status line: "HTTP/1.1 200 OK\r\n..."
+    if (response.rfind("HTTP/1.", 0) != 0)
+    {
+        return std::nullopt;
+    }
+    auto const space = response.find(' ');
+    if (space == std::string::npos)
+    {
+        return std::nullopt;
+    }
+    try
+    {
+        return std::stoi(response.substr(space + 1U, 3U));
+    }
+    catch (std::exception const&)
+    {
+        return std::nullopt;
+    }
+}
+
 } // namespace
 
 SCENARIO("merovingian-server either starts under full platform hardening or refuses to start when hardening cannot be "
@@ -522,6 +622,25 @@ SCENARIO("merovingian-server either starts under full platform hardening or refu
                     FAIL("server died during 10 s idle window under full hardening; likely seccomp gap:\n" + drain);
                 }
 
+                AND_THEN("the real spawned process answers an actual HTTP request on its client listener")
+                {
+                    // This is the crux of "real listener coverage": prove the
+                    // process the service manager would run actually serves a
+                    // client, not merely that it logged "Listeners active" and
+                    // stayed alive. GET /_matrix/client/versions requires no
+                    // auth and no database fixture, so it is a minimal, stable
+                    // probe of end-to-end request handling.
+                    auto const status =
+                        http_get_status("127.0.0.1", client_port, "/_matrix/client/versions", std::chrono::seconds{10});
+                    if (!guard.alive())
+                    {
+                        auto const drain = drain_pipe(guard.log_pipe_read);
+                        FAIL("server died while handling a live HTTP request:\n" + drain);
+                    }
+                    REQUIRE(status.has_value());
+                    REQUIRE(*status == 200);
+                }
+
                 // Request graceful shutdown.
                 ::kill(guard.pid, SIGTERM);
 
@@ -549,6 +668,20 @@ SCENARIO("merovingian-server either starts under full platform hardening or refu
                 auto const clean_exit = (WIFEXITED(exit_status) && WEXITSTATUS(exit_status) == 0) ||
                                         (WIFSIGNALED(exit_status) && WTERMSIG(exit_status) == SIGTERM);
                 REQUIRE(clean_exit);
+
+                AND_THEN("the listener stops accepting traffic once the process has exited")
+                {
+                    // Completes "serves requests until stopped by the service
+                    // manager": after the SIGTERM-driven shutdown above, the
+                    // port must no longer answer. A listening socket that
+                    // outlived process exit would mean the shutdown path is
+                    // not actually releasing the bind — connect() against a
+                    // closed port fails immediately (ECONNREFUSED), so this
+                    // does not depend on any TIME_WAIT timing.
+                    auto const status_after_exit =
+                        http_get_status("127.0.0.1", client_port, "/_matrix/client/versions", std::chrono::seconds{2});
+                    REQUIRE_FALSE(status_after_exit.has_value());
+                }
             }
         }
     }

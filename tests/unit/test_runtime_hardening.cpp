@@ -638,3 +638,53 @@ SCENARIO("BSD hardening profile rejects the same unsafe filesystem paths as Linu
         }
     }
 }
+
+SCENARIO("Worker hardening's unavailable-platform decision fails closed instead of silently accepting",
+         "[platform][hardening][worker]")
+{
+    GIVEN("a platform without an in-process federation-worker sandbox (seccomp-bpf, capability bounding, "
+          "core dump policy, and PR_SET_NO_NEW_PRIVS are Linux-only); worker_hardening_unavailable_decision() "
+          "is the pure decision builder apply_worker_hardening() falls back to there, and it performs no "
+          "syscalls, so it is safe to call directly here on any platform — including the shared Linux "
+          "Catch2 binary — without installing a real sandbox on the running test process")
+    {
+        WHEN("the decision is built")
+        {
+            auto const decision = merovingian::platform::worker_hardening_unavailable_decision();
+
+            THEN("it is rejected and fail-closed rather than a silent accept()")
+            {
+                REQUIRE_FALSE(decision.accepted);
+                REQUIRE(decision.fail_closed);
+
+                AND_THEN("the reason names the unavailable controls and the config escape hatch so operators "
+                         "can diagnose and, if they accept the risk, opt out explicitly")
+                {
+                    REQUIRE(decision.reason.find("Linux") != std::string::npos);
+                    REQUIRE(decision.reason.find("federation.worker.apply_hardening") != std::string::npos);
+                }
+            }
+        }
+    }
+}
+
+#ifndef __linux__
+SCENARIO("apply_worker_hardening refuses to run the federation worker on platforms it cannot sandbox",
+         "[platform][hardening][worker]")
+{
+    GIVEN("a non-Linux build, where the Linux-only in-process worker sandbox sequence cannot run")
+    {
+        WHEN("apply_worker_hardening is called")
+        {
+            auto const decision = merovingian::platform::apply_worker_hardening();
+
+            THEN("it fails closed instead of the previous behaviour of unconditionally returning accept()")
+            {
+                REQUIRE_FALSE(decision.accepted);
+                REQUIRE(decision.fail_closed);
+                REQUIRE_FALSE(decision.reason.empty());
+            }
+        }
+    }
+}
+#endif
