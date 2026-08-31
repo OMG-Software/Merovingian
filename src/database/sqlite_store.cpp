@@ -738,6 +738,7 @@ namespace
                                  std::chrono::milliseconds{parse_u64(column_text(row, 2))}};
                              entry.used = text_is_true(column_text(row, 3));
                              store.login_tokens.push_back(std::move(entry));
+                         }) &&
                load_rows(connection,
                          "SELECT appservice_id, next_txn_id, delivered_stream_ordering, pending_txn_id, "
                          "pending_stream_ordering FROM appservice_txn_cursor ORDER BY appservice_id",

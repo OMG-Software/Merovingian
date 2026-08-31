@@ -819,7 +819,108 @@ auto login_local_user_by_id(HomeserverRuntime& runtime, std::string_view user_id
         return make_operation_result(false, {}, "invalid login", 403U);
     }
     if (!auth::device_id_is_valid(device_id))
-    return complete_login(runtime, *user, device_id, with_ttl);
+    {
+        log_diagnostic_audit(runtime.database, "auth", "login.rejected",
+                             {
+                                 {"user_id",   std::string{user_id},   false},
+                                 {"device_id", std::string{device_id}, false},
+                                 {"reason",    "invalid device id",    false}
+        },
+                             observability::LogEventSeverity::warning, observability::AuditCategory::auth,
+                             "login.rejected", std::string{user_id}, std::string{device_id}, "invalid device id");
+        return make_operation_result(false, {}, "invalid device id");
+    }
+
+    auto state = auth::AccountState::active;
+    if (user->locked)
+    {
+        state = auth::AccountState::locked;
+    }
+    if (user->suspended)
+    {
+        state = auth::AccountState::suspended;
+    }
+    auto const login = auth::login_policy({user->user_id, state});
+    if (!login.allowed)
+    {
+        // Account locked or suspended: still a 403, not a 400.
+        log_diagnostic_audit(runtime.database, "auth", "login.rejected",
+                             {
+                                 {"user_id",   user->user_id,          false},
+                                 {"device_id", std::string{device_id}, false},
+                                 {"status",    "403",                  false},
+                                 {"reason",    login.reason,           false}
+        },
+                             observability::LogEventSeverity::warning, observability::AuditCategory::auth,
+                             "login.rejected", user->user_id, std::string{device_id}, "403:" + login.reason);
+        return make_operation_result(false, {}, "invalid login", 403U);
+    }
+
+    auto const token = issue_token();
+    if (!token.has_value())
+    {
+        log_diagnostic_audit(runtime.database, "auth", "login.rejected",
+                             {
+                                 {"user_id",   user->user_id,             false},
+                                 {"device_id", std::string{device_id},    false},
+                                 {"reason",    "token generation failed", false}
+        },
+                             observability::LogEventSeverity::warning, observability::AuditCategory::auth,
+                             "login.rejected", user->user_id, std::string{device_id}, "token generation failed");
+        return make_operation_result(false, {}, "token generation failed");
+    }
+    auto const token_hash = issue_token_hash(runtime, *token);
+    if (!token_hash.has_value())
+    {
+        log_diagnostic_audit(runtime.database, "auth", "login.rejected",
+                             {
+                                 {"user_id",   user->user_id,          false},
+                                 {"device_id", std::string{device_id}, false},
+                                 {"reason",    "token hashing failed", false}
+        },
+                             observability::LogEventSeverity::warning, observability::AuditCategory::auth,
+                             "login.rejected", user->user_id, std::string{device_id}, "token hashing failed");
+        return make_operation_result(false, {}, "token hashing failed");
+    }
+    auto const device_exists = std::ranges::any_of(
+        runtime.database.persistent_store.devices, [user, device_id](database::PersistentDevice const& device) {
+            return device.user_id == user->user_id && device.device_id == device_id;
+        });
+    auto device = std::optional<database::PersistentDevice>{};
+    if (!device_exists)
+    {
+        device = database::PersistentDevice{user->user_id, std::string{device_id}, std::string{device_id}};
+    }
+    // Only honour the configured TTL when the client opted into refresh tokens.
+    // Spec §5.6.2: servers SHOULD NOT expire tokens without co-issuing a refresh token.
+    auto const access_expires_at =
+        token_expires_at(with_ttl ? runtime.config.security().access_token_lifetime_ms : 0LL);
+    if (!database::store_device_and_access_token(
+            runtime.database.persistent_store, std::move(device),
+            {user->user_id, std::string{device_id}, *token_hash, false, access_expires_at}))
+    {
+        log_diagnostic_audit(runtime.database, "auth", "login.rejected",
+                             {
+                                 {"user_id",   user->user_id,              false},
+                                 {"device_id", std::string{device_id},     false},
+                                 {"status",    "500",                      false},
+                                 {"reason",    "login persistence failed", false}
+        },
+                             observability::LogEventSeverity::warning, observability::AuditCategory::auth,
+                             "login.rejected", user->user_id, std::string{device_id}, "500:login persistence failed");
+        return make_operation_result(false, {}, "login persistence failed", 500U);
+    }
+    ++runtime.database.next_session_id;
+    runtime.database.sessions.push_back({user->user_id, std::string{device_id}, *token_hash, false, access_expires_at});
+    append_local_audit(runtime.database, observability::AuditCategory::auth, "auth.login", user->user_id,
+                       std::string{device_id}, "accepted");
+    log_diagnostic("login.accepted",
+                   {
+                       {"user_id",   user->user_id,          false},
+                       {"device_id", std::string{device_id}, false}
+    },
+                   observability::LogEventSeverity::info);
+    return make_operation_result(true, *token);
 }
 // NOLINTEND(bugprone-easily-swappable-parameters)
 

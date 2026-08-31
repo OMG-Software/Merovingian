@@ -1104,6 +1104,9 @@ namespace
                 entry.expires_at = std::chrono::system_clock::time_point{std::chrono::milliseconds{parse_u64(row[2])}};
                 entry.used = text_is_true(row[3]);
                 store.login_tokens.push_back(std::move(entry));
+            }
+        }
+
         auto appservice_txn_cursor_result =
             query_rows(connection, "postgresql_load_appservice_txn_cursor",
                        "SELECT appservice_id, next_txn_id, delivered_stream_ordering, pending_txn_id, "

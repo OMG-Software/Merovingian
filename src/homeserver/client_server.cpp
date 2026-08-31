@@ -2100,7 +2100,6 @@ namespace
                                    *login_token};
         }
 
-        if (type != nullptr && *type != "m.login.password")
         auto const is_appservice_login = type != nullptr && *type == "m.login.application_service";
         if (type != nullptr && *type != "m.login.password" && !is_appservice_login)
         {
@@ -2131,6 +2130,9 @@ namespace
                                device_id == nullptr ? std::string{} : *device_id,
                                display_name == nullptr ? std::string{} : *display_name,
                                supports_refresh_tokens != nullptr && *supports_refresh_tokens,
+                               is_appservice_login ? std::string{"m.login.application_service"}
+                                                   : std::string{"m.login.password"},
+                               std::string{},
                                is_appservice_login};
     }
 
@@ -9293,11 +9295,6 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
             body->user_id = *redeemed;
         }
-        auto const result =
-            body->type == "m.login.token"
-                ? login_local_user_by_id(rt.homeserver, body->user_id, body->device_id, body->supports_refresh_tokens)
-                : login_local_user(rt.homeserver, body->user_id, body->password, body->device_id,
-                                   body->supports_refresh_tokens);
         if (body->is_appservice_login)
         {
             // See the identical pattern in the m.login.application_service
@@ -9337,8 +9334,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                      json_member("device_id", json_str(body->device_id)),
                                  })));
         }
-        auto const result = login_local_user(rt.homeserver, body->user_id, body->password, body->device_id,
-                                             body->supports_refresh_tokens);
+        auto const result =
+            body->type == "m.login.token"
+                ? login_local_user_by_id(rt.homeserver, body->user_id, body->device_id, body->supports_refresh_tokens)
+                : login_local_user(rt.homeserver, body->user_id, body->password, body->device_id,
+                                   body->supports_refresh_tokens);
         if (!result.ok)
         {
             return dispatch_err(req, rt, result.status, "M_FORBIDDEN", result.reason);

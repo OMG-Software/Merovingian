@@ -519,15 +519,6 @@ auto upgrade_migration_catalog() -> std::vector<MigrationStep>
     return {12U, "drop_appservice_txn_cursor", std::move(statements), MigrationDirection::downgrade};
 }
 
-// v12 -> v11: drop the login_tokens table (see upgrade_login_tokens_migration
-// above for why this branch carries it).
-[[nodiscard]] auto downgrade_login_tokens_migration() -> MigrationStep
-{
-    auto statements = std::vector<PreparedStatement>{};
-    statements.push_back(make_drop_table_statement("login_tokens").value());
-    return {11U, "drop_login_tokens", std::move(statements), MigrationDirection::downgrade};
-}
-
 [[nodiscard]] auto downgrade_sync_stream_watermark_migration() -> MigrationStep
 {
     auto statements = std::vector<PreparedStatement>{};

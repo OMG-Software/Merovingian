@@ -489,6 +489,8 @@ struct PersistentLoginToken final
     std::string token_hash{};
     std::chrono::system_clock::time_point expires_at{};
     bool used{false};
+};
+
 // The Application Service API's (Matrix v1.19) outbound
 // `PUT /_matrix/app/v1/transactions/{txnId}` delivery cursor for one
 // registered appservice. One row per appservice, keyed on `appservice_id`

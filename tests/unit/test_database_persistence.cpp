@@ -1012,7 +1012,7 @@ SCENARIO("Database migration runner applies the current schema and the matching 
                 REQUIRE(upgrade_plan.direction == merovingian::database::MigrationDirection::upgrade);
                 REQUIRE(upgrade_plan.current_version == 0U);
                 REQUIRE(upgrade_plan.target_version == merovingian::database::current_schema_version());
-                REQUIRE(upgrade_plan.steps.size() == 12U);
+                REQUIRE(upgrade_plan.steps.size() == 13U);
                 REQUIRE(upgrade_plan.steps.size() == 13U);
                 REQUIRE(upgrade_plan.steps[0].version == 1U);
                 REQUIRE(upgrade_plan.steps[0].name == "initial_schema");
@@ -1040,7 +1040,7 @@ SCENARIO("Database migration runner applies the current schema and the matching 
                 REQUIRE(upgrade_plan.steps[11].name == "login_tokens");
                 REQUIRE(upgraded.ok);
                 REQUIRE(upgraded.state.version == merovingian::database::current_schema_version());
-                REQUIRE(upgraded.state.applied_migrations.size() == 12U);
+                REQUIRE(upgraded.state.applied_migrations.size() == 13U);
                 // v12 (login_tokens) belongs to a sibling branch (SSO login);
                 // registered here only for chain contiguity — see
                 // migrations/AGENTS.md and schema.cpp's v12_table_names comment.
@@ -1068,7 +1068,7 @@ SCENARIO("Database migration runner applies the current schema and the matching 
                 REQUIRE(compatible.valid);
                 REQUIRE(second_plan.steps.empty());
                 REQUIRE(downgrade_plan.direction == merovingian::database::MigrationDirection::downgrade);
-                REQUIRE(downgrade_plan.steps.size() == 12U);
+                REQUIRE(downgrade_plan.steps.size() == 13U);
                 // Downgrade walks v12->v0; the login_tokens table drops
                 // first, then the pushers_data_extra column, then the
                 // openid_tokens table, then notifications, then pushers,
@@ -1831,7 +1831,7 @@ SCENARIO("Checked-in migrations cover the v1 bootstrap and the v2/v3 stream wate
             THEN("the v1 bootstrap creates the initial schema and numbered migrations add post-v1 tables")
             {
                 REQUIRE(loaded.ok);
-                REQUIRE(loaded.steps.size() == 12U);
+                REQUIRE(loaded.steps.size() == 13U);
                 REQUIRE(loaded.steps.size() == 13U);
                 REQUIRE(loaded.steps[0].version == 1U);
                 REQUIRE(loaded.steps[0].name == "initial_schema");
@@ -1957,7 +1957,7 @@ SCENARIO("Database schema inventory covers the core Matrix tables", "[database][
                 // in the current schema inventory, while v5, v7, and v11 add
                 // no tables.
                 REQUIRE(tables.size() == 45U);
-                REQUIRE(merovingian::database::current_schema_version() == 12U);
+                REQUIRE(merovingian::database::current_schema_version() == 13U);
                 REQUIRE(merovingian::database::current_schema_tables().size() == 53U);
                 // data_extra_json column onto pushers (no new table),
                 // migration v12 adds the login_tokens table (a sibling
