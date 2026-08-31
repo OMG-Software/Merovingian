@@ -218,6 +218,7 @@ shell = find_program('sh')
     sources: files(
       'conformance/test_main.cpp',
       'conformance/test_appservice_conformance.cpp',
+      'conformance/test_appservice_thirdparty_conformance.cpp',
       'conformance/test_canonicaljson_parser.cpp',
       'conformance/test_canonicaljson_serializer.cpp',
       'conformance/test_client_server_conformance.cpp',
@@ -283,6 +284,7 @@ shell = find_program('sh')
     'merovingian-integration-tests',
     sources: files(
       'integration/test_main.cpp',
+      'integration/test_appservice_thirdparty_flow.cpp',
       'integration/test_client_server_flow.cpp',
       'integration/test_federation_inbound_flow.cpp',
       'integration/test_federation_outbound_flow.cpp',

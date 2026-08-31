@@ -10,7 +10,40 @@ assertion (`?user_id=`), and the outbound `/_matrix/app/v1/*` client.
 | `registration.cpp` | Record types, JSON parsing, namespace matching and exclusivity, registry lookup, cross-registration validation |
 | `registration_yaml.cpp` | The bounded YAML-subset parser — the format real registration files actually use |
 | `masquerade_token.cpp` | `?user_id=` identity assertion, scoped to the asserting appservice's namespaces |
-| `appservice_client.cpp` | Outbound `PUT /transactions/{txnId}`, `GET /users/{userId}`, `GET /rooms/{roomAlias}` |
+| `appservice_client.cpp` | Outbound `PUT /transactions/{txnId}`, `GET /users/{userId}`, `GET /rooms/{roomAlias}`, and the five `GET /thirdparty/*` third-party lookup calls |
+
+## Third-party lookups
+
+The client-server `GET /_matrix/client/v3/thirdparty/{protocols,protocol/{p},
+location,location/{p},user,user/{p}}` routes (routed in
+`homeserver/client_server.cpp`) are backed by `AppserviceClient::
+query_thirdparty_protocol`/`query_thirdparty_location_by_alias`/
+`query_thirdparty_location_by_protocol`/`query_thirdparty_user_by_userid`/
+`query_thirdparty_user_by_protocol` in `appservice_client.cpp`.
+
+- **Ownership**: a protocol name is "owned" by whichever registration lists
+  it in `protocols:`. `protocol/{p}` and `location|user/{p}` route only to
+  the owning registration(s); an unrecognised protocol name is `404
+  M_NOT_FOUND` without any outbound call. The bare `location`/`user` routes
+  (alias/userid lookup) have no such ownership signal, so they fan out to
+  *every* registered appservice and aggregate.
+- **Aggregation degrades, never fails**: an appservice that times out,
+  refuses the connection, or returns a non-200/malformed body contributes
+  nothing and is skipped — it does not turn the whole client request into an
+  error. Only when *no* appservice contributed anything does the route
+  answer 404 (or `{}` for `/protocols`).
+- **`instance_id` is homeserver-minted**, never trusted from the appservice
+  reply (spec: "This field is added to the response ... by the homeserver").
+  It is `<registration id>:<instance index>`, unique across the homeserver
+  because registration `id`s are enforced unique at load time.
+- **Untrusted response parsing**: `parse_thirdparty_protocol_response`/
+  `parse_thirdparty_location_response`/`parse_thirdparty_user_response` are
+  pure, network-free, and exported specifically so the bounded/type-checked
+  extraction (dropped malformed entries, non-string `fields` members
+  dropped, capped array/object sizes — see the constants at the top of
+  `appservice_client.cpp`) is unit-testable without a mock server. A bridge
+  is not a trusted peer: never widen these bounds without updating the
+  corresponding unit test.
 
 ## Registration files
 

@@ -180,6 +180,41 @@ follow-up entry under this same section.
   anchored-matching requirement, the token-handling rules, and one known gap:
   overlapping *exclusive* namespaces between different appservices are not
   detected, so two registrations may both exclusively claim the same pattern.
+- **Third-party lookups implemented, closing the last functional gap in the
+  Application Service API.** All six client-server routes — `GET /_matrix/
+  client/v3/thirdparty/{protocols, protocol/{protocol}, location,
+  location/{protocol}, user, user/{protocol}}` — are now backed by the
+  corresponding outbound `GET /_matrix/app/v1/thirdparty/*` calls
+  (`AppserviceClient::query_thirdparty_*`, new in `appservice_client.cpp`).
+  A protocol name is owned by whichever registration lists it in
+  `protocols:`; an unrecognised protocol is `404 M_NOT_FOUND` with no
+  outbound call. The alias/userid lookups (`location`/`user` with no
+  protocol) have no such ownership signal, so they fan out to every
+  registered appservice and aggregate the results. An appservice that is
+  unreachable, times out, or answers with a non-200/malformed body
+  contributes nothing rather than failing the whole client request — only
+  when no appservice contributed anything does the route 404 (or, for
+  `/protocols`, return `{}`, matching the previous placeholder's behaviour
+  for the no-appservice case so Element does not resume its retry loop).
+  `instance_id` is minted by the homeserver per spec, never trusted from the
+  appservice reply. Every field taken from an appservice's JSON reply is
+  type-checked and bounded (dropped malformed array entries, non-string
+  `fields` members dropped, capped array/object sizes and string lengths)
+  before being echoed to a client — a bridge is not a trusted peer. Outbound
+  calls carry the `hs_token` as a Bearer credential exactly like the
+  existing transaction/query calls. All six routes bypass client-side rate
+  limiting and require authentication, matching the spec's per-endpoint
+  `Rate-limited: No` / `Requires authentication: Yes` flags exactly — the
+  previous `/protocols` placeholder was incorrectly rate-limited. New unit
+  tests (`tests/unit/test_appservice_client.cpp`, tag `[thirdparty]`) cover
+  the disabled (`url: null`) fast path and the bounded/defensive response
+  parsing in isolation; new conformance tests
+  (`tests/conformance/test_appservice_thirdparty_conformance.cpp`) cover the
+  documented status codes, the auth/rate-limit flags, and the
+  no-appservice-registered cases; new integration tests
+  (`tests/integration/test_appservice_thirdparty_flow.cpp`) drive the full
+  path against a real local mock appservice, including multi-appservice
+  aggregation and the unreachable-appservice degrade-not-fail guarantee.
 
 ## 0.11.13
 

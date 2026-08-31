@@ -741,10 +741,14 @@ should win; check the startup log for `start.appservice_registration_rejected`
 events. `as_token`/`hs_token` are held in an mlocked `core::SecretBuffer` and
 never appear in logs or diagnostics.
 
-Outbound delivery (`PUT /_matrix/app/v1/transactions/{txnId}`), the outbound
-query hooks (`GET /_matrix/app/v1/users/{userId}`,
-`GET /_matrix/app/v1/rooms/{roomAlias}`), and `/_matrix/client/v3/thirdparty/*`
-are not yet implemented — see `docs/todos/capability-gaps.md`, "Application
+Outbound delivery (`PUT /_matrix/app/v1/transactions/{txnId}`) is wired into
+the event pipeline. The outbound query hooks (`GET /_matrix/app/v1/users/
+{userId}`, `GET /_matrix/app/v1/rooms/{roomAlias}`) exist but are not yet
+invoked from any local-miss call site. `/_matrix/client/v3/thirdparty/*`
+(`protocols`, `protocol/{protocol}`, `location`, `location/{protocol}`,
+`user`, `user/{protocol}`) is implemented, backed by the outbound
+`GET /_matrix/app/v1/thirdparty/*` calls to every appservice that declares a
+matching protocol — see `docs/todos/capability-gaps.md`, "Application
 Service API".
 
 #### Media repository — `security.media.*`

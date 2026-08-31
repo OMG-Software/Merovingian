@@ -9,6 +9,7 @@
 
 #include "merovingian/homeserver/client_server.hpp"
 
+#include "merovingian/appservice/appservice_client.hpp"
 #include "merovingian/appservice/masquerade_token.hpp"
 #include "merovingian/appservice/registration.hpp"
 #include "merovingian/auth/identity.hpp"
@@ -1441,6 +1442,49 @@ namespace
         return std::nullopt;
     }
 
+    // Every query parameter on the request target, percent-decoded, in
+    // original order. Used by GET /thirdparty/location/{protocol} and
+    // GET /thirdparty/user/{protocol}: the spec's `fields` query parameter
+    // (`{string: string}`) is, per real-world usage and the task this route
+    // exists for, the entire query string of protocol-defined search terms —
+    // e.g. `?network=freenode&channel=%23matrix` — forwarded to the owning
+    // appservice's matching `GET /_matrix/app/v1/thirdparty/*` call verbatim
+    // (Matrix v1.19 AS API "Third-party networks": "the search fields will
+    // be passed along to the application service for filtering"). Bounded to
+    // kMaxThirdPartyQueryFields entries so a client cannot use this route to
+    // fan an unbounded query string out to a downstream appservice.
+    [[nodiscard]] auto thirdparty_query_fields(std::string_view target)
+        -> std::vector<std::pair<std::string, std::string>>
+    {
+        constexpr auto kMaxThirdPartyQueryFields = std::size_t{32U};
+        auto fields = std::vector<std::pair<std::string, std::string>>{};
+        auto const query_pos = target.find('?');
+        if (query_pos == std::string_view::npos || query_pos + 1U >= target.size())
+        {
+            return fields;
+        }
+        auto query = target.substr(query_pos + 1U);
+        while (!query.empty() && fields.size() < kMaxThirdPartyQueryFields)
+        {
+            auto const amp = query.find('&');
+            auto const pair = query.substr(0U, amp);
+            auto const equals = pair.find('=');
+            auto const key = pair.substr(0U, equals);
+            if (!key.empty())
+            {
+                auto const encoded_value =
+                    equals == std::string_view::npos ? std::string_view{} : pair.substr(equals + 1U);
+                fields.emplace_back(core::percent_decode(key), core::percent_decode(encoded_value));
+            }
+            if (amp == std::string_view::npos)
+            {
+                break;
+            }
+            query.remove_prefix(amp + 1U);
+        }
+        return fields;
+    }
+
     [[nodiscard]] auto server_name_from_room_alias(std::string_view room_alias) noexcept -> std::string_view
     {
         if (room_alias.empty() || room_alias.front() != '#')
@@ -2422,6 +2466,18 @@ namespace
 
     [[nodiscard]] auto allow(ClientServerRuntime& rt, LocalHttpRequest const& req) -> http::RateLimitDecision
     {
+        // Matrix v1.19 CS API "Third-party Lookups" (client-server-api.md):
+        // every one of the six /thirdparty/* GET routes is documented
+        // "Rate-limited: No". These are read-only metadata lookups gated on
+        // the ordinary auth check below, not credential/enumeration surface,
+        // so bypassing the per-IP/per-user buckets here (rather than
+        // resolving them into a effectively-unbounded tier policy) matches
+        // the spec table exactly instead of approximating it.
+        auto const request_path_only = std::string_view{req.target}.substr(0U, req.target.find('?'));
+        if (req.method == "GET" && starts_with(request_path_only, "/_matrix/client/v3/thirdparty/"))
+        {
+            return http::RateLimitDecision{.allowed = true};
+        }
         if (rt.rate_limit_engine == nullptr)
         {
             // The runtime is in a test-only state with no engine installed
@@ -7961,6 +8017,91 @@ namespace
         return err(400U, "M_BAD_REQUEST", decision.reason.public_summary);
     }
 
+    // ── Third-party lookups response builders (Matrix v1.19 CS API
+    // "Third-party Lookups") ────────────────────────────────────────────
+    //
+    // Every field pulled from `appservice::ThirdParty*` here already passed
+    // through appservice_client.cpp's bounded, type-checked parsing of the
+    // untrusted appservice reply — these builders just shape it into the
+    // client-server wire format.
+
+    // Builds the client-server `Protocol` object, minting `instance_id` for
+    // each instance. Spec: "This field is added to the response ... by the
+    // homeserver" — `instance_id` therefore does not exist on
+    // ThirdPartyProtocolInstance at all (see its doc comment); it is
+    // `<registration id>:<instance index>`, which is unique across the whole
+    // homeserver because registration `id`s are enforced unique at load time
+    // (validate_registrations, appservice/AGENTS.md).
+    [[nodiscard]] auto thirdparty_protocol_json(appservice::ThirdPartyProtocol const& protocol,
+                                                std::string const& registration_id) -> canonicaljson::Value
+    {
+        auto field_types = canonicaljson::Object{};
+        for (auto const& [field_name, field_type] : protocol.field_types)
+        {
+            field_types.push_back(
+                json_member(field_name, json_obj({
+                                            json_member("placeholder", json_str(field_type.placeholder)),
+                                            json_member("regexp", json_str(field_type.regexp)),
+                                        })));
+        }
+
+        auto instances = canonicaljson::Array{};
+        for (auto index = std::size_t{0U}; index < protocol.instances.size(); ++index)
+        {
+            auto const& instance = protocol.instances[index];
+            auto instance_members = canonicaljson::Object{};
+            instance_members.push_back(json_member("desc", json_str(instance.desc)));
+            instance_members.push_back(canonicaljson::make_member("fields", canonicaljson::Value{instance.fields}));
+            if (!instance.icon.empty())
+            {
+                instance_members.push_back(json_member("icon", json_str(instance.icon)));
+            }
+            instance_members.push_back(
+                json_member("instance_id", json_str(registration_id + ":" + std::to_string(index))));
+            instance_members.push_back(json_member("network_id", json_str(instance.network_id)));
+            instances.emplace_back(json_obj(std::move(instance_members)));
+        }
+
+        auto location_fields = canonicaljson::Array{};
+        for (auto const& field_name : protocol.location_fields)
+        {
+            location_fields.emplace_back(json_str(field_name));
+        }
+        auto user_fields = canonicaljson::Array{};
+        for (auto const& field_name : protocol.user_fields)
+        {
+            user_fields.emplace_back(json_str(field_name));
+        }
+
+        return json_obj({
+            json_member("field_types", json_obj(std::move(field_types))),
+            json_member("icon", json_str(protocol.icon)),
+            json_member("instances", json_arr(std::move(instances))),
+            json_member("location_fields", json_arr(std::move(location_fields))),
+            json_member("user_fields", json_arr(std::move(user_fields))),
+        });
+    }
+
+    // Builds one entry of a `Location` array response.
+    [[nodiscard]] auto thirdparty_location_json(appservice::ThirdPartyLocation const& location) -> canonicaljson::Value
+    {
+        return json_obj({
+            json_member("alias", json_str(location.alias)),
+            canonicaljson::make_member("fields", canonicaljson::Value{location.fields}),
+            json_member("protocol", json_str(location.protocol)),
+        });
+    }
+
+    // Builds one entry of a `User` array response.
+    [[nodiscard]] auto thirdparty_user_json(appservice::ThirdPartyUser const& user) -> canonicaljson::Value
+    {
+        return json_obj({
+            canonicaljson::make_member("fields", canonicaljson::Value{user.fields}),
+            json_member("protocol", json_str(user.protocol)),
+            json_member("userid", json_str(user.userid)),
+        });
+    }
+
 } // namespace
 
 // Translate the operator-facing `config::ClientRateLimitsConfig` into the
@@ -10247,15 +10388,245 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                              })),
                              }))})));
     }
-    // GET /_matrix/client/v3/thirdparty/protocols
-    // Spec: CS API v1.19 §third party networks — returns the third-party
-    // protocols the server supports as a (possibly empty) JSON object. Merovingian
-    // runs no application services, so the map is empty. Returning 404 here made
-    // clients (Element) log repeated "Failed to check for protocol support"
-    // errors and retry; an empty 200 object is the conformant answer.
-    if (req.method == "GET" && request_path == "/_matrix/client/v3/thirdparty/protocols")
+    // GET /_matrix/client/v3/thirdparty/{protocols,protocol/{p},location,
+    // location/{p},user,user/{p}} — Matrix v1.19 CS API "Third-party
+    // Lookups" / AS API "Third-party networks". Every one of these six
+    // routes is documented "Rate-limited: No" (see the bypass in allow()
+    // above) and "Requires authentication: Yes" (satisfied by the shared
+    // `auth(...)` gate that already ran above this point in the dispatcher).
+    // Backed by the outbound `GET /_matrix/app/v1/thirdparty/*` calls in
+    // appservice_client.cpp. Returning `{}` (not 404) for `/protocols` when
+    // no appservice is registered matches the placeholder this replaces —
+    // Element retries in a loop on 404.
+    if (req.method == "GET" && starts_with(request_path, "/_matrix/client/v3/thirdparty/"))
     {
-        return dispatch_resp(req, rt, 200U, "{}");
+        // AppserviceRegistry is immutable after boot (see its class doc
+        // comment in registration.hpp) — these references into it stay
+        // valid across the guard.unlock()/guard.lock() pairs below, which
+        // release runtime.mutex for the actual outbound network calls per
+        // homeserver/AGENTS.md's "never make a blocking network call while
+        // holding it" rule.
+        auto const& registrations = rt.homeserver.appservices.all();
+        auto* outbound_client = rt.homeserver.outbound_client.get();
+        auto* cached_discovery = rt.homeserver.cached_discovery.get();
+        auto const can_call_appservices = outbound_client != nullptr && cached_discovery != nullptr;
+
+        if (request_path == "/_matrix/client/v3/thirdparty/protocols")
+        {
+            auto protocols_obj = canonicaljson::Object{};
+            if (can_call_appservices)
+            {
+                auto client = appservice::AppserviceClient{*outbound_client, *cached_discovery};
+                guard.unlock();
+                for (auto const& registration : registrations)
+                {
+                    for (auto const& protocol_name : registration.protocols)
+                    {
+                        auto const already_resolved =
+                            std::ranges::any_of(protocols_obj, [&protocol_name](canonicaljson::ObjectMember const& m) {
+                                return m.key == protocol_name;
+                            });
+                        if (already_resolved)
+                        {
+                            continue;
+                        }
+                        auto const result = client.query_thirdparty_protocol(registration, protocol_name);
+                        if (result.ok && result.found)
+                        {
+                            protocols_obj.push_back(
+                                json_member(protocol_name, thirdparty_protocol_json(result.protocol, registration.id)));
+                        }
+                    }
+                }
+                guard.lock();
+            }
+            return dispatch_resp(req, rt, 200U, json_serialize(json_obj(std::move(protocols_obj))));
+        }
+
+        auto constexpr protocol_prefix = std::string_view{"/_matrix/client/v3/thirdparty/protocol/"};
+        if (starts_with(request_path, protocol_prefix))
+        {
+            auto const protocol_name = core::percent_decode_path_component(request_path.substr(protocol_prefix.size()));
+            appservice::AppserviceRegistration const* owner = nullptr;
+            for (auto const& registration : registrations)
+            {
+                if (!protocol_name.empty() &&
+                    std::ranges::find(registration.protocols, protocol_name) != registration.protocols.end())
+                {
+                    owner = &registration;
+                    break;
+                }
+            }
+            if (owner == nullptr || !can_call_appservices)
+            {
+                return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "unknown third-party protocol");
+            }
+            auto client = appservice::AppserviceClient{*outbound_client, *cached_discovery};
+            auto const* owner_ptr = owner;
+            guard.unlock();
+            auto const result = client.query_thirdparty_protocol(*owner_ptr, protocol_name);
+            guard.lock();
+            if (!result.ok || !result.found)
+            {
+                return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "unknown third-party protocol");
+            }
+            return dispatch_resp(req, rt, 200U,
+                                 json_serialize(thirdparty_protocol_json(result.protocol, owner_ptr->id)));
+        }
+
+        auto constexpr location_protocol_prefix = std::string_view{"/_matrix/client/v3/thirdparty/location/"};
+        if (starts_with(request_path, location_protocol_prefix))
+        {
+            auto const protocol_name =
+                core::percent_decode_path_component(request_path.substr(location_protocol_prefix.size()));
+            auto owners = std::vector<appservice::AppserviceRegistration const*>{};
+            for (auto const& registration : registrations)
+            {
+                if (!protocol_name.empty() &&
+                    std::ranges::find(registration.protocols, protocol_name) != registration.protocols.end())
+                {
+                    owners.push_back(&registration);
+                }
+            }
+            if (owners.empty())
+            {
+                return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "unknown third-party protocol");
+            }
+            auto locations = canonicaljson::Array{};
+            if (can_call_appservices)
+            {
+                auto const fields = thirdparty_query_fields(req.target);
+                auto client = appservice::AppserviceClient{*outbound_client, *cached_discovery};
+                guard.unlock();
+                for (auto const* owner : owners)
+                {
+                    auto const result = client.query_thirdparty_location_by_protocol(*owner, protocol_name, fields);
+                    if (result.ok && result.found)
+                    {
+                        for (auto const& location : result.locations)
+                        {
+                            locations.push_back(thirdparty_location_json(location));
+                        }
+                    }
+                }
+                guard.lock();
+            }
+            if (locations.empty())
+            {
+                return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "no matching third-party portal rooms found");
+            }
+            return dispatch_resp(req, rt, 200U, json_serialize(json_arr(std::move(locations))));
+        }
+
+        if (request_path == "/_matrix/client/v3/thirdparty/location")
+        {
+            auto const alias = query_param_value(req.target, "alias");
+            if (!alias.has_value() || alias->empty())
+            {
+                return dispatch_err(req, rt, 400U, "M_MISSING_PARAM", "alias is required");
+            }
+            auto locations = canonicaljson::Array{};
+            if (can_call_appservices)
+            {
+                auto client = appservice::AppserviceClient{*outbound_client, *cached_discovery};
+                guard.unlock();
+                for (auto const& registration : registrations)
+                {
+                    auto const result = client.query_thirdparty_location_by_alias(registration, *alias);
+                    if (result.ok && result.found)
+                    {
+                        for (auto const& location : result.locations)
+                        {
+                            locations.push_back(thirdparty_location_json(location));
+                        }
+                    }
+                }
+                guard.lock();
+            }
+            if (locations.empty())
+            {
+                return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "no third-party locations found for that alias");
+            }
+            return dispatch_resp(req, rt, 200U, json_serialize(json_arr(std::move(locations))));
+        }
+
+        auto constexpr user_protocol_prefix = std::string_view{"/_matrix/client/v3/thirdparty/user/"};
+        if (starts_with(request_path, user_protocol_prefix))
+        {
+            auto const protocol_name =
+                core::percent_decode_path_component(request_path.substr(user_protocol_prefix.size()));
+            auto owners = std::vector<appservice::AppserviceRegistration const*>{};
+            for (auto const& registration : registrations)
+            {
+                if (!protocol_name.empty() &&
+                    std::ranges::find(registration.protocols, protocol_name) != registration.protocols.end())
+                {
+                    owners.push_back(&registration);
+                }
+            }
+            if (owners.empty())
+            {
+                return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "unknown third-party protocol");
+            }
+            auto users = canonicaljson::Array{};
+            if (can_call_appservices)
+            {
+                auto const fields = thirdparty_query_fields(req.target);
+                auto client = appservice::AppserviceClient{*outbound_client, *cached_discovery};
+                guard.unlock();
+                for (auto const* owner : owners)
+                {
+                    auto const result = client.query_thirdparty_user_by_protocol(*owner, protocol_name, fields);
+                    if (result.ok && result.found)
+                    {
+                        for (auto const& found_user : result.users)
+                        {
+                            users.push_back(thirdparty_user_json(found_user));
+                        }
+                    }
+                }
+                guard.lock();
+            }
+            if (users.empty())
+            {
+                return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "no matching third-party users found");
+            }
+            return dispatch_resp(req, rt, 200U, json_serialize(json_arr(std::move(users))));
+        }
+
+        if (request_path == "/_matrix/client/v3/thirdparty/user")
+        {
+            auto const userid = query_param_value(req.target, "userid");
+            if (!userid.has_value() || userid->empty())
+            {
+                return dispatch_err(req, rt, 400U, "M_MISSING_PARAM", "userid is required");
+            }
+            auto users = canonicaljson::Array{};
+            if (can_call_appservices)
+            {
+                auto client = appservice::AppserviceClient{*outbound_client, *cached_discovery};
+                guard.unlock();
+                for (auto const& registration : registrations)
+                {
+                    auto const result = client.query_thirdparty_user_by_userid(registration, *userid);
+                    if (result.ok && result.found)
+                    {
+                        for (auto const& found_user : result.users)
+                        {
+                            users.push_back(thirdparty_user_json(found_user));
+                        }
+                    }
+                }
+                guard.lock();
+            }
+            if (users.empty())
+            {
+                return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "no third-party users found for that user ID");
+            }
+            return dispatch_resp(req, rt, 200U, json_serialize(json_arr(std::move(users))));
+        }
+
+        return dispatch_err(req, rt, 404U, "M_UNRECOGNIZED", "route not found");
     }
     // Clients fetch /pushrules immediately after login to load the
     // server-default rules defined by Matrix v1.19.
