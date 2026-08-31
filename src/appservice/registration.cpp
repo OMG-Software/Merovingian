@@ -332,7 +332,24 @@ auto load_registration_file(std::string_view path) -> AppserviceRegistrationPars
                                       "failed reading appservice registration file: " + std::string{path}}
         };
     }
-    return parse_registration_json(buffer.str());
+    auto const contents = buffer.str();
+    // YAML first: that is the format the spec's example and real bridges use.
+    // A JSON document is valid YAML 1.2 but is NOT in the bounded block-style
+    // subset the YAML parser accepts, so fall back rather than reject a file
+    // this module has always been able to read.
+    auto yaml_result = parse_registration_yaml(contents);
+    if (yaml_result.value.has_value())
+    {
+        return yaml_result;
+    }
+    auto json_result = parse_registration_json(contents);
+    if (json_result.value.has_value())
+    {
+        return json_result;
+    }
+    // Report the YAML error: it is the documented format, so its diagnostic is
+    // the one that helps an operator fix a real registration file.
+    return yaml_result;
 }
 
 AppserviceRegistry::AppserviceRegistry(std::vector<AppserviceRegistration> registrations) noexcept

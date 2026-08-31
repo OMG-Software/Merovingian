@@ -573,3 +573,107 @@ SCENARIO("a namespace regex claims whole identifiers, not substrings", "[appserv
         }
     }
 }
+
+SCENARIO("parsing the spec's own YAML registration example", "[appservice][registration][yaml]")
+{
+    GIVEN("the registration document printed in the Application Service API spec")
+    {
+        // Matrix v1.19 Application Service API, "Registration" — reproduced
+        // verbatim, including the trailing comment and the empty `rooms` list.
+        // Real bridges ship exactly this shape (`registration.yaml`), so a
+        // homeserver that cannot read block-style YAML cannot load any of them.
+        auto const document = std::string{
+            "id: \"IRC Bridge\"\n"
+            "url: \"http://127.0.0.1:1234\"\n"
+            "as_token: \"30c05ae90a248a4188e620216fa72e349803310ec83e2a77b34fe90be6081f46\"\n"
+            "hs_token: \"312df522183efd404ec1cd22d2ffa4bbc76a8c1ccf541dd692eef281356bb74e\"\n"
+            "sender_localpart: \"_irc_bot\" # Will result in @_irc_bot:example.org\n"
+            "namespaces:\n"
+            "  users:\n"
+            "    - exclusive: true\n"
+            "      regex: \"@_irc_bridge_.*\"\n"
+            "  aliases:\n"
+            "    - exclusive: false\n"
+            "      regex: \"#_irc_bridge_.*\"\n"
+            "  rooms: []\n"};
+
+        WHEN("it is parsed")
+        {
+            auto const result = merovingian::appservice::parse_registration_yaml(document);
+            INFO("parser error: " << result.error.message());
+
+            THEN("it is accepted and every field is carried through")
+            {
+                REQUIRE(result.value.has_value());
+                REQUIRE(result.value->id == "IRC Bridge");
+                REQUIRE(result.value->url.has_value());
+                REQUIRE(*result.value->url == "http://127.0.0.1:1234");
+                REQUIRE(result.value->sender_localpart == "_irc_bot");
+            }
+
+            THEN("the namespaces keep their exclusivity flags and patterns")
+            {
+                REQUIRE(result.value.has_value());
+                REQUIRE(result.value->namespaces.users.size() == 1U);
+                REQUIRE(result.value->namespaces.users.front().exclusive);
+                REQUIRE(result.value->namespaces.users.front().regex == "@_irc_bridge_.*");
+                REQUIRE(result.value->namespaces.aliases.size() == 1U);
+                REQUIRE_FALSE(result.value->namespaces.aliases.front().exclusive);
+                REQUIRE(result.value->namespaces.rooms.empty());
+            }
+
+            THEN("the parsed exclusive user namespace claims only its own identifiers")
+            {
+                REQUIRE(result.value.has_value());
+                REQUIRE(merovingian::appservice::any_exclusive_namespace_matches(
+                    result.value->namespaces.users, "@_irc_bridge_alice:example.org"));
+                REQUIRE_FALSE(merovingian::appservice::any_exclusive_namespace_matches(
+                    result.value->namespaces.users, "@alice:example.org"));
+            }
+        }
+    }
+}
+
+SCENARIO("an inline namespace value is accepted only when it is an empty list",
+         "[appservice][registration][yaml]")
+{
+    GIVEN("a registration whose namespaces use inline flow syntax")
+    {
+        auto const document_for = [](std::string_view rooms_value) {
+            return std::string{"id: \"bridge\"\n"
+                               "url: \"http://127.0.0.1:1234\"\n"
+                               "as_token: \"a\"\n"
+                               "hs_token: \"b\"\n"
+                               "sender_localpart: \"_bot\"\n"
+                               "namespaces:\n"
+                               "  users:\n"
+                               "    - exclusive: true\n"
+                               "      regex: \"@_bridge_.*\"\n"
+                               "  rooms: "}
+                   + std::string{rooms_value} + "\n";
+        };
+
+        WHEN("the value is the empty flow sequence the spec example uses")
+        {
+            auto const result = merovingian::appservice::parse_registration_yaml(document_for("[]"));
+
+            THEN("it parses and the namespace is empty")
+            {
+                REQUIRE(result.value.has_value());
+                REQUIRE(result.value->namespaces.rooms.empty());
+                REQUIRE(result.value->namespaces.users.size() == 1U);
+            }
+        }
+
+        WHEN("the value is a non-empty flow sequence this bounded subset cannot parse")
+        {
+            auto const result = merovingian::appservice::parse_registration_yaml(
+                document_for("[{exclusive: true, regex: \"!x:example.org\"}]"));
+
+            THEN("it is rejected rather than silently dropping the entries")
+            {
+                REQUIRE_FALSE(result.value.has_value());
+            }
+        }
+    }
+}

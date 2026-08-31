@@ -94,6 +94,17 @@ struct AppserviceRegistrationParseResult final
 // — `url` must be present as either a string or JSON `null`).
 [[nodiscard]] auto parse_registration_json(std::string_view json_text) -> AppserviceRegistrationParseResult;
 
+// Parses one registration file's YAML text into an AppserviceRegistration.
+// This is the format the spec's own example uses and the format real bridges
+// ship (`registration.yaml`): 2-space-indented block maps and lists, plain
+// and quoted scalars, `#` comments, `null`/`~`. It is a strict bounded
+// subset, not a general YAML parser — anchors, aliases, tags, flow
+// collections, block scalars, tabs and document markers are parse failures
+// rather than being silently coerced, and the input is bounded (256 KiB
+// file, 4 KiB line, 64 namespace entries, 32 protocols) because a
+// registration file is operator-authored configuration.
+[[nodiscard]] auto parse_registration_yaml(std::string_view contents) -> AppserviceRegistrationParseResult;
+
 // Reads and parses the registration file at `path`. `result.error`
 // (ErrorCode::io_failure) is set if the file cannot be opened/read,
 // otherwise this defers to parse_registration_json.
