@@ -207,6 +207,11 @@ SCENARIO("Reload plan emits a diff for every documented config block", "[config]
         auto rate_limits = merovingian::config::ClientRateLimitsConfig{};
         rate_limits.default_per_ip = {30U, 60U};
         rate_limits.per_ip["/login"] = {10U, 60U};
+        rate_limits.tier["auth_sensitive"] = {10U, 60U};
+
+        // The per-origin non-/send request cap is part of the federation
+        // security block; a change must surface in the plan.
+        security.federation.per_origin_request_rate = {300U, 60U};
 
         auto log_modules = merovingian::config::LogModulesConfig{};
         log_modules.levels["federation"] = merovingian::observability::LogLevel::debug;
@@ -240,6 +245,8 @@ SCENARIO("Reload plan emits a diff for every documented config block", "[config]
                 REQUIRE(plan_has_key(plan, "federation.worker.shards"));
                 REQUIRE(plan_has_key(plan, "client_rate_limits.default_per_ip"));
                 REQUIRE(plan_has_key(plan, "client_rate_limits.per_ip./login"));
+                REQUIRE(plan_has_key(plan, "client_rate_limits.tier.auth_sensitive"));
+                REQUIRE(plan_has_key(plan, "security.federation.per_origin_request_rate"));
                 REQUIRE(plan_has_key(plan, "log_modules.federation"));
             }
 

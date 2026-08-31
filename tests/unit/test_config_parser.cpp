@@ -45,6 +45,7 @@ SCENARIO("Key-value config parser applies known scalar values", "[config][parser
                                        "security.federation.per_origin_transaction_rate=60/60s\n"
                                        "security.federation.per_origin_pdu_rate=300/60s\n"
                                        "security.federation.per_origin_edu_rate=900/60s\n"
+                                       "security.federation.per_origin_request_rate=700/60s\n"
                                        "security.federation.remote_timeout=45s\n"
                                        "security.registration.token_file=/etc/merovingian/registration-token\n"
                                        "security.secrets.master_key_file=/etc/merovingian/master.key\n"
@@ -69,6 +70,7 @@ SCENARIO("Key-value config parser applies known scalar values", "[config][parser
                 REQUIRE(result.config.security().federation.per_origin_transaction_rate.max_requests == 60U);
                 REQUIRE(result.config.security().federation.per_origin_pdu_rate.max_requests == 300U);
                 REQUIRE(result.config.security().federation.per_origin_edu_rate.max_requests == 900U);
+                REQUIRE(result.config.security().federation.per_origin_request_rate.max_requests == 700U);
                 REQUIRE(result.config.security().federation.remote_timeout == "45s");
                 REQUIRE(result.config.security().registration.token_file == "/etc/merovingian/registration-token");
                 REQUIRE(result.config.security().secrets.master_key_file == "/etc/merovingian/master.key");

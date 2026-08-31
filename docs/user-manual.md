@@ -667,8 +667,9 @@ events for many users and an abusive remote can rotate sender IDs.
 | `security.federation.per_origin_transaction_rate` | `120/60s` | Maximum accepted `/send` transactions per verified remote origin per window. |
 | `security.federation.per_origin_pdu_rate` | `600/60s` | Weighted PDU budget per verified remote origin per window — a transaction with 40 PDUs consumes 40 units. |
 | `security.federation.per_origin_edu_rate` | `1200/60s` | Weighted EDU budget per verified remote origin per window. |
+| `security.federation.per_origin_request_rate` | `600/60s` | Per-origin cap on inbound federation requests **outside** `/send` (query, backfill, membership, key and state endpoints). `/send` counts only against the weighted trio above, so a transaction and its contents are never double-counted. |
 
-Rate values use `N/Ws` or `N/Wm` syntax (e.g. `300/60s`). All five keys are
+Rate values use `N/Ws` or `N/Wm` syntax (e.g. `300/60s`). All six keys are
 reloadable. An origin that exceeds a bucket gets `429 M_LIMIT_EXCEEDED` for
 the transaction and a `federation.rate_limited` audit event; invalid
 individual PDUs inside an otherwise-valid transaction still report per-PDU
@@ -677,7 +678,9 @@ and avoiding destination-wide backoff for one bad event.
 
 #### Federation outbound delivery controls
 
-The `per_origin_*` keys above apply only to inbound `/send` traffic; they do
+The `per_origin_*` keys above apply only to inbound federation traffic (`/send`
+for the weighted trio, every other federation endpoint for
+`per_origin_request_rate`); they do
 not throttle Merovingian's own delivery to other homeservers. Outbound
 federation queues an `OutboundTransaction` record per destination, and a
 dispatch worker drains that queue with destination retry state, a circuit

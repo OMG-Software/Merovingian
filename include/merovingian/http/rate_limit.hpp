@@ -28,6 +28,41 @@ struct RateLimitState final
     std::uint32_t window_elapsed_seconds{0U};
 };
 
+// Explicit client-server route tiers. The classification lives in
+// rate_limit_tier_for() (src/http/rate_limit.cpp) as one greppable prefix
+// table, and each tier's default policy lives in rate_limit_tier_default().
+// Operators override a whole tier via `client_rate_limits.tier.<name>`
+// config keys (auth_sensitive, media, sync, federation, admin, generic).
+enum class RateLimitTier // no `final`: clang <= 18 rejects `final` on enums (C++26)
+{
+    // Unauthenticated credential/enumeration surface: /login, /register,
+    // /refresh and every */requestToken route. These have no authenticated
+    // user to key on, so the per-IP bucket is the only defense and the tier
+    // default is tighter than the generic fallback.
+    auth_sensitive,
+    // Media download/thumbnail/upload, both the legacy /_matrix/media/ tree
+    // and the authenticated /_matrix/client/v1/media/ tree.
+    media,
+    // /sync and the MSC4186 / simplified MSC3575 sliding-sync long-polls.
+    sync,
+    // /_matrix/federation/* routes reaching the client-server dispatcher.
+    // Inbound federation on the federation listener is limited per verified
+    // origin server name instead (see security.federation.per_origin_*).
+    federation,
+    // /_merovingian/admin/* operator surface.
+    admin,
+    // Every other client-server route.
+    generic,
+};
+
+[[nodiscard]] auto rate_limit_tier_for(std::string_view target) noexcept -> RateLimitTier;
+[[nodiscard]] auto rate_limit_tier_name(RateLimitTier tier) noexcept -> std::string_view;
+// Inverse of rate_limit_tier_name(); std::nullopt for an unknown tier name.
+// Used by the config parser so a typo in client_rate_limits.tier.<name>
+// becomes a parse finding instead of a silently ignored key.
+[[nodiscard]] auto rate_limit_tier_from_name(std::string_view name) noexcept -> std::optional<RateLimitTier>;
+[[nodiscard]] auto rate_limit_tier_default(RateLimitTier tier) noexcept -> RateLimitPolicy;
+
 [[nodiscard]] auto rate_limit_policy_is_valid(RateLimitPolicy const& policy) noexcept -> bool;
 [[nodiscard]] auto request_is_rate_limited(RateLimitState state, RateLimitPolicy policy) -> bool;
 [[nodiscard]] auto endpoint_default_rate_limit(std::string_view method, std::string_view target) noexcept
@@ -36,18 +71,27 @@ struct RateLimitState final
 
 struct RateLimitConfig final
 {
-    // Per-IP cap, keyed by request target prefix (e.g. "/_matrix/client/v3/register").
-    // `default_client_rate_limit_config()` pre-populates this with design-doc
-    // defaults; operators override any entry via the `client_rate_limits:`
-    // config block.
+    // Built-in per-endpoint refinements WITHIN a tier, seeded by
+    // `default_client_rate_limit_config()` (keys/devices at 30/60s, search at
+    // 20/60s) plus the built-in per-user login cap. These are the secure
+    // defaults; operators do not write them directly.
+    std::unordered_map<std::string, RateLimitPolicy> builtin_per_ip{};
+    std::unordered_map<std::string, RateLimitPolicy> builtin_per_user{};
+    // Operator per-endpoint/prefix overrides from the `client_rate_limits:`
+    // config block, keyed by request target prefix (longest match wins).
     std::unordered_map<std::string, RateLimitPolicy> per_ip{};
-    // Per-user cap, currently populated for /login by default. Empty map
-    // disables the per-user tier entirely. The cap is enforced on
-    // every authenticated request for which a user_id is known; on
-    // unauthenticated paths the per-user tier is skipped and the
-    // per-IP cap is the only limit.
+    // Operator per-user overrides, keyed by target prefix. Empty map leaves
+    // only the built-in per-user login cap. The cap is enforced on every
+    // authenticated request for which a user_id is known; on unauthenticated
+    // paths the per-user tier is skipped and the per-IP cap is the only limit.
     std::unordered_map<std::string, RateLimitPolicy> per_user{};
-    // Fallback for target prefixes not in the per_ip map.
+    // Operator per-tier overrides keyed by tier name (see
+    // rate_limit_tier_name()). A tier override applies to every route
+    // classified into that tier unless a more specific per-prefix override
+    // exists.
+    std::unordered_map<std::string, RateLimitPolicy> tier{};
+    // Operator-tunable policy for routes in the generic tier
+    // (`client_rate_limits.default_per_ip`). Also the ultimate fallback.
     RateLimitPolicy default_per_ip{90U, 60U};
 };
 
@@ -93,23 +137,49 @@ public:
     {
     }
 
+    // Per-IP policy resolution, most specific first:
+    //   1. operator `per_ip` entry (longest target-prefix match),
+    //   2. operator `tier` override for the route's tier,
+    //   3. built-in per-endpoint refinement (`builtin_per_ip`),
+    //   4. the tier default (`rate_limit_tier_default()`); the generic tier
+    //      resolves to the operator-tunable `default_per_ip`.
+    // An invalid policy at whichever level matched resolves to std::nullopt
+    // so check() can fail closed (issue #412) — a misconfigured entry must
+    // never be treated as "no limit".
     [[nodiscard]] auto resolve_per_ip_policy(std::string_view target) const -> std::optional<RateLimitPolicy>
     {
-        auto const* policy = lookup_policy(m_config.per_ip, target);
-        if (policy == nullptr)
+        auto const* operator_prefix = lookup_policy(m_config.per_ip, target);
+        if (operator_prefix != nullptr)
         {
-            policy = &m_config.default_per_ip;
+            return valid_or_nullopt(*operator_prefix);
         }
-        if (!rate_limit_policy_is_valid(*policy))
+        auto const tier = rate_limit_tier_for(target);
+        auto const tier_name = rate_limit_tier_name(tier);
+        if (auto const it = m_config.tier.find(std::string{tier_name}); it != m_config.tier.end())
         {
-            return std::nullopt;
+            return valid_or_nullopt(it->second);
         }
-        return *policy;
+        if (auto const* refinement = lookup_policy(m_config.builtin_per_ip, target); refinement != nullptr)
+        {
+            return valid_or_nullopt(*refinement);
+        }
+        if (tier == RateLimitTier::generic)
+        {
+            return valid_or_nullopt(m_config.default_per_ip);
+        }
+        return rate_limit_tier_default(tier);
     }
 
+    // Per-user policy resolution: operator `per_user` entry first, then the
+    // built-in per-user login cap. Unlisted routes resolve to std::nullopt
+    // and the per-user tier is skipped for them.
     [[nodiscard]] auto resolve_per_user_policy(std::string_view target) const -> std::optional<RateLimitPolicy>
     {
         auto const* policy = lookup_policy(m_config.per_user, target);
+        if (policy == nullptr)
+        {
+            policy = lookup_policy(m_config.builtin_per_user, target);
+        }
         if (policy == nullptr || !rate_limit_policy_is_valid(*policy))
         {
             return std::nullopt;
@@ -129,13 +199,16 @@ public:
         auto const per_ip = resolve_per_ip_policy(target);
         auto const per_user = resolve_per_user_policy(target);
 
-        if (!per_ip.has_value() && !per_user.has_value())
+        if (!per_ip.has_value())
         {
-            // Fail closed: a policy that cannot be resolved (missing config entry
-            // combined with an invalid default, or a default that fails
-            // rate_limit_policy_is_valid()) must never be treated as "no limit".
-            // Matches the fail-closed behaviour of the standalone
-            // request_is_rate_limited() helper.
+            // Fail closed: the per-IP policy is the base limit on every route
+            // and only resolves to nullopt when a configured entry, tier
+            // override or the default fails rate_limit_policy_is_valid()
+            // (issue #412). An unresolvable per-IP policy must never be
+            // treated as "no limit" — deny even when a valid per-user policy
+            // exists, because the per-IP bucket is the only defense on
+            // unauthenticated routes. (A nullopt per-user policy is the
+            // normal state for routes with no per-user cap and is fine.)
             return RateLimitDecision{.allowed = false, .deny_reason = "invalid_policy"};
         }
 
@@ -252,6 +325,18 @@ private:
             }
         }
         table.erase(oldest);
+    }
+
+    // Shared fail-closed shim for policy resolution: an entry that fails
+    // rate_limit_policy_is_valid() resolves to std::nullopt so check() can
+    // reject rather than silently proceed (issue #412).
+    [[nodiscard]] static auto valid_or_nullopt(RateLimitPolicy const& policy) -> std::optional<RateLimitPolicy>
+    {
+        if (!rate_limit_policy_is_valid(policy))
+        {
+            return std::nullopt;
+        }
+        return policy;
     }
 
     [[nodiscard]] static auto lookup_policy(std::unordered_map<std::string, RateLimitPolicy> const& table,

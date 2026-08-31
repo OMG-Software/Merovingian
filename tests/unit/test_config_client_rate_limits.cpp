@@ -5,10 +5,12 @@
 // |                                                                         |
 // |  These scenarios cover the parser + validator wiring of                |
 // |  `client_rate_limits.per_ip.<target>`,                                 |
-// |  `client_rate_limits.per_user.<target>`, and                           |
+// |  `client_rate_limits.per_user.<target>`,                               |
+// |  `client_rate_limits.tier.<name>`, and                                 |
 // |  `client_rate_limits.default_per_ip` keys. The keys are dotted         |
 // |  to support target prefixes that themselves contain slashes           |
-// |  (e.g. `/_matrix/client/v3/login`). Bad values become findings; the   |
+// |  (e.g. `/_matrix/client/v3/login`). Tier names are validated           |
+// |  against the engine's tier table. Bad values become findings; the     |
 // |  parser rejects zero-window/zero-cap policies.                         |
 // +-------------------------------------------------------------------------+
 
@@ -146,6 +148,73 @@ SCENARIO("Empty client_rate_limits target keys are rejected", "[config][rate-lim
             {
                 REQUIRE_FALSE(result.findings.empty());
                 REQUIRE(result.findings.front().field == "client_rate_limits.per_user");
+            }
+        }
+    }
+}
+
+SCENARIO("Parsing client_rate_limits.tier.<name>=N/Ws populates the tier override map", "[config][rate-limit][tier]")
+{
+    GIVEN("a config that tightens the auth_sensitive and generic tiers")
+    {
+        auto const input = std::string{"client_rate_limits.tier.auth_sensitive=10/60s\n"
+                                       "client_rate_limits.tier.generic=45/120s\n"};
+
+        WHEN("the config is parsed")
+        {
+            auto const result = parse_key_value_config(input);
+
+            THEN("both tier overrides land in the tier map with no findings")
+            {
+                REQUIRE(result.findings.empty());
+                auto const& limits = result.config.client_rate_limits();
+                REQUIRE(limits.tier.contains("auth_sensitive"));
+                REQUIRE(limits.tier.at("auth_sensitive").max_requests == 10U);
+                REQUIRE(limits.tier.at("auth_sensitive").window_seconds == 60U);
+                REQUIRE(limits.tier.contains("generic"));
+                REQUIRE(limits.tier.at("generic").max_requests == 45U);
+                REQUIRE(limits.tier.at("generic").window_seconds == 120U);
+            }
+        }
+    }
+}
+
+SCENARIO("An unknown client_rate_limits.tier name is rejected as a parse finding",
+         "[config][rate-limit][tier][security]")
+{
+    GIVEN("a config that names a tier the engine does not define")
+    {
+        auto const input = std::string{"client_rate_limits.tier.login=10/60s\n"};
+
+        WHEN("the config is parsed")
+        {
+            auto const result = parse_key_value_config(input);
+
+            THEN("the typo becomes a finding rather than a silently ignored key")
+            {
+                REQUIRE_FALSE(result.findings.empty());
+                REQUIRE(result.findings.front().field == "client_rate_limits.tier.login");
+                REQUIRE(result.config.client_rate_limits().tier.empty());
+            }
+        }
+    }
+}
+
+SCENARIO("A malformed client_rate_limits.tier policy is rejected as a parse finding", "[config][rate-limit][tier]")
+{
+    GIVEN("a config with a valid tier name but a non-numeric policy")
+    {
+        auto const input = std::string{"client_rate_limits.tier.media=lots\n"};
+
+        WHEN("the config is parsed")
+        {
+            auto const result = parse_key_value_config(input);
+
+            THEN("the parser emits a finding and the tier map stays empty")
+            {
+                REQUIRE_FALSE(result.findings.empty());
+                REQUIRE(result.findings.front().field == "client_rate_limits.tier.media");
+                REQUIRE(result.config.client_rate_limits().tier.empty());
             }
         }
     }

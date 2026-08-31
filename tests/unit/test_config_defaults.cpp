@@ -136,6 +136,8 @@ SCENARIO("Config blocks private federation and loopback targets by default", "[c
                 REQUIRE(federation.per_origin_transaction_rate.max_requests == 120U);
                 REQUIRE(federation.per_origin_pdu_rate.max_requests == 600U);
                 REQUIRE(federation.per_origin_edu_rate.max_requests == 1200U);
+                REQUIRE(federation.per_origin_request_rate.max_requests == 600U);
+                REQUIRE(federation.per_origin_request_rate.window_seconds == 60U);
                 REQUIRE(federation.remote_timeout == "60s");
             }
         }

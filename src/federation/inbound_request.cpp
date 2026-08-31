@@ -376,6 +376,58 @@ namespace
         };
     }
 
+    // Per-origin cap for inbound federation requests OUTSIDE /send (query,
+    // backfill, membership, key and state endpoints). Keyed by the verified
+    // origin server name, not by IP, because the peer is authenticated by
+    // X-Matrix before this point. /send keeps its own weighted
+    // transaction/PDU/EDU trio and is exempt so a transaction and its
+    // contents are never double-counted. Window reset happens here (not in
+    // prepare_weighted_bucket) because the bucket's stored window_start must
+    // be updated in the same step as the count.
+    [[nodiscard]] auto check_federation_origin_request_rate(FederationRuntimeState& runtime, std::string_view origin)
+        -> FederationRateLimitDecision
+    {
+        auto const& policy = runtime.config.per_origin_request_rate;
+        if (!http::rate_limit_policy_is_valid(policy))
+        {
+            // Fail closed: an unresolvable policy must never mean "no limit".
+            return FederationRateLimitDecision{.allowed = false, .reason = "invalid federation rate-limit policy"};
+        }
+        auto guard = federation_guard(runtime);
+        auto& bucket = rate_limit_bucket(runtime, origin);
+        auto const now = std::chrono::steady_clock::now();
+        auto count = bucket.requests_seen;
+        auto window_start = bucket.request_window_start;
+        if (window_start == std::chrono::steady_clock::time_point{} ||
+            now - window_start >= std::chrono::seconds{policy.window_seconds})
+        {
+            count = 0U;
+            window_start = now;
+        }
+        if (count >= policy.max_requests)
+        {
+            return FederationRateLimitDecision{
+                .allowed = false,
+                .reason = "remote non-transaction request rate limit exceeded",
+                .max_requests = policy.max_requests,
+                .window_seconds = policy.window_seconds,
+                .requests_seen = count,
+                .weight = 1U,
+            };
+        }
+        ++count;
+        bucket.requests_seen = count;
+        bucket.request_window_start = window_start;
+        return FederationRateLimitDecision{
+            .allowed = true,
+            .reason = {},
+            .max_requests = policy.max_requests,
+            .window_seconds = policy.window_seconds,
+            .requests_seen = count,
+            .weight = 1U,
+        };
+    }
+
     // Reason codes that would indicate signature/token material leaked into
     // the audit log. Tracked incrementally so federation_audit_is_safe is
     // O(1) instead of a scan over the whole log (#423).
@@ -2166,6 +2218,27 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
 
     if (route_match.route.endpoint != FederationEndpoint::transaction)
     {
+        // Per-origin cap on non-/send endpoints, keyed by the X-Matrix-verified
+        // origin. /send traffic is exempt here (it keeps the weighted
+        // transaction/PDU/EDU trio) so a transaction and its contents are
+        // never double-counted.
+        auto const request_rate = check_federation_origin_request_rate(runtime, request.origin);
+        if (!request_rate.allowed)
+        {
+            log_diagnostic("request.rate_limited",
+                           {
+                               {"origin",         request.origin,                                       false},
+                               {"target",         observability::sanitized_http_target(request.target), false},
+                               {"status",         "429",                                                false},
+                               {"reason",         request_rate.reason,                                  false},
+                               {"max_requests",   std::to_string(request_rate.max_requests),            false},
+                               {"window_seconds", std::to_string(request_rate.window_seconds),          false},
+                               {"requests_seen",  std::to_string(request_rate.requests_seen),           false}
+            },
+                           observability::LogEventSeverity::warning);
+            audit_federation(runtime, "federation.rate_limited", request.origin, request.target, request_rate.reason);
+            return {429U, homeserver::matrix_error("M_LIMIT_EXCEEDED", request_rate.reason)};
+        }
         auto const non_transaction_response =
             dispatch_non_transaction_endpoint(runtime, request, route_match.route, remote);
         if (non_transaction_response.status >= 200U && non_transaction_response.status < 300U)

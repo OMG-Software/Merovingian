@@ -232,6 +232,11 @@ struct FederationSecurityConfig final
     http::RateLimitPolicy per_origin_transaction_rate{120U, 60U};
     http::RateLimitPolicy per_origin_pdu_rate{600U, 60U};
     http::RateLimitPolicy per_origin_edu_rate{1200U, 60U};
+    // Per-origin cap on inbound federation requests OUTSIDE /send (query,
+    // backfill, membership, key and state endpoints). /send keeps its own
+    // weighted transaction/PDU/EDU trio above and is exempt so a transaction
+    // and its contents are never double-counted.
+    http::RateLimitPolicy per_origin_request_rate{600U, 60U};
     std::string remote_timeout{"60s"};
     // Separate, extendable budget for the make_join/send_join/make_leave/send_leave
     // membership dance. A large remote room's make_join can take longer than the
@@ -324,14 +329,20 @@ struct SecretsSecurityConfig final
 // Per-endpoint rate-limit policies. The values populate
 // `http::RateLimitEngine` at `start_client_server()` time; restart
 // required (see `src/config/reload_policy.cpp`). The 0.5.0 design doc
-// (`docs/log-filtering-design.md`) lists the operator-agreed defaults:
-// 20/min per IP for /login and /register, 5/min per user for /login,
-// 30/min for keys/devices, 20/min for media, 120/min for federation,
-// 90/min for everything else.
+// (`docs/log-filtering-design.md`) lists the operator-agreed defaults,
+// now expressed through the route tiers in `http::rate_limit_tier_for()`:
+// 20/min per IP for the auth-sensitive tier (/login, /register, /refresh
+// and the */requestToken family), 5/min per user for /login, 30/min for
+// keys/devices, 20/min for media and search, 120/min for federation routes
+// on the client listener, 90/min for everything else.
 struct ClientRateLimitsConfig final
 {
     std::unordered_map<std::string, http::RateLimitPolicy> per_ip{};
     std::unordered_map<std::string, http::RateLimitPolicy> per_user{};
+    // Per-tier overrides keyed by tier name (auth_sensitive, media, sync,
+    // federation, admin, generic). Validated against
+    // `http::rate_limit_tier_from_name()` so a typo is a parse finding.
+    std::unordered_map<std::string, http::RateLimitPolicy> tier{};
     http::RateLimitPolicy default_per_ip{90U, 60U};
 };
 

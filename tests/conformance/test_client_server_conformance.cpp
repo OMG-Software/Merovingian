@@ -14963,6 +14963,76 @@ SCENARIO("rate limiting uses the path without query parameters as the bucket key
 }
 
 // Spec: Matrix Client-Server API v1.19
+// Endpoint / Section: Rate limiting
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#rate-limiting
+//
+// A request refused due to rate limiting MUST return the standard error
+// response {"errcode": "M_LIMIT_EXCEEDED", "error": "string", ...} with HTTP
+// 429. Homeservers SHOULD include a Retry-After header; retry_after_ms (an
+// integer in milliseconds) MAY be included and is deprecated since v1.10.
+SCENARIO("a rate-limited request returns the standard 429 error shape with retry guidance",
+         "[homeserver][client-server][rate-limit][conformance]")
+{
+    GIVEN("a server configured with a cap of 1 request per minute on an unauthenticated route")
+    {
+        auto security = merovingian::config::SecurityConfig{};
+        merovingian::tests::enable_token_registration(security);
+        auto rate_limits = merovingian::config::ClientRateLimitsConfig{};
+        // /login is unauthenticated, so the per-IP bucket is the only
+        // defense and the 429 shape is observable without a valid account.
+        rate_limits.per_ip["/_matrix/client/v3/login"] = {1U, 60U};
+        auto cfg = merovingian::config::Config{
+            merovingian::config::ServerConfig{},
+            merovingian::config::ListenersConfig{},
+            merovingian::config::DatabaseConfig{},
+            security,
+            std::move(rate_limits),
+            merovingian::config::LogModulesConfig{},
+        };
+        auto started = merovingian::homeserver::start_client_server(cfg);
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+
+        WHEN("two unauthenticated requests hit the capped route within the window")
+        {
+            auto const body = std::string{"{\"type\":\"m.login.password\",\"identifier\":{\"type\":\"m.id.user\","
+                                          "\"user\":\"nobody\"},\"password\":\"wrong\"}"};
+            std::ignore = merovingian::homeserver::handle_client_server_request(
+                rt, {"POST", "/_matrix/client/v3/login", "", body});
+            auto const throttled = merovingian::homeserver::handle_client_server_request(
+                rt, {"POST", "/_matrix/client/v3/login", "", body});
+
+            THEN("the second is refused with the standard 429 error response")
+            {
+                // Spec MUST: refusal due to rate limiting returns the standard
+                // error form with errcode M_LIMIT_EXCEEDED and HTTP 429.
+                REQUIRE(throttled.response.status == 429U);
+                auto const err = parse_object(throttled.response.body);
+                auto const* errcode = string_member(err, "errcode");
+                auto const* error = string_member(err, "error");
+                REQUIRE(errcode != nullptr);
+                REQUIRE(*errcode == "M_LIMIT_EXCEEDED");
+                REQUIRE(error != nullptr);
+                REQUIRE_FALSE(error->empty());
+            }
+            AND_THEN("retry guidance is present in the body and as a Retry-After header")
+            {
+                // Spec MAY (deprecated v1.10): retry_after_ms is an integer in
+                // milliseconds telling the client how long to wait.
+                auto const err = parse_object(throttled.response.body);
+                auto const* retry_after_ms = int_member(err, "retry_after_ms");
+                REQUIRE(retry_after_ms != nullptr);
+                REQUIRE(*retry_after_ms > 0);
+                // Spec SHOULD: a Retry-After header accompanies any 429.
+                auto const retry_after = response_header(throttled.response.headers, "Retry-After");
+                REQUIRE(retry_after.has_value());
+                REQUIRE_FALSE(retry_after->empty());
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.19
 // Endpoint / Section: PUT /rooms/{roomId}/send/{eventType}/{txnId}
 // URL: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3roomsroomidsendeventtypetxnid
 //

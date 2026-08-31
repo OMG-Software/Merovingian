@@ -894,6 +894,11 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
         findings.push_back(
             {"security.federation.per_origin_edu_rate", "federation per-origin EDU rate must be N>0 per Ws>0"});
     }
+    if (!http::rate_limit_policy_is_valid(config.security().federation.per_origin_request_rate))
+    {
+        findings.push_back({"security.federation.per_origin_request_rate",
+                            "federation per-origin non-/send request rate must be N>0 per Ws>0"});
+    }
 
     auto const federation_remote_timeout = parse_duration_seconds(config.security().federation.remote_timeout);
     if (!federation_remote_timeout.valid)
@@ -1033,6 +1038,20 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
         {
             findings.push_back(
                 {"client_rate_limits.per_user." + target, "rate-limit policy must be N>0 per 0<Ws<=3600"});
+        }
+    }
+    // Tier-override keys are re-validated here (not just at parse time) so a
+    // programmatically-constructed Config cannot smuggle an unknown tier
+    // name or out-of-range policy past validation.
+    for (auto const& [tier, policy] : config.client_rate_limits().tier)
+    {
+        if (!http::rate_limit_tier_from_name(tier).has_value())
+        {
+            findings.push_back({"client_rate_limits.tier." + tier, "unknown rate-limit tier name"});
+        }
+        if (policy.max_requests == 0U || policy.window_seconds == 0U || policy.window_seconds > max_window_seconds)
+        {
+            findings.push_back({"client_rate_limits.tier." + tier, "rate-limit policy must be N>0 per 0<Ws<=3600"});
         }
     }
     if (config.client_rate_limits().default_per_ip.max_requests == 0U ||
