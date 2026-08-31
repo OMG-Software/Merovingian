@@ -286,6 +286,31 @@ follow-up entry under this same section.
   scenarios completing in 66–132 microseconds. See `docs/http-transport.md`,
   "Load/soak evidence", for how to run it and the full measured results.
 
+- **Appservice user and room-alias query hooks are wired.** `query_user()` and
+  `query_room_alias()` were implemented but called from nowhere, so a bridge
+  that materialises users and rooms on demand got a flat 404 for exactly the
+  identifiers its namespace exists to claim. `GET /directory/room/{roomAlias}`
+  and `GET /profile/{userId}` now consult the appservice whose namespace covers
+  the identifier and re-check locally afterwards. Only the owning appservice is
+  queried — fanning out would leak which aliases and users clients look up — and
+  an unreachable or declining appservice is a miss, not an error, so a bridge
+  outage cannot turn a 404 into a 502.
+- **Exclusive namespaces claimed by two appservices are now boot-time
+  findings.** Nothing enforced the spec's exclusivity guarantee across
+  registrations: two could both exclusively claim `@_bridge_.*` and whichever
+  the registry consulted first silently won. Detection compares pattern strings
+  and is deliberately conservative — differing regexes with overlapping matches
+  are not reported, because a false conflict that refuses to start a correct
+  deployment would be worse than the gap.
+- **The request lock is restored on every path out of a released region.** The
+  dispatcher's `guard.unlock(); f(); guard.lock();` triples never re-acquired if
+  `f()` threw, leaving the request — and the next one on that thread — running
+  with the locking invariant broken. Adds `ScopedGuardRelease` and converts 8 of
+  21 sites. Three publicRooms/alias federation-proxy paths were worse: they
+  released the guard and returned through `dispatch_err`/`dispatch_resp` without
+  ever re-acquiring, reading `rt.cors` — which config hot-reload can replace —
+  unsynchronised.
+
 ## 0.11.13
 
 Fixes a production stall where one slow federation peer froze the whole

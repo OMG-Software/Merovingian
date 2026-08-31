@@ -91,10 +91,43 @@ query_thirdparty_protocol`/`query_thirdparty_location_by_alias`/
   appservice's own namespaces. An appservice asserting a user outside its
   namespaces is a privilege escalation, not a lookup miss.
 
-## Known gap
+## User and room-alias query hooks
 
-Overlapping **exclusive** namespaces *between different appservices* are not
-detected. Two registrations may both exclusively claim `@_bridge_.*`, and
-whichever is consulted first wins. The spec's exclusivity guarantee is
-per-namespace, so this should become a boot-time finding alongside the
-duplicate `id`/`as_token` checks in `validate_registrations()`.
+When an identifier inside an appservice's namespace is unknown locally, the
+homeserver asks that appservice before answering 404 — a bridge materialises
+users and rooms on demand, so a flat 404 makes the namespace pointless.
+
+- Wired at `GET /_matrix/client/v3/directory/room/{roomAlias}` and
+  `GET /_matrix/client/v3/profile/{userId}` in `homeserver/client_server.cpp`,
+  backed by `AppserviceClient::query_room_alias` / `query_user`.
+- **Only the owning appservice is queried.** The spec limits queries to an
+  appservice's own namespace, and fanning out would leak which aliases and
+  users clients are looking up to bridges with no claim on them.
+- **A failing appservice is a miss, not an error.** Unreachable or declining
+  contributes nothing; the next candidate is tried and the request ultimately
+  404s. A bridge being down must never turn a 404 into a 502.
+- Both outbound calls use `homeserver::ScopedGuardRelease`, so `runtime.mutex`
+  is released for the round trip and restored even if the call throws.
+- Covered by `tests/integration/test_appservice_query_hooks_flow.cpp`, which
+  asserts on the bytes actually sent — the outbound half was dead code for its
+  whole life and never once failed to compile.
+
+## Cross-registration validation
+
+`validate_registrations()` runs at boot and fails the whole set closed rather
+than resolving ambiguity by consultation order. It reports duplicate `id` and
+duplicate `as_token` (constant-time compared), and namespace patterns claimed
+by two registrations where at least one claims them exclusively.
+
+## Known gaps
+
+- **Namespace-overlap detection compares pattern strings.** Two *different*
+  regexes that happen to match overlapping identifiers are not reported.
+  Deciding regex intersection in general is not something a boot-time check can
+  do, and a false conflict refusing to start a correct deployment would be
+  worse than the gap. This catches the realistic operator error: two bridges
+  shipping the same pattern.
+- **An appservice's own `sender_localpart` user is not checked against another
+  appservice's exclusive namespace.** That needs the server name to build a
+  full user id, and neither `validate_registrations()` nor the registration
+  loader currently has one.

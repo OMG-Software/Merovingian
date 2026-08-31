@@ -286,6 +286,7 @@ shell = find_program('sh')
     sources: files(
       'integration/test_main.cpp',
       'integration/test_appservice_thirdparty_flow.cpp',
+      'integration/test_appservice_query_hooks_flow.cpp',
       'integration/test_client_server_flow.cpp',
       'integration/test_federation_inbound_flow.cpp',
       'integration/test_federation_outbound_flow.cpp',
