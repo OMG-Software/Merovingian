@@ -216,6 +216,76 @@ follow-up entry under this same section.
   path against a real local mock appservice, including multi-appservice
   aggregation and the unreachable-appservice degrade-not-fail guarantee.
 
+- **`resolve_policy_server_hook` no longer holds `HomeserverRuntime::mutex`
+  across the `trust_safety.policy_server_url` round trip.**
+  `handle_federation_http_request` was already fixed for this (#415), but
+  `register_local_user`, `create_room` (and room upgrade), and the media
+  download/thumbnail policy check all called the same function directly
+  while still holding the lock — an operator running with
+  `trust_safety.enabled` inherited a policy server that, if slow or
+  unreachable, froze registration, room creation, and media reads for every
+  other user for up to `policy_server_timeout`. The fix wraps the remainder
+  of `resolve_policy_server_hook` (the injectable test hook and the real
+  `OutboundClient::perform` call alike) in one `NetworkIoUnlock` scope, so
+  every call site is fixed at the source. New regression coverage in
+  `tests/integration/test_request_lock_contention_flow.cpp` (registration,
+  room creation, media download, each gated on a blocking policy-server hook
+  while an unrelated request is asserted to complete promptly).
+- **`create_room` was silently double-locking `HomeserverRuntime::mutex`,
+  which made `NetworkIoUnlock` a no-op for anything blocking inside it —
+  found by the new regression coverage above, not by inspection.**
+  `HomeserverRuntime::mutex` is a `std::recursive_mutex`, and `create_room`
+  takes its own lock on it (it must stay independently callable outside a
+  request handler — see `local_smoke_flow.cpp`). Called from
+  `client_server.cpp`, which already held its own outer guard for the whole
+  request, this recursively re-locked the *same* mutex a second time — legal
+  for a `recursive_mutex`, and therefore silent. `NetworkIoUnlock`'s single
+  `unlock()` call only undoes one level of that recursion: it released the
+  outer guard (the one `RequestLockScope` had published) while `create_room`'s
+  own, inner guard — the one actually in scope at the point of the network
+  call — stayed locked. The mutex was therefore never really available to
+  another thread during the (now-unlocked-in-theory) policy-server round
+  trip. This means **the `NetworkIoUnlock` mechanism introduced in 0.11.13
+  was incomplete for any call chain that passed through a self-locking
+  function**: it correctly modelled "the caller holds one lock, release it,"
+  but not "the caller holds one lock, a callee recursively takes a second
+  one, release the one actually in scope." The room-creation regression test
+  added alongside the `resolve_policy_server_hook` fix above caught this
+  immediately — it deadlocked rather than passing, exactly as a lock bug
+  should. Fixed by publishing `RequestLockScope` around `create_room`'s own
+  guard (`room_service.cpp`) and releasing the caller's outer guard before
+  delegating to it at all three call sites (`client_server.cpp` ×2,
+  `local_http_router.cpp` ×1) — the unlock/call/relock idiom already used for
+  `join_room` — so `create_room`'s own guard becomes the only lock in scope
+  and is the one `NetworkIoUnlock` actually finds and releases.
+  `join_room`/`leave_room` share the identical self-locking shape and very
+  likely have the same latent gap for their own outbound federation calls;
+  fixing them is tracked as separate follow-up work, deliberately out of
+  scope here to avoid last-minute scope creep on a lock-correctness change.
+- **New load/soak evidence harness for the global runtime lock**
+  (`tests/integration/test_runtime_lock_soak_flow.cpp`, opt-in behind the
+  `build_load_tests` Meson option — a manual tool with no CI wiring, matching
+  the existing `build_live_tests` precedent). Drives concurrent `/sync`
+  long-polls, ordinary reads, message sends, and signed
+  X-Matrix-authenticated inbound federation transactions — all over real
+  sockets with HTTP/1.1 keep-alive — and reports throughput and p50/p95/p99
+  latency per category, so the "Global runtime lock" release blocker in
+  `docs/todos/production-milestone.md` can be closed (or kept open) on
+  measurement rather than intuition. **Measured, 20 s runs, 6 simulated users
+  + 2 simulated federation peers, before (pre-fix source reverted to a
+  scratch copy) vs. after this change**: reads ~385→374 req/s (p50 7.2→7.4 ms,
+  p95 25.0→26.4 ms), sends ~478→469 req/s (p50 6.7→7.0 ms, p95 21.4→21.8 ms),
+  federation transactions ~208→204 req/s (p50 6.4→6.7 ms, p95 22.6→23.0 ms,
+  capped by the federation per-origin transaction rate limiter, not lock
+  contention) — statistically indistinguishable, as expected: this change's
+  two fixes (below) do not touch that hot path when `trust_safety` is
+  disabled. The direct evidence for those two fixes is instead the
+  regression tests themselves: before, the affected request deadlocks
+  (unbounded — confirmed by direct reproduction under a bounded external
+  timeout); after, `--durations yes` shows registration/room-creation/media
+  scenarios completing in 66–132 microseconds. See `docs/http-transport.md`,
+  "Load/soak evidence", for how to run it and the full measured results.
+
 ## 0.11.13
 
 Fixes a production stall where one slow federation peer froze the whole

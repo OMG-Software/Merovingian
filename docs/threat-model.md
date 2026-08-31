@@ -902,7 +902,31 @@ threat it closes; the controls above are the standing defences these reinforce.
   releasing the mutex for the duration of every outbound network call
   (`homeserver::NetworkIoUnlock`) so a stalled peer costs one request rather than
   the process, and covered by a regression test that holds a real TLS peer open
-  and asserts unrelated requests still complete.
+  and asserts unrelated requests still complete. A third instance of the same
+  bug (0.12.1): `resolve_policy_server_hook`'s call to `trust_safety.policy_server_url`
+  was fixed for inbound federation (#415) but still ran under the lock from
+  `register_local_user`, `create_room`, and the media download/thumbnail
+  policy check — an operator who enables `trust_safety.enabled` inherits a
+  policy server as a remote dependency that, if slow or unreachable, freezes
+  registration, room creation, and media reads for every other user, not just
+  the caller who tripped it. Closed the same way, and covered by the same
+  style of regression test using the injectable `trust_safety_policy_server`
+  hook to stand in for a stalled policy server (no outbound TLS pinning
+  mechanism exists for this particular call, unlike the federation path).
+  That regression test also surfaced a second, independent bug: `create_room`
+  self-locks `runtime.mutex` (a `std::recursive_mutex`) so it stays callable
+  outside a request handler, but calling it from a handler that already held
+  the lock silently double-locked it — `NetworkIoUnlock` released only the
+  outer level, so the mutex stayed effectively held for the whole "unlocked"
+  network call, and the 0.11.13 `NetworkIoUnlock` mechanism turns out to have
+  been incomplete for any call chain with a second, self-locking function on
+  the stack. Fixed by publishing `RequestLockScope` around `create_room`'s own
+  guard and having every caller release its own guard first — see
+  `docs/http-transport.md`, "`NetworkIoUnlock` was incomplete for recursive
+  acquisitions". `join_room`/`leave_room` share the same self-locking shape
+  and are tracked as follow-up, not yet confirmed either way.
+  Load/soak evidence for the remaining critical section is tracked in
+  `docs/todos/production-milestone.md`, "Global runtime lock".
 
 - **Idle-connection thread holding through HTTP keep-alive parking.** With
   HTTP/1.1 persistent connections (RFC 9112 §9.3) a client that has received

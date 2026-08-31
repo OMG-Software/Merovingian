@@ -516,6 +516,110 @@ Rules for anything added to these paths:
   calling a service function directly) or when a caller already released the
   lock by hand, so it composes with the existing `unlock()`/`lock()` pairs.
 
+### `resolve_policy_server_hook` (0.12.1)
+
+`resolve_policy_server_hook` (`src/homeserver/runtime.cpp`) performs a
+synchronous outbound call to `trust_safety.policy_server_url` when
+`trust_safety.enabled` is set. `handle_federation_http_request` was already
+fixed (#415) to call it only after releasing the lock, but three other call
+sites called it directly while still holding `HomeserverRuntime::mutex`:
+`register_local_user` (client registration), `create_room` (room creation and
+room upgrade), and `media_policy_decision` (remote media download and
+thumbnail fetch — right before the *already*-unlocked remote fetch call that
+follows it). A slow or unreachable policy server therefore still froze every
+other client and federation request for up to `policy_server_timeout`,
+despite #415.
+
+The fix wraps the remainder of `resolve_policy_server_hook` — the injectable
+`trust_safety_policy_server` test hook and the real
+`OutboundClient::perform` call alike — in one `NetworkIoUnlock` scope, so
+every call site is fixed at the source rather than needing four separate
+call-site changes. Everything the function still reads
+(`trust_safety_config`, `runtime.config`, the request built from them) is
+read before that scope, while the lock is still held; nothing after it
+touches runtime state. See `tests/integration/test_request_lock_contention_flow.cpp`
+for the regression coverage (registration, room creation, and media
+download, each gated on a blocking policy-server hook while an unrelated
+request is asserted to complete promptly).
+
+### `NetworkIoUnlock` was incomplete for recursive acquisitions (0.12.1)
+
+`HomeserverRuntime::mutex` is a `std::recursive_mutex` specifically so that a
+service function such as `create_room` can take its own lock and remain
+independently callable outside a request handler (`local_smoke_flow.cpp` does
+exactly this). But `create_room` is *also* called directly from
+`client_server.cpp`, which already holds its own outer guard for the whole
+request. `std::recursive_mutex` permits that nested acquisition silently — the
+same thread simply increments a recursion count — so nothing failed loudly.
+
+The problem: `NetworkIoUnlock` releases exactly one `std::unique_lock`, the
+one published via `RequestLockScope`. When the room-creation regression test
+above gated `create_room`'s call into `resolve_policy_server_hook`, the
+outer guard (published) got released, but `create_room`'s own inner guard —
+the second, nested acquisition, and the one actually in lexical scope at the
+point of the network call — was never touched. The mutex stayed held by that
+thread for the full duration of the (attempted) unlock, and a concurrent
+request on another thread blocked forever waiting for the same
+`recursive_mutex`. **This means the `NetworkIoUnlock` mechanism, as shipped
+in 0.11.13, was correct only for call chains with exactly one lock
+acquisition on the stack; it silently did nothing for any chain that passed
+through a second, self-locking function.** The room-creation regression test
+caught this by deadlocking rather than by a failed assertion — the strongest
+possible signal that a lock invariant, not just a status code, was wrong.
+
+Fixed by publishing `RequestLockScope` around `create_room`'s own guard
+(`room_service.cpp`) and releasing the caller's outer guard with
+`guard.unlock()` before delegating to `create_room` — `guard.lock()`
+afterward, when later code still needs the lock — at all three call sites
+(`client_server.cpp` ×2: create and room-upgrade; `local_http_router.cpp` ×1).
+This is the same unlock/call/relock idiom `local_http_router.cpp` already
+used for `join_room`, so `create_room`'s own guard becomes the *only* lock in
+scope and the one `NetworkIoUnlock` actually finds and releases.
+
+**`join_room` and `leave_room` have the identical self-locking shape** and
+very likely the same latent gap for their own outbound federation calls
+(`perform_sync_outbound_call`'s `NetworkIoUnlock` sites). Fixing them needs
+its own regression coverage per function and was deliberately left as
+follow-up work rather than folded into this change — see the task tracker
+entry created alongside this fix.
+
+## Load/soak evidence
+
+`tests/integration/test_runtime_lock_soak_flow.cpp` (gated behind the
+`build_load_tests` Meson option, parallel to `build_live_tests`) drives real
+concurrent traffic — over real TCP sockets, HTTP/1.1 keep-alive throughout —
+against a running server: several users each long-polling their own room's
+`/sync`, each doing ordinary authenticated reads, each sending messages into
+their own room, and several simulated remote servers sending signed,
+X-Matrix-authenticated inbound federation transactions, all at once. It
+reports throughput and p50/p95/p99 latency per category to stderr. Its own
+default duration is short enough to run safely as a CI correctness check
+(nothing deadlocks or starves); a real measurement run sets
+`MEROVINGIAN_LOCK_SOAK_SECONDS` to something longer:
+
+```bash
+meson configure build-wsl -Dbuild_load_tests=true
+MEROVINGIAN_LOCK_SOAK_SECONDS=60 ./build-wsl/tests/merovingian-load-tests "[load-soak]"
+```
+
+See `docs/todos/production-milestone.md`, "Global runtime lock", for the
+measured before/after numbers this harness produced and the resulting
+narrowing decision.
+
+**This harness is a manual tool, not a CI job — deliberately, matching the
+existing `build_live_tests` precedent** (also gated behind an opt-in Meson
+option with zero `.github/workflows/` wiring; see
+`docs/testing-standards.md`). A real measurement run needs tens of seconds to
+minutes of wall-clock time to be meaningful, which does not fit a per-PR CI
+budget, and headline throughput/latency numbers on shared CI runners are
+noisy and non-reproducible in a way that would make a regression gate here
+more misleading than useful. Its default (unset `MEROVINGIAN_LOCK_SOAK_SECONDS`)
+2-second run does stay CI-safe as a *correctness* check — nothing deadlocks
+or starves — and CAN be added as a fast job later if that is wanted, but that
+is a distinct decision from running it as a soak/perf gate. Use it manually,
+locally or on a dedicated benchmarking host, whenever a future lock-narrowing
+change needs before/after evidence.
+
 ## Fuzzing
 
 `fuzz-http-request` exercises the request-head parser against arbitrary input. It is registered with the existing fuzz target group.

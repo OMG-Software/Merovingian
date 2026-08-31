@@ -2268,7 +2268,13 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
     }
     if (request.method == "POST" && request.target == "/_matrix/client/v3/createRoom")
     {
+        // create_room self-locks (see room_service.cpp); release this
+        // handler's own guard first so it is not double-locked, matching the
+        // join_room delegation just above and the equivalent client_server.cpp
+        // call sites.
+        guard.unlock();
         auto result = create_room(runtime, request.access_token);
+        guard.lock();
         return result.ok ? response(200U, result.value)
                          : response(result.status != 0U ? result.status : 403U, result.reason);
     }
