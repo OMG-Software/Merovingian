@@ -2282,10 +2282,14 @@ namespace
     }
 
     // Wall-clock rate limiter. The cap is `http::RateLimitEngine<Clock>::check`,
-    // which honours the per-endpoint policy configured in
-    // `config.client_rate_limits()` (or the design-doc defaults if the
-    // operator left the block empty). Two independent tiers:
-    //   * per-IP,  keyed by the request's source IP + target prefix.
+    // which resolves the policy for each route through the tier table in
+    // `http::rate_limit_tier_for()` (or the operator's `client_rate_limits:*`
+    // overrides — per-prefix, per-tier, then per-user). Two independent
+    // buckets:
+    //   * per-IP,  keyed by the request's effective source IP + target prefix.
+    //     This is the only bucket on unauthenticated routes (login, register,
+    //     refresh, the */requestToken family), which sit in the tighter
+    //     auth_sensitive tier.
     //   * per-user, keyed by the authenticated user_id (empty on
     //     unauthenticated paths so the per-user tier is silently
     //     skipped). The 5/60s per-user login cap is enforced through
@@ -2477,7 +2481,7 @@ namespace
         // the per-user tier is silently skipped — same behaviour as the
         // 0.4.x limiter's empty-token bucket. We also append the
         // normalized target so a 5/60s cap on /login does not bleed
-        // into a 60/60s cap on /sync.
+        // into the 90/60s sync-tier cap on /sync.
         std::string user_key;
         if (!req.access_token.empty())
         {
@@ -7954,6 +7958,10 @@ namespace
     {
         out.per_user[k] = v;
     }
+    for (auto const& [k, v] : in.tier)
+    {
+        out.tier[k] = v;
+    }
     out.default_per_ip = in.default_per_ip;
     return out;
 }
@@ -7987,8 +7995,16 @@ auto install_test_rate_limit_engine(ClientServerRuntime& runtime) -> void
     // cap that still drives a 429 from a single back-to-back request.
     // A real "test for the 429 path" wants the second call to be
     // denied; that is exactly what the cap-of-1 guarantees.
+    // The cap must be installed as a per-tier override for every tier,
+    // not just default_per_ip: tiered resolution otherwise binds routes
+    // like /login to their tier default (20/60s) and tests relying on a
+    // 429 from the second request would silently stop exercising it.
     auto cfg = http::RateLimitConfig{};
     cfg.default_per_ip = {1U, 60U};
+    for (auto const tier_name : {"auth_sensitive", "media", "sync", "federation", "admin", "generic"})
+    {
+        cfg.tier[tier_name] = {1U, 60U};
+    }
     runtime.rate_limit_engine = std::make_unique<http::RateLimitEngine<ClientServerClock>>(cfg, runtime.clock);
 }
 
@@ -8278,9 +8294,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     // general user-token gate so require_admin() owns the 401/403 split
     // (missing/invalid token -> 401, valid non-admin -> 403), matching how
     // /_matrix/client/v3/logout is dispatched. Rate limiting is inherited
-    // from the allow() gate above: the per-IP /_merovingian/admin/ prefix
-    // policy in default_client_rate_limit_config() applies, so admin routes
-    // are throttled exactly once with no double-count.
+    // from the allow() gate above: the admin-tier default (or an operator
+    // client_rate_limits.tier.admin override) applies, so admin routes are
+    // throttled exactly once with no double-count.
     if (starts_with(request_path, "/_merovingian/admin/"))
     {
         auto local = call_local(req);

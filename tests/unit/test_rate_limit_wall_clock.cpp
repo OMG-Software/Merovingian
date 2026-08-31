@@ -237,15 +237,18 @@ SCENARIO("Wall-clock rate limiter: per-endpoint caps are overridable via config"
 SCENARIO("Wall-clock rate limiter: default /register cap is 20/60s, not the legacy 5/60s",
          "[homeserver][client-server][rate-limit][wall-clock][regression]")
 {
-    GIVEN("the default ClientRateLimitsConfig")
+    GIVEN("an engine built from the default ClientRateLimitsConfig")
     {
-        auto const config = default_config();
-        auto const reg_policy = config.per_ip.at("/_matrix/client/v3/register");
+        auto clock = ManualClock{};
+        auto engine = RateLimitEngine{default_config(), clock};
+        auto const target = std::string_view{"/_matrix/client/v3/register"};
 
-        THEN("the /register per-IP cap is 20/60s")
+        THEN("the /register per-IP policy resolves to 20/60s via the auth_sensitive tier")
         {
-            REQUIRE(reg_policy.max_requests == 20U);
-            REQUIRE(reg_policy.window_seconds == 60U);
+            auto const reg_policy = engine.resolve_per_ip_policy(target);
+            REQUIRE(reg_policy.has_value());
+            REQUIRE(reg_policy->max_requests == 20U);
+            REQUIRE(reg_policy->window_seconds == 60U);
         }
     }
 }

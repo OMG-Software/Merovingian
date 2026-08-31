@@ -253,6 +253,13 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "security.federation.per_origin_edu_rate");
     }
+    if (current.security().federation.per_origin_request_rate.max_requests !=
+            next.security().federation.per_origin_request_rate.max_requests ||
+        current.security().federation.per_origin_request_rate.window_seconds !=
+            next.security().federation.per_origin_request_rate.window_seconds)
+    {
+        add_change(plan, "security.federation.per_origin_request_rate");
+    }
     if (current.security().federation.remote_timeout != next.security().federation.remote_timeout)
     {
         add_change(plan, "security.federation.remote_timeout");
@@ -482,6 +489,7 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
                    next.client_rate_limits().per_ip);
     diff_keyed_map(plan, "client_rate_limits.per_user.", current.client_rate_limits().per_user,
                    next.client_rate_limits().per_user);
+    diff_keyed_map(plan, "client_rate_limits.tier.", current.client_rate_limits().tier, next.client_rate_limits().tier);
     diff_keyed_map(plan, "log_modules.", current.log_modules().levels, next.log_modules().levels);
 
     return plan;

@@ -329,39 +329,87 @@ maintained:
 A quiet server does not freeze a bucket because the window rolls over on elapsed
 real time, not on request count. When a cap is exceeded the server returns
 `429 M_LIMIT_EXCEEDED` with a `Retry-After` header (seconds). The deprecated
-`retry_after_ms` body field is also included for older clients.
+`retry_after_ms` body field is also included for older clients. A 429 does not
+tear down a keep-alive connection: connection framing is decided per request
+round and is status-independent (see "HTTP keep-alive" above), so a throttled
+client can wait out its window on the same connection and retry.
 
-Default route-aware policies use longest-prefix matching. Path parameters such as
-`roomId`, `deviceId`, and `mediaId` are coalesced into placeholders so the same
-cap applies regardless of which room, device, or media ID appears in the URL:
+### Route tiers
 
-| Endpoint class | Default policy |
-| --- | --- |
-| Login / registration | 20/60s per IP; 5/60s per user on `/login` |
-| Device and key APIs | 30/60s per IP |
-| Media APIs | 20/60s per IP |
-| Search API (`/_matrix/client/v3/search`) | 20/60s per IP — same tier as media; each request does real work (a bounded in-memory scan, see `ClientApiLimits::max_search_events_scanned`) rather than a cheap lookup |
-| Federation APIs | 120/60s per IP |
-| Admin routes (`/_merovingian/admin/*`) | 30/60s per IP |
-| Generic client APIs | 90/60s per IP fallback |
+Every client-server route is classified into one of six explicit tiers by the
+prefix table in `http::rate_limit_tier_for()` (`src/http/rate_limit.cpp`) — one
+greppable place, no magic. Path parameters such as `roomId`, `deviceId`, and
+`mediaId` are coalesced into placeholders by `normalized_target()` so the same
+cap applies regardless of which room, device, or media ID appears in the URL.
 
-Operators override any class via `client_rate_limits.per_ip.<target>` and
-`client_rate_limits.per_user.<target>`; `client_rate_limits.default_per_ip` is
-the fallback for unmatched targets. All policy changes require a server restart.
-`window_seconds` must be `1..3600` — both `rate_limit_policy_is_valid()` (engine)
-and config validation reject anything outside that range.
+| Tier | Routes | Default per-IP policy |
+| --- | --- | --- |
+| `auth_sensitive` | `/login`, `/register`, `/refresh`, and every `*/requestToken` route (matched by suffix) — unauthenticated, so the per-IP bucket is the only defense | 20/60s |
+| `media` | `/_matrix/media/*` and `/_matrix/client/v1/media/*` | 20/60s |
+| `sync` | `/sync` plus the MSC4186 and simplified MSC3575 sliding-sync long-polls | 90/60s |
+| `federation` | `/_matrix/federation/*` routes reaching the client-server dispatcher | 120/60s |
+| `admin` | `/_merovingian/admin/*` | 30/60s |
+| `generic` | every other client-server route | `client_rate_limits.default_per_ip` (90/60s) |
 
-**Fail-closed on an unresolvable policy (issue #412):** if both the per-IP and
-per-user policies resolve to `nullopt` (e.g. an operator-configured
-`default_per_ip` with `window_seconds > 3600`), `RateLimitEngine::check()`
-denies the request rather than allowing it — a misconfigured policy must never
-silently disable rate limiting.
+Built-in per-endpoint refinements inside a tier: device and key APIs at
+30/60s, search at 20/60s — each request does real work (a bounded in-memory
+scan, see `ClientApiLimits::max_search_events_scanned`) rather than a cheap
+lookup. The built-in per-user cap is 5/60s on `/login`.
+
+Classification is method-agnostic: a `GET` against `/login` is the same
+enumeration surface as a `POST`, and the `*/requestToken` family spans several
+path parents, so it is matched by suffix.
+
+### Operator overrides
+
+Per-IP policy resolution is most-specific-first:
+
+1. `client_rate_limits.per_ip.<target-prefix>` (longest prefix match wins),
+2. `client_rate_limits.tier.<name>` for the route's tier,
+3. the built-in per-endpoint refinement (keys/devices 30/60s, search 20/60s),
+4. the tier default; the `generic` tier resolves to
+   `client_rate_limits.default_per_ip`.
+
+Per-user resolution: `client_rate_limits.per_user.<target-prefix>` first, then
+the built-in 5/60s login cap; routes with neither have no per-user cap (the
+per-IP cap still applies). Tier names are `auth_sensitive`, `media`, `sync`,
+`federation`, `admin`, `generic`; an unknown name is a parse-time finding, not a
+silently ignored key. All `client_rate_limits.*` changes require a server
+restart. `window_seconds` must be `1..3600` — both `rate_limit_policy_is_valid()`
+(engine) and config validation reject anything outside that range.
+
+Defaults remain the operator-agreed secure values from the 0.5.0 design doc;
+tiering only makes them explicit and complete. One deliberate tightening: the
+auth-sensitive tier now covers `/refresh`, the `*/requestToken` family, and
+non-`POST` hits on `/login`/`/register`, which previously fell into the 90/60s
+generic fallback.
+
+**Fail-closed on an unresolvable policy (issue #412):** the per-IP policy
+resolves to a value on every route unless a configured entry, tier override, or
+the default fails `rate_limit_policy_is_valid()` (e.g.
+`window_seconds > 3600`). An unresolvable per-IP policy makes
+`RateLimitEngine::check()` deny the request — even when a valid per-user policy
+exists, because the per-IP bucket is the only defense on unauthenticated
+routes. A misconfigured policy must never silently disable rate limiting.
 
 **Bounded bucket tables (issue #427):** `m_ip_buckets`/`m_user_buckets` are
 hash maps capped at 100,000 entries each, with stale-entry and
 least-recently-touched eviction, so a client rotating a spoofable
 `X-Forwarded-For` value (see below) cannot grow the table or the per-check
 cost without bound.
+
+### Inbound federation
+
+`/send` transactions are limited per **verified origin server name** (the
+X-Matrix-authenticated peer, not the IP) by a weighted trio:
+`security.federation.per_origin_transaction_rate` (120/60s),
+`per_origin_pdu_rate` (600/60s), `per_origin_edu_rate` (1200/60s). Every other
+inbound federation endpoint (query, backfill, membership, key and state routes)
+is limited by `security.federation.per_origin_request_rate` (600/60s), checked
+after signature verification and the server-ACL check, before dispatch.
+Non-`/send` traffic is counted only against `per_origin_request_rate` and
+`/send` only against the weighted trio, so a transaction and its contents are
+never double-counted.
 
 ### Admin routes
 
@@ -373,9 +421,9 @@ user-token gate, so `require_admin()` owns the auth outcome: 401
 `M_FORBIDDEN` for a valid token belonging to a non-admin user. The routes
 inherit the same `allow()` rate-limit gate as every other client-server
 request — throttled exactly once per request, no double-count — under the
-`/_merovingian/admin/` per-IP prefix policy (30/60s by default, operator-tunable
-via `client_rate_limits.per_ip`). Operator-only and low-volume, but still
-throttled against brute-force token guessing.
+admin-tier default (30/60s, operator-tunable via
+`client_rate_limits.tier.admin` or a per-prefix entry). Operator-only and
+low-volume, but still throttled against brute-force token guessing.
 
 ### In-memory counter trade-off
 

@@ -43,11 +43,11 @@ namespace
                                    std::string_view key, std::string_view value,
                                    std::vector<ConfigValidationFinding>& findings) -> void
     {
-        // The client_rate_limits.per_ip and .per_user maps are keyed by
-        // request target prefix (e.g. "/_matrix/client/v3/login"), which
-        // contains '/' characters. We handle them with prefix-matching
-        // before the literal-key branches so the rest of the parser
-        // remains a clean if/else chain.
+        // The client_rate_limits.per_ip, .per_user and .tier maps are keyed
+        // by request target prefix (e.g. "/_matrix/client/v3/login") or tier
+        // name, both of which contain '/' or '_' characters. We handle them
+        // with prefix-matching before the literal-key branches so the rest
+        // of the parser remains a clean if/else chain.
         if (starts_with(key, "client_rate_limits.per_ip."))
         {
             auto const target = std::string{key.substr(std::string_view{"client_rate_limits.per_ip."}.size())};
@@ -75,6 +75,30 @@ namespace
             else
             {
                 client_rate_limits.per_user[target] = *policy;
+            }
+            return;
+        }
+        if (starts_with(key, "client_rate_limits.tier."))
+        {
+            // Tier names are validated against the engine's tier table so a
+            // typo (e.g. client_rate_limits.tier.login) becomes a parse
+            // finding instead of a silently ignored key.
+            auto const name = key.substr(std::string_view{"client_rate_limits.tier."}.size());
+            auto const policy = parse_rate_limit_policy(value);
+            if (!http::rate_limit_tier_from_name(name).has_value())
+            {
+                add_parse_finding(findings, std::string{key},
+                                  "unknown rate-limit tier; expected one of auth_sensitive, media, sync, federation, "
+                                  "admin, generic");
+            }
+            else if (!policy.has_value())
+            {
+                add_parse_finding(findings, std::string{key},
+                                  "expected rate-limit policy of the form N/Ns (e.g. 20/60s)");
+            }
+            else
+            {
+                client_rate_limits.tier[std::string{name}] = *policy;
             }
             return;
         }
@@ -618,6 +642,19 @@ namespace
             else
             {
                 security.federation.per_origin_edu_rate = *policy;
+            }
+        }
+        else if (key == "security.federation.per_origin_request_rate")
+        {
+            auto const policy = parse_rate_limit_policy(value);
+            if (!policy.has_value())
+            {
+                add_parse_finding(findings, std::string{key},
+                                  "expected rate-limit policy of the form N/Ns (e.g. 600/60s)");
+            }
+            else
+            {
+                security.federation.per_origin_request_rate = *policy;
             }
         }
         else if (key == "security.federation.remote_timeout")

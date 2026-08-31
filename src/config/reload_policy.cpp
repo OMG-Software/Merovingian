@@ -40,7 +40,8 @@ auto reload_policy_for_key(std::string_view key) noexcept -> ReloadPolicy
     // `merovingian-server --plan-config-reload a.conf b.conf` will see the
     // `restart_required` flag for any change to these blocks).
     if (key == "client_rate_limits.default_per_ip" || starts_with(key, "client_rate_limits.per_ip.") ||
-        starts_with(key, "client_rate_limits.per_user.") || starts_with(key, "log_modules."))
+        starts_with(key, "client_rate_limits.per_user.") || starts_with(key, "client_rate_limits.tier.") ||
+        starts_with(key, "log_modules."))
     {
         return ReloadPolicy::restart_required;
     }

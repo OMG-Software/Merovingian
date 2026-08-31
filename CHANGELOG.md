@@ -40,6 +40,35 @@ production gates. This section is updated as each closure lands.
   sequential requests over one real connection (plain and TLS), body-drain
   framing across a pipelined send, `Connection: close` honouring, idle-window
   expiry, and the parked-connection cap.
+- **Production-grade rate limiting (tiered policies).** Every client-server
+  route is now classified into one of six explicit tiers in
+  `http::rate_limit_tier_for()` (`src/http/rate_limit.cpp`) — one greppable
+  prefix table: `auth_sensitive` (/login, /register, /refresh and the
+  */requestToken family, 20/min), `media` (20/min), `sync` (90/min),
+  `federation` routes on the client listener (120/min), `admin` (30/min) and
+  `generic` (90/min via the operator-tunable `client_rate_limits.default_per_ip`).
+  Per-IP resolution is most-specific-first: an operator per-prefix override
+  (`client_rate_limits.per_ip.*`) beats an operator tier override
+  (`client_rate_limits.tier.<name>`, validated against the tier table so a
+  typo is a parse finding), which beats a built-in per-endpoint refinement
+  (keys/devices 30/min, search 20/min), which beats the tier default.
+  Unauthenticated routes are bucketed per remote IP — the
+  credential/enumeration surface now gets the tighter `auth_sensitive` cap
+  instead of the generic fallback. A misconfigured entry at any level resolves
+  to "invalid_policy" and the request is denied, so a bad operator value can
+  never silently mean "no limit" (fail-closed, issue #412). Inbound
+  federation gains a per-origin cap on requests OUTSIDE /send (query,
+  backfill, membership, key and state endpoints) — keyed by the X-Matrix
+  verified origin, tunable via `security.federation.per_origin_request_rate`
+  (default 600/min); /send keeps its weighted transaction/PDU/EDU trio so a
+  transaction and its contents are never double-counted. Tier keys are
+  `restart_required` in the config-reload plan, matching the rest of the
+  rate-limit block. New unit scenarios in
+  `tests/unit/test_http_rate_limit_tiers.cpp` cover the classification table,
+  tier-name round-trip, tier defaults, override precedence and the
+  fail-closed path; new conformance scenario asserts the 429 error shape;
+  new integration scenario serves a 429 mid-pipeline on a kept-alive
+  connection and recovery after the window.
 
 ## 0.11.13
 

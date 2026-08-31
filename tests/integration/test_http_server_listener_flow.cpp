@@ -872,6 +872,89 @@ SCENARIO("merovingian-server drains a request body exactly before serving the ne
     }
 }
 
+SCENARIO("merovingian-server rate limits a route per IP, answers 429 on the kept-alive connection, then recovers",
+         "[homeserver][http][listener][rate-limit][keep-alive][integration]")
+{
+    GIVEN("a runtime with a 2-requests-per-second cap on the versions endpoint and a loopback HTTP listener")
+    {
+        // A one-second window keeps the in-test recovery wait short while
+        // still exercising the same wall-clock rollover the 60s defaults use.
+        auto rate_limits = merovingian::config::ClientRateLimitsConfig{};
+        rate_limits.per_ip["/_matrix/client/versions"] = {2U, 1U};
+        auto security = merovingian::config::SecurityConfig{};
+        merovingian::tests::enable_token_registration(security);
+        auto const config = merovingian::config::Config{
+            merovingian::config::ServerConfig{},
+            merovingian::config::ListenersConfig{},
+            merovingian::config::DatabaseConfig{},
+            security,
+            std::move(rate_limits),
+            merovingian::config::LogModulesConfig{},
+        };
+        auto runtime_result = merovingian::homeserver::start_client_server(config);
+        REQUIRE(runtime_result.started);
+
+        auto acceptor = merovingian::net::TcpAcceptor{};
+        REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+        auto const port = acceptor.bound_port();
+        REQUIRE(port > 0U);
+
+        auto shutdown = merovingian::net::ShutdownSignal{};
+        auto stats = merovingian::homeserver::HttpServeStats{};
+        auto pool = merovingian::net::ThreadPool{4U};
+        auto runtime = std::move(runtime_result.runtime);
+
+        WHEN("a client issues three requests over one persistent connection, waits out the window, then retries")
+        {
+            auto server_thread = std::thread{[&]() {
+                merovingian::homeserver::serve_http(acceptor, runtime, shutdown, stats,
+                                                    merovingian::homeserver::HttpDispatchMode::client_server, pool);
+            }};
+
+            auto const client_fd = connect_loopback(port);
+            REQUIRE(client_fd >= 0);
+            auto reader = PlainResponseReader{};
+            auto const request = std::string{"GET /_matrix/client/versions HTTP/1.1\r\nHost: localhost\r\n\r\n"};
+
+            REQUIRE(send_all(client_fd, request));
+            auto const first_response = receive_response(client_fd, reader);
+            REQUIRE(send_all(client_fd, request));
+            auto const second_response = receive_response(client_fd, reader);
+            REQUIRE(send_all(client_fd, request));
+            auto const throttled_response = receive_response(client_fd, reader);
+
+            // The 429 must NOT tear down the keep-alive connection: the
+            // framing decision is per request round and status-independent.
+            REQUIRE(throttled_response.find("Connection: keep-alive") != std::string::npos);
+
+            // The 1s window has rolled by the time this fires, so the next
+            // round is served normally on the same connection.
+            std::this_thread::sleep_for(std::chrono::milliseconds{1200});
+            REQUIRE(send_all(client_fd, request));
+            auto const recovered_response = receive_response(client_fd, reader);
+            ::close(client_fd);
+
+            shutdown.fire();
+            server_thread.join();
+
+            THEN("the third round is a 429 with the spec error shape and the fourth is served after the window")
+            {
+                REQUIRE(first_response.starts_with("HTTP/1.1 200"));
+                REQUIRE(second_response.starts_with("HTTP/1.1 200"));
+                REQUIRE(throttled_response.starts_with("HTTP/1.1 429"));
+                REQUIRE(throttled_response.find("M_LIMIT_EXCEEDED") != std::string::npos);
+                REQUIRE(throttled_response.find("retry_after_ms") != std::string::npos);
+                REQUIRE(throttled_response.find("Retry-After:") != std::string::npos);
+                REQUIRE(recovered_response.starts_with("HTTP/1.1 200"));
+                // Everything above ran as request rounds on ONE accepted
+                // connection: the 429 never forced a reconnect.
+                REQUIRE(stats.accepted_connections == 1U);
+                REQUIRE(stats.completed_requests >= 4U);
+            }
+        }
+    }
+}
+
 SCENARIO("merovingian-server honours a client Connection close request and closes after the response",
          "[homeserver][http][listener][keep-alive][integration]")
 {
