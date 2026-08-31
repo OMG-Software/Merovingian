@@ -13112,10 +13112,15 @@ SCENARIO("GET /v1/rooms/{roomId}/hierarchy conformance")
 // ============================================================================
 // 21     Third-party lookup
 // ============================================================================
-// Spec: Matrix v1.19 §third party networks
-//       GET /thirdparty/protocols is implemented and returns a (possibly empty)
-//       protocol map. The location/{protocol} and user/{protocol} lookups remain
-//       unimplemented and return 404 M_UNRECOGNIZED.
+// Spec: Matrix v1.19 §third party networks. All six lookups are implemented
+//       (src/appservice/appservice_client.cpp's query_thirdparty_* methods,
+//       routed in client_server.cpp) — see tests/conformance/
+//       test_appservice_thirdparty_conformance.cpp for the full surface. The
+//       two scenarios below cover the specific "protocol name nobody
+//       registered declares" case: 404 M_NOT_FOUND, per spec ("The protocol
+//       is unknown." / "No portal rooms were found." / "The Matrix User ID
+//       was not found.") — never the generic route-not-found M_UNRECOGNIZED
+//       these used to assert back when the routes were entirely unrouted.
 
 // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3thirdpartyprotocols
 //
@@ -13149,9 +13154,9 @@ SCENARIO("GET /thirdparty/protocols returns a 200 JSON object", "[conformance][c
     }
 }
 
-SCENARIO("GET /thirdparty/location/{protocol} conformance")
+SCENARIO("GET /thirdparty/location/{protocol} conformance", "[conformance][client-server][thirdparty]")
 {
-    GIVEN("a started homeserver with an authenticated user")
+    GIVEN("a started homeserver with an authenticated user and no registered appservices")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
@@ -13162,21 +13167,24 @@ SCENARIO("GET /thirdparty/location/{protocol} conformance")
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"GET", "/_matrix/client/v3/thirdparty/location/irc", token, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED")
+            THEN("the server returns 404 M_NOT_FOUND — 'irc' is an unknown protocol, not an unrouted path")
             {
+                // Spec MUST: 404 | "No portal rooms were found." — a
+                // protocol no registered appservice declares is a strict
+                // subset of that.
                 REQUIRE(response.response.status == 404);
                 auto const body = parse_object(response.response.body);
                 auto const* err = string_member(body, "errcode");
                 REQUIRE(err != nullptr);
-                REQUIRE(*err == "M_UNRECOGNIZED");
+                REQUIRE(*err == "M_NOT_FOUND");
             }
         }
     }
 }
 
-SCENARIO("GET /thirdparty/user/{protocol} conformance")
+SCENARIO("GET /thirdparty/user/{protocol} conformance", "[conformance][client-server][thirdparty]")
 {
-    GIVEN("a started homeserver with an authenticated user")
+    GIVEN("a started homeserver with an authenticated user and no registered appservices")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
@@ -13187,13 +13195,16 @@ SCENARIO("GET /thirdparty/user/{protocol} conformance")
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"GET", "/_matrix/client/v3/thirdparty/user/irc", token, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED")
+            THEN("the server returns 404 M_NOT_FOUND — 'irc' is an unknown protocol, not an unrouted path")
             {
+                // Spec MUST: 404 | "The Matrix User ID was not found." — a
+                // protocol no registered appservice declares is a strict
+                // subset of that.
                 REQUIRE(response.response.status == 404);
                 auto const body = parse_object(response.response.body);
                 auto const* err = string_member(body, "errcode");
                 REQUIRE(err != nullptr);
-                REQUIRE(*err == "M_UNRECOGNIZED");
+                REQUIRE(*err == "M_NOT_FOUND");
             }
         }
     }
