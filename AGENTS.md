@@ -49,6 +49,69 @@ The most secure Matrix Protocol homeserver ever created. Secure by design, imple
 - Make the correct change for the ask, not the smallest.
 - Update `CHANGELOG.md` on every change.
 
+## Delegating Work to Subagents
+
+**Default to delegating. Do the thinking; make subagents do the reading.**
+
+Exploration, code reading, searching, file-by-file analysis, and routine code
+writing are bulk work. They consume the orchestrating model's context without
+needing its judgement, and context spent reading is context unavailable for
+reasoning. Hand them to subagents.
+
+- **Run subagents on a lower tier.** Grepping a module, summarising a file,
+  applying a mechanical change, or drafting tests from a clear brief does not
+  need a frontier model. Reserve the expensive model for the orchestrator.
+- **Delegate**: locating code, tracing call chains, summarising modules,
+  auditing which endpoints exist, mechanical refactors, renames, applying a
+  decided-upon change across many files, drafting tests from a stated
+  behaviour.
+- **Keep for yourself**: what the change should be, whether the spec says what
+  someone claims it says, security-relevant decisions, lock and concurrency
+  correctness, migration numbering and ordering, and every judgement about
+  whether reported work is actually done.
+- **Prefer many small delegations to one large one.** A brief with a single
+  clear deliverable comes back usable; an open-ended one comes back as an
+  essay.
+
+### Writing a brief
+
+A subagent starts cold with none of your context. A brief that assumes shared
+context produces work against the wrong assumptions, and you will not notice
+until you read the diff.
+
+- State the file paths, the spec section, and the acceptance criterion.
+- Name the binding rules explicitly: the spec is the authority, tests first in
+  GIVEN/WHEN/THEN, RAII, no raw pointers, `std::ignore` not `(void)`.
+- Say which branch to base on and confirm it is the current tip. Work started
+  from a stale base is re-verified from scratch or thrown away.
+- Tell it to commit at every coherent boundary. Uncommitted work in a subagent
+  worktree is lost when the agent stops, and agents stop for reasons that have
+  nothing to do with the task.
+
+### Verifying delegated work
+
+A subagent's report is a claim, not evidence. These failure modes are observed,
+not hypothetical — each has already produced a "complete, all tests passing"
+report over work that was broken:
+
+- **"Tests pass" from a run the agent never read.** Read the `Ok:` / `Fail:` /
+  `Timeout:` counts out of `build-wsl/meson-logs/testlog.txt` yourself.
+- **A green suite that never ran the new tests.** Confirm with a tag filter
+  against the test binary — see "Verifying Work" below.
+- **A sanitizer or tool run that aborted at startup** and was reported as clean
+  because it emitted no findings. No findings from a process that died is not a
+  pass.
+- **Confidently documented decisions that are wrong.** A subagent will write a
+  clear rationale for an incorrect choice and test thoroughly against its own
+  assumption. Check the assumption against the spec, not against its tests.
+- **Two subagents solving the same problem incompatibly** — duplicate migration
+  numbers, competing modules, conflicting types. Check for collisions across
+  parallel work before merging any of it.
+
+Read the diff of anything security-relevant, concurrency-related, or touching a
+migration. Delegation saves you reading the whole codebase; it does not save you
+reading the change.
+
 ## Verifying Work
 
 Claims about tests are only worth what they were checked against. These rules exist
