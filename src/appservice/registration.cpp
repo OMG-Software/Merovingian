@@ -441,6 +441,48 @@ namespace
             }
         }
     }
+
+    // Reports a namespace pattern claimed by two different registrations when
+    // at least one of them claims it exclusively.
+    //
+    // Spec v1.19: an exclusive namespace means no other user, alias or room in
+    // it may be created by anyone else. Two registrations claiming the same
+    // pattern — or one claiming exclusively what another also claims — is
+    // unsatisfiable: whichever the registry consults first silently wins and
+    // the other's exclusivity is quietly not honoured.
+    //
+    // Detection is deliberately conservative: it compares pattern strings, so
+    // two *different* regexes that happen to match overlapping identifiers are
+    // NOT reported. Deciding regex intersection in general is not something a
+    // boot-time check can do, and a false "conflict" that refuses to start a
+    // correct deployment would be worse than the gap. This catches the
+    // realistic operator error: two bridges shipping the same pattern.
+    auto report_exclusive_namespace_conflicts(std::vector<Namespace> const& first,
+                                              std::vector<Namespace> const& second, std::string_view kind,
+                                              std::string_view first_id, std::string_view second_id,
+                                              std::vector<AppserviceRegistrationFinding>& findings) -> void
+    {
+        for (auto const& left : first)
+        {
+            for (auto const& right : second)
+            {
+                if (left.regex != right.regex)
+                {
+                    continue;
+                }
+                if (!left.exclusive && !right.exclusive)
+                {
+                    // Two non-exclusive claims on the same pattern are legal:
+                    // neither excludes the other.
+                    continue;
+                }
+                findings.push_back({std::string{second_id}, "namespaces." + std::string{kind} + " pattern '" +
+                                                                left.regex + "' conflicts with appservice '" +
+                                                                std::string{first_id} +
+                                                                "', which claims it exclusively"});
+            }
+        }
+    }
 } // namespace
 
 auto validate_registrations(std::vector<AppserviceRegistration> const& registrations)
@@ -473,6 +515,13 @@ auto validate_registrations(std::vector<AppserviceRegistration> const& registrat
                 findings.push_back(
                     {registrations[j].id, "duplicate as_token shared with appservice '" + registrations[i].id + "'"});
             }
+            report_exclusive_namespace_conflicts(registrations[i].namespaces.users, registrations[j].namespaces.users,
+                                                 "users", registrations[i].id, registrations[j].id, findings);
+            report_exclusive_namespace_conflicts(registrations[i].namespaces.aliases,
+                                                 registrations[j].namespaces.aliases, "aliases", registrations[i].id,
+                                                 registrations[j].id, findings);
+            report_exclusive_namespace_conflicts(registrations[i].namespaces.rooms, registrations[j].namespaces.rooms,
+                                                 "rooms", registrations[i].id, registrations[j].id, findings);
         }
     }
 

@@ -677,3 +677,95 @@ SCENARIO("an inline namespace value is accepted only when it is an empty list",
         }
     }
 }
+
+namespace
+{
+    [[nodiscard]] auto registration_doc(std::string_view id, std::string_view localpart, std::string_view token,
+                                        std::string_view user_regex, bool exclusive) -> std::string
+    {
+        return std::string{"id: \""} + std::string{id} +
+               "\"\n"
+               "url: \"http://127.0.0.1:1234\"\n"
+               "as_token: \"" +
+               std::string{token} +
+               "\"\n"
+               "hs_token: \"hs-" +
+               std::string{token} +
+               "\"\n"
+               "sender_localpart: \"" +
+               std::string{localpart} +
+               "\"\n"
+               "namespaces:\n"
+               "  users:\n"
+               "    - exclusive: " +
+               (exclusive ? "true" : "false") +
+               "\n"
+               "      regex: \"" +
+               std::string{user_regex} +
+               "\"\n"
+               "  rooms: []\n";
+    }
+
+    [[nodiscard]] auto parsed(std::string const& document) -> merovingian::appservice::AppserviceRegistration
+    {
+        auto result = merovingian::appservice::parse_registration_yaml(document);
+        REQUIRE(result.value.has_value());
+        return std::move(*result.value);
+    }
+} // namespace
+
+SCENARIO("two appservices cannot both claim the same exclusive namespace",
+         "[appservice][registration][security]")
+{
+    GIVEN("two registrations whose user namespaces use the identical pattern")
+    {
+        // Matrix v1.19 Application Service API, "Registration": an exclusive
+        // namespace means no other user may occupy it. Two appservices both
+        // claiming `@_bridge_.*` exclusively is unsatisfiable — whichever the
+        // registry consults first silently wins, and the other's exclusivity
+        // guarantee is quietly not honoured.
+        WHEN("both declare it exclusive")
+        {
+            auto registrations = std::vector<merovingian::appservice::AppserviceRegistration>{};
+            registrations.push_back(parsed(registration_doc("irc", "_irc_bot", "tok-a", "@_bridge_.*", true)));
+            registrations.push_back(parsed(registration_doc("xmpp", "_xmpp_bot", "tok-b", "@_bridge_.*", true)));
+
+            auto const findings = merovingian::appservice::validate_registrations(registrations);
+
+            THEN("the conflict is reported")
+            {
+                REQUIRE_FALSE(findings.empty());
+            }
+        }
+
+        WHEN("only one declares it exclusive")
+        {
+            auto registrations = std::vector<merovingian::appservice::AppserviceRegistration>{};
+            registrations.push_back(parsed(registration_doc("irc", "_irc_bot", "tok-a", "@_bridge_.*", true)));
+            registrations.push_back(parsed(registration_doc("xmpp", "_xmpp_bot", "tok-b", "@_bridge_.*", false)));
+
+            THEN("it is still a conflict, because exclusivity excludes the other claim too")
+            {
+                auto const findings = merovingian::appservice::validate_registrations(registrations);
+                REQUIRE_FALSE(findings.empty());
+            }
+        }
+    }
+
+    GIVEN("two registrations with disjoint namespaces")
+    {
+        auto registrations = std::vector<merovingian::appservice::AppserviceRegistration>{};
+        registrations.push_back(parsed(registration_doc("irc", "_irc_bot", "tok-a", "@_irc_.*", true)));
+        registrations.push_back(parsed(registration_doc("xmpp", "_xmpp_bot", "tok-b", "@_xmpp_.*", true)));
+
+        WHEN("they are validated")
+        {
+            auto const findings = merovingian::appservice::validate_registrations(registrations);
+
+            THEN("no conflict is reported")
+            {
+                REQUIRE(findings.empty());
+            }
+        }
+    }
+}
