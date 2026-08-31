@@ -535,3 +535,41 @@ SCENARIO("registration_interested_in_room_event matches per the spec's namespace
         }
     }
 }
+
+SCENARIO("a namespace regex claims whole identifiers, not substrings", "[appservice][registration][security]")
+{
+    GIVEN("an exclusive namespace using the spec's reserved-prefix example pattern")
+    {
+        // Matrix v1.19 Application Service API, "Registration": `regex` is
+        // "A POSIX regular expression defining which values this namespace
+        // includes" — a namespace is a claim over an identifier, so the
+        // pattern must match the whole value. An unanchored search would let
+        // `@_irc_.*` also claim any user id that merely CONTAINS it, letting
+        // one appservice's exclusive namespace swallow unrelated users.
+        auto const pattern = std::string_view{"@_irc_.*"};
+
+        WHEN("the value is an identifier the pattern genuinely covers")
+        {
+            THEN("it matches")
+            {
+                REQUIRE(merovingian::appservice::namespace_matches(pattern, "@_irc_bob:example.org"));
+            }
+        }
+
+        WHEN("the pattern appears only as a substring of an unrelated identifier")
+        {
+            THEN("it does not match")
+            {
+                REQUIRE_FALSE(merovingian::appservice::namespace_matches(pattern, "@evil@_irc_bob:example.org"));
+            }
+        }
+
+        WHEN("the value shares only a prefix of the pattern")
+        {
+            THEN("it does not match")
+            {
+                REQUIRE_FALSE(merovingian::appservice::namespace_matches(pattern, "@_ir:example.org"));
+            }
+        }
+    }
+}

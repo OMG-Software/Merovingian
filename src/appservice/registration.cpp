@@ -109,7 +109,14 @@ auto namespace_matches(std::string_view pattern, std::string_view value) noexcep
     try
     {
         auto const compiled = std::regex{pattern.begin(), pattern.end(), std::regex::extended};
-        return std::regex_search(value.begin(), value.end(), compiled);
+        // regex_match, not regex_search: the spec defines `regex` as "a POSIX
+        // regular expression defining which values this namespace includes",
+        // i.e. a claim over a whole identifier. An unanchored search would let
+        // the spec's own example pattern `@_irc_.*` also claim
+        // `@evil@_irc_bob:example.org`, so one appservice's *exclusive*
+        // namespace could swallow unrelated local users and block their
+        // registration.
+        return std::regex_match(value.begin(), value.end(), compiled);
     }
     catch (std::regex_error const&)
     {
