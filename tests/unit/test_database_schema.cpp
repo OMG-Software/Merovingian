@@ -497,7 +497,12 @@ SCENARIO("login_tokens (v12) migrates cleanly from an existing database already 
 {
     GIVEN("a database already migrated to the previous schema version (v11, pre-SSO)")
     {
-        auto const previous_version = merovingian::database::current_schema_version() - 1U;
+        // Pinned, not derived from current_schema_version(): this scenario is
+        // about migration 012 specifically, so it must keep testing the v11 -> v12
+        // step as later migrations are added. Deriving `current - 1` silently
+        // retargeted it at v12 -> v13 the moment 013 landed.
+        auto const previous_version = std::uint32_t{11U};
+        auto const login_tokens_version = std::uint32_t{12U};
         auto const bootstrap_plan = merovingian::database::migration_plan_between(0U, previous_version);
         auto const bootstrapped =
             merovingian::database::apply_migration_plan(merovingian::database::SchemaState{}, bootstrap_plan);
@@ -506,10 +511,10 @@ SCENARIO("login_tokens (v12) migrates cleanly from an existing database already 
         REQUIRE_FALSE(std::ranges::find(bootstrapped.state.tables, std::string{"login_tokens"}) !=
                       bootstrapped.state.tables.end());
 
-        WHEN("the incremental upgrade to the current (SSO) schema version is planned and applied")
+        WHEN("the incremental upgrade to the SSO schema version (v12) is planned and applied")
         {
-            auto const upgrade_plan = merovingian::database::migration_plan_between(
-                previous_version, merovingian::database::current_schema_version());
+            auto const upgrade_plan =
+                merovingian::database::migration_plan_between(previous_version, login_tokens_version);
             auto const upgraded = merovingian::database::apply_migration_plan(bootstrapped.state, upgrade_plan);
 
             THEN("exactly the login_tokens step is applied and the table now exists")
@@ -519,7 +524,7 @@ SCENARIO("login_tokens (v12) migrates cleanly from an existing database already 
                 REQUIRE(upgrade_plan.steps.front().name == "login_tokens");
                 REQUIRE(merovingian::database::migration_plan_is_valid(upgrade_plan).valid);
                 REQUIRE(upgraded.ok);
-                REQUIRE(upgraded.state.version == merovingian::database::current_schema_version());
+                REQUIRE(upgraded.state.version == login_tokens_version);
                 REQUIRE(std::ranges::find(upgraded.state.tables, std::string{"login_tokens"}) !=
                         upgraded.state.tables.end());
             }

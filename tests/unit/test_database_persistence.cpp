@@ -1069,24 +1069,6 @@ SCENARIO("Database migration runner applies the current schema and the matching 
                 REQUIRE(second_plan.steps.empty());
                 REQUIRE(downgrade_plan.direction == merovingian::database::MigrationDirection::downgrade);
                 REQUIRE(downgrade_plan.steps.size() == 13U);
-                // Downgrade walks v12->v0; the login_tokens table drops
-                // first, then the pushers_data_extra column, then the
-                // openid_tokens table, then notifications, then pushers,
-                // then the account_threepids column drop must precede the
-                // account_threepids table drop.
-                REQUIRE(downgrade_plan.steps[0].name == "drop_login_tokens");
-                REQUIRE(downgrade_plan.steps[1].name == "drop_pushers_data_extra");
-                REQUIRE(downgrade_plan.steps[2].name == "drop_openid_tokens");
-                REQUIRE(downgrade_plan.steps[3].name == "drop_notifications");
-                REQUIRE(downgrade_plan.steps[4].name == "drop_pushers");
-                REQUIRE(downgrade_plan.steps[5].name == "drop_account_threepids_columns");
-                REQUIRE(downgrade_plan.steps[6].name == "drop_account_threepids");
-                REQUIRE(downgrade_plan.steps[7].name == "drop_backfill_state_transitions");
-                REQUIRE(downgrade_plan.steps[8].name == "drop_state_transitions");
-                REQUIRE(downgrade_plan.steps[9].name == "drop_event_stream_watermark");
-                REQUIRE(downgrade_plan.steps[10].name == "drop_sync_stream_watermark");
-                REQUIRE(downgrade_plan.steps[11].name == "drop_initial_schema");
-                REQUIRE(downgrade_plan.steps.size() == 13U);
                 // Downgrade walks v13->v0; the appservice_txn_cursor table
                 // drops first, then login_tokens, then the
                 // pushers_data_extra column, then the openid_tokens table,
@@ -1958,7 +1940,7 @@ SCENARIO("Database schema inventory covers the core Matrix tables", "[database][
                 // no tables.
                 REQUIRE(tables.size() == 45U);
                 REQUIRE(merovingian::database::current_schema_version() == 13U);
-                REQUIRE(merovingian::database::current_schema_tables().size() == 53U);
+                REQUIRE(merovingian::database::current_schema_tables().size() == 54U);
                 // data_extra_json column onto pushers (no new table),
                 // migration v12 adds the login_tokens table (a sibling
                 // branch's SSO login work, registered here only for

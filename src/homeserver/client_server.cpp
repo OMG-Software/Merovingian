@@ -9176,6 +9176,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     {
         auto flows = canonicaljson::Array{};
         flows.emplace_back(json_obj({json_member("type", json_str("m.login.password"))}));
+        // Matrix v1.19 Application Service API §"Server admin style
+        // permissions". Usable only by a request presenting a valid
+        // as_token; harmless to advertise unconditionally, mirroring
+        // m.login.password's advertisement.
+        flows.emplace_back(json_obj({json_member("type", json_str("m.login.application_service"))}));
         // Matrix v1.19 CS API §"Client login via SSO": advertise m.login.sso
         // only when server.sso.* is fully configured (sso_is_configured
         // shares the same fail-closed condition the redirect endpoints use
@@ -9252,20 +9257,6 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         auto response = LocalHttpResponse{result.status, {}, {{"Location", result.location}}};
         apply_cors_headers(req, response, rt.cors);
         return DispatchResult{DispatchResult::Status::complete, std::move(response), {}};
-        return dispatch_resp(
-            req, rt, 200U,
-            json_serialize(json_obj({
-                json_member("flows", json_arr({
-                                         json_obj({json_member("type", json_str("m.login.password"))}),
-                                         // Matrix v1.19 Application Service API
-                                         // §"Server admin style permissions". Usable
-                                         // only by a request presenting a valid
-                                         // as_token; harmless to advertise
-                                         // unconditionally, mirroring
-                                         // m.login.password's advertisement.
-                                         json_obj({json_member("type", json_str("m.login.application_service"))}),
-                                     })),
-            })));
     }
     if (req.method == "POST" && req.target == "/_matrix/client/v3/login")
     {
