@@ -8468,9 +8468,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                             rate_limit_decision.retry_after_ms);
     }
     auto call_local = [&](LocalHttpRequest const& inner) {
-        guard.unlock();
-        auto response = handle_local_http_request(rt.homeserver, inner);
-        guard.lock();
+        auto response = [&] {
+            auto const released = merovingian::homeserver::ScopedGuardRelease{guard};
+            return handle_local_http_request(rt.homeserver, inner);
+        }();
         return response;
     };
 
@@ -8549,10 +8550,14 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             auto const since_sv = since.has_value() ? std::optional<std::string_view>{*since} : std::nullopt;
             auto const tx = federation::make_outbound_transaction(
                 *server_param, "GET", public_rooms_fed_target(limit, since_sv), our_server, {});
-            guard.unlock();
-            auto const [ok, body] =
-                perform_sync_outbound_call(rt.homeserver, {}, tx, key_id, secret, "public_rooms.proxy",
+            auto const [ok, body] = [&] {
+                // Re-acquire before returning: dispatch_resp/dispatch_err read
+                // reloadable runtime state (rt.cors), and every other return path
+                // from this handler leaves the guard held.
+                auto const released = merovingian::homeserver::ScopedGuardRelease{guard};
+                return perform_sync_outbound_call(rt.homeserver, {}, tx, key_id, secret, "public_rooms.proxy",
                                            rt.homeserver.federation.config.remote_timeout_seconds);
+            }();
             if (!ok)
                 return dispatch_err(req, rt, 502U, "M_UNKNOWN", "Failed to fetch public rooms from remote server");
             return dispatch_resp(req, rt, 200U, body);
@@ -8622,10 +8627,14 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
             auto const tx = federation::make_outbound_transaction(
                 *server_param, fed_method, public_rooms_fed_target(limit, opt_since), our_server, fed_body);
-            guard.unlock();
-            auto const [ok, body] =
-                perform_sync_outbound_call(rt.homeserver, {}, tx, key_id, secret, "public_rooms.proxy",
+            auto const [ok, body] = [&] {
+                // Re-acquire before returning: dispatch_resp/dispatch_err read
+                // reloadable runtime state (rt.cors), and every other return path
+                // from this handler leaves the guard held.
+                auto const released = merovingian::homeserver::ScopedGuardRelease{guard};
+                return perform_sync_outbound_call(rt.homeserver, {}, tx, key_id, secret, "public_rooms.proxy",
                                            rt.homeserver.federation.config.remote_timeout_seconds);
+            }();
             if (!ok)
                 return dispatch_err(req, rt, 502U, "M_UNKNOWN", "Failed to fetch public rooms from remote server");
             return dispatch_resp(req, rt, 200U, body);
@@ -8650,10 +8659,14 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                 core::percent_encode_path_component(room_alias);
             auto const tx =
                 federation::make_outbound_transaction(std::string{alias_server}, "GET", target, our_server, {});
-            guard.unlock();
-            auto const [ok, body] =
-                perform_sync_outbound_call(rt.homeserver, {}, tx, key_id, secret, "directory.room.proxy",
+            auto const [ok, body] = [&] {
+                // Re-acquire before returning: dispatch_resp/dispatch_err read
+                // reloadable runtime state (rt.cors), and every other return path
+                // from this handler leaves the guard held.
+                auto const released = merovingian::homeserver::ScopedGuardRelease{guard};
+                return perform_sync_outbound_call(rt.homeserver, {}, tx, key_id, secret, "directory.room.proxy",
                                            rt.homeserver.federation.config.remote_timeout_seconds);
+            }();
             if (!ok)
             {
                 return dispatch_err(req, rt, 502U, "M_UNKNOWN", "Failed to resolve room alias on remote server");
@@ -10463,9 +10476,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
             auto client = appservice::AppserviceClient{*outbound_client, *cached_discovery};
             auto const* owner_ptr = owner;
-            guard.unlock();
-            auto const result = client.query_thirdparty_protocol(*owner_ptr, protocol_name);
-            guard.lock();
+            auto const result = [&] {
+                auto const released = merovingian::homeserver::ScopedGuardRelease{guard};
+                return client.query_thirdparty_protocol(*owner_ptr, protocol_name);
+            }();
             if (!result.ok || !result.found)
             {
                 return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "unknown third-party protocol");
@@ -11065,9 +11079,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         // the local-router delegation, so create_room's own guard is the
         // only one active and its own RequestLockScope publication is what
         // NetworkIoUnlock sees.
-        guard.unlock();
-        auto const create_result = create_room(rt.homeserver, req.access_token, options);
-        guard.lock();
+        auto const create_result = [&] {
+            auto const released = merovingian::homeserver::ScopedGuardRelease{guard};
+            return create_room(rt.homeserver, req.access_token, options);
+        }();
         if (!create_result.ok)
         {
             auto errcode = error_code_for_status(create_result.status);
@@ -12533,9 +12548,10 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             upgrade_options.creation_content.push_back(json_member("predecessor", json_obj(std::move(predecessor))));
             // See the createRoom route above for why the outer guard must be
             // released before calling create_room (which self-locks).
-            guard.unlock();
-            auto const create_result = create_room(rt.homeserver, req.access_token, upgrade_options);
-            guard.lock();
+            auto const create_result = [&] {
+                auto const released = merovingian::homeserver::ScopedGuardRelease{guard};
+                return create_room(rt.homeserver, req.access_token, upgrade_options);
+            }();
             if (!create_result.ok)
             {
                 return dispatch_err(req, rt, create_result.status, error_code_for_status(create_result.status),
@@ -12737,11 +12753,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                     core::percent_encode_path_component(decoded_room_segment);
                 auto const tx =
                     federation::make_outbound_transaction(std::string{alias_server}, "GET", target, our_server, {});
-                guard.unlock();
-                auto const [ok, body] =
-                    perform_sync_outbound_call(rt.homeserver, {}, tx, key_id, secret, "room.join.alias_lookup_failed",
-                                               rt.homeserver.federation.config.remote_timeout_seconds);
-                guard.lock();
+                auto const [ok, body] = [&] {
+                    auto const released = merovingian::homeserver::ScopedGuardRelease{guard};
+                    return perform_sync_outbound_call(rt.homeserver, {}, tx, key_id, secret, "room.join.alias_lookup_failed",
+                                                   rt.homeserver.federation.config.remote_timeout_seconds);
+                }();
                 if (!ok)
                 {
                     return dispatch_err(req, rt, 502U, "M_UNKNOWN", "Failed to resolve room alias on remote server");

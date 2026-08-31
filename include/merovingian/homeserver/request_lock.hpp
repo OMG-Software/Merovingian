@@ -71,4 +71,42 @@ private:
     std::unique_lock<std::recursive_mutex>* released_{nullptr};
 };
 
+
+// Releases a guard the caller holds directly for the lifetime of the scope and
+// re-acquires it on exit, including when the guarded call throws.
+//
+// This is the counterpart to NetworkIoUnlock for the case where the lock
+// object is in hand rather than published: the caller must release its *own*
+// outer guard before calling a function that takes runtime.mutex itself (a
+// recursive mutex means a nested acquisition would otherwise keep the mutex
+// held across the inner call's blocking work). Those sites were written as a
+// bare `guard.unlock(); f(); guard.lock();` triple, which never re-acquires if
+// `f()` throws or if control leaves the region early — the request then
+// continues, and the next request on this thread runs, with the runtime's
+// locking invariant silently broken.
+//
+// Use this rather than NetworkIoUnlock whenever the guard to release is the
+// local one: NetworkIoUnlock acts on the thread's *published* guard, which at
+// a nested call site is not necessarily the same object.
+class ScopedGuardRelease final
+{
+public:
+    explicit ScopedGuardRelease(std::unique_lock<std::recursive_mutex>& guard) noexcept;
+
+    // Re-acquires the guard released by the constructor. As with
+    // NetworkIoUnlock, a failure to re-acquire leaves the locking invariant
+    // broken with no way to signal it from a destructor, so the resulting
+    // exception terminates rather than letting the caller continue
+    // unsynchronised.
+    ~ScopedGuardRelease();
+
+    ScopedGuardRelease(ScopedGuardRelease const&) = delete;
+    auto operator=(ScopedGuardRelease const&) -> ScopedGuardRelease& = delete;
+    ScopedGuardRelease(ScopedGuardRelease&&) = delete;
+    auto operator=(ScopedGuardRelease&&) -> ScopedGuardRelease& = delete;
+
+private:
+    std::unique_lock<std::recursive_mutex>* released_{nullptr};
+};
+
 } // namespace merovingian::homeserver

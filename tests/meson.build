@@ -155,6 +155,7 @@ shell = find_program('sh')
       'unit/test_outbound_transaction.cpp',
       'unit/test_query_params.cpp',
       'unit/test_rate_limit_wall_clock.cpp',
+      'unit/test_request_lock.cpp',
       'unit/test_remote_key_cache.cpp',
       'unit/test_review_regressions.cpp',
       'unit/test_room_encryption_policy.cpp',
