@@ -8673,7 +8673,48 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
             return dispatch_resp(req, rt, 200U, body);
         }
-        auto const found = database::find_room_alias(rt.homeserver.database.persistent_store, room_alias);
+        auto found = database::find_room_alias(rt.homeserver.database.persistent_store, room_alias);
+        if (!found.has_value())
+        {
+            // Matrix v1.19 Application Service API, "Room aliases": when an
+            // alias inside an appservice's namespace is unknown locally, the
+            // homeserver asks that appservice, which may create the room as a
+            // side effect; the alias is then looked up again. Without this the
+            // server 404s exactly the aliases a bridge creates on demand, which
+            // is the whole point of an alias namespace.
+            auto* const alias_outbound = rt.homeserver.outbound_client.get();
+            auto* const alias_discovery = rt.homeserver.cached_discovery.get();
+            if (alias_outbound != nullptr && alias_discovery != nullptr)
+            {
+                for (auto const& registration : rt.homeserver.appservices.all())
+                {
+                    // Spec: only query an appservice about aliases in its own
+                    // namespace. Asking one about another's alias would leak
+                    // which aliases clients are looking up.
+                    if (!appservice::any_namespace_matches(registration.namespaces.aliases, room_alias))
+                    {
+                        continue;
+                    }
+                    auto client = appservice::AppserviceClient{*alias_outbound, *alias_discovery};
+                    auto const query = [&] {
+                        auto const released = merovingian::homeserver::ScopedGuardRelease{guard};
+                        return client.query_room_alias(registration, room_alias);
+                    }();
+                    if (!query.ok || !query.exists)
+                    {
+                        // An unreachable or declining appservice is a miss, not
+                        // an error: another registration may still claim it, and
+                        // a bridge being down must not turn a 404 into a 502.
+                        continue;
+                    }
+                    found = database::find_room_alias(rt.homeserver.database.persistent_store, room_alias);
+                    if (found.has_value())
+                    {
+                        break;
+                    }
+                }
+            }
+        }
         if (!found.has_value())
         {
             return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "room alias not found");
@@ -9299,9 +9340,50 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         auto const field = slash == std::string_view::npos ? std::string_view{} : path_remainder.substr(slash + 1U);
         auto const target_user = core::percent_decode_path_component(encoded_target);
         auto const& store = rt.homeserver.database.persistent_store;
-        auto const user_exists = std::ranges::any_of(store.users, [&target_user](database::PersistentUser const& u) {
+        auto user_exists = std::ranges::any_of(store.users, [&target_user](database::PersistentUser const& u) {
             return u.user_id == target_user;
         });
+        if (!user_exists)
+        {
+            // Matrix v1.19 Application Service API, "User IDs": when a user
+            // inside an appservice's namespace is unknown locally, the
+            // homeserver asks that appservice, which may create the user as a
+            // side effect; existence is then re-checked. Without this the
+            // server 404s exactly the users a bridge materialises on demand.
+            auto* const user_outbound = rt.homeserver.outbound_client.get();
+            auto* const user_discovery = rt.homeserver.cached_discovery.get();
+            if (user_outbound != nullptr && user_discovery != nullptr)
+            {
+                for (auto const& registration : rt.homeserver.appservices.all())
+                {
+                    // Spec: "The homeserver will only query user IDs inside the
+                    // application service's users namespace." Querying outside
+                    // it would also leak which users clients are looking up.
+                    if (!appservice::any_namespace_matches(registration.namespaces.users, target_user))
+                    {
+                        continue;
+                    }
+                    auto client = appservice::AppserviceClient{*user_outbound, *user_discovery};
+                    auto const query = [&] {
+                        auto const released = merovingian::homeserver::ScopedGuardRelease{guard};
+                        return client.query_user(registration, target_user);
+                    }();
+                    if (!query.ok || !query.exists)
+                    {
+                        // Unreachable or declining: a miss, not an error. A
+                        // bridge being down must not turn a 404 into a 502.
+                        continue;
+                    }
+                    user_exists = std::ranges::any_of(store.users, [&target_user](database::PersistentUser const& u) {
+                        return u.user_id == target_user;
+                    });
+                    if (user_exists)
+                    {
+                        break;
+                    }
+                }
+            }
+        }
         if (!user_exists)
         {
             return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "user not found");
