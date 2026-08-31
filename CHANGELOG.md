@@ -148,6 +148,39 @@ follow-up entry under this same section.
   `POST /_matrix/client/v1/appservice/{id}/ping` round trip and
   `/_matrix/client/v3/thirdparty/*` remain unimplemented.
 
+- **Application service registration files are now parsed as YAML.** The
+  module parsed JSON only, reasoning that JSON is a subset of YAML 1.2. That
+  is true and was not sufficient: the spec's own registration example and
+  every shipped bridge use block-style `registration.yaml`, so the homeserver
+  could not load a single real registration file. `registration_yaml.cpp` is a
+  strict bounded subset — 2-space block maps and lists, plain and quoted
+  scalars, `#` comments, `null`/`~` — where anchors, aliases, tags, block
+  scalars, tabs, document markers and unknown keys are parse failures rather
+  than silent coercion, with fail-closed input bounds (256 KiB file, 4 KiB
+  line, 64 namespace entries, 32 protocols). `load_registration_file()` tries
+  YAML first and falls back to JSON, so anything that loaded before still
+  loads. Covered by a test that parses the spec's example verbatim, trailing
+  comment and empty `rooms: []` included.
+- **An empty namespace list written as `rooms: []` is accepted.** The YAML
+  parser required every namespace key to carry an empty value with an indented
+  list beneath it, which rejected the spec's canonical example. Empty flow
+  sequences are now accepted — they carry no entries, so supporting them costs
+  nothing — while every other inline value, including non-empty flow sequences
+  the bounded subset cannot parse, is still rejected rather than silently
+  dropping entries.
+- **Namespace regexes are anchored to whole identifiers (security).**
+  `namespace_matches()` used `std::regex_search`, which is unanchored. A
+  namespace regex is a claim over an identifier, not a substring: the spec's
+  own example pattern `@_irc_.*` therefore also matched
+  `@evil@_irc_bob:example.org`, so one appservice's **exclusive** namespace
+  could claim unrelated local users and block their registration. Now
+  `std::regex_match`, with coverage for the genuine match, the substring
+  escape, and a shared-prefix non-match.
+- **`src/appservice/AGENTS.md` added**, recording the YAML-subset rules, the
+  anchored-matching requirement, the token-handling rules, and one known gap:
+  overlapping *exclusive* namespaces between different appservices are not
+  detected, so two registrations may both exclusively claim the same pattern.
+
 ## 0.11.13
 
 Fixes a production stall where one slow federation peer froze the whole
