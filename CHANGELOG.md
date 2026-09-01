@@ -1,3 +1,13 @@
+## 0.12.2
+
+- **`docs/todos/production-milestone.md` corrected after the 0.12.1 release.**
+  The SSO login row still read "`m.login.sso` not advertised; `GET /_matrix/client/v3/login/sso/redirect` unrouted" after that work had
+  shipped — the row was never updated when the branch merged, so the document
+  that decides whether the project can be released understated its own
+  readiness. Rows crediting `feature/release-blockers` now cite 0.12.1, since
+  the branch is merged and gone, and the closing summary lists the rows that
+  are genuinely still open rather than excluding only HTTP keep-alive.
+
 ## 0.12.1
 
 Release-blocker closures branch (`feature/release-blockers`). The audit that
