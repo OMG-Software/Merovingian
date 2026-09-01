@@ -13112,10 +13112,15 @@ SCENARIO("GET /v1/rooms/{roomId}/hierarchy conformance")
 // ============================================================================
 // 21     Third-party lookup
 // ============================================================================
-// Spec: Matrix v1.19 §third party networks
-//       GET /thirdparty/protocols is implemented and returns a (possibly empty)
-//       protocol map. The location/{protocol} and user/{protocol} lookups remain
-//       unimplemented and return 404 M_UNRECOGNIZED.
+// Spec: Matrix v1.19 §third party networks. All six lookups are implemented
+//       (src/appservice/appservice_client.cpp's query_thirdparty_* methods,
+//       routed in client_server.cpp) — see tests/conformance/
+//       test_appservice_thirdparty_conformance.cpp for the full surface. The
+//       two scenarios below cover the specific "protocol name nobody
+//       registered declares" case: 404 M_NOT_FOUND, per spec ("The protocol
+//       is unknown." / "No portal rooms were found." / "The Matrix User ID
+//       was not found.") — never the generic route-not-found M_UNRECOGNIZED
+//       these used to assert back when the routes were entirely unrouted.
 
 // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3thirdpartyprotocols
 //
@@ -13149,9 +13154,9 @@ SCENARIO("GET /thirdparty/protocols returns a 200 JSON object", "[conformance][c
     }
 }
 
-SCENARIO("GET /thirdparty/location/{protocol} conformance")
+SCENARIO("GET /thirdparty/location/{protocol} conformance", "[conformance][client-server][thirdparty]")
 {
-    GIVEN("a started homeserver with an authenticated user")
+    GIVEN("a started homeserver with an authenticated user and no registered appservices")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
@@ -13162,21 +13167,24 @@ SCENARIO("GET /thirdparty/location/{protocol} conformance")
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"GET", "/_matrix/client/v3/thirdparty/location/irc", token, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED")
+            THEN("the server returns 404 M_NOT_FOUND — 'irc' is an unknown protocol, not an unrouted path")
             {
+                // Spec MUST: 404 | "No portal rooms were found." — a
+                // protocol no registered appservice declares is a strict
+                // subset of that.
                 REQUIRE(response.response.status == 404);
                 auto const body = parse_object(response.response.body);
                 auto const* err = string_member(body, "errcode");
                 REQUIRE(err != nullptr);
-                REQUIRE(*err == "M_UNRECOGNIZED");
+                REQUIRE(*err == "M_NOT_FOUND");
             }
         }
     }
 }
 
-SCENARIO("GET /thirdparty/user/{protocol} conformance")
+SCENARIO("GET /thirdparty/user/{protocol} conformance", "[conformance][client-server][thirdparty]")
 {
-    GIVEN("a started homeserver with an authenticated user")
+    GIVEN("a started homeserver with an authenticated user and no registered appservices")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
@@ -13187,13 +13195,16 @@ SCENARIO("GET /thirdparty/user/{protocol} conformance")
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"GET", "/_matrix/client/v3/thirdparty/user/irc", token, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED")
+            THEN("the server returns 404 M_NOT_FOUND — 'irc' is an unknown protocol, not an unrouted path")
             {
+                // Spec MUST: 404 | "The Matrix User ID was not found." — a
+                // protocol no registered appservice declares is a strict
+                // subset of that.
                 REQUIRE(response.response.status == 404);
                 auto const body = parse_object(response.response.body);
                 auto const* err = string_member(body, "errcode");
                 REQUIRE(err != nullptr);
-                REQUIRE(*err == "M_UNRECOGNIZED");
+                REQUIRE(*err == "M_NOT_FOUND");
             }
         }
     }
@@ -14963,6 +14974,76 @@ SCENARIO("rate limiting uses the path without query parameters as the bucket key
 }
 
 // Spec: Matrix Client-Server API v1.19
+// Endpoint / Section: Rate limiting
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#rate-limiting
+//
+// A request refused due to rate limiting MUST return the standard error
+// response {"errcode": "M_LIMIT_EXCEEDED", "error": "string", ...} with HTTP
+// 429. Homeservers SHOULD include a Retry-After header; retry_after_ms (an
+// integer in milliseconds) MAY be included and is deprecated since v1.10.
+SCENARIO("a rate-limited request returns the standard 429 error shape with retry guidance",
+         "[homeserver][client-server][rate-limit][conformance]")
+{
+    GIVEN("a server configured with a cap of 1 request per minute on an unauthenticated route")
+    {
+        auto security = merovingian::config::SecurityConfig{};
+        merovingian::tests::enable_token_registration(security);
+        auto rate_limits = merovingian::config::ClientRateLimitsConfig{};
+        // /login is unauthenticated, so the per-IP bucket is the only
+        // defense and the 429 shape is observable without a valid account.
+        rate_limits.per_ip["/_matrix/client/v3/login"] = {1U, 60U};
+        auto cfg = merovingian::config::Config{
+            merovingian::config::ServerConfig{},
+            merovingian::config::ListenersConfig{},
+            merovingian::config::DatabaseConfig{},
+            security,
+            std::move(rate_limits),
+            merovingian::config::LogModulesConfig{},
+        };
+        auto started = merovingian::homeserver::start_client_server(cfg);
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+
+        WHEN("two unauthenticated requests hit the capped route within the window")
+        {
+            auto const body = std::string{"{\"type\":\"m.login.password\",\"identifier\":{\"type\":\"m.id.user\","
+                                          "\"user\":\"nobody\"},\"password\":\"wrong\"}"};
+            std::ignore = merovingian::homeserver::handle_client_server_request(
+                rt, {"POST", "/_matrix/client/v3/login", "", body});
+            auto const throttled = merovingian::homeserver::handle_client_server_request(
+                rt, {"POST", "/_matrix/client/v3/login", "", body});
+
+            THEN("the second is refused with the standard 429 error response")
+            {
+                // Spec MUST: refusal due to rate limiting returns the standard
+                // error form with errcode M_LIMIT_EXCEEDED and HTTP 429.
+                REQUIRE(throttled.response.status == 429U);
+                auto const err = parse_object(throttled.response.body);
+                auto const* errcode = string_member(err, "errcode");
+                auto const* error = string_member(err, "error");
+                REQUIRE(errcode != nullptr);
+                REQUIRE(*errcode == "M_LIMIT_EXCEEDED");
+                REQUIRE(error != nullptr);
+                REQUIRE_FALSE(error->empty());
+            }
+            AND_THEN("retry guidance is present in the body and as a Retry-After header")
+            {
+                // Spec MAY (deprecated v1.10): retry_after_ms is an integer in
+                // milliseconds telling the client how long to wait.
+                auto const err = parse_object(throttled.response.body);
+                auto const* retry_after_ms = int_member(err, "retry_after_ms");
+                REQUIRE(retry_after_ms != nullptr);
+                REQUIRE(*retry_after_ms > 0);
+                // Spec SHOULD: a Retry-After header accompanies any 429.
+                auto const retry_after = response_header(throttled.response.headers, "Retry-After");
+                REQUIRE(retry_after.has_value());
+                REQUIRE_FALSE(retry_after->empty());
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.19
 // Endpoint / Section: PUT /rooms/{roomId}/send/{eventType}/{txnId}
 // URL: ../../docs/matrix-v1.19-spec/client-server-api.md#put_matrixclientv3roomsroomidsendeventtypetxnid
 //
@@ -15621,6 +15702,143 @@ SCENARIO("POST /pushers/set returns 200 with empty JSON object", "[conformance][
                 REQUIRE(response.response.status == 200U);
                 auto const body = parse_object(response.response.body);
                 REQUIRE(body.empty());
+            }
+        }
+    }
+}
+
+// --- SSO client login/authentication -------------------------------------
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#sso-client-loginauthentication
+// GET /_matrix/client/v3/login/sso/redirect[/{idpId}]
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3loginssoredirect
+//      ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3loginssoredirectidpid
+//
+// "The server MUST respond with an HTTP redirect to the SSO interface" (302),
+// and for the {idpId} variant "404 The IdP ID was not recognized by the
+// server." GET /login's m.login.sso flow schema requires `type` and, when
+// present, each identity_providers entry requires `id` and `name`.
+
+namespace
+{
+
+[[nodiscard]] auto sso_conformance_config() -> merovingian::config::Config
+{
+    auto security = merovingian::config::SecurityConfig{};
+    merovingian::tests::enable_token_registration(security);
+    auto server = merovingian::config::ServerConfig{};
+    server.sso.enabled = true;
+    server.sso.authorization_url = "https://sso.example.org/authorize";
+    server.sso.redirect_url_allowlist = {"https://client.example.com/"};
+    server.sso.identity_providers.push_back({"com.example.idp.github", "GitHub", {}, "github"});
+    return {
+        std::move(server),   merovingian::config::ListenersConfig{},        merovingian::config::DatabaseConfig{},
+        std::move(security), merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+    };
+}
+
+} // namespace
+
+SCENARIO("GET /login advertises the m.login.sso flow schema per spec", "[conformance][client-server][sso]")
+{
+    GIVEN("a homeserver with SSO configured")
+    {
+        auto started = merovingian::homeserver::start_client_server(sso_conformance_config());
+        REQUIRE(started.started);
+
+        WHEN("GET /login is called")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v3/login", {}, {}});
+
+            THEN("the flows array contains an m.login.sso entry with a well-formed identity_providers array")
+            {
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+                auto const* flows = object_member_as_array(body, "flows");
+                REQUIRE(flows != nullptr);
+                auto const sso_flow = std::ranges::find_if(*flows, [](merovingian::canonicaljson::Value const& flow) {
+                    auto const* flow_object = std::get_if<merovingian::canonicaljson::Object>(&flow.storage());
+                    if (flow_object == nullptr)
+                    {
+                        return false;
+                    }
+                    auto const* type = string_member(*flow_object, "type");
+                    return type != nullptr && *type == "m.login.sso";
+                });
+                // Spec MUST: a homeserver supporting SSO advertises "type": "m.login.sso".
+                REQUIRE(sso_flow != flows->end());
+
+                auto const* sso_flow_object = std::get_if<merovingian::canonicaljson::Object>(&sso_flow->storage());
+                REQUIRE(sso_flow_object != nullptr);
+                auto const* identity_providers = object_member_as_array(*sso_flow_object, "identity_providers");
+                REQUIRE(identity_providers != nullptr);
+                REQUIRE(identity_providers->size() == 1U);
+                auto const* idp_object =
+                    std::get_if<merovingian::canonicaljson::Object>(&(*identity_providers)[0].storage());
+                REQUIRE(idp_object != nullptr);
+                // Spec MUST: each IdP entry has required `id` and `name` fields.
+                auto const* idp_id = string_member(*idp_object, "id");
+                auto const* idp_name = string_member(*idp_object, "name");
+                REQUIRE(idp_id != nullptr);
+                REQUIRE(*idp_id == "com.example.idp.github");
+                REQUIRE(idp_name != nullptr);
+                REQUIRE(*idp_name == "GitHub");
+            }
+        }
+    }
+}
+
+SCENARIO("GET /login/sso/redirect responds with a 302 redirect to the SSO interface",
+         "[conformance][client-server][sso]")
+{
+    GIVEN("a homeserver with SSO configured")
+    {
+        auto started = merovingian::homeserver::start_client_server(sso_conformance_config());
+        REQUIRE(started.started);
+
+        WHEN("a client navigates the browser to /login/sso/redirect with a trusted redirectUrl")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"GET",
+                 "/_matrix/client/v3/login/sso/redirect?redirectUrl=https%3A%2F%2Fclient.example.com%2F",
+                 {},
+                 {}});
+
+            THEN("the response is 302, per spec 'The server MUST respond with an HTTP redirect'")
+            {
+                // Spec MUST: 302 -> "A redirect to the SSO interface."
+                REQUIRE(response.response.status == 302U);
+                auto const location = std::ranges::find_if(response.response.headers, [](auto const& header) {
+                    return header.first == "Location";
+                });
+                REQUIRE(location != response.response.headers.end());
+                REQUIRE(!location->second.empty());
+            }
+        }
+    }
+}
+
+SCENARIO("GET /login/sso/redirect/{idpId} returns 404 for an unrecognised IdP", "[conformance][client-server][sso]")
+{
+    GIVEN("a homeserver with SSO configured and one known IdP")
+    {
+        auto started = merovingian::homeserver::start_client_server(sso_conformance_config());
+        REQUIRE(started.started);
+
+        WHEN("the idpId does not match any configured identity provider")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"GET",
+                 "/_matrix/client/v3/login/sso/redirect/does.not.exist?redirectUrl=https%3A%2F%2Fclient.example.com%2F",
+                 {},
+                 {}});
+
+            THEN("the response is 404, per spec 'The IdP ID was not recognized by the server'")
+            {
+                // Spec MUST: 404 for an unrecognised idpId.
+                REQUIRE(response.response.status == 404U);
             }
         }
     }

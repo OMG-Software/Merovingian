@@ -104,6 +104,27 @@ class CiWorkflowTests(unittest.TestCase):
         self.assertIn("Packaging sanity gate", workflow)
         self.assertIn("packages-workflow-tooling", workflow)
 
+    def test_real_listener_coverage_job_enforces_link_time_hardening_and_live_request_serving(self) -> None:
+        # GIVEN the repository CI workflow.
+        self.assertTrue(CI_WORKFLOW.is_file(), "CI workflow is missing")
+        workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+
+        # WHEN production-milestone.md's "real listener coverage in CI" and
+        # "platform-specific hardening enforcement" gates are checked.
+        # THEN a dedicated job builds the hardened release profile, statically
+        # enforces link-time hardening on every shipped binary (a check that
+        # needs no live process, so it runs regardless of root/capability
+        # constraints), grants the capability the runtime hardening self-check
+        # needs to run non-root, and then actually executes the scenario that
+        # spawns the real merovingian-server binary, serves a live HTTP
+        # request over a real socket, and confirms clean shutdown on SIGTERM —
+        # rather than merely building the binary and never proving it serves.
+        self.assertIn("ubuntu-hardened-listener-coverage:", workflow)
+        self.assertIn("--profile hardened", workflow)
+        self.assertIn("check-elf-hardening.sh", workflow)
+        self.assertIn("setcap cap_setpcap+ep", workflow)
+        self.assertIn('"[startup][binary]" --success', workflow)
+
 
 if __name__ == "__main__":
     unittest.main()

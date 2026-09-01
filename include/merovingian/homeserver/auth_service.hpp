@@ -3,6 +3,7 @@
 #pragma once
 
 #include "merovingian/auth/identity.hpp"
+#include "merovingian/config/config.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 
 #include <cstdint>
@@ -20,6 +21,22 @@ namespace merovingian::homeserver
                                         std::string_view password) -> OperationResult;
 [[nodiscard]] auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std::string_view password,
                                     std::string_view device_id, bool with_ttl = false) -> OperationResult;
+// Grants a session for an already-authenticated `user_id` -- the second
+// half of login_local_user (device-id validation, account lock/suspend
+// gate, token issuance/persistence, session bookkeeping) without a password
+// check. Shared by login_local_user itself and by the `m.login.token`
+// exchange (POST /login after redeem_login_token has already established
+// the caller's identity via a redeemed SSO login token).
+[[nodiscard]] auto login_local_user_by_id(HomeserverRuntime& runtime, std::string_view user_id,
+                                          std::string_view device_id, bool with_ttl = false) -> OperationResult;
+// Application Service API (Matrix v1.19): see the .cpp definitions for the
+// full spec citation. The caller MUST have already verified the presented
+// as_token and that the target user_id/localpart is within the appservice's
+// namespace (or is its own sender_localpart) before calling either of these
+// — neither function re-derives that check itself.
+[[nodiscard]] auto register_appservice_user(HomeserverRuntime& runtime, std::string_view localpart) -> OperationResult;
+[[nodiscard]] auto login_appservice_user(HomeserverRuntime& runtime, std::string_view user_id,
+                                         std::string_view device_id) -> OperationResult;
 [[nodiscard]] auto issue_refresh_token_for_session(HomeserverRuntime& runtime, std::string_view user_id,
                                                    std::string_view device_id) -> OperationResult;
 [[nodiscard]] auto refresh_local_session(HomeserverRuntime& runtime, std::string_view refresh_token)
@@ -113,6 +130,65 @@ struct OpenidTokenIssueResult final
 // rejected here, even if it happens to collide byte-for-byte, because the
 // lookup never touches the access-token/session store.
 [[nodiscard]] auto federation_openid_userinfo(HomeserverRuntime const& runtime, std::string_view openid_access_token)
+    -> std::optional<std::string>;
+
+// SSO login (Matrix v1.19 CS API §"Client login via SSO"). See
+// docs/auth-identity.md for the full boundary: Merovingian routes and
+// validates the redirect endpoints and the m.login.token exchange, but does
+// not itself speak an external SSO protocol (CAS/SAML/OIDC) -- that lives
+// behind the operator-configured `server.sso.authorization_url`.
+
+// True when `server.sso.*` is complete enough to serve the SSO flow at
+// all: enabled, with an authorization_url to redirect to, and at least one
+// redirectUrl allowlist entry so the redirect endpoints are not
+// unconditionally rejecting. Config-parse validation already enforces this
+// invariant for anything read from disk (see config::validate_config), but
+// both the `GET /login` flow advertisement and the redirect handlers below
+// call this rather than re-deriving the condition, so the two paths cannot
+// silently drift apart -- fail closed consistently rather than twice.
+[[nodiscard]] auto sso_is_configured(config::SsoConfig const& sso) noexcept -> bool;
+
+// Outcome of resolving `GET /login/sso/redirect[/{idpId}]` to a concrete
+// redirect target. `location` is only meaningful when `ok` is true.
+struct SsoRedirectResult final
+{
+    bool ok{false};
+    std::uint16_t status{400U};
+    std::string location{};
+    std::string errcode{};
+    std::string reason{};
+};
+
+// Validates the request against `server.sso.*` and, on success, builds the
+// URI the browser should be 302-redirected to. Fails closed (ok=false) when:
+// SSO is disabled/misconfigured (`M_UNRECOGNIZED`, 404 -- the endpoint does
+// not exist as far as the client can tell); `idp_id` is non-empty but not
+// one of the configured identity providers (`M_NOT_FOUND`, 404, matching
+// spec's documented response for an unrecognised IdP); or `redirect_url` is
+// empty or not covered by `server.sso.redirect_url_allowlist`
+// (`M_INVALID_PARAM`, 400) -- this last check is the control that prevents
+// the endpoint from being an open redirect.
+[[nodiscard]] auto sso_redirect_target(HomeserverRuntime const& runtime, std::string_view idp_id,
+                                       std::string_view redirect_url, std::string_view action) -> SsoRedirectResult;
+
+// Completes an SSO authentication for `user_id`: mints a short-lived,
+// single-use login token (persisted in `login_tokens`, never
+// `access_tokens` -- see PersistentLoginToken), and returns `value` set to
+// the final `redirectUrl?loginToken=...` the browser should be sent to next
+// (spec steps 4-5). This is the integration point an operator's external
+// SSO adapter calls once it has verified the user's identity and mapped it
+// to a local Matrix user id. `redirect_url` is re-validated against
+// `server.sso.redirect_url_allowlist` (never trust a caller-supplied value
+// across an integration boundary without re-checking it).
+[[nodiscard]] auto complete_sso_login(HomeserverRuntime& runtime, std::string_view user_id,
+                                      std::string_view redirect_url) -> OperationResult;
+
+// Redeems a login token minted by complete_sso_login, for `POST /login`
+// with `type: m.login.token` (spec step 6). Consumes the token so it cannot
+// be redeemed twice, and returns the owning Matrix user id, or std::nullopt
+// if the token is unknown, expired, or already used -- these are
+// deliberately indistinguishable to the caller.
+[[nodiscard]] auto redeem_login_token(HomeserverRuntime& runtime, std::string_view login_token)
     -> std::optional<std::string>;
 
 } // namespace merovingian::homeserver

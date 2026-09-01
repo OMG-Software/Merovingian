@@ -56,15 +56,87 @@ Implemented now:
   final wire formatter, dropping invalid header names/values instead of
   emitting them on the wire
 - `X-Content-Type-Options: nosniff` on every response
+- HTTP/1.1 persistent connections (keep-alive, RFC 9112 §9.3): sequential
+  request rounds over one connection, per-request framing with exact
+  Content-Length body draining, an operator-tunable idle window, and a
+  process-wide parked-connection cap — see "HTTP keep-alive" below
 
 Not implemented yet:
 
 - `llhttp` dependency wrapper
 - request body streaming implementation
 - per-endpoint rate-limit enforcement
-- runtime application of the slowloris progress policy
+- runtime application of the slowloris progress policy to the request-head
+  read deadline (the head deadline and inter-byte caps in `http_server.cpp`
+  are the inline enforcement of that policy)
 - HTTP/2
-- keep-alive (every connection currently sends `Connection: close`)
+- HTTP pipelining (more than one outstanding request per connection):
+  pipelined bytes are buffered and answered strictly in order, one response
+  at a time, so request boundaries are never lost
+
+## HTTP keep-alive
+
+Matrix v1.19 is served over HTTP/1.1, where persistent connections are the
+default. Merovingian serves each connection as a sequential loop of request
+rounds (`serve_connection` in `src/homeserver/http_server.cpp`): read one
+request head, drain exactly its Content-Length bytes, route, write one
+response, then either close or park the connection for the next request.
+
+Framing decisions (RFC 9112 §9.3, implemented in
+`merovingian::http::connection_preference_for_response`):
+
+- HTTP/1.1 requests default to `Connection: keep-alive`; a request carrying
+  the `close` token is answered with `Connection: close` and the connection
+  is closed after that response.
+- HTTP/1.0 requests default to close; only a request carrying the
+  `keep-alive` token keeps the connection open.
+- Kept-alive responses carry `Connection: keep-alive` and the advisory
+  `Keep-Alive: timeout=N` hint matching the configured idle window. The hint
+  is not a promise: the server may still close early (parked-connection cap
+  reached, shutdown) and the client must retry on a new connection.
+
+Connection lifecycle:
+
+1. **First request** — served immediately after accept; no parking, so no
+   worker thread is held without work.
+2. **Idle park** — before waiting for a subsequent request the connection
+   acquires one process-wide parked slot (CAS counter,
+   `parked_keep_alive_connections`). Beyond `server.http.keep_alive_max_connections`
+   the server closes after the current response instead of parking. The park
+   is bounded by `server.http.keep_alive_idle_seconds`, polled in one-second
+   slices so pool shutdown stays bounded to one slice regardless of the
+   configured window.
+3. **Next request** — when bytes arrive, the slot is released and the full
+   per-request machinery (slowloris head deadline and inter-byte caps, body
+   size caps, rate limits) applies to that request exactly as for a fresh
+   connection. Bytes read past a request's body (pipelined follow-up
+   requests) are carried into the next round, so request boundaries are
+   never lost.
+
+Slowloris composition: the phase-aware `connection_should_close` guard
+(`include/merovingian/http/connection_guard.hpp`) distinguishes
+`awaiting_request` (parked, bounded only by the idle window — a quiet
+connection is not a slow client) from `reading_request` (the slowloris
+rate policy applies in full). Mid-request slow clients are killed exactly as
+before; idle kept-alive connections are not.
+
+Sync-pool interaction: a `/sync` long-poll round is handed to the dedicated
+sync pool as before. When the long-poll response has been written and the
+client asked for keep-alive, the sync task submits the connection back to the
+main pool for its next round, preserving the pool separation (long-poll
+threads never serve ordinary request rounds).
+
+Configuration (`server.http.*`, restart required — read when listeners start):
+
+| Key | Default | Meaning |
+|---|---|---|
+| `server.http.keep_alive` | `true` | Enable persistent connections. `false` restores one-request-per-connection. |
+| `server.http.keep_alive_idle_seconds` | `15` | Idle window per parked connection, 1..300. |
+| `server.http.keep_alive_max_connections` | `8` | Process-wide cap on connections parked awaiting a request, 1..4096. Each parked connection occupies a main-pool worker thread. |
+
+Direct `serve_one_http_connection` callers (tests, one-off embeds) keep the
+historical one-request-per-call contract: with no owning pool the policy
+disables parking and the round is answered with `Connection: close`.
 
 ## Response-header safety
 
@@ -104,6 +176,24 @@ backend choice:
   does not resolve hostnames so the SSRF policy in
   `merovingian::federation::security` remains the single source of truth
 
+**`OutboundRequest::allow_cleartext_http`** (added 0.12.1) is a narrow,
+opt-in escape hatch from the https-only rule above, defaulting to `false`
+for every existing caller (federation, the push-gateway client, the
+identity-server client all stay https-only with no way to override it).
+Setting it to `true` additionally permits `http://` for that one request.
+The only sanctioned caller is `appservice::AppserviceClient`
+(`src/appservice/appservice_client.cpp`): an appservice registration file's
+`url` is operator-configured — a local filesystem artifact the operator
+wrote, not something a network peer can influence — and the Application
+Service API's own canonical registration example (and most real-world
+bridges) gives a plain `http://127.0.0.1:...` URL. When set, host
+resolution also intentionally bypasses `CachedServerDiscovery`'s
+private/loopback-address rejection (via `.upstream().lookup_addresses()`
+directly) for the same reason: that rejection exists specifically for
+attacker/client-influenced destinations, which an appservice URL is not.
+TLS verification (`CURLOPT_SSL_VERIFYPEER`/`VERIFYHOST`) is unaffected —
+still on unconditionally whenever the connection does end up being TLS.
+
 `perform()` is libcurl-backed. Each request runs with the following
 non-negotiable defaults so federation traffic cannot regress its security
 posture:
@@ -111,7 +201,9 @@ posture:
 - `CURLOPT_SSL_VERIFYPEER = 1` — reject untrusted certificate chains
 - `CURLOPT_SSL_VERIFYHOST = 2` — require the certificate to match the URL host
 - `CURLOPT_FOLLOWLOCATION = 0` — redirects are refused
-- `CURLOPT_PROTOCOLS_STR = "https"` — no cleartext fallback
+- `CURLOPT_PROTOCOLS_STR = "https"` — no cleartext fallback, unless the
+  request set `allow_cleartext_http = true` (see above), in which case
+  `"https,http"`
 - `CURLOPT_NOSIGNAL = 1` — signal-driven resolution disabled so timeouts
   remain safe across threads
 - `CURLOPT_CONNECTTIMEOUT` and `CURLOPT_TIMEOUT` driven by the request
@@ -236,7 +328,13 @@ The slowloris guard tracks bytes received versus elapsed time using:
 - grace period
 - header deadline
 
-This is currently a pure policy primitive. Runtime socket code must apply it when connection I/O exists.
+The request-head read applies the equivalent deadlines inline (`request_head_deadline`, inter-byte cap, per-`recv` poll timeout in `http_server.cpp`); a request head that dribbles bytes is dropped with a 408 once any bound is exceeded.
+
+Keep-alive parking composes with the guard phase-aware
+(`connection_should_close`): a connection `awaiting_request` (parked, no
+bytes in flight) is bounded only by the keep-alive idle window, never by the
+slowloris rate — a quiet connection is not a slow client. A connection
+`reading_request` is subject to the full slowloris policy.
 
 ## Rate-limit policy
 
@@ -251,39 +349,87 @@ maintained:
 A quiet server does not freeze a bucket because the window rolls over on elapsed
 real time, not on request count. When a cap is exceeded the server returns
 `429 M_LIMIT_EXCEEDED` with a `Retry-After` header (seconds). The deprecated
-`retry_after_ms` body field is also included for older clients.
+`retry_after_ms` body field is also included for older clients. A 429 does not
+tear down a keep-alive connection: connection framing is decided per request
+round and is status-independent (see "HTTP keep-alive" above), so a throttled
+client can wait out its window on the same connection and retry.
 
-Default route-aware policies use longest-prefix matching. Path parameters such as
-`roomId`, `deviceId`, and `mediaId` are coalesced into placeholders so the same
-cap applies regardless of which room, device, or media ID appears in the URL:
+### Route tiers
 
-| Endpoint class | Default policy |
-| --- | --- |
-| Login / registration | 20/60s per IP; 5/60s per user on `/login` |
-| Device and key APIs | 30/60s per IP |
-| Media APIs | 20/60s per IP |
-| Search API (`/_matrix/client/v3/search`) | 20/60s per IP — same tier as media; each request does real work (a bounded in-memory scan, see `ClientApiLimits::max_search_events_scanned`) rather than a cheap lookup |
-| Federation APIs | 120/60s per IP |
-| Admin routes (`/_merovingian/admin/*`) | 30/60s per IP |
-| Generic client APIs | 90/60s per IP fallback |
+Every client-server route is classified into one of six explicit tiers by the
+prefix table in `http::rate_limit_tier_for()` (`src/http/rate_limit.cpp`) — one
+greppable place, no magic. Path parameters such as `roomId`, `deviceId`, and
+`mediaId` are coalesced into placeholders by `normalized_target()` so the same
+cap applies regardless of which room, device, or media ID appears in the URL.
 
-Operators override any class via `client_rate_limits.per_ip.<target>` and
-`client_rate_limits.per_user.<target>`; `client_rate_limits.default_per_ip` is
-the fallback for unmatched targets. All policy changes require a server restart.
-`window_seconds` must be `1..3600` — both `rate_limit_policy_is_valid()` (engine)
-and config validation reject anything outside that range.
+| Tier | Routes | Default per-IP policy |
+| --- | --- | --- |
+| `auth_sensitive` | `/login`, `/register`, `/refresh`, and every `*/requestToken` route (matched by suffix) — unauthenticated, so the per-IP bucket is the only defense | 20/60s |
+| `media` | `/_matrix/media/*` and `/_matrix/client/v1/media/*` | 20/60s |
+| `sync` | `/sync` plus the MSC4186 and simplified MSC3575 sliding-sync long-polls | 90/60s |
+| `federation` | `/_matrix/federation/*` routes reaching the client-server dispatcher | 120/60s |
+| `admin` | `/_merovingian/admin/*` | 30/60s |
+| `generic` | every other client-server route | `client_rate_limits.default_per_ip` (90/60s) |
 
-**Fail-closed on an unresolvable policy (issue #412):** if both the per-IP and
-per-user policies resolve to `nullopt` (e.g. an operator-configured
-`default_per_ip` with `window_seconds > 3600`), `RateLimitEngine::check()`
-denies the request rather than allowing it — a misconfigured policy must never
-silently disable rate limiting.
+Built-in per-endpoint refinements inside a tier: device and key APIs at
+30/60s, search at 20/60s — each request does real work (a bounded in-memory
+scan, see `ClientApiLimits::max_search_events_scanned`) rather than a cheap
+lookup. The built-in per-user cap is 5/60s on `/login`.
+
+Classification is method-agnostic: a `GET` against `/login` is the same
+enumeration surface as a `POST`, and the `*/requestToken` family spans several
+path parents, so it is matched by suffix.
+
+### Operator overrides
+
+Per-IP policy resolution is most-specific-first:
+
+1. `client_rate_limits.per_ip.<target-prefix>` (longest prefix match wins),
+2. `client_rate_limits.tier.<name>` for the route's tier,
+3. the built-in per-endpoint refinement (keys/devices 30/60s, search 20/60s),
+4. the tier default; the `generic` tier resolves to
+   `client_rate_limits.default_per_ip`.
+
+Per-user resolution: `client_rate_limits.per_user.<target-prefix>` first, then
+the built-in 5/60s login cap; routes with neither have no per-user cap (the
+per-IP cap still applies). Tier names are `auth_sensitive`, `media`, `sync`,
+`federation`, `admin`, `generic`; an unknown name is a parse-time finding, not a
+silently ignored key. All `client_rate_limits.*` changes require a server
+restart. `window_seconds` must be `1..3600` — both `rate_limit_policy_is_valid()`
+(engine) and config validation reject anything outside that range.
+
+Defaults remain the operator-agreed secure values from the 0.5.0 design doc;
+tiering only makes them explicit and complete. One deliberate tightening: the
+auth-sensitive tier now covers `/refresh`, the `*/requestToken` family, and
+non-`POST` hits on `/login`/`/register`, which previously fell into the 90/60s
+generic fallback.
+
+**Fail-closed on an unresolvable policy (issue #412):** the per-IP policy
+resolves to a value on every route unless a configured entry, tier override, or
+the default fails `rate_limit_policy_is_valid()` (e.g.
+`window_seconds > 3600`). An unresolvable per-IP policy makes
+`RateLimitEngine::check()` deny the request — even when a valid per-user policy
+exists, because the per-IP bucket is the only defense on unauthenticated
+routes. A misconfigured policy must never silently disable rate limiting.
 
 **Bounded bucket tables (issue #427):** `m_ip_buckets`/`m_user_buckets` are
 hash maps capped at 100,000 entries each, with stale-entry and
 least-recently-touched eviction, so a client rotating a spoofable
 `X-Forwarded-For` value (see below) cannot grow the table or the per-check
 cost without bound.
+
+### Inbound federation
+
+`/send` transactions are limited per **verified origin server name** (the
+X-Matrix-authenticated peer, not the IP) by a weighted trio:
+`security.federation.per_origin_transaction_rate` (120/60s),
+`per_origin_pdu_rate` (600/60s), `per_origin_edu_rate` (1200/60s). Every other
+inbound federation endpoint (query, backfill, membership, key and state routes)
+is limited by `security.federation.per_origin_request_rate` (600/60s), checked
+after signature verification and the server-ACL check, before dispatch.
+Non-`/send` traffic is counted only against `per_origin_request_rate` and
+`/send` only against the weighted trio, so a transaction and its contents are
+never double-counted.
 
 ### Admin routes
 
@@ -295,9 +441,9 @@ user-token gate, so `require_admin()` owns the auth outcome: 401
 `M_FORBIDDEN` for a valid token belonging to a non-admin user. The routes
 inherit the same `allow()` rate-limit gate as every other client-server
 request — throttled exactly once per request, no double-count — under the
-`/_merovingian/admin/` per-IP prefix policy (30/60s by default, operator-tunable
-via `client_rate_limits.per_ip`). Operator-only and low-volume, but still
-throttled against brute-force token guessing.
+admin-tier default (30/60s, operator-tunable via
+`client_rate_limits.tier.admin` or a per-prefix entry). Operator-only and
+low-volume, but still throttled against brute-force token guessing.
 
 ### In-memory counter trade-off
 
@@ -369,6 +515,110 @@ Rules for anything added to these paths:
 - The scope is a no-op when no guard is published (the federation worker, a test
   calling a service function directly) or when a caller already released the
   lock by hand, so it composes with the existing `unlock()`/`lock()` pairs.
+
+### `resolve_policy_server_hook` (0.12.1)
+
+`resolve_policy_server_hook` (`src/homeserver/runtime.cpp`) performs a
+synchronous outbound call to `trust_safety.policy_server_url` when
+`trust_safety.enabled` is set. `handle_federation_http_request` was already
+fixed (#415) to call it only after releasing the lock, but three other call
+sites called it directly while still holding `HomeserverRuntime::mutex`:
+`register_local_user` (client registration), `create_room` (room creation and
+room upgrade), and `media_policy_decision` (remote media download and
+thumbnail fetch — right before the *already*-unlocked remote fetch call that
+follows it). A slow or unreachable policy server therefore still froze every
+other client and federation request for up to `policy_server_timeout`,
+despite #415.
+
+The fix wraps the remainder of `resolve_policy_server_hook` — the injectable
+`trust_safety_policy_server` test hook and the real
+`OutboundClient::perform` call alike — in one `NetworkIoUnlock` scope, so
+every call site is fixed at the source rather than needing four separate
+call-site changes. Everything the function still reads
+(`trust_safety_config`, `runtime.config`, the request built from them) is
+read before that scope, while the lock is still held; nothing after it
+touches runtime state. See `tests/integration/test_request_lock_contention_flow.cpp`
+for the regression coverage (registration, room creation, and media
+download, each gated on a blocking policy-server hook while an unrelated
+request is asserted to complete promptly).
+
+### `NetworkIoUnlock` was incomplete for recursive acquisitions (0.12.1)
+
+`HomeserverRuntime::mutex` is a `std::recursive_mutex` specifically so that a
+service function such as `create_room` can take its own lock and remain
+independently callable outside a request handler (`local_smoke_flow.cpp` does
+exactly this). But `create_room` is *also* called directly from
+`client_server.cpp`, which already holds its own outer guard for the whole
+request. `std::recursive_mutex` permits that nested acquisition silently — the
+same thread simply increments a recursion count — so nothing failed loudly.
+
+The problem: `NetworkIoUnlock` releases exactly one `std::unique_lock`, the
+one published via `RequestLockScope`. When the room-creation regression test
+above gated `create_room`'s call into `resolve_policy_server_hook`, the
+outer guard (published) got released, but `create_room`'s own inner guard —
+the second, nested acquisition, and the one actually in lexical scope at the
+point of the network call — was never touched. The mutex stayed held by that
+thread for the full duration of the (attempted) unlock, and a concurrent
+request on another thread blocked forever waiting for the same
+`recursive_mutex`. **This means the `NetworkIoUnlock` mechanism, as shipped
+in 0.11.13, was correct only for call chains with exactly one lock
+acquisition on the stack; it silently did nothing for any chain that passed
+through a second, self-locking function.** The room-creation regression test
+caught this by deadlocking rather than by a failed assertion — the strongest
+possible signal that a lock invariant, not just a status code, was wrong.
+
+Fixed by publishing `RequestLockScope` around `create_room`'s own guard
+(`room_service.cpp`) and releasing the caller's outer guard with
+`guard.unlock()` before delegating to `create_room` — `guard.lock()`
+afterward, when later code still needs the lock — at all three call sites
+(`client_server.cpp` ×2: create and room-upgrade; `local_http_router.cpp` ×1).
+This is the same unlock/call/relock idiom `local_http_router.cpp` already
+used for `join_room`, so `create_room`'s own guard becomes the *only* lock in
+scope and the one `NetworkIoUnlock` actually finds and releases.
+
+**`join_room` and `leave_room` have the identical self-locking shape** and
+very likely the same latent gap for their own outbound federation calls
+(`perform_sync_outbound_call`'s `NetworkIoUnlock` sites). Fixing them needs
+its own regression coverage per function and was deliberately left as
+follow-up work rather than folded into this change — see the task tracker
+entry created alongside this fix.
+
+## Load/soak evidence
+
+`tests/integration/test_runtime_lock_soak_flow.cpp` (gated behind the
+`build_load_tests` Meson option, parallel to `build_live_tests`) drives real
+concurrent traffic — over real TCP sockets, HTTP/1.1 keep-alive throughout —
+against a running server: several users each long-polling their own room's
+`/sync`, each doing ordinary authenticated reads, each sending messages into
+their own room, and several simulated remote servers sending signed,
+X-Matrix-authenticated inbound federation transactions, all at once. It
+reports throughput and p50/p95/p99 latency per category to stderr. Its own
+default duration is short enough to run safely as a CI correctness check
+(nothing deadlocks or starves); a real measurement run sets
+`MEROVINGIAN_LOCK_SOAK_SECONDS` to something longer:
+
+```bash
+meson configure build-wsl -Dbuild_load_tests=true
+MEROVINGIAN_LOCK_SOAK_SECONDS=60 ./build-wsl/tests/merovingian-load-tests "[load-soak]"
+```
+
+See `docs/todos/production-milestone.md`, "Global runtime lock", for the
+measured before/after numbers this harness produced and the resulting
+narrowing decision.
+
+**This harness is a manual tool, not a CI job — deliberately, matching the
+existing `build_live_tests` precedent** (also gated behind an opt-in Meson
+option with zero `.github/workflows/` wiring; see
+`docs/testing-standards.md`). A real measurement run needs tens of seconds to
+minutes of wall-clock time to be meaningful, which does not fit a per-PR CI
+budget, and headline throughput/latency numbers on shared CI runners are
+noisy and non-reproducible in a way that would make a regression gate here
+more misleading than useful. Its default (unset `MEROVINGIAN_LOCK_SOAK_SECONDS`)
+2-second run does stay CI-safe as a *correctness* check — nothing deadlocks
+or starves — and CAN be added as a fast job later if that is wanted, but that
+is a distinct decision from running it as a soak/perf gate. Use it manually,
+locally or on a dedicated benchmarking host, whenever a future lock-narrowing
+change needs before/after evidence.
 
 ## Fuzzing
 

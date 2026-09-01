@@ -6,9 +6,23 @@
 // froze every other client-server request and every inbound federation
 // transaction for the full duration of the remote timeout.
 //
-// These tests stand up a real TLS peer that accepts the connection and then
-// refuses to answer, and assert that the rest of the server keeps serving while
-// that call is still in flight.
+// The first scenario below stands up a real TLS peer that accepts the
+// connection and then refuses to answer, and asserts that the rest of the
+// server keeps serving while that call is still in flight.
+//
+// The remaining scenarios cover a second instance of the same bug class:
+// resolve_policy_server_hook() (runtime.cpp) performs a blocking round trip
+// to `trust_safety.policy_server_url`. handle_federation_http_request was
+// fixed to call it after releasing runtime.mutex (#415), but
+// register_local_user, create_room, and the media download/thumbnail policy
+// check all call it directly while still holding the lock. A real TLS peer
+// is not used here because resolve_policy_server_hook's OutboundRequest has
+// no `trusted_ca_pem` field to pin a self-signed test certificate against
+// (unlike the federation outbound path); the injectable
+// `trust_safety_policy_server` hook stands in for the network round trip
+// instead, exactly as the existing #415 regression unit test
+// (test_federation_runtime_callbacks.cpp) already does for the federation
+// path.
 
 #include "../support/json_test_support.hpp"
 #include "../support/registration_token.hpp"
@@ -17,12 +31,16 @@
 #include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/homeserver/tls.hpp"
+#include "merovingian/http/request.hpp"
 #include "merovingian/net/tcp_acceptor.hpp"
+#include "merovingian/trust_safety/policy_engine.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -68,6 +86,79 @@ constexpr auto responsive_budget = 3000ms;
     REQUIRE(token != nullptr);
     REQUIRE(!token->empty());
     return *token;
+}
+
+[[nodiscard]] auto registration_enabled_config_with_policy_server() -> merovingian::config::Config
+{
+    auto config = registration_enabled_config();
+    config.security().trust_safety.enabled = true;
+    // Never actually dialled: runtime.homeserver.trust_safety_policy_server
+    // is set in every scenario below, and resolve_policy_server_hook()
+    // returns that injected hook before it ever reaches outbound_client. A
+    // non-empty URL is required only to pass the "enabled" gate.
+    config.security().trust_safety.policy_server_url = "https://policy.example.org/check";
+    return config;
+}
+
+// A rendezvous the worker thread signals on entry and blocks on until the
+// main thread releases it — standing in for the blocking network round trip
+// resolve_policy_server_hook() makes to `trust_safety.policy_server_url`.
+struct PolicyServerGate final
+{
+    std::mutex mutex{};
+    std::condition_variable cv{};
+    bool entered{false};
+    bool release{false};
+};
+
+auto wait_for_gate_entry(PolicyServerGate& gate) -> void
+{
+    auto lock = std::unique_lock{gate.mutex};
+    gate.cv.wait(lock, [&gate] {
+        return gate.entered;
+    });
+}
+
+auto release_gate(PolicyServerGate& gate) -> void
+{
+    {
+        auto const lock = std::lock_guard{gate.mutex};
+        gate.release = true;
+    }
+    gate.cv.notify_all();
+}
+
+// Returns a trust_safety_policy_server hook that blocks on `gate` only when
+// called for `target_surface`; every other surface (e.g. registration, while
+// a room-creation test is only gated on PolicySurface::room) gets an
+// immediate permissive answer so GIVEN-phase setup calls are not blocked by
+// a gate this test never releases. `allow_without_result` opts into the
+// permissive default so the assertions below are about mutex availability,
+// not about trust_safety's fail-closed-on-no-decision policy (exercised
+// elsewhere, e.g. test_client_server.cpp).
+[[nodiscard]] auto gated_policy_hook(merovingian::trust_safety::PolicySurface target_surface, PolicyServerGate& gate)
+{
+    return [target_surface, &gate](merovingian::trust_safety::PolicySurface surface,
+                                   std::string_view) -> merovingian::trust_safety::PolicyServerHook {
+        auto hook = merovingian::trust_safety::PolicyServerHook{};
+        hook.enabled = true;
+        hook.reachable = true;
+        hook.allow_without_result = true;
+        if (surface != target_surface)
+        {
+            return hook;
+        }
+        {
+            auto const lock = std::lock_guard{gate.mutex};
+            gate.entered = true;
+        }
+        gate.cv.notify_all();
+        auto lock = std::unique_lock{gate.mutex};
+        gate.cv.wait(lock, [&gate] {
+            return gate.release;
+        });
+        return hook;
+    };
 }
 
 } // namespace
@@ -141,6 +232,181 @@ SCENARIO("A stalled outbound federation call leaves the rest of the server respo
                 // The stalled query still succeeds once the peer answers —
                 // releasing the lock must not have broken the call itself.
                 REQUIRE(query_status.load() == 200U);
+            }
+        }
+    }
+}
+
+SCENARIO("A stalled trust-safety policy-server hook during registration leaves the rest of the server responsive",
+         "[homeserver][client-server][integration][concurrency][locking][trust-safety]")
+{
+    GIVEN("a running homeserver with trust-safety enabled and a policy-server hook that blocks on registration")
+    {
+        REQUIRE(sodium_init() >= 0);
+
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config_with_policy_server());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto gate = PolicyServerGate{};
+        runtime.homeserver.trust_safety_policy_server =
+            gated_policy_hook(merovingian::trust_safety::PolicySurface::registration, gate);
+
+        WHEN("a registration is in flight, blocked on the policy-server round trip")
+        {
+            // Catch2 assertion macros are not thread-safe, so the worker
+            // thread only records what it saw; every REQUIRE runs on the
+            // main thread.
+            auto registration_status = std::atomic<std::uint16_t>{0U};
+            auto registration_thread = std::thread{[&]() {
+                auto const response = merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")});
+                registration_status.store(response.response.status);
+            }};
+            auto const registration_join = tls_mock::ScopedThreadJoin{registration_thread};
+
+            wait_for_gate_entry(gate);
+
+            THEN("an unrelated client request still completes promptly")
+            {
+                // No user is registered yet at this point (registration is
+                // the very thing blocked in flight), so the concurrent probe
+                // must be an endpoint that does not require an access token.
+                // GET /_matrix/client/versions is the unauthenticated
+                // discovery endpoint (client_server.cpp answers it before
+                // any auth check).
+                auto const start = std::chrono::steady_clock::now();
+                auto const versions = merovingian::homeserver::handle_client_server_request(
+                    runtime, {"GET", "/_matrix/client/versions", {}, {}});
+                auto const elapsed = std::chrono::steady_clock::now() - start;
+
+                release_gate(gate);
+                registration_thread.join();
+
+                REQUIRE(versions.response.status == 200U);
+                REQUIRE(elapsed < responsive_budget);
+                // The stalled registration still succeeds once the policy
+                // server answers — releasing the lock must not have broken
+                // the call itself.
+                REQUIRE(registration_status.load() == 200U);
+            }
+        }
+    }
+}
+
+SCENARIO("A stalled trust-safety policy-server hook during room creation leaves the rest of the server responsive",
+         "[homeserver][client-server][integration][concurrency][locking][trust-safety]")
+{
+    GIVEN("a running homeserver, a logged-in user, and a policy-server hook that blocks on room creation")
+    {
+        REQUIRE(sodium_init() >= 0);
+
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config_with_policy_server());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto gate = PolicyServerGate{};
+        // Set the gate before registering: register_and_login's own
+        // PolicySurface::registration check must fall through immediately
+        // (gated_policy_hook only blocks PolicySurface::room), so the GIVEN
+        // phase is not itself stalled on a gate this test never releases.
+        runtime.homeserver.trust_safety_policy_server =
+            gated_policy_hook(merovingian::trust_safety::PolicySurface::room, gate);
+        auto const access_token = register_and_login(runtime);
+
+        WHEN("a room creation is in flight, blocked on the policy-server round trip")
+        {
+            auto create_status = std::atomic<std::uint16_t>{0U};
+            auto create_thread = std::thread{[&]() {
+                auto const response = merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST", "/_matrix/client/v3/createRoom", access_token, "{}"});
+                create_status.store(response.response.status);
+            }};
+            auto const create_join = tls_mock::ScopedThreadJoin{create_thread};
+
+            wait_for_gate_entry(gate);
+
+            THEN("an unrelated client request still completes promptly")
+            {
+                auto const start = std::chrono::steady_clock::now();
+                auto const capabilities = merovingian::homeserver::handle_client_server_request(
+                    runtime, {"GET", "/_matrix/client/v3/capabilities", access_token, {}});
+                auto const elapsed = std::chrono::steady_clock::now() - start;
+
+                release_gate(gate);
+                create_thread.join();
+
+                REQUIRE(capabilities.response.status == 200U);
+                REQUIRE(elapsed < responsive_budget);
+                REQUIRE(create_status.load() == 200U);
+            }
+        }
+    }
+}
+
+SCENARIO("A stalled trust-safety policy-server hook during media download leaves the rest of the server responsive",
+         "[homeserver][client-server][integration][concurrency][locking][trust-safety]")
+{
+    GIVEN("a running homeserver, an uploaded media item, and a policy-server hook that blocks on media download")
+    {
+        REQUIRE(sodium_init() >= 0);
+
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config_with_policy_server());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto gate = PolicyServerGate{};
+        // media upload does not consult the policy-server hook (only
+        // download/thumbnail do — see media_service.cpp's
+        // media_policy_decision), but set the gate on PolicySurface::media
+        // before the upload anyway so this test does not depend on that.
+        runtime.homeserver.trust_safety_policy_server =
+            gated_policy_hook(merovingian::trust_safety::PolicySurface::media, gate);
+        auto const access_token = register_and_login(runtime);
+
+        auto const upload = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST",
+                      "/_matrix/media/v3/upload",
+                      access_token,
+                      "hello",
+                      {merovingian::http::Header{"Content-Type", "text/plain"}}});
+        REQUIRE(upload.response.status == 200U);
+        auto const upload_body = parse_object(upload.response.body);
+        auto const* content_uri = string_member(upload_body, "content_uri");
+        REQUIRE(content_uri != nullptr);
+        // mxc://<server_name>/<media_id> -> the download route only wants
+        // "<server_name>/<media_id>".
+        auto const download_target =
+            "/_matrix/media/v3/download/" + content_uri->substr(std::string_view{"mxc://"}.size());
+
+        WHEN("a media download is in flight, blocked on the policy-server round trip")
+        {
+            auto download_status = std::atomic<std::uint16_t>{0U};
+            auto download_thread = std::thread{[&]() {
+                auto const response = merovingian::homeserver::handle_client_server_request(
+                    runtime, {"GET", download_target, access_token, {}});
+                download_status.store(response.response.status);
+            }};
+            auto const download_join = tls_mock::ScopedThreadJoin{download_thread};
+
+            wait_for_gate_entry(gate);
+
+            THEN("an unrelated client request still completes promptly")
+            {
+                auto const start = std::chrono::steady_clock::now();
+                auto const capabilities = merovingian::homeserver::handle_client_server_request(
+                    runtime, {"GET", "/_matrix/client/v3/capabilities", access_token, {}});
+                auto const elapsed = std::chrono::steady_clock::now() - start;
+
+                release_gate(gate);
+                download_thread.join();
+
+                REQUIRE(capabilities.response.status == 200U);
+                REQUIRE(elapsed < responsive_budget);
+                REQUIRE(download_status.load() == 200U);
             }
         }
     }

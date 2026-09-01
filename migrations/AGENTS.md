@@ -11,7 +11,8 @@ NNN_snake_case_description.sql
 
 `NNN` is a zero-padded three-digit integer: `001`, `002`, ..., `010`, `011`, ...
 The next migration number is always `max(existing) + 1`.
-Current highest: `011`.
+Current highest: `012`.
+Current highest: `013`.
 
 Schema version `2` introduced the `sync_stream_watermark` table via
 `002_sync_stream_watermark.sql` to support live pre-production deployments that
@@ -52,9 +53,32 @@ object holding every member of a pusher's registration-time `data`
 dictionary beyond `url`/`format`, which already have dedicated columns.
 Matrix v1.19 Push Gateway API requires forwarding the pusher's whole `data`
 dictionary minus `url` to the gateway, not just `format`; see
-`docs/database-persistence.md`. After `v1.0.0`, deployed databases become a
+`docs/database-persistence.md`. Schema version `12` (`012_login_tokens.sql`)
+adds the `login_tokens` table so short-lived, single-use SSO login tokens
+minted by `homeserver::complete_sso_login` (Matrix v1.19 CS API §"Client
+login via SSO") survive restarts and can be redeemed exactly once by `POST
+/_matrix/client/v3/login` with `type: m.login.token`. It is deliberately a
+separate table from `access_tokens`, for the same token-confusion reason
+`openid_tokens` is — see `docs/threat-model.md`. Every row has a finite
+`expires_at` and a `used` flag; expired-or-used rows are pruned at write
+time (see `docs/database-persistence.md`) so the table cannot grow without
+bound. After `v1.0.0`, deployed databases become a
 strict compatibility boundary and schema changes must be added as new
 forward migration files instead of modifying already-applied migrations.
+Schema version `12` (`012_login_tokens.sql`) adds the `login_tokens` table
+for SSO login token redemption — owned by a sibling feature branch (not
+implemented in this codebase's C++ layer); it is registered here purely so
+this branch's own migration chain has no version gap. Schema version `13`
+(`013_appservice_txn_cursor.sql`) adds the `appservice_txn_cursor` table:
+one row per registered appservice, tracking the Application Service API's
+outbound `PUT /_matrix/app/v1/transactions/{txnId}` delivery cursor
+(`next_txn_id`, `delivered_stream_ordering`) plus the currently in-flight
+(unacknowledged) batch, if any (`pending_txn_id`/`pending_stream_ordering`)
+— see `docs/database-persistence.md` and `src/homeserver/room_service.cpp`'s
+appservice delivery dispatch for how retries reuse the same `pending_txn_id`
+and event range rather than growing it, per the spec's "Homeservers MUST NOT
+alter ... events they were going to send within that transaction ID on
+retries."
 
 ## File format
 

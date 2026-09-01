@@ -36,6 +36,28 @@ struct CorsConfig final
     std::string allow_headers{"authorization, content-type"};
 };
 
+// HTTP/1.1 persistent-connection (keep-alive) policy. Matrix v1.19 is served
+// over HTTP/1.1, where persistent connections are the default; keeping a
+// connection open saves a full TLS handshake per request. The fields mirror
+// `merovingian::http::KeepAlivePolicy` (validated by
+// `http::keep_alive_policy_is_valid()` and `config::validate()`):
+//   keep_alive              — master switch; false restores the historical
+//                             close-after-every-response behaviour.
+//   keep_alive_idle_seconds — how long a kept-alive connection may sit idle
+//                             (no next request) before the server closes it.
+//                             Range 1..300; restart required.
+//   keep_alive_max_connections — process-wide cap on connections parked idle
+//                             waiting for a next request. Each parked
+//                             connection occupies a main-pool worker thread,
+//                             so the cap bounds how many workers a client can
+//                             tie up. Range 1..4096; restart required.
+struct HttpTransportConfig final
+{
+    bool keep_alive{true};
+    std::uint32_t keep_alive_idle_seconds{15U};
+    std::uint32_t keep_alive_max_connections{8U};
+};
+
 struct TurnServerConfig final
 {
     // TURN server URI advertised to clients, e.g. "turn:turn.example.org:3478?transport=udp".
@@ -91,6 +113,50 @@ struct OidcConfig final
     std::vector<std::string> account_management_actions_supported{};
 };
 
+// A single SSO identity provider advertised in the `m.login.sso` login flow
+// (Matrix v1.19 CS API §"Client login via SSO", `IdP` shape). `id` and
+// `name` are required by spec; `icon` (an `mxc://` URI) and `brand` are
+// optional UI hints and are omitted from the advertised flow when empty.
+struct SsoIdentityProvider final
+{
+    std::string id{};
+    std::string name{};
+    std::string icon{};
+    std::string brand{};
+};
+
+// SSO login configuration (Matrix v1.19 CS API §"Client login via SSO").
+// Disabled by default, mirroring OidcConfig's opt-in pattern. `enabled`
+// gates both advertising `m.login.sso` from `GET /login` and routing
+// `GET /login/sso/redirect[/{idpId}]` — a misconfigured or disabled SSO
+// setup fails closed (flow not advertised, redirect endpoints 404) rather
+// than half-serving the flow.
+//
+// Merovingian does not itself implement an external SSO protocol client
+// (CAS/SAML/OIDC) — `authorization_url` is the operator-configured HTTPS
+// endpoint of that external system, which `/login/sso/redirect[/{idpId}]`
+// redirects the browser to per spec step "redirect the user's browser to
+// the SSO login page". Once that external system has authenticated the
+// user, its own integration adapter maps the verified identity to a local
+// Matrix user id and calls `homeserver::complete_sso_login` to mint the
+// short-lived `m.login.token` login token and complete the redirect back
+// to the client's `redirectUrl` (spec steps "generate a short-term login
+// token" / "redirect the user's browser to the URI thus built"); see
+// docs/auth-identity.md for the full boundary.
+//
+// `redirect_url_allowlist` is the operator's allowlist of HTTPS URL
+// prefixes a client's `redirectUrl` query parameter is validated against
+// before the homeserver ever redirects a browser (and, later, a login
+// token) there — this is the control that prevents `/login/sso/redirect`
+// from being an open redirect (see docs/threat-model.md).
+struct SsoConfig final
+{
+    bool enabled{false};
+    std::string authorization_url{};
+    std::vector<SsoIdentityProvider> identity_providers{};
+    std::vector<std::string> redirect_url_allowlist{};
+};
+
 // Push Gateway API delivery configuration (Matrix v1.19 push-gateway-api /
 // CS API push-notifications module). `enabled` gates the entire outbound
 // delivery path and defaults to false, mirroring OidcConfig's pattern, so
@@ -118,6 +184,10 @@ struct ServerConfig final
     // combined with `allow_credentials=true` is rejected at config-parse
     // time per the CORS spec.
     CorsConfig cors{};
+    // HTTP/1.1 persistent-connection (keep-alive) policy for the client and
+    // federation listeners. See merovingian/http/keep_alive.hpp for the
+    // semantics of each field; validation enforces the documented ranges.
+    HttpTransportConfig http{};
     // TURN relay configuration for GET /_matrix/client/v3/voip/turnServer.
     // Empty by default; when populated the endpoint returns real credentials.
     TurnServerConfig turn{};
@@ -130,6 +200,8 @@ struct ServerConfig final
     IdentityServerConfig identity_server{};
     // Push Gateway API delivery config. Disabled by default (see PushConfig).
     PushConfig push{};
+    // SSO login config. Disabled by default (see SsoConfig).
+    SsoConfig sso{};
 };
 
 struct ListenerConfig final
@@ -206,6 +278,11 @@ struct FederationSecurityConfig final
     http::RateLimitPolicy per_origin_transaction_rate{120U, 60U};
     http::RateLimitPolicy per_origin_pdu_rate{600U, 60U};
     http::RateLimitPolicy per_origin_edu_rate{1200U, 60U};
+    // Per-origin cap on inbound federation requests OUTSIDE /send (query,
+    // backfill, membership, key and state endpoints). /send keeps its own
+    // weighted transaction/PDU/EDU trio above and is exempt so a transaction
+    // and its contents are never double-counted.
+    http::RateLimitPolicy per_origin_request_rate{600U, 60U};
     std::string remote_timeout{"60s"};
     // Separate, extendable budget for the make_join/send_join/make_leave/send_leave
     // membership dance. A large remote room's make_join can take longer than the
@@ -298,14 +375,20 @@ struct SecretsSecurityConfig final
 // Per-endpoint rate-limit policies. The values populate
 // `http::RateLimitEngine` at `start_client_server()` time; restart
 // required (see `src/config/reload_policy.cpp`). The 0.5.0 design doc
-// (`docs/log-filtering-design.md`) lists the operator-agreed defaults:
-// 20/min per IP for /login and /register, 5/min per user for /login,
-// 30/min for keys/devices, 20/min for media, 120/min for federation,
-// 90/min for everything else.
+// (`docs/log-filtering-design.md`) lists the operator-agreed defaults,
+// now expressed through the route tiers in `http::rate_limit_tier_for()`:
+// 20/min per IP for the auth-sensitive tier (/login, /register, /refresh
+// and the */requestToken family), 5/min per user for /login, 30/min for
+// keys/devices, 20/min for media and search, 120/min for federation routes
+// on the client listener, 90/min for everything else.
 struct ClientRateLimitsConfig final
 {
     std::unordered_map<std::string, http::RateLimitPolicy> per_ip{};
     std::unordered_map<std::string, http::RateLimitPolicy> per_user{};
+    // Per-tier overrides keyed by tier name (auth_sensitive, media, sync,
+    // federation, admin, generic). Validated against
+    // `http::rate_limit_tier_from_name()` so a typo is a parse finding.
+    std::unordered_map<std::string, http::RateLimitPolicy> tier{};
     http::RateLimitPolicy default_per_ip{90U, 60U};
 };
 
@@ -363,6 +446,19 @@ struct FederationWorkerConfig final
     bool apply_hardening{true};
 };
 
+// Matrix v1.19 Application Service API configuration. `registration_files`
+// lists paths to appservice registration documents (see
+// `merovingian::appservice::load_registrations`), each describing one
+// bridge/bot's as_token/hs_token, namespaces, and outbound URL. Empty by
+// default: with no registration files, the Application Service surface
+// (as_token auth, transactions, query hooks, third-party endpoints) is
+// entirely inert. Restart required — see reload_policy.cpp: the registry is
+// built once at start_runtime() time.
+struct AppserviceConfig final
+{
+    std::vector<std::string> registration_files{};
+};
+
 struct SecurityConfig final
 {
     RegistrationSecurityConfig registration{};
@@ -387,7 +483,7 @@ public:
 
     Config(ServerConfig server, ListenersConfig listeners, DatabaseConfig database, SecurityConfig security,
            ClientRateLimitsConfig client_rate_limits, LogModulesConfig log_modules,
-           FederationWorkerConfig federation_worker = {});
+           FederationWorkerConfig federation_worker = {}, AppserviceConfig appservice = {});
 
     [[nodiscard]] auto server() const noexcept -> ServerConfig const&;
     [[nodiscard]] auto server() noexcept -> ServerConfig&;
@@ -403,6 +499,8 @@ public:
     [[nodiscard]] auto log_modules() noexcept -> LogModulesConfig&;
     [[nodiscard]] auto federation_worker() const noexcept -> FederationWorkerConfig const&;
     [[nodiscard]] auto federation_worker() noexcept -> FederationWorkerConfig&;
+    [[nodiscard]] auto appservice() const noexcept -> AppserviceConfig const&;
+    [[nodiscard]] auto appservice() noexcept -> AppserviceConfig&;
 
 private:
     ServerConfig m_server{};
@@ -412,6 +510,7 @@ private:
     ClientRateLimitsConfig m_client_rate_limits{};
     LogModulesConfig m_log_modules{};
     FederationWorkerConfig m_federation_worker{};
+    AppserviceConfig m_appservice{};
 };
 
 struct ConfigValidationFinding final

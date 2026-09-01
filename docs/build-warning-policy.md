@@ -54,11 +54,34 @@ That keeps the default debug profile warning-clean on glibc platforms, where
 FORTIFY without optimization is itself a compiler warning and this project
 treats warnings as errors.
 
+## Included now (continued)
+
+- **Mandatory fuzz execution on every push and pull request** — this was
+  already true when this document's "Deliberately not included" list below
+  claimed otherwise (audited 0.12.1, corrected here). `.github/workflows/fuzz.yml`
+  triggers on `push`/`pull_request` (not just the weekly schedule), and
+  `scripts/run-fuzz-targets.sh` runs each of the seven fuzz targets under
+  `set -eu` with `-error_exitcode=77`, so any crash, leak, or UBSan finding
+  fails the job — there is no `continue-on-error`.
+- **Build-time link-time hardening enforcement** (0.12.1) —
+  `scripts/check-elf-hardening.sh` statically inspects a built binary's ELF
+  headers (PIE, `PT_GNU_RELRO`, `DT_BIND_NOW`, non-executable
+  `PT_GNU_STACK`) and fails closed if any is missing. Unlike the runtime
+  hardening self-check (which needs a live process satisfying both a
+  hardened build *and* `CAP_SETPCAP`, a combination most CI jobs cannot
+  provide — see `docs/hardening.md`), this needs only the built binary, so
+  it runs identically whether the CI job is root, non-root, or
+  containerized. Wired into the `ubuntu-hardened-listener-coverage` CI job
+  against every shipped binary, and per-platform in
+  `.github/workflows/release.yml` via `scripts/collect-release-evidence.sh`.
+
 ## Deliberately not included
 
-- Mandatory fuzz execution in every CI run.
-- Platform-specific production hardening enforcement beyond current compiler and
-  linker flags.
+- Platform-specific production hardening enforcement beyond current compiler
+  and linker flags **and** the ELF-header build gate above — specifically,
+  the *runtime* hardening self-check (seccomp, capability bounding,
+  pledge/unveil, Capsicum) is still not exercised by most CI jobs (see
+  `docs/hardening.md`'s CI-gates section for exactly which job now does).
 - Byte-for-byte reproducibility for distro packages (`.deb`, `.rpm`, BSD
   packages) — reproducible build verification currently covers only the
   static Linux fallback tarball.

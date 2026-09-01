@@ -1877,6 +1877,17 @@ SCENARIO("The federation worker starts and serves a request under the worker sec
         // reason. The allowlist itself is validated in unit tests.
         SKIP("worker seccomp scenario skipped under ThreadSanitizer");
 #endif
+#ifndef __linux__
+        // seccomp-bpf and the sibling controls apply_worker_hardening() installs
+        // are Linux-only. apply_worker_hardening() now fails closed on other
+        // platforms instead of silently accepting (see runtime_hardening.cpp) --
+        // with apply_hardening=true below, the worker process now correctly
+        // refuses to start here, so this scenario's "reaches healthy" assertion
+        // no longer applies on non-Linux. The fail-closed behaviour itself is
+        // covered by tests/unit/test_runtime_hardening.cpp.
+        SKIP("worker seccomp scenario is Linux-only; other platforms fail closed by design when "
+             "federation.worker.apply_hardening=true because there is no in-process worker sandbox there");
+#endif
 
         REQUIRE(sodium_init() >= 0);
 

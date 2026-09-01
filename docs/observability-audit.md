@@ -32,6 +32,17 @@ This capability note describes runtime-wired observability and audit behavior.
   suspended (`M_USER_SUSPENDED`), keyed by actor, target path, and reason.
 - `auth.password_changed` (auth category) records a password change and notes
   when `logout_devices: true` revoked the user's other device tokens/sessions.
+- `auth.sso.login_token.issued` and `auth.sso.login_token.redeemed` (auth
+  category) record the two ends of the SSO `m.login.token` lifecycle
+  (Matrix v1.19 CS API §"Client login via SSO"): the former when
+  `homeserver::complete_sso_login` mints a short-lived login token, the
+  latter when `POST /login` successfully consumes it via
+  `homeserver::redeem_login_token`. Neither the raw login token nor the
+  resulting access token is logged. `sso.redirect.rejected` (warning
+  severity, via `log_diagnostic`) fires when
+  `GET /login/sso/redirect[/{idpId}]` rejects a `redirectUrl` that is not
+  covered by `server.sso.redirect_url_allowlist` — see `docs/threat-model.md`
+  ("Open redirect and login-token exfiltration via SSO redirectUrl").
 - `federation.edu.direct_to_device.store_incomplete` (warning severity, via
   `log_diagnostic`) fires whenever an inbound `m.direct_to_device` EDU targets
   one or more devices but fewer messages persist to `to_device_messages` than

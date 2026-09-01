@@ -93,6 +93,50 @@ SCENARIO("Outbound HTTP request validation enforces method, scheme, host, and ad
         }
     }
 
+    GIVEN("a request whose URL uses cleartext http but opts into allow_cleartext_http")
+    {
+        // Application Service API destinations (an appservice registration
+        // file's `url`) are operator-configured, not attacker/client
+        // influenced, and the spec's own canonical example is plain
+        // http://127.0.0.1:1234 — see OutboundRequest::allow_cleartext_http's
+        // doc comment. This is the ONLY sanctioned way to reach a cleartext
+        // URL through this client; every other caller stays https-only.
+        auto request = merovingian::http::OutboundRequest{};
+        request.method = "GET";
+        request.url = "http://127.0.0.1:1234/_matrix/app/v1/ping";
+        request.pinned_addresses = {"127.0.0.1"};
+        request.allow_cleartext_http = true;
+
+        WHEN("the request is validated")
+        {
+            auto const error = merovingian::http::validate_outbound_request(request);
+
+            THEN("validation passes")
+            {
+                REQUIRE(error == merovingian::http::OutboundError::none);
+            }
+        }
+    }
+
+    GIVEN("a request whose URL uses https and ALSO opts into allow_cleartext_http")
+    {
+        auto request = merovingian::http::OutboundRequest{};
+        request.method = "GET";
+        request.url = "https://matrix.example.org/_matrix/app/v1/ping";
+        request.pinned_addresses = {"203.0.113.10"};
+        request.allow_cleartext_http = true;
+
+        WHEN("the request is validated")
+        {
+            auto const error = merovingian::http::validate_outbound_request(request);
+
+            THEN("https still validates cleanly — the opt-in only ADDS http, it never removes https support")
+            {
+                REQUIRE(error == merovingian::http::OutboundError::none);
+            }
+        }
+    }
+
     GIVEN("a request whose URL is missing the host segment")
     {
         auto request = merovingian::http::OutboundRequest{};

@@ -62,7 +62,7 @@ flowchart TB
 |---|---|---|
 | Malicious local user | Client-server API | Access-token auth, login-enumeration-resistant errors, rate limits, bounded parsers |
 | Malicious federated server | Federation transactions | X-Matrix verification, per-PDU content-hash + sender-domain Ed25519 checks, auth rules before persist, EDU origin-ownership checks, and per-room `m.room.server_acl` enforcement on protected endpoints and inbound PDUs/EDUs |
-| Remote exhaustion attacker | Listeners, queues, parsers | Bounded queues, rate limiting, resource limits, circuit breakers |
+| Remote exhaustion attacker | Listeners, queues, parsers | Bounded queues, rate limiting, resource limits, circuit breakers, bounded keep-alive idle parking (per-connection idle window + process-wide parked-connection cap) |
 | Media upload attacker | Image decoding | Out-of-process seccomp/rlimit-sandboxed worker, pixel-count decode-bomb guard, MIME sniffing, quarantine |
 | Malicious reverse proxy | Header/transport trust | Production listener rejects test-only credential encodings; response header validation; public listeners require TLS and cannot declare a local reverse proxy, while loopback cleartext requires an explicit `reverse_proxy=true` declaration |
 | Malicious local process | IPC channel sniffing | Master-key-authenticated `crypto_kx` handshake (#318) + AEAD encryption; no filesystem socket path; signing key never loaded in worker and never forwarded over IPC (#317); main verifies inbound X-Matrix signatures and forwards only the verified peer identity — the raw peer `access_token`/`Authorization` never crosses IPC (#323) |
@@ -891,6 +891,35 @@ threat it closes; the controls above are the standing defences these reinforce.
   entirely outside `federation::handle_inbound_federation_request`, in the
   same homeserver-router bypass used for `GET /_matrix/key/v2/server`.
 
+- **Open redirect and login-token exfiltration via SSO `redirectUrl`
+  (identified and mitigated during implementation, v0.12.1):** `GET
+  /_matrix/client/v3/login/sso/redirect[/{idpId}]` (Matrix v1.19 CS API
+  §"Client login via SSO") takes an attacker-controlled `redirectUrl` query
+  parameter directly from an unauthenticated request and, after a
+  successful SSO round trip, sends the user's browser there carrying a
+  freshly minted `loginToken` — a credential a client can redeem for a full
+  access token. The spec's own security-considerations section documents
+  the exact attack: a link like
+  `.../login/sso/redirect?redirectUrl=https://evil.example.com` tricks a
+  victim into having their login token delivered to an attacker-controlled
+  site. Mitigated by validating `redirectUrl` against an
+  operator-configured HTTPS prefix allowlist
+  (`server.sso.redirect_url_allowlist`, `config::SsoConfig`) before ever
+  building a redirect — both at the initial `/login/sso/redirect` request
+  (`homeserver::sso_redirect_target`) and again at
+  `homeserver::complete_sso_login`, since the latter is called from a
+  separate integration boundary (the operator's external SSO adapter) and
+  must not trust a redirect target handed to it a second time without
+  re-checking. An empty or non-matching `redirectUrl` is rejected with `400
+  M_INVALID_PARAM` rather than falling back to any default destination.
+  Config-parse validation additionally fails closed: `server.sso.enabled =
+  true` with an empty allowlist (or missing `authorization_url`) is
+  rejected outright at startup rather than shipping a half-configured SSO
+  flow that advertises `m.login.sso` while every redirect 400s. See
+  `docs/auth-identity.md` ("SSO login") for the full design and the
+  dedicated `[security]`-tagged test that proves an off-allowlist
+  `redirectUrl` is rejected.
+
 - **Self-inflicted denial of service through the global runtime lock.**
   `HomeserverRuntime::mutex` serialises every client-server request and every
   inbound federation transaction. Any blocking outbound call made while holding
@@ -902,7 +931,79 @@ threat it closes; the controls above are the standing defences these reinforce.
   releasing the mutex for the duration of every outbound network call
   (`homeserver::NetworkIoUnlock`) so a stalled peer costs one request rather than
   the process, and covered by a regression test that holds a real TLS peer open
-  and asserts unrelated requests still complete.
+  and asserts unrelated requests still complete. A third instance of the same
+  bug (0.12.1): `resolve_policy_server_hook`'s call to `trust_safety.policy_server_url`
+  was fixed for inbound federation (#415) but still ran under the lock from
+  `register_local_user`, `create_room`, and the media download/thumbnail
+  policy check — an operator who enables `trust_safety.enabled` inherits a
+  policy server as a remote dependency that, if slow or unreachable, freezes
+  registration, room creation, and media reads for every other user, not just
+  the caller who tripped it. Closed the same way, and covered by the same
+  style of regression test using the injectable `trust_safety_policy_server`
+  hook to stand in for a stalled policy server (no outbound TLS pinning
+  mechanism exists for this particular call, unlike the federation path).
+  That regression test also surfaced a second, independent bug: `create_room`
+  self-locks `runtime.mutex` (a `std::recursive_mutex`) so it stays callable
+  outside a request handler, but calling it from a handler that already held
+  the lock silently double-locked it — `NetworkIoUnlock` released only the
+  outer level, so the mutex stayed effectively held for the whole "unlocked"
+  network call, and the 0.11.13 `NetworkIoUnlock` mechanism turns out to have
+  been incomplete for any call chain with a second, self-locking function on
+  the stack. Fixed by publishing `RequestLockScope` around `create_room`'s own
+  guard and having every caller release its own guard first — see
+  `docs/http-transport.md`, "`NetworkIoUnlock` was incomplete for recursive
+  acquisitions". `join_room`/`leave_room` share the same self-locking shape
+  and are tracked as follow-up, not yet confirmed either way.
+  Load/soak evidence for the remaining critical section is tracked in
+  `docs/todos/production-milestone.md`, "Global runtime lock".
+
+- **Idle-connection thread holding through HTTP keep-alive parking.** With
+  HTTP/1.1 persistent connections (RFC 9112 §9.3) a client that has received
+  its response can leave the connection open and simply never send the next
+  request; a naive keep-alive loop would then park one main-pool worker
+  thread per connection for as long as the client cares to wait, and an
+  attacker needs nothing more than N open sockets to stall all request
+  handling. Three bounds compose to close this: (1) each park is limited to
+  the operator-tunable idle window (`server.http.keep_alive_idle_seconds`,
+  default 15 s — strictly shorter than the 30 s slowloris head deadline that
+  already bounds a worker per connection, so the parking surface is no wider
+  than the pre-existing one), polled in one-second slices so shutdown stays
+  bounded; (2) a process-wide CAS counter caps how many connections may be
+  parked at once (`server.http.keep_alive_max_connections`, default 8) —
+  beyond the cap the server answers `Connection: close` instead of parking,
+  so a single client cannot convert open sockets into held worker threads
+  beyond the operator's budget; and (3) the slowloris guard is phase-aware
+  (`http::connection_should_close`): an idle park is bounded only by the
+  idle window — a quiet connection is not a slow client — while the full
+  slowloris rate policy applies unchanged to the request head/body read the
+  moment bytes arrive, so an attacker cannot use keep-alive to outlive the
+  per-request slowloris kill. The parked slot is held only while no request
+  is in flight; it is released the moment the next request's first bytes
+  arrive, so the cap bounds parked threads, not active requests.
+
+- **Outbound Application Service API transaction delivery is deliberately
+  NOT SSRF-filtered the way federation/push/identity outbound calls are
+  (v0.12.1, routed).** `appservice::AppserviceClient` (`src/appservice/
+  appservice_client.cpp`) sends `PUT /_matrix/app/v1/transactions/{txnId}`
+  to an appservice's `url`, resolved via `.upstream().lookup_addresses()`
+  directly — bypassing `CachedServerDiscovery`'s `deny_ip_ranges`
+  private/loopback rejection — and with `OutboundRequest::allow_cleartext_http
+  = true`, permitting plain `http://`. This is a deliberate, narrow
+  departure from the pattern the identity-server and push-gateway clients
+  use, justified by a difference in trust, not a relaxation of it: an
+  appservice's `url` comes from a registration FILE the operator placed on
+  disk (`appservice.registration_files`) — the same trust level as
+  `federation.worker.binary` or `security.trust_safety.policy_server_url`,
+  neither of which goes through SSRF-safe discovery either — never from a
+  client request, a federation peer, or any other network-reachable input.
+  The Application Service API's own canonical registration example, and
+  most real-world bridges, run as a plain-HTTP process on `127.0.0.1`,
+  which the ordinary https-only/private-range-rejecting path would make
+  entirely unreachable. `hs_token` (sent as `Authorization: Bearer`) is
+  never placed in the URL or logged. If this trust boundary is ever
+  weakened — e.g. registration files become editable by a lower-privilege
+  process, or a future feature lets a namespace owner influence `url` — this
+  exemption must be revisited alongside it.
 
 ## Security principles
 

@@ -64,6 +64,7 @@ auto make_runtime_federation_config(config::Config const& config) -> RuntimeFede
         config.security().federation.per_origin_transaction_rate,
         config.security().federation.per_origin_pdu_rate,
         config.security().federation.per_origin_edu_rate,
+        config.security().federation.per_origin_request_rate,
         remote_timeout.valid ? remote_timeout.seconds : 0U,
         join_timeout.valid ? join_timeout.seconds : 0U,
         config.security().federation.join_parallelism,
@@ -87,6 +88,7 @@ auto federation_summary(RuntimeFederationConfig const& config) -> std::string
            " per_origin_transaction_rate=" + rate_limit_policy_string(config.per_origin_transaction_rate) +
            " per_origin_pdu_rate=" + rate_limit_policy_string(config.per_origin_pdu_rate) +
            " per_origin_edu_rate=" + rate_limit_policy_string(config.per_origin_edu_rate) +
+           " per_origin_request_rate=" + rate_limit_policy_string(config.per_origin_request_rate) +
            " remote_timeout_seconds=" + std::to_string(config.remote_timeout_seconds) +
            " join_timeout_seconds=" + std::to_string(config.join_timeout_seconds) +
            " join_parallelism=" + std::to_string(config.join_parallelism) +

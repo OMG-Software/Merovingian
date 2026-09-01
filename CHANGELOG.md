@@ -1,3 +1,436 @@
+## 0.12.1
+
+Release-blocker closures branch (`feature/release-blockers`). The audit that
+defines this branch is recorded in
+[`docs/todos/production-milestone.md`](docs/todos/production-milestone.md)
+"Release-blocking functional holes" — eight functional holes plus the still-open
+production gates. This section is updated as each closure lands.
+
+- Documented the release-blocking audit: the functional-hole table in
+  `docs/todos/production-milestone.md`, and a new "Runtime concurrency" ledger
+  row in `docs/todos/capability-gaps.md` recording that `HomeserverRuntime::mutex`
+  serialises every client-server request and inbound federation transaction, and
+  that every HTTP response carries `Connection: close`.
+- **HTTP/1.1 persistent connections (keep-alive, RFC 9112 §9.3).** Connections
+  are now served as a sequential loop of request rounds instead of
+  one-request-per-connection: HTTP/1.1 clients get persistent connections by
+  default, `Connection: close` is honoured and echoed, and HTTP/1.0 clients
+  are kept alive only on an explicit `Connection: keep-alive`. Each request's
+  body is drained exactly (Content-Length bytes) before the connection waits
+  for the next request, and surplus bytes are carried into the next round, so
+  request boundaries are never lost; pipelining itself stays out of scope —
+  pipelined requests are buffered and answered strictly in order. Kept-alive
+  responses carry `Connection: keep-alive` plus an advisory
+  `Keep-Alive: timeout=N` hint. Security composition: the connection guard is
+  now phase-aware (`http::connection_should_close`) — an idle parked
+  connection is bounded only by the operator-tunable idle window
+  (`server.http.keep_alive_idle_seconds`, default 15 s, 1..300, restart
+  required) and is never killed as "slow", while the full slowloris policy
+  applies unchanged once request bytes arrive; a process-wide CAS cap
+  (`server.http.keep_alive_max_connections`, default 8, 1..4096) bounds how
+  many connections may be parked waiting for a next request, so a client
+  cannot park a main-pool worker thread per connection beyond the operator's
+  budget. `/sync` long-polls still run on the dedicated sync pool, and a
+  kept-alive long-poll connection is handed back to the main pool for its
+  next round, preserving pool separation. New unit tests
+  (`tests/unit/test_http_keep_alive.cpp`) cover the framing decision, header
+  token parsing, policy validation, and the idle-vs-slow guard phases; new
+  integration scenarios
+  (`tests/integration/test_http_server_listener_flow.cpp`) exercise two
+  sequential requests over one real connection (plain and TLS), body-drain
+  framing across a pipelined send, `Connection: close` honouring, idle-window
+  expiry, and the parked-connection cap.
+- **Production-grade rate limiting (tiered policies).** Every client-server
+  route is now classified into one of six explicit tiers in
+  `http::rate_limit_tier_for()` (`src/http/rate_limit.cpp`) — one greppable
+  prefix table: `auth_sensitive` (/login, /register, /refresh and the
+  */requestToken family, 20/min), `media` (20/min), `sync` (90/min),
+  `federation` routes on the client listener (120/min), `admin` (30/min) and
+  `generic` (90/min via the operator-tunable `client_rate_limits.default_per_ip`).
+  Per-IP resolution is most-specific-first: an operator per-prefix override
+  (`client_rate_limits.per_ip.*`) beats an operator tier override
+  (`client_rate_limits.tier.<name>`, validated against the tier table so a
+  typo is a parse finding), which beats a built-in per-endpoint refinement
+  (keys/devices 30/min, search 20/min), which beats the tier default.
+  Unauthenticated routes are bucketed per remote IP — the
+  credential/enumeration surface now gets the tighter `auth_sensitive` cap
+  instead of the generic fallback. A misconfigured entry at any level resolves
+  to "invalid_policy" and the request is denied, so a bad operator value can
+  never silently mean "no limit" (fail-closed, issue #412). Inbound
+  federation gains a per-origin cap on requests OUTSIDE /send (query,
+  backfill, membership, key and state endpoints) — keyed by the X-Matrix
+  verified origin, tunable via `security.federation.per_origin_request_rate`
+  (default 600/min); /send keeps its weighted transaction/PDU/EDU trio so a
+  transaction and its contents are never double-counted. Tier keys are
+  `restart_required` in the config-reload plan, matching the rest of the
+  rate-limit block. New unit scenarios in
+  `tests/unit/test_http_rate_limit_tiers.cpp` cover the classification table,
+  tier-name round-trip, tier defaults, override precedence and the
+  fail-closed path; new conformance scenario asserts the 429 error shape;
+  new integration scenario serves a 429 mid-pipeline on a kept-alive
+  connection and recovery after the window.
+
+Adds SSO login (`m.login.sso`) per Matrix v1.19 CS API §"Client login via SSO":
+homeserver-side routing, redirect validation, and the `m.login.token` exchange.
+Merovingian does not itself speak an external SSO protocol (CAS/SAML/OIDC) —
+this closes the homeserver-side half of the flow so an operator's own external
+IdP adapter has a real integration point to call into.
+
+- **`m.login.sso` is now advertised** by `GET /_matrix/client/v3/login`,
+  including the configured `identity_providers` list, but only when
+  `server.sso.*` is fully configured (`homeserver::sso_is_configured`) —
+  otherwise the flow is silently omitted rather than half-advertised.
+- **`GET /_matrix/client/v3/login/sso/redirect[/{idpId}]` is now routed.**
+  Validates the client-supplied `redirectUrl` against an operator-configured
+  HTTPS allowlist (`server.sso.redirect_url_allowlist`) before ever building a
+  redirect — this is the control that prevents the endpoint from being an open
+  redirect (Matrix v1.19's own security-considerations section for this
+  endpoint documents the exact attack it closes). Validates `idpId` against
+  `identity_providers`, returning `404 M_NOT_FOUND` for an unrecognised IdP per
+  spec. On success, 302-redirects to the operator-configured
+  `server.sso.authorization_url`.
+- **`m.login.token` is now implemented** in `POST /_matrix/client/v3/login`
+  (previously entirely absent — only `m.login.password` was handled).
+  `homeserver::complete_sso_login` is the integration point an operator's
+  external SSO adapter calls once it has authenticated the user and mapped
+  them to a local Matrix user id: it re-validates `redirectUrl`, mints a
+  short-lived (~30s), single-use login token using the same keyed-hash
+  machinery access tokens use, and returns the client's `redirectUrl` with any
+  stale `loginToken` parameters stripped and the new one appended, per spec.
+  `homeserver::redeem_login_token` consumes the token exactly once (atomic
+  redeem, backend-first) and hands off to `homeserver::login_local_user_by_id`
+  — the same account lock/suspend gate and session-issuance path password
+  login uses, factored out of `login_local_user` so SSO login cannot bypass it.
+- **New durable `login_tokens` table** (schema version 12, migration
+  `012_login_tokens.sql`), structurally disjoint from `access_tokens` — the
+  same token-confusion mitigation already applied to `openid_tokens` — so a
+  login token can never authenticate an ordinary client-server request.
+- **New config surface**: `server.sso.enabled`, `server.sso.
+  authorization_url`, `server.sso.redirect_url_allowlist`, and
+  `server.sso.identity_providers.<idpId>.{name,icon,brand}`. Parse-time
+  validation fails closed: `enabled=true` with a missing `authorization_url`
+  or an empty `redirect_url_allowlist` is rejected outright, as is a
+  duplicate/empty identity-provider id, an empty name, or a non-`mxc://` icon.
+Begins closing the Application Service API gap (Matrix v1.19): the entire
+surface was previously unimplemented (see `docs/todos/capability-gaps.md`).
+This entry covers the registration/auth layer and outbound transaction
+delivery; the outbound query hooks and `/thirdparty/*` remain and land in a
+follow-up entry under this same section.
+
+- **Appservice registration files.** New `merovingian::appservice` module
+  (`include/merovingian/appservice/`, `src/appservice/`) parses registration
+  documents (`as_token`, `hs_token`, `id`, `url`, `sender_localpart`,
+  `namespaces.{users,aliases,rooms}` with per-entry `exclusive`/`regex`) and
+  builds an in-memory `AppserviceRegistry` at startup from the new
+  `appservice.registration_files` config key (`config::AppserviceConfig`,
+  restart-required). Registration files are parsed as JSON — a strict subset
+  of the YAML the spec describes — rather than pulling in a new YAML
+  dependency; see the doc comment on `AppserviceRegistration` for the
+  rationale. `as_token`/`hs_token` are held in `core::SecretBuffer` and
+  compared with `crypto::constant_time_equal_variable_length`, never `==`.
+  Duplicate `id`/`as_token` across registrations is rejected at load time
+  (spec MUST) and drops the whole set rather than guessing a winner.
+- **as_token bearer auth + `?user_id=`/`?device_id=` masquerade.** A
+  client-server request bearing a registered appservice's `as_token` now
+  authenticates as that appservice's `sender_localpart` user by default, or
+  as the user named by `?user_id=` when it falls within the appservice's
+  `users` namespace (403 otherwise); `?device_id=` is honoured when it names
+  a device already known to belong to that user (400 `M_UNKNOWN_DEVICE`
+  otherwise). Resolved once per request in
+  `handle_client_server_request_impl` via an internal, never-on-the-wire
+  token substitution (`appservice/masquerade_token.hpp`) so every existing
+  `authenticated_user`/`authenticated_session`/`authenticated_admin_user`
+  call site, and every deeper handler that re-derives identity from a bare
+  `access_token`, works unmodified for both ordinary sessions and appservice
+  masquerades. A raw incoming token already in the internal reserved shape
+  is rejected before any auth logic runs, closing the obvious forgery path.
+- **`m.login.application_service`.** `POST /register` and `POST /login`
+  accept `type: m.login.application_service` (bearer-authenticated with
+  `as_token`), bypassing the ordinary registration flow entirely per spec
+  ("Server admin style permissions") — no registration token, no UIA. New
+  passwordless account creation (`register_appservice_user`) and
+  passwordless login (`login_appservice_user`) in `auth_service.cpp`, sharing
+  the existing session/token-issuance tail with the password path via a new
+  `complete_login` helper. `GET /login` now advertises
+  `m.login.application_service` alongside `m.login.password`.
+- **Namespace exclusivity.** An appservice's `exclusive` namespace now
+  blocks entity creation by anyone else: ordinary `POST /register` and
+  `m.login.application_service` registration both reject a username inside
+  another appservice's exclusive `users` namespace with `M_EXCLUSIVE`, and
+  `PUT /_matrix/client/v3/directory/room/{roomAlias}` and `POST /createRoom`
+  (`room_alias_name`) both reject an alias inside an exclusive `aliases`
+  namespace the same way — except for the owning appservice itself.
+- **Outbound `PUT /_matrix/app/v1/transactions/{txnId}` delivery.** New
+  `AppserviceClient` (`src/appservice/appservice_client.cpp`) PUTs one event
+  per transaction, authenticated with `Authorization: Bearer <hs_token>`.
+  Wired synchronously into `room_service.cpp`'s `dispatch_appservice_delivery`
+  from `send_event()`, local membership transitions, and the
+  federation-accepted-PDU path, for every registered appservice whose
+  namespaces match the event (`registration_interested_in_room_event`). The
+  delivery cursor (`next_txn_id`, `delivered_stream_ordering`, and the
+  currently in-flight `pending_txn_id`/`pending_stream_ordering`) is durable
+  in the new `appservice_txn_cursor` table (migration
+  `013_appservice_txn_cursor.sql`, schema version 13), so a retried
+  transaction reuses the exact same txn_id and event after a restart, per
+  spec ("Homeservers MUST NOT alter ... events they were going to send
+  within that transaction ID on retries"). Appservice URLs are
+  operator-configured (registration files), not attacker-influenced, so
+  `http::OutboundRequest` gained an opt-in `allow_cleartext_http` escape
+  hatch from its https-only invariant (default `false`, unchanged for every
+  other caller) — the spec's own canonical registration example, and most
+  real-world bridges, use plain `http://127.0.0.1:...`.
+- **Known gaps, tracked in `docs/todos/capability-gaps.md`:** the outbound
+  transaction delivery above sends one event per transaction synchronously
+  on the request path (no background dispatch, no retry/backoff timer
+  independent of new events, no `ephemeral` data); the outbound
+  `GET /_matrix/app/v1/users/{userId}` / `/rooms/{roomAlias}` query hooks
+  are scaffolded (client methods exist, unit-tested) but not invoked from
+  any local-miss call site; the `/_matrix/app/v1/ping` ↔
+  `POST /_matrix/client/v1/appservice/{id}/ping` round trip and
+  `/_matrix/client/v3/thirdparty/*` remain unimplemented.
+
+- **Application service registration files are now parsed as YAML.** The
+  module parsed JSON only, reasoning that JSON is a subset of YAML 1.2. That
+  is true and was not sufficient: the spec's own registration example and
+  every shipped bridge use block-style `registration.yaml`, so the homeserver
+  could not load a single real registration file. `registration_yaml.cpp` is a
+  strict bounded subset — 2-space block maps and lists, plain and quoted
+  scalars, `#` comments, `null`/`~` — where anchors, aliases, tags, block
+  scalars, tabs, document markers and unknown keys are parse failures rather
+  than silent coercion, with fail-closed input bounds (256 KiB file, 4 KiB
+  line, 64 namespace entries, 32 protocols). `load_registration_file()` tries
+  YAML first and falls back to JSON, so anything that loaded before still
+  loads. Covered by a test that parses the spec's example verbatim, trailing
+  comment and empty `rooms: []` included.
+- **An empty namespace list written as `rooms: []` is accepted.** The YAML
+  parser required every namespace key to carry an empty value with an indented
+  list beneath it, which rejected the spec's canonical example. Empty flow
+  sequences are now accepted — they carry no entries, so supporting them costs
+  nothing — while every other inline value, including non-empty flow sequences
+  the bounded subset cannot parse, is still rejected rather than silently
+  dropping entries.
+- **Namespace regexes are anchored to whole identifiers (security).**
+  `namespace_matches()` used `std::regex_search`, which is unanchored. A
+  namespace regex is a claim over an identifier, not a substring: the spec's
+  own example pattern `@_irc_.*` therefore also matched
+  `@evil@_irc_bob:example.org`, so one appservice's **exclusive** namespace
+  could claim unrelated local users and block their registration. Now
+  `std::regex_match`, with coverage for the genuine match, the substring
+  escape, and a shared-prefix non-match.
+- **`src/appservice/AGENTS.md` added**, recording the YAML-subset rules, the
+  anchored-matching requirement, the token-handling rules, and one known gap:
+  overlapping *exclusive* namespaces between different appservices are not
+  detected, so two registrations may both exclusively claim the same pattern.
+- **Third-party lookups implemented, closing the last functional gap in the
+  Application Service API.** All six client-server routes — `GET /_matrix/
+  client/v3/thirdparty/{protocols, protocol/{protocol}, location,
+  location/{protocol}, user, user/{protocol}}` — are now backed by the
+  corresponding outbound `GET /_matrix/app/v1/thirdparty/*` calls
+  (`AppserviceClient::query_thirdparty_*`, new in `appservice_client.cpp`).
+  A protocol name is owned by whichever registration lists it in
+  `protocols:`; an unrecognised protocol is `404 M_NOT_FOUND` with no
+  outbound call. The alias/userid lookups (`location`/`user` with no
+  protocol) have no such ownership signal, so they fan out to every
+  registered appservice and aggregate the results. An appservice that is
+  unreachable, times out, or answers with a non-200/malformed body
+  contributes nothing rather than failing the whole client request — only
+  when no appservice contributed anything does the route 404 (or, for
+  `/protocols`, return `{}`, matching the previous placeholder's behaviour
+  for the no-appservice case so Element does not resume its retry loop).
+  `instance_id` is minted by the homeserver per spec, never trusted from the
+  appservice reply. Every field taken from an appservice's JSON reply is
+  type-checked and bounded (dropped malformed array entries, non-string
+  `fields` members dropped, capped array/object sizes and string lengths)
+  before being echoed to a client — a bridge is not a trusted peer. Outbound
+  calls carry the `hs_token` as a Bearer credential exactly like the
+  existing transaction/query calls. All six routes bypass client-side rate
+  limiting and require authentication, matching the spec's per-endpoint
+  `Rate-limited: No` / `Requires authentication: Yes` flags exactly — the
+  previous `/protocols` placeholder was incorrectly rate-limited. New unit
+  tests (`tests/unit/test_appservice_client.cpp`, tag `[thirdparty]`) cover
+  the disabled (`url: null`) fast path and the bounded/defensive response
+  parsing in isolation; new conformance tests
+  (`tests/conformance/test_appservice_thirdparty_conformance.cpp`) cover the
+  documented status codes, the auth/rate-limit flags, and the
+  no-appservice-registered cases; new integration tests
+  (`tests/integration/test_appservice_thirdparty_flow.cpp`) drive the full
+  path against a real local mock appservice, including multi-appservice
+  aggregation and the unreachable-appservice degrade-not-fail guarantee.
+
+- **`resolve_policy_server_hook` no longer holds `HomeserverRuntime::mutex`
+  across the `trust_safety.policy_server_url` round trip.**
+  `handle_federation_http_request` was already fixed for this (#415), but
+  `register_local_user`, `create_room` (and room upgrade), and the media
+  download/thumbnail policy check all called the same function directly
+  while still holding the lock — an operator running with
+  `trust_safety.enabled` inherited a policy server that, if slow or
+  unreachable, froze registration, room creation, and media reads for every
+  other user for up to `policy_server_timeout`. The fix wraps the remainder
+  of `resolve_policy_server_hook` (the injectable test hook and the real
+  `OutboundClient::perform` call alike) in one `NetworkIoUnlock` scope, so
+  every call site is fixed at the source. New regression coverage in
+  `tests/integration/test_request_lock_contention_flow.cpp` (registration,
+  room creation, media download, each gated on a blocking policy-server hook
+  while an unrelated request is asserted to complete promptly).
+- **`create_room` was silently double-locking `HomeserverRuntime::mutex`,
+  which made `NetworkIoUnlock` a no-op for anything blocking inside it —
+  found by the new regression coverage above, not by inspection.**
+  `HomeserverRuntime::mutex` is a `std::recursive_mutex`, and `create_room`
+  takes its own lock on it (it must stay independently callable outside a
+  request handler — see `local_smoke_flow.cpp`). Called from
+  `client_server.cpp`, which already held its own outer guard for the whole
+  request, this recursively re-locked the *same* mutex a second time — legal
+  for a `recursive_mutex`, and therefore silent. `NetworkIoUnlock`'s single
+  `unlock()` call only undoes one level of that recursion: it released the
+  outer guard (the one `RequestLockScope` had published) while `create_room`'s
+  own, inner guard — the one actually in scope at the point of the network
+  call — stayed locked. The mutex was therefore never really available to
+  another thread during the (now-unlocked-in-theory) policy-server round
+  trip. This means **the `NetworkIoUnlock` mechanism introduced in 0.11.13
+  was incomplete for any call chain that passed through a self-locking
+  function**: it correctly modelled "the caller holds one lock, release it,"
+  but not "the caller holds one lock, a callee recursively takes a second
+  one, release the one actually in scope." The room-creation regression test
+  added alongside the `resolve_policy_server_hook` fix above caught this
+  immediately — it deadlocked rather than passing, exactly as a lock bug
+  should. Fixed by publishing `RequestLockScope` around `create_room`'s own
+  guard (`room_service.cpp`) and releasing the caller's outer guard before
+  delegating to it at all three call sites (`client_server.cpp` ×2,
+  `local_http_router.cpp` ×1) — the unlock/call/relock idiom already used for
+  `join_room` — so `create_room`'s own guard becomes the only lock in scope
+  and is the one `NetworkIoUnlock` actually finds and releases.
+  `join_room`/`leave_room` share the identical self-locking shape and very
+  likely have the same latent gap for their own outbound federation calls;
+  fixing them is tracked as separate follow-up work, deliberately out of
+  scope here to avoid last-minute scope creep on a lock-correctness change.
+- **New load/soak evidence harness for the global runtime lock**
+  (`tests/integration/test_runtime_lock_soak_flow.cpp`, opt-in behind the
+  `build_load_tests` Meson option — a manual tool with no CI wiring, matching
+  the existing `build_live_tests` precedent). Drives concurrent `/sync`
+  long-polls, ordinary reads, message sends, and signed
+  X-Matrix-authenticated inbound federation transactions — all over real
+  sockets with HTTP/1.1 keep-alive — and reports throughput and p50/p95/p99
+  latency per category, so the "Global runtime lock" release blocker in
+  `docs/todos/production-milestone.md` can be closed (or kept open) on
+  measurement rather than intuition. **Measured, 20 s runs, 6 simulated users
+  + 2 simulated federation peers, before (pre-fix source reverted to a
+  scratch copy) vs. after this change**: reads ~385→374 req/s (p50 7.2→7.4 ms,
+  p95 25.0→26.4 ms), sends ~478→469 req/s (p50 6.7→7.0 ms, p95 21.4→21.8 ms),
+  federation transactions ~208→204 req/s (p50 6.4→6.7 ms, p95 22.6→23.0 ms,
+  capped by the federation per-origin transaction rate limiter, not lock
+  contention) — statistically indistinguishable, as expected: this change's
+  two fixes (below) do not touch that hot path when `trust_safety` is
+  disabled. The direct evidence for those two fixes is instead the
+  regression tests themselves: before, the affected request deadlocks
+  (unbounded — confirmed by direct reproduction under a bounded external
+  timeout); after, `--durations yes` shows registration/room-creation/media
+  scenarios completing in 66–132 microseconds. See `docs/http-transport.md`,
+  "Load/soak evidence", for how to run it and the full measured results.
+
+- **Appservice user and room-alias query hooks are wired.** `query_user()` and
+  `query_room_alias()` were implemented but called from nowhere, so a bridge
+  that materialises users and rooms on demand got a flat 404 for exactly the
+  identifiers its namespace exists to claim. `GET /directory/room/{roomAlias}`
+  and `GET /profile/{userId}` now consult the appservice whose namespace covers
+  the identifier and re-check locally afterwards. Only the owning appservice is
+  queried — fanning out would leak which aliases and users clients look up — and
+  an unreachable or declining appservice is a miss, not an error, so a bridge
+  outage cannot turn a 404 into a 502.
+- **Exclusive namespaces claimed by two appservices are now boot-time
+  findings.** Nothing enforced the spec's exclusivity guarantee across
+  registrations: two could both exclusively claim `@_bridge_.*` and whichever
+  the registry consulted first silently won. Detection compares pattern strings
+  and is deliberately conservative — differing regexes with overlapping matches
+  are not reported, because a false conflict that refuses to start a correct
+  deployment would be worse than the gap.
+- **The request lock is restored on every path out of a released region.** The
+  dispatcher's `guard.unlock(); f(); guard.lock();` triples never re-acquired if
+  `f()` threw, leaving the request — and the next one on that thread — running
+  with the locking invariant broken. Adds `ScopedGuardRelease` and converts 8 of
+  21 sites. Three publicRooms/alias federation-proxy paths were worse: they
+  released the guard and returned through `dispatch_err`/`dispatch_resp` without
+  ever re-acquiring, reading `rt.cors` — which config hot-reload can replace —
+  unsynchronised.
+- **Federation worker hardening no longer fails open on non-Linux platforms.**
+  `apply_worker_hardening()` (`src/platform/runtime_hardening.cpp`)
+  unconditionally returned `accept()` on every non-Linux build regardless of
+  `federation.worker.apply_hardening` (default `true`), so the worker logged
+  "runtime hardening applied (seccomp filter active)" and handled untrusted
+  federation traffic completely unsandboxed on FreeBSD/OpenBSD/NetBSD, with
+  zero test coverage anywhere in the suite. It now returns a fail-closed
+  rejection (`worker_hardening_unavailable_decision()`, exposed for testing)
+  naming the unavailable controls and the `apply_hardening=false` escape
+  hatch, so the worker process refuses to start rather than run unsandboxed;
+  the `WorkerSupervisor` sees a crash-looping child and federation degrades
+  to 503 instead of ever accepting unsandboxed traffic. The main process's
+  own `hardening_self_check.cpp`/`is_ready()` gate was already correctly
+  fail-closed (any `unknown` or `disabled` control blocks startup) — this was
+  specifically a gap in the worker's separate hardening path.
+  `MEROVINGIAN_TEST_DISABLE_HARDENING` is untouched by this change and
+  continues to let the in-process test suite skip hardening in the shared
+  Catch2 process. New unit coverage in `tests/unit/test_runtime_hardening.cpp`
+  (`[worker]`) proves the fail-closed decision on every platform without
+  installing a real sandbox on the test process, plus a non-Linux-only
+  scenario exercising `apply_worker_hardening()` itself.
+- **Real listener coverage in CI.** Audited the only test that spawns the real
+  `merovingian-server` binary
+  (`tests/integration/test_server_startup_hardening_flow.cpp`) and found it
+  proved only "reaches the listening state and shuts down cleanly", never
+  that the server actually serves a request — and that every existing CI job
+  WARN-skipped before reaching even that, because the runtime hardening
+  self-check can only report `ready=true` on a hardened-profile build (debug
+  builds never advertise `_FORTIFY_SOURCE`) run by a process holding
+  `CAP_SETPCAP` (root containers fail the privilege-drop check instead), a
+  combination no existing job satisfied. Added a real HTTP GET over a real
+  TCP socket against the spawned process's client listener (asserting a
+  genuine 200 from `/_matrix/client/versions`) plus a post-shutdown
+  connect-refused check to that scenario, and a new
+  `ubuntu-hardened-listener-coverage` CI job (`.github/workflows/ci.yml`)
+  that builds the `hardened` profile and grants the built server binary
+  `CAP_SETPCAP` via `sudo setcap cap_setpcap+ep` so the scenario actually
+  reaches the live-serving assertions instead of skipping.
+- **Build-time link-time hardening enforcement.** Added
+  `scripts/check-elf-hardening.sh`, which statically inspects a built
+  binary's ELF headers (PIE, `PT_GNU_RELRO`, `DT_BIND_NOW`, non-executable
+  `PT_GNU_STACK`) and fails closed if any is missing — a CI-time counterpart
+  to the runtime ELF probe that needs no live process, so it runs
+  identically whether the job is root, non-root, or containerized. Wired
+  into the new `ubuntu-hardened-listener-coverage` CI job against every
+  shipped binary (server, federation worker, thumbnail worker, db-migrate).
+- **PostgreSQL role-provisioning script for deployments.** Audited the
+  "enforce runtime/migration PostgreSQL role grants" gate: the CI-level test
+  coverage (`postgres-integration.yml`, `test_postgresql_persistence_flow.cpp`)
+  proving transaction rollback, migration ordering, and runtime-role DDL
+  denial against a real temporary PostgreSQL database was already closed;
+  `packaging/` provisioned none of it for a real deployment. Added
+  `packaging/postgresql/provision-roles.sql`, the same
+  migration/runtime-role grant pattern CI already proves, for operators to
+  run. Documented the remaining gap precisely in
+  `docs/database-persistence.md` "Next starting points": nothing in the live
+  startup path calls `set_postgresql_role()` yet — `merovingian-db-migrate`
+  never opens a database connection (it only prints an offline plan) and
+  `bootstrap_local_database()` always applies migrations automatically
+  through the same connection/role that then serves runtime traffic.
+- **Release evidence recorded in release notes.** Added
+  `scripts/collect-release-evidence.sh`, run per-platform in
+  `.github/workflows/release.yml`, which records the actual compiler
+  version, confirms link-time hardening via `check-elf-hardening.sh`, lists
+  pinned dependency versions from `subprojects/*.wrap`, summarizes the test
+  log's Ok/Fail/Timeout counts, and lists the mandatory fuzz target names.
+  `publish-alpha-release` now folds every platform's evidence plus a package
+  checksums section into the published release notes, alongside the
+  existing GPG signatures.
+- **Audit findings recorded, not just fixes:** mandatory fuzz execution
+  (`.github/workflows/fuzz.yml` already ran `set -eu` + `-error_exitcode=77`
+  on every push/PR, no `continue-on-error`) was already closed and the
+  capability-gaps.md row describing it as missing was stale; Complement was
+  audited and found to mean the upstream `matrix-org/complement` Go suite,
+  not this repo's own `tests/fixtures/complement/` JSON-fixture flow test —
+  a root `Dockerfile` exists but is not Complement-compatible and no Go/CI
+  wiring exists anywhere, so this remains open and unstarted. Config-profile
+  CI-naming (`scripts/validate-phase1-config.sh` and its "Phase 1" step
+  name) also remains open — not touched this pass.
+
 ## 0.11.13
 
 Fixes a production stall where one slow federation peer froze the whole

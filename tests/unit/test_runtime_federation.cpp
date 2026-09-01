@@ -21,6 +21,7 @@ SCENARIO("Runtime federation config parses validated transaction limits", "[fede
         security.federation.per_origin_transaction_rate = {60U, 60U};
         security.federation.per_origin_pdu_rate = {300U, 60U};
         security.federation.per_origin_edu_rate = {900U, 60U};
+        security.federation.per_origin_request_rate = {700U, 60U};
         security.federation.remote_timeout = "45s";
         security.federation.join_timeout = "200s";
         security.federation.join_parallelism = 12U;
@@ -52,6 +53,7 @@ SCENARIO("Runtime federation config parses validated transaction limits", "[fede
                 REQUIRE(runtime_federation.per_origin_transaction_rate.max_requests == 60U);
                 REQUIRE(runtime_federation.per_origin_pdu_rate.max_requests == 300U);
                 REQUIRE(runtime_federation.per_origin_edu_rate.max_requests == 900U);
+                REQUIRE(runtime_federation.per_origin_request_rate.max_requests == 700U);
                 REQUIRE(runtime_federation.remote_timeout_seconds == 45U);
                 REQUIRE(runtime_federation.join_timeout_seconds == 200U);
                 REQUIRE(runtime_federation.join_parallelism == 12U);
@@ -80,6 +82,7 @@ SCENARIO("Runtime federation summary exposes bounded operational values", "[fede
         runtime_federation.per_origin_transaction_rate = {120U, 60U};
         runtime_federation.per_origin_pdu_rate = {600U, 60U};
         runtime_federation.per_origin_edu_rate = {1200U, 60U};
+        runtime_federation.per_origin_request_rate = {600U, 60U};
         runtime_federation.remote_timeout_seconds = 30U;
         runtime_federation.join_timeout_seconds = 180U;
         runtime_federation.join_parallelism = 8U;
@@ -104,6 +107,7 @@ SCENARIO("Runtime federation summary exposes bounded operational values", "[fede
                 REQUIRE(summary.find("per_origin_transaction_rate=120/60s") != std::string::npos);
                 REQUIRE(summary.find("per_origin_pdu_rate=600/60s") != std::string::npos);
                 REQUIRE(summary.find("per_origin_edu_rate=1200/60s") != std::string::npos);
+                REQUIRE(summary.find("per_origin_request_rate=600/60s") != std::string::npos);
                 REQUIRE(summary.find("remote_timeout_seconds=30") != std::string::npos);
                 REQUIRE(summary.find("join_timeout_seconds=180") != std::string::npos);
                 REQUIRE(summary.find("join_parallelism=8") != std::string::npos);

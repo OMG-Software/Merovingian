@@ -391,6 +391,24 @@ Wildcard `*` is the safe default for Matrix because clients authenticate with
 forbids that combination. CORS is **not** hot-reloadable — a change to any
 `server.cors.*` key requires a restart.
 
+#### HTTP transport — `server.http.*`
+
+Controls HTTP/1.1 persistent connections (keep-alive). Connections are served
+as sequential request rounds; each kept-alive connection is parked for at most
+`keep_alive_idle_seconds` while waiting for the client's next request, and
+each parked connection holds one request-pool worker thread, so
+`keep_alive_max_connections` caps the process-wide total.
+
+| Key | Default | When to change |
+|---|---|---|
+| `server.http.keep_alive` | `true` | Set `false` to restore strict one-request-per-connection behaviour (e.g. in front of a proxy that pools upstream connections itself). |
+| `server.http.keep_alive_idle_seconds` | `15` | Idle window per kept-alive connection, seconds, 1..300. Raise for chatty API clients that re-use connections; lower to free worker threads sooner. |
+| `server.http.keep_alive_max_connections` | `8` | Process-wide cap on connections parked awaiting a next request, 1..4096. Beyond the cap the server answers `Connection: close`. Raise only alongside a larger request pool. |
+
+The parser rejects idle windows outside 1..300 seconds and caps outside
+1..4096. These keys are read when the listeners start and are **not**
+hot-reloadable — a change to any `server.http.*` key requires a restart.
+
 #### TURN server — `server.turn.*`
 
 VoIP clients request TURN relay credentials through
@@ -458,6 +476,43 @@ client-supplied gateway URLs on upgrade.
 | `server.push.enabled` | `false` | Set `true` to actually deliver notifications to registered pushers' gateways. |
 | `server.push.connect_timeout_seconds` | `10` | Outbound connect timeout when contacting a pusher's gateway URL (client-supplied, untrusted). |
 | `server.push.total_timeout_seconds` | `30` | Outbound total timeout for a gateway push request. Must be `>=` `connect_timeout_seconds`. |
+
+#### SSO login — `server.sso.*`
+
+`m.login.sso` is **disabled by default**; `GET /login` does not advertise it
+and `GET /login/sso/redirect[/{idpId}]` returns 404 until `server.sso.
+enabled=true` *and* both `authorization_url` and `redirect_url_allowlist`
+are populated — a half-configured setup (e.g. `enabled=true` with an empty
+allowlist) is rejected at config-parse time rather than shipping a flow
+that advertises itself but then 400s every redirect. Merovingian does not
+itself implement an external SSO protocol (CAS/SAML/OIDC) —
+`authorization_url` points at that external system, and completing the
+round trip into a usable login token is the job of the operator's own
+external-IdP adapter calling `homeserver::complete_sso_login`; see
+`docs/auth-identity.md` ("SSO login").
+
+`redirect_url_allowlist` is a **security-critical** setting: a client's
+`redirectUrl` query parameter on `/login/sso/redirect` is attacker
+-controlled input, and every entry not covered by this allowlist is
+rejected before any redirect (or later, a login token) is ever sent there —
+see `docs/threat-model.md` ("Open redirect and login-token exfiltration via
+SSO redirectUrl"). List HTTPS URL prefixes, not bare domains — an entry
+matches any `redirectUrl` that starts with it.
+
+`identity_providers` entries are configured with dotted keys of the form
+`server.sso.identity_providers.<idpId>.<field>`, where `<idpId>` is the
+opaque provider id (may itself contain dots, e.g.
+`com.example.idp.github`) and `<field>` is one of `name` (required),
+`icon` (optional `mxc://` URI), or `brand` (optional).
+
+| Key | Default | When to change |
+|---|---|---|
+| `server.sso.enabled` | `false` | Set `true` once `authorization_url` and `redirect_url_allowlist` are configured. |
+| `server.sso.authorization_url` | (empty) | **Required when enabled.** HTTPS entry point of the external SSO system `/login/sso/redirect[/{idpId}]` redirects the browser to. |
+| `server.sso.redirect_url_allowlist` | (empty) | **Required when enabled.** Comma-separated HTTPS URL prefixes a client's `redirectUrl` must start with to be accepted. |
+| `server.sso.identity_providers.<idpId>.name` | (empty) | **Required per IdP.** Human-readable name shown to the user. |
+| `server.sso.identity_providers.<idpId>.icon` | (empty) | Optional `mxc://` URI for the IdP's icon. |
+| `server.sso.identity_providers.<idpId>.brand` | (empty) | Optional UI brand hint (see the spec's IdP brand registry). |
 
 #### Listeners — `listeners.client.*` and `listeners.federation.*`
 
@@ -649,8 +704,9 @@ events for many users and an abusive remote can rotate sender IDs.
 | `security.federation.per_origin_transaction_rate` | `120/60s` | Maximum accepted `/send` transactions per verified remote origin per window. |
 | `security.federation.per_origin_pdu_rate` | `600/60s` | Weighted PDU budget per verified remote origin per window — a transaction with 40 PDUs consumes 40 units. |
 | `security.federation.per_origin_edu_rate` | `1200/60s` | Weighted EDU budget per verified remote origin per window. |
+| `security.federation.per_origin_request_rate` | `600/60s` | Per-origin cap on inbound federation requests **outside** `/send` (query, backfill, membership, key and state endpoints). `/send` counts only against the weighted trio above, so a transaction and its contents are never double-counted. |
 
-Rate values use `N/Ws` or `N/Wm` syntax (e.g. `300/60s`). All five keys are
+Rate values use `N/Ws` or `N/Wm` syntax (e.g. `300/60s`). All six keys are
 reloadable. An origin that exceeds a bucket gets `429 M_LIMIT_EXCEEDED` for
 the transaction and a `federation.rate_limited` audit event; invalid
 individual PDUs inside an otherwise-valid transaction still report per-PDU
@@ -659,7 +715,9 @@ and avoiding destination-wide backoff for one bad event.
 
 #### Federation outbound delivery controls
 
-The `per_origin_*` keys above apply only to inbound `/send` traffic; they do
+The `per_origin_*` keys above apply only to inbound federation traffic (`/send`
+for the weighted trio, every other federation endpoint for
+`per_origin_request_rate`); they do
 not throttle Merovingian's own delivery to other homeservers. Outbound
 federation queues an `OutboundTransaction` record per destination, and a
 dispatch worker drains that queue with destination retry state, a circuit
@@ -701,6 +759,34 @@ key is never forwarded; the worker reads it from the same database, and
 client access tokens are stripped from every request before forwarding. If
 the worker crashes, the supervisor restarts it with exponential back-off
 (1s, 2s, 4s, 8s, capped at 30s).
+
+#### Application Service API — `appservice.*`
+
+Matrix v1.19 Application Service API (bridges and bots). **Empty by
+default** — with no registration files configured, the entire appservice
+surface (as_token auth, `m.login.application_service`, namespace
+exclusivity) is inert.
+
+| Key | Default | When to change |
+|---|---|---|
+| `appservice.registration_files` | (empty) | Comma-separated list of paths to appservice registration documents. Each is parsed as JSON (a strict subset of the YAML the spec describes — anchors, comments, and unquoted scalars are not supported); see a real bridge's own documentation for its registration file's required `as_token`/`hs_token`/`sender_localpart`/`namespaces` fields, or the example in `docs/matrix-v1.19-spec/application-service-api.md#registration`. **Requires restart** — the registry is parsed once at startup and never re-read on `SIGHUP`. |
+
+A registration file with a duplicate `id` or `as_token` against another
+configured registration is rejected — per spec this MUST be unique — and
+drops every registration from the batch rather than guessing which one
+should win; check the startup log for `start.appservice_registration_rejected`
+events. `as_token`/`hs_token` are held in an mlocked `core::SecretBuffer` and
+never appear in logs or diagnostics.
+
+Outbound delivery (`PUT /_matrix/app/v1/transactions/{txnId}`) is wired into
+the event pipeline. The outbound query hooks (`GET /_matrix/app/v1/users/
+{userId}`, `GET /_matrix/app/v1/rooms/{roomAlias}`) exist but are not yet
+invoked from any local-miss call site. `/_matrix/client/v3/thirdparty/*`
+(`protocols`, `protocol/{protocol}`, `location`, `location/{protocol}`,
+`user`, `user/{protocol}`) is implemented, backed by the outbound
+`GET /_matrix/app/v1/thirdparty/*` calls to every appservice that declares a
+matching protocol — see `docs/todos/capability-gaps.md`, "Application
+Service API".
 
 #### Media repository — `security.media.*`
 
@@ -854,6 +940,7 @@ only reports what *would* happen.
 | `security.federation.join_response_max_size` | Restart required |
 | `federation.worker.*` | Restart required |
 | `server.cors.*` | Restart required |
+| `server.http.*` | Restart required |
 | `security.secrets.master_key_file` | Restart required |
 | `client_rate_limits.*` | Restart required |
 | `log_modules.*` | Restart required |
@@ -870,6 +957,7 @@ only reports what *would* happen.
 | `security.media.*` | Reloadable |
 | `security.logging.*` | Reloadable |
 | `server.oidc.*` | Reloadable |
+| `server.sso.*` | Reloadable |
 
 `--plan-config-reload <current> <next>` compares two validated configs and
 reports the reload action:

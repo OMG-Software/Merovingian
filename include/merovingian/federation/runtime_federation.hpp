@@ -28,6 +28,11 @@ struct RuntimeFederationConfig final
     http::RateLimitPolicy per_origin_transaction_rate{120U, 60U};
     http::RateLimitPolicy per_origin_pdu_rate{600U, 60U};
     http::RateLimitPolicy per_origin_edu_rate{1200U, 60U};
+    // Per-origin cap on inbound federation requests OUTSIDE /send (query,
+    // backfill, membership, key and state endpoints). /send keeps its own
+    // weighted transaction/PDU/EDU trio and is exempt so a transaction and
+    // its contents are never double-counted.
+    http::RateLimitPolicy per_origin_request_rate{600U, 60U};
     std::uint32_t remote_timeout_seconds{0U};
     // Separate budget for make_join/send_join/make_leave/send_leave (default 180s).
     std::uint32_t join_timeout_seconds{0U};

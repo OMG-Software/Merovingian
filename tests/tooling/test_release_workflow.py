@@ -79,6 +79,28 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("attestations: write", workflow)
         self.assertIn("id-token: write", workflow)
 
+    def test_release_notes_record_compiler_dependency_and_test_evidence(self) -> None:
+        # GIVEN the repository release workflow.
+        self.assertTrue(WORKFLOW.is_file(), "release workflow is missing")
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+
+        # WHEN a release is published.
+        # THEN each hardened platform build collects release evidence (compiler
+        # version, link-time hardening confirmation, pinned dependency
+        # versions, test log summary, fuzz target names) via the shared
+        # scripts/collect-release-evidence.sh helper, uploads it as its own
+        # artifact, and the publish job downloads and folds every platform's
+        # evidence into the published release notes alongside the package
+        # checksums — closing production-milestone.md's "Record compiler
+        # version, linker flags, dependency versions, test logs, sanitizer
+        # logs, fuzz target names, package checksums, and GPG signatures in
+        # release notes" bullet.
+        self.assertIn("scripts/collect-release-evidence.sh", workflow)
+        self.assertIn("release-evidence-linux-", workflow)
+        self.assertIn("release-evidence-freebsd-", workflow)
+        self.assertIn("## Package checksums", workflow)
+        self.assertIn("## Release evidence", workflow)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -245,7 +245,18 @@ auto parse_request_head(std::string_view input) -> RequestParseResult
     auto const method = request_line.substr(0U, first_space);
     auto const target = request_line.substr(first_space + 1U, second_space - first_space - 1U);
     auto const version = request_line.substr(second_space + 1U);
-    if (version != "HTTP/1.1")
+    // Record the version rather than only gating on it: the persistent
+    // connection decision depends on it (HTTP/1.1 defaults to keep-alive,
+    // HTTP/1.0 to close). Anything else is not a request this server speaks.
+    if (version == "HTTP/1.1")
+    {
+        result.request.version = HttpVersion::http_1_1;
+    }
+    else if (version == "HTTP/1.0")
+    {
+        result.request.version = HttpVersion::http_1_0;
+    }
+    else
     {
         result.error = RequestErrorCode::malformed_request_line;
         return result;

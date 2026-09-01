@@ -728,6 +728,28 @@ namespace
                              entry.expires_at = std::chrono::system_clock::time_point{
                                  std::chrono::milliseconds{parse_u64(column_text(row, 2))}};
                              store.openid_tokens.push_back(std::move(entry));
+                         }) &&
+               load_rows(connection, "SELECT user_id, token_hash, expires_at, used FROM login_tokens ORDER BY user_id",
+                         [&store](sqlite3_stmt& row) {
+                             PersistentLoginToken entry{};
+                             entry.user_id = column_text(row, 0);
+                             entry.token_hash = column_text(row, 1);
+                             entry.expires_at = std::chrono::system_clock::time_point{
+                                 std::chrono::milliseconds{parse_u64(column_text(row, 2))}};
+                             entry.used = text_is_true(column_text(row, 3));
+                             store.login_tokens.push_back(std::move(entry));
+                         }) &&
+               load_rows(connection,
+                         "SELECT appservice_id, next_txn_id, delivered_stream_ordering, pending_txn_id, "
+                         "pending_stream_ordering FROM appservice_txn_cursor ORDER BY appservice_id",
+                         [&store](sqlite3_stmt& row) {
+                             PersistentAppserviceTxnCursor entry{};
+                             entry.appservice_id = column_text(row, 0);
+                             entry.next_txn_id = parse_u64(column_text(row, 1));
+                             entry.delivered_stream_ordering = parse_u64(column_text(row, 2));
+                             entry.pending_txn_id = parse_u64(column_text(row, 3));
+                             entry.pending_stream_ordering = parse_u64(column_text(row, 4));
+                             store.appservice_txn_cursors.push_back(std::move(entry));
                          });
     }
 

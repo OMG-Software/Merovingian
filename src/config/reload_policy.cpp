@@ -40,18 +40,19 @@ auto reload_policy_for_key(std::string_view key) noexcept -> ReloadPolicy
     // `merovingian-server --plan-config-reload a.conf b.conf` will see the
     // `restart_required` flag for any change to these blocks).
     if (key == "client_rate_limits.default_per_ip" || starts_with(key, "client_rate_limits.per_ip.") ||
-        starts_with(key, "client_rate_limits.per_user.") || starts_with(key, "log_modules."))
+        starts_with(key, "client_rate_limits.per_user.") || starts_with(key, "client_rate_limits.tier.") ||
+        starts_with(key, "log_modules."))
     {
         return ReloadPolicy::restart_required;
     }
 
     // The master key is loaded and zeroised at startup, the federation
     // worker processes are spawned (with their thread pools, shard count and
-    // hardening) at startup, and CORS headers are wired when the listeners
-    // start — SIGHUP cannot re-apply any of these (#421, and the
-    // docs/user-manual.md Reloadability policy).
+    // hardening) at startup, and CORS headers and the keep-alive connection
+    // policy are wired when the listeners start — SIGHUP cannot re-apply any
+    // of these (#421, and the docs/user-manual.md Reloadability policy).
     if (key == "security.secrets.master_key_file" || starts_with(key, "federation.worker.") ||
-        starts_with(key, "server.cors."))
+        starts_with(key, "server.cors.") || starts_with(key, "server.http."))
     {
         return ReloadPolicy::restart_required;
     }
@@ -69,6 +70,17 @@ auto reload_policy_for_key(std::string_view key) noexcept -> ReloadPolicy
     // are constructed at startup from this block, the same lifecycle as the
     // identity-server client above. SIGHUP does not rebuild them.
     if (starts_with(key, "server.push."))
+    {
+        return ReloadPolicy::restart_required;
+    }
+
+    // Application Service API: the AppserviceRegistry is parsed from the
+    // configured registration files once at start_runtime() time and handed
+    // out as an immutable, read-only snapshot to every request. SIGHUP does
+    // not re-parse or rebuild it, so a registration-file-path change (add,
+    // remove, or edit the list) requires a restart, the same lifecycle as
+    // federation.worker.* above.
+    if (starts_with(key, "appservice."))
     {
         return ReloadPolicy::restart_required;
     }

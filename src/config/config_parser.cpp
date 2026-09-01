@@ -6,6 +6,7 @@
 #include "merovingian/http/rate_limit.hpp"
 #include "merovingian/observability/logger.hpp"
 
+#include <algorithm>
 #include <limits>
 #include <optional>
 #include <string>
@@ -40,14 +41,14 @@ namespace
     inline auto apply_config_value(ServerConfig& server, ListenersConfig& listeners, DatabaseConfig& database,
                                    SecurityConfig& security, ClientRateLimitsConfig& client_rate_limits,
                                    LogModulesConfig& log_modules, FederationWorkerConfig& federation_worker,
-                                   std::string_view key, std::string_view value,
+                                   AppserviceConfig& appservice, std::string_view key, std::string_view value,
                                    std::vector<ConfigValidationFinding>& findings) -> void
     {
-        // The client_rate_limits.per_ip and .per_user maps are keyed by
-        // request target prefix (e.g. "/_matrix/client/v3/login"), which
-        // contains '/' characters. We handle them with prefix-matching
-        // before the literal-key branches so the rest of the parser
-        // remains a clean if/else chain.
+        // The client_rate_limits.per_ip, .per_user and .tier maps are keyed
+        // by request target prefix (e.g. "/_matrix/client/v3/login") or tier
+        // name, both of which contain '/' or '_' characters. We handle them
+        // with prefix-matching before the literal-key branches so the rest
+        // of the parser remains a clean if/else chain.
         if (starts_with(key, "client_rate_limits.per_ip."))
         {
             auto const target = std::string{key.substr(std::string_view{"client_rate_limits.per_ip."}.size())};
@@ -75,6 +76,30 @@ namespace
             else
             {
                 client_rate_limits.per_user[target] = *policy;
+            }
+            return;
+        }
+        if (starts_with(key, "client_rate_limits.tier."))
+        {
+            // Tier names are validated against the engine's tier table so a
+            // typo (e.g. client_rate_limits.tier.login) becomes a parse
+            // finding instead of a silently ignored key.
+            auto const name = key.substr(std::string_view{"client_rate_limits.tier."}.size());
+            auto const policy = parse_rate_limit_policy(value);
+            if (!http::rate_limit_tier_from_name(name).has_value())
+            {
+                add_parse_finding(findings, std::string{key},
+                                  "unknown rate-limit tier; expected one of auth_sensitive, media, sync, federation, "
+                                  "admin, generic");
+            }
+            else if (!policy.has_value())
+            {
+                add_parse_finding(findings, std::string{key},
+                                  "expected rate-limit policy of the form N/Ns (e.g. 20/60s)");
+            }
+            else
+            {
+                client_rate_limits.tier[std::string{name}] = *policy;
             }
             return;
         }
@@ -156,6 +181,51 @@ namespace
             catch (...)
             {
                 add_parse_finding(findings, std::string{key}, "expected non-negative integer");
+            }
+        }
+        else if (key == "server.http.keep_alive")
+        {
+            if (!parse_bool_value(value, server.http.keep_alive))
+            {
+                add_parse_finding(findings, std::string{key}, "expected boolean value");
+            }
+        }
+        else if (key == "server.http.keep_alive_idle_seconds")
+        {
+            try
+            {
+                auto const parsed = std::stoul(std::string{value});
+                if (parsed == 0U || parsed > std::numeric_limits<std::uint32_t>::max())
+                {
+                    add_parse_finding(findings, std::string{key}, "expected positive integer");
+                }
+                else
+                {
+                    server.http.keep_alive_idle_seconds = static_cast<std::uint32_t>(parsed);
+                }
+            }
+            catch (...)
+            {
+                add_parse_finding(findings, std::string{key}, "expected positive integer");
+            }
+        }
+        else if (key == "server.http.keep_alive_max_connections")
+        {
+            try
+            {
+                auto const parsed = std::stoul(std::string{value});
+                if (parsed == 0U || parsed > std::numeric_limits<std::uint32_t>::max())
+                {
+                    add_parse_finding(findings, std::string{key}, "expected positive integer");
+                }
+                else
+                {
+                    server.http.keep_alive_max_connections = static_cast<std::uint32_t>(parsed);
+                }
+            }
+            catch (...)
+            {
+                add_parse_finding(findings, std::string{key}, "expected positive integer");
             }
         }
         else if (key == "server.turn.server")
@@ -321,6 +391,64 @@ namespace
             catch (...)
             {
                 add_parse_finding(findings, std::string{key}, "expected positive integer");
+            }
+        }
+        else if (key == "server.sso.enabled")
+        {
+            if (!parse_bool_value(value, server.sso.enabled))
+            {
+                add_parse_finding(findings, std::string{key}, "expected boolean value");
+            }
+        }
+        else if (key == "server.sso.authorization_url")
+        {
+            server.sso.authorization_url = std::string{value};
+        }
+        else if (key == "server.sso.redirect_url_allowlist")
+        {
+            server.sso.redirect_url_allowlist = parse_string_list(value);
+        }
+        else if (starts_with(key, "server.sso.identity_providers."))
+        {
+            // Keyed as server.sso.identity_providers.<idpId>.<field>. idpId
+            // is an opaque identifier (spec: Opaque identifier Grammar) that
+            // may itself contain dots (reverse-DNS-style, e.g.
+            // "com.example.idp.github"), so the *last* dot-delimited segment
+            // is always the field name and everything before it is the id.
+            auto const rest = key.substr(std::string_view{"server.sso.identity_providers."}.size());
+            auto const last_dot = rest.rfind('.');
+            if (last_dot == std::string_view::npos || last_dot == 0U || last_dot + 1U >= rest.size())
+            {
+                add_parse_finding(findings, std::string{key},
+                                  "expected server.sso.identity_providers.<idpId>.<name|icon|brand>");
+                return;
+            }
+            auto const idp_id = std::string{rest.substr(0U, last_dot)};
+            auto const field = rest.substr(last_dot + 1U);
+            auto existing =
+                std::ranges::find_if(server.sso.identity_providers, [&idp_id](SsoIdentityProvider const& idp) {
+                    return idp.id == idp_id;
+                });
+            if (existing == server.sso.identity_providers.end())
+            {
+                server.sso.identity_providers.push_back(SsoIdentityProvider{idp_id, {}, {}, {}});
+                existing = std::prev(server.sso.identity_providers.end());
+            }
+            if (field == "name")
+            {
+                existing->name = std::string{value};
+            }
+            else if (field == "icon")
+            {
+                existing->icon = std::string{value};
+            }
+            else if (field == "brand")
+            {
+                existing->brand = std::string{value};
+            }
+            else
+            {
+                add_parse_finding(findings, std::string{key}, "expected field name|icon|brand");
             }
         }
         else if (key == "listeners.client.bind")
@@ -575,6 +703,19 @@ namespace
                 security.federation.per_origin_edu_rate = *policy;
             }
         }
+        else if (key == "security.federation.per_origin_request_rate")
+        {
+            auto const policy = parse_rate_limit_policy(value);
+            if (!policy.has_value())
+            {
+                add_parse_finding(findings, std::string{key},
+                                  "expected rate-limit policy of the form N/Ns (e.g. 600/60s)");
+            }
+            else
+            {
+                security.federation.per_origin_request_rate = *policy;
+            }
+        }
         else if (key == "security.federation.remote_timeout")
         {
             security.federation.remote_timeout = std::string{value};
@@ -753,6 +894,10 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected boolean (true/false)");
             }
         }
+        else if (key == "appservice.registration_files")
+        {
+            appservice.registration_files = parse_string_list(value);
+        }
         else
         {
             add_parse_finding(findings, std::string{key}, "unknown configuration key");
@@ -899,6 +1044,7 @@ auto parse_key_value_config(std::string_view input) -> ConfigParseResult
     auto client_rate_limits = ClientRateLimitsConfig{};
     auto log_modules = LogModulesConfig{};
     auto federation_worker = FederationWorkerConfig{};
+    auto appservice = AppserviceConfig{};
     auto findings = std::vector<ConfigValidationFinding>{};
     auto seen_keys = std::vector<std::string>{};
 
@@ -942,7 +1088,7 @@ auto parse_key_value_config(std::string_view input) -> ConfigParseResult
                 {
                     seen_keys.emplace_back(key);
                     apply_config_value(server, listeners, database, security, client_rate_limits, log_modules,
-                                       federation_worker, key, value, findings);
+                                       federation_worker, appservice, key, value, findings);
                 }
             }
         }
@@ -955,7 +1101,8 @@ auto parse_key_value_config(std::string_view input) -> ConfigParseResult
         ++line_number;
     }
 
-    auto config = Config{server, listeners, database, security, client_rate_limits, log_modules, federation_worker};
+    auto config =
+        Config{server, listeners, database, security, client_rate_limits, log_modules, federation_worker, appservice};
     auto validation_findings = validate(config);
     findings.insert(findings.end(), validation_findings.begin(), validation_findings.end());
 

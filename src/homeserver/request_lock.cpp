@@ -46,4 +46,24 @@ NetworkIoUnlock::~NetworkIoUnlock()
     }
 }
 
+
+ScopedGuardRelease::ScopedGuardRelease(std::unique_lock<std::recursive_mutex>& guard) noexcept
+{
+    // Only release a guard that currently owns the mutex; releasing one that
+    // does not would re-acquire on exit a lock the caller never held.
+    if (guard.owns_lock())
+    {
+        released_ = &guard;
+        released_->unlock();
+    }
+}
+
+ScopedGuardRelease::~ScopedGuardRelease()
+{
+    if (released_ != nullptr)
+    {
+        released_->lock();
+    }
+}
+
 } // namespace merovingian::homeserver

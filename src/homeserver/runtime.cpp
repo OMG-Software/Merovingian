@@ -3,6 +3,7 @@
 
 #include "merovingian/homeserver/runtime.hpp"
 
+#include "merovingian/appservice/registration.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/crypto/ed25519.hpp"
@@ -14,6 +15,7 @@
 #include "merovingian/federation/runtime_federation.hpp"
 #include "merovingian/homeserver/federation_proxy.hpp"
 #include "merovingian/homeserver/local_services.hpp"
+#include "merovingian/homeserver/request_lock.hpp"
 #include "merovingian/homeserver/room_service.hpp"
 #include "merovingian/media/repository.hpp"
 #include "merovingian/media/runtime_media.hpp"
@@ -382,6 +384,7 @@ HomeserverRuntime::HomeserverRuntime(HomeserverRuntime&& other) noexcept
     , trust_safety_policy_server(std::move(other.trust_safety_policy_server))
     , discovery_network(std::move(other.discovery_network))
     , cached_discovery(std::move(other.cached_discovery))
+    , appservices(std::move(other.appservices))
     , dispatch_worker(std::move(other.dispatch_worker))
     , federation_proxy(std::move(other.federation_proxy))
     , crypto_provider_owned(std::move(other.crypto_provider_owned))
@@ -422,6 +425,7 @@ auto HomeserverRuntime::operator=(HomeserverRuntime&& other) noexcept -> Homeser
     trust_safety_policy_server = std::move(other.trust_safety_policy_server);
     discovery_network = std::move(other.discovery_network);
     cached_discovery = std::move(other.cached_discovery);
+    appservices = std::move(other.appservices);
     dispatch_worker = std::move(other.dispatch_worker);
     federation_proxy = std::move(other.federation_proxy);
     crypto_provider_owned = std::move(other.crypto_provider_owned);
@@ -763,6 +767,34 @@ auto start_runtime(RuntimeStartOptions opts) -> RuntimeStartResult
     }
     runtime.media_repository = media::make_local_media_repository(media::make_runtime_media_config(config));
     hydrate_media_repository(runtime.media_repository, runtime.database.persistent_store);
+
+    // Application Service API (Matrix v1.19): parse every configured
+    // registration file once, up front. A per-file problem (bad JSON, a
+    // missing required field, an unreadable path) is logged and that one
+    // appservice is dropped rather than failing the whole server — an
+    // operator typo in one bridge's registration must not take down every
+    // other appservice or the homeserver itself. A cross-file problem
+    // (duplicate id/as_token, which the spec says the homeserver MUST
+    // enforce) drops every registration, since routing would otherwise be
+    // ambiguous.
+    {
+        auto loaded = appservice::load_registrations(config.appservice().registration_files);
+        for (auto const& finding : loaded.findings)
+        {
+            log_diagnostic("start.appservice_registration_rejected",
+                           {
+                               {"source",  finding.source,  false},
+                               {"message", finding.message, false}
+            },
+                           observability::LogEventSeverity::warning);
+        }
+        log_diagnostic("start.appservices_ready",
+                       {
+                           {"count", std::to_string(loaded.registry.size()), false}
+        },
+                       observability::LogEventSeverity::info);
+        runtime.appservices = std::move(loaded.registry);
+    }
     // Tests run in a long-lived Catch2 process. Applying seccomp/pledge/unveil
     // there would permanently restrict that process and break every subsequent
     // test. The build scripts set MEROVINGIAN_TEST_DISABLE_HARDENING=1 when they
@@ -951,8 +983,23 @@ auto resolve_policy_server_hook(HomeserverRuntime& runtime, trust_safety::Policy
     hook.timeout_milliseconds = static_cast<std::uint32_t>(
         std::min<std::uint64_t>(timeout_milliseconds, std::numeric_limits<std::uint32_t>::max()));
 
+    // Everything from here on is a synchronous round trip to the policy
+    // server — the real one via OutboundClient::perform below, or (in tests)
+    // the injectable trust_safety_policy_server hook standing in for it.
+    // handle_federation_http_request already released runtime.mutex before
+    // calling this function (#415: a slow or unreachable policy server must
+    // not freeze every runtime.mutex consumer for up to
+    // policy_server_timeout). register_local_user, create_room, and the
+    // media download/thumbnail policy check all call this function while
+    // still holding the lock, so releasing it here — not just at that one
+    // call site — is what actually closes the gap. Every value this
+    // function still reads (trust_safety_config, runtime.config, the
+    // request built below) is read above this point, while the lock is
+    // still held; nothing after NetworkIoUnlock touches runtime state. See
+    // NetworkIoUnlock in request_lock.hpp.
     if (runtime.trust_safety_policy_server)
     {
+        auto const unlocked = NetworkIoUnlock{};
         return runtime.trust_safety_policy_server(surface, entity);
     }
 
@@ -982,7 +1029,10 @@ auto resolve_policy_server_hook(HomeserverRuntime& runtime, trust_safety::Policy
         {"Content-Type", "application/json"}
     };
     request.body = serialized.output;
-    auto const result = runtime.outbound_client->perform(request);
+    auto const result = [&]() {
+        auto const unlocked = NetworkIoUnlock{};
+        return runtime.outbound_client->perform(request);
+    }();
     if (!result.ok)
     {
         return hook;

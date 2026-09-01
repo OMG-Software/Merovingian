@@ -3,11 +3,13 @@
 
 #include "merovingian/homeserver/auth_service.hpp"
 
+#include "merovingian/appservice/masquerade_token.hpp"
 #include "merovingian/auth/identity.hpp"
 #include "merovingian/auth/password.hpp"
 #include "merovingian/auth/session.hpp"
 #include "merovingian/auth/token.hpp"
 #include "merovingian/core/file_descriptor.hpp"
+#include "merovingian/core/query_params.hpp"
 #include "merovingian/core/secret_buffer.hpp"
 #include "merovingian/crypto/constant_time.hpp"
 #include "merovingian/crypto/master_key.hpp"
@@ -215,6 +217,80 @@ namespace
         });
     }
 
+    // SSO redirectUrl allowlist check (docs/threat-model.md, "open redirect
+    // via SSO redirectUrl"): a prefix match against each operator-configured
+    // HTTPS allowlist entry. Prefix (rather than exact-origin) matching lets
+    // an operator scope the allowlist down to a specific path under a
+    // trusted origin when they want to; an entry that names a bare origin
+    // still behaves as an origin allowlist because every same-origin URL has
+    // that origin as a prefix.
+    [[nodiscard]] auto redirect_url_is_allowed(config::SsoConfig const& sso, std::string_view redirect_url) noexcept
+        -> bool
+    {
+        if (redirect_url.empty())
+        {
+            return false;
+        }
+        return std::ranges::any_of(sso.redirect_url_allowlist, [redirect_url](std::string const& allowed) {
+            return !allowed.empty() && redirect_url.starts_with(allowed);
+        });
+    }
+
+    [[nodiscard]] auto find_identity_provider(config::SsoConfig const& sso, std::string_view idp_id)
+        -> config::SsoIdentityProvider const*
+    {
+        auto const it = std::ranges::find_if(sso.identity_providers, [idp_id](config::SsoIdentityProvider const& idp) {
+            return idp.id == idp_id;
+        });
+        return it == sso.identity_providers.end() ? nullptr : &(*it);
+    }
+
+    [[nodiscard]] auto append_query_param(std::string url, std::string_view key, std::string_view value) -> std::string
+    {
+        url.push_back(url.find('?') == std::string::npos ? '?' : '&');
+        url += key;
+        url.push_back('=');
+        url += core::percent_encode_path_component(value);
+        return url;
+    }
+
+    // Strips every existing `loginToken` query parameter from `redirect_url`
+    // before a new one is appended (spec step 4: "If it already includes one
+    // or more loginToken parameters, they should be removed before adding
+    // the new one"). Only the query string is touched; the path and any
+    // fragment (there should not be one on a redirectUrl) are left intact.
+    [[nodiscard]] auto strip_login_token_params(std::string_view redirect_url) -> std::string
+    {
+        auto const query_start = redirect_url.find('?');
+        if (query_start == std::string_view::npos)
+        {
+            return std::string{redirect_url};
+        }
+        auto result = std::string{redirect_url.substr(0U, query_start)};
+        auto kept = std::vector<std::string_view>{};
+        auto query = redirect_url.substr(query_start + 1U);
+        while (!query.empty())
+        {
+            auto const amp = query.find('&');
+            auto const pair = query.substr(0U, amp);
+            if (!pair.starts_with("loginToken="))
+            {
+                kept.push_back(pair);
+            }
+            if (amp == std::string_view::npos)
+            {
+                break;
+            }
+            query = query.substr(amp + 1U);
+        }
+        for (auto index = std::size_t{0U}; index < kept.size(); ++index)
+        {
+            result.push_back(index == 0U ? '?' : '&');
+            result += kept[index];
+        }
+        return result;
+    }
+
     // A session is expired when it has a finite expires_at that is now in the
     // past. nullopt means no expiry (legacy or explicitly non-expiring). Mirrors
     // the canonical policy in `auth::session::session_is_active` (src/auth/session.cpp).
@@ -396,14 +472,24 @@ namespace
     }
 
     [[nodiscard]] auto make_user(HomeserverRuntime& runtime, std::string_view localpart, std::string_view password,
-                                 bool admin, std::string_view audit_outcome) -> OperationResult
+                                 bool admin, std::string_view audit_outcome, bool enforce_password_policy = true)
+        -> OperationResult
     {
         auto const user_id = user_id_from_localpart(runtime.config.server().server_name, localpart);
         if (!auth::user_id_is_valid(user_id))
         {
             return make_operation_result(false, {}, "invalid user id");
         }
-        if (!auth::password_is_acceptable(password))
+        // Application Service API registrations (register_appservice_user)
+        // pass enforce_password_policy=false: the generated credential is a
+        // random secret the appservice never sees and password login is
+        // never the intended auth path for that account (masquerade/
+        // m.login.application_service only), so the human-facing
+        // upper/lower/digit/symbol complexity policy in
+        // auth::password_is_acceptable does not apply — it exists to push
+        // back on weak choices a HUMAN makes, not to gate an
+        // internally-generated placeholder.
+        if (enforce_password_policy && !auth::password_is_acceptable(password))
         {
             return make_operation_result(false, {}, "password rejected");
         }
@@ -434,6 +520,124 @@ namespace
                        observability::LogEventSeverity::info);
         return make_operation_result(true, user_id);
     }
+
+    // Shared tail of login_local_user() and login_appservice_user(): device
+    // validation, account-state (locked/suspended) policy, token issuance,
+    // and session persistence. The two callers differ only in how they got
+    // to a validated `user` — one via password verification, the other via
+    // as_token + namespace verification — everything after that point is
+    // identical, so it lives here once rather than being duplicated.
+    // NOLINTBEGIN(bugprone-easily-swappable-parameters)
+    [[nodiscard]] auto complete_login(HomeserverRuntime& runtime, LocalUser& user, std::string_view device_id,
+                                      bool with_ttl) -> OperationResult
+    {
+        if (!auth::device_id_is_valid(device_id))
+        {
+            log_diagnostic_audit(runtime.database, "auth", "login.rejected",
+                                 {
+                                     {"user_id",   user.user_id,           false},
+                                     {"device_id", std::string{device_id}, false},
+                                     {"reason",    "invalid device id",    false}
+            },
+                                 observability::LogEventSeverity::warning, observability::AuditCategory::auth,
+                                 "login.rejected", user.user_id, std::string{device_id}, "invalid device id");
+            return make_operation_result(false, {}, "invalid device id");
+        }
+
+        auto state = auth::AccountState::active;
+        if (user.locked)
+        {
+            state = auth::AccountState::locked;
+        }
+        if (user.suspended)
+        {
+            state = auth::AccountState::suspended;
+        }
+        auto const login = auth::login_policy({user.user_id, state});
+        if (!login.allowed)
+        {
+            // Account locked or suspended: still a 403, not a 400.
+            log_diagnostic_audit(runtime.database, "auth", "login.rejected",
+                                 {
+                                     {"user_id",   user.user_id,           false},
+                                     {"device_id", std::string{device_id}, false},
+                                     {"status",    "403",                  false},
+                                     {"reason",    login.reason,           false}
+            },
+                                 observability::LogEventSeverity::warning, observability::AuditCategory::auth,
+                                 "login.rejected", user.user_id, std::string{device_id}, "403:" + login.reason);
+            return make_operation_result(false, {}, "invalid login", 403U);
+        }
+
+        auto const token = issue_token();
+        if (!token.has_value())
+        {
+            log_diagnostic_audit(runtime.database, "auth", "login.rejected",
+                                 {
+                                     {"user_id",   user.user_id,              false},
+                                     {"device_id", std::string{device_id},    false},
+                                     {"reason",    "token generation failed", false}
+            },
+                                 observability::LogEventSeverity::warning, observability::AuditCategory::auth,
+                                 "login.rejected", user.user_id, std::string{device_id}, "token generation failed");
+            return make_operation_result(false, {}, "token generation failed");
+        }
+        auto const token_hash = issue_token_hash(runtime, *token);
+        if (!token_hash.has_value())
+        {
+            log_diagnostic_audit(runtime.database, "auth", "login.rejected",
+                                 {
+                                     {"user_id",   user.user_id,           false},
+                                     {"device_id", std::string{device_id}, false},
+                                     {"reason",    "token hashing failed", false}
+            },
+                                 observability::LogEventSeverity::warning, observability::AuditCategory::auth,
+                                 "login.rejected", user.user_id, std::string{device_id}, "token hashing failed");
+            return make_operation_result(false, {}, "token hashing failed");
+        }
+        auto const device_exists = std::ranges::any_of(
+            runtime.database.persistent_store.devices, [&user, device_id](database::PersistentDevice const& device) {
+                return device.user_id == user.user_id && device.device_id == device_id;
+            });
+        auto device = std::optional<database::PersistentDevice>{};
+        if (!device_exists)
+        {
+            device = database::PersistentDevice{user.user_id, std::string{device_id}, std::string{device_id}};
+        }
+        // Only honour the configured TTL when the client opted into refresh tokens.
+        // Spec §5.6.2: servers SHOULD NOT expire tokens without co-issuing a refresh token.
+        auto const access_expires_at =
+            token_expires_at(with_ttl ? runtime.config.security().access_token_lifetime_ms : 0LL);
+        if (!database::store_device_and_access_token(
+                runtime.database.persistent_store, std::move(device),
+                {user.user_id, std::string{device_id}, *token_hash, false, access_expires_at}))
+        {
+            log_diagnostic_audit(runtime.database, "auth", "login.rejected",
+                                 {
+                                     {"user_id",   user.user_id,               false},
+                                     {"device_id", std::string{device_id},     false},
+                                     {"status",    "500",                      false},
+                                     {"reason",    "login persistence failed", false}
+            },
+                                 observability::LogEventSeverity::warning, observability::AuditCategory::auth,
+                                 "login.rejected", user.user_id, std::string{device_id},
+                                 "500:login persistence failed");
+            return make_operation_result(false, {}, "login persistence failed", 500U);
+        }
+        ++runtime.database.next_session_id;
+        runtime.database.sessions.push_back(
+            {user.user_id, std::string{device_id}, *token_hash, false, access_expires_at});
+        append_local_audit(runtime.database, observability::AuditCategory::auth, "auth.login", user.user_id,
+                           std::string{device_id}, "accepted");
+        log_diagnostic("login.accepted",
+                       {
+                           {"user_id",   user.user_id,           false},
+                           {"device_id", std::string{device_id}, false}
+        },
+                       observability::LogEventSeverity::info);
+        return make_operation_result(true, *token);
+    }
+    // NOLINTEND(bugprone-easily-swappable-parameters)
 
 } // namespace
 
@@ -526,6 +730,36 @@ auto bootstrap_admin_user(HomeserverRuntime& runtime, std::string_view localpart
     return make_user(runtime, localpart, password, true, "bootstrapped_admin");
 }
 
+// Application Service API (Matrix v1.19) §"Server admin style permissions":
+// `POST /register` with `type: m.login.application_service` bypasses the
+// ordinary registration flow entirely (no registration-token UIA, no
+// trust-safety registration policy hook, no captcha) — "This involves
+// bypassing the registration flows entirely." The caller (client_server.cpp)
+// has already verified the presented as_token and that `localpart` falls
+// within the appservice's namespace (or is its own sender_localpart) before
+// calling this.
+//
+// Passwordless per spec ("have a 'passwordless' user"): the account is
+// created with a freshly generated random password that is immediately
+// discarded and never returned to the caller, so `m.login.password` can
+// never succeed for it by chance — the appservice authenticates as this
+// user exclusively via its as_token (masquerade) or m.login.application_service.
+auto register_appservice_user(HomeserverRuntime& runtime, std::string_view localpart) -> OperationResult
+{
+    auto const user_id = user_id_from_localpart(runtime.config.server().server_name, localpart);
+    if (find_user(runtime.database, user_id) != nullptr)
+    {
+        return make_operation_result(false, {}, "user already exists");
+    }
+    auto const random_password = crypto::secure_random_hex(32U);
+    if (!random_password.has_value())
+    {
+        return make_operation_result(false, {}, "password hashing failed");
+    }
+    return make_user(runtime, localpart, *random_password, false, "created_by_appservice",
+                     /*enforce_password_policy=*/false);
+}
+
 // NOLINTBEGIN(bugprone-easily-swappable-parameters)
 auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std::string_view password,
                       std::string_view device_id, bool with_ttl) -> OperationResult
@@ -552,6 +786,36 @@ auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std:
                              observability::LogEventSeverity::warning, observability::AuditCategory::auth,
                              "login.rejected", std::string{user_id}, std::string{device_id},
                              std::string{"403:"} + audit_reason);
+        return make_operation_result(false, {}, "invalid login", 403U);
+    }
+    return login_local_user_by_id(runtime, user->user_id, device_id, with_ttl);
+}
+// NOLINTEND(bugprone-easily-swappable-parameters)
+
+// Grants a session for an already-authenticated `user_id`: device-id
+// validation, the account lock/suspend gate, token issuance/persistence,
+// and session bookkeeping. This is the second half of login_local_user
+// (everything after its password check), factored out so the SSO
+// login-token exchange (redeem_login_token has already established the
+// caller's identity) can share it instead of duplicating the account-state
+// gate and token-issuance plumbing. Neither caller re-checks a credential
+// here -- this function trusts that `user_id` is already verified and only
+// answers "should this account be allowed a new session, and if so, issue
+// one."
+auto login_local_user_by_id(HomeserverRuntime& runtime, std::string_view user_id, std::string_view device_id,
+                            bool with_ttl) -> OperationResult
+{
+    auto* user = find_user(runtime.database, user_id);
+    if (user == nullptr)
+    {
+        log_diagnostic_audit(runtime.database, "auth", "login.rejected",
+                             {
+                                 {"user_id",   std::string{user_id},   false},
+                                 {"device_id", std::string{device_id}, false},
+                                 {"reason",    "unknown user",         false}
+        },
+                             observability::LogEventSeverity::warning, observability::AuditCategory::auth,
+                             "login.rejected", std::string{user_id}, std::string{device_id}, "403:unknown user");
         return make_operation_result(false, {}, "invalid login", 403U);
     }
     if (!auth::device_id_is_valid(device_id))
@@ -660,6 +924,40 @@ auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std:
 }
 // NOLINTEND(bugprone-easily-swappable-parameters)
 
+// Application Service API (Matrix v1.19) §"Server admin style permissions":
+// logs in as `user_id` WITHOUT a password check, for a `POST /login` call
+// authenticated with an appservice's `as_token` and
+// `type: m.login.application_service`. The caller (client_server.cpp) is
+// responsible for verifying the as_token and that `user_id` falls within
+// the appservice's namespace (or is its own sender_localpart) before
+// calling this — the same division of responsibility as
+// register_appservice_user below. Locked/suspended accounts are still
+// rejected: masquerading does not bypass account-state moderation.
+auto login_appservice_user(HomeserverRuntime& runtime, std::string_view user_id, std::string_view device_id)
+    -> OperationResult
+{
+    log_diagnostic("login.appservice.started",
+                   {
+                       {"user_id",   std::string{user_id},   false},
+                       {"device_id", std::string{device_id}, false}
+    });
+    auto* user = find_user(runtime.database, user_id);
+    if (user == nullptr)
+    {
+        log_diagnostic_audit(runtime.database, "auth", "login.rejected",
+                             {
+                                 {"user_id",   std::string{user_id},   false},
+                                 {"device_id", std::string{device_id}, false},
+                                 {"status",    "403",                  false},
+                                 {"reason",    "unknown user",         false}
+        },
+                             observability::LogEventSeverity::warning, observability::AuditCategory::auth,
+                             "login.rejected", std::string{user_id}, std::string{device_id}, "403:unknown user");
+        return make_operation_result(false, {}, "invalid login", 403U);
+    }
+    return complete_login(runtime, *user, device_id, false);
+}
+
 auto issue_refresh_token_for_session(HomeserverRuntime& runtime, std::string_view user_id, std::string_view device_id)
     -> OperationResult
 {
@@ -757,6 +1055,27 @@ auto refresh_local_session(HomeserverRuntime& runtime, std::string_view refresh_
 
 auto authenticated_user(HomeserverRuntime& runtime, std::string_view access_token) -> std::optional<std::string>
 {
+    // Application Service API (Matrix v1.19) identity-assertion masquerade.
+    // client_server.cpp's dispatch entry point synthesizes this internal
+    // token shape exactly once per request, only after verifying the
+    // presented as_token via constant-time comparison against the registry
+    // and validating the asserted user_id against the appservice's
+    // namespaces — see appservice/masquerade_token.hpp's doc comment for why
+    // a raw externally-supplied token in this shape can never reach here.
+    // Re-validated here anyway (appservice still registered, user_id still
+    // within its namespace) as defense in depth against a stale token
+    // surviving a config reload that removed/changed the appservice.
+    if (auto const identity = appservice::decode_masquerade_token(access_token); identity.has_value())
+    {
+        auto const* registration = runtime.appservices.find_by_id(identity->appservice_id);
+        if (registration == nullptr ||
+            !appservice::appservice_owns_user(*registration, runtime.config.server().server_name, identity->user_id))
+        {
+            return std::nullopt;
+        }
+        return identity->user_id;
+    }
+
     auto const token_hashes = lookup_token_hashes(runtime, access_token);
     if (token_hashes.empty())
     {
@@ -817,6 +1136,22 @@ auto authenticated_user(HomeserverRuntime& runtime, std::string_view access_toke
 auto authenticated_session(HomeserverRuntime const& runtime, std::string_view access_token)
     -> std::optional<LocalSession>
 {
+    // See authenticated_user() above for why this branch is safe.
+    if (auto const identity = appservice::decode_masquerade_token(access_token); identity.has_value())
+    {
+        auto const* registration = runtime.appservices.find_by_id(identity->appservice_id);
+        if (registration == nullptr ||
+            !appservice::appservice_owns_user(*registration, runtime.config.server().server_name, identity->user_id))
+        {
+            return std::nullopt;
+        }
+        // No DB-backed access-token hash exists for a masquerade identity —
+        // it is not a real session row. access_token_hash is left empty;
+        // callers of authenticated_session must not treat it as a lookup
+        // key back into the session store.
+        return LocalSession{identity->user_id, identity->device_id, {}, false, std::nullopt};
+    }
+
     auto const token_hashes = lookup_token_hashes(runtime, access_token);
     if (token_hashes.empty())
     {
@@ -1186,6 +1521,133 @@ auto federation_openid_userinfo(HomeserverRuntime const& runtime, std::string_vi
         }
     }
     return std::nullopt;
+}
+
+auto sso_is_configured(config::SsoConfig const& sso) noexcept -> bool
+{
+    return sso.enabled && !sso.authorization_url.empty() && !sso.redirect_url_allowlist.empty();
+}
+
+auto sso_redirect_target(HomeserverRuntime const& runtime, std::string_view idp_id, std::string_view redirect_url,
+                         std::string_view action) -> SsoRedirectResult
+{
+    auto const& sso = runtime.config.server().sso;
+    // Fail closed: an unconfigured or disabled SSO setup behaves exactly
+    // like the route does not exist, matching what GET /login already
+    // advertises (no m.login.sso flow) rather than half-serving the flow.
+    if (!sso_is_configured(sso))
+    {
+        return {false, 404U, {}, "M_UNRECOGNIZED", "SSO not supported"};
+    }
+    if (!idp_id.empty() && find_identity_provider(sso, idp_id) == nullptr)
+    {
+        // Spec: "404 The IdP ID was not recognized by the server."
+        return {false, 404U, {}, "M_NOT_FOUND", "unknown identity provider"};
+    }
+    if (!redirect_url_is_allowed(sso, redirect_url))
+    {
+        log_diagnostic("sso.redirect.rejected",
+                       {
+                           {"reason", "redirectUrl not allowlisted", false}
+        },
+                       observability::LogEventSeverity::warning);
+        return {false, 400U, {}, "M_INVALID_PARAM", "redirectUrl is not an allowed destination"};
+    }
+
+    auto location = sso.authorization_url;
+    if (!idp_id.empty())
+    {
+        location = append_query_param(std::move(location), "idp", idp_id);
+    }
+    if (!action.empty())
+    {
+        location = append_query_param(std::move(location), "action", action);
+    }
+    // The validated redirectUrl is threaded through so the operator's
+    // external SSO adapter knows where to send the browser once it calls
+    // back into complete_sso_login below.
+    location = append_query_param(std::move(location), "redirectUrl", redirect_url);
+    return {true, 302U, std::move(location), {}, {}};
+}
+
+auto complete_sso_login(HomeserverRuntime& runtime, std::string_view user_id, std::string_view redirect_url)
+    -> OperationResult
+{
+    auto const& sso = runtime.config.server().sso;
+    if (!sso_is_configured(sso))
+    {
+        return make_operation_result(false, {}, "SSO not supported", 404U);
+    }
+    // Never trust a redirectUrl across an integration boundary without
+    // re-checking it -- the caller here is the operator's external SSO
+    // adapter, not the original browser request, so re-validate exactly as
+    // sso_redirect_target did before minting anything.
+    if (!redirect_url_is_allowed(sso, redirect_url))
+    {
+        return make_operation_result(false, {}, "redirectUrl is not an allowed destination", 400U);
+    }
+    if (find_user(runtime.database, user_id) == nullptr)
+    {
+        return make_operation_result(false, {}, "unknown user", 400U);
+    }
+
+    auto const token = issue_token();
+    if (!token.has_value())
+    {
+        return make_operation_result(false, {}, "token generation failed", 500U);
+    }
+    auto const token_hash = issue_token_hash(runtime, *token);
+    if (!token_hash.has_value())
+    {
+        return make_operation_result(false, {}, "token hashing failed", 500U);
+    }
+    // Matrix v1.19 CS API §"Client login via SSO": "The lifetime of this
+    // token SHOULD be limited to around five seconds." A short, fixed
+    // lifetime (not operator-configurable, like the OpenID token lifetime
+    // above) keeps the exposure window tight regardless of how quickly the
+    // client's browser redirect completes the round trip.
+    constexpr auto login_token_lifetime = std::chrono::seconds{30};
+    auto const expires_at = std::chrono::system_clock::now() + login_token_lifetime;
+    if (!database::store_login_token(runtime.database.persistent_store,
+                                     {std::string{user_id}, *token_hash, expires_at, false}))
+    {
+        return make_operation_result(false, {}, "login token persistence failed", 500U);
+    }
+    append_local_audit(runtime.database, observability::AuditCategory::auth, "auth.sso.login_token.issued",
+                       std::string{user_id}, {}, "issued");
+    log_diagnostic("sso.login_token.issued",
+                   {
+                       {"user_id", std::string{user_id}, false}
+    },
+                   observability::LogEventSeverity::info);
+
+    auto const location = append_query_param(strip_login_token_params(redirect_url), "loginToken", *token);
+    return make_operation_result(true, location);
+}
+
+auto redeem_login_token(HomeserverRuntime& runtime, std::string_view login_token) -> std::optional<std::string>
+{
+    if (login_token.empty())
+    {
+        return std::nullopt;
+    }
+    // Deliberately independent of authenticated_user/find_session, exactly
+    // like federation_openid_userinfo above: a login token must never
+    // authenticate as an ordinary access token, so only login_tokens is
+    // ever consulted here.
+    auto const candidate_hashes = lookup_token_hashes(runtime, login_token);
+    if (candidate_hashes.empty())
+    {
+        return std::nullopt;
+    }
+    auto const user_id = database::consume_login_token(runtime.database.persistent_store, candidate_hashes);
+    if (!user_id.has_value())
+    {
+        return std::nullopt;
+    }
+    append_local_audit(runtime.database, observability::AuditCategory::auth, "auth.sso.login_token.redeemed", *user_id,
+                       {}, "redeemed");
+    return user_id;
 }
 
 } // namespace merovingian::homeserver

@@ -4,6 +4,7 @@
 #include "merovingian/config/config.hpp"
 
 #include "merovingian/config/config_parser.hpp"
+#include "merovingian/http/keep_alive.hpp"
 
 #include <algorithm>
 #include <limits>
@@ -42,7 +43,7 @@ namespace
 
 Config::Config(ServerConfig server, ListenersConfig listeners, DatabaseConfig database, SecurityConfig security,
                ClientRateLimitsConfig client_rate_limits, LogModulesConfig log_modules,
-               FederationWorkerConfig federation_worker)
+               FederationWorkerConfig federation_worker, AppserviceConfig appservice)
     : m_server{std::move(server)}
     , m_listeners{std::move(listeners)}
     , m_database{std::move(database)}
@@ -50,6 +51,7 @@ Config::Config(ServerConfig server, ListenersConfig listeners, DatabaseConfig da
     , m_client_rate_limits{std::move(client_rate_limits)}
     , m_log_modules{std::move(log_modules)}
     , m_federation_worker{std::move(federation_worker)}
+    , m_appservice{std::move(appservice)}
 {
 }
 
@@ -121,6 +123,16 @@ auto Config::federation_worker() const noexcept -> FederationWorkerConfig const&
 auto Config::federation_worker() noexcept -> FederationWorkerConfig&
 {
     return m_federation_worker;
+}
+
+auto Config::appservice() const noexcept -> AppserviceConfig const&
+{
+    return m_appservice;
+}
+
+auto Config::appservice() noexcept -> AppserviceConfig&
+{
+    return m_appservice;
 }
 
 auto is_ascii_digit(char value) noexcept -> bool
@@ -558,6 +570,26 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
         }
     }
 
+    // HTTP keep-alive transport policy. Range-validate here so bad config is
+    // rejected at startup rather than silently closing every connection at
+    // request time (http::keep_alive_policy_is_valid is fail-closed, but the
+    // operator should hear about the bad value, not just see connections die).
+    auto const& http_transport = config.server().http;
+    if (!http::keep_alive_policy_is_valid({http_transport.keep_alive, http_transport.keep_alive_idle_seconds,
+                                           http_transport.keep_alive_max_connections}))
+    {
+        if (http_transport.keep_alive_idle_seconds == 0U || http_transport.keep_alive_idle_seconds > 300U)
+        {
+            findings.push_back(
+                {"server.http.keep_alive_idle_seconds", "keep-alive idle window must be 1..300 seconds"});
+        }
+        if (http_transport.keep_alive_max_connections == 0U || http_transport.keep_alive_max_connections > 4096U)
+        {
+            findings.push_back(
+                {"server.http.keep_alive_max_connections", "keep-alive parked-connection cap must be 1..4096"});
+        }
+    }
+
     // TURN configuration: if a server is supplied the operator must also
     // provide credentials so the endpoint can issue usable credentials.
     // A partially populated turn block (e.g. only a username) is rejected
@@ -653,6 +685,63 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
     if (push.total_timeout_seconds < push.connect_timeout_seconds)
     {
         findings.push_back({"server.push.total_timeout_seconds", "total timeout must be >= connect timeout"});
+    }
+
+    // SSO login: when enabled, both the external authorization endpoint and
+    // at least one redirectUrl allowlist entry are required -- an enabled
+    // flow with an empty allowlist would advertise m.login.sso while every
+    // redirect request is rejected, which is confusing rather than secure,
+    // so we reject the config outright instead (fail closed at parse time).
+    auto const& sso = config.server().sso;
+    if (sso.enabled)
+    {
+        if (sso.authorization_url.empty())
+        {
+            findings.push_back({"server.sso.authorization_url", "SSO enabled but authorization_url is missing"});
+        }
+        else if (!is_valid_https_url(sso.authorization_url))
+        {
+            findings.push_back({"server.sso.authorization_url", "SSO authorization_url must use HTTPS"});
+        }
+        if (sso.redirect_url_allowlist.empty())
+        {
+            findings.push_back(
+                {"server.sso.redirect_url_allowlist", "SSO enabled but redirect_url_allowlist is empty"});
+        }
+    }
+    for (auto const& allowed : sso.redirect_url_allowlist)
+    {
+        if (!is_valid_https_url(allowed))
+        {
+            findings.push_back(
+                {"server.sso.redirect_url_allowlist", "each redirectUrl allowlist entry must use HTTPS"});
+        }
+    }
+    auto seen_idp_ids = std::vector<std::string>{};
+    for (auto const& idp : sso.identity_providers)
+    {
+        if (idp.id.empty())
+        {
+            findings.push_back({"server.sso.identity_providers", "identity provider id must not be empty"});
+        }
+        else if (std::ranges::find(seen_idp_ids, idp.id) != seen_idp_ids.end())
+        {
+            findings.push_back({"server.sso.identity_providers", "duplicate identity provider id: " + idp.id});
+        }
+        else
+        {
+            seen_idp_ids.push_back(idp.id);
+        }
+        if (idp.name.empty())
+        {
+            findings.push_back(
+                {"server.sso.identity_providers." + idp.id + ".name", "identity provider name must not be empty"});
+        }
+        if (!idp.icon.empty() && !idp.icon.starts_with("mxc://"))
+        {
+            findings.push_back(
+                {"server.sso.identity_providers." + idp.id + ".icon", "identity provider icon must be an mxc:// URI"});
+        }
     }
 
     if (!is_valid_listener_bind(config.listeners().client.bind))
@@ -862,6 +951,11 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
         findings.push_back(
             {"security.federation.per_origin_edu_rate", "federation per-origin EDU rate must be N>0 per Ws>0"});
     }
+    if (!http::rate_limit_policy_is_valid(config.security().federation.per_origin_request_rate))
+    {
+        findings.push_back({"security.federation.per_origin_request_rate",
+                            "federation per-origin non-/send request rate must be N>0 per Ws>0"});
+    }
 
     auto const federation_remote_timeout = parse_duration_seconds(config.security().federation.remote_timeout);
     if (!federation_remote_timeout.valid)
@@ -1001,6 +1095,20 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
         {
             findings.push_back(
                 {"client_rate_limits.per_user." + target, "rate-limit policy must be N>0 per 0<Ws<=3600"});
+        }
+    }
+    // Tier-override keys are re-validated here (not just at parse time) so a
+    // programmatically-constructed Config cannot smuggle an unknown tier
+    // name or out-of-range policy past validation.
+    for (auto const& [tier, policy] : config.client_rate_limits().tier)
+    {
+        if (!http::rate_limit_tier_from_name(tier).has_value())
+        {
+            findings.push_back({"client_rate_limits.tier." + tier, "unknown rate-limit tier name"});
+        }
+        if (policy.max_requests == 0U || policy.window_seconds == 0U || policy.window_seconds > max_window_seconds)
+        {
+            findings.push_back({"client_rate_limits.tier." + tier, "rate-limit policy must be N>0 per 0<Ws<=3600"});
         }
     }
     if (config.client_rate_limits().default_per_ip.max_requests == 0U ||

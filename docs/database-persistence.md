@@ -54,7 +54,11 @@ remaining work before PostgreSQL-backed production operation.
   new table) so custom members of a pusher's registration-time `data`
   dictionary — beyond the `url`/`format` keys already stored as dedicated
   columns — survive restarts and can be forwarded to the Push Gateway (see
-  "Pushers" below).
+  "Pushers" below), and schema version `12` adds the `login_tokens` table
+  via `migrations/012_login_tokens.sql` so short-lived, single-use SSO login
+  tokens minted by `homeserver::complete_sso_login` survive restarts and can
+  be redeemed exactly once by `POST /_matrix/client/v3/login` with `type:
+  m.login.token` (see "SSO login tokens" below).
   After the project reaches production-ready `v1.0.0`, every schema change
   must add a forward migration and keep deployed databases compatible.
 - SQLite RAII wrappers around database connections and prepared statements.
@@ -292,6 +296,70 @@ remaining work before PostgreSQL-backed production operation.
   token's natural bound is its own short expiry (one hour; see
   `docs/auth-identity.md`) rather than a per-user row count, unlike
   `notifications`' count-based cap above.
+- `login_tokens` table (schema version `12`, migration
+  `migrations/012_login_tokens.sql`) stores the short-lived, single-use
+  tokens minted by `homeserver::complete_sso_login` when an SSO
+  authentication completes (Matrix v1.19 CS API §"Client login via SSO")
+  and redeemed exactly once by `POST /_matrix/client/v3/login` with `type:
+  m.login.token` (`homeserver::redeem_login_token`). Columns are `user_id`,
+  `token_hash` (primary key), `expires_at` (epoch milliseconds, same
+  encoding as `openid_tokens.expires_at`), and `used` (`TEXT NOT NULL
+  DEFAULT 'false'`, following the `revoked`-column boolean-as-text
+  convention `access_tokens`/`refresh_tokens` already use). The runtime
+  migration path uses the compiled catalog in `src/database/migration.cpp`
+  (upgrade step version `12` "login_tokens"; downgrade step version `11`
+  "drop_login_tokens"); `schema::current_schema_version()` returns `12U`.
+  This is a **separate table from `access_tokens`**, for the same
+  token-confusion reason `openid_tokens` is — see `docs/auth-identity.md`
+  ("SSO login") and `docs/threat-model.md` ("Open redirect and login-token
+  exfiltration via SSO redirectUrl"). `database::store_login_token` persists
+  a row (reusing `issue_token_hash`, the same keyed-hash machinery access
+  tokens use) and mirrors the openid-token retention strategy: every insert
+  sweeps every already-expired-or-used row, not just the one just inserted,
+  since a login token's natural bound is its own ~30s expiry or single use
+  rather than a row count. `database::consume_login_token` is the only
+  function that ever reads this table back and is the sole redemption path:
+  it finds an unused, unexpired row matching one of the candidate hashes
+  (constant-time compared via `crypto::constant_time_equal`), marks it used
+  in the backend *before* returning the owning `user_id` so a persistence
+  failure can never leave a token silently redeemable twice from memory
+  alone, and returns `nullopt` on any miss (unknown, expired, or
+  already-used token are indistinguishable to the caller). Implemented for
+  both SQLite and PostgreSQL, hydrated on backend open.
+  `migrations/012_login_tokens.sql`) belongs to a sibling feature branch
+  (SSO login) and carries no C++ store/find/hydration code in this codebase
+  — it is registered in `schema.cpp`/`migration.cpp` purely so this branch's
+  own migration chain has no version gap between the sibling branch's `12`
+  and this branch's `13` below.
+- `appservice_txn_cursor` table (schema version `13`, migration
+  `migrations/013_appservice_txn_cursor.sql`) persists the outbound
+  `PUT /_matrix/app/v1/transactions/{txnId}` delivery cursor for each
+  registered Application Service API (Matrix v1.19) appservice, keyed on
+  `appservice_id` (one row per appservice). Columns: `next_txn_id` (the
+  next fresh transaction id to allocate — monotonic, never reused),
+  `delivered_stream_ordering` (high-water mark: every event up to and
+  including this position has been acknowledged), `pending_txn_id` and
+  `pending_stream_ordering` (the currently in-flight, unacknowledged batch,
+  if any — `pending_txn_id == 0` means none). Every field is stored as
+  `TEXT`, matching this table's `pushers`/`notifications`/`openid_tokens`
+  neighbours, and parsed back to `std::uint64_t` at hydration. The
+  `PersistentAppserviceTxnCursor` struct and the
+  `find_appservice_txn_cursor`/`store_appservice_txn_cursor` store functions
+  ([persistent_store.hpp](../include/merovingian/database/persistent_store.hpp))
+  are implemented for both SQLite and PostgreSQL, hydrated on backend open.
+  Delivery itself (`room_service.cpp`'s `dispatch_appservice_delivery`,
+  called from `send_event()`, `dispatch_membership_push_notification()`, and
+  the federation `deliver_federation_push_notifications()` path) replays
+  forward through the existing `events` table by `stream_ordering` rather
+  than maintaining a separate durable outbox — this row is the *entire*
+  persisted delivery state. A retry of an in-flight batch reuses the exact
+  same `pending_txn_id` and re-derives the identical single event from
+  `events`, never growing it, per the spec's "Homeservers MUST NOT alter
+  ... events they were going to send within that transaction ID on
+  retries." Delivery is synchronous (on the request path that produced the
+  triggering event), not a background/async dispatch like push notification
+  delivery — see `dispatch_appservice_delivery`'s doc comment for why, and
+  `docs/todos/capability-gaps.md` for the documented follow-up.
 - `/sync` calls `database::ensure_sync_stream_id_ahead_of()` when the client's
   `since` token is ahead of the server's counter. This recovers live deployments
   whose counter rolled back below a stored token (for example, when the watermark
@@ -424,3 +492,27 @@ These remain deferred:
 1. Extend transaction helpers across federation queues, policy actions, and
    media metadata once those rows are runtime-wired.
 2. Persist push rules, federation queues, and media blob metadata.
+3. **Wire PostgreSQL migration/runtime role separation into the live
+   connection path (production-milestone.md release blocker).** Today the
+   role-enforcement mechanism (`set_postgresql_role`/`reset_postgresql_role`,
+   `docs/database-persistence.md` above) and its CI proof
+   (`postgres-integration.yml`) are real and passing, and
+   `packaging/postgresql/provision-roles.sql` provisions the two roles for an
+   operator — but nothing in the live startup path actually calls
+   `set_postgresql_role()`. `merovingian-db-migrate` (`src/db_migrate.cpp`)
+   never opens a database connection at all; it only prints an offline
+   migration *plan*. Schema migrations are applied automatically by
+   `bootstrap_local_database()`/`migration.hpp` on every server startup,
+   through the same connection pool that then serves runtime traffic, so
+   today the login role in `database.uri_file` always carries DDL privileges
+   whether or not `provision-roles.sql` has been run. Closing this needs: (a)
+   `merovingian-db-migrate` to become a real tool that connects, `SET ROLE`s
+   to the migration role, and applies migrations; (b) the server's own
+   runtime bootstrap to `SET ROLE` to the runtime role before serving traffic
+   and to refuse to auto-apply migrations itself when a migration role is
+   configured; (c) an integration test proving the *config-driven* startup
+   path (not just the primitive in isolation) rejects DDL through the
+   runtime connection. See `packaging/postgresql/provision-roles.sql` for
+   the interim operator-driven alternative (provision the roles, run
+   migrations out-of-band as the more privileged role, point
+   `database.uri_file` at a login restricted to the runtime role).

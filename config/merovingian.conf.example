@@ -43,6 +43,22 @@ server.cors.allow_headers=authorization, content-type
 server.cors.allow_credentials=false
 server.cors.max_age=86400
 
+# HTTP/1.1 persistent connections (keep-alive, RFC 9112 §9.3).
+# keep_alive=true serves sequential requests over one connection: HTTP/1.1
+# clients get persistent connections by default, HTTP/1.0 clients only when
+# they send "Connection: keep-alive", and any client may opt out per request
+# with "Connection: close". Pipelining (multiple outstanding requests) is
+# not supported; pipelined bytes are buffered and answered in order.
+# keep_alive_idle_seconds bounds how long an idle kept-alive connection is
+# held before the server closes it (1..300). Every parked connection holds a
+# request-pool worker thread, so keep_alive_max_connections (1..4096) caps
+# how many connections the whole process will park at once — beyond the cap
+# the server answers with "Connection: close" instead of parking. These
+# keys are read when the listeners start; changes require a restart.
+server.http.keep_alive=true
+server.http.keep_alive_idle_seconds=15
+server.http.keep_alive_max_connections=8
+
 # TURN server for VoIP relay (optional)
 # When server.turn.server is empty, GET /_matrix/client/v3/voip/turnServer
 # returns an empty object so clients gracefully disable relay support.

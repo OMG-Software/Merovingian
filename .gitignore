@@ -25,3 +25,7 @@ tsan-ci-log*.txt
 /subprojects/curl-8.20.0/
 /subprojects/sqlite-amalgamation-3530100/
 /subprojects/packagecache/
+
+# Local review scratch and CI capture files — never part of the source tree
+.review_tmp/
+.ci_pr_checks_final.txt

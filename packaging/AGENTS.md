@@ -16,6 +16,7 @@ Contains the package metadata and init scripts for each supported OS.
 | `systemd/` | `merovingian.service` unit file |
 | `openrc/` | OpenRC init script |
 | `rc.d/` | BSD `rc.d` script |
+| `postgresql/` | `provision-roles.sql` — provisions separate migration/runtime PostgreSQL roles for production deployments |
 
 ## Rules
 

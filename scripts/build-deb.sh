@@ -1,9 +1,9 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Build for merovingian 0.11.13.
+# Build for merovingian 0.12.1.
 set -e
 
-VERSION="0.11.13"
+VERSION="0.12.1"
 PKG_NAME="merovingian"
 STAGING="staging-deb"
 

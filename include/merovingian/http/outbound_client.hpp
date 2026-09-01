@@ -66,6 +66,19 @@ struct OutboundRequest final
     // Empty means "use system trust". Production federation traffic leaves
     // this empty; tests and pinned-CA deployments populate it.
     std::string trusted_ca_pem{};
+    // Opt-in escape hatch from the https-only invariant above. MUST be left
+    // false for every URL that is attacker/client-influenced in any way
+    // (federation destinations, a pusher's registered gateway URL, an
+    // identity server named by a client) — those stay https-only,
+    // unconditionally, with no way to override it here. The only sanctioned
+    // use is a destination the OPERATOR configured out-of-band (a local
+    // filesystem artifact, not something a network peer can point at): an
+    // appservice registration file's `url`, which the Matrix Application
+    // Service API's own canonical example (and most real-world bridges)
+    // gives as a plain `http://` localhost address. When true, `url` may be
+    // `http://` OR `https://`; TLS verification still applies whenever the
+    // connection does end up being TLS.
+    bool allow_cleartext_http{false};
 };
 
 struct OutboundResponse final

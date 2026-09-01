@@ -115,8 +115,8 @@ namespace
         {
             edus += ",";
         }
-        edus +=
-            "{\"edu_type\":\"m.typing\",\"content\":{\"room_id\":\"!room:example.org\",\"user_id\":\"@alice:matrix.example.org\",\"typing\":true}}";
+        edus += "{\"edu_type\":\"m.typing\",\"content\":{\"room_id\":\"!room:example.org\",\"user_id\":\"@alice:matrix."
+                "example.org\",\"typing\":true}}";
     }
     return std::string{"{\"origin\":\""} + origin + "\",\"origin_server_ts\":1000,\"pdus\":[],\"edus\":[" + edus + "]}";
 }
@@ -603,9 +603,9 @@ SCENARIO("Inbound federation handles non-transaction endpoints with PDU validati
         auto const sender = std::string{"@alice:matrix.example.org"};
         auto const target_user = std::string{"@alice:matrix.example.org"};
         auto const unsigned_invite_json =
-            std::string{"{\"type\":\"m.room.member\",\"state_key\":\""} + target_user +
-            "\",\"sender\":\"" + sender +
-            "\",\"room_id\":\"!room1:example.org\",\"content\":{\"membership\":\"invite\"},\"depth\":1,\"origin_server_ts\":1000,\"prev_events\":[],\"auth_events\":[]}";
+            std::string{"{\"type\":\"m.room.member\",\"state_key\":\""} + target_user + "\",\"sender\":\"" + sender +
+            "\",\"room_id\":\"!room1:example.org\",\"content\":{\"membership\":\"invite\"},\"depth\":1,\"origin_server_"
+            "ts\":1000,\"prev_events\":[],\"auth_events\":[]}";
         auto const invite_event_json =
             merovingian::federation::test::make_signed_event_json(unsigned_invite_json, origin, key_id, token, "12");
         REQUIRE_FALSE(invite_event_json.empty());
@@ -820,6 +820,72 @@ SCENARIO("Inbound federation rate limits authenticated origins by transaction PD
                 REQUIRE(edu_throttled.status == 429U);
                 REQUIRE(edu_throttled.body.find("remote EDU rate limit exceeded") != std::string::npos);
                 REQUIRE(transaction_runtime.remotes.front().trust.consecutive_failures == 0U);
+            }
+        }
+    }
+}
+
+SCENARIO("Inbound federation rate limits non-transaction endpoints per verified origin",
+         "[federation][inbound][rate-limit]")
+{
+    GIVEN("known remotes and a strict per-origin non-/send request cap")
+    {
+        auto const origin = std::string{"matrix.example.org"};
+        auto const other_origin = std::string{"elsewhere.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const token = std::string{"verify-token"};
+        auto const other_token = std::string{"other-token"};
+
+        auto request_limited_config = runtime_config();
+        request_limited_config.per_origin_request_rate = {2U, 60U};
+        auto runtime = merovingian::federation::make_federation_runtime_state(request_limited_config);
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
+        merovingian::federation::upsert_remote(runtime, remote_for(other_origin, key_id, other_token));
+
+        // A non-/send endpoint (query/profile) reached via its own signed
+        // GET. Without a provider wired the handler answers 501, but the
+        // per-origin request check runs before dispatch, so the observable
+        // difference is the 429 on the third request.
+        auto const make_query_request = [&](std::string const& req_origin, std::string const& req_token,
+                                            std::string const& target) {
+            auto request = merovingian::federation::SignedFederationRequest{};
+            request.method = "GET";
+            request.target = target;
+            request.origin = req_origin;
+            request.destination = "local.example.org";
+            request.key_id = key_id;
+            request.now_ts = 1000U;
+            request.canonical_json_verified = true;
+            request.body = "{}";
+            request.signature = merovingian::federation::make_federation_signature(
+                req_origin, request.destination, request.method, request.target, request.body,
+                merovingian::federation::test::keypair_from_seed(req_token).secret_key);
+            return request;
+        };
+        auto const target = std::string{"/_matrix/federation/v1/query/profile?user_id=@alice:example.org"};
+
+        WHEN("one origin issues three non-/send requests within the window")
+        {
+            auto const first = merovingian::federation::handle_inbound_federation_request(
+                runtime, make_query_request(origin, token, target));
+            auto const second = merovingian::federation::handle_inbound_federation_request(
+                runtime, make_query_request(origin, token, target));
+            auto const third = merovingian::federation::handle_inbound_federation_request(
+                runtime, make_query_request(origin, token, target));
+            auto const other_origin_first = merovingian::federation::handle_inbound_federation_request(
+                runtime, make_query_request(other_origin, other_token, target));
+
+            THEN("the first two pass the cap and the third is rejected with 429 M_LIMIT_EXCEEDED")
+            {
+                REQUIRE(first.status != 429U);
+                REQUIRE(second.status != 429U);
+                REQUIRE(third.status == 429U);
+                REQUIRE(third.body.find("M_LIMIT_EXCEEDED") != std::string::npos);
+                REQUIRE(third.body.find("remote non-transaction request rate limit exceeded") != std::string::npos);
+            }
+            AND_THEN("a different verified origin has its own bucket and is unaffected")
+            {
+                REQUIRE(other_origin_first.status != 429U);
             }
         }
     }
