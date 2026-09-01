@@ -30,6 +30,24 @@
   inside its own exclusive namespace, and reporting that would refuse to start
   every correctly configured bridge.
 
+- **`docs/todos/production-milestone.md` reassessed and restructured.** The
+  charter conflated "we must know this" with "CI must prove it every pull
+  request", and carried one item — "complete full Matrix v1.19 conformance and
+  endpoint coverage" — that could never be marked done and so blocked 1.0.0
+  permanently while communicating nothing. Soak, load and chaos runs cannot
+  produce meaningful numbers on shared, time-limited runners: thresholds loose
+  enough to survive runner noise prove nothing, tight enough to mean something
+  flake, and a green soak badge that means nothing invites the conclusion that
+  concurrency has been checked. They are now maintainer-run release evidence
+  recorded at tag time beside the compiler flags and checksums, which is
+  stronger evidence than a CI figure because the hardware is real.
+  Five blockers remain: `/messages` chunk-relevant state, PostgreSQL privilege
+  separation that is provisioned but never applied, an external Complement run,
+  push silently discarding email pushers, and — newly identified — no tested
+  upgrade path from a database written by an older release. Descoped items are
+  recorded under "Decided against" rather than deleted, so a later audit does
+  not silently reintroduce them.
+
 ## 0.12.1
 
 Release-blocker closures branch (`feature/release-blockers`). The audit that
