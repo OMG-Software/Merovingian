@@ -8,6 +8,18 @@
   the branch is merged and gone, and the closing summary lists the rows that
   are genuinely still open rather than excluding only HTTP keep-alive.
 
+- **`leave_room` releases `runtime.mutex` through a scoped guard.** The remote
+  leave exchange released the lock by hand and re-acquired it at nine separate
+  return paths; a throw anywhere across the three federation round trips left
+  the mutex down for that thread and the next request it served. The exchange
+  now sits in one `ScopedGuardRelease` scope, deleting all nine manual
+  re-locks, with the `send_leave` result declared outside it because the
+  membership write that consumes it must hold the lock.
+- **`join_room`/`leave_room` were recorded in 0.12.1 as sharing `create_room`'s
+  lock gap; they do not.** Both already released the guard around their
+  federation calls. The regression written to expose the supposed stall passes
+  against the unfixed code and is kept as a guard on the property.
+
 ## 0.12.1
 
 Release-blocker closures branch (`feature/release-blockers`). The audit that

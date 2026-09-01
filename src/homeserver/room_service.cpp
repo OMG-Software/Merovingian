@@ -62,6 +62,7 @@
 #include <set>
 #include <span>
 #include <string>
+#include <tuple>
 #include <string_view>
 #include <system_error>
 #include <thread>
@@ -4391,146 +4392,150 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
         auto const key_id = signing_key.has_value() ? signing_key->key_id : std::string{};
         auto const secret_key = runtime.database.signing_secret_key.bytes();
 
-        guard.unlock();
+        // Consumed after the released scope below closes (the membership write
+        // in step 5 needs the lock), so it must outlive that scope.
+        auto send_ok = false;
+        auto send_body = std::string{};
 
-        // Step 1: make_leave — fetch a leave event template from the remote server.
-        auto make_leave_tx = federation::make_outbound_make_membership(
-            federation::FederationEndpoint::make_leave, remote_server, our_server, room_id, *user_id, {});
-        log_diagnostic("room.leave.remote.make_leave", {
-                                                           {"actor",         *user_id,             false},
-                                                           {"room_id",       std::string{room_id}, false},
-                                                           {"remote_server", remote_server,        false}
-        });
-        auto const [make_ok, make_body] = perform_sync_outbound_call(runtime, room_id, make_leave_tx, key_id,
-                                                                     secret_key, "room.leave.remote.make_leave_failed",
-                                                                     runtime.federation.config.remote_timeout_seconds);
-        if (!make_ok)
+        // The whole remote-leave exchange runs with runtime.mutex released:
+        // three federation round trips must not freeze every other request.
+        // Scoped rather than a hand-written unlock/lock pair so the guard is
+        // restored on EVERY exit — including a throw out of
+        // perform_sync_outbound_call, which previously left the mutex down for
+        // this thread and the next request it served.
         {
-            guard.lock();
-            log_diagnostic("room.leave.rejected",
-                           {
-                               {"actor",   *user_id,             false},
-                               {"room_id", std::string{room_id}, false},
-                               {"status",  "502",                false},
-                               {"reason",  "make_leave failed",  false}
-            },
-                           observability::LogEventSeverity::warning);
-            return make_operation_result(false, {}, "make_leave failed: " + make_body, 502U);
-        }
+            auto const released = merovingian::homeserver::ScopedGuardRelease{guard};
 
-        // Step 2: validate the leave event template.
-        auto const make_response = canonicaljson::parse_lossless(make_body);
-        auto const* make_obj = std::get_if<canonicaljson::Object>(&make_response.value.storage());
-        if (make_obj == nullptr)
-        {
-            guard.lock();
-            log_diagnostic("room.leave.rejected", {
-                                                      {"actor",   *user_id,                    false},
-                                                      {"room_id", std::string{room_id},        false},
-                                                      {"status",  "502",                       false},
-                                                      {"reason",  "malformed make_leave body", false}
+            // Step 1: make_leave — fetch a leave event template from the remote server.
+            auto make_leave_tx = federation::make_outbound_make_membership(
+                federation::FederationEndpoint::make_leave, remote_server, our_server, room_id, *user_id, {});
+            log_diagnostic("room.leave.remote.make_leave", {
+                                                               {"actor",         *user_id,             false},
+                                                               {"room_id",       std::string{room_id}, false},
+                                                               {"remote_server", remote_server,        false}
             });
-            return make_operation_result(false, {}, "malformed make_leave response", 502U);
-        }
-        auto const validated = validate_make_leave_event(room_id, *user_id, *make_obj);
-        if (!validated.ok)
-        {
-            guard.lock();
-            log_diagnostic("room.leave.rejected", {
-                                                      {"actor",   *user_id,             false},
-                                                      {"room_id", std::string{room_id}, false},
-                                                      {"status",  "502",                false},
-                                                      {"reason",  validated.reason,     false}
-            });
-            return make_operation_result(false, {}, validated.reason, 502U);
-        }
-        auto const room_version = validated.room_version;
-        auto event_object = validated.event;
+            auto const [make_ok, make_body] = perform_sync_outbound_call(runtime, room_id, make_leave_tx, key_id,
+                                                                         secret_key, "room.leave.remote.make_leave_failed",
+                                                                         runtime.federation.config.remote_timeout_seconds);
+            if (!make_ok)
+            {
+                log_diagnostic("room.leave.rejected",
+                               {
+                                   {"actor",   *user_id,             false},
+                                   {"room_id", std::string{room_id}, false},
+                                   {"status",  "502",                false},
+                                   {"reason",  "make_leave failed",  false}
+                },
+                               observability::LogEventSeverity::warning);
+                return make_operation_result(false, {}, "make_leave failed: " + make_body, 502U);
+            }
 
-        // Step 3: add content hash and sign the leave event.
-        auto const content_hash = events::make_content_hash(canonicaljson::Value{event_object});
-        if (!content_hash.error.empty())
-        {
-            guard.lock();
-            log_diagnostic("room.leave.rejected", {
-                                                      {"actor",   *user_id,             false},
-                                                      {"room_id", std::string{room_id}, false},
-                                                      {"status",  "500",                false},
-                                                      {"reason",  content_hash.error,   false}
-            });
-            return make_operation_result(false, {}, "leave event content hash failed", 500U);
-        }
-        auto hashes_obj = canonicaljson::Object{};
-        hashes_obj.push_back(canonicaljson::make_member("sha256", canonicaljson::Value{content_hash.sha256}));
-        event_object.push_back(canonicaljson::make_member("hashes", canonicaljson::Value{std::move(hashes_obj)}));
+            // Step 2: validate the leave event template.
+            auto const make_response = canonicaljson::parse_lossless(make_body);
+            auto const* make_obj = std::get_if<canonicaljson::Object>(&make_response.value.storage());
+            if (make_obj == nullptr)
+            {
+                log_diagnostic("room.leave.rejected", {
+                                                          {"actor",   *user_id,                    false},
+                                                          {"room_id", std::string{room_id},        false},
+                                                          {"status",  "502",                       false},
+                                                          {"reason",  "malformed make_leave body", false}
+                });
+                return make_operation_result(false, {}, "malformed make_leave response", 502U);
+            }
+            auto const validated = validate_make_leave_event(room_id, *user_id, *make_obj);
+            if (!validated.ok)
+            {
+                log_diagnostic("room.leave.rejected", {
+                                                          {"actor",   *user_id,             false},
+                                                          {"room_id", std::string{room_id}, false},
+                                                          {"status",  "502",                false},
+                                                          {"reason",  validated.reason,     false}
+                });
+                return make_operation_result(false, {}, validated.reason, 502U);
+            }
+            auto const room_version = validated.room_version;
+            auto event_object = validated.event;
 
-        auto event_to_sign = canonicaljson::Value{event_object};
-        auto const* policy = rooms::find_room_version_policy(room_version);
-        if (policy == nullptr)
-        {
-            guard.lock();
-            log_diagnostic("room.leave.rejected", {
-                                                      {"actor",   *user_id,                      false},
-                                                      {"room_id", std::string{room_id},          false},
-                                                      {"status",  "500",                         false},
-                                                      {"reason",  "room version policy missing", false}
-            });
-            return make_operation_result(false, {}, "room version policy missing", 500U);
-        }
-        if (runtime.crypto_provider == nullptr)
-        {
-            guard.lock();
-            log_diagnostic("room.leave.rejected", {
-                                                      {"actor",   *user_id,                                false},
-                                                      {"room_id", std::string{room_id},                    false},
-                                                      {"status",  "500",                                   false},
-                                                      {"reason",  "server signing provider not available", false}
-            });
-            return make_operation_result(false, {}, "server signing provider not available", 500U);
-        }
-        auto key_store = RuntimeSigningKeyStore{our_server, signing_key.value()};
-        auto const signed_event =
-            events::sign_event_for_server(event_to_sign, *policy, key_store, *runtime.crypto_provider, our_server);
-        if (!signed_event.error.empty())
-        {
-            guard.lock();
-            log_diagnostic("room.leave.rejected", {
-                                                      {"actor",   *user_id,             false},
-                                                      {"room_id", std::string{room_id}, false},
-                                                      {"status",  "500",                false},
-                                                      {"reason",  signed_event.error,   false}
-            });
-            return make_operation_result(false, {}, "event signing failed", 500U);
-        }
-        auto const signed_value = canonicaljson::parse_lossless(signed_event.event_json);
-        auto const event_id_result = events::make_reference_hash_event_id(signed_value.value, *policy);
-        if (!event_id_result.error.empty() || event_id_result.event_id.empty())
-        {
-            guard.lock();
-            log_diagnostic("room.leave.rejected", {
-                                                      {"actor",   *user_id,                      false},
-                                                      {"room_id", std::string{room_id},          false},
-                                                      {"status",  "500",                         false},
-                                                      {"reason",  "event_id computation failed", false}
-            });
-            return make_operation_result(false, {}, "event_id computation failed", 500U);
-        }
+            // Step 3: add content hash and sign the leave event.
+            auto const content_hash = events::make_content_hash(canonicaljson::Value{event_object});
+            if (!content_hash.error.empty())
+            {
+                log_diagnostic("room.leave.rejected", {
+                                                          {"actor",   *user_id,             false},
+                                                          {"room_id", std::string{room_id}, false},
+                                                          {"status",  "500",                false},
+                                                          {"reason",  content_hash.error,   false}
+                });
+                return make_operation_result(false, {}, "leave event content hash failed", 500U);
+            }
+            auto hashes_obj = canonicaljson::Object{};
+            hashes_obj.push_back(canonicaljson::make_member("sha256", canonicaljson::Value{content_hash.sha256}));
+            event_object.push_back(canonicaljson::make_member("hashes", canonicaljson::Value{std::move(hashes_obj)}));
 
-        // Step 4: send_leave — deliver the signed leave event to the remote server.
-        auto send_leave_tx = federation::make_outbound_send_membership(
-            federation::FederationEndpoint::send_leave, remote_server, our_server, room_id, event_id_result.event_id,
-            signed_event.event_json);
-        log_diagnostic("room.leave.remote.send_leave", {
-                                                           {"actor",         *user_id,                 false},
-                                                           {"room_id",       std::string{room_id},     false},
-                                                           {"remote_server", remote_server,            false},
-                                                           {"event_id",      event_id_result.event_id, false}
-        });
-        auto const [send_ok, send_body] = perform_sync_outbound_call(runtime, room_id, send_leave_tx, key_id,
-                                                                     secret_key, "room.leave.remote.send_leave_failed",
-                                                                     runtime.federation.config.remote_timeout_seconds);
+            auto event_to_sign = canonicaljson::Value{event_object};
+            auto const* policy = rooms::find_room_version_policy(room_version);
+            if (policy == nullptr)
+            {
+                log_diagnostic("room.leave.rejected", {
+                                                          {"actor",   *user_id,                      false},
+                                                          {"room_id", std::string{room_id},          false},
+                                                          {"status",  "500",                         false},
+                                                          {"reason",  "room version policy missing", false}
+                });
+                return make_operation_result(false, {}, "room version policy missing", 500U);
+            }
+            if (runtime.crypto_provider == nullptr)
+            {
+                log_diagnostic("room.leave.rejected", {
+                                                          {"actor",   *user_id,                                false},
+                                                          {"room_id", std::string{room_id},                    false},
+                                                          {"status",  "500",                                   false},
+                                                          {"reason",  "server signing provider not available", false}
+                });
+                return make_operation_result(false, {}, "server signing provider not available", 500U);
+            }
+            auto key_store = RuntimeSigningKeyStore{our_server, signing_key.value()};
+            auto const signed_event =
+                events::sign_event_for_server(event_to_sign, *policy, key_store, *runtime.crypto_provider, our_server);
+            if (!signed_event.error.empty())
+            {
+                log_diagnostic("room.leave.rejected", {
+                                                          {"actor",   *user_id,             false},
+                                                          {"room_id", std::string{room_id}, false},
+                                                          {"status",  "500",                false},
+                                                          {"reason",  signed_event.error,   false}
+                });
+                return make_operation_result(false, {}, "event signing failed", 500U);
+            }
+            auto const signed_value = canonicaljson::parse_lossless(signed_event.event_json);
+            auto const event_id_result = events::make_reference_hash_event_id(signed_value.value, *policy);
+            if (!event_id_result.error.empty() || event_id_result.event_id.empty())
+            {
+                log_diagnostic("room.leave.rejected", {
+                                                          {"actor",   *user_id,                      false},
+                                                          {"room_id", std::string{room_id},          false},
+                                                          {"status",  "500",                         false},
+                                                          {"reason",  "event_id computation failed", false}
+                });
+                return make_operation_result(false, {}, "event_id computation failed", 500U);
+            }
 
-        guard.lock();
+            // Step 4: send_leave — deliver the signed leave event to the remote server.
+            auto send_leave_tx = federation::make_outbound_send_membership(
+                federation::FederationEndpoint::send_leave, remote_server, our_server, room_id, event_id_result.event_id,
+                signed_event.event_json);
+            log_diagnostic("room.leave.remote.send_leave", {
+                                                               {"actor",         *user_id,                 false},
+                                                               {"room_id",       std::string{room_id},     false},
+                                                               {"remote_server", remote_server,            false},
+                                                               {"event_id",      event_id_result.event_id, false}
+            });
+            std::tie(send_ok, send_body) = perform_sync_outbound_call(runtime, room_id, send_leave_tx, key_id,
+                                                                         secret_key, "room.leave.remote.send_leave_failed",
+                                                                         runtime.federation.config.remote_timeout_seconds);
+
+        }
 
         if (!send_ok)
         {
