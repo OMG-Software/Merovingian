@@ -576,12 +576,22 @@ This is the same unlock/call/relock idiom `local_http_router.cpp` already
 used for `join_room`, so `create_room`'s own guard becomes the *only* lock in
 scope and the one `NetworkIoUnlock` actually finds and releases.
 
-**`join_room` and `leave_room` have the identical self-locking shape** and
-very likely the same latent gap for their own outbound federation calls
-(`perform_sync_outbound_call`'s `NetworkIoUnlock` sites). Fixing them needs
-its own regression coverage per function and was deliberately left as
-follow-up work rather than folded into this change — see the task tracker
-entry created alongside this fix.
+**`join_room` and `leave_room` have the identical self-locking shape but NOT
+the same gap** — checked in 0.12.2, and the suspicion recorded here in 0.12.1
+was wrong. Both already release their guard around the federation round trip
+with hand-written `guard.unlock()`/`guard.lock()` pairs, so the mutex is not
+held across `make_join`/`send_join`/`make_leave`. The regression written to
+expose the supposed stall — a remote join against a peer that accepts and
+withholds, asserting an unrelated request stays inside the responsiveness
+budget — passes against the unfixed code, and is kept so the property cannot
+regress silently.
+
+What they do carry is the exception-safety gap common to every hand-written
+pair in the codebase: `leave_room` re-locks at nine separate return paths, so
+a throw anywhere between the release and one of them leaves the guard down and
+the next request on that thread running unsynchronised. That is the same
+defect `ScopedGuardRelease` exists to remove, and it is why the remaining
+hand-written sites are worth converting even though none of them deadlocks.
 
 ## Load/soak evidence
 

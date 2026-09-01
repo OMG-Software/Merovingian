@@ -198,8 +198,17 @@ the recursive acquisition is silent — and `NetworkIoUnlock` releases only the
 *published* (outer) guard, leaving the callee's own (inner, actually-in-scope)
 guard held. 0.12.1 found and fixed this for `create_room` (see
 [`http-transport.md`](http-transport.md) "`NetworkIoUnlock` was incomplete for
-recursive acquisitions"); `join_room`/`leave_room` share the same shape and are
-tracked as follow-up.
+recursive acquisitions"). **`join_room`/`leave_room` were tracked as sharing that
+gap; 0.12.2 disproved it.** They self-lock the same way, but unlike the
+pre-fix `create_room` they already release the guard around their federation
+work with hand-written `guard.unlock()`/`guard.lock()` pairs, so the mutex is
+not held across `make_join`/`make_leave`. A regression test driving a remote
+join against a stalled peer
+(`test_request_lock_contention_flow.cpp`, "A stalled peer during a remote room
+join") passes against the unfixed code and is kept as a guard. What those two
+do still carry is the exception-safety gap common to every hand-written pair:
+`leave_room` re-locks at nine separate return paths, and a throw between the
+release and any of them leaves the guard down.
 
 **Load/soak evidence for the remaining critical section.**
 `tests/integration/test_runtime_lock_soak_flow.cpp` (opt-in, `build_load_tests`)

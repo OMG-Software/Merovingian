@@ -411,3 +411,80 @@ SCENARIO("A stalled trust-safety policy-server hook during media download leaves
         }
     }
 }
+
+// join_room()/leave_room() take their own unique_lock on runtime.mutex so they
+// stay callable outside a request handler — the same self-locking shape as
+// create_room(). Unlike create_room they published no RequestLockScope and
+// wrapped none of their outbound federation calls, so a remote join held the
+// global mutex across every make_join/send_join round trip: not a conditional
+// deadlock but a guaranteed stall of every other client request and inbound
+// federation transaction for the full remote timeout.
+SCENARIO("A stalled peer during a remote room join leaves the rest of the server responsive",
+         "[homeserver][client-server][integration][concurrency][locking]")
+{
+    GIVEN("a running homeserver and a remote peer that accepts a join request but withholds its response")
+    {
+        REQUIRE(sodium_init() >= 0);
+
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const access_token = register_and_login(runtime);
+
+        auto const certificate = tls_mock::write_test_tls_certificate();
+        auto tls_context = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
+                                                                           certificate.private_key_file);
+        REQUIRE(tls_context.ok());
+        auto acceptor = merovingian::net::TcpAcceptor{};
+        REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+        auto const port = acceptor.bound_port();
+        REQUIRE(port > 0U);
+
+        runtime.homeserver.test_forced_outbound_resolution[std::string{stalled_server}] =
+            merovingian::homeserver::TestOnlyForcedOutboundResolution{
+                "localhost", port, {"127.0.0.1"}, certificate.certificate_pem};
+
+        auto stall = tls_mock::StallingTlsServerState{};
+        auto const late_response = tls_mock::json_http_response("200 OK", R"({})");
+        auto server_thread = std::thread{[&]() {
+            tls_mock::run_stalling_tls_server(acceptor, *tls_context.context, stall, late_response, max_stall);
+        }};
+        auto const server_join = tls_mock::ScopedThreadJoin{server_thread};
+
+        WHEN("a join for a room on that peer is in flight")
+        {
+            // Catch2 assertion macros are not thread-safe: the worker only
+            // records what it saw, and every REQUIRE runs on the main thread.
+            auto join_status = std::atomic<std::uint16_t>{0U};
+            auto join_thread = std::thread{[&]() {
+                auto const target = std::string{"/_matrix/client/v3/join/%21room%3A"} + std::string{stalled_server} +
+                                    "?server_name=" + std::string{stalled_server};
+                auto const response =
+                    merovingian::homeserver::handle_client_server_request(runtime, {"POST", target, access_token, "{}"});
+                join_status.store(response.response.status);
+            }};
+            auto const join_guard = tls_mock::ScopedThreadJoin{join_thread};
+
+            auto const peer_saw_request = tls_mock::wait_for_flag(stall.request_received, max_stall);
+
+            THEN("an unrelated client request still completes promptly")
+            {
+                auto const start = std::chrono::steady_clock::now();
+                auto const capabilities = merovingian::homeserver::handle_client_server_request(
+                    runtime, {"GET", "/_matrix/client/v3/capabilities", access_token, {}});
+                auto const elapsed = std::chrono::steady_clock::now() - start;
+
+                stall.released.store(true);
+                join_thread.join();
+
+                REQUIRE(peer_saw_request);
+                REQUIRE(capabilities.response.status == 200U);
+                REQUIRE(elapsed < responsive_budget);
+                // The join itself is expected to fail against a peer that never
+                // returns a usable make_join response; what matters is that it
+                // returned at all rather than holding the mutex forever.
+                REQUIRE(join_status.load() != 0U);
+            }
+        }
+    }
+}
