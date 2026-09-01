@@ -20,6 +20,16 @@
   federation calls. The regression written to expose the supposed stall passes
   against the unfixed code and is kept as a guard on the property.
 
+- **An appservice's `sender_localpart` user is now checked against other
+  registrations' exclusive namespaces.** That user is created at startup, so an
+  exclusive-namespace collision over it is guaranteed rather than latent — yet
+  nothing detected it. `load_registrations()`/`validate_registrations()` now take
+  the homeserver's `server_name` (defaulted empty, which skips only this check)
+  so the sender user id can be built and matched. The check runs both directions
+  per pair and never self-compares: a registration's own sender legitimately sits
+  inside its own exclusive namespace, and reporting that would refuse to start
+  every correctly configured bridge.
+
 ## 0.12.1
 
 Release-blocker closures branch (`feature/release-blockers`). The audit that

@@ -769,3 +769,69 @@ SCENARIO("two appservices cannot both claim the same exclusive namespace",
         }
     }
 }
+
+SCENARIO("an appservice's sender user may not fall inside another's exclusive namespace",
+         "[appservice][registration][security]")
+{
+    // Matrix v1.19 Application Service API, "Registration": an exclusive
+    // namespace means no other user in it may be created by anyone else. The
+    // sender_localpart user is a real local user the appservice acts as, so it
+    // is subject to another appservice's exclusive claim exactly like any other
+    // user id — and unlike an ordinary user it is created at startup, so the
+    // collision is guaranteed rather than incidental.
+    auto const server_name = std::string_view{"example.org"};
+
+    GIVEN("an appservice whose sender user is claimed by another's exclusive namespace")
+    {
+        auto registrations = std::vector<merovingian::appservice::AppserviceRegistration>{};
+        registrations.push_back(parsed(registration_doc("irc", "_irc_bot", "tok-a", "@_shared_.*", true)));
+        registrations.push_back(parsed(registration_doc("xmpp", "_shared_bot", "tok-b", "@_xmpp_.*", true)));
+
+        WHEN("the set is validated")
+        {
+            auto const findings = merovingian::appservice::validate_registrations(registrations, server_name);
+
+            THEN("the encroachment is reported")
+            {
+                REQUIRE_FALSE(findings.empty());
+            }
+        }
+    }
+
+    GIVEN("appservices whose sender users fall outside every other exclusive namespace")
+    {
+        auto registrations = std::vector<merovingian::appservice::AppserviceRegistration>{};
+        registrations.push_back(parsed(registration_doc("irc", "_irc_bot", "tok-a", "@_irc_.*", true)));
+        registrations.push_back(parsed(registration_doc("xmpp", "_xmpp_bot", "tok-b", "@_xmpp_.*", true)));
+
+        WHEN("the set is validated")
+        {
+            auto const findings = merovingian::appservice::validate_registrations(registrations, server_name);
+
+            THEN("nothing is reported")
+            {
+                // Each sender sits inside its OWN exclusive namespace
+                // (@_irc_bot matches @_irc_.*), which is correct and must not
+                // be reported — an appservice always owns its own sender.
+                REQUIRE(findings.empty());
+            }
+        }
+    }
+
+    GIVEN("a sender claimed only by another appservice's NON-exclusive namespace")
+    {
+        auto registrations = std::vector<merovingian::appservice::AppserviceRegistration>{};
+        registrations.push_back(parsed(registration_doc("irc", "_irc_bot", "tok-a", "@_shared_.*", false)));
+        registrations.push_back(parsed(registration_doc("xmpp", "_shared_bot", "tok-b", "@_xmpp_.*", true)));
+
+        WHEN("the set is validated")
+        {
+            auto const findings = merovingian::appservice::validate_registrations(registrations, server_name);
+
+            THEN("nothing is reported — a non-exclusive claim excludes nobody")
+            {
+                REQUIRE(findings.empty());
+            }
+        }
+    }
+}

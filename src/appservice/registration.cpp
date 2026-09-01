@@ -483,10 +483,28 @@ namespace
             }
         }
     }
+
+    // Reports `intruder`'s sender user falling inside `owner`'s exclusive users
+    // namespace. A registration's own sender legitimately sits inside its own
+    // exclusive namespace, so self-comparison is never performed by the caller.
+    auto report_sender_encroachment(AppserviceRegistration const& owner, AppserviceRegistration const& intruder,
+                                    std::string_view server_name,
+                                    std::vector<AppserviceRegistrationFinding>& findings) -> void
+    {
+        auto const intruder_sender = sender_user_id(intruder, server_name);
+        if (!any_exclusive_namespace_matches(owner.namespaces.users, intruder_sender))
+        {
+            return;
+        }
+        findings.push_back({intruder.id, "sender_localpart user '" + intruder_sender +
+                                             "' falls inside the exclusive users namespace of appservice '" +
+                                             owner.id + "'"});
+    }
+
 } // namespace
 
-auto validate_registrations(std::vector<AppserviceRegistration> const& registrations)
-    -> std::vector<AppserviceRegistrationFinding>
+auto validate_registrations(std::vector<AppserviceRegistration> const& registrations,
+                            std::string_view server_name) -> std::vector<AppserviceRegistrationFinding>
 {
     auto findings = std::vector<AppserviceRegistrationFinding>{};
 
@@ -522,13 +540,24 @@ auto validate_registrations(std::vector<AppserviceRegistration> const& registrat
                                                  registrations[j].id, findings);
             report_exclusive_namespace_conflicts(registrations[i].namespaces.rooms, registrations[j].namespaces.rooms,
                                                  "rooms", registrations[i].id, registrations[j].id, findings);
+
+            // An appservice's sender_localpart user is a real local user it acts
+            // as, created at startup, so another appservice's *exclusive* claim
+            // over it is a guaranteed collision rather than a latent one. Checked
+            // both ways: either registration may be the encroacher.
+            if (!server_name.empty())
+            {
+                report_sender_encroachment(registrations[i], registrations[j], server_name, findings);
+                report_sender_encroachment(registrations[j], registrations[i], server_name, findings);
+            }
         }
     }
 
     return findings;
 }
 
-auto load_registrations(std::vector<std::string> const& paths) -> LoadRegistrationsResult
+auto load_registrations(std::vector<std::string> const& paths, std::string_view server_name)
+    -> LoadRegistrationsResult
 {
     auto result = LoadRegistrationsResult{};
     auto loaded = std::vector<AppserviceRegistration>{};
@@ -544,7 +573,7 @@ auto load_registrations(std::vector<std::string> const& paths) -> LoadRegistrati
         loaded.push_back(std::move(*parsed.value));
     }
 
-    auto const cross_findings = validate_registrations(loaded);
+    auto const cross_findings = validate_registrations(loaded, server_name);
     if (!cross_findings.empty())
     {
         // Duplicate id/as_token makes routing ambiguous — fail closed for
