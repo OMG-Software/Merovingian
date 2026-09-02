@@ -19,6 +19,7 @@ and what has been deliberately dropped.
 | --- | --- | --- |
 | Federation conformance is entirely self-attested | Every conformance claim rests on this project's own tests. Complement is the only external check on whether the federation implementation is actually correct. | Complement runs green against a release candidate — see "Release evidence" for why this is a pre-tag run, not a per-PR gate. |
 | Push silently discards email pushers | `kind: "email"` is accepted at registration, persisted, and then never delivered. Silent acceptance is worse than either alternative: an operator believes email push works. Gateway retry/backoff is a spec SHOULD and is also absent. | Either email delivery is implemented, or `kind: "email"` is rejected at registration with a clear error. Retry/backoff decided explicitly, not left absent by default. |
+| No tested upgrade path across releases | Migrations are tested forward from an empty database and between adjacent versions. Nothing tests that a database written by an older release opens under a newer one. For a 1.0.0 that promises stability this is a larger operational risk than any remaining test-coverage item. | A database created by the previous minor series is opened, migrated and served by the candidate, in CI. |
 
 ## Release evidence, not CI gates
 
