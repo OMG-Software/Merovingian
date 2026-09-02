@@ -1915,16 +1915,13 @@ namespace
                 .accepted = false, .error = {404U, route_match.reason}
             };
         }
-        // Reject early when the TLS peer name is known and does not match the
-        // X-Matrix origin claim: a relay cannot legitimately present a different
-        // server name in the TLS handshake than in the federation auth header.
-        if (!request.tls_peer_server_name.empty() && request.tls_peer_server_name != request.origin)
-        {
-            audit_federation(runtime, "federation.rejected", request.origin, request.target, "TLS origin mismatch");
-            return {
-                .accepted = false, .error = {403U, "TLS peer name does not match request origin"}
-            };
-        }
+        // No TLS-peer-name-vs-X-Matrix-origin cross-check here: inbound Matrix
+        // federation TLS is one-way (the originating server presents no client
+        // certificate) and SNI on this connection carries our own hostname, not
+        // theirs. There is no legitimate source for a peer server name on an
+        // inbound connection to compare against, so no such check belongs here.
+        // X-Matrix Ed25519 signature verification (below) is the actual,
+        // fail-closed authentication gate for inbound federation requests.
         auto const server_policy = federation_server_policy(runtime.config, request.origin);
         if (!server_policy.allowed)
         {

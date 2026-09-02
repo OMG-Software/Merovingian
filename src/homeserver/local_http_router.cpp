@@ -1331,6 +1331,26 @@ namespace
             [rt](federation::FederationEndpoint endpoint, std::string_view room_id,
                  [[maybe_unused]] std::string_view event_id,
                  federation::InboundPduEnvelope const& envelope) -> federation::MembershipAcceptResult {
+            // Locking: this callback mutates store.rooms/state/events and the
+            // stream-ordering/sync-stream-id counters, so it needs rt->mutex held.
+            // It is invoked from two call sites with different locking states:
+            //   - the direct path (handle_federation_http_request) releases
+            //     rt->mutex before dispatching into federation::inbound_request.cpp;
+            //   - the worker-relay path (worker_pool.cpp's
+            //     handle_membership_ingest_request) already holds rt->mutex when
+            //     it calls this callback.
+            // rt->mutex is a std::recursive_mutex, so acquiring it here is safe in
+            // both cases (fresh lock or reentrant re-lock on the same thread).
+            // Deliberately taking only the global mutex, not a room stripe mutex:
+            // ingest_pdu_event documents a stripe-then-global lock order, and
+            // taking a stripe while the worker-relay path already holds the
+            // global mutex would acquire them in the reverse order — a classic
+            // lock-order inversion that can deadlock against a concurrent
+            // ingest_pdu_event call for the same room. There is no in-flight
+            // network I/O under this lock (unlike outbound calls elsewhere in
+            // this file), so holding the global mutex for the whole callback
+            // does not risk blocking on a remote round trip.
+            auto guard = std::unique_lock<std::recursive_mutex>{rt->mutex};
             auto& store = rt->database.persistent_store;
             auto const room_it = std::ranges::find_if(store.rooms, [&room_id](database::PersistentRoom const& r) {
                 return r.room_id == room_id;
@@ -1490,6 +1510,15 @@ namespace
 
         runtime.federation.invite_handler =
             [rt](federation::InviteRequest const& invite) -> federation::InviteAcceptResult {
+            // Locking: same reasoning as runtime.federation.membership_acceptor
+            // above — this callback mutates store.state/events/memberships and
+            // the stream-ordering/sync-stream-id counters with no lock held by
+            // its direct-path caller, while the worker-relay path
+            // (handle_invite_ingest_request in worker_pool.cpp) already holds
+            // rt->mutex. Take only the global recursive mutex, never a room
+            // stripe mutex, so the lock order can never invert against
+            // ingest_pdu_event's documented stripe-then-global ordering.
+            auto guard = std::unique_lock<std::recursive_mutex>{rt->mutex};
             auto const parsed = canonicaljson::parse_lossless(invite.invite_event_json);
             auto const* event = std::get_if<canonicaljson::Object>(&parsed.value.storage());
             if (parsed.error != canonicaljson::ParseError::none || event == nullptr)

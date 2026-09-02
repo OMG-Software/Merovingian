@@ -77,10 +77,6 @@ struct SignedFederationRequest final
     // signature is absent in this case; only the verified identity travels.
     bool signature_verified{false};
     std::string body{};
-    // Non-empty when the request arrived on a TLS connection. The inbound
-    // handler compares this against the X-Matrix origin claim so a relay
-    // cannot spoof origin through header injection.
-    std::string tls_peer_server_name{};
 };
 
 struct FederationPdu final
