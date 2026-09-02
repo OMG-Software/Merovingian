@@ -778,7 +778,8 @@ auto start_runtime(RuntimeStartOptions opts) -> RuntimeStartResult
     // enforce) drops every registration, since routing would otherwise be
     // ambiguous.
     {
-        auto loaded = appservice::load_registrations(config.appservice().registration_files);
+        auto loaded = appservice::load_registrations(config.appservice().registration_files,
+                                                     config.server().server_name);
         for (auto const& finding : loaded.findings)
         {
             log_diagnostic("start.appservice_registration_rejected",

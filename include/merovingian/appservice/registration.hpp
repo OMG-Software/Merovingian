@@ -217,7 +217,11 @@ struct AppserviceRegistrationFinding final
 // Validates `registrations` for duplicate `id`/`as_token` values (constant-
 // time for as_token) and structurally invalid namespace regexes. Returns
 // every problem found; an empty result means the set is safe to load.
-[[nodiscard]] auto validate_registrations(std::vector<AppserviceRegistration> const& registrations)
+// `server_name` builds each registration's sender user id so it can be checked
+// against the other registrations' exclusive namespaces; pass the homeserver's
+// own name. An empty `server_name` skips only that check.
+[[nodiscard]] auto validate_registrations(std::vector<AppserviceRegistration> const& registrations,
+                                          std::string_view server_name = {})
     -> std::vector<AppserviceRegistrationFinding>;
 
 // Loads and validates every registration file named in `paths`, in order.
@@ -236,6 +240,7 @@ struct LoadRegistrationsResult final
     std::vector<AppserviceRegistrationFinding> findings{};
 };
 
-[[nodiscard]] auto load_registrations(std::vector<std::string> const& paths) -> LoadRegistrationsResult;
+[[nodiscard]] auto load_registrations(std::vector<std::string> const& paths, std::string_view server_name = {})
+    -> LoadRegistrationsResult;
 
 } // namespace merovingian::appservice

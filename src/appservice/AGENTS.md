@@ -127,7 +127,9 @@ by two registrations where at least one claims them exclusively.
   do, and a false conflict refusing to start a correct deployment would be
   worse than the gap. This catches the realistic operator error: two bridges
   shipping the same pattern.
-- **An appservice's own `sender_localpart` user is not checked against another
-  appservice's exclusive namespace.** That needs the server name to build a
-  full user id, and neither `validate_registrations()` nor the registration
-  loader currently has one.
+Closed in 0.12.2: an appservice's `sender_localpart` user IS now checked against
+every other registration's exclusive users namespace. `validate_registrations()`
+and `load_registrations()` take the homeserver's `server_name` (defaulted empty,
+which skips only this check) so the sender user id can be built. A registration's
+own sender legitimately sits inside its own exclusive namespace, so the check
+never self-compares — flagging that would refuse to start every correct bridge.

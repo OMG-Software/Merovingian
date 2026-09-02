@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.12.1
+Version:        0.12.2
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -112,6 +112,10 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Mon Aug 31 2026 James Chapman <claude@ping.me.uk> - 0.12.2-1
+- Correct stale production-milestone rows after the 0.12.1 release
+- Close remaining gaps recorded in the 0.12.1 release PR
+
 * Mon Aug 31 2026 James Chapman <claude@ping.me.uk> - 0.12.1-1
 - HTTP/1.1 keep-alive and tiered production rate limiting
 - Application Service API: registration, auth, transactions, third-party lookups

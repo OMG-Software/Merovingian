@@ -198,8 +198,22 @@ the recursive acquisition is silent — and `NetworkIoUnlock` releases only the
 *published* (outer) guard, leaving the callee's own (inner, actually-in-scope)
 guard held. 0.12.1 found and fixed this for `create_room` (see
 [`http-transport.md`](http-transport.md) "`NetworkIoUnlock` was incomplete for
-recursive acquisitions"); `join_room`/`leave_room` share the same shape and are
-tracked as follow-up.
+recursive acquisitions"). **`join_room`/`leave_room` were tracked as sharing that
+gap; 0.12.2 disproved it.** They self-lock the same way, but unlike the
+pre-fix `create_room` they already release the guard around their federation
+work with hand-written `guard.unlock()`/`guard.lock()` pairs, so the mutex is
+not held across `make_join`/`make_leave`. A regression test driving a remote
+join against a stalled peer
+(`test_request_lock_contention_flow.cpp`, "A stalled peer during a remote room
+join") passes against the unfixed code and is kept as a guard. Two further findings, both from review on #485. First, `leave_room` carried the
+exception-safety gap common to every hand-written pair — nine separate re-lock
+paths, any throw between them leaving the guard down — now one scoped release.
+Second, and more consequential: releasing inside `leave_room` was NOT enough.
+The client dispatcher holds its own guard on the same recursive mutex for the
+whole request, so the callee's release dropped only the depth it had added and
+the mutex stayed held across `make_leave`/`send_leave`. The leave route now
+releases the dispatcher's guard around the call, which is what actually closes
+the stall. Tracked generally in issue #487.
 
 **Load/soak evidence for the remaining critical section.**
 `tests/integration/test_runtime_lock_soak_flow.cpp` (opt-in, `build_load_tests`)

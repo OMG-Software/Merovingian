@@ -3187,6 +3187,47 @@ namespace
         return state_events;
     }
 
+    // Spec: GET /messages `state` is "a list of state events relevant to showing
+    // the `chunk`... if `lazy_load_members` is enabled in the filter then this
+    // may contain the membership events for the senders of events in the
+    // `chunk`". Returning the room's whole current member list instead defeats
+    // the flag exactly where it matters most: pagination repeats the payload
+    // for every page. Non-member state is unaffected — it is all relevant to
+    // rendering the chunk regardless.
+    [[nodiscard]] auto build_chunk_relevant_state_events_array(database::PersistentStore const& store,
+                                                               sync::EventTypeFilter const& filter,
+                                                               std::string_view room_id,
+                                                               std::unordered_set<std::string> const& chunk_senders)
+        -> canonicaljson::Array
+    {
+        auto state_events = build_current_state_events_array(store, filter, room_id);
+        if (!filter.lazy_load_members)
+        {
+            return state_events;
+        }
+        auto lazy = canonicaljson::Array{};
+        for (auto& value : state_events)
+        {
+            auto const* event = std::get_if<canonicaljson::Object>(&value.storage());
+            if (event == nullptr)
+            {
+                continue;
+            }
+            auto const* type = string_member(*event, "type");
+            if (type == nullptr || *type != "m.room.member")
+            {
+                lazy.push_back(std::move(value));
+                continue;
+            }
+            auto const* state_key = string_member(*event, "state_key");
+            if (state_key != nullptr && chunk_senders.contains(*state_key))
+            {
+                lazy.push_back(std::move(value));
+            }
+        }
+        return lazy;
+    }
+
     [[nodiscard]] auto build_room_ephemeral_events_array(HomeserverRuntime const& runtime, std::string_view room_id,
                                                          std::uint64_t since_sync_stream_id,
                                                          std::uint64_t& max_observed_stream_id,
@@ -6284,7 +6325,9 @@ namespace
         auto chunk = canonicaljson::Array{};
         auto start_token = std::string{};
         auto end_token = std::string{};
-        auto const append = [&chunk, &start_token, &end_token, &store, limit](database::PersistentEvent const& event) {
+        // Senders appearing in the chunk, for lazy-loaded membership state below.
+        auto chunk_senders = std::unordered_set<std::string>{};
+        auto const append = [&chunk, &chunk_senders, &start_token, &end_token, &store, limit](database::PersistentEvent const& event) {
             if (chunk.size() >= limit)
             {
                 return false;
@@ -6295,6 +6338,7 @@ namespace
             }
             end_token = std::to_string(event.stream_ordering);
             chunk.push_back(client_event_with_id(store, event));
+            chunk_senders.insert(event.sender_user_id);
             return true;
         };
         if (backwards)
@@ -6325,8 +6369,14 @@ namespace
                 }
             }
         }
-        auto state =
-            build_current_state_events_array(rt.homeserver.database.persistent_store, sync::EventTypeFilter{}, room_id);
+        // The request's own RoomEventFilter drives this: it carries
+        // lazy_load_members, and a default-constructed filter silently ignored it.
+        auto const state_filter =
+            sync::parse_room_event_filter_argument(messages_query_value(target, "filter"))
+                .value_or(sync::RoomFilter{})
+                .timeline;
+        auto state = build_chunk_relevant_state_events_array(rt.homeserver.database.persistent_store,
+                                                            state_filter, room_id, chunk_senders);
         return json_serialize(json_obj({
             json_member("chunk", json_arr(std::move(chunk))),
             json_member("start", json_str(start_token)),
@@ -12487,7 +12537,16 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             suffix.substr(suffix.size() - leave_s.size()) == leave_s)
         {
             auto const room_id = core::percent_decode_path_component(suffix.substr(0U, suffix.size() - leave_s.size()));
-            auto const result = merovingian::homeserver::leave_room(rt.homeserver, req.access_token, room_id);
+            // leave_room takes its own lock on the recursive runtime mutex, so
+            // its internal release drops the depth this dispatcher added and no
+            // more — the mutex stays held across make_leave/send_leave unless the
+            // OUTER guard is released too. Scoped rather than a hand-written
+            // unlock/lock pair so it is restored on every exit, including a throw
+            // out of the federation round trip.
+            auto const result = [&] {
+                auto const released = merovingian::homeserver::ScopedGuardRelease{guard};
+                return merovingian::homeserver::leave_room(rt.homeserver, req.access_token, room_id);
+            }();
             if (!result.ok)
             {
                 log_diagnostic("room.leave.rejected",

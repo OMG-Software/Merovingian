@@ -576,12 +576,49 @@ This is the same unlock/call/relock idiom `local_http_router.cpp` already
 used for `join_room`, so `create_room`'s own guard becomes the *only* lock in
 scope and the one `NetworkIoUnlock` actually finds and releases.
 
-**`join_room` and `leave_room` have the identical self-locking shape** and
-very likely the same latent gap for their own outbound federation calls
-(`perform_sync_outbound_call`'s `NetworkIoUnlock` sites). Fixing them needs
-its own regression coverage per function and was deliberately left as
-follow-up work rather than folded into this change — see the task tracker
-entry created alongside this fix.
+**`join_room` and `leave_room` have the identical self-locking shape but NOT
+the same gap** — checked in 0.12.2, and the suspicion recorded here in 0.12.1
+was wrong. Both already release their guard around the federation round trip
+with hand-written `guard.unlock()`/`guard.lock()` pairs, so the mutex is not
+held across `make_join`/`send_join`/`make_leave`. The regression written to
+expose the supposed stall — a remote join against a peer that accepts and
+withholds, asserting an unrelated request stays inside the responsiveness
+budget — passes against the unfixed code, and is kept so the property cannot
+regress silently.
+
+What they do carry is the exception-safety gap common to every hand-written
+pair in the codebase: a throw between the release and the re-lock leaves the
+guard down and the next request on that thread running unsynchronised. That is
+the defect `ScopedGuardRelease` exists to remove, and it is why the remaining
+hand-written sites are worth converting even though none of them deadlocks.
+
+`leave_room` is converted (0.12.2): its nine hand-written re-locks are gone and
+the whole three-round-trip exchange sits in one scoped release, so the guard is
+restored on every exit including a throw.
+
+**That alone did not close the stall**, which review on #485 caught. The client
+dispatcher holds its own guard on the same recursive mutex for the duration of
+the request, so a release inside `leave_room` drops only the depth the callee
+added — the mutex stays held across `make_leave`/`send_leave`. The leave route
+therefore releases the dispatcher's guard around the call too, with
+`ScopedGuardRelease` rather than a hand-written pair. This is the same failure
+shape as `create_room`, found twice by different means, which is why the
+remaining hand-written sites are tracked for removal in issue #487 rather than
+audited individually. The one value consumed after the
+scope — the `send_leave` result, needed by the membership write that must hold
+the lock — is declared before it and assigned inside.
+
+**`join_room` is deliberately not converted.** Its released region spans ~350
+lines and nine of the forty-four values declared inside it are consumed after
+the re-lock (`verified_critical_state`, `verified_auth_chain`, `signed_event`,
+`event_id_result` among them). Hoisting those would strip `const` from nine
+declarations, require each type to be default-constructible, and split nine
+initialisations into declare-then-assign — a real loss of const-correctness
+inside a 1019-line function, bought for an exception-safety gain with no live
+bug behind it. The correct fix is to extract the released region into its own
+function returning a result struct, at which point the scope boundary becomes
+the function boundary and nothing needs hoisting. That is a refactor, not a
+lock-idiom swap, and is tracked as such rather than attempted piecemeal.
 
 ## Load/soak evidence
 

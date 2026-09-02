@@ -15843,3 +15843,85 @@ SCENARIO("GET /login/sso/redirect/{idpId} returns 404 for an unrecognised IdP", 
         }
     }
 }
+
+// Spec: GET /_matrix/client/v3/rooms/{roomId}/messages, `state` — "A list of
+// state events relevant to showing the `chunk`. For example, if
+// `lazy_load_members` is enabled in the filter then this may contain the
+// membership events for the senders of events in the `chunk`."
+//
+// Returning the room's full current state instead defeats the flag entirely:
+// the client asked NOT to be sent every member, and pagination is exactly where
+// that payload hurts most, since it is repeated for every page.
+SCENARIO("GET /rooms/{roomId}/messages honours lazy_load_members in the filter",
+         "[conformance][client-server][room-participation][lazyload]")
+{
+    GIVEN("a room whose members include someone who has not sent any of the returned events")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const alice_token = register_and_login(runtime, "alice");
+        auto const bob_token = register_and_login(runtime, "bob");
+        auto const room_id = create_room(runtime, alice_token);
+
+        // Bob joins but never speaks: his membership is in the room's current
+        // state, yet he is not a sender of anything in the chunk.
+        auto const invite = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/invite", alice_token,
+                      R"({"user_id":"@bob:example.org"})"});
+        REQUIRE(invite.response.status == 200U);
+        auto const join = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/join", bob_token, "{}"});
+        REQUIRE(join.response.status == 200U);
+
+        std::ignore = send_message(runtime, alice_token, room_id);
+
+        WHEN("/messages is called with a filter enabling lazy_load_members")
+        {
+            // limit=1 keeps the chunk to the most recent event — Alice's
+            // message. Without it the backward walk reaches Bob's own join
+            // event, which would make him a chunk sender legitimately and
+            // the assertion below meaningless.
+            auto const target = "/_matrix/client/v3/rooms/" + room_id +
+                                "/messages?dir=b&limit=1&filter=%7B%22lazy_load_members%22%3Atrue%7D";
+            auto const response =
+                merovingian::homeserver::handle_client_server_request(runtime, {"GET", target, alice_token, {}});
+
+            THEN("state carries membership only for senders of events in the chunk")
+            {
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+                auto const* state = object_member_as_array(body, "state");
+                REQUIRE(state != nullptr);
+
+                auto member_state_keys = std::vector<std::string>{};
+                for (auto const& value : *state)
+                {
+                    auto const* event = std::get_if<merovingian::canonicaljson::Object>(&value.storage());
+                    REQUIRE(event != nullptr);
+                    auto const* type = string_member(*event, "type");
+                    REQUIRE(type != nullptr);
+                    if (*type == "m.room.member")
+                    {
+                        auto const* state_key = string_member(*event, "state_key");
+                        REQUIRE(state_key != nullptr);
+                        member_state_keys.push_back(*state_key);
+                    }
+                }
+
+                // Only the absence is asserted here. The spec says `state`
+                // "MAY contain the membership events for the senders of events
+                // in the chunk", so requiring the sender's membership to be
+                // PRESENT would fail a conforming server that omits optional
+                // state — see tests/conformance/AGENTS.md on asserting MUSTs.
+                // The presence check lives in the integration suite, where this
+                // implementation's own behaviour is a fair thing to pin.
+                //
+                // Bob is a joined member of the room but sent nothing in the
+                // chunk, so lazy loading must omit his membership event.
+                REQUIRE(std::ranges::find(member_state_keys, "@bob:example.org") == member_state_keys.end());
+            }
+        }
+    }
+}

@@ -1,3 +1,69 @@
+## 0.12.2
+
+- **`docs/todos/production-milestone.md` corrected after the 0.12.1 release.**
+  The SSO login row still read "`m.login.sso` not advertised; `GET /_matrix/client/v3/login/sso/redirect` unrouted" after that work had
+  shipped — the row was never updated when the branch merged, so the document
+  that decides whether the project can be released understated its own
+  readiness. Rows crediting `feature/release-blockers` now cite 0.12.1, since
+  the branch is merged and gone, and the closing summary lists the rows that
+  are genuinely still open rather than excluding only HTTP keep-alive.
+
+- **`leave_room` releases `runtime.mutex` through a scoped guard.** The remote
+  leave exchange released the lock by hand and re-acquired it at nine separate
+  return paths; a throw anywhere across the three federation round trips left
+  the mutex down for that thread and the next request it served. The exchange
+  now sits in one `ScopedGuardRelease` scope, deleting all nine manual
+  re-locks, with the `send_leave` result declared outside it because the
+  membership write that consumes it must hold the lock.
+- **`join_room`/`leave_room` were recorded in 0.12.1 as sharing `create_room`'s
+  lock gap; they do not.** Both already released the guard around their
+  federation calls. The regression written to expose the supposed stall passes
+  against the unfixed code and is kept as a guard on the property.
+
+- **An appservice's `sender_localpart` user is now checked against other
+  registrations' exclusive namespaces.** That user is created at startup, so an
+  exclusive-namespace collision over it is guaranteed rather than latent — yet
+  nothing detected it. `load_registrations()`/`validate_registrations()` now take
+  the homeserver's `server_name` (defaulted empty, which skips only this check)
+  so the sender user id can be built and matched. The check runs both directions
+  per pair and never self-compares: a registration's own sender legitimately sits
+  inside its own exclusive namespace, and reporting that would refuse to start
+  every correctly configured bridge.
+
+- **`docs/todos/production-milestone.md` reassessed and restructured.** The
+  charter conflated "we must know this" with "CI must prove it every pull
+  request", and carried one item — "complete full Matrix v1.19 conformance and
+  endpoint coverage" — that could never be marked done and so blocked 1.0.0
+  permanently while communicating nothing. Soak, load and chaos runs cannot
+  produce meaningful numbers on shared, time-limited runners: thresholds loose
+  enough to survive runner noise prove nothing, tight enough to mean something
+  flake, and a green soak badge that means nothing invites the conclusion that
+  concurrency has been checked. They are now maintainer-run release evidence
+  recorded at tag time beside the compiler flags and checksums, which is
+  stronger evidence than a CI figure because the hardware is real.
+  Five blockers remain: `/messages` chunk-relevant state, PostgreSQL privilege
+  separation that is provisioned but never applied, an external Complement run,
+  push silently discarding email pushers, and — newly identified — no tested
+  upgrade path from a database written by an older release. Descoped items are
+  recorded under "Decided against" rather than deleted, so a later audit does
+  not silently reintroduce them.
+
+- **`GET /messages` honours `lazy_load_members`.** The endpoint returned the
+  room's full current state, including every member, defeating the flag exactly
+  where it costs most — pagination repeats that payload for every page. Two
+  causes: `lazy_load_members` was never parsed anywhere in the codebase, and
+  `/messages` passed a default-constructed filter to its state builder, so no
+  state filtering happened at all. `RoomEventFilter` now carries
+  `lazy_load_members` and `include_redundant_members`, the request's own filter
+  reaches the builder, and membership events are restricted to senders
+  appearing in the chunk. Non-member state is untouched — it is relevant to
+  rendering the chunk regardless.
+
+  The two endpoints' `state` fields are NOT the same contract: `/context`
+  returns "the state of the room at the last event returned" and reconstructs
+  it temporally, whereas `/messages` returns "state events relevant to showing
+  the chunk". Copying `/context`'s temporal walk would have been wrong.
+
 ## 0.12.1
 
 Release-blocker closures branch (`feature/release-blockers`). The audit that
