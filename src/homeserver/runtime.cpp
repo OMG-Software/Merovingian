@@ -590,8 +590,7 @@ auto bootstrap_local_database(config::Config const& config, database::SchemaStat
         auto const conninfo = read_database_uri_file(config.database().uri_file);
         opened = conninfo.empty() ? database::open_persistent_store(std::move(existing_state))
                                   : database::open_postgresql_persistent_store(
-                                        conninfo, config.database().migration_role,
-                                        config.database().runtime_role);
+                                        conninfo, config.database().runtime_role);
     }
     if (!opened.ok)
     {

@@ -777,17 +777,16 @@ SCENARIO("PostgreSQL store open assumes the configured roles and fails closed ot
     {
         auto const uri = postgresql_uri_from_environment();
         auto const runtime_role = runtime_role_from_environment();
-        auto const migration_role = migration_role_from_environment();
-        if (uri.empty() || runtime_role.empty() || migration_role.empty())
+        if (uri.empty() || runtime_role.empty())
         {
             SUCCEED("skipped: live PG URI or role env vars are not set");
             return;
         }
 
-        WHEN("the store is opened with the provisioned roles")
+        WHEN("the store is opened with the provisioned runtime role")
         {
             auto const opened =
-                merovingian::database::open_postgresql_persistent_store(uri, migration_role, runtime_role);
+                merovingian::database::open_postgresql_persistent_store(uri, runtime_role);
 
             THEN("the open succeeds")
             {
@@ -797,8 +796,7 @@ SCENARIO("PostgreSQL store open assumes the configured roles and fails closed ot
 
         WHEN("the store is opened naming a runtime role that cannot be assumed")
         {
-            auto const opened = merovingian::database::open_postgresql_persistent_store(
-                uri, migration_role, "merovingian_role_that_does_not_exist");
+            auto const opened = merovingian::database::open_postgresql_persistent_store(uri, "merovingian_role_that_does_not_exist");
 
             THEN("the open is refused rather than serving with wider privileges")
             {
