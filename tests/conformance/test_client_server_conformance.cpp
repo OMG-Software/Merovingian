@@ -15910,12 +15910,14 @@ SCENARIO("GET /rooms/{roomId}/messages honours lazy_load_members in the filter",
                     }
                 }
 
-                // Alice sent the only event in the chunk, so her membership
-                // must be present. Asserted first: without it, an
-                // implementation returning NO state at all would satisfy the
-                // absence check below and look correct.
-                REQUIRE(std::ranges::find(member_state_keys, "@alice:example.org") != member_state_keys.end());
-
+                // Only the absence is asserted here. The spec says `state`
+                // "MAY contain the membership events for the senders of events
+                // in the chunk", so requiring the sender's membership to be
+                // PRESENT would fail a conforming server that omits optional
+                // state — see tests/conformance/AGENTS.md on asserting MUSTs.
+                // The presence check lives in the integration suite, where this
+                // implementation's own behaviour is a fair thing to pin.
+                //
                 // Bob is a joined member of the room but sent nothing in the
                 // chunk, so lazy loading must omit his membership event.
                 REQUIRE(std::ranges::find(member_state_keys, "@bob:example.org") == member_state_keys.end());

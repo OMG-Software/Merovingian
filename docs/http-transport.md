@@ -594,7 +594,17 @@ hand-written sites are worth converting even though none of them deadlocks.
 
 `leave_room` is converted (0.12.2): its nine hand-written re-locks are gone and
 the whole three-round-trip exchange sits in one scoped release, so the guard is
-restored on every exit including a throw. The one value consumed after the
+restored on every exit including a throw.
+
+**That alone did not close the stall**, which review on #485 caught. The client
+dispatcher holds its own guard on the same recursive mutex for the duration of
+the request, so a release inside `leave_room` drops only the depth the callee
+added — the mutex stays held across `make_leave`/`send_leave`. The leave route
+therefore releases the dispatcher's guard around the call too, with
+`ScopedGuardRelease` rather than a hand-written pair. This is the same failure
+shape as `create_room`, found twice by different means, which is why the
+remaining hand-written sites are tracked for removal in issue #487 rather than
+audited individually. The one value consumed after the
 scope — the `send_leave` result, needed by the membership write that must hold
 the lock — is declared before it and assigned inside.
 
