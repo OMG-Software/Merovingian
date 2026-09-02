@@ -13,6 +13,18 @@
   continuing would serve with wider privileges than asked for, silently.
   Configured via `database.migration_role`/`database.runtime_role`; both empty
   issues no SET ROLE, leaving existing single-role deployments unaffected.
+- **PostgreSQL role changes are now correctly classified as restart-required.**
+  `build_reload_plan` reported `database.migration_role`/`database.runtime_role`
+  changes, but derived their policy from `reload_policy_for_key`, which did not
+  list either key and so fell through to the `reloadable` default. An operator
+  editing the separation and reloading would be told the change had applied
+  while every open connection kept its old role, since roles are assumed with
+  `SET ROLE` at connect time — the exact silent mismatch the surrounding code
+  comment claimed to prevent. Found by investigating low patch coverage on the
+  change: the line was untested and wrong.
+- **`database.migration_role`/`database.runtime_role` documented** in the
+  user manual's configuration reference and reload-policy table, where they
+  had been absent since being introduced.
 - **Email pushers are refused instead of stored and discarded.** `kind: "email"`
   was accepted, persisted, listed back by `GET /pushers`, then skipped at
   delivery time, so the user had positive confirmation of notifications that

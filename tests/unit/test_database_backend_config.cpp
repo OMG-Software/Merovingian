@@ -6,6 +6,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <string>
 
 SCENARIO("Database config defaults to PostgreSQL", "[config][database]")
@@ -227,6 +228,70 @@ SCENARIO("PostgreSQL role separation is configured by role name", "[config][data
                 // privileges its login role already has.
                 REQUIRE(config.database().migration_role.empty());
                 REQUIRE(config.database().runtime_role.empty());
+            }
+        }
+    }
+}
+
+SCENARIO("PostgreSQL role separation must name both roles or neither", "[config][database][pgroles]")
+{
+    GIVEN("a config naming only a migration role")
+    {
+        // Half a separation is worse than none: the DDL phase would drop into a
+        // role the operator never named, or the connection would serve requests
+        // with migration privileges still held. Refuse the config instead.
+        auto const text = std::string{"database.migration_role = merovingian_migration\n"};
+
+        WHEN("the parsed config is validated")
+        {
+            auto const parsed = merovingian::config::parse_key_value_config(text);
+            auto const findings = merovingian::config::validate(parsed.config);
+
+            THEN("the partial configuration is reported")
+            {
+                REQUIRE(std::any_of(findings.begin(), findings.end(),
+                                    [](merovingian::config::ConfigValidationFinding const& finding) {
+                                        return finding.field == "database.runtime_role";
+                                    }));
+            }
+        }
+    }
+
+    GIVEN("a config naming only a runtime role")
+    {
+        auto const text = std::string{"database.runtime_role = merovingian_runtime\n"};
+
+        WHEN("the parsed config is validated")
+        {
+            auto const parsed = merovingian::config::parse_key_value_config(text);
+            auto const findings = merovingian::config::validate(parsed.config);
+
+            THEN("the partial configuration is reported")
+            {
+                REQUIRE(std::any_of(findings.begin(), findings.end(),
+                                    [](merovingian::config::ConfigValidationFinding const& finding) {
+                                        return finding.field == "database.runtime_role";
+                                    }));
+            }
+        }
+    }
+
+    GIVEN("a config naming both roles")
+    {
+        auto const text = std::string{"database.migration_role = merovingian_migration\n"
+                                      "database.runtime_role = merovingian_runtime\n"};
+
+        WHEN("the parsed config is validated")
+        {
+            auto const parsed = merovingian::config::parse_key_value_config(text);
+            auto const findings = merovingian::config::validate(parsed.config);
+
+            THEN("no role separation finding is reported")
+            {
+                REQUIRE(std::none_of(findings.begin(), findings.end(),
+                                     [](merovingian::config::ConfigValidationFinding const& finding) {
+                                         return finding.field == "database.runtime_role";
+                                     }));
             }
         }
     }

@@ -269,3 +269,59 @@ SCENARIO("Reload plan emits a diff for every documented config block", "[config]
         }
     }
 }
+
+SCENARIO("Reload plan marks PostgreSQL role separation changes as restart required", "[config][reload][pgroles]")
+{
+    GIVEN("current and next configs naming different migration and runtime roles")
+    {
+        // The roles are assumed with SET ROLE when a connection is opened, so an
+        // already-open pool keeps its old privileges no matter what a reload does.
+        // Reporting these as reloadable would tell an operator the separation had
+        // been applied while every live connection still held the old role.
+        auto current_database = merovingian::config::DatabaseConfig{};
+        current_database.migration_role = "merovingian_migration";
+        current_database.runtime_role = "merovingian_runtime";
+
+        auto next_database = merovingian::config::DatabaseConfig{};
+        next_database.migration_role = "other_migration";
+        next_database.runtime_role = "other_runtime";
+
+        auto const current = merovingian::config::Config{
+            merovingian::config::ServerConfig{},
+            merovingian::config::ListenersConfig{},
+            current_database,
+            merovingian::config::SecurityConfig{},
+            merovingian::config::ClientRateLimitsConfig{},
+            merovingian::config::LogModulesConfig{},
+        };
+        auto const next = merovingian::config::Config{
+            merovingian::config::ServerConfig{},
+            merovingian::config::ListenersConfig{},
+            next_database,
+            merovingian::config::SecurityConfig{},
+            merovingian::config::ClientRateLimitsConfig{},
+            merovingian::config::LogModulesConfig{},
+        };
+
+        WHEN("a reload plan is built")
+        {
+            auto const plan = merovingian::config::build_reload_plan(current, next);
+
+            THEN("both role changes are reported and require a restart")
+            {
+                auto const has_restart_required_key = [&plan](std::string const& key) {
+                    return std::any_of(plan.changes().begin(), plan.changes().end(),
+                                       [&key](merovingian::config::ReloadChange const& change) {
+                                           return change.key == key &&
+                                                  change.policy == merovingian::config::ReloadPolicy::restart_required;
+                                       });
+                };
+
+                REQUIRE(has_restart_required_key("database.migration_role"));
+                REQUIRE(has_restart_required_key("database.runtime_role"));
+                REQUIRE(plan.has_restart_required_changes());
+                REQUIRE(plan.reloadable_change_count() == 0U);
+            }
+        }
+    }
+}

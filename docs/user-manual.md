@@ -566,6 +566,8 @@ federation port `8448`.
 | `database.backend` | `postgresql` | Set to `sqlite` for development/evaluation. Only one backend line is allowed. |
 | `database.uri_file` | `/etc/merovingian/db-uri` | Path to an owner-only file containing the PostgreSQL URI. |
 | `database.role` | `runtime` | Use `migration` only with `merovingian-db-migrate`. |
+| `database.migration_role` | (empty) | PostgreSQL role assumed for the DDL/migration phase only. Must be set together with `database.runtime_role`. |
+| `database.runtime_role` | (empty) | PostgreSQL role assumed to serve requests, dropping DDL rights. Both empty issues no `SET ROLE`, leaving an existing single-role deployment unchanged. |
 | `database.pool_size` | `16` | Tune based on workload; reloadable. |
 | `database.sqlite_path` | (commented out) | Path for SQLite single-file store. |
 
@@ -935,6 +937,8 @@ only reports what *would* happen.
 | `server.name` | Restart required |
 | `database.uri_file` | Restart required |
 | `database.role` | Restart required |
+| `database.migration_role` | Restart required |
+| `database.runtime_role` | Restart required |
 | `listeners.*.tls_certificate_file` | Restart required |
 | `listeners.*.tls_private_key_file` | Restart required |
 | `security.federation.join_response_max_size` | Restart required |
