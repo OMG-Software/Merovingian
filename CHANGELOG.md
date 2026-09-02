@@ -1,3 +1,29 @@
+## 0.12.3
+
+- **PostgreSQL privilege separation is applied rather than only provisioned.**
+  `packaging/postgresql/provision-roles.sql` created a DDL migration role and a
+  DML-only runtime role, and `set_postgresql_role`/`reset_postgresql_role`
+  existed and were covered by an integration scenario — but nothing called
+  them. A deployment that had provisioned the roles still served every request
+  with its login role's full privileges, and testing the functions in isolation
+  could never have caught that. `open_postgresql_persistent_store` now assumes
+  the migration role for the DDL phase, drops to the runtime role to serve
+  (whether or not a migration ran, so a steady-state restart is equally
+  constrained), and refuses to open when a configured role cannot be assumed —
+  continuing would serve with wider privileges than asked for, silently.
+  Configured via `database.migration_role`/`database.runtime_role`; both empty
+  issues no SET ROLE, leaving existing single-role deployments unaffected.
+- **Email pushers are refused instead of stored and discarded.** `kind: "email"`
+  was accepted, persisted, listed back by `GET /pushers`, then skipped at
+  delivery time, so the user had positive confirmation of notifications that
+  would never arrive. Now `400 M_INVALID_PARAM` naming the reason.
+- **The "no tested upgrade path" blocker was withdrawn as an error.** Both
+  backends already migrate on open via `apply_pending_migrations`, each step in
+  its own transaction, and the path is exercised end to end. It had been added
+  to the charter after reading `initialize_current_schema`'s empty-database
+  guard and concluding no migration existed, without reading the following
+  lines where it does.
+
 ## 0.12.2
 
 - **`docs/todos/production-milestone.md` corrected after the 0.12.1 release.**

@@ -17,10 +17,8 @@ and what has been deliberately dropped.
 
 | Blocker | Why it blocks | Done when |
 | --- | --- | --- |
-| PostgreSQL privilege separation is provisioned but unenforced | `packaging/postgresql/provision-roles.sql` creates separate runtime and migration roles, but `db-migrate` is an offline planner that opens no connection and the runtime never issues `SET ROLE`. A project whose premise is defence in depth must not ship privilege separation it does not actually apply. | The runtime connects as the restricted role and migrations run as the migration role, proven against a real temporary database. |
 | Federation conformance is entirely self-attested | Every conformance claim rests on this project's own tests. Complement is the only external check on whether the federation implementation is actually correct. | Complement runs green against a release candidate — see "Release evidence" for why this is a pre-tag run, not a per-PR gate. |
 | Push silently discards email pushers | `kind: "email"` is accepted at registration, persisted, and then never delivered. Silent acceptance is worse than either alternative: an operator believes email push works. Gateway retry/backoff is a spec SHOULD and is also absent. | Either email delivery is implemented, or `kind: "email"` is rejected at registration with a clear error. Retry/backoff decided explicitly, not left absent by default. |
-| No tested upgrade path across releases | Migrations are tested forward from an empty database and between adjacent versions. Nothing tests that a database written by an older release opens under a newer one. For a 1.0.0 that promises stability this is a larger operational risk than any remaining test-coverage item. | A database created by the previous minor series is opened, migrated and served by the candidate, in CI. |
 
 ## Release evidence, not CI gates
 
@@ -75,6 +73,40 @@ Note the endpoints differ: `/context` returns "the state of the room at the last
 event returned" and reconstructs temporally, while `/messages` returns "state
 events relevant to showing the chunk". Copying `/context`'s approach here would
 have been the wrong fix.
+
+Withdrawn in 0.12.2: "no tested upgrade path" was added to this charter in error.
+Both backends already migrate on open — `open_sqlite_persistent_store` and
+`open_postgresql_persistent_store` each call `apply_pending_migrations` when the
+stored version is below current, applying every pending step in its own
+transaction so a mid-upgrade failure rolls that step back rather than leaving a
+half-migrated database. `schema_state_is_compatible`'s strict version equality
+runs *after* that, so it rejects a database from a NEWER release (its tested
+case) while an older one has already been brought up to current.
+
+The machinery is exercised end to end: a fresh database is created at v1 by
+`initialize_current_schema` and then migrated by the same incremental path, which
+is why "Persistent homeserver runtime bootstraps a fresh migrated schema"
+asserts thirteen recorded migrations from `initial_schema` to
+`appservice_txn_cursor`. Plan-level upgrades between specific versions are
+covered separately in `test_database_persistence.cpp`.
+
+The error came from reading `initialize_current_schema`'s empty-database guard
+and `load_schema_state` on the following line, then concluding no migration
+existed without reading the next twenty-five lines where it does.
+
+Closed in 0.12.3: PostgreSQL privilege separation is applied, not just provisioned.
+`set_postgresql_role`/`reset_postgresql_role` and a role-separation integration
+scenario already existed — with no callers, so a deployment that had run
+`provision-roles.sql` still served every request with its login role's full
+privileges. `open_postgresql_persistent_store` now assumes the migration role for
+the DDL phase, drops to the DML-only runtime role to serve, and refuses to open
+if a configured role cannot be assumed. Role names come from
+`database.migration_role`/`database.runtime_role`; both empty issues no SET ROLE,
+so existing single-role deployments are unaffected by upgrading.
+
+Verification note: the open-path scenario needs a live PostgreSQL URI and the
+role environment variables, so it skips locally and runs in the
+`postgres-integration` workflow. The config-parsing half runs everywhere.
 
 ## Still open, not blocking
 

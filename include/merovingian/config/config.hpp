@@ -237,6 +237,18 @@ struct DatabaseConfig final
     std::uint32_t pool_size{16U};
     DatabaseBackend backend{DatabaseBackend::postgresql};
     DatabaseRole role{DatabaseRole::runtime};
+    // PostgreSQL role separation (packaging/postgresql/provision-roles.sql).
+    // The login role is granted two NOLOGIN roles: one with DDL rights used
+    // for the migration phase, one with DML-only rights used to serve. Both
+    // empty means no SET ROLE is issued and the connection keeps whatever
+    // privileges its login role has — the pre-separation behaviour, so an
+    // existing single-role deployment is unaffected by upgrading.
+    //
+    // When either IS set, a failed SET ROLE aborts the open. Continuing would
+    // serve traffic with more privilege than the operator asked for, which is
+    // the exact outcome this separation exists to prevent.
+    std::string migration_role{};
+    std::string runtime_role{};
     std::string sqlite_path{"/var/lib/merovingian/merovingian.sqlite3"};
 };
 

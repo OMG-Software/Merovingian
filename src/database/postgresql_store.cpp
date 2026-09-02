@@ -1366,7 +1366,8 @@ auto open_postgresql_connection(std::string_view conninfo) -> PostgresqlConnecti
     return {true, {}, redacted, PostgresqlConnection{std::move(handle)}};
 }
 
-auto open_postgresql_persistent_store(std::string_view conninfo) -> PersistentStoreOpenResult
+auto open_postgresql_persistent_store(std::string_view conninfo, std::string_view migration_role,
+                                      std::string_view runtime_role) -> PersistentStoreOpenResult
 {
     log_diagnostic("store.opening", {
                                         {"backend", "postgresql", false}
@@ -1420,6 +1421,19 @@ auto open_postgresql_persistent_store(std::string_view conninfo) -> PersistentSt
     store.backend = PersistentStoreBackend::postgresql;
     store.postgresql_conninfo = std::string{conninfo};
     store.schema = std::move(*schema);
+    // DDL runs as the migration role. Assumed only for the migration itself and
+    // dropped immediately after, so the connection spends the rest of its life
+    // without CREATE rights even if a later code path is tricked into DDL.
+    if (store.schema.version < current_schema_version() && !migration_role.empty())
+    {
+        if (!set_postgresql_role(connection, migration_role))
+        {
+            log_diagnostic("store.rejected", {
+                                                 {"reason", "unable to assume migration role", false}
+            });
+            return {false, "unable to assume PostgreSQL migration role", {}};
+        }
+    }
     if (store.schema.version < current_schema_version())
     {
         log_diagnostic("store.migrating", {
@@ -1438,6 +1452,15 @@ auto open_postgresql_persistent_store(std::string_view conninfo) -> PersistentSt
                                              {"version", std::to_string(migrated->version), false}
         });
         store.schema = std::move(*migrated);
+    }
+    // Serve as the DML-only runtime role. Applied whether or not a migration
+    // ran, so a steady-state restart is just as constrained as a fresh upgrade.
+    if (!runtime_role.empty() && !set_postgresql_role(connection, runtime_role))
+    {
+        log_diagnostic("store.rejected", {
+                                             {"reason", "unable to assume runtime role", false}
+        });
+        return {false, "unable to assume PostgreSQL runtime role", {}};
     }
     if (!load_persistent_rows(connection, store))
     {

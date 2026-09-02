@@ -191,3 +191,43 @@ SCENARIO("SQLite config requires a database path", "[config][database][validatio
         }
     }
 }
+
+SCENARIO("PostgreSQL role separation is configured by role name", "[config][database][pgroles]")
+{
+    GIVEN("a config naming a migration role and a runtime role")
+    {
+        // packaging/postgresql/provision-roles.sql grants both NOLOGIN roles to
+        // one login role; the names are operator-chosen, so they have to be
+        // configuration rather than a convention baked into the binary.
+        auto const text = std::string{"database.migration_role = merovingian_migration\n"
+                                      "database.runtime_role = merovingian_runtime\n"};
+
+        WHEN("the config text is parsed")
+        {
+            auto const parsed = merovingian::config::parse_key_value_config(text);
+
+            THEN("both role names are carried into the database config")
+            {
+                REQUIRE(parsed.config.database().migration_role == "merovingian_migration");
+                REQUIRE(parsed.config.database().runtime_role == "merovingian_runtime");
+            }
+        }
+    }
+
+    GIVEN("a default config")
+    {
+        auto const config = merovingian::config::Config{};
+
+        WHEN("the role names are inspected")
+        {
+            THEN("both are empty, so no SET ROLE is issued")
+            {
+                // An existing single-role deployment must keep working across
+                // an upgrade: empty names mean the connection keeps whatever
+                // privileges its login role already has.
+                REQUIRE(config.database().migration_role.empty());
+                REQUIRE(config.database().runtime_role.empty());
+            }
+        }
+    }
+}

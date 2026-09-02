@@ -56,7 +56,16 @@ struct PostgresqlConnectionOpenResult final
 [[nodiscard]] auto redact_postgresql_conninfo(std::string_view conninfo) -> std::string;
 [[nodiscard]] auto postgresql_schema_bootstrap_statements() -> std::vector<PreparedStatement>;
 [[nodiscard]] auto open_postgresql_connection(std::string_view conninfo) -> PostgresqlConnectionOpenResult;
-[[nodiscard]] auto open_postgresql_persistent_store(std::string_view conninfo) -> PersistentStoreOpenResult;
+// `migration_role`/`runtime_role` implement the separation provisioned by
+// packaging/postgresql/provision-roles.sql: DDL runs as the migration role,
+// everything afterwards as the DML-only runtime role. Both empty issues no
+// SET ROLE at all, preserving the behaviour of a single-role deployment.
+// A configured role that cannot be assumed aborts the open rather than
+// serving with the login role's wider privileges.
+[[nodiscard]] auto open_postgresql_persistent_store(std::string_view conninfo,
+                                                    std::string_view migration_role = {},
+                                                    std::string_view runtime_role = {})
+    -> PersistentStoreOpenResult;
 
 // Switch the session role on `connection` to `role_name`. Returns false if
 // the connection is not open or `SET ROLE` fails (e.g. the current login

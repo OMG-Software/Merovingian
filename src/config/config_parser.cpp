@@ -531,6 +531,14 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected database role runtime or migration");
             }
         }
+        else if (key == "database.migration_role")
+        {
+            database.migration_role = std::string{value};
+        }
+        else if (key == "database.runtime_role")
+        {
+            database.runtime_role = std::string{value};
+        }
         else if (key == "database.sqlite_path")
         {
             database.sqlite_path = std::string{value};
