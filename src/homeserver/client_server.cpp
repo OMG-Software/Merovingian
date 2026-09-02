@@ -12551,7 +12551,16 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             suffix.substr(suffix.size() - leave_s.size()) == leave_s)
         {
             auto const room_id = core::percent_decode_path_component(suffix.substr(0U, suffix.size() - leave_s.size()));
-            auto const result = merovingian::homeserver::leave_room(rt.homeserver, req.access_token, room_id);
+            // leave_room takes its own lock on the recursive runtime mutex, so
+            // its internal release drops the depth this dispatcher added and no
+            // more — the mutex stays held across make_leave/send_leave unless the
+            // OUTER guard is released too. Scoped rather than a hand-written
+            // unlock/lock pair so it is restored on every exit, including a throw
+            // out of the federation round trip.
+            auto const result = [&] {
+                auto const released = merovingian::homeserver::ScopedGuardRelease{guard};
+                return merovingian::homeserver::leave_room(rt.homeserver, req.access_token, room_id);
+            }();
             if (!result.ok)
             {
                 log_diagnostic("room.leave.rejected",

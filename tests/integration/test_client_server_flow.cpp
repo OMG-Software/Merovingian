@@ -1423,3 +1423,49 @@ SCENARIO("Typing notifications can stop and restart via ephemeral events in /syn
         }
     }
 }
+
+// The conformance suite asserts only that a NON-sender's membership is omitted
+// when lazy_load_members is set, because the spec makes the sender's membership
+// optional ("MAY contain the membership events for the senders"). That leaves a
+// hole a conformance test cannot close: an implementation returning NO state at
+// all satisfies an absence-only assertion. This pins what this server actually
+// does, which is a fair thing to assert outside the conformance suite — and it
+// is not hypothetical, since this codebase has already shipped an endpoint
+// returning a hardcoded empty object while its tests passed.
+SCENARIO("GET /messages returns the chunk sender's membership when lazy loading",
+         "[client-server][integration][lazyload]")
+{
+    GIVEN("a room where one member sends the only event in the chunk")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const alice = register_and_login(runtime, "alice", "CorrectHorse7!", "ALICE_DEV");
+        auto const room = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", alice, "{}"});
+        REQUIRE(room.response.status == 200U);
+        auto const room_id = response_string_field(room.response.body, "room_id");
+        REQUIRE(!room_id.empty());
+
+        auto const sent = merovingian::homeserver::handle_client_server_request(
+            runtime, {"PUT", "/_matrix/client/v3/rooms/" + room_id + "/send/m.room.message/txn-lazy-1", alice,
+                      R"({"msgtype":"m.text","body":"hello"})"});
+        REQUIRE(sent.response.status == 200U);
+
+        WHEN("/messages is requested with lazy_load_members and a single-event chunk")
+        {
+            auto const target = "/_matrix/client/v3/rooms/" + room_id +
+                                "/messages?dir=b&limit=1&filter=%7B%22lazy_load_members%22%3Atrue%7D";
+            auto const response =
+                merovingian::homeserver::handle_client_server_request(runtime, {"GET", target, alice, {}});
+
+            THEN("state is not empty and carries the sender's membership")
+            {
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(response.response.body.find("\"state\":[]") == std::string::npos);
+                REQUIRE(response.response.body.find("@alice:example.org") != std::string::npos);
+            }
+        }
+    }
+}

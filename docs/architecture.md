@@ -205,10 +205,15 @@ work with hand-written `guard.unlock()`/`guard.lock()` pairs, so the mutex is
 not held across `make_join`/`make_leave`. A regression test driving a remote
 join against a stalled peer
 (`test_request_lock_contention_flow.cpp`, "A stalled peer during a remote room
-join") passes against the unfixed code and is kept as a guard. What those two
-do still carry is the exception-safety gap common to every hand-written pair:
-`leave_room` re-locks at nine separate return paths, and a throw between the
-release and any of them leaves the guard down.
+join") passes against the unfixed code and is kept as a guard. Two further findings, both from review on #485. First, `leave_room` carried the
+exception-safety gap common to every hand-written pair — nine separate re-lock
+paths, any throw between them leaving the guard down — now one scoped release.
+Second, and more consequential: releasing inside `leave_room` was NOT enough.
+The client dispatcher holds its own guard on the same recursive mutex for the
+whole request, so the callee's release dropped only the depth it had added and
+the mutex stayed held across `make_leave`/`send_leave`. The leave route now
+releases the dispatcher's guard around the call, which is what actually closes
+the stall. Tracked generally in issue #487.
 
 **Load/soak evidence for the remaining critical section.**
 `tests/integration/test_runtime_lock_soak_flow.cpp` (opt-in, `build_load_tests`)
