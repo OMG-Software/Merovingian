@@ -10,6 +10,8 @@
 #include "merovingian/observability/observability.hpp"
 
 #include <algorithm>
+#include <array>
+#include <cstdint>
 #include <limits>
 #include <string>
 #include <string_view>
@@ -381,6 +383,278 @@ namespace
         return make_allowed("6");
     }
 
+    // The seven scalar power-level keys. Rule 9.1 requires each to be an integer
+    // when present; rule 9.5 bounds every alteration of one by the sender's own
+    // power level, in both the old and the new direction.
+    // Spec: ../../docs/matrix-v1.19-spec/rooms/v11.md — Authorization rules, rule 9.
+    constexpr auto scalar_power_level_keys = std::array{
+        std::string_view{"users_default"}, std::string_view{"events_default"}, std::string_view{"state_default"},
+        std::string_view{"ban"},           std::string_view{"redact"},         std::string_view{"kick"},
+        std::string_view{"invite"},
+    };
+
+    // Minimal user-ID well-formedness check, used by rule 9.3 (content.users keys)
+    // and by rule 1.4 (v12 content.additional_creators). Deliberately as permissive
+    // as auth::user_id_is_valid_federated — historical localparts must keep working
+    // — and restated here rather than imported because events_lib does not link
+    // auth_lib and adding that edge for one grammar check is not worth the coupling.
+    [[nodiscard]] auto user_id_is_well_formed(std::string_view user_id) noexcept -> bool
+    {
+        if (user_id.size() < 3U || user_id.size() > 255U || user_id.front() != '@')
+        {
+            return false;
+        }
+        auto const separator = user_id.find(':');
+        return separator != std::string_view::npos && separator + 1U < user_id.size();
+    }
+
+    // Rules 9.1, 9.2 and 9.3: structural validation of an m.room.power_levels
+    // content object. Returns an empty string when well formed, else the reason.
+    [[nodiscard]] auto power_levels_content_rejection_reason(canonicaljson::Object const& content) -> std::string
+    {
+        // 9.1 — scalar keys must be integers when present.
+        for (auto const& key : scalar_power_level_keys)
+        {
+            auto const* value = object_member(content, key);
+            if (value != nullptr && std::get_if<std::int64_t>(&value->storage()) == nullptr)
+            {
+                return std::string{key} + " must be an integer";
+            }
+        }
+
+        // 9.2 — events and notifications must be objects whose values are integers.
+        for (auto const& key : {std::string_view{"events"}, std::string_view{"notifications"}})
+        {
+            auto const* value = object_member(content, key);
+            if (value == nullptr)
+            {
+                continue;
+            }
+            auto const* map = std::get_if<canonicaljson::Object>(&value->storage());
+            if (map == nullptr)
+            {
+                return std::string{key} + " must be an object";
+            }
+            for (auto const& entry : *map)
+            {
+                if (entry.value == nullptr || std::get_if<std::int64_t>(&entry.value->storage()) == nullptr)
+                {
+                    return std::string{key} + " values must be integers";
+                }
+            }
+        }
+
+        // 9.3 — users must map valid user IDs to integers.
+        auto const* users_value = object_member(content, "users");
+        if (users_value == nullptr)
+        {
+            return {};
+        }
+        auto const* users = std::get_if<canonicaljson::Object>(&users_value->storage());
+        if (users == nullptr)
+        {
+            return "users must be an object";
+        }
+        for (auto const& entry : *users)
+        {
+            if (!user_id_is_well_formed(entry.key))
+            {
+                return "users keys must be valid user IDs";
+            }
+            if (entry.value == nullptr || std::get_if<std::int64_t>(&entry.value->storage()) == nullptr)
+            {
+                return "users values must be integers";
+            }
+        }
+
+        return {};
+    }
+
+    // Rule 9.5: for each scalar key added to, changed in, or removed from content,
+    // neither the current nor the new value may exceed the sender's power level.
+    // Absence of this check let any sender holding state_default rewrite
+    // users_default, ban, kick, redact and invite without bound (#487).
+    [[nodiscard]] auto scalar_power_level_rejection_reason(canonicaljson::Object const& old_content,
+                                                           canonicaljson::Object const& new_content,
+                                                           std::int64_t sender_power) -> std::string
+    {
+        for (auto const& key : scalar_power_level_keys)
+        {
+            auto const* old_level = integer_member(old_content, key);
+            auto const* new_level = integer_member(new_content, key);
+            auto const unchanged = (old_level == nullptr && new_level == nullptr) ||
+                                   (old_level != nullptr && new_level != nullptr && *old_level == *new_level);
+            if (unchanged)
+            {
+                continue;
+            }
+            // 9.5.1 — the value being replaced must be within the sender's reach.
+            if (old_level != nullptr && *old_level > sender_power)
+            {
+                return "cannot alter " + std::string{key} + ": its current value exceeds the sender's power level";
+            }
+            // 9.5.2 — and so must the value replacing it.
+            if (new_level != nullptr && *new_level > sender_power)
+            {
+                return "cannot set " + std::string{key} + " above the sender's own power level";
+            }
+        }
+
+        return {};
+    }
+
+    // Rules 9.6 and 9.7: entries in the events and notifications maps are bounded
+    // by the sender's power in their current value (when changed or removed) and
+    // in their new value (when added or changed).
+    [[nodiscard]] auto power_level_map_rejection_reason(canonicaljson::Object const& old_content,
+                                                        canonicaljson::Object const& new_content,
+                                                        std::string_view map_key, std::int64_t sender_power)
+        -> std::string
+    {
+        auto const* old_map = object_member_as_object(old_content, map_key);
+        auto const* new_map = object_member_as_object(new_content, map_key);
+
+        // 9.6 — for each entry changed in, or removed from, the map.
+        if (old_map != nullptr)
+        {
+            for (auto const& entry : *old_map)
+            {
+                auto const* old_level =
+                    entry.value == nullptr ? nullptr : std::get_if<std::int64_t>(&entry.value->storage());
+                if (old_level == nullptr)
+                {
+                    continue;
+                }
+                auto const* new_level = new_map == nullptr ? nullptr : integer_member(*new_map, entry.key);
+                auto const removed_or_changed = (new_level == nullptr) || (*new_level != *old_level);
+                if (removed_or_changed && *old_level > sender_power)
+                {
+                    return std::string{map_key} + " entry '" + entry.key +
+                           "' currently exceeds the sender's power level";
+                }
+            }
+        }
+
+        // 9.7 — for each entry added to, or changed in, the map.
+        if (new_map != nullptr)
+        {
+            for (auto const& entry : *new_map)
+            {
+                auto const* new_level =
+                    entry.value == nullptr ? nullptr : std::get_if<std::int64_t>(&entry.value->storage());
+                if (new_level == nullptr)
+                {
+                    continue;
+                }
+                auto const* old_level = old_map == nullptr ? nullptr : integer_member(*old_map, entry.key);
+                auto const added_or_changed = (old_level == nullptr) || (*new_level != *old_level);
+                if (added_or_changed && *new_level > sender_power)
+                {
+                    return std::string{map_key} + " entry '" + entry.key + "' exceeds the sender's power level";
+                }
+            }
+        }
+
+        return {};
+    }
+
+    // Rule 1: m.room.create. Sub-rules 1.1 and 1.3 are common to every room
+    // version; 1.2 and 1.4 differ between v1-v10, v11 and v12. None of these was
+    // enforced before 0.12.4, which let a remote server mint a create event whose
+    // room_id claimed another homeserver's domain (#487).
+    // Spec: ../../docs/matrix-v1.19-spec/rooms/v1.md, v11.md and v12.md.
+    [[nodiscard]] auto create_event_rejection_reason(canonicaljson::Object const& event,
+                                                     rooms::RoomVersionPolicy const& policy) -> std::string
+    {
+        // 1.1 — a create event starts the room's DAG and can reference nothing.
+        if (auto const* prev_events = object_member(event, "prev_events"); prev_events != nullptr)
+        {
+            auto const* entries = std::get_if<canonicaljson::Array>(&prev_events->storage());
+            if (entries != nullptr && !entries->empty())
+            {
+                return "create event must not have prev_events";
+            }
+        }
+
+        auto const* sender = string_member(event, "sender");
+        auto const* room_id = string_member(event, "room_id");
+
+        if (policy.create_event_is_room_id)
+        {
+            // 1.2 (v12/MSC4291) — the room ID *is* this event's ID, so the event
+            // must not carry a room_id of its own.
+            if (room_id != nullptr)
+            {
+                return "v12 create event must not carry a room_id";
+            }
+        }
+        else
+        {
+            // 1.2 (v1-v11) — the room ID is minted by the creating server and must
+            // sit in that server's own namespace. Without this check a federating
+            // server can squat room IDs inside another homeserver's domain.
+            if (room_id == nullptr)
+            {
+                return "create event requires a room_id";
+            }
+            if (sender == nullptr || domain_of(*room_id) != domain_of(*sender))
+            {
+                return "create event room_id domain does not match the sender domain";
+            }
+        }
+
+        auto const* content = object_member_as_object(event, "content");
+
+        // 1.4 (v1-v10) — content.creator is required. Room v11 removed the field
+        // (the create event's sender is the creator), and the redaction-rules
+        // bucket identifies the pre-v11 versions exactly.
+        auto const creator_field_required =
+            !policy.create_event_is_room_id && policy.redaction_rules != rooms::RedactionRules::room_v11_plus;
+        if (creator_field_required && (content == nullptr || string_member(*content, "creator") == nullptr))
+        {
+            return "create event content requires a creator";
+        }
+
+        if (content == nullptr)
+        {
+            return {};
+        }
+
+        // 1.3 — a room_version this server does not recognise cannot be authorised.
+        if (auto const* room_version = string_member(*content, "room_version"); room_version != nullptr)
+        {
+            if (!rooms::room_version_is_supported(*room_version))
+            {
+                return "create event declares an unrecognised room_version";
+            }
+        }
+
+        // 1.4 (v12/MSC4289) — additional_creators, when present, must be an array
+        // of well-formed user IDs. Each entry gains creator privilege, so a
+        // malformed entry must not be silently ignored.
+        if (policy.create_event_is_room_id)
+        {
+            if (auto const* additional = object_member(*content, "additional_creators"); additional != nullptr)
+            {
+                auto const* entries = std::get_if<canonicaljson::Array>(&additional->storage());
+                if (entries == nullptr)
+                {
+                    return "additional_creators must be an array";
+                }
+                for (auto const& entry : *entries)
+                {
+                    auto const* user_id = std::get_if<std::string>(&entry.storage());
+                    if (user_id == nullptr || !user_id_is_well_formed(*user_id))
+                    {
+                        return "additional_creators must contain only valid user IDs";
+                    }
+                }
+            }
+        }
+
+        return {};
+    }
+
 } // namespace
 
 auto auth_rule_hook_name(rooms::RoomVersionPolicy const& policy) -> std::string
@@ -537,13 +811,12 @@ auto extract_power_level_key(canonicaljson::Value const& power_levels_event, std
     {
         return *level;
     }
-    if (auto const* events = object_member_as_object(*content, "events"); events != nullptr)
-    {
-        if (auto const* level = integer_member(*events, key); level != nullptr)
-        {
-            return *level;
-        }
-    }
+    // No fallback into content.events. That map keys *event types* to power
+    // levels, so "ban", "kick", "redact", "invite", "users_default",
+    // "events_default" and "state_default" are not names it can legitimately
+    // carry. Consulting it here let a sender who omitted a top-level scalar key
+    // smuggle its value in under an event-type name and, for example, drop the
+    // effective ban level to zero (#487).
     return default_value;
 }
 
@@ -596,11 +869,18 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
     // Step 1: m.room.create allows if this is the first event (no create event in auth events)
     if (*event_type == "m.room.create")
     {
-        if (!value_has_content(auth_events.create))
+        if (value_has_content(auth_events.create))
         {
-            return make_allowed("1");
+            return make_denied("1", "room already has a create event");
         }
-        return make_denied("1", "room already has a create event");
+        // Sub-rules 1.1-1.4 — prev_events, the room_id/sender relationship, the
+        // declared room_version, and the creator fields. See
+        // create_event_rejection_reason() for the per-version breakdown.
+        if (auto const reason = create_event_rejection_reason(*obj, policy); !reason.empty())
+        {
+            return make_denied("1", reason);
+        }
+        return make_allowed("1");
     }
 
     // Step 2: All other events require a create event
@@ -1020,13 +1300,38 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
     auto const* state_key = string_member(*obj, "state_key");
     auto const is_state_event = state_key != nullptr;
 
+    // Spec rule 8: "If the event has a state_key that starts with an @ and does
+    // not match the sender, reject." m.room.member is not reached here — it
+    // returns from its own branch above, exactly as the spec's rule 5 does — so
+    // this governs every other state event type. Without it any member holding
+    // state_default could write state keyed to another user's MXID, which
+    // clients routinely read as "authored by that user".
+    // Spec: ../../docs/matrix-v1.19-spec/rooms/v11.md — Authorization rules, rule 8.
+    if (is_state_event && state_key->starts_with('@') && *state_key != *sender)
+    {
+        return make_denied("8", "state_key belongs to another user");
+    }
+
     if (*event_type == "m.room.power_levels")
     {
         auto const pl_sender_power =
             effective_sender_power(auth_events.power_levels, *sender, auth_events.create, policy);
 
         auto const* content_obj = object_member_as_object(*obj, "content");
-        auto const* new_users = content_obj == nullptr ? nullptr : object_member_as_object(*content_obj, "users");
+        if (content_obj == nullptr)
+        {
+            return make_denied("11", "m.room.power_levels requires a content object");
+        }
+
+        // Rules 9.1, 9.2 and 9.3 — structural validation, applied before any
+        // comparison so a malformed event is rejected outright rather than
+        // having its unreadable keys silently treated as absent.
+        if (auto const reason = power_levels_content_rejection_reason(*content_obj); !reason.empty())
+        {
+            return make_denied("11", reason);
+        }
+
+        auto const* new_users = object_member_as_object(*content_obj, "users");
 
         // v12/MSC4289: a room creator's power is effectively infinite and cannot be
         // expressed as an integer in content.users. Any m.room.power_levels event that
@@ -1052,6 +1357,34 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
             auto const* old_content =
                 old_event_obj == nullptr ? nullptr : object_member_as_object(*old_event_obj, "content");
             auto const old_users = old_content == nullptr ? nullptr : object_member_as_object(*old_content, "users");
+
+            if (old_content != nullptr)
+            {
+                // Rule 9.5 — every alteration of users_default, events_default,
+                // state_default, ban, redact, kick or invite is bounded by the
+                // sender's power in BOTH directions. This is the check whose
+                // absence let a moderator set users_default to 100 and take the
+                // room (#487).
+                if (auto const reason =
+                        scalar_power_level_rejection_reason(*old_content, *content_obj, pl_sender_power);
+                    !reason.empty())
+                {
+                    return make_denied("11", reason);
+                }
+
+                // Rules 9.6 and 9.7 — the same two-sided bound for each entry of
+                // the events and notifications maps, so the bar for sending
+                // m.room.power_levels itself cannot be lowered from beneath it.
+                for (auto const& map_key : {std::string_view{"events"}, std::string_view{"notifications"}})
+                {
+                    if (auto const reason =
+                            power_level_map_rejection_reason(*old_content, *content_obj, map_key, pl_sender_power);
+                        !reason.empty())
+                    {
+                        return make_denied("11", reason);
+                    }
+                }
+            }
 
             // Spec v1.19 authorization rules 9.8 and 9.9 (room v12):
             //   9.9 — For each entry added to or changed in content.users: if the new
@@ -1110,6 +1443,16 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
             }
         }
 
+        // Deliberately stricter than spec rule 9.4, which allows any event when the
+        // room has no previous m.room.power_levels. Our AuthEventMap is built from
+        // this server's own resolved state rather than from the event's declared
+        // auth_events, so "no previous power_levels" can also mean "we have not
+        // got that state yet" — under which a blanket allow would be a fail-open.
+        // Requiring the default state_default (50) instead keeps the room-creation
+        // bootstrap working (the creator resolves to 100, or infinite under v12)
+        // while denying an ordinary joined member. This is pre-existing behaviour,
+        // retained knowingly; it can only reject where the spec would allow, never
+        // the reverse. See docs/event-engine.md.
         auto const state_default = value_has_content(auth_events.power_levels)
                                        ? extract_power_level_key(auth_events.power_levels, "state_default", 50)
                                        : 50;

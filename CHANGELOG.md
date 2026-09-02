@@ -1,3 +1,55 @@
+## 0.12.4
+
+Security audit of the 0.12.3 tree. Two of the findings below are privilege
+escalations reachable by an ordinary room moderator or a federating peer.
+
+- **Authorization rule 9 was implemented only for `content.users`.** Sub-rules
+  9.1-9.3 (type validation), 9.5 (the scalar keys `users_default`,
+  `events_default`, `state_default`, `ban`, `redact`, `kick`, `invite`) and
+  9.6/9.7 (the `events` and `notifications` maps) were absent, so the only bound
+  on a `m.room.power_levels` event was that its sender met the *old*
+  `state_default`. A moderator at power 50 could set `users_default: 100`, drop
+  their own `users` entry — permitted by 9.8's own-entry carve-out — and resolve
+  to power 100 along with every other member, taking the room. Setting `ban: 0`
+  or `kick: 0` handed those powers to everyone at less effort. All of rule 9 is
+  now enforced, bounded in both directions as the spec specifies.
+- **`content.events` no longer shadows the scalar power-level keys.**
+  `extract_power_level_key` fell back to looking a missing top-level key up
+  inside `content.events`, which maps *event types* to levels. Omitting
+  top-level `ban` and sending `events: {"ban": 0}` therefore set the effective
+  ban level to zero — a second, independent route to the same escalation, and
+  one that needed no rule-9 gap at all.
+- **`m.room.create` authorization rule 1 was entirely unimplemented.** None of
+  1.1 (no `prev_events`), 1.2 (the `room_id`/`sender` domain relationship, or
+  in v12 that no `room_id` is present), 1.3 (a recognised `content.room_version`)
+  or 1.4 (`content.creator` before v11; `content.additional_creators` in v12)
+  was checked. Under 1.2 in particular, any federating server could mint a room
+  whose ID claimed another homeserver's domain. The gap was held in place by a
+  conformance scenario asserting that room versions 1-5 have no domain check —
+  a premise the repository's own vendored `rooms/v1.md` contradicts, and whose
+  fixture put the room ID and sender in the same domain so it never exercised
+  the case either way. That scenario now asserts what it builds, and the
+  mismatching case has its own.
+- **Authorization rule 8 is enforced.** A state event whose `state_key` starts
+  with `@` must have that key match the sender. Without it any member holding
+  `state_default` could write state keyed to another user's MXID, which clients
+  routinely read as authored by that user.
+- **Local event authorization no longer fails open.** In `room_service.cpp` the
+  authorization call sat inside three nested guards with no else branch, so a
+  parse failure, an unrecognised room version, or a room whose `m.room.create`
+  was absent from local state all fell through to composing and returning the
+  event unauthorized. The denial for a missing create event already existed as
+  rule 2 inside `authorize_event_against_auth_events`; it was simply never
+  reached. Every path is now fail-closed. The federation ingest path and state
+  resolution always called the check unconditionally and were unaffected.
+- **Canonical JSON duplicate-key detection is O(n) instead of O(n²).** Both the
+  parser's per-key `std::ranges::any_of` scan and the serializer's nested
+  `object_has_duplicate_keys` loop were quadratic in an object's member count,
+  bounded only by the 1 MiB body cap — roughly 1.1×10¹⁰ string comparisons for a
+  body of ~150,000 unique keys, on unauthenticated endpoints such as `/login`
+  and `/register`. Both now use a hash set, and the parser enforces an explicit
+  `max_object_members` cap of 65536 as defence in depth.
+
 ## 0.12.3
 
 - **PostgreSQL privilege separation is applied rather than only provisioned.**

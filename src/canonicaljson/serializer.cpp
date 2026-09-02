@@ -12,6 +12,7 @@
 #include <cstdlib>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <utility>
 #include <variant>
 
@@ -305,14 +306,19 @@ auto string_is_valid_for_json(std::string_view value) noexcept -> bool
 
 auto object_has_duplicate_keys(Object const& object) noexcept -> bool
 {
-    for (auto left = object.begin(); left != object.end(); ++left)
+    // Previously an O(n^2) nested begin/end scan, called at the top of
+    // serialize_object on every serialize_canonical / serialize_canonical_strict
+    // — an unauthenticated CPU-exhaustion DoS on a wide enough object (see
+    // parser.cpp's matching duplicate-key rewrite for the full analysis).
+    // `object` outlives this function call and is never mutated here, so
+    // string_view keys aliasing its members are safe for the loop's duration.
+    auto seen_keys = std::unordered_set<std::string_view>{};
+    seen_keys.reserve(object.size());
+    for (auto const& member : object)
     {
-        for (auto right = left + 1; right != object.end(); ++right)
+        if (!seen_keys.insert(member.key).second)
         {
-            if (left->key == right->key)
-            {
-                return true;
-            }
+            return true;
         }
     }
 

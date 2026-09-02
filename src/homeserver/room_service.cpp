@@ -62,10 +62,10 @@
 #include <set>
 #include <span>
 #include <string>
-#include <tuple>
 #include <string_view>
 #include <system_error>
 #include <thread>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
 #include <variant>
@@ -1433,33 +1433,51 @@ namespace
             });
             return std::nullopt;
         }
+        // Authorization is fail-closed: every path out of this block that is not an
+        // explicit "allowed" returns nullopt. Before 0.12.4 the check sat inside
+        // three nested guards with no else branch, so a parse failure, an
+        // unrecognised room version, or a room whose m.room.create was missing from
+        // local state all fell straight through to composing the event with no
+        // authorization at all (#487). The denial for a missing create event
+        // already existed inside authorize_event_against_auth_events as rule 2 —
+        // it was simply never reached.
+        //
+        // A room's own m.room.create event legitimately has no prior create in the
+        // auth map; that case is not special-cased here because rule 1 handles it,
+        // and short-circuiting it again is how the fail-open arose in the first
+        // place.
+        auto const reject = [&](std::string_view reason, std::string_view rule_hook = {},
+                                std::string_view rule_step = {}) -> std::optional<ComposedEvent> {
+            log_diagnostic("event.auth.rejected", {
+                                                      {"room_id",    std::string{room_id},   false},
+                                                      {"sender",     std::string{sender},    false},
+                                                      {"event_type", event_type,             false},
+                                                      {"rule_hook",  std::string{rule_hook}, false},
+                                                      {"rule_step",  std::string{rule_step}, false},
+                                                      {"reason",     std::string{reason},    false}
+            });
+            return std::nullopt;
+        };
+
         auto signed_event_value = canonicaljson::parse_lossless(signed_event.event_json);
-        if (signed_event_value.error == canonicaljson::ParseError::none)
+        if (signed_event_value.error != canonicaljson::ParseError::none)
         {
-            auto const* auth_policy = rooms::find_room_version_policy(room_version);
-            if (auth_policy != nullptr)
-            {
-                auto auth_map = build_auth_event_map(runtime.database.persistent_store, room_id, sender,
-                                                     state_key.value_or(""), event_type, signed_event_value.value);
-                auto const has_create_event = !std::holds_alternative<std::nullptr_t>(auth_map.create.storage());
-                if (has_create_event)
-                {
-                    auto const auth_decision =
-                        events::authorize_event_against_auth_events(signed_event_value.value, *auth_policy, auth_map);
-                    if (!auth_decision.allowed)
-                    {
-                        log_diagnostic("event.auth.rejected", {
-                                                                  {"room_id",    std::string{room_id},    false},
-                                                                  {"sender",     std::string{sender},     false},
-                                                                  {"event_type", event_type,              false},
-                                                                  {"rule_hook",  auth_decision.rule_hook, false},
-                                                                  {"rule_step",  auth_decision.rule_step, false},
-                                                                  {"reason",     auth_decision.reason,    false}
-                        });
-                        return std::nullopt;
-                    }
-                }
-            }
+            return reject("signed event could not be parsed for authorization");
+        }
+
+        auto const* auth_policy = rooms::find_room_version_policy(room_version);
+        if (auth_policy == nullptr)
+        {
+            return reject("unrecognised room version; cannot authorize event");
+        }
+
+        auto auth_map = build_auth_event_map(runtime.database.persistent_store, room_id, sender, state_key.value_or(""),
+                                             event_type, signed_event_value.value);
+        auto const auth_decision =
+            events::authorize_event_against_auth_events(signed_event_value.value, *auth_policy, auth_map);
+        if (!auth_decision.allowed)
+        {
+            return reject(auth_decision.reason, auth_decision.rule_hook, auth_decision.rule_step);
         }
 
         return ComposedEvent{
@@ -4414,9 +4432,9 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
                                                                {"room_id",       std::string{room_id}, false},
                                                                {"remote_server", remote_server,        false}
             });
-            auto const [make_ok, make_body] = perform_sync_outbound_call(runtime, room_id, make_leave_tx, key_id,
-                                                                         secret_key, "room.leave.remote.make_leave_failed",
-                                                                         runtime.federation.config.remote_timeout_seconds);
+            auto const [make_ok, make_body] = perform_sync_outbound_call(
+                runtime, room_id, make_leave_tx, key_id, secret_key, "room.leave.remote.make_leave_failed",
+                runtime.federation.config.remote_timeout_seconds);
             if (!make_ok)
             {
                 log_diagnostic("room.leave.rejected",
@@ -4523,8 +4541,8 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
 
             // Step 4: send_leave — deliver the signed leave event to the remote server.
             auto send_leave_tx = federation::make_outbound_send_membership(
-                federation::FederationEndpoint::send_leave, remote_server, our_server, room_id, event_id_result.event_id,
-                signed_event.event_json);
+                federation::FederationEndpoint::send_leave, remote_server, our_server, room_id,
+                event_id_result.event_id, signed_event.event_json);
             log_diagnostic("room.leave.remote.send_leave", {
                                                                {"actor",         *user_id,                 false},
                                                                {"room_id",       std::string{room_id},     false},
@@ -4532,9 +4550,8 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
                                                                {"event_id",      event_id_result.event_id, false}
             });
             std::tie(send_ok, send_body) = perform_sync_outbound_call(runtime, room_id, send_leave_tx, key_id,
-                                                                         secret_key, "room.leave.remote.send_leave_failed",
-                                                                         runtime.federation.config.remote_timeout_seconds);
-
+                                                                      secret_key, "room.leave.remote.send_leave_failed",
+                                                                      runtime.federation.config.remote_timeout_seconds);
         }
 
         if (!send_ok)

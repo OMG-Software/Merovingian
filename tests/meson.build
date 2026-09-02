@@ -99,6 +99,7 @@ shell = find_program('sh')
       'unit/test_auth_oidc_discovery.cpp',
       'unit/test_auth_session.cpp',
       'unit/test_audit_filter.cpp',
+      'unit/test_canonicaljson_limits.cpp',
       'unit/test_client_server.cpp',
       'unit/test_config_defaults.cpp',
       'unit/test_config_media_timeout.cpp',
