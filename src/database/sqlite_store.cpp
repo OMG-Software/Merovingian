@@ -1094,7 +1094,7 @@ namespace detail
     {
         if (store.backend == PersistentStoreBackend::postgresql)
         {
-            return load_room_snapshot_from_postgresql(store.postgresql_conninfo, room_id);
+            return load_room_snapshot_from_postgresql(store.postgresql_conninfo, store.postgresql_runtime_role, room_id);
         }
         if (store.backend != PersistentStoreBackend::sqlite)
         {

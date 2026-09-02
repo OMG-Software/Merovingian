@@ -764,3 +764,58 @@ SCENARIO("PostgreSQL reload_room picks up a room committed by a different store 
         }
     }
 }
+
+// The role-switching functions existed and were covered by the scenario above
+// long before anything called them: open_postgresql_persistent_store never
+// issued SET ROLE, so a deployment that had provisioned the roles still served
+// every request with its login role's full privileges. Testing the functions in
+// isolation could never have caught that — this drives the open path itself.
+SCENARIO("PostgreSQL store open assumes the configured roles and fails closed otherwise",
+         "[database][postgresql][integration][pgroles]")
+{
+    GIVEN("a live PostgreSQL URI plus migration and runtime role names")
+    {
+        auto const uri = postgresql_uri_from_environment();
+        auto const runtime_role = runtime_role_from_environment();
+        if (uri.empty() || runtime_role.empty())
+        {
+            SUCCEED("skipped: live PG URI or role env vars are not set");
+            return;
+        }
+
+        WHEN("the store is opened with the provisioned runtime role")
+        {
+            auto const opened =
+                merovingian::database::open_postgresql_persistent_store(uri, runtime_role);
+
+            THEN("the open succeeds")
+            {
+                REQUIRE(opened.ok);
+            }
+        }
+
+        WHEN("the store is opened naming a runtime role that cannot be assumed")
+        {
+            auto const opened = merovingian::database::open_postgresql_persistent_store(uri, "merovingian_role_that_does_not_exist");
+
+            THEN("the open is refused rather than serving with wider privileges")
+            {
+                // Fail closed: continuing here would serve traffic as the login
+                // role, which is exactly the outcome the separation exists to
+                // prevent — and it would do so silently.
+                REQUIRE_FALSE(opened.ok);
+                REQUIRE(opened.reason.find("runtime role") != std::string::npos);
+            }
+        }
+
+        WHEN("the store is opened with no role names at all")
+        {
+            auto const opened = merovingian::database::open_postgresql_persistent_store(uri);
+
+            THEN("it opens normally, preserving single-role deployments")
+            {
+                REQUIRE(opened.ok);
+            }
+        }
+    }
+}

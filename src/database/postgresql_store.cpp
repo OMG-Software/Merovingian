@@ -1366,7 +1366,8 @@ auto open_postgresql_connection(std::string_view conninfo) -> PostgresqlConnecti
     return {true, {}, redacted, PostgresqlConnection{std::move(handle)}};
 }
 
-auto open_postgresql_persistent_store(std::string_view conninfo) -> PersistentStoreOpenResult
+auto open_postgresql_persistent_store(std::string_view conninfo, std::string_view runtime_role)
+    -> PersistentStoreOpenResult
 {
     log_diagnostic("store.opening", {
                                         {"backend", "postgresql", false}
@@ -1420,6 +1421,13 @@ auto open_postgresql_persistent_store(std::string_view conninfo) -> PersistentSt
     store.backend = PersistentStoreBackend::postgresql;
     store.postgresql_conninfo = std::string{conninfo};
     store.schema = std::move(*schema);
+    // Migrations deliberately run as the connection's own login role, NOT as
+    // migration_role. Migrations 007 and 011 use ALTER TABLE, which PostgreSQL
+    // permits only to a table's owner; provision-roles.sql grants migration_role
+    // CREATE on the schema but the existing tables are owned by the login role,
+    // so switching here would break exactly the upgrades this separation is
+    // meant to protect. migration_role exists for a future live db-migrate tool
+    // that owns what it creates.
     if (store.schema.version < current_schema_version())
     {
         log_diagnostic("store.migrating", {
@@ -1438,6 +1446,16 @@ auto open_postgresql_persistent_store(std::string_view conninfo) -> PersistentSt
                                              {"version", std::to_string(migrated->version), false}
         });
         store.schema = std::move(*migrated);
+    }
+    // Serve as the DML-only runtime role. Applied whether or not a migration
+    // ran, so a steady-state restart is just as constrained as a fresh upgrade.
+    store.postgresql_runtime_role = std::string{runtime_role};
+    if (!runtime_role.empty() && !set_postgresql_role(connection, runtime_role))
+    {
+        log_diagnostic("store.rejected", {
+                                             {"reason", "unable to assume runtime role", false}
+        });
+        return {false, "unable to assume PostgreSQL runtime role", {}};
     }
     if (!load_persistent_rows(connection, store))
     {
@@ -1727,10 +1745,24 @@ namespace detail
             return false;
         }
         auto opened = open_postgresql_connection(store.postgresql_conninfo);
-        return opened.ok && opened.connection.execute_transaction(statements);
+        if (!opened.ok)
+        {
+            return false;
+        }
+        // Every connection assumes the runtime role, not just the bootstrap one:
+        // these are opened per operation, so a role set once at startup would
+        // constrain nothing afterwards. A failure here refuses the write rather
+        // than performing it with the login role's wider privileges.
+        if (!store.postgresql_runtime_role.empty() &&
+            !set_postgresql_role(opened.connection, store.postgresql_runtime_role))
+        {
+            return false;
+        }
+        return opened.connection.execute_transaction(statements);
     }
 
-    auto load_room_snapshot_from_postgresql(std::string_view conninfo, std::string_view room_id)
+    auto load_room_snapshot_from_postgresql(std::string_view conninfo, std::string_view runtime_role,
+                                            std::string_view room_id)
         -> std::optional<RoomReloadSnapshot>
     {
         if (conninfo.empty())
@@ -1739,6 +1771,10 @@ namespace detail
         }
         auto opened = open_postgresql_connection(conninfo);
         if (!opened.ok)
+        {
+            return std::nullopt;
+        }
+        if (!runtime_role.empty() && !set_postgresql_role(opened.connection, runtime_role))
         {
             return std::nullopt;
         }

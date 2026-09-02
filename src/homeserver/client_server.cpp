@@ -10449,6 +10449,20 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             return dispatch_err(req, rt, 400U, "M_BAD_JSON",
                                 "pusher body must contain app_id, pushkey, and kind with required fields");
         }
+        // Matrix v1.19 defines kind "email" as a pusher that emails unread
+        // notifications. This homeserver implements no email transport, and
+        // accepting one anyway was the worst of the three options: the pusher
+        // was stored, listed back by GET /pushers, and then skipped at delivery
+        // time, so the user believed notifications were configured and none
+        // ever arrived. Refuse it instead — the spec's 400 for this endpoint is
+        // "one or more of the pusher values were invalid" with no mandated
+        // errcode, so the message says which value and why.
+        if (body->kind.has_value() && *body->kind == "email")
+        {
+            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM",
+                                "email pushers are not supported by this homeserver: no email transport is "
+                                "configured, so an email pusher would be stored but never delivered");
+        }
         auto& store = rt.homeserver.database.persistent_store;
         if (!body->kind.has_value())
         {

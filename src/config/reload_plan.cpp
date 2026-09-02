@@ -150,6 +150,17 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "database.role");
     }
+    // Role names take effect on connect, so a change to either is restart-required
+    // like the rest of this block. Omitting them would let an operator edit the
+    // separation and see "no changes", believing it had been applied.
+    if (current.database().migration_role != next.database().migration_role)
+    {
+        add_change(plan, "database.migration_role");
+    }
+    if (current.database().runtime_role != next.database().runtime_role)
+    {
+        add_change(plan, "database.runtime_role");
+    }
     if (current.database().pool_size != next.database().pool_size)
     {
         add_change(plan, "database.pool_size");

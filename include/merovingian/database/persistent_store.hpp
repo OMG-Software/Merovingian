@@ -643,6 +643,13 @@ struct PersistentStore final
     bool open{false};
     PersistentStoreBackend backend{PersistentStoreBackend::memory};
     std::string postgresql_conninfo{};
+    // The DML-only role every PostgreSQL connection assumes after opening.
+    // Carried on the store because connections are opened per operation from
+    // the conninfo above: setting the role only on the bootstrap connection
+    // would leave every subsequent read and write running as the login role,
+    // which is the whole privilege separation defeated. Empty issues no
+    // SET ROLE, preserving single-role deployments.
+    std::string postgresql_runtime_role{};
     std::string sqlite_path{};
     SchemaState schema{};
     std::vector<PersistentUser> users{};
@@ -1056,7 +1063,7 @@ namespace detail
         -> std::optional<RoomReloadSnapshot>;
     [[nodiscard]] auto load_room_snapshot_from_sqlite(std::string const& path, std::string_view room_id)
         -> std::optional<RoomReloadSnapshot>;
-    [[nodiscard]] auto load_room_snapshot_from_postgresql(std::string_view conninfo, std::string_view room_id)
+    [[nodiscard]] auto load_room_snapshot_from_postgresql(std::string_view conninfo, std::string_view runtime_role, std::string_view room_id)
         -> std::optional<RoomReloadSnapshot>;
 
 } // namespace detail

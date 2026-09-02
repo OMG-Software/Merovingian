@@ -502,17 +502,24 @@ These remain deferred:
    `set_postgresql_role()`. `merovingian-db-migrate` (`src/db_migrate.cpp`)
    never opens a database connection at all; it only prints an offline
    migration *plan*. Schema migrations are applied automatically by
-   `bootstrap_local_database()`/`migration.hpp` on every server startup,
-   through the same connection pool that then serves runtime traffic, so
-   today the login role in `database.uri_file` always carries DDL privileges
-   whether or not `provision-roles.sql` has been run. Closing this needs: (a)
-   `merovingian-db-migrate` to become a real tool that connects, `SET ROLE`s
-   to the migration role, and applies migrations; (b) the server's own
-   runtime bootstrap to `SET ROLE` to the runtime role before serving traffic
-   and to refuse to auto-apply migrations itself when a migration role is
-   configured; (c) an integration test proving the *config-driven* startup
-   path (not just the primitive in isolation) rejects DDL through the
-   runtime connection. See `packaging/postgresql/provision-roles.sql` for
+   `bootstrap_local_database()`/`migration.hpp` on every server startup.
+   **Partly closed in 0.12.3**: when `database.runtime_role` is configured,
+   every PostgreSQL connection assumes it after opening — not just the
+   bootstrap one, since connections are created per operation — and an
+   unassumable role refuses the open rather than serving with the login
+   role's wider privileges. Migrations deliberately continue to run as the
+   login role: they use `ALTER TABLE`, which PostgreSQL permits only to a
+   table's owner, and the provisioned migration role does not own the login
+   role's tables.
+
+   Still open: (a) `merovingian-db-migrate` becoming a real tool that
+   connects and owns what it creates, at which point the migration role has
+   a user; (b) the server refusing to auto-apply migrations when a migration
+   role is configured. The config-driven startup path is covered by the
+   role-separation scenario in `test_postgresql_persistence_flow.cpp`, which
+   drives `open_postgresql_persistent_store` itself rather than the
+   primitive in isolation — note it requires a live PostgreSQL URI and role
+   environment variables, so it runs only in `postgres-integration`. See `packaging/postgresql/provision-roles.sql` for
    the interim operator-driven alternative (provision the roles, run
    migrations out-of-band as the more privileged role, point
    `database.uri_file` at a login restricted to the runtime role).

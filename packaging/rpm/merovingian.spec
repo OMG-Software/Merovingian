@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.12.2
+Version:        0.12.3
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -101,6 +101,10 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Tue Sep 02 2026 James Chapman <claude@ping.me.uk> - 0.12.3-1
+- Apply PostgreSQL privilege separation on connect
+- Refuse email pushers instead of discarding them
+
 * Mon Aug 31 2026 James Chapman <claude@ping.me.uk> - 0.12.2-1
 - Correct stale production-milestone rows after the 0.12.1 release
 - Close remaining gaps recorded in the 0.12.1 release PR

@@ -15925,3 +15925,55 @@ SCENARIO("GET /rooms/{roomId}/messages honours lazy_load_members in the filter",
         }
     }
 }
+
+// Matrix v1.19 CS API, POST /_matrix/client/v3/pushers/set: `kind` "email"
+// "makes a pusher that emails the user with unread notifications". This
+// homeserver implements no email transport, and the spec's 400 is "one or more
+// of the pusher values were invalid" with no mandated errcode.
+//
+// Accepting and persisting an email pusher that is then skipped at delivery
+// time is the worst available behaviour: the client is told notifications are
+// configured, the pusher is listed back by GET /pushers, and no notification
+// ever arrives. Refusing it is honest; the user can then configure something
+// that works.
+SCENARIO("POST /pushers/set refuses email pushers rather than silently discarding them",
+         "[conformance][client-server][push][email-pusher]")
+{
+    GIVEN("a started homeserver with an authenticated user")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const token = logged_in_token(runtime);
+
+        WHEN("POST /pushers/set is called with kind \"email\"")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/pushers/set", token,
+                          R"({"app_display_name":"Mail","app_id":"m.email","data":{},"device_display_name":"Inbox",)"
+                          R"("kind":"email","lang":"en","pushkey":"user@example.org"})"});
+
+            THEN("the request is rejected")
+            {
+                REQUIRE(response.response.status == 400U);
+            }
+
+            THEN("the rejection names email pushers, not a generic malformed body")
+            {
+                // A bare M_BAD_JSON would send the operator hunting for a typo
+                // in a body that is in fact well-formed and spec-valid.
+                REQUIRE(response.response.body.find("email") != std::string::npos);
+            }
+
+            THEN("nothing is persisted")
+            {
+                // The defect being closed: the pusher used to be stored and
+                // listed back, so the user believed email notifications worked.
+                auto const listed = merovingian::homeserver::handle_client_server_request(
+                    runtime, {"GET", "/_matrix/client/v3/pushers", token, {}});
+                REQUIRE(listed.response.status == 200U);
+                REQUIRE(listed.response.body.find("user@example.org") == std::string::npos);
+            }
+        }
+    }
+}

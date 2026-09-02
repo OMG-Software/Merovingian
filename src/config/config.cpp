@@ -548,6 +548,18 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
         findings.push_back({"server.server_name", "server name must not be empty"});
     }
 
+    // Role separation is all-or-nothing. Configuring only one role is worse
+    // than configuring neither: with just a migration role the connection would
+    // assume a DDL-capable role and never drop out of it, and with just a
+    // runtime role an operator believes migrations are separated when they are
+    // not. Fail closed at parse time rather than half-applying either.
+    if (config.database().migration_role.empty() != config.database().runtime_role.empty())
+    {
+        findings.push_back({"database.runtime_role",
+                            "database.migration_role and database.runtime_role must be set together or "
+                            "both left empty"});
+    }
+
     if (!is_valid_public_baseurl(config.server().public_baseurl))
     {
         findings.push_back({"server.public_baseurl", "public base URL must be a non-empty HTTPS URL"});

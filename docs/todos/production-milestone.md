@@ -17,7 +17,6 @@ and what has been deliberately dropped.
 
 | Blocker | Why it blocks | Done when |
 | --- | --- | --- |
-| PostgreSQL privilege separation is provisioned but unenforced | `packaging/postgresql/provision-roles.sql` creates separate runtime and migration roles, but `db-migrate` is an offline planner that opens no connection and the runtime never issues `SET ROLE`. A project whose premise is defence in depth must not ship privilege separation it does not actually apply. | The runtime connects as the restricted role and migrations run as the migration role, proven against a real temporary database. |
 | Federation conformance is entirely self-attested | Every conformance claim rests on this project's own tests. Complement is the only external check on whether the federation implementation is actually correct. | Complement runs green against a release candidate — see "Release evidence" for why this is a pre-tag run, not a per-PR gate. |
 | Push silently discards email pushers | `kind: "email"` is accepted at registration, persisted, and then never delivered. Silent acceptance is worse than either alternative: an operator believes email push works. Gateway retry/backoff is a spec SHOULD and is also absent. | Either email delivery is implemented, or `kind: "email"` is rejected at registration with a clear error. Retry/backoff decided explicitly, not left absent by default. |
 | No tested upgrade path across releases | Migrations are tested forward from an empty database and between adjacent versions. Nothing tests that a database written by an older release opens under a newer one. For a 1.0.0 that promises stability this is a larger operational risk than any remaining test-coverage item. | A database created by the previous minor series is opened, migrated and served by the candidate, in CI. |
@@ -75,6 +74,36 @@ Note the endpoints differ: `/context` returns "the state of the room at the last
 event returned" and reconstructs temporally, while `/messages` returns "state
 events relevant to showing the chunk". Copying `/context`'s approach here would
 have been the wrong fix.
+
+Reinstated in 0.12.3, having been withdrawn in error. The migration code does
+exist — `open_sqlite_persistent_store` and `open_postgresql_persistent_store`
+each call `apply_pending_migrations` when the stored version is below current,
+each step in its own transaction — so the path is not missing. But nothing
+exercises it. The scenario cited when withdrawing this ("bootstraps a fresh
+migrated schema") runs with the default PostgreSQL config and no URI file, so
+startup falls back to the in-memory `open_persistent_store()` and never reaches
+either backend's migration branch; the SQLite restart scenarios open a database
+the same binary just created, so `version < current` is false and the branch is
+skipped. The original wording — an upgrade path that exists but is untested —
+was accurate.
+
+Closing it needs a database seeded at an older schema version through a real
+file-backed store, which needs a way to open at a target version rather than
+straight to current.
+
+Closed in 0.12.3: PostgreSQL privilege separation is applied, not just provisioned.
+`set_postgresql_role`/`reset_postgresql_role` and a role-separation integration
+scenario already existed — with no callers, so a deployment that had run
+`provision-roles.sql` still served every request with its login role's full
+privileges. `open_postgresql_persistent_store` now assumes the migration role for
+the DDL phase, drops to the DML-only runtime role to serve, and refuses to open
+if a configured role cannot be assumed. Role names come from
+`database.migration_role`/`database.runtime_role`; both empty issues no SET ROLE,
+so existing single-role deployments are unaffected by upgrading.
+
+Verification note: the open-path scenario needs a live PostgreSQL URI and the
+role environment variables, so it skips locally and runs in the
+`postgres-integration` workflow. The config-parsing half runs everywhere.
 
 ## Still open, not blocking
 
@@ -190,5 +219,5 @@ Retained as the record of what was verified and when.
 
 | No HTTP keep-alive | **Closed in 0.12.1** — `src/homeserver/http_server.cpp` now serves persistent HTTP/1.1 connections as sequential request rounds: keep-alive by default for 1.1, `Connection: close` honoured and echoed, 1.0 only on explicit request; each request's body is drained exactly so request boundaries are never lost (pipelining buffered and answered in order, out of scope); idle parking bounded by `server.http.keep_alive_idle_seconds` (default 15) plus a process-wide parked-connection cap `server.http.keep_alive_max_connections` (default 8); the phase-aware `connection_guard` (`connection_should_close`) keeps the slowloris kill for mid-request slow clients while exempting idle parks | Closed — see CHANGELOG 0.12.1 |
 | Rate limiting not production-grade | **Closed in 0.12.1** — every client-server route is classified into one of six explicit tiers in `http::rate_limit_tier_for()` (`auth_sensitive`, `media`, `sync`, `federation`, `admin`, `generic`) with per-endpoint accounting; unauthenticated routes are bucketed per remote IP and the credential/enumeration surface resolves to the tighter `auth_sensitive` tier rather than the generic fallback; operators override per-prefix (`client_rate_limits.per_ip.*`), per-tier (`client_rate_limits.tier.<name>`, validated against the tier table so a typo is a parse finding) or the generic default, most-specific-first, and a misconfigured entry at any level fails closed (`invalid_policy`, issue #412). Inbound federation gains a per-X-Matrix-origin cap on non-/send endpoints (`security.federation.per_origin_request_rate`, default 600/min); /send keeps its weighted transaction/PDU/EDU trio so nothing is double-counted. In-memory counters remain by design — operator sign-off recorded in `docs/http-transport.md` | Closed — see CHANGELOG 0.12.1 |
-| Application Service API | **`/thirdparty/*` closed in 0.12.1** — registration files, `as_token`/`hs_token`, `m.login.application_service`, namespace exclusivity, outbound transaction delivery, and all six `GET /_matrix/client/v3/thirdparty/*` third-party lookup routes (backed by outbound `GET /_matrix/app/v1/thirdparty/*` calls, with multi-appservice aggregation and unreachable-appservice degradation) are implemented — see CHANGELOG 0.12.1 and `docs/todos/capability-gaps.md`, "Application service API". **Still open:** the outbound `GET /_matrix/app/v1/users/{userId}` / `/rooms/{roomAlias}` query hooks exist but are not invoked from any local-miss call site, so an unknown user/alias is never resolved by asking the owning appservice | User/room query hooks wired to their local-miss call sites |
+| Application Service API | **`/thirdparty/*` closed in 0.12.1** — registration files, `as_token`/`hs_token`, `m.login.application_service`, namespace exclusivity, outbound transaction delivery, and all six `GET /_matrix/client/v3/thirdparty/*` third-party lookup routes (backed by outbound `GET /_matrix/app/v1/thirdparty/*` calls, with multi-appservice aggregation and unreachable-appservice degradation) are implemented — see CHANGELOG 0.12.1 and `docs/todos/capability-gaps.md`, "Application service API". **Still open:** the outbound `GET /_matrix/app/v1/users/{userId}` / `/rooms/{roomAlias}` query hooks are invoked on a local miss: `GET /directory/room/{roomAlias}` and `GET /profile/{userId}` consult the appservice whose namespace covers the identifier and re-check locally afterwards (wired in 0.12.1, covered by `test_appservice_query_hooks_flow.cpp`) | User/room query hooks wired to their local-miss call sites |
 | SSO login | **Closed in 0.12.1** — `m.login.sso` is advertised from `GET /login` with `identity_providers` when `server.sso.*` is fully configured (fail-closed: a half-configured setup is not advertised), `GET /_matrix/client/v3/login/sso/redirect[/{idpId}]` is routed with a `redirectUrl` allowlist closing the open-redirect, and `m.login.token` is implemented (it was entirely absent — only password login existed) against a durable single-use `login_tokens` table, migration `012`, disjoint from `access_tokens`. | Merovingian does not itself speak CAS/SAML/OIDC; `homeserver::complete_sso_login` is the documented integration point for an operator's external IdP adapter. |
