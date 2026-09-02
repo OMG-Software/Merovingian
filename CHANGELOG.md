@@ -88,10 +88,13 @@ escalations reachable by an ordinary room moderator or a federating peer.
   account permanently deactivated (schema version 14 adds a `deactivated` column
   to `users`), revokes every access and refresh token including the caller's own,
   and replaces the password hash with an unmatchable value. The users row is
-  retained so the localpart is never reissued. `id_server_unbind_result` reports
-  `no-support` when the account has 3PIDs, since this server does not record
-  which identity server bound each one — which is the case the spec names for
-  that value.
+  retained so the localpart is never reissued. Every identity-server-bound 3PID
+  the account holds is unbound as part of deactivation, reusing the stored
+  `id_server`/`client_secret`/`sid` through the same trusted-base-URL SSRF gate
+  as `POST /account/3pid/unbind`; `id_server_unbind_result` is `success` only
+  when every identifier was unbound, `no-support` when any could not be. Unlike
+  the standalone unbind endpoint, a failure there does not fail the
+  deactivation — it is irreversible and leaves no owner to retry with.
 - **`membership_acceptor` and `invite_handler` take the runtime lock.** Both
   mutated `store.rooms`/`state`/`events` and the stream-ordering counters with no
   lock held, where their sibling `ingest_pdu_event` locks correctly. Not a live

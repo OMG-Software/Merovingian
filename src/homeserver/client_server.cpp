@@ -1940,6 +1940,90 @@ namespace
         return std::optional<std::string>{*match};
     }
 
+    // Unbinds one 3PID from its identity server as part of account deactivation,
+    // clearing the local binding either way. Returns true when the identifier is
+    // known to be unbound at the IS, false when it could not be (no identity
+    // server recorded, the operator has withdrawn trust for it, or the IS was
+    // unreachable or refused) -- which the caller aggregates into the response's
+    // id_server_unbind_result.
+    //
+    // Split out from the POST /account/3pid/unbind handler rather than shared
+    // with it because the two want opposite failure dispositions: that endpoint
+    // fails closed and keeps the local binding so the user can retry, whereas
+    // deactivation is irreversible and must not strand a binding on an account
+    // that no longer has an owner to retry with.
+    //
+    // `guard` is the dispatch-wide runtime lock; it is dropped around the
+    // outbound call and reacquired before touching the store again, per
+    // src/homeserver/AGENTS.md "The runtime lock and blocking calls".
+    [[nodiscard]] auto unbind_threepid_for_deactivation(ClientServerRuntime& rt,
+                                                        std::unique_lock<std::recursive_mutex>& guard,
+                                                        std::string_view user_id, std::string_view medium,
+                                                        std::string_view address) -> bool
+    {
+        auto const clear_local = [&rt, user_id, medium, address]() {
+            // Re-find rather than reuse a pointer: the store may have moved.
+            auto* refreshed = find_account_threepid(rt, user_id, medium, address);
+            if (refreshed != nullptr)
+            {
+                refreshed->bound = false;
+                refreshed->id_server.reset();
+                refreshed->client_secret.reset();
+                refreshed->sid.reset();
+                std::ignore = database::store_account_threepid(rt.homeserver.database.persistent_store, *refreshed);
+            }
+        };
+
+        auto* record = find_account_threepid(rt, user_id, medium, address);
+        if (record == nullptr)
+        {
+            return true;
+        }
+        if (!record->id_server.has_value() || !record->client_secret.has_value() || !record->sid.has_value())
+        {
+            // Never IS-delegated, or bound before the credentials were persisted
+            // (migration 007). Nothing to unbind remotely; clear it locally.
+            clear_local();
+            return false;
+        }
+        auto const trusted_base =
+            resolve_trusted_identity_base_url(rt.homeserver.config.server().identity_server, *record->id_server);
+        if (!trusted_base.has_value())
+        {
+            // The operator has withdrawn trust for the IS holding this binding, so
+            // it is no longer reachable through the SSRF gate. Clear locally.
+            clear_local();
+            return false;
+        }
+        if (rt.homeserver.outbound_client == nullptr || rt.homeserver.cached_discovery == nullptr)
+        {
+            clear_local();
+            return false;
+        }
+
+        auto const base_url = std::string{*trusted_base};
+        auto const client_secret = std::string{*record->client_secret};
+        auto const sid = std::string{*record->sid};
+        auto const medium_copy = std::string{medium};
+        auto const address_copy = std::string{address};
+
+        guard.unlock();
+        auto id_client = merovingian::identity::IdentityServerClient{
+            *rt.homeserver.outbound_client, *rt.homeserver.cached_discovery,
+            rt.homeserver.config.server().identity_server, &rt.homeserver.test_forced_identity_resolution};
+        // Mode 2: empty bearer -- the IS authenticates the unbind via the
+        // client_secret + sid carried in the body.
+        auto const is_result =
+            id_client.unbind(base_url, std::string_view{}, client_secret, sid, medium_copy, address_copy);
+        guard.lock();
+
+        clear_local();
+        // 200 is a real unbind. 404/501 mean the IS does not hold or does not
+        // support this binding, which the spec models as "no-support" rather than
+        // an error. Anything else (transport failure, 401/403) is also no-support.
+        return is_result.ok && is_result.status == 200U;
+    }
+
     [[nodiscard]] auto parse_register_email_request_body(std::string_view body)
         -> std::optional<MatrixRegisterEmailRequestBody>
     {
@@ -10208,19 +10292,40 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             return dispatch_err(req, rt, result.status, result.status == 401U ? "M_UNKNOWN_TOKEN" : "M_FORBIDDEN",
                                 result.reason);
         }
-        // id_server_unbind_result is REQUIRED in the 200 response. This server
-        // does not record which identity server bound each 3PID, and the spec is
-        // explicit that "no-support" is the correct answer in exactly that case:
-        // "or the homeserver being unable to determine an identity server to
-        // unbind from". It must be "success" when there is nothing to unbind.
-        auto const has_threepids =
-            std::ranges::any_of(rt.homeserver.database.persistent_store.account_threepids,
-                                [&result](database::PersistentThreePidBinding const& record) {
-                                    return record.user_id == result.value;
-                                });
-        return dispatch_resp(req, rt, 200U,
-                             json_serialize(json_obj({json_member(
-                                 "id_server_unbind_result", json_str(has_threepids ? "no-support" : "success"))})));
+        // Unbind every identity-server-bound 3PID the account holds. Spec: the
+        // 200 response's id_server_unbind_result is "success" only when *all*
+        // identifiers were unbound -- and when there were none to unbind --
+        // and "no-support" when one or more could not be, whether because the
+        // identity server refused or because none could be determined.
+        //
+        // Deactivation itself has already happened and is not undone by an
+        // unbind failure: the spec models a partial unbind as a 200 carrying
+        // "no-support", not as a failed deactivation. This is the opposite
+        // disposition to POST /account/3pid/unbind, which fails closed so the
+        // user can retry -- there is no retry after deactivation.
+        //
+        // Addresses are copied out before the loop: the outbound call drops the
+        // runtime lock, so the store vector can move and any iterator, pointer
+        // or index taken across it would dangle.
+        auto pending_unbinds = std::vector<std::pair<std::string, std::string>>{};
+        for (auto const& record : rt.homeserver.database.persistent_store.account_threepids)
+        {
+            if (record.user_id == result.value && record.bound)
+            {
+                pending_unbinds.emplace_back(record.medium, record.address);
+            }
+        }
+        auto unbind_result = std::string_view{"success"};
+        for (auto const& [medium, address] : pending_unbinds)
+        {
+            if (!unbind_threepid_for_deactivation(rt, guard, result.value, medium, address))
+            {
+                unbind_result = "no-support";
+            }
+        }
+        return dispatch_resp(
+            req, rt, 200U,
+            json_serialize(json_obj({json_member("id_server_unbind_result", json_str(unbind_result))})));
     }
     if (req.method == "GET" && req.target == "/_matrix/client/v3/account/3pid")
     {

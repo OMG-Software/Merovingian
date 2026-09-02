@@ -59,6 +59,23 @@ server.http.keep_alive=true
 server.http.keep_alive_idle_seconds=15
 server.http.keep_alive_max_connections=8
 
+# Identity Service API — third-party identifiers (3PIDs: email, msisdn)
+# Governs 3PID invites, bind, unbind and requestToken. All of it is OFF until
+# trusted_servers is set: with an empty allow-list every operation that needs an
+# identity server fails closed rather than silently minting tokens locally, and
+# a 3PID naming an id_server outside the list is refused. That allow-list is the
+# SSRF boundary for outbound identity-server calls, so keep it as narrow as the
+# deployment allows. default_server must itself appear in trusted_servers, and
+# every URL must be HTTPS. allowed_bind_domains restricts which domains a user
+# may bind an address for, which stops a user binding someone else's domain;
+# empty means any domain. These keys are read at startup — changing any of them
+# requires a restart, not a SIGHUP reload.
+# server.identity_server.trusted_servers=https://vector.im,https://matrix.org
+# server.identity_server.default_server=https://vector.im
+# server.identity_server.allowed_bind_domains=example.org
+# server.identity_server.connect_timeout_seconds=10
+# server.identity_server.total_timeout_seconds=30
+
 # TURN server for VoIP relay (optional)
 # When server.turn.server is empty, GET /_matrix/client/v3/voip/turnServer
 # returns an empty object so clients gracefully disable relay support.

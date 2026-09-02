@@ -403,12 +403,23 @@ are reversible where deactivation is not.
   deactivated" before evaluating the reversible `locked`/`suspended`
   states — deactivation outranks them because it is permanent where they
   are not.
+- **3PIDs are unbound from their identity servers.**
+  `unbind_threepid_for_deactivation` (`src/homeserver/client_server.cpp`)
+  walks every bound 3PID the account holds and drives IS unbind auth mode 2
+  with the stored `id_server` + `client_secret` + `sid` (migration `007`),
+  through the same `resolve_trusted_identity_base_url` SSRF gate as
+  `POST /account/3pid/unbind`. The local binding is cleared either way.
 - **`id_server_unbind_result`**, required in the `200` response body, is
-  `"no-support"` when the account has any recorded 3PIDs and `"success"`
-  when it has none. This server does not record which identity server
-  bound each 3PID, and the spec names exactly that condition — "the
-  homeserver being unable to determine an identity server to unbind
-  from" — as the case for `no-support`.
+  `"success"` only when every identifier was unbound — and when there were
+  none to unbind — and `"no-support"` when any could not be: no identity
+  server recorded against the binding, operator trust withdrawn for the one
+  that holds it, or the identity server unreachable or refusing.
+- **A failed unbind does not fail the deactivation.** This is the opposite
+  disposition to `POST /account/3pid/unbind`, which fails closed and keeps
+  the local binding so the user can retry. Deactivation is irreversible and
+  leaves no owner to retry with, so it completes and reports `no-support`
+  rather than stranding the account half-closed. The spec models a partial
+  unbind as a `200` carrying `no-support`, not as a failed deactivation.
 - **Irreversible by design**: there is no reactivate endpoint.
 
 **Not yet done**, tracked in `docs/todos/capability-gaps.md`: the request
@@ -416,9 +427,7 @@ body's `erase` parameter is parsed as part of the JSON body but never
 inspected, so it has no effect either way — the spec's erasure behaviour is
 a SHOULD, not a MUST, so this is not a conformance violation, but a client
 that explicitly asks for erasure gets the same silent no-op as a client that
-does not. The account's rooms are not left, and its 3PIDs are not unbound
-from their identity servers as part of deactivation — only the local
-account is marked deactivated and its tokens revoked.
+does not. The account's rooms are also not left on its behalf.
 
 ## Per-account failed-login throttle
 
