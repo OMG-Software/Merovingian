@@ -48,6 +48,22 @@
   recorded under "Decided against" rather than deleted, so a later audit does
   not silently reintroduce them.
 
+- **`GET /messages` honours `lazy_load_members`.** The endpoint returned the
+  room's full current state, including every member, defeating the flag exactly
+  where it costs most — pagination repeats that payload for every page. Two
+  causes: `lazy_load_members` was never parsed anywhere in the codebase, and
+  `/messages` passed a default-constructed filter to its state builder, so no
+  state filtering happened at all. `RoomEventFilter` now carries
+  `lazy_load_members` and `include_redundant_members`, the request's own filter
+  reaches the builder, and membership events are restricted to senders
+  appearing in the chunk. Non-member state is untouched — it is relevant to
+  rendering the chunk regardless.
+
+  The two endpoints' `state` fields are NOT the same contract: `/context`
+  returns "the state of the room at the last event returned" and reconstructs
+  it temporally, whereas `/messages` returns "state events relevant to showing
+  the chunk". Copying `/context`'s temporal walk would have been wrong.
+
 ## 0.12.1
 
 Release-blocker closures branch (`feature/release-blockers`). The audit that

@@ -24,6 +24,13 @@ struct EventTypeFilter final
     std::vector<std::string> senders{};
     std::vector<std::string> not_senders{};
     std::size_t limit{0U}; // 0 == no cap
+    // RoomEventFilter, Matrix v1.19 CS API § Filtering. When lazy_load_members
+    // is set the server may send only the membership events of the senders
+    // appearing in the returned events, instead of the room's whole member
+    // list; include_redundant_members suppresses the de-duplication the spec
+    // otherwise permits across repeat calls.
+    bool lazy_load_members{false};
+    bool include_redundant_members{false};
 };
 
 struct RoomFilter final

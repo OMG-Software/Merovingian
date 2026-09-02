@@ -17,7 +17,6 @@ and what has been deliberately dropped.
 
 | Blocker | Why it blocks | Done when |
 | --- | --- | --- |
-| `/messages` returns current, not chunk-relevant, state | A spec deviation in an endpoint every client hits constantly. Lazy-loading members is the reason the field exists; returning full current state defeats it and inflates every pagination response. | `/messages` returns state filtered to the chunk, matching the fix already applied to `/context` in 0.11.11. |
 | PostgreSQL privilege separation is provisioned but unenforced | `packaging/postgresql/provision-roles.sql` creates separate runtime and migration roles, but `db-migrate` is an offline planner that opens no connection and the runtime never issues `SET ROLE`. A project whose premise is defence in depth must not ship privilege separation it does not actually apply. | The runtime connects as the restricted role and migrations run as the migration role, proven against a real temporary database. |
 | Federation conformance is entirely self-attested | Every conformance claim rests on this project's own tests. Complement is the only external check on whether the federation implementation is actually correct. | Complement runs green against a release candidate — see "Release evidence" for why this is a pre-tag run, not a per-PR gate. |
 | Push silently discards email pushers | `kind: "email"` is accepted at registration, persisted, and then never delivered. Silent acceptance is worse than either alternative: an operator believes email push works. Gateway retry/backoff is a spec SHOULD and is also absent. | Either email delivery is implemented, or `kind: "email"` is rejected at registration with a clear error. Retry/backoff decided explicitly, not left absent by default. |
@@ -63,6 +62,19 @@ Recorded so these are not silently reintroduced by a later audit.
 - **Config-profile capability-gate naming.** Cosmetic CI job renaming with no
   bearing on whether the software is correct. Dropped from the milestone.
 - **Load/soak/chaos as CI gates.** See above — moved to release evidence.
+
+Closed in 0.12.2: `/messages` honours `lazy_load_members`. Investigating it found
+the flag was never parsed anywhere in the codebase, and `/messages` additionally
+passed a default-constructed filter to its state builder, so no state filtering
+happened at all. `RoomEventFilter` now carries `lazy_load_members` and
+`include_redundant_members`, the request's own filter reaches the builder, and
+membership state is restricted to senders appearing in the chunk. Non-member
+state is unchanged — it is relevant to rendering the chunk regardless.
+
+Note the endpoints differ: `/context` returns "the state of the room at the last
+event returned" and reconstructs temporally, while `/messages` returns "state
+events relevant to showing the chunk". Copying `/context`'s approach here would
+have been the wrong fix.
 
 ## Still open, not blocking
 
