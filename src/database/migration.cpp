@@ -433,6 +433,21 @@ auto downgrade_initial_schema_migration() -> MigrationStep
     return {13U, "appservice_txn_cursor", std::move(statements), MigrationDirection::upgrade};
 }
 
+// v14: add the users.deactivated column (Matrix v1.19 CS API
+// POST /_matrix/client/v3/account/deactivate). Deliberately distinct from the
+// existing reversible `locked`/`suspended` admin flags: a deactivated account can
+// never log in again and its row is retained so the localpart is never reissued.
+// The base table is created at v1; this step ALTERs the column onto it so the v1
+// migration stays historically intact and fresh installs (which run every upgrade
+// step in order) end at the same v14 shape.
+[[nodiscard]] auto upgrade_user_deactivation_migration() -> MigrationStep
+{
+    auto statements = std::vector<PreparedStatement>{};
+    statements.push_back(PreparedStatement{
+        "add_deactivated_column", "ALTER TABLE users ADD COLUMN deactivated TEXT NOT NULL DEFAULT 'false'", {}});
+    return {14U, "user_deactivation", std::move(statements), MigrationDirection::upgrade};
+}
+
 auto upgrade_migration_catalog() -> std::vector<MigrationStep>
 {
     return {initial_schema_migration(),
@@ -447,7 +462,8 @@ auto upgrade_migration_catalog() -> std::vector<MigrationStep>
             upgrade_openid_tokens_migration(),
             upgrade_pushers_data_extra_migration(),
             upgrade_login_tokens_migration(),
-            upgrade_appservice_txn_cursor_migration()};
+            upgrade_appservice_txn_cursor_migration(),
+            upgrade_user_deactivation_migration()};
 }
 
 [[nodiscard]] auto downgrade_backfill_state_transitions_migration() -> MigrationStep
@@ -548,9 +564,19 @@ auto upgrade_migration_catalog() -> std::vector<MigrationStep>
     return {3U, "drop_state_transitions", std::move(statements), MigrationDirection::downgrade};
 }
 
+// v14 -> v13: drop the users.deactivated column.
+[[nodiscard]] auto downgrade_user_deactivation_migration() -> MigrationStep
+{
+    auto statements = std::vector<PreparedStatement>{};
+    statements.push_back(
+        PreparedStatement{"drop_deactivated_column", "ALTER TABLE users DROP COLUMN deactivated", {}});
+    return {13U, "drop_user_deactivation", std::move(statements), MigrationDirection::downgrade};
+}
+
 auto downgrade_migration_catalog() -> std::vector<MigrationStep>
 {
-    return {downgrade_appservice_txn_cursor_migration(),
+    return {downgrade_user_deactivation_migration(),
+            downgrade_appservice_txn_cursor_migration(),
             downgrade_login_tokens_migration(),
             downgrade_pushers_data_extra_migration(),
             downgrade_openid_tokens_migration(),

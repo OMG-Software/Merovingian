@@ -376,6 +376,15 @@ Built-in per-endpoint refinements inside a tier: device and key APIs at
 scan, see `ClientApiLimits::max_search_events_scanned`) rather than a cheap
 lookup. The built-in per-user cap is 5/60s on `/login`.
 
+The per-user tier keys on the *authenticated* user, which before a login
+succeeds is nobody — so a `/login` guessing spree against one account spread
+across many source IPs previously accumulated against nothing at all,
+regardless of tier. There is now an additional, independent per-account
+failed-login throttle layered on top of these IP/user buckets, tracking
+failures against the claimed user ID rather than an IP or an authenticated
+identity; see `docs/auth-identity.md` "Per-account failed-login throttle"
+for the mechanism, thresholds, and trade-offs.
+
 Classification is method-agnostic: a `GET` against `/login` is the same
 enumeration surface as a `POST`, and the `*/requestToken` family spans several
 path parents, so it is matched by suffix.

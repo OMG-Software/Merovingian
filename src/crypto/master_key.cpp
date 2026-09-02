@@ -3,8 +3,12 @@
 
 #include "merovingian/crypto/master_key.hpp"
 
+#include "merovingian/observability/logger.hpp"
+#include "merovingian/observability/observability.hpp"
+
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <fstream>
@@ -63,7 +67,31 @@ auto load_master_key_material(std::string_view path) -> std::optional<core::Secr
     // Copy down to a right-sized owner; `scratch`'s destructor wipes the
     // oversized 4096-byte working buffer (including any unused tail) when
     // this function returns.
-    return core::SecretBuffer{scratch_bytes.subspan(0U, total)};
+    auto material = core::SecretBuffer{scratch_bytes.subspan(0U, total)};
+
+    // #487: SecretBuffer records whether sodium_mlock succeeded and falls back to
+    // plain zeroise-on-destruction when it did not, but nothing ever consulted
+    // is_locked(). A server that had exhausted RLIMIT_MEMLOCK therefore held its
+    // root secret — the key every derived key comes from — in swappable memory
+    // with no indication anywhere. Warn once per process: the condition is a
+    // deployment-level fault (raise RLIMIT_MEMLOCK, or grant CAP_IPC_LOCK), so
+    // repeating it per load would be noise, and it must not be fatal — refusing
+    // to start would turn a hardening shortfall into an outage.
+    if (!material.is_locked())
+    {
+        static auto warned = std::atomic<bool>{false};
+        if (!warned.exchange(true))
+        {
+            observability::log_diagnostic(
+                "crypto", "master_key.not_mlocked",
+                {
+                    {"reason", "sodium_mlock failed; the master key may be paged to swap",   false},
+                    {"action", "raise RLIMIT_MEMLOCK for the service or grant CAP_IPC_LOCK", false}
+            },
+                observability::LogEventSeverity::warning);
+        }
+    }
+    return material;
 }
 
 } // namespace merovingian::crypto

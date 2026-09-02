@@ -49,6 +49,84 @@ escalations reachable by an ordinary room moderator or a federating peer.
   body of ~150,000 unique keys, on unauthenticated endpoints such as `/login`
   and `/register`. Both now use a hash set, and the parser enforces an explicit
   `max_object_members` cap of 65536 as defence in depth.
+- **The master key is no longer read from disk twice per authenticated request.**
+  `lookup_token_hashes` derives both the v3 and v4 access-token HMAC keys, and
+  each derivation opened and read the operator's master key file — so every
+  authenticated request performed two blocking reads of the server's root secret
+  and two `sodium_mlock`/`munlock` cycles on a 4 KiB buffer. Under concurrency
+  that mlock churn could exhaust `RLIMIT_MEMLOCK`, at which point `SecretBuffer`
+  silently falls back to swappable memory for the key every other key is derived
+  from. Both keys are now derived once and cached, invalidated on the file's
+  (path, size, mtime) identity so replacing the key still takes effect without a
+  restart — the steady-state cost is one `stat` instead of two full reads.
+- **A failed `mlock` of the master key is now reported.** `SecretBuffer` already
+  recorded it and exposed `is_locked()`; nothing ever called it, so a server
+  holding its root secret in swappable memory said nothing at any log level. It
+  now warns once per process, naming the remedy. Deliberately not fatal: refusing
+  to start would turn a hardening shortfall into an outage.
+- **Media responses carry the spec's content-security headers.** Client-facing
+  download and thumbnail responses set only `Content-Type` and CORS headers —
+  `Content-Security-Policy` appeared nowhere in the tree, and
+  `Content-Disposition` only on the federation multipart body. All three of CSP,
+  `Cross-Origin-Resource-Policy: cross-origin` and `Content-Disposition` are now
+  set, with `inline` used only for the content types the spec's "Serving inline
+  content" allowlist permits and `attachment` for everything else. No `filename`
+  parameter is emitted yet — this server does not persist the upload filename,
+  which the spec permits and which is now tracked as a gap.
+- **`/login` is throttled per account, not only per source IP.** The rate
+  limiter's per-user tier keys on the authenticated user, which pre-login is
+  nobody, so guesses against one account spread across many source IPs
+  accumulated against nothing. Failures are now counted against the claimed
+  user ID — whether or not it exists, so the throttle cannot be used to probe
+  which accounts are real — with a lockout after five failures in fifteen
+  minutes, cleared by any successful login.
+- **`POST /_matrix/client/v3/account/deactivate` is implemented.** It previously
+  had no handler at all; the path appeared only as a literal in the
+  suspended-user allowlist, so a user whose credentials were compromised could
+  not close their own account — only an admin could apply a reversible
+  lock/suspend. The endpoint now performs `m.login.password` UIA, marks the
+  account permanently deactivated (schema version 14 adds a `deactivated` column
+  to `users`), revokes every access and refresh token including the caller's own,
+  and replaces the password hash with an unmatchable value. The users row is
+  retained so the localpart is never reissued. `id_server_unbind_result` reports
+  `no-support` when the account has 3PIDs, since this server does not record
+  which identity server bound each one — which is the case the spec names for
+  that value.
+- **`membership_acceptor` and `invite_handler` take the runtime lock.** Both
+  mutated `store.rooms`/`state`/`events` and the stream-ordering counters with no
+  lock held, where their sibling `ingest_pdu_event` locks correctly. Not a live
+  race in any shippable configuration — the worker-relay path already held the
+  global mutex and is always constructed when federation is enabled — but a trap
+  for the first change that made the worker optional. They now take the global
+  recursive mutex only: acquiring a room stripe there would invert the
+  documented stripe-then-global order against `ingest_pdu_event`.
+- **The dead X-Matrix/TLS peer cross-check was removed.**
+  `SignedFederationRequest::tls_peer_server_name` was assigned nowhere in
+  production, only in four conformance tests, so its `!empty()` guard could never
+  fire while its comment and those passing tests asserted a defence-in-depth
+  control that did not exist at runtime. Inbound federation TLS is one-way — the
+  originating server presents no client certificate and SNI carries our own
+  hostname — so there is no legitimate peer name to compare. X-Matrix Ed25519
+  verification remains the actual, fail-closed gate and is untouched.
+- **Sliding-sync connection state is now bounded.**
+  `HomeserverRuntime::sliding_sync_connections` is keyed on a client-chosen
+  `conn_id` and was only ever erased on the `M_UNKNOWN_POS` path, so a client
+  varying `conn_id` grew it until the process was OOM-killed. `sliding_sync.hpp`
+  documented a one-hour idle eviction and `last_used` was written on every
+  request — but never read, and no sweep existed. Idle connections are now
+  evicted after that hour, and each user/device is capped at eight with
+  least-recently-used eviction.
+- **`scripts/reject-unsafe.sh` no longer flags comments as libsodium
+  violations.** Its comment-exclusion filter, `grep -vE '^[[:space:]]*//'`, ran
+  *after* `grep --line-number` had already prefixed every hit with `path:line:`,
+  so the anchor could never match and the filter excluded nothing. Any comment
+  that merely named a libsodium symbol failed the pre-commit gate. A gate that
+  reports violations where there are none is one people learn to bypass, which
+  is the more serious failure. The anchor now accounts for the prefix; the rule
+  itself is unchanged and still rejects real calls.
+- **`migrations/AGENTS.md` carried two contradictory "Current highest" lines**
+  (`012` and `013`) — the 013 branch added a line instead of updating the
+  existing one. Now a single line, reading `014`.
 
 ## 0.12.3
 

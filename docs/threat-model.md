@@ -1005,6 +1005,84 @@ threat it closes; the controls above are the standing defences these reinforce.
   process, or a future feature lets a namespace owner influence `url` — this
   exemption must be revisited alongside it.
 
+- **Power-level escalation from moderator to room owner (0.12.4):**
+  authorization rule 9 was implemented only for `content.users`. The scalar keys
+  (`users_default`, `events_default`, `state_default`, `ban`, `redact`, `kick`,
+  `invite`) and the `events`/`notifications` maps were unbounded, so any sender
+  meeting the *old* `state_default` could set `users_default` above their own
+  level and take the room, or set `ban`/`kick` to zero and hand those powers to
+  everyone. Separately, `extract_power_level_key` fell back to `content.events`
+  when a top-level scalar key was absent, letting the same values be smuggled in
+  under an event-type name. Fixed by implementing rules 9.1-9.3 and 9.5-9.7 in
+  full and removing the `content.events` fallback.
+
+- **Room-ID squatting across homeserver domains (0.12.4):** `m.room.create`
+  authorization rule 1 was unimplemented in every sub-rule, so a federating
+  server could mint a room whose ID claimed another homeserver's domain, and a
+  create event could carry `prev_events` or an unrecognised `room_version`.
+  Fixed by enforcing rule 1 per room version, including v12's inverted
+  requirement that a create event carry no `room_id` at all.
+
+- **Unauthorized local events through a fail-open authorization guard (0.12.4):**
+  the client-originated event path wrapped its authorization call in three nested
+  guards with no else branch, so a parse failure, an unrecognised room version,
+  or a room whose `m.room.create` was absent from local state composed the event
+  with no authorization at all. The denial existed as rule 2 but was never
+  reached. Fixed by making every path out of that block fail closed.
+
+- **State written under another user's identity (0.12.4):** authorization rule 8
+  was absent, so any member holding `state_default` could write a state event
+  whose `state_key` was another user's MXID — which clients routinely read as
+  authored by that user. Fixed by enforcing the rule for every state event type
+  other than `m.room.member`, which returns from its own branch first.
+
+- **Unauthenticated CPU exhaustion via wide JSON objects (0.12.4):** duplicate-key
+  detection was O(n^2) in both the canonical-JSON parser and serializer, bounded
+  only by the 1 MiB body cap — roughly 1.1e10 string comparisons for a body of
+  ~150,000 unique keys, reachable on `/login` and `/register`. Fixed with
+  hash-set membership checks plus an explicit object member-count cap.
+
+- **Distributed password guessing against a single account (0.12.4):** `/login`
+  was throttled per source IP only; the limiter's per-user tier keys on the
+  authenticated user, who pre-login is nobody. Guesses spread across many source
+  IPs accumulated nowhere. Fixed by counting failures against the claimed user ID
+  — existent or not, so the throttle cannot probe which accounts are real.
+
+- **Root secret in swappable memory, silently (0.12.4):** the master key file was
+  read twice per authenticated request, each read `mlock`-ing a fresh 4 KiB
+  buffer. Under concurrency this could exhaust `RLIMIT_MEMLOCK`, after which
+  `SecretBuffer` fell back to unpinned memory for the key every derived key comes
+  from — and nothing consulted `is_locked()`, so nothing said so. Fixed by
+  deriving the token HMAC keys once and caching them against the file's identity,
+  and by warning once per process when `mlock` fails.
+
+- **Stored XSS through served media (0.12.4):** client-facing download and
+  thumbnail responses set no `Content-Security-Policy`, no
+  `Cross-Origin-Resource-Policy` and no `Content-Disposition`, leaving a browser
+  fetching media directly with no layered defence against rendering it inline.
+  Fixed by setting all three, with `inline` reserved for the spec's allowlisted
+  content types.
+
+- **Unbounded sliding-sync connection state (0.12.4):**
+  `sliding_sync_connections` is keyed on a client-chosen `conn_id` and was erased
+  only on the `M_UNKNOWN_POS` path, so any authenticated client could grow it
+  until the process was OOM-killed. A one-hour idle eviction was *documented* on
+  the `last_used` field and never implemented — the field was written on every
+  request and read nowhere. Fixed with that eviction plus a per-user/device cap.
+
+- **No self-service account closure (0.12.4):** `POST /account/deactivate` had no
+  handler, so a user whose credentials were compromised could not close their own
+  account; only a reversible admin lock existed. Implemented with UIA, permanent
+  deactivation, full token revocation, and retention of the users row so the
+  localpart is never reissued.
+
+- **A defence-in-depth control that existed only in tests (0.12.4):** the
+  X-Matrix/TLS peer cross-check read `tls_peer_server_name`, which production
+  code never assigned — only four conformance tests did. The branch could not
+  fire, while its comment and those passing tests asserted a control that was not
+  running. Removed, with the reasoning recorded where it stood: inbound
+  federation TLS is one-way, so no peer name exists to compare.
+
 ## Security principles
 
 - Fail closed.

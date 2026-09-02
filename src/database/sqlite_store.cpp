@@ -404,11 +404,13 @@ namespace
 
     auto load_persistent_rows(sqlite3& connection, PersistentStore& store) -> bool
     {
-        return load_rows(connection, "SELECT user_id, password_hash, locked, suspended, admin FROM users",
+        return load_rows(connection,
+                         "SELECT user_id, password_hash, locked, suspended, admin, deactivated FROM users",
                          [&store](sqlite3_stmt& row) {
                              store.users.push_back(
                                  {column_text(row, 0), column_text(row, 1), text_is_true(column_text(row, 2)),
-                                  text_is_true(column_text(row, 3)), text_is_true(column_text(row, 4))});
+                                  text_is_true(column_text(row, 3)), text_is_true(column_text(row, 4)),
+                                  text_is_true(column_text(row, 5))});
                          }) &&
                load_rows(connection, "SELECT user_id, device_id, display_name FROM devices",
                          [&store](sqlite3_stmt& row) {

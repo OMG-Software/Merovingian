@@ -1012,8 +1012,8 @@ SCENARIO("Database migration runner applies the current schema and the matching 
                 REQUIRE(upgrade_plan.direction == merovingian::database::MigrationDirection::upgrade);
                 REQUIRE(upgrade_plan.current_version == 0U);
                 REQUIRE(upgrade_plan.target_version == merovingian::database::current_schema_version());
-                REQUIRE(upgrade_plan.steps.size() == 13U);
-                REQUIRE(upgrade_plan.steps.size() == 13U);
+                REQUIRE(upgrade_plan.steps.size() == 14U);
+                REQUIRE(upgrade_plan.steps.size() == 14U);
                 REQUIRE(upgrade_plan.steps[0].version == 1U);
                 REQUIRE(upgrade_plan.steps[0].name == "initial_schema");
                 REQUIRE(upgrade_plan.steps[1].version == 2U);
@@ -1040,7 +1040,7 @@ SCENARIO("Database migration runner applies the current schema and the matching 
                 REQUIRE(upgrade_plan.steps[11].name == "login_tokens");
                 REQUIRE(upgraded.ok);
                 REQUIRE(upgraded.state.version == merovingian::database::current_schema_version());
-                REQUIRE(upgraded.state.applied_migrations.size() == 13U);
+                REQUIRE(upgraded.state.applied_migrations.size() == 14U);
                 // v12 (login_tokens) belongs to a sibling branch (SSO login);
                 // registered here only for chain contiguity — see
                 // migrations/AGENTS.md and schema.cpp's v12_table_names comment.
@@ -1048,9 +1048,11 @@ SCENARIO("Database migration runner applies the current schema and the matching 
                 REQUIRE(upgrade_plan.steps[11].name == "login_tokens");
                 REQUIRE(upgrade_plan.steps[12].version == 13U);
                 REQUIRE(upgrade_plan.steps[12].name == "appservice_txn_cursor");
+                REQUIRE(upgrade_plan.steps[13].version == 14U);
+                REQUIRE(upgrade_plan.steps[13].name == "user_deactivation");
                 REQUIRE(upgraded.ok);
                 REQUIRE(upgraded.state.version == merovingian::database::current_schema_version());
-                REQUIRE(upgraded.state.applied_migrations.size() == 13U);
+                REQUIRE(upgraded.state.applied_migrations.size() == 14U);
                 REQUIRE(upgraded.state.applied_migrations[0].name == "initial_schema");
                 REQUIRE(upgraded.state.applied_migrations[1].name == "sync_stream_watermark");
                 REQUIRE(upgraded.state.applied_migrations[2].name == "event_stream_watermark");
@@ -1064,30 +1066,33 @@ SCENARIO("Database migration runner applies the current schema and the matching 
                 REQUIRE(upgraded.state.applied_migrations[10].name == "pushers_data_extra");
                 REQUIRE(upgraded.state.applied_migrations[11].name == "login_tokens");
                 REQUIRE(upgraded.state.applied_migrations[12].name == "appservice_txn_cursor");
+                REQUIRE(upgraded.state.applied_migrations[13].name == "user_deactivation");
                 REQUIRE(upgraded.state.tables.size() == merovingian::database::current_schema_tables().size());
                 REQUIRE(compatible.valid);
                 REQUIRE(second_plan.steps.empty());
                 REQUIRE(downgrade_plan.direction == merovingian::database::MigrationDirection::downgrade);
-                REQUIRE(downgrade_plan.steps.size() == 13U);
-                // Downgrade walks v13->v0; the appservice_txn_cursor table
+                REQUIRE(downgrade_plan.steps.size() == 14U);
+                // Downgrade walks v14->v0; the users.deactivated column drops
+                // first, then the appservice_txn_cursor table,
                 // drops first, then login_tokens, then the
                 // pushers_data_extra column, then the openid_tokens table,
                 // then notifications, then pushers, then the
                 // account_threepids column drop must precede the
                 // account_threepids table drop.
-                REQUIRE(downgrade_plan.steps[0].name == "drop_appservice_txn_cursor");
-                REQUIRE(downgrade_plan.steps[1].name == "drop_login_tokens");
-                REQUIRE(downgrade_plan.steps[2].name == "drop_pushers_data_extra");
-                REQUIRE(downgrade_plan.steps[3].name == "drop_openid_tokens");
-                REQUIRE(downgrade_plan.steps[4].name == "drop_notifications");
-                REQUIRE(downgrade_plan.steps[5].name == "drop_pushers");
-                REQUIRE(downgrade_plan.steps[6].name == "drop_account_threepids_columns");
-                REQUIRE(downgrade_plan.steps[7].name == "drop_account_threepids");
-                REQUIRE(downgrade_plan.steps[8].name == "drop_backfill_state_transitions");
-                REQUIRE(downgrade_plan.steps[9].name == "drop_state_transitions");
-                REQUIRE(downgrade_plan.steps[10].name == "drop_event_stream_watermark");
-                REQUIRE(downgrade_plan.steps[11].name == "drop_sync_stream_watermark");
-                REQUIRE(downgrade_plan.steps[12].name == "drop_initial_schema");
+                REQUIRE(downgrade_plan.steps[0].name == "drop_user_deactivation");
+                REQUIRE(downgrade_plan.steps[1].name == "drop_appservice_txn_cursor");
+                REQUIRE(downgrade_plan.steps[2].name == "drop_login_tokens");
+                REQUIRE(downgrade_plan.steps[3].name == "drop_pushers_data_extra");
+                REQUIRE(downgrade_plan.steps[4].name == "drop_openid_tokens");
+                REQUIRE(downgrade_plan.steps[5].name == "drop_notifications");
+                REQUIRE(downgrade_plan.steps[6].name == "drop_pushers");
+                REQUIRE(downgrade_plan.steps[7].name == "drop_account_threepids_columns");
+                REQUIRE(downgrade_plan.steps[8].name == "drop_account_threepids");
+                REQUIRE(downgrade_plan.steps[9].name == "drop_backfill_state_transitions");
+                REQUIRE(downgrade_plan.steps[10].name == "drop_state_transitions");
+                REQUIRE(downgrade_plan.steps[11].name == "drop_event_stream_watermark");
+                REQUIRE(downgrade_plan.steps[12].name == "drop_sync_stream_watermark");
+                REQUIRE(downgrade_plan.steps[13].name == "drop_initial_schema");
                 REQUIRE(downgraded.ok);
                 REQUIRE(downgraded.state.version == 0U);
                 REQUIRE(downgraded.state.tables.empty());
@@ -1115,7 +1120,7 @@ SCENARIO("migration 013_appservice_txn_cursor applies cleanly on top of a databa
         WHEN("the plan to the current schema version is built and applied")
         {
             auto const plan =
-                merovingian::database::migration_plan_between(12U, merovingian::database::current_schema_version());
+                merovingian::database::migration_plan_between(12U, 13U);
             auto const applied = merovingian::database::apply_migration_plan(state_at_v12, plan);
 
             THEN("exactly one step runs: 013_appservice_txn_cursor, taking the database to v13")
@@ -1132,6 +1137,44 @@ SCENARIO("migration 013_appservice_txn_cursor applies cleanly on top of a databa
                 // The v12 table this branch does not own is left completely
                 // untouched by the v13 step.
                 REQUIRE(std::ranges::find(applied.state.tables, "login_tokens") != applied.state.tables.end());
+            }
+        }
+    }
+}
+
+SCENARIO("migration 014_user_deactivation applies cleanly on top of a database already at v13",
+         "[database][migration][deactivate]")
+{
+    GIVEN("a database already migrated to v13")
+    {
+        // Pinned, not derived from current_schema_version(): this scenario is
+        // about migration 014 specifically, so it must keep testing the
+        // v13 -> v14 step as later migrations are added.
+        auto const previous_version = std::uint32_t{13U};
+        auto const deactivation_version = std::uint32_t{14U};
+        auto const bootstrap_plan = merovingian::database::migration_plan_between(0U, previous_version);
+        auto const bootstrapped =
+            merovingian::database::apply_migration_plan(merovingian::database::SchemaState{}, bootstrap_plan);
+        REQUIRE(bootstrapped.ok);
+        REQUIRE(bootstrapped.state.version == previous_version);
+
+        WHEN("the incremental upgrade to v14 is planned and applied")
+        {
+            auto const plan = merovingian::database::migration_plan_between(previous_version, deactivation_version);
+            auto const applied = merovingian::database::apply_migration_plan(bootstrapped.state, plan);
+
+            THEN("exactly one step runs and it adds no new table")
+            {
+                REQUIRE(plan.direction == merovingian::database::MigrationDirection::upgrade);
+                REQUIRE(plan.steps.size() == 1U);
+                REQUIRE(plan.steps[0].version == 14U);
+                REQUIRE(plan.steps[0].name == "user_deactivation");
+                REQUIRE(merovingian::database::migration_plan_is_valid(plan).valid);
+                REQUIRE(applied.ok);
+                REQUIRE(applied.state.version == deactivation_version);
+                // v14 ALTERs a column onto `users`; the table inventory is
+                // unchanged by it.
+                REQUIRE(applied.state.tables.size() == bootstrapped.state.tables.size());
             }
         }
     }
@@ -1813,8 +1856,8 @@ SCENARIO("Checked-in migrations cover the v1 bootstrap and the v2/v3 stream wate
             THEN("the v1 bootstrap creates the initial schema and numbered migrations add post-v1 tables")
             {
                 REQUIRE(loaded.ok);
-                REQUIRE(loaded.steps.size() == 13U);
-                REQUIRE(loaded.steps.size() == 13U);
+                REQUIRE(loaded.steps.size() == 14U);
+                REQUIRE(loaded.steps.size() == 14U);
                 REQUIRE(loaded.steps[0].version == 1U);
                 REQUIRE(loaded.steps[0].name == "initial_schema");
                 REQUIRE(loaded.steps[0].statements.size() == merovingian::database::initial_schema_tables().size());
@@ -1861,6 +1904,9 @@ SCENARIO("Checked-in migrations cover the v1 bootstrap and the v2/v3 stream wate
                 REQUIRE(loaded.steps[12].version == 13U);
                 REQUIRE(loaded.steps[12].name == "appservice_txn_cursor");
                 REQUIRE(loaded.steps[12].statements.size() == 1U);
+                REQUIRE(loaded.steps[13].version == 14U);
+                REQUIRE(loaded.steps[13].name == "user_deactivation");
+                REQUIRE(loaded.steps[13].statements.size() == 1U);
 
                 for (auto const& statement : loaded.steps[0].statements)
                 {
@@ -1936,10 +1982,10 @@ SCENARIO("Database schema inventory covers the core Matrix tables", "[database][
                 // data_extra_json column onto pushers (no new table), and
                 // migration v12 adds the login_tokens table.
                 // The post-v1 tables (v2/v3/v4/v6/v8/v9/v10/v12) are counted
-                // in the current schema inventory, while v5, v7, and v11 add
-                // no tables.
+                // in the current schema inventory, while v5, v7, v11 and v14
+                // add no tables -- v14 adds only the users.deactivated column.
                 REQUIRE(tables.size() == 45U);
-                REQUIRE(merovingian::database::current_schema_version() == 13U);
+                REQUIRE(merovingian::database::current_schema_version() == 14U);
                 REQUIRE(merovingian::database::current_schema_tables().size() == 54U);
                 // data_extra_json column onto pushers (no new table),
                 // migration v12 adds the login_tokens table (a sibling
@@ -1948,9 +1994,10 @@ SCENARIO("Database schema inventory covers the core Matrix tables", "[database][
                 // v12_table_names comment), and migration v13 adds the
                 // appservice_txn_cursor table. The post-v1 tables
                 // (v2/v3/v4/v6/v8/v9/v10/v12/v13) are counted in the current
-                // schema inventory, while v5, v7, and v11 add no tables.
+                // schema inventory, while v5, v7, v11 and v14 add no tables --
+                // v14 adds only the users.deactivated column.
                 REQUIRE(tables.size() == 45U);
-                REQUIRE(merovingian::database::current_schema_version() == 13U);
+                REQUIRE(merovingian::database::current_schema_version() == 14U);
                 REQUIRE(merovingian::database::current_schema_tables().size() == 54U);
                 REQUIRE(users_definition.has_value());
                 REQUIRE(current_state_definition.has_value());

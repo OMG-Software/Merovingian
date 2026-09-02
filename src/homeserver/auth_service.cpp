@@ -26,11 +26,13 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <mutex>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <tuple>
 #include <unordered_map>
 #include <vector>
@@ -88,14 +90,85 @@ namespace
     // separation. This invalidates stored token-hash:v3: hashes; affected
     // sessions re-login and are upgraded to v4 via upgrade_v3_access_token_to_v4.
     // If no master key is configured, v3 hashing is unavailable (fail-closed).
-    [[nodiscard]] auto token_hmac_key_v3(HomeserverRuntime const& runtime) -> std::optional<crypto::TokenHmacKey>
+    // Both token HMAC keys, derived together and cached.
+    //
+    // #487: these derivations are on the hot path — lookup_token_hashes() calls
+    // both on every authenticated request — and each one used to read the
+    // operator's master key file from disk. That meant two open+read cycles of
+    // the server's root secret per request, and two sodium_mlock/munlock pairs
+    // of a 4 KiB SecretBuffer. Besides the blocking I/O, the mlock churn could
+    // exhaust RLIMIT_MEMLOCK under concurrency, at which point SecretBuffer
+    // silently falls back to unpinned (swappable) memory for the root secret.
+    //
+    // The cache is invalidated on the file's identity (path, size, mtime) rather
+    // than on the path alone, so replacing the master key file still takes effect
+    // without a restart — the steady-state cost is one stat() instead of two full
+    // reads.
+    struct TokenHmacKeys final
     {
-        auto const material = crypto::load_master_key_material(runtime.config.security().secrets.master_key_file);
+        std::optional<crypto::TokenHmacKey> v3{};
+        std::optional<crypto::TokenHmacKey> v4{};
+    };
+
+    [[nodiscard]] auto master_key_file_identity(std::string const& path) -> std::string
+    {
+        auto error = std::error_code{};
+        auto const size = std::filesystem::file_size(path, error);
+        if (error)
+        {
+            return {};
+        }
+        auto const written = std::filesystem::last_write_time(path, error);
+        if (error)
+        {
+            return {};
+        }
+        return path + '\0' + std::to_string(size) + '\0' + std::to_string(written.time_since_epoch().count());
+    }
+
+    [[nodiscard]] auto token_hmac_keys(HomeserverRuntime const& runtime) -> TokenHmacKeys
+    {
+        auto const& path = runtime.config.security().secrets.master_key_file;
+        if (path.empty())
+        {
+            return {};
+        }
+
+        // Guards the cache below. Held only across the derivation itself, never
+        // across a call that can block on anything but this file read.
+        static auto cache_mutex = std::mutex{};
+        static auto cached_identity = std::string{};
+        static auto cached_keys = TokenHmacKeys{};
+
+        auto const identity = master_key_file_identity(path);
+        auto guard = std::lock_guard{cache_mutex};
+        // An unreadable file yields an empty identity, which never matches the
+        // cached one, so this falls through to a fresh (and failing) load rather
+        // than serving keys for a file that has since become unreadable.
+        if (!identity.empty() && identity == cached_identity)
+        {
+            return cached_keys;
+        }
+
+        auto const material = crypto::load_master_key_material(path);
         if (!material.has_value())
         {
-            return std::nullopt;
+            cached_identity.clear();
+            cached_keys = {};
+            return {};
         }
-        return crypto::derive_token_hmac_key_v3(material->bytes());
+        auto keys = TokenHmacKeys{crypto::derive_token_hmac_key_v3(material->bytes()),
+                                  crypto::derive_token_hmac_key(material->bytes())};
+        cached_identity = identity;
+        cached_keys = keys;
+        return keys;
+    }
+
+    // v3 HMAC key: retained only for validating legacy tokens; new tokens MUST
+    // use the v4 key.
+    [[nodiscard]] auto token_hmac_key_v3(HomeserverRuntime const& runtime) -> std::optional<crypto::TokenHmacKey>
+    {
+        return token_hmac_keys(runtime).v3;
     }
 
     // v4 HMAC key: derived from the operator's master key file, completely
@@ -103,12 +176,115 @@ namespace
     // v4 hashing is unavailable and the code falls back to v3/v2.
     [[nodiscard]] auto token_hmac_key_v4(HomeserverRuntime const& runtime) -> std::optional<crypto::TokenHmacKey>
     {
-        auto const material = crypto::load_master_key_material(runtime.config.security().secrets.master_key_file);
-        if (!material.has_value())
+        return token_hmac_keys(runtime).v4;
+    }
+
+    // Per-account failed-login throttle (#487).
+    //
+    // The HTTP rate limiter buckets /login per source IP, and its per-user tier is
+    // keyed on the authenticated user — which, before a login succeeds, is nobody.
+    // Guesses against a single account distributed over many source IPs therefore
+    // accumulated against nothing at all. This tracks failures against the claimed
+    // user_id instead, which is the identity an attacker is actually attacking.
+    //
+    // Tracking a claimed identity does mean a third party can deliberately trip an
+    // account's lockout — the standard account-lockout trade-off. It is bounded
+    // rather than eliminated: the lockout is a fixed short window (not escalating,
+    // not sticky), any successful login clears the history, and the window is
+    // deliberately short enough to be an inconvenience rather than a denial of
+    // service. Operators who want different numbers currently need a rebuild;
+    // exposing these as configuration is tracked in docs/todos/capability-gaps.md.
+    constexpr auto max_failed_login_attempts = std::size_t{5U};
+    constexpr auto failed_login_window = std::chrono::minutes{15};
+    constexpr auto failed_login_lockout = std::chrono::minutes{15};
+
+    struct FailedLoginRecord final
+    {
+        std::size_t count{0U};
+        std::chrono::steady_clock::time_point first_failure{};
+        std::chrono::steady_clock::time_point last_failure{};
+    };
+
+    // The failure map and its guard. File-scope rather than runtime state so the
+    // throttle survives independently of any one runtime object, and because the
+    // entry points here are free functions taking the runtime by reference.
+    struct FailedLoginState final
+    {
+        std::mutex mutex{};
+        std::unordered_map<std::string, FailedLoginRecord> records{};
+    };
+
+    // src/AGENTS.md says to avoid static locals in functions callable from several
+    // threads. The rule guards against unsynchronised shared mutable state; this
+    // state is reachable only through the three accessors below, each of which
+    // holds state.mutex for the whole access, and the static's own initialisation
+    // is thread-safe. The same pattern is already used here for
+    // dummy_password_hash() and sodium_is_ready().
+    [[nodiscard]] auto failed_login_state() -> FailedLoginState&
+    {
+        static auto state = FailedLoginState{};
+        return state;
+    }
+
+    // Drops records whose window has fully elapsed. Called on every write so the
+    // map cannot grow without bound under a spray of distinct claimed user IDs.
+    auto expire_failed_logins(std::unordered_map<std::string, FailedLoginRecord>& records,
+                              std::chrono::steady_clock::time_point now) -> void
+    {
+        for (auto it = records.begin(); it != records.end();)
         {
-            return std::nullopt;
+            auto const idle = now - it->second.last_failure;
+            it = (idle > failed_login_window && idle > failed_login_lockout) ? records.erase(it) : std::next(it);
         }
-        return crypto::derive_token_hmac_key(material->bytes());
+    }
+
+    // Milliseconds remaining before this account may attempt a login again, or 0
+    // when it is not locked out.
+    [[nodiscard]] auto failed_login_lockout_remaining_ms(std::string_view user_id) -> std::uint64_t
+    {
+        auto const now = std::chrono::steady_clock::now();
+        auto& state = failed_login_state();
+        auto guard = std::lock_guard{state.mutex};
+        auto const it = state.records.find(std::string{user_id});
+        if (it == state.records.end() || it->second.count < max_failed_login_attempts)
+        {
+            return 0U;
+        }
+        auto const unlock_at = it->second.last_failure + failed_login_lockout;
+        if (now >= unlock_at)
+        {
+            // The lockout has expired; clear it so the next failure starts a fresh
+            // window rather than immediately re-locking on the stale count.
+            state.records.erase(it);
+            return 0U;
+        }
+        return static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(unlock_at - now).count());
+    }
+
+    auto record_failed_login(std::string_view user_id) -> void
+    {
+        auto const now = std::chrono::steady_clock::now();
+        auto& state = failed_login_state();
+        auto guard = std::lock_guard{state.mutex};
+        expire_failed_logins(state.records, now);
+        auto& record = state.records[std::string{user_id}];
+        // Failures older than the whole window do not count toward the threshold:
+        // a slow trickle over days must not eventually lock a real user out.
+        if (record.count == 0U || (now - record.first_failure) > failed_login_window)
+        {
+            record.count = 0U;
+            record.first_failure = now;
+        }
+        ++record.count;
+        record.last_failure = now;
+    }
+
+    auto clear_failed_logins(std::string_view user_id) -> void
+    {
+        auto& state = failed_login_state();
+        auto guard = std::lock_guard{state.mutex};
+        std::ignore = state.records.erase(std::string{user_id});
     }
 
     constexpr auto token_secret_bytes = std::size_t{32U};
@@ -544,6 +720,23 @@ namespace
             return make_operation_result(false, {}, "invalid device id");
         }
 
+        // A deactivated account can never log in again (spec: POST
+        // /account/deactivate, "removing all ability for the user to login
+        // again"). Checked before the reversible locked/suspended states because
+        // it outranks them and is permanent.
+        if (user.deactivated)
+        {
+            log_diagnostic_audit(runtime.database, "auth", "login.rejected",
+                                 {
+                                     {"user_id",   user.user_id,           false},
+                                     {"device_id", std::string{device_id}, false},
+                                     {"reason",    "account deactivated",  false}
+            },
+                                 observability::LogEventSeverity::warning, observability::AuditCategory::auth,
+                                 "login.rejected", user.user_id, std::string{device_id}, "403:account deactivated");
+            return make_operation_result(false, {}, "account deactivated", 403U);
+        }
+
         auto state = auth::AccountState::active;
         if (user.locked)
         {
@@ -769,11 +962,32 @@ auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std:
                        {"user_id",   std::string{user_id},   false},
                        {"device_id", std::string{device_id}, false}
     });
+
+    // #487: /login was throttled per source IP only. The per-user rate-limit tier
+    // is keyed on the authenticated user, which pre-login is nobody, so guesses
+    // against one account spread across many source IPs accumulated nowhere.
+    if (auto const retry_after_ms = failed_login_lockout_remaining_ms(user_id); retry_after_ms > 0U)
+    {
+        log_diagnostic_audit(runtime.database, "auth", "login.throttled",
+                             {
+                                 {"user_id",        std::string{user_id},           false},
+                                 {"device_id",      std::string{device_id},         false},
+                                 {"retry_after_ms", std::to_string(retry_after_ms), false}
+        },
+                             observability::LogEventSeverity::warning, observability::AuditCategory::auth,
+                             "login.throttled", std::string{user_id}, std::string{device_id},
+                             "429:too many failed login attempts");
+        return make_operation_result(false, {}, "too many failed login attempts", 429U);
+    }
+
     auto* user = find_user(runtime.database, user_id);
     auto const* password_hash = user != nullptr ? &user->password_hash : dummy_password_hash();
     auto const password_valid = password_hash != nullptr && auth::password_matches(*password_hash, password);
     if (user == nullptr || !password_valid)
     {
+        // Counted against the *claimed* user_id whether or not it exists, so the
+        // lockout cannot be used to probe which accounts are real.
+        record_failed_login(user_id);
         auto const audit_reason = user == nullptr ? "unknown user" : "bad credentials";
         // Matrix spec §5.7.2: login failures must be 403 M_FORBIDDEN.
         log_diagnostic_audit(runtime.database, "auth", "login.rejected",
@@ -788,6 +1002,9 @@ auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std:
                              std::string{"403:"} + audit_reason);
         return make_operation_result(false, {}, "invalid login", 403U);
     }
+    // A correct password clears the account's failure history, so an interrupted
+    // legitimate login attempt cannot accumulate toward a lockout.
+    clear_failed_logins(user->user_id);
     return login_local_user_by_id(runtime, user->user_id, device_id, with_ttl);
 }
 // NOLINTEND(bugprone-easily-swappable-parameters)
@@ -829,6 +1046,22 @@ auto login_local_user_by_id(HomeserverRuntime& runtime, std::string_view user_id
                              observability::LogEventSeverity::warning, observability::AuditCategory::auth,
                              "login.rejected", std::string{user_id}, std::string{device_id}, "invalid device id");
         return make_operation_result(false, {}, "invalid device id");
+    }
+
+    // See the deactivation gate in the shared helper above: permanent and
+    // outranking the reversible moderation states.
+    if (user->deactivated)
+    {
+        log_diagnostic_audit(runtime.database, "auth", "login.rejected",
+                             {
+                                 {"user_id",   std::string{user_id},   false},
+                                 {"device_id", std::string{device_id}, false},
+                                 {"reason",    "account deactivated",  false}
+        },
+                             observability::LogEventSeverity::warning, observability::AuditCategory::auth,
+                             "login.rejected", std::string{user_id}, std::string{device_id},
+                             "403:account deactivated");
+        return make_operation_result(false, {}, "account deactivated", 403U);
     }
 
     auto state = auth::AccountState::active;
@@ -1280,6 +1513,61 @@ auto logout_all_local_user(HomeserverRuntime& runtime, std::string_view access_t
     append_local_audit(runtime.database, observability::AuditCategory::auth, "auth.logout_all", session->user_id,
                        session->device_id, "revoked");
     log_diagnostic("logout_all.accepted",
+                   {
+                       {"user_id",   session->user_id,   false},
+                       {"device_id", session->device_id, false}
+    },
+                   observability::LogEventSeverity::info);
+    return make_operation_result(true, session->user_id);
+}
+
+// Permanently deactivates the caller's account (spec: POST
+// /_matrix/client/v3/account/deactivate). Irreversible by design.
+//
+// The caller (client_server.cpp) is responsible for the UIA password
+// re-authentication; by the time this runs, ownership of the account is proven.
+//
+// The localpart is never reissued: the users row is retained with
+// deactivated = true, so make_user's existing duplicate check keeps rejecting
+// a re-registration of the same user_id.
+auto deactivate_local_user(HomeserverRuntime& runtime, std::string_view access_token) -> OperationResult
+{
+    auto const session = authenticated_session(runtime, access_token);
+    if (!session.has_value())
+    {
+        return make_operation_result(false, {}, "unauthenticated", 401U);
+    }
+    auto* user = find_user(runtime.database, session->user_id);
+    if (user == nullptr)
+    {
+        return make_operation_result(false, {}, "unknown user", 404U);
+    }
+    if (!database::set_user_deactivated(runtime.database.persistent_store, session->user_id))
+    {
+        return make_operation_result(false, {}, "deactivation persistence failed", 500U);
+    }
+    user->deactivated = true;
+
+    // Every credential dies with the account, including the caller's own -- unlike
+    // a password change, there is no session to preserve.
+    std::ignore = database::revoke_access_tokens_for_user(runtime.database.persistent_store, session->user_id);
+    std::ignore = database::revoke_refresh_tokens_for_user(runtime.database.persistent_store, session->user_id);
+    for (auto& candidate : runtime.database.sessions)
+    {
+        if (candidate.user_id == session->user_id)
+        {
+            candidate.revoked = true;
+        }
+    }
+    // The password hash is replaced with a value no password can produce, so a
+    // credential leak predating deactivation cannot be replayed even if a future
+    // change were to soften the login gate.
+    std::ignore = database::update_user_password(runtime.database.persistent_store, session->user_id, "!deactivated");
+    user->password_hash = "!deactivated";
+
+    append_local_audit(runtime.database, observability::AuditCategory::auth, "auth.account_deactivated",
+                       session->user_id, session->device_id, "deactivated");
+    log_diagnostic("account.deactivated",
                    {
                        {"user_id",   session->user_id,   false},
                        {"device_id", session->device_id, false}

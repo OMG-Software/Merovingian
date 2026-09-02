@@ -4348,34 +4348,10 @@ SCENARIO("POST /account/password with logout_devices omitted defaults to revokin
 
 // --- POST /_matrix/client/v3/account/deactivate -------------------------------
 // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3accountdeactivate
-// IMPLEMENTATION GAP: account deactivation not yet implemented.
-SCENARIO("POST /account/deactivate returns 404 M_UNRECOGNIZED (implementation gap)",
-         "[conformance][client-server][account]")
-{
-    GIVEN("a running client-server and a logged-in user")
-    {
-        auto started = merovingian::homeserver::start_client_server(conformance_config());
-        REQUIRE(started.started);
-        auto const token = logged_in_token(started.runtime);
-
-        WHEN("POST /account/deactivate is called")
-        {
-            auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime, {"POST", "/_matrix/client/v3/account/deactivate", token,
-                                  R"({"auth":{"type":"m.login.password","password":"CorrectHorse7!"}})"});
-
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
-            {
-                // IMPLEMENTATION GAP: account deactivation not supported.
-                REQUIRE(response.response.status == 404U);
-                auto const body = parse_object(response.response.body);
-                auto const* errcode = string_member(body, "errcode");
-                REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
-            }
-        }
-    }
-}
+//
+// Implemented in 0.12.4. The scenario that used to live here asserted a 404
+// M_UNRECOGNIZED "until the endpoint is implemented"; it is superseded by the
+// UIA-challenge and permanent-closure scenarios at the end of this file.
 // --- GET /_matrix/client/v3/account/3pid -------------------------------------
 // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixclientv3account3pid
 // Spec MUST: return the third-party identifiers associated with the account.
@@ -15973,6 +15949,216 @@ SCENARIO("POST /pushers/set refuses email pushers rather than silently discardin
                     runtime, {"GET", "/_matrix/client/v3/pushers", token, {}});
                 REQUIRE(listed.response.status == 200U);
                 REQUIRE(listed.response.body.find("user@example.org") == std::string::npos);
+            }
+        }
+    }
+}
+
+// --- Media download security headers ---
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#content-repository
+//
+// "When serving content, the server SHOULD provide a Content-Security-Policy
+// header. The recommended policy is `sandbox; default-src 'none'; script-src
+// 'none'; plugin-types application/pdf; style-src 'unsafe-inline'; object-src
+// 'self';`" and "[Added in v1.4] The server SHOULD additionally provide
+// Cross-Origin-Resource-Policy: cross-origin". Content-Disposition became
+// Required in v1.12 and is the stored-XSS mitigation named by
+// §"Serving inline content".
+//
+// Before 0.12.4 the client-facing download and thumbnail responses carried only
+// Content-Type and the CORS headers — no CSP, no CORP, no Content-Disposition —
+// so uploaded content served to a browser had no layered defence against being
+// rendered inline as active content.
+SCENARIO("Media downloads carry the spec's content-security headers",
+         "[conformance][client-server][media][security]")
+{
+    GIVEN("a running client-server with uploaded PNG media")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+
+        auto const upload = merovingian::homeserver::handle_client_server_request(
+            started.runtime, {"POST",
+                              "/_matrix/media/v3/upload",
+                              token,
+                              "\x89PNG\r\n\x1a\ntest-image-data",
+                              {merovingian::http::Header{"Content-Type", "image/png"}}});
+        REQUIRE(upload.response.status == 200U);
+        auto const upload_body = parse_object(upload.response.body);
+        auto const* content_uri = string_member(upload_body, "content_uri");
+        REQUIRE(content_uri != nullptr);
+
+        auto const mxc_prefix = std::string_view{"mxc://"};
+        auto const path = std::string_view{*content_uri}.substr(mxc_prefix.size());
+        auto const download_target = "/_matrix/media/v3/download/" + std::string{path};
+
+        WHEN("the media is downloaded")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", download_target, token, {}});
+            REQUIRE(response.response.status == 200U);
+
+            THEN("a Content-Security-Policy sandboxing the response is present")
+            {
+                auto const csp = response_header(response.response.headers, "Content-Security-Policy");
+                REQUIRE(csp.has_value());
+                REQUIRE(csp->find("sandbox") != std::string::npos);
+                REQUIRE(csp->find("script-src 'none'") != std::string::npos);
+                REQUIRE(csp->find("default-src 'none'") != std::string::npos);
+            }
+
+            THEN("Cross-Origin-Resource-Policy is cross-origin")
+            {
+                auto const corp = response_header(response.response.headers, "Cross-Origin-Resource-Policy");
+                REQUIRE(corp.has_value());
+                REQUIRE(*corp == "cross-origin");
+            }
+
+            THEN("Content-Disposition is inline, image/png being an inline-safe type")
+            {
+                auto const disposition = response_header(response.response.headers, "Content-Disposition");
+                REQUIRE(disposition.has_value());
+                REQUIRE(disposition->starts_with("inline"));
+            }
+        }
+    }
+}
+
+// The inline/attachment decision follows the spec's allowlist in
+// §"Serving inline content". A type outside that list must be served as an
+// attachment so a browser cannot render it in the media origin's context.
+SCENARIO("Media downloads of non-inline-safe types are served as attachments",
+         "[conformance][client-server][media][security]")
+{
+    GIVEN("a running client-server with uploaded octet-stream media")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+
+        auto const upload = merovingian::homeserver::handle_client_server_request(
+            started.runtime, {"POST",
+                              "/_matrix/media/v3/upload",
+                              token,
+                              std::string{"\x00\x01\x02\x03binary-payload", 19U},
+                              {merovingian::http::Header{"Content-Type", "application/octet-stream"}}});
+        REQUIRE(upload.response.status == 200U);
+        auto const upload_body = parse_object(upload.response.body);
+        auto const* content_uri = string_member(upload_body, "content_uri");
+        REQUIRE(content_uri != nullptr);
+
+        auto const mxc_prefix = std::string_view{"mxc://"};
+        auto const path = std::string_view{*content_uri}.substr(mxc_prefix.size());
+        auto const download_target = "/_matrix/media/v3/download/" + std::string{path};
+
+        WHEN("the media is downloaded")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", download_target, token, {}});
+            REQUIRE(response.response.status == 200U);
+
+            THEN("Content-Disposition is attachment")
+            {
+                auto const disposition = response_header(response.response.headers, "Content-Disposition");
+                REQUIRE(disposition.has_value());
+                REQUIRE(disposition->starts_with("attachment"));
+            }
+        }
+    }
+}
+
+// --- POST /_matrix/client/v3/account/deactivate ---
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#account-deactivation
+//
+// "Deactivate the user's account, removing all ability for the user to login
+// again. This API endpoint uses the User-Interactive Authentication API."
+//
+// Before 0.12.4 this endpoint had no handler at all: the path appeared only as a
+// literal in the suspended-user allowlist, so a user whose credentials were
+// compromised could not close their own account.
+SCENARIO("POST /account/deactivate challenges with UIA before deactivating",
+         "[conformance][client-server][account][deactivate]")
+{
+    GIVEN("a running client-server with a logged-in user")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+
+        WHEN("deactivate is called with no auth block")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"POST", "/_matrix/client/v3/account/deactivate", token, "{}", {}});
+
+            THEN("the server returns the 401 UIA challenge naming m.login.password")
+            {
+                REQUIRE(response.response.status == 401U);
+                REQUIRE(response.response.body.find("m.login.password") != std::string::npos);
+                REQUIRE(response.response.body.find("flows") != std::string::npos);
+            }
+        }
+
+        WHEN("deactivate is called with a wrong password")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"POST",
+                                  "/_matrix/client/v3/account/deactivate",
+                                  token,
+                                  R"({"auth":{"type":"m.login.password","password":"not-the-password"}})",
+                                  {}});
+
+            THEN("the server re-issues the 401 challenge rather than 403")
+            {
+                REQUIRE(response.response.status == 401U);
+            }
+        }
+    }
+}
+
+SCENARIO("POST /account/deactivate closes the account permanently",
+         "[conformance][client-server][account][deactivate][security]")
+{
+    GIVEN("a running client-server with a logged-in user")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+
+        WHEN("deactivate is called with the correct password")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"POST",
+                                  "/_matrix/client/v3/account/deactivate",
+                                  token,
+                                  R"({"auth":{"type":"m.login.password","password":"CorrectHorse7!"}})",
+                                  {}});
+
+            THEN("the server returns 200 with the required id_server_unbind_result")
+            {
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+                auto const* unbind = string_member(body, "id_server_unbind_result");
+                REQUIRE(unbind != nullptr);
+                REQUIRE(*unbind == "success");
+            }
+
+            THEN("the caller's own access token is no longer usable")
+            {
+                auto const whoami = merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"GET", "/_matrix/client/v3/account/whoami", token, {}});
+                REQUIRE(whoami.response.status == 401U);
+            }
+
+            THEN("the account can never log in again")
+            {
+                auto const login = merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"POST",
+                                      "/_matrix/client/v3/login",
+                                      {},
+                                      R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!"})",
+                                      {}});
+                REQUIRE(login.response.status != 200U);
             }
         }
     }

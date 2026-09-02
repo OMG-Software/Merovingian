@@ -41,6 +41,11 @@ if [ -n "$SHARED_PTR_HITS" ]; then
   exit 1
 fi
 
+# NOTE: the comment-exclusion filter below must account for the "path:line:"
+# prefix that `grep --line-number` adds to every hit. A bare '^[[:space:]]*//'
+# never matches after that prefix, so it excluded nothing and the gate flagged
+# pure comments that merely NAMED a libsodium symbol.
+#
 # Crypto-boundary rule (src/crypto/AGENTS.md): only src/crypto/, src/events/,
 # src/auth/, and src/core/secret_buffer.cpp (memory locking/zeroing) may call
 # libsodium functions directly.  Anything else must route through crypto/ or
@@ -50,7 +55,7 @@ SODIUM_HITS=$(grep -R --line-number --extended-regexp \
   '\b(sodium_|randombytes_|crypto_(generichash|pwhash|sign|secretbox|aead|kx|scalarmult|box|hash|core|verify|onetimeauth|shorthash|auth|kdf|secretstream|stream))([A-Za-z0-9_]*)[[:space:]]*\(' \
   include src \
   | grep -vE '^(src/crypto/|src/events/|src/auth/|src/core/secret_buffer\.cpp|include/merovingian/crypto/|include/merovingian/events/|include/merovingian/auth/)' \
-  | grep -vE '^[[:space:]]*//' \
+  | grep -vE '^[^:]*:[0-9]+:[[:space:]]*//' \
   || true)
 if [ -n "$SODIUM_HITS" ]; then
   printf '%s\n' "$SODIUM_HITS"

@@ -7,7 +7,7 @@
 # and is not needed when -Dbuild_tests=false).
 set -e
 
-VERSION="0.12.3"
+VERSION="0.12.4"
 
 mkdir -p "${HOME}/rpmbuild/BUILD"
 mkdir -p "${HOME}/rpmbuild/BUILDROOT"

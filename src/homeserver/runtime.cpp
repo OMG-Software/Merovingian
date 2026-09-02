@@ -485,7 +485,8 @@ auto hydrate_local_database(LocalDatabase& database) -> void
     database.users.reserve(database.persistent_store.users.size());
     for (auto const& user : database.persistent_store.users)
     {
-        database.users.push_back({user.user_id, user.password_hash, user.locked, user.suspended, user.admin});
+        database.users.push_back(
+            {user.user_id, user.password_hash, user.locked, user.suspended, user.admin, user.deactivated});
     }
 
     database.sessions.reserve(database.persistent_store.access_tokens.size());

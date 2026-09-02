@@ -92,6 +92,9 @@ struct LocalUser final
     bool locked{false};
     bool suspended{false};
     bool admin{false};
+    // Permanent account closure (POST /account/deactivate). Unlike locked and
+    // suspended this is irreversible, and the localpart is never reissued.
+    bool deactivated{false};
 };
 
 struct LocalSession final
