@@ -632,6 +632,9 @@ namespace
         signed_request.now_ts = *now_ts;
         signed_request.canonical_json_verified = *canonical_json_verified;
         signed_request.body = request.body;
+        // Budgets pre-authentication remote-key resolution (#487); see
+        // SignedFederationRequest::remote_addr.
+        signed_request.remote_addr = request.remote_addr;
         return signed_request;
     }
 

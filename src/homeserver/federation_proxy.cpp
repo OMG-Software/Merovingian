@@ -80,6 +80,10 @@ auto FederationProxy::handle(LocalHttpRequest const& request) -> LocalHttpRespon
                 .count());
         signed_request.canonical_json_verified = true;
         signed_request.body = request.body;
+        // Budgets pre-authentication remote-key resolution (#487). This is the
+        // production path: verification happens here in the main process, before
+        // anything is forwarded to the worker, so this is where the budget bites.
+        signed_request.remote_addr = request.remote_addr;
         signed_request_opt = std::move(signed_request);
     }
     if (!signed_request_opt.has_value())

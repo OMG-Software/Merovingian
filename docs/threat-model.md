@@ -1083,6 +1083,22 @@ threat it closes; the controls above are the standing defences these reinforce.
   running. Removed, with the reasoning recorded where it stood: inbound
   federation TLS is one-way, so no peer name exists to compare.
 
+- **Unauthenticated outbound amplification via remote-key resolution (0.12.4):**
+  `resolve_inbound_remote` calls the remote-key resolver before
+  `check_inbound_request_signature`, because verifying a signature requires the
+  key being resolved — the ordering is inherent and cannot be reversed. Under
+  the shipped `default_policy=allow`, an unauthenticated sender could therefore
+  name any origin in an `X-Matrix` header and make this server perform
+  `.well-known` + SRV + DNS discovery and an outbound
+  `GET /_matrix/key/v2/server` against a host of their choosing: load here, and
+  a reflection vector at the named third party. `CachedServerDiscovery` did not
+  help, being keyed on the very field the attacker varies. Fixed with three
+  budgets keyed on source IP — a per-IP resolution rate, a process-wide
+  in-flight cap that rejects rather than queues, and a negative cache for failed
+  resolutions — with both pre-authentication containers capped and FIFO-evicted.
+  `default_policy=deny` with an `allowed_servers` list already closed this
+  independently, since the policy check runs before resolution.
+
 ## Security principles
 
 - Fail closed.

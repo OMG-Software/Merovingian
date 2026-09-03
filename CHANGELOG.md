@@ -127,6 +127,26 @@ escalations reachable by an ordinary room moderator or a federating peer.
   reports violations where there are none is one people learn to bypass, which
   is the more serious failure. The anchor now accounts for the prefix; the rule
   itself is unchanged and still rejects real calls.
+- **Pre-authentication remote-key resolution is now budgeted.**
+  `resolve_inbound_remote` calls the remote-key resolver *before*
+  `check_inbound_request_signature` — necessarily, since verifying a signature
+  requires the key being resolved — so under the shipped
+  `security.federation.default_policy=allow` an unauthenticated sender could
+  name any origin in an `X-Matrix` header and make this server perform
+  `.well-known` + SRV + DNS discovery plus an outbound
+  `GET /_matrix/key/v2/server` against a host of their choosing. That is load
+  here and a reflection vector at whoever was named, and `CachedServerDiscovery`
+  gave no protection because it is keyed on the very field the attacker varies.
+  Bounded now by `key_resolution_per_ip_rate` (10/60s),
+  `key_resolution_max_in_flight` (8, rejecting rather than queuing over the cap)
+  and `key_resolution_failure_ttl` (300s negative cache) — keyed on source IP,
+  because the origin is attacker-chosen. Both pre-authentication containers are
+  capped with FIFO eviction; an unbounded pre-auth map would have been the same
+  class of bug this fixes. A throttled resolution logs `key_resolution.throttled`
+  at warning with the origin and the budget that denied it, because the failure
+  this risks introducing — a new federation partner intermittently failing to
+  join — is otherwise very hard to diagnose. `default_policy=deny` with a
+  populated `allowed_servers` list already closed this independently.
 - **`config/merovingian.conf.example` was missing 21 of the 109 configuration
   keys the parser accepts**, plus two whole prefix families. All 109 keys were
   documented in the user manual, so this was an example-file gap rather than an

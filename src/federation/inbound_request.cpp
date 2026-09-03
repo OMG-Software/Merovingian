@@ -261,6 +261,149 @@ namespace
         return *iterator;
     }
 
+    // Pre-auth containers must be bounded: they are reachable before any
+    // identity is verified, so an attacker chooses how many distinct keys go in.
+    constexpr auto kMaxKeyResolutionBuckets = std::size_t{4'096U};
+    constexpr auto kMaxKeyResolutionFailures = std::size_t{4'096U};
+
+    // Result of the pre-authentication key-resolution budget check.
+    struct KeyResolutionAdmission final
+    {
+        bool allowed{true};
+        std::string reason{};
+    };
+
+    // Drops negative-cache entries whose TTL has elapsed. Caller holds the guard.
+    auto expire_key_resolution_failures(FederationRuntimeState& runtime,
+                                        std::chrono::steady_clock::time_point now) -> void
+    {
+        while (!runtime.key_resolution_failures.empty() && runtime.key_resolution_failures.front().expires_at <= now)
+        {
+            runtime.key_resolution_failures.pop_front();
+        }
+    }
+
+    // True when this origin is in the negative cache. Caller holds the guard.
+    [[nodiscard]] auto key_resolution_recently_failed(FederationRuntimeState& runtime, std::string_view origin,
+                                                      std::chrono::steady_clock::time_point now) -> bool
+    {
+        expire_key_resolution_failures(runtime, now);
+        return std::ranges::any_of(runtime.key_resolution_failures,
+                                   [origin, now](KeyResolutionFailure const& failure) {
+                                       return failure.origin == origin && failure.expires_at > now;
+                                   });
+    }
+
+    auto remember_key_resolution_failure(FederationRuntimeState& runtime, std::string_view origin,
+                                         std::chrono::steady_clock::time_point now) -> void
+    {
+        auto const ttl = runtime.config.key_resolution_failure_ttl_seconds;
+        if (ttl == 0U)
+        {
+            return;
+        }
+        auto guard = federation_guard(runtime);
+        expire_key_resolution_failures(runtime, now);
+        // FIFO eviction, mirroring accepted_transactions: entries are appended
+        // in expiry order because the TTL is constant, so the oldest is always
+        // at the front and pop_front is O(1).
+        if (runtime.key_resolution_failures.size() >= kMaxKeyResolutionFailures)
+        {
+            runtime.key_resolution_failures.pop_front();
+        }
+        runtime.key_resolution_failures.push_back(
+            KeyResolutionFailure{std::string{origin}, now + std::chrono::seconds{ttl}});
+    }
+
+    // Budgets a pre-authentication remote-key resolution. Reserves an in-flight
+    // slot on success; the caller must release it.
+    [[nodiscard]] auto admit_key_resolution(FederationRuntimeState& runtime, std::string_view source,
+                                            std::string_view origin) -> KeyResolutionAdmission
+    {
+        auto const now = std::chrono::steady_clock::now();
+        auto const& policy = runtime.config.key_resolution_per_ip_rate;
+        if (!http::rate_limit_policy_is_valid(policy))
+        {
+            // Fail closed: an unresolvable policy must never mean "no limit".
+            return {false, "invalid key-resolution rate-limit policy"};
+        }
+
+        auto guard = federation_guard(runtime);
+
+        if (key_resolution_recently_failed(runtime, origin, now))
+        {
+            return {false, "origin key resolution recently failed"};
+        }
+
+        if (runtime.key_resolutions_in_flight >= runtime.config.key_resolution_max_in_flight)
+        {
+            // Reject rather than queue: queuing converts an overload into a
+            // slower overload while still holding the resources.
+            return {false, "too many key resolutions in flight"};
+        }
+
+        // An empty source (tests, and paths that never reach the network) all
+        // share one bucket rather than bypassing the budget entirely.
+        auto const key = source.empty() ? std::string_view{"<unknown>"} : source;
+        auto iterator = std::ranges::find_if(runtime.key_resolution_buckets, [key](KeyResolutionBucket const& bucket) {
+            return bucket.source == key;
+        });
+        if (iterator == runtime.key_resolution_buckets.end())
+        {
+            if (runtime.key_resolution_buckets.size() >= kMaxKeyResolutionBuckets)
+            {
+                runtime.key_resolution_buckets.pop_front();
+            }
+            runtime.key_resolution_buckets.push_back(KeyResolutionBucket{std::string{key}, 0U, now});
+            iterator = std::prev(runtime.key_resolution_buckets.end());
+        }
+        if (iterator->window_start == std::chrono::steady_clock::time_point{} ||
+            now - iterator->window_start >= std::chrono::seconds{policy.window_seconds})
+        {
+            iterator->resolutions_seen = 0U;
+            iterator->window_start = now;
+        }
+        if (iterator->resolutions_seen >= policy.max_requests)
+        {
+            return {false, "key resolution rate exceeded for source"};
+        }
+        ++iterator->resolutions_seen;
+        ++runtime.key_resolutions_in_flight;
+        return {true, {}};
+    }
+
+    auto release_key_resolution(FederationRuntimeState& runtime) -> void
+    {
+        auto guard = federation_guard(runtime);
+        if (runtime.key_resolutions_in_flight > 0U)
+        {
+            --runtime.key_resolutions_in_flight;
+        }
+    }
+
+    // RAII release of the in-flight slot reserved by admit_key_resolution, so an
+    // early return or a throwing resolver cannot leak the slot and wedge the cap
+    // at its ceiling for the life of the process.
+    class KeyResolutionSlot final
+    {
+    public:
+        explicit KeyResolutionSlot(FederationRuntimeState& runtime) noexcept
+            : m_runtime(&runtime)
+        {
+        }
+        KeyResolutionSlot(KeyResolutionSlot const&) = delete;
+        auto operator=(KeyResolutionSlot const&) -> KeyResolutionSlot& = delete;
+        KeyResolutionSlot(KeyResolutionSlot&&) = delete;
+        auto operator=(KeyResolutionSlot&&) -> KeyResolutionSlot& = delete;
+        ~KeyResolutionSlot()
+        {
+            release_key_resolution(*m_runtime);
+        }
+
+    private:
+        FederationRuntimeState* m_runtime;
+    };
+
     [[nodiscard]] auto prepare_weighted_bucket(std::uint32_t count, std::chrono::steady_clock::time_point window_start,
                                                http::RateLimitPolicy policy, std::uint32_t weight,
                                                std::chrono::steady_clock::time_point now, std::string reason)
@@ -1946,7 +2089,29 @@ namespace
             // something to validate against. The resolver caches through the
             // persistent store, so subsequent requests see the new record
             // without another network round-trip.
+            // #487: this runs BEFORE the signature is checked -- verifying it
+            // needs the key -- so it is reachable by an unauthenticated sender
+            // naming any origin they like, and has to be budgeted.
+            auto const admission = admit_key_resolution(runtime, request.remote_addr, request.origin);
+            if (!admission.allowed)
+            {
+                log_diagnostic("key_resolution.throttled",
+                               {
+                                   {"origin", request.origin,   false},
+                                   {"reason", admission.reason, false}
+                },
+                               observability::LogEventSeverity::warning);
+                audit_federation(runtime, "federation.rejected", request.origin, request.target, admission.reason);
+                return {
+                    .accepted = false, .error = {429U, admission.reason}
+                };
+            }
+            auto const slot = KeyResolutionSlot{runtime};
             auto resolved = runtime.remote_key_resolver(request.origin, request.key_id);
+            if (!resolved.has_value())
+            {
+                remember_key_resolution_failure(runtime, request.origin, std::chrono::steady_clock::now());
+            }
             if (resolved.has_value())
             {
                 if (resolved->server_name.empty())
@@ -1985,6 +2150,24 @@ namespace
             remote->signing_key.valid_until_ts != 0U && request.now_ts >= remote->signing_key.valid_until_ts;
         if (runtime.remote_key_resolver && (cached_key_id_mismatches || cached_key_expired))
         {
+            // Same budget as the unknown-remote path above: a stale or
+            // mismatched cached key sends us back to the network, so an attacker
+            // who can name an origin with an expired cached key would otherwise
+            // have an unbudgeted route to the same outbound call.
+            auto const refresh_admission = admit_key_resolution(runtime, request.remote_addr, request.origin);
+            if (!refresh_admission.allowed)
+            {
+                log_diagnostic("key_resolution.throttled",
+                               {
+                                   {"origin", request.origin,           false},
+                                   {"reason", refresh_admission.reason, false}
+                },
+                               observability::LogEventSeverity::warning);
+                return {
+                    .accepted = false, .error = {429U, refresh_admission.reason}
+                };
+            }
+            auto const refresh_slot = KeyResolutionSlot{runtime};
             auto refreshed = runtime.remote_key_resolver(request.origin, request.key_id);
             if (refreshed.has_value() && !refreshed->signing_key.public_key_bytes.empty())
             {

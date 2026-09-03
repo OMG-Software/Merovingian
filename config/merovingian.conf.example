@@ -199,6 +199,32 @@ security.federation.per_origin_pdu_rate=600/60s
 security.federation.per_origin_edu_rate=1200/60s
 security.federation.per_origin_request_rate=600/60s
 
+# Pre-authentication remote-key resolution budgets
+# Resolving a peer's signing key necessarily happens BEFORE its request
+# signature can be checked -- verifying the signature needs the key. So the
+# resolution path is reachable by an unauthenticated sender: name any origin in
+# an X-Matrix header and this server performs .well-known + SRV + DNS discovery
+# and an outbound GET /_matrix/key/v2/server against that host. That is a load
+# vector here and a reflection vector at whoever was named. These budgets bound
+# it. They are keyed on the SOURCE IP, not the origin, because the origin is
+# precisely the field an attacker varies to miss every cache.
+#
+# Setting default_policy=deny with a populated allowed_servers list above closes
+# this independently -- the policy check runs before resolution -- so an
+# allow-list deployment is already covered.
+#
+# per_ip_rate bounds how often one source may cause resolution of an origin with
+# no usable cached key. max_in_flight caps resolutions process-wide, so a sender
+# spread across many IPs still cannot exhaust the outbound path; over the cap
+# requests are rejected rather than queued. failure_ttl remembers a failed
+# resolution so repeats of the same name are cheap (0s disables it).
+# A legitimate new peer needs exactly one resolution, after which its record is
+# cached, so these defaults are generous for real federation traffic.
+# Changing any of them requires a restart.
+security.federation.key_resolution_per_ip_rate=10/60s
+security.federation.key_resolution_max_in_flight=8
+security.federation.key_resolution_failure_ttl=300s
+
 # Join/leave membership budget
 # make_join/send_join/make_leave/send_leave get a separate, longer budget than
 # remote_timeout above, because a large remote room's send_join response (full

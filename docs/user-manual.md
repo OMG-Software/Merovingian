@@ -708,8 +708,28 @@ events for many users and an abusive remote can rotate sender IDs.
 | `security.federation.per_origin_edu_rate` | `1200/60s` | Weighted EDU budget per verified remote origin per window. |
 | `security.federation.per_origin_request_rate` | `600/60s` | Per-origin cap on inbound federation requests **outside** `/send` (query, backfill, membership, key and state endpoints). `/send` counts only against the weighted trio above, so a transaction and its contents are never double-counted. |
 
-Rate values use `N/Ws` or `N/Wm` syntax (e.g. `300/60s`). All six keys are
-reloadable. An origin that exceeds a bucket gets `429 M_LIMIT_EXCEEDED` for
+| `security.federation.key_resolution_per_ip_rate` | `10/60s` | Per-**source-IP** cap on remote signing-key resolutions for an origin with no usable cached key. **Requires restart.** |
+| `security.federation.key_resolution_max_in_flight` | `8` | Process-wide cap on concurrent key resolutions; over it, requests are rejected rather than queued. **Requires restart.** |
+| `security.federation.key_resolution_failure_ttl` | `300s` | How long a failed resolution is remembered so repeats of the same origin are cheap. `0s` disables. **Requires restart.** |
+
+The three `key_resolution_*` keys bound work this server does **before** a
+request is authenticated. Resolving a peer's signing key necessarily precedes
+verifying the signature that key is for, so an unauthenticated sender can name
+any origin in an `X-Matrix` header and cause `.well-known` + SRV + DNS discovery
+plus an outbound `GET /_matrix/key/v2/server` against that host — load here, and
+a reflection vector at whoever was named. They are keyed on the source IP rather
+than the origin because the origin is the field an attacker varies to miss every
+cache. Setting `default_policy=deny` with a populated `allowed_servers` list
+closes the same hole independently, since the policy check runs first.
+
+A legitimate new peer needs exactly one resolution before its record is cached,
+so the defaults are generous for real traffic. If you tighten them and a new
+federation partner intermittently fails to join, look for
+`key_resolution.throttled` at warning level — it names the origin and which
+budget denied it.
+
+Rate values use `N/Ws` or `N/Wm` syntax (e.g. `300/60s`). The six `per_origin_*`
+and transaction keys are reloadable. An origin that exceeds a bucket gets `429 M_LIMIT_EXCEEDED` for
 the transaction and a `federation.rate_limited` audit event; invalid
 individual PDUs inside an otherwise-valid transaction still report per-PDU
 errors in the `200` transaction response, matching Matrix retry semantics
@@ -732,6 +752,7 @@ rejection and pinned resolved addresses used during federation discovery.
 |---|---|---|---|
 | `security.federation.remote_timeout` | `60s` | reloadable | General outbound federation HTTP timeout for calls other than the join/leave dance. |
 | `security.federation.deny_ip_ranges` | private/loopback ranges | reloadable | Blocks discovered outbound federation targets in private/loopback address space. |
+| `security.federation.key_resolution_*` | see above | requires restart | Budgets pre-authentication remote-key resolution. Snapshotted into the federation runtime config at startup, which SIGHUP does not rebuild. |
 | `federation.worker.relay_threads` | `32` | requires restart | Thread pool for worker paths that can block on outbound HTTP or synchronous main-process relays. |
 
 #### Federation worker — `federation.worker.*`

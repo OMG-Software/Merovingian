@@ -271,6 +271,23 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "security.federation.per_origin_request_rate");
     }
+    if (current.security().federation.key_resolution_per_ip_rate.max_requests !=
+            next.security().federation.key_resolution_per_ip_rate.max_requests ||
+        current.security().federation.key_resolution_per_ip_rate.window_seconds !=
+            next.security().federation.key_resolution_per_ip_rate.window_seconds)
+    {
+        add_change(plan, "security.federation.key_resolution_per_ip_rate");
+    }
+    if (current.security().federation.key_resolution_max_in_flight !=
+        next.security().federation.key_resolution_max_in_flight)
+    {
+        add_change(plan, "security.federation.key_resolution_max_in_flight");
+    }
+    if (current.security().federation.key_resolution_failure_ttl !=
+        next.security().federation.key_resolution_failure_ttl)
+    {
+        add_change(plan, "security.federation.key_resolution_failure_ttl");
+    }
     if (current.security().federation.remote_timeout != next.security().federation.remote_timeout)
     {
         add_change(plan, "security.federation.remote_timeout");

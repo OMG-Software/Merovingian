@@ -77,6 +77,13 @@ struct SignedFederationRequest final
     // signature is absent in this case; only the verified identity travels.
     bool signature_verified{false};
     std::string body{};
+    // Source IP of the direct peer (or the trusted-proxy-resolved client IP),
+    // copied from LocalHttpRequest::remote_addr. Used solely to budget
+    // pre-authentication remote-key resolution: at that point no identity has
+    // been verified, so the IP is the only thing about the sender that is not
+    // simply asserted in a header. Empty in tests and on paths that do not
+    // resolve keys, which the budget treats as a single shared bucket.
+    std::string remote_addr{};
 };
 
 struct FederationPdu final
@@ -206,6 +213,22 @@ using RoomVersionResolver = std::function<std::string(std::string_view room_id)>
 using RoomServerAclProvider = std::function<bool(std::string_view room_id, std::string_view server_name)>;
 using FederationRuntimeMutex = std::shared_ptr<std::recursive_mutex>; // SHARED_PTR: reviewed
 
+// Per-source-IP window for pre-authentication remote-key resolution.
+struct KeyResolutionBucket final
+{
+    std::string source{};
+    std::uint32_t resolutions_seen{0U};
+    std::chrono::steady_clock::time_point window_start{};
+};
+
+// Negative cache entry: an origin whose key resolution failed, remembered until
+// `expires_at` so repeats of the same name are cheap.
+struct KeyResolutionFailure final
+{
+    std::string origin{};
+    std::chrono::steady_clock::time_point expires_at{};
+};
+
 struct FederationRuntimeState final
 {
     RuntimeFederationConfig config{};
@@ -229,6 +252,19 @@ struct FederationRuntimeState final
     std::deque<observability::AuditLogEvent> audit_events{};
     std::size_t unsafe_audit_events{0U};
     RemoteKeyResolver remote_key_resolver{};
+    // Pre-authentication key-resolution budget state. Unlike rate_limit_buckets
+    // above -- which is keyed on an already-verified origin and so bounded by
+    // the number of real federating peers -- these are reachable before any
+    // identity is established, so both containers are explicitly capped with
+    // FIFO eviction (kMaxKeyResolutionBuckets / kMaxKeyResolutionFailures in
+    // inbound_request.cpp). An unbounded pre-auth map is the very DoS this
+    // budget exists to prevent.
+    std::deque<KeyResolutionBucket> key_resolution_buckets{};
+    std::deque<KeyResolutionFailure> key_resolution_failures{};
+    // Resolutions currently in flight process-wide. Guarded by `mutex`; the
+    // resolver call itself runs unlocked, so this is incremented before the
+    // call and decremented after by a scope guard.
+    std::uint32_t key_resolutions_in_flight{0U};
     // Optional ingestion hooks. When set, accepted PDUs are appended to the
     // event graph via pdu_sink and accepted EDUs are routed to runtime
     // surfaces (typing tracker, receipt store, etc.) via edu_sink. Both
