@@ -123,7 +123,13 @@ namespace
         {
             return {};
         }
-        return path + '\0' + std::to_string(size) + '\0' + std::to_string(written.time_since_epoch().count());
+        // Both counts are widened to fixed-width types before formatting.
+        // file_time_type::rep is implementation-defined -- libstdc++ makes it
+        // `long`, which picks a std::to_string overload unambiguously, while
+        // libc++ (FreeBSD, OpenBSD) uses a type that matches none of them
+        // exactly and the call fails to compile.
+        return path + '\0' + std::to_string(static_cast<std::uint64_t>(size)) + '\0' +
+               std::to_string(static_cast<std::int64_t>(written.time_since_epoch().count()));
     }
 
     [[nodiscard]] auto token_hmac_keys(HomeserverRuntime const& runtime) -> TokenHmacKeys
@@ -1059,8 +1065,7 @@ auto login_local_user_by_id(HomeserverRuntime& runtime, std::string_view user_id
                                  {"reason",    "account deactivated",  false}
         },
                              observability::LogEventSeverity::warning, observability::AuditCategory::auth,
-                             "login.rejected", std::string{user_id}, std::string{device_id},
-                             "403:account deactivated");
+                             "login.rejected", std::string{user_id}, std::string{device_id}, "403:account deactivated");
         return make_operation_result(false, {}, "account deactivated", 403U);
     }
 

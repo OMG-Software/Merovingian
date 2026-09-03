@@ -15969,8 +15969,7 @@ SCENARIO("POST /pushers/set refuses email pushers rather than silently discardin
 // Content-Type and the CORS headers — no CSP, no CORP, no Content-Disposition —
 // so uploaded content served to a browser had no layered defence against being
 // rendered inline as active content.
-SCENARIO("Media downloads carry the spec's content-security headers",
-         "[conformance][client-server][media][security]")
+SCENARIO("Media downloads carry the spec's content-security headers", "[conformance][client-server][media][security]")
 {
     GIVEN("a running client-server with uploaded PNG media")
     {
@@ -16038,11 +16037,20 @@ SCENARIO("Media downloads of non-inline-safe types are served as attachments",
         auto const token = logged_in_token(started.runtime);
 
         auto const upload = merovingian::homeserver::handle_client_server_request(
-            started.runtime, {"POST",
-                              "/_matrix/media/v3/upload",
-                              token,
-                              std::string{"\x00\x01\x02\x03binary-payload", 19U},
-                              {merovingian::http::Header{"Content-Type", "application/octet-stream"}}});
+            started.runtime, {
+                                 "POST",
+                                 "/_matrix/media/v3/upload",
+                                 token,
+                                 // The leading NUL bytes are the point: an octet-stream body that a
+                                 // strlen-based construction would truncate to nothing. Built as an
+                                 // explicit 4-byte prefix plus a NUL-terminated literal rather than
+                                 // one literal with a hand-counted length — that version said 19 for
+                                 // an 18-byte literal and read a byte off the end of it. ASan caught
+                                 // it; an ordinary build did not.
+                                 std::string{"\x00\x01\x02\x03", 4U}
+                                 + "binary-payload",
+                                 {merovingian::http::Header{"Content-Type", "application/octet-stream"}}
+        });
         REQUIRE(upload.response.status == 200U);
         auto const upload_body = parse_object(upload.response.body);
         auto const* content_uri = string_member(upload_body, "content_uri");
@@ -16153,11 +16161,12 @@ SCENARIO("POST /account/deactivate closes the account permanently",
             THEN("the account can never log in again")
             {
                 auto const login = merovingian::homeserver::handle_client_server_request(
-                    started.runtime, {"POST",
-                                      "/_matrix/client/v3/login",
-                                      {},
-                                      R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!"})",
-                                      {}});
+                    started.runtime,
+                    {"POST",
+                     "/_matrix/client/v3/login",
+                     {},
+                     R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!"})",
+                     {}});
                 REQUIRE(login.response.status != 200U);
             }
         }
