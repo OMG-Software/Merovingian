@@ -127,6 +127,16 @@ escalations reachable by an ordinary room moderator or a federating peer.
   reports violations where there are none is one people learn to bypass, which
   is the more serious failure. The anchor now accounts for the prefix; the rule
   itself is unchanged and still rejects real calls.
+- **`config/merovingian.conf.example` was missing 21 of the 109 configuration
+  keys the parser accepts**, plus two whole prefix families. All 109 keys were
+  documented in the user manual, so this was an example-file gap rather than an
+  undocumented-feature one — but an operator working from the example had no
+  sign that SSO, OIDC discovery, Application Services, the PostgreSQL role
+  separation added in 0.12.3, the per-origin federation budgets, or the
+  rate-limit tiers existed at all. Added with the reasoning for each, and the
+  file re-verified against the parser: `--dry-run` reports "Configuration
+  validation passed" with zero findings, and an unknown key is still rejected,
+  so the check is meaningful rather than vacuous.
 - **`migrations/AGENTS.md` carried two contradictory "Current highest" lines**
   (`012` and `013`) — the 013 branch added a line instead of updating the
   existing one. Now a single line, reading `014`.
