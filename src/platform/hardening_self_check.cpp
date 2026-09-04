@@ -9,6 +9,8 @@
 #include "merovingian/platform/runtime_hardening.hpp"
 #include "merovingian/platform/seccomp_hardening.hpp"
 
+#include <cstdint>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -76,6 +78,9 @@ namespace
     // the checks that used them did (0.12.5 audit, finding 10): the effect was
     // that a FreeBSD or OpenBSD server reported "unknown" for controls it had
     // actually applied, and is_ready() then refused to start it.
+    // Reads the live process state and hands the decision to the pure predicate
+    // core_dump_policy_is_satisfied, which is where the policy actually lives
+    // and where the tests reach it.
     [[nodiscard]] auto core_dump_policy_applied() noexcept -> bool
     {
         auto limit = ::rlimit{};
@@ -83,20 +88,15 @@ namespace
         {
             return false;
         }
-        if (limit.rlim_cur != 0 || limit.rlim_max != 0)
-        {
-            return false;
-        }
 #ifdef __linux__
-        // 0.12.5 audit, finding 21: RLIMIT_CORE=0 alone is not the whole
-        // policy. A core_pattern that pipes to a handler (systemd-coredump,
-        // apport) is not bound by the process rlimit, so the dumpable flag has
-        // to be checked too or the probe reports success over a process whose
-        // memory can still be captured.
-        return ::prctl(PR_GET_DUMPABLE, 0, 0, 0, 0) == 0;
+        auto const dumpable = std::optional<bool>{::prctl(PR_GET_DUMPABLE, 0, 0, 0, 0) != 0};
 #else
-        return true;
+        // No dumpable flag on this platform: clamping RLIMIT_CORE is the whole
+        // policy there.
+        auto const dumpable = std::optional<bool>{};
 #endif
+        return core_dump_policy_is_satisfied(static_cast<std::uint64_t>(limit.rlim_cur),
+                                             static_cast<std::uint64_t>(limit.rlim_max), dumpable);
     }
 
     // Returns true when the process is running as a non-root user. This is the
@@ -127,6 +127,18 @@ namespace
 #endif
 
 } // namespace
+
+auto core_dump_policy_is_satisfied(std::uint64_t rlimit_core_soft, std::uint64_t rlimit_core_hard,
+                                   std::optional<bool> dumpable) noexcept -> bool
+{
+    if (rlimit_core_soft != 0U || rlimit_core_hard != 0U)
+    {
+        return false;
+    }
+    // Fail closed on a still-dumpable process: see the header for why
+    // RLIMIT_CORE alone is not the whole policy (0.12.5 audit, finding 21).
+    return !dumpable.value_or(false);
+}
 
 HardeningSelfCheck::HardeningSelfCheck(std::vector<HardeningCheck> checks)
     : m_checks{std::move(checks)}

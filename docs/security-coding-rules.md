@@ -27,6 +27,40 @@ quickly finding everything a given `AGENTS.md` file contributed.
 
 ## Memory safety and resource ownership
 
+- **Secret files must be owner-read-only (`0400`), not merely owner-only.**
+  `platform::is_secure_secret_file()` rejects group and other access, execute bits, and
+  owner-write. Applies to `security.secrets.master_key_file`, `database.uri_file`,
+  `security.registration.token_file`, and every listener `tls_private_key_file`; a file
+  failing the check aborts startup.
+  Why: the service account is also the account a compromised worker process runs as. A
+  writable master key lets an attacker who reaches code execution substitute a key of their
+  own and then decrypt or re-sign at will, which turns a contained compromise into a
+  federation identity takeover (CWE-732 Incorrect Permission Assignment for Critical
+  Resource). The file is never written after provisioning, so `0400` costs nothing.
+  Source: 0.12.5 security audit, finding 22; `docs/hardening.md`.
+
+- **Outside `src/crypto/`, `src/events/`, `src/auth/` and `src/core/secret_buffer.cpp`, erase
+  secret bytes with `core::secure_zero()` — never by calling `sodium_memzero` directly, and
+  never by relying on a container's destructor.**
+  Prefer `core::SecretBuffer` wherever the owning type can be move-only; `secure_zero` is for
+  the cases where it cannot, such as a database row that has to stay copyable.
+  Why: the crypto boundary exists so libsodium use stays auditable in four directories rather
+  than the whole tree, and `scripts/reject-unsafe.sh` enforces it. A plain `clear()` or a
+  destructor leaves the bytes in freed heap memory (CWE-226 Sensitive Information in Resource
+  Not Removed Before Reuse), and a compiler is free to elide a hand-written zeroing loop
+  entirely (CWE-14 Compiler Removal of Code to Clear Buffers).
+  Source: 0.12.5 security audit, finding 17; `src/core/AGENTS.md`.
+
+- **Release a request guard with `homeserver::ScopedGuardRelease`, not a manual
+  `guard.unlock(); f(); guard.lock();` triple.** A manual release needs a
+  `// LOCK_RELEASE: reviewed — <reason>` annotation or `scripts/reject-unsafe.sh` rejects it.
+  Why: the RAII scope restores the guard on the exceptional path as well as the normal one,
+  so a throwing outbound call cannot leave the locking invariant broken (CWE-667 Improper
+  Locking). RAII is non-negotiable in this codebase; the annotation exists so the handful of
+  legitimate exceptions — releasing before `notify_one`, or before calling a function that
+  self-locks — are visible to a reviewer rather than indistinguishable from a regression.
+  Source: 0.12.5 security audit, finding 14; `include/merovingian/homeserver/request_lock.hpp`.
+
 - **RAII is non-negotiable.**
   Why: resources (file descriptors, locks, `SecretBuffer`s, mutex guards) must be released
   even when an exception unwinds through the function. A resource that only gets freed on
@@ -648,8 +682,9 @@ quickly finding everything a given `AGENTS.md` file contributed.
 
 - **`scripts/reject-unsafe.sh` enforces a subset of these rules automatically (banned
   patterns: raw `new`, `delete`, `malloc`, `free`, `calloc`, `realloc`,
-  unjustified `shared_ptr`) — a new rule that can be grep-detected should be added to that
-  script.**
+  unjustified `shared_ptr`, direct libsodium calls outside the crypto boundary, and
+  unannotated manual lock release) — a new rule that can be grep-detected should be added to
+  that script.**
   Why: automated enforcement catches violations at commit time, before a human reviewer even
   sees the diff, which is strictly more reliable than relying on every reviewer to remember
   every rule in this document.

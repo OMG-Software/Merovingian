@@ -53,6 +53,16 @@ constexpr std::array<unsigned char, 81U> sample_png_8x8{
 
 #ifdef MEROVINGIAN_TEST_THUMBNAIL_WORKER
 
+// This scenario is also the platform-sandbox guard for the 0.12.5 audit,
+// finding 9. harden() runs before the worker reads a byte of input, and it now
+// enters seccomp-bpf on Linux, pledge("stdio") on OpenBSD and Capsicum
+// capability mode on FreeBSD. A sandbox drawn too tight kills the worker
+// mid-decode, which surfaces here as a failed round-trip -- so on each Tier 1
+// platform's CI job this test is what proves that platform's sandbox admits
+// exactly the work the worker still has to do. It cannot be asserted from the
+// parent process any other way: the restrictions apply to the child, and a
+// correctly sandboxed child is indistinguishable from an unsandboxed one except
+// by what it can still accomplish.
 SCENARIO("the sandboxed worker resamples a PNG to the requested size", "[media][thumbnail][integration]")
 {
     GIVEN("an 8x8 PNG and the built thumbnail worker")

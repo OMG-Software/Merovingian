@@ -3390,7 +3390,9 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
         auto const signing_key = find_active_server_signing_key(runtime);
         auto const key_id = signing_key.has_value() ? signing_key->key_id : std::string{};
         auto const secret_key = runtime.database.signing_secret_key.bytes();
-        guard.unlock();
+        guard.unlock(); // LOCK_RELEASE: reviewed — the federated-join network work below must not hold
+                        // runtime.mutex. The guard is function-local, so each of the early returns in
+                        // that window releases it rather than stranding it.
         // Parallel make_join race: fire up to join_parallelism concurrent make_join
         // calls and return on the first successful response. Still-running losers are
         // moved into runtime.orphan_futures_ to complete in the background; they are
@@ -3459,7 +3461,8 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
                         {
                             if (--race_state->remaining == 0)
                             {
-                                lk.unlock();
+                                lk.unlock(); // LOCK_RELEASE: reviewed — notify outside the lock so the
+                                             // waiter does not immediately block on it.
                                 race_state->cv.notify_one();
                             }
                             return;
@@ -3481,7 +3484,8 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
                     }
                     if (--race_state->remaining == 0 || race_state->winner.has_value())
                     {
-                        lk.unlock();
+                        lk.unlock(); // LOCK_RELEASE: reviewed — notify outside the lock so the waiter
+                                     // does not immediately block on it.
                         race_state->cv.notify_one();
                     }
                 }));
@@ -4694,7 +4698,9 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
         return make_operation_result(false, {}, "identity server is not trusted", 403U);
     }
     auto base_url = std::string{*trusted_match};
-    guard.unlock();
+    guard.unlock(); // LOCK_RELEASE: reviewed — the identity-server call below is network-bound and must
+                    // not hold runtime.mutex. The guard is function-local, so every exit from here
+                    // releases it rather than stranding it.
 
     // IS store-invite call: network-bound, deliberately outside runtime.mutex
     // (matches the convention at filter_verified_send_join_events above).

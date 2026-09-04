@@ -2,6 +2,7 @@
 
 #include "merovingian/platform/hardening_self_check.hpp"
 
+#include <optional>
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
@@ -319,3 +320,68 @@ SCENARIO("Hardening self-check maps Linux-only controls to appropriate non-Linux
     }
 }
 #endif // !__linux__
+
+// --- 0.12.5 security audit, finding 21 ---------------------------------------
+//
+// apply_linux_core_dump_policy() returned success whenever setrlimit(RLIMIT_CORE)
+// succeeded, discarding the prctl(PR_SET_DUMPABLE, 0) result, and the matching
+// self-check probed only RLIMIT_CORE. RLIMIT_CORE=0 stops the kernel writing a
+// core file for an ordinary crash, but a core_pattern that pipes to a handler
+// (systemd-coredump, apport) is not bound by the process rlimit -- so a
+// still-dumpable process could have its memory, master key included, captured
+// while the policy reported success.
+
+SCENARIO("The core-dump policy is only satisfied when the process is also undumpable",
+         "[platform][hardening][security]")
+{
+    GIVEN("a Linux process where the dumpable flag is observable")
+    {
+        WHEN("RLIMIT_CORE is clamped but the process is still dumpable")
+        {
+            auto const satisfied = merovingian::platform::core_dump_policy_is_satisfied(0U, 0U, true);
+
+            THEN("the policy is not satisfied")
+            {
+                // This is the whole finding: RLIMIT_CORE=0 alone used to report
+                // success here.
+                REQUIRE_FALSE(satisfied);
+            }
+        }
+
+        WHEN("RLIMIT_CORE is clamped and the process is undumpable")
+        {
+            auto const satisfied = merovingian::platform::core_dump_policy_is_satisfied(0U, 0U, false);
+
+            THEN("the policy is satisfied")
+            {
+                REQUIRE(satisfied);
+            }
+        }
+    }
+
+    GIVEN("a platform with no dumpable flag, where clamping RLIMIT_CORE is the whole policy")
+    {
+        WHEN("RLIMIT_CORE is clamped")
+        {
+            THEN("the policy is satisfied")
+            {
+                REQUIRE(merovingian::platform::core_dump_policy_is_satisfied(0U, 0U, std::nullopt));
+            }
+        }
+    }
+
+    GIVEN("a process whose core-dump limit is not clamped")
+    {
+        WHEN("either half of the limit is non-zero")
+        {
+            THEN("the policy is not satisfied, whatever the dumpable flag says")
+            {
+                // Both halves matter: raising the soft limit back up is exactly
+                // what an attacker with the process's own privileges would do.
+                REQUIRE_FALSE(merovingian::platform::core_dump_policy_is_satisfied(1U, 0U, false));
+                REQUIRE_FALSE(merovingian::platform::core_dump_policy_is_satisfied(0U, 1U, false));
+                REQUIRE_FALSE(merovingian::platform::core_dump_policy_is_satisfied(1U, 1U, std::nullopt));
+            }
+        }
+    }
+}

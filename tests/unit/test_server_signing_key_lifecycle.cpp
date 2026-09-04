@@ -19,6 +19,8 @@
 #include "../support/registration_token.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/crypto/ed25519.hpp"
+#include "merovingian/events/event_signer.hpp"
+#include "merovingian/crypto/secret_box.hpp"
 #include "merovingian/crypto/runtime_multikey_ed25519_provider.hpp"
 #include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/homeserver/http_server.hpp"
@@ -28,6 +30,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <string>
@@ -437,6 +440,207 @@ SCENARIO("The key server fast path re-publishes a cached document past its "
                 auto const cached = runtime.homeserver.database.key_server_cache->load(now_ms());
                 REQUIRE(cached.has_value());
                 REQUIRE(*cached != stale_document);
+            }
+        }
+    }
+}
+
+// --- 0.12.5 security audit, findings 1 and 5 ---------------------------------
+//
+// Finding 1: with no master key configured the server persisted its Ed25519
+// seed as base64 with encrypted='false', so anyone who exfiltrated the database
+// held a forgery-capable federation signing key -- the whole threat the column
+// exists to defend against. There is no longer a plaintext path, on first
+// generation or on rotation, and a server that cannot encrypt refuses to start.
+//
+// Finding 5: rebuild_signing_provider() staged every active secret through a
+// std::vector of plain std::array, leaving a second unlocked, never-zeroised
+// copy of each seed in ordinary heap memory on every provider rebuild.
+
+namespace
+{
+
+[[nodiscard]] auto config_without_master_key() -> merovingian::config::Config
+{
+    auto security = merovingian::config::SecurityConfig{};
+    merovingian::tests::enable_token_registration(security);
+    // Deliberately no security.secrets.master_key_file: this is the state
+    // finding 1 says must never produce a stored plaintext secret.
+    return {
+        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
+        merovingian::config::DatabaseConfig{},         security,
+        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+    };
+}
+
+} // namespace
+
+SCENARIO("A server with no master key refuses to start rather than store a plaintext signing secret",
+         "[homeserver][signing][security]")
+{
+    GIVEN("a runtime configured with no master key file")
+    {
+        auto started = merovingian::homeserver::start_runtime(config_without_master_key());
+
+        WHEN("the runtime is started")
+        {
+            THEN("startup is refused")
+            {
+                REQUIRE_FALSE(started.started);
+            }
+
+            THEN("the reason names the missing master key rather than a downstream symptom")
+            {
+                // The failure used to surface three steps later as an inability
+                // to derive an unrelated pagination-token key, which told an
+                // operator nothing about what to fix.
+                REQUIRE(started.reason.find("signing key") != std::string::npos);
+                REQUIRE(started.reason.find("master_key_file") != std::string::npos);
+            }
+
+            THEN("no signing-key row was written at all, let alone a plaintext one")
+            {
+                auto const& keys = started.runtime.database.persistent_store.server_signing_keys;
+                REQUIRE(keys.empty());
+            }
+        }
+    }
+}
+
+SCENARIO("A generated signing secret is always stored encrypted at rest", "[homeserver][signing][security]")
+{
+    GIVEN("a runtime with a master key configured")
+    {
+        auto started = merovingian::homeserver::start_runtime(signing_lifecycle_config());
+        REQUIRE(started.started);
+
+        WHEN("the server's own signing key is inspected in the store")
+        {
+            auto const& keys = started.runtime.database.persistent_store.server_signing_keys;
+            auto const own = std::ranges::find_if(keys, [](auto const& key) {
+                return !key.secret_key.empty();
+            });
+
+            THEN("its stored secret carries the secret-box envelope, never raw base64")
+            {
+                REQUIRE(own != keys.end());
+                REQUIRE(own->secret_key.starts_with(merovingian::crypto::secret_box_storage_prefix));
+            }
+
+            THEN("the raw seed does not appear anywhere in the stored value")
+            {
+                // A regression that wrote the seed alongside the envelope would
+                // still match the prefix check above; this catches it.
+                auto const& secret = started.runtime.database.signing_secret_key;
+                REQUIRE(secret.bytes().size() == merovingian::crypto::ed25519_secret_key_bytes);
+                auto const raw = std::string{reinterpret_cast<char const*>(secret.bytes().data()),
+                                             secret.bytes().size()};
+                REQUIRE(own->secret_key.find(raw) == std::string::npos);
+            }
+        }
+    }
+}
+
+// Exactly the shape of a pre-0.12.5 server being upgraded: a legacy plaintext
+// signing key in the store, and no master key configured. That combination is
+// what reaches the *rotation* encrypt path. An encrypted key could not be loaded
+// without the master key at all, so rotation would refuse one step earlier and
+// never exercise the fallback this half of the finding is about -- which is why
+// the row is rewritten into legacy form here rather than the master key simply
+// being taken away.
+SCENARIO("Rotating a legacy plaintext signing key refuses rather than minting another one",
+         "[homeserver][signing][security]")
+{
+    GIVEN("a server holding a legacy plaintext signing key with no master key configured")
+    {
+        auto started = merovingian::homeserver::start_runtime(signing_lifecycle_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        // Rewrite the active row into the pre-encryption storage format, using
+        // the raw seed the running server already holds in memory.
+        auto& keys = runtime.database.persistent_store.server_signing_keys;
+        auto const active = std::ranges::find_if(keys, [](auto const& key) {
+            return !key.secret_key.empty();
+        });
+        REQUIRE(active != keys.end());
+        auto const& raw = runtime.database.signing_secret_key;
+        REQUIRE(raw.bytes().size() == merovingian::crypto::ed25519_secret_key_bytes);
+        active->secret_key = merovingian::events::matrix_base64_from_bytes(
+            std::string_view{reinterpret_cast<char const*>(raw.bytes().data()), raw.bytes().size()});
+        REQUIRE_FALSE(active->secret_key.starts_with(merovingian::crypto::secret_box_storage_prefix));
+
+        // Now take the master key away, as an un-migrated deployment has it.
+        runtime.config = config_without_master_key();
+        auto const keys_before = keys.size();
+
+        WHEN("a rotation is requested")
+        {
+            // Rotation is precisely what an operator runs after a suspected
+            // leak -- the worst possible moment to mint another plaintext key.
+            auto const result = merovingian::homeserver::rotate_server_signing_key(runtime);
+
+            THEN("the rotation fails, naming the missing master key")
+            {
+                // Asserted on the reason, not just on ok: a rotation that failed
+                // for some unrelated cause would otherwise satisfy this scenario
+                // without the finding being fixed at all.
+                REQUIRE_FALSE(result.ok);
+                REQUIRE(result.reason.find("master_key_file") != std::string::npos);
+                REQUIRE(result.reason.find("plaintext") != std::string::npos);
+            }
+
+            THEN("no new signing-key row was written")
+            {
+                REQUIRE(runtime.database.persistent_store.server_signing_keys.size() == keys_before);
+            }
+        }
+    }
+}
+
+SCENARIO("Every holder of an active signing secret keeps it in locked memory",
+         "[homeserver][signing][security]")
+{
+    GIVEN("a started runtime with an active signing key")
+    {
+        auto started = merovingian::homeserver::start_runtime(signing_lifecycle_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        WHEN("the crypto provider is rebuilt from the active secrets")
+        {
+            merovingian::homeserver::reset_runtime_crypto_provider(runtime);
+
+            THEN("the preferred single secret is held in a locked buffer")
+            {
+                // Finding 5: the rebuild used to copy each seed into a plain
+                // std::array first. Asserting that every surviving holder is a
+                // locked SecretBuffer is the observable half of "no copy remains
+                // in unprotected memory".
+                REQUIRE(runtime.database.signing_secret_key.bytes().size() ==
+                        merovingian::crypto::ed25519_secret_key_bytes);
+                REQUIRE(runtime.database.signing_secret_key.is_locked());
+            }
+
+            THEN("every per-key secret is held in a locked buffer with a non-empty key id")
+            {
+                REQUIRE_FALSE(runtime.database.signing_secret_keys.empty());
+                for (auto const& entry : runtime.database.signing_secret_keys)
+                {
+                    REQUIRE_FALSE(entry.first.empty());
+                    REQUIRE(entry.second.bytes().size() == merovingian::crypto::ed25519_secret_key_bytes);
+                    REQUIRE(entry.second.is_locked());
+                }
+            }
+
+            THEN("the rebuilt provider can still sign, so the rebuild did not lose the key")
+            {
+                REQUIRE(runtime.crypto_provider != nullptr);
+                auto const key_id = runtime.database.signing_secret_keys.front().first;
+                auto const signed_result =
+                    runtime.crypto_provider->sign(merovingian::crypto::Ed25519SecretKeyHandle{key_id}, "payload");
+                REQUIRE(signed_result.error.empty());
+                REQUIRE_FALSE(signed_result.signature.bytes.empty());
             }
         }
     }

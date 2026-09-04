@@ -183,6 +183,52 @@ earlier on this branch; this entry covers the code changes.
   PostgreSQL CI job runs the same statement so the sequence is exercised. A
   fresh install needs nothing.
 
+### Regression cover for the audit fixes
+
+Every finding above now has a test that fails without its fix. The ones that
+resisted a direct assertion were made testable rather than left uncovered:
+
+- **The core-dump policy decision is a pure predicate.**
+  `platform::core_dump_policy_is_satisfied()` takes the observed `RLIMIT_CORE`
+  pair and dumpable flag, so finding 21 is asserted directly. The live probe
+  cannot be driven from a test: lowering `RLIMIT_CORE`'s hard limit is
+  irreversible for a non-root process, so a test that set it would poison every
+  test after it in the same binary.
+- **The signing-secret key cache is observed through an unreadable file.**
+  Making the master key file unreadable while leaving its identity unchanged
+  means a second call that still returns a key can only have come from the
+  cache (finding 3) — no seam required. The scenario skips loudly when run as
+  root, where the permission bits would not bite and it would otherwise pass
+  without proving anything.
+- **Rotation is exercised through a legacy plaintext row.** An encrypted key
+  cannot be loaded without the master key at all, so rotation refuses one step
+  earlier and never reaches the encrypt path finding 1 is about. The scenario
+  rewrites the stored row into the pre-0.12.5 format first, which is exactly
+  the state of a server being upgraded, and asserts on the refusal *reason* so
+  it cannot pass on an unrelated failure.
+- **Manual lock release is now a `scripts/reject-unsafe.sh` gate.** Finding 14's
+  fix is structural, so the guard against regression is too: a new
+  `guard.unlock()` in `include/` or `src/` is rejected unless annotated
+  `// LOCK_RELEASE: reviewed — <reason>`. The handful of legitimate releases
+  that remain — releasing before `notify_one`, or before a function that
+  self-locks — are annotated rather than refactored: each guard is a
+  function-local `std::unique_lock`, so an early exit releases it rather than
+  stranding it, and converting them would buy no safety.
+- **The thumbnail worker round-trip is named as the sandbox guard.** Finding 9's
+  restrictions apply to a child process and cannot be asserted from the parent;
+  a correctly sandboxed child is indistinguishable from an unsandboxed one
+  except by what it can still accomplish. The existing integration scenario is
+  that test, on whichever Tier 1 platform's CI job runs it.
+- **`docs/security-coding-rules.md`** gains the three rules these findings
+  established: secret files are `0400`, non-crypto modules erase secrets through
+  `core::secure_zero()`, and request guards are released with
+  `ScopedGuardRelease`.
+
+Findings 5 and 20 remain covered only indirectly — both are memory-residue
+properties, asserted through their observable half (every surviving secret
+holder is a locked buffer; the unbuffered read returns exact bytes across chunk
+boundaries) rather than by inspecting freed heap.
+
 ## 0.12.4
 
 Security audit of the 0.12.3 tree. Two of the findings below are privilege
