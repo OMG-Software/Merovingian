@@ -1,3 +1,9 @@
+## 0.12.5
+
+Record the full security-audit findings from the 0.12.4 review in a machine-
+actionable file so subsequent fix branches can be driven from a single source
+of truth. No production code is changed in this branch.
+
 ## 0.12.4
 
 Security audit of the 0.12.3 tree. Two of the findings below are privilege
