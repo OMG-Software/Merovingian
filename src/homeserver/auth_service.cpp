@@ -210,36 +210,7 @@ namespace
     constexpr auto failed_login_window = std::chrono::minutes{15};
     constexpr auto failed_login_lockout = std::chrono::minutes{15};
 
-    struct FailedLoginRecord final
-    {
-        std::size_t count{0U};
-        std::chrono::steady_clock::time_point first_failure{};
-        std::chrono::steady_clock::time_point last_failure{};
-    };
-
-    // The failure map and its guard. File-scope rather than runtime state so the
-    // throttle survives independently of any one runtime object, and because the
-    // entry points here are free functions taking the runtime by reference.
-    struct FailedLoginState final
-    {
-        std::mutex mutex{};
-        std::unordered_map<std::string, FailedLoginRecord> records{};
-    };
-
-    // src/AGENTS.md says to avoid static locals in functions callable from several
-    // threads. The rule guards against unsynchronised shared mutable state; this
-    // state is reachable only through the three accessors below, each of which
-    // holds state.mutex for the whole access, and the static's own initialisation
-    // is thread-safe. The same pattern is already used here for
-    // dummy_password_hash() and sodium_is_ready().
-    [[nodiscard]] auto failed_login_state() -> FailedLoginState&
-    {
-        static auto state = FailedLoginState{};
-        return state;
-    }
-
-    // Drops records whose window has fully elapsed. Called on every write so the
-    // map cannot grow without bound under a spray of distinct claimed user IDs.
+    // Drops records whose window has fully elapsed. Caller holds runtime.mutex.
     auto expire_failed_logins(std::unordered_map<std::string, FailedLoginRecord>& records,
                               std::chrono::steady_clock::time_point now) -> void
     {
@@ -252,13 +223,13 @@ namespace
 
     // Milliseconds remaining before this account may attempt a login again, or 0
     // when it is not locked out.
-    [[nodiscard]] auto failed_login_lockout_remaining_ms(std::string_view user_id) -> std::uint64_t
+    [[nodiscard]] auto failed_login_lockout_remaining_ms(HomeserverRuntime& runtime, std::string_view user_id)
+        -> std::uint64_t
     {
         auto const now = std::chrono::steady_clock::now();
-        auto& state = failed_login_state();
-        auto guard = std::lock_guard{state.mutex};
-        auto const it = state.records.find(std::string{user_id});
-        if (it == state.records.end() || it->second.count < max_failed_login_attempts)
+        auto guard = std::lock_guard{runtime.mutex};
+        auto const it = runtime.failed_logins.find(std::string{user_id});
+        if (it == runtime.failed_logins.end() || it->second.count < max_failed_login_attempts)
         {
             return 0U;
         }
@@ -267,20 +238,19 @@ namespace
         {
             // The lockout has expired; clear it so the next failure starts a fresh
             // window rather than immediately re-locking on the stale count.
-            state.records.erase(it);
+            runtime.failed_logins.erase(it);
             return 0U;
         }
         return static_cast<std::uint64_t>(
             std::chrono::duration_cast<std::chrono::milliseconds>(unlock_at - now).count());
     }
 
-    auto record_failed_login(std::string_view user_id) -> void
+    auto record_failed_login(HomeserverRuntime& runtime, std::string_view user_id) -> void
     {
         auto const now = std::chrono::steady_clock::now();
-        auto& state = failed_login_state();
-        auto guard = std::lock_guard{state.mutex};
-        expire_failed_logins(state.records, now);
-        auto& record = state.records[std::string{user_id}];
+        auto guard = std::lock_guard{runtime.mutex};
+        expire_failed_logins(runtime.failed_logins, now);
+        auto& record = runtime.failed_logins[std::string{user_id}];
         // Failures older than the whole window do not count toward the threshold:
         // a slow trickle over days must not eventually lock a real user out.
         if (record.count == 0U || (now - record.first_failure) > failed_login_window)
@@ -292,11 +262,10 @@ namespace
         record.last_failure = now;
     }
 
-    auto clear_failed_logins(std::string_view user_id) -> void
+    auto clear_failed_logins(HomeserverRuntime& runtime, std::string_view user_id) -> void
     {
-        auto& state = failed_login_state();
-        auto guard = std::lock_guard{state.mutex};
-        std::ignore = state.records.erase(std::string{user_id});
+        auto guard = std::lock_guard{runtime.mutex};
+        std::ignore = runtime.failed_logins.erase(std::string{user_id});
     }
 
     constexpr auto token_secret_bytes = std::size_t{32U};
@@ -978,7 +947,7 @@ auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std:
     // #487: /login was throttled per source IP only. The per-user rate-limit tier
     // is keyed on the authenticated user, which pre-login is nobody, so guesses
     // against one account spread across many source IPs accumulated nowhere.
-    if (auto const retry_after_ms = failed_login_lockout_remaining_ms(user_id); retry_after_ms > 0U)
+    if (auto const retry_after_ms = failed_login_lockout_remaining_ms(runtime, user_id); retry_after_ms > 0U)
     {
         log_diagnostic_audit(runtime.database, "auth", "login.throttled",
                              {
@@ -1005,7 +974,7 @@ auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std:
     {
         // Counted against the *claimed* user_id whether or not it exists, so the
         // lockout cannot be used to probe which accounts are real.
-        record_failed_login(user_id);
+        record_failed_login(runtime, user_id);
         auto const audit_reason = user == nullptr ? "unknown user" : "bad credentials";
         // Matrix spec §5.7.2: login failures must be 403 M_FORBIDDEN.
         log_diagnostic_audit(runtime.database, "auth", "login.rejected",
@@ -1022,7 +991,7 @@ auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std:
     }
     // A correct password clears the account's failure history, so an interrupted
     // legitimate login attempt cannot accumulate toward a lockout.
-    clear_failed_logins(user->user_id);
+    clear_failed_logins(runtime, user->user_id);
     return login_local_user_by_id(runtime, user->user_id, device_id, with_ttl);
 }
 // NOLINTEND(bugprone-easily-swappable-parameters)

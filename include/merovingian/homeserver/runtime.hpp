@@ -35,6 +35,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <unordered_map>
 #include <vector>
 
 namespace merovingian::homeserver
@@ -203,6 +204,20 @@ struct TestOnlyForcedOutboundResolution final
     std::string trusted_ca_pem{};
 };
 
+// Per-account failed-login accounting for the login throttle. Lives on the
+// runtime, not in a file-scope static: a static is shared by every runtime in
+// the process, which in the test binary means lockout state leaks between
+// unrelated scenarios and makes them order-dependent. It did exactly that --
+// a scenario that deliberately exhausts the threshold for one localpart broke a
+// later, unrelated scenario registering the same name under a different RNG
+// seed. Guarded by HomeserverRuntime::mutex.
+struct FailedLoginRecord final
+{
+    std::size_t count{0U};
+    std::chrono::steady_clock::time_point first_failure{};
+    std::chrono::steady_clock::time_point last_failure{};
+};
+
 struct HomeserverRuntime final
 {
     HomeserverRuntime();
@@ -308,6 +323,8 @@ struct HomeserverRuntime final
     // Per-connection MSC4186 sliding sync state.
     // Key: user_id + "/" + device_id + "/" + conn_id (or "__default__").
     std::map<std::string, sync::SlidingSyncConnectionState> sliding_sync_connections{};
+    // Failed-login counters keyed on the claimed user ID. See FailedLoginRecord.
+    std::unordered_map<std::string, FailedLoginRecord> failed_logins{};
     std::uint64_t next_request_sequence{1U};
     // Guards mutable runtime state when requests are handled concurrently.
     // Handlers must release it before outbound network I/O so unrelated
