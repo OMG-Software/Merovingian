@@ -12,10 +12,13 @@
 #include <utility>
 #include <vector>
 
+// POSIX, not Linux-only: apply_posix_core_dump_limit() clamps RLIMIT_CORE on
+// every supported platform.
+#include <sys/resource.h>
+
 #ifdef __linux__
 #include <linux/capability.h>
 #include <sys/prctl.h>
-#include <sys/resource.h>
 #endif
 
 #ifdef __OpenBSD__

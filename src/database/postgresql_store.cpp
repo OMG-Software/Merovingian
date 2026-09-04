@@ -1433,7 +1433,8 @@ auto open_postgresql_persistent_store(std::string_view conninfo, std::string_vie
     // The reason it used to run as the login role was ownership: ALTER TABLE is
     // permitted only to a table's owner, and migration_role owned nothing.
     // provision-roles.sql now creates the schema objects under migration_role,
-    // and documents the single REASSIGN OWNED an existing database needs.
+    // ends with a scoped transfer of the objects an existing database still
+    // has owned by the login role.
     if (store.schema.version < current_schema_version())
     {
         log_diagnostic("store.migrating", {
@@ -1460,7 +1461,7 @@ auto open_postgresql_persistent_store(std::string_view conninfo, std::string_vie
                                               ? std::string{"migration failed"}
                                               : std::string{"migration failed as the configured migration role; if "
                                                             "this is an upgrade, the schema objects may still be owned "
-                                                            "by the login role -- see the REASSIGN OWNED step in "
+                                                            "by the login role -- see the ownership transfer step in "
                                                             "packaging/postgresql/provision-roles.sql"},
                                 false}
             });

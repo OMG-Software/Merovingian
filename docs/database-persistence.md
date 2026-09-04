@@ -539,10 +539,14 @@ These remain deferred:
    separation did not cover the one operation that actually needs DDL. The
    answer is for the migration role to own the schema:
 
-   - `provision-roles.sql` creates objects under `:migration_role`, and
-     documents the single `REASSIGN OWNED BY :login_role TO :migration_role`
-     an existing database needs before upgrading. The `postgres-integration`
-     CI job runs the same statement, so the operator sequence is exercised.
+   - `provision-roles.sql` creates objects under `:migration_role`, and ends
+     with a scoped transfer of the `public` tables and sequences `:login_role`
+     still owns — the one step an existing database needs before upgrading.
+     The `postgres-integration` CI job runs the same statements, so the
+     operator sequence is exercised. It is deliberately not `REASSIGN OWNED`,
+     which operates on everything the role owns including pinned system
+     objects, and so fails when the login role is the cluster bootstrap
+     superuser.
    - `open_postgresql_persistent_store()` takes `database.migration_role`,
      `SET ROLE`s to it before applying pending migrations, and resets the
      session before assuming the runtime role.

@@ -176,12 +176,17 @@ earlier on this branch; this entry covers the code changes.
   single-role deployments working exactly as before.
 - **Upgrading needs one operator step.** `ALTER TABLE` is permitted only to an
   object's owner, and objects created before 0.12.5 are owned by the login role
-  — which is precisely why migrations ran as the login role until now. Run
-  `REASSIGN OWNED BY <login_role> TO <migration_role>;` once against the
-  Merovingian database before upgrading; `packaging/postgresql/provision-roles.sql`
-  documents it, the startup diagnostic names it if it was missed, and the
-  PostgreSQL CI job runs the same statement so the sequence is exercised. A
-  fresh install needs nothing.
+  — which is precisely why migrations ran as the login role until now. Re-run
+  `packaging/postgresql/provision-roles.sql` before upgrading: it ends with a
+  scoped transfer of the `public` tables and sequences the login role owns. The
+  startup diagnostic names that step if it was missed, and the PostgreSQL CI job
+  runs the same statements so the sequence is exercised. A fresh install needs
+  nothing.
+
+  Not `REASSIGN OWNED`: that operates on everything the role owns, including
+  objects the system pins, so it fails outright when the login role is the
+  cluster bootstrap superuser — which is what the official postgres container
+  produces and what an operator reusing the `postgres` role has.
 
 ### Regression cover for the audit fixes
 

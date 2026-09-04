@@ -42,19 +42,24 @@
 -- UPGRADING AN EXISTING DATABASE. Before 0.12.5 the schema objects were created
 -- by, and are therefore owned by, :login_role. ALTER TABLE is permitted only to
 -- an object's owner, so the next migration would fail under :migration_role
--- until ownership moves across. Run this once, as a superuser or as
--- :login_role, before upgrading:
+-- until ownership moves across. The transfer at the end of this script does
+-- that; it is a no-op on a fresh install, where the migration role owns what it
+-- creates from the start.
 --
---   \c :db_name
---   REASSIGN OWNED BY :login_role TO :migration_role;
+-- Deliberately NOT `REASSIGN OWNED BY :login_role TO :migration_role`. That
+-- command operates on everything the role owns across the whole database,
+-- including objects the system pins -- so when :login_role is the cluster
+-- bootstrap superuser (which is what the official postgres container produces,
+-- and what an operator reusing the `postgres` role has) it fails outright with
 --
--- REASSIGN OWNED moves every object :login_role owns in the current database,
--- which for a Merovingian database is exactly the schema this server created.
--- A fresh install needs nothing: the CREATE TABLEs below the first SET ROLE run
--- as :migration_role and are owned by it from the start.
+--   ERROR: cannot reassign ownership of objects owned by role <role>
+--          because they are required by the database system
+--
+-- The scoped transfer below touches only the tables and sequences in `public`
+-- that :login_role actually owns, which is exactly the Merovingian schema.
 --
 -- Startup logs `store.rejected reason="migration failed as the configured
--- migration role; ... see the REASSIGN OWNED step"` if this was missed.
+-- migration role; ... see the ownership transfer step"` if this was missed.
 
 \set ON_ERROR_STOP on
 
@@ -96,6 +101,20 @@ ALTER DEFAULT PRIVILEGES FOR ROLE :login_role IN SCHEMA public
 -- fresh database, where these match nothing.
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO :runtime_role;
 GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO :runtime_role;
+
+-- Transfer ownership of any pre-0.12.5 schema objects to :migration_role, so
+-- the next migration can ALTER them. \gexec runs each generated statement;
+-- selecting nothing (a fresh install, or an already-migrated database) runs
+-- nothing, which is what makes this safe to re-run.
+SELECT format('ALTER TABLE public.%I OWNER TO %I', tablename, :'migration_role')
+  FROM pg_tables
+ WHERE schemaname = 'public' AND tableowner = :'login_role'
+\gexec
+
+SELECT format('ALTER SEQUENCE public.%I OWNER TO %I', sequencename, :'migration_role')
+  FROM pg_sequences
+ WHERE schemaname = 'public' AND sequenceowner = :'login_role'
+\gexec
 
 -- Stricter alternative, for a deployment that does not want the login role to
 -- be a member of :migration_role at all: skip the "GRANT :migration_role TO
