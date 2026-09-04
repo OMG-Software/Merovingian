@@ -10,6 +10,14 @@
 namespace merovingian::core
 {
 
+auto secure_zero(std::span<std::byte> bytes) noexcept -> void
+{
+    if (!bytes.empty())
+    {
+        sodium_memzero(bytes.data(), bytes.size());
+    }
+}
+
 SecretBuffer::SecretBuffer(std::size_t size)
     : m_buffer(size, 0U)
 {

@@ -2980,3 +2980,77 @@ SCENARIO("A session row with a malformed expiry is treated as expired, not as ne
         }
     }
 }
+
+// --- 0.12.5 security audit, finding 17 ---------------------------------------
+//
+// PersistentServerSigningKey.secret_key holds this server's Ed25519 signing
+// secret in its at-rest form. It is a std::string, so the in-memory store held
+// that material in heap memory freed without being wiped, and every copy or
+// move left another unwiped buffer behind. The field cannot become a
+// core::SecretBuffer without making the whole row move-only -- the store's row
+// vectors and query paths depend on it being copyable -- so the row zeroises the
+// field itself on destruction, on move, and before an assignment overwrites it.
+
+SCENARIO("A persistent signing-key row erases its secret rather than leaving it in freed memory",
+         "[database][persistent_store][security]")
+{
+    GIVEN("a signing-key row holding an at-rest secret")
+    {
+        auto const secret = std::string{"secretbox:v1:AAAABBBBCCCCDDDD"};
+
+        WHEN("the row is moved from")
+        {
+            auto source = merovingian::database::PersistentServerSigningKey{"example.org", "ed25519:a0", "cHVi", 1U,
+                                                                           secret};
+            auto const moved = merovingian::database::PersistentServerSigningKey{std::move(source)};
+
+            THEN("the destination carries the secret and the source retains nothing")
+            {
+                REQUIRE(moved.secret_key == secret);
+                // A moved-from std::string is valid but unspecified: with the
+                // small-string optimisation it can still hold the original
+                // characters, which is exactly the residue this wipes.
+                REQUIRE(source.secret_key.empty());
+            }
+        }
+
+        WHEN("a row is assigned over another row that already held a secret")
+        {
+            auto target = merovingian::database::PersistentServerSigningKey{"example.org", "ed25519:a0", "cHVi", 1U,
+                                                                           secret};
+            auto const replacement = merovingian::database::PersistentServerSigningKey{
+                "example.org", "ed25519:b1", "cHVi", 2U, "secretbox:v1:EEEEFFFF"};
+            target = replacement;
+
+            THEN("the target holds only the new secret")
+            {
+                REQUIRE(target.secret_key == replacement.secret_key);
+                REQUIRE(target.key_id == "ed25519:b1");
+            }
+        }
+
+        WHEN("a row is copied")
+        {
+            auto const original = merovingian::database::PersistentServerSigningKey{"example.org", "ed25519:a0",
+                                                                                    "cHVi", 1U, secret};
+            auto const copy = original;
+
+            THEN("both rows carry the secret independently, so the store's vectors still work")
+            {
+                REQUIRE(copy.secret_key == secret);
+                REQUIRE(original.secret_key == secret);
+            }
+        }
+
+        WHEN("a row is default-constructed")
+        {
+            auto const empty = merovingian::database::PersistentServerSigningKey{};
+
+            THEN("it carries no secret")
+            {
+                REQUIRE(empty.secret_key.empty());
+                REQUIRE(empty.valid_until_ts == 0U);
+            }
+        }
+    }
+}

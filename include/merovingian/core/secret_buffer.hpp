@@ -10,6 +10,19 @@
 namespace merovingian::core
 {
 
+// Erase `bytes` in place with a wipe the compiler may not elide.
+//
+// Modules outside src/crypto/, src/events/, src/auth/ and this one must not
+// call libsodium directly (security/reject-unsafe gate, see
+// docs/security-coding-rules.md), so this is the sanctioned way for them to
+// clear a buffer that held secret material -- e.g. the at-rest signing secret
+// carried by database::PersistentServerSigningKey, which cannot be a
+// SecretBuffer because its row has to stay copyable.
+//
+// Prefer SecretBuffer wherever the type can be move-only: this erases, but
+// unlike SecretBuffer it does not pin the pages against swap.
+auto secure_zero(std::span<std::byte> bytes) noexcept -> void;
+
 class SecretBuffer final
 {
 public:

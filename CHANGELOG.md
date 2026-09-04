@@ -42,6 +42,16 @@ earlier on this branch; this entry covers the code changes.
   every byte read in ordinary heap memory that is freed without zeroisation, so
   wiping our own read buffer still left plaintext root-secret bytes in the
   process.
+- **The stored signing-key row wipes its own secret (finding 17).**
+  `PersistentServerSigningKey.secret_key` is a `std::string`, so the in-memory
+  store held the signing secret's at-rest form in heap memory freed without
+  being wiped, and every copy or move left another unwiped buffer behind. The
+  field cannot become a `core::SecretBuffer` without making the row move-only,
+  which the store's row vectors and query paths depend on it not being, so the
+  row now zeroises the field on destruction, on move, and before an assignment
+  overwrites it. This is a mitigation, not `SecretBuffer`'s guarantee — the
+  bytes are still swappable while live. What protects them at rest is that
+  since finding 1 they are always ciphertext.
 
 ### Unbounded resources reachable from the network (findings 11-13, 19)
 
