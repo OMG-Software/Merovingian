@@ -208,8 +208,15 @@ Client-facing download and thumbnail responses previously carried only
   does not defeat the match, and does not let an unlisted type slip through
   by prefix. `Content-Disposition: attachment` is set for every other
   content type, which is the mitigation the spec names against stored XSS
-  through uploaded files. `Content-Disposition` was previously carried only
-  on the federation multipart body, not on client-facing responses.
+  through uploaded files.
+
+  The allow-list lives in `media::content_type_is_inline_safe()` and is used
+  by both the client-facing download path and the federation multipart body.
+  Until 0.12.5 the federation body hardcoded `inline` for every type, so a
+  peer's clients were told to render an executable or a scripted document
+  inline in the media origin's context — the local allow-list did not apply
+  to anything served over federation (audit finding 8). Unknown and
+  non-inline-safe types fail closed to `attachment` on both paths.
 
 **Remaining gap: no `filename` parameter is emitted.** This server does not
 persist the upload's original filename, and the spec permits omitting it

@@ -71,6 +71,32 @@ earlier on this branch; this entry covers the code changes.
   and eviction would break those links rather than shed load. Bytes are counted
   over stored blobs, so a deduplicated upload consumes a record but no bytes.
 
+### High-severity correctness (findings 8, 14, 15)
+
+- **An SSO `redirectUrl` allowlist entry naming a bare origin no longer matches
+  other origins.** `redirect_url_is_allowed()` was a bare `starts_with()` with no
+  boundary, so an entry of `https://client.example.com` -- the natural way to
+  write "this whole origin" -- also matched
+  `https://client.example.com.evil.test/callback`. An attacker who registered
+  that domain received a freshly minted `m.login.token`. The character after the
+  matched prefix must now be a URL delimiter (`/`, `?`, `#`) or end-of-string, so
+  a bare-origin entry still works as an origin allowlist and a path-scoped entry
+  still works as a path allowlist.
+- **Federation media downloads derive `Content-Disposition` from the inline-safe
+  allow-list.** `build_federation_media_download_body()` hardcoded `inline` for
+  every content type, so a peer's clients were told to render whatever we served
+  -- an executable, a scripted HTML document -- inline in the media origin's
+  context, bypassing the allow-list the local download path applies. The
+  allow-list now lives in `media::content_type_is_inline_safe()` and both paths
+  use it; unknown types fail closed to `attachment`.
+- **Every manual `runtime.mutex` unlock/lock pair around an outbound call is now
+  RAII.** Fourteen endpoints released the global runtime mutex by hand before a
+  blocking outbound call and re-took it afterwards. A throw between the two left
+  the mutex unlocked, which serialises every client request and inbound
+  federation transaction behind a lock nobody holds. Each is now a
+  `ScopedGuardRelease` scope -- an immediately-invoked lambda where the call's
+  result is read after the lock is re-taken, a plain block where it is not.
+
 ## 0.12.4
 
 Security audit of the 0.12.3 tree. Two of the findings below are privilege

@@ -134,6 +134,22 @@ threat it closes; the controls above are the standing defences these reinforce.
   start without a usable master key. Legacy plaintext rows are still read so
   existing deployments keep federating until they rotate.
 
+- **SSO `redirectUrl` allowlist matched by unbounded prefix:** the allowlist
+  check was a bare `starts_with()` with no origin or path boundary, so an
+  operator entry naming a bare origin (`https://client.example.com`) also
+  matched `https://client.example.com.evil.test/callback`. An attacker who
+  registered such a domain received a freshly minted `m.login.token` — the
+  exact open-redirect-plus-token-exfiltration the allowlist exists to prevent.
+  Fixed in 0.12.5: the character following the matched prefix must be a URL
+  delimiter (`/`, `?`, `#`) or end-of-string.
+
+- **Federation media served with a hardcoded `Content-Disposition: inline`:**
+  the federation multipart body told the receiving homeserver's clients to
+  render every content type inline, including types the local download path
+  refuses to serve inline, so the inline-safe allow-list did not apply to
+  anything reached over federation. Fixed in 0.12.5: both paths share
+  `media::content_type_is_inline_safe()` and fail closed to `attachment`.
+
 - **Master key usable from swappable memory:** `load_master_key_material()`
   tolerated a failed `sodium_mlock()` and returned the root secret in ordinary
   pageable memory after a one-time warning, so `RLIMIT_MEMLOCK` exhaustion

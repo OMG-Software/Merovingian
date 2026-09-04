@@ -641,7 +641,14 @@ auto build_federation_media_download_body(std::string_view media_content_type, s
     body += "Content-Type: application/json\r\n\r\n{}\r\n";
     body += "--" + boundary + "\r\n";
     body += std::string{"Content-Type: "} + std::string{canonical_type} + "\r\n";
-    body += "Content-Disposition: inline\r\n\r\n";
+    // 0.12.5 audit, finding 8: derive the disposition from the same
+    // inline-safe allow-list the client-facing download path uses. This was
+    // hardcoded to `inline`, so a peer's clients were told to render an
+    // executable or a scripted document inline -- bypassing the allow-list
+    // entirely for anything served over federation. Unknown and
+    // non-inline-safe types fail closed to `attachment`.
+    body += content_type_is_inline_safe(canonical_type) ? "Content-Disposition: inline\r\n\r\n"
+                                                        : "Content-Disposition: attachment\r\n\r\n";
     body += std::string{bytes} + "\r\n";
     body += "--" + boundary + "--\r\n";
     return {std::move(body), "multipart/mixed; boundary=" + boundary};

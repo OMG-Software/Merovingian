@@ -347,11 +347,36 @@ namespace
 
     // SSO redirectUrl allowlist check (docs/threat-model.md, "open redirect
     // via SSO redirectUrl"): a prefix match against each operator-configured
-    // HTTPS allowlist entry. Prefix (rather than exact-origin) matching lets
-    // an operator scope the allowlist down to a specific path under a
-    // trusted origin when they want to; an entry that names a bare origin
-    // still behaves as an origin allowlist because every same-origin URL has
-    // that origin as a prefix.
+    // HTTPS allowlist entry, terminated at a URL delimiter. Prefix (rather
+    // than exact) matching lets an operator scope the allowlist down to a
+    // specific path under a trusted origin when they want to; an entry that
+    // names a bare origin still behaves as an origin allowlist.
+    //
+    // 0.12.5 audit, finding 15: the match used to be a bare starts_with(),
+    // with no boundary. An entry naming a bare origin --
+    // "https://client.example.com", the natural way to write "this whole
+    // origin" -- therefore also matched
+    // "https://client.example.com.evil.test/callback", and an attacker who
+    // registered that domain received a freshly minted m.login.token.
+    // Requiring the next character to be a URL delimiter closes it: `/` ends
+    // the authority, `?` and `#` end the path, and end-of-string is the bare
+    // origin itself. An entry that already ends in a delimiter (e.g. a
+    // trailing `/`) has consumed its own boundary and needs no further check.
+    [[nodiscard]] auto redirect_url_boundary_is_valid(std::string_view allowed,
+                                                      std::string_view redirect_url) noexcept -> bool
+    {
+        constexpr auto delimiters = std::string_view{"/?#"};
+        if (!allowed.empty() && delimiters.find(allowed.back()) != std::string_view::npos)
+        {
+            return true;
+        }
+        if (redirect_url.size() == allowed.size())
+        {
+            return true;
+        }
+        return delimiters.find(redirect_url[allowed.size()]) != std::string_view::npos;
+    }
+
     [[nodiscard]] auto redirect_url_is_allowed(config::SsoConfig const& sso, std::string_view redirect_url) noexcept
         -> bool
     {
@@ -360,7 +385,8 @@ namespace
             return false;
         }
         return std::ranges::any_of(sso.redirect_url_allowlist, [redirect_url](std::string const& allowed) {
-            return !allowed.empty() && redirect_url.starts_with(allowed);
+            return !allowed.empty() && redirect_url.starts_with(allowed) &&
+                   redirect_url_boundary_is_valid(allowed, redirect_url);
         });
     }
 

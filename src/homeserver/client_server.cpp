@@ -195,54 +195,6 @@ namespace
     // Origin` so intermediate caches do not collapse responses across
     // origins. For OPTIONS preflight also attaches the methods, headers,
     // and max-age so the browser can short-circuit the next request.
-    // Content types the spec permits to be served with Content-Disposition:
-    // inline, from §"Serving inline content". Anything outside this list is
-    // served as an attachment so a browser cannot render it as active content in
-    // the media origin's context.
-    // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#serving-inline-content
-    [[nodiscard]] auto content_type_is_inline_safe(std::string_view content_type) -> bool
-    {
-        // Compare only the media type: a charset or other parameter must not
-        // defeat the match, and must not let an unlisted type slip through by
-        // prefixing a listed one.
-        auto const semicolon = content_type.find(';');
-        auto media_type = semicolon == std::string_view::npos ? content_type : content_type.substr(0U, semicolon);
-        while (!media_type.empty() && media_type.back() == ' ')
-        {
-            media_type.remove_suffix(1U);
-        }
-
-        static constexpr auto inline_safe = std::array{
-            std::string_view{"text/css"},
-            std::string_view{"text/plain"},
-            std::string_view{"text/csv"},
-            std::string_view{"application/json"},
-            std::string_view{"application/ld+json"},
-            std::string_view{"image/jpeg"},
-            std::string_view{"image/gif"},
-            std::string_view{"image/png"},
-            std::string_view{"image/apng"},
-            std::string_view{"image/webp"},
-            std::string_view{"image/avif"},
-            std::string_view{"video/mp4"},
-            std::string_view{"video/webm"},
-            std::string_view{"video/ogg"},
-            std::string_view{"video/quicktime"},
-            std::string_view{"audio/mp4"},
-            std::string_view{"audio/webm"},
-            std::string_view{"audio/aac"},
-            std::string_view{"audio/mpeg"},
-            std::string_view{"audio/ogg"},
-            std::string_view{"audio/wave"},
-            std::string_view{"audio/wav"},
-            std::string_view{"audio/x-wav"},
-            std::string_view{"audio/x-pn-wav"},
-            std::string_view{"audio/flac"},
-            std::string_view{"audio/x-flac"},
-        };
-        return std::ranges::find(inline_safe, media_type) != inline_safe.end();
-    }
-
     // #487: client-facing media responses previously carried only Content-Type
     // and the CORS headers. The spec asks for a sandboxing Content-Security-Policy
     // and Cross-Origin-Resource-Policy when serving content, and made
@@ -261,7 +213,7 @@ namespace
                                  "style-src 'unsafe-inline'; object-src 'self';");
         append_header_if_missing(response.headers, "Cross-Origin-Resource-Policy", "cross-origin");
         append_header_if_missing(response.headers, "Content-Disposition",
-                                 content_type_is_inline_safe(content_type) ? "inline" : "attachment");
+                                 media::content_type_is_inline_safe(content_type) ? "inline" : "attachment");
     }
 
     auto apply_cors_headers(LocalHttpRequest const& req, LocalHttpResponse& response, config::CorsConfig const& cors)
@@ -2015,15 +1967,20 @@ namespace
         auto const medium_copy = std::string{medium};
         auto const address_copy = std::string{address};
 
-        guard.unlock();
-        auto id_client = merovingian::identity::IdentityServerClient{
-            *rt.homeserver.outbound_client, *rt.homeserver.cached_discovery,
-            rt.homeserver.config.server().identity_server, &rt.homeserver.test_forced_identity_resolution};
-        // Mode 2: empty bearer -- the IS authenticates the unbind via the
-        // client_secret + sid carried in the body.
-        auto const is_result =
-            id_client.unbind(base_url, std::string_view{}, client_secret, sid, medium_copy, address_copy);
-        guard.lock();
+        // Network-bound call: runtime.mutex is released for its duration, via
+        // RAII (0.12.5 audit, finding 14). A manual unlock/lock pair left the
+        // mutex unlocked if the outbound call threw between them, which
+        // serialises every client request and inbound federation transaction
+        // behind a lock nobody holds.
+        auto const is_result = [&] {
+            auto const released = merovingian::homeserver::ScopedGuardRelease{guard};
+            auto id_client = merovingian::identity::IdentityServerClient{
+                *rt.homeserver.outbound_client, *rt.homeserver.cached_discovery,
+                rt.homeserver.config.server().identity_server, &rt.homeserver.test_forced_identity_resolution};
+            // Mode 2: empty bearer -- the IS authenticates the unbind via the
+            // client_secret + sid carried in the body.
+            return id_client.unbind(base_url, std::string_view{}, client_secret, sid, medium_copy, address_copy);
+        }();
 
         clear_local();
         // 200 is a real unbind. 404/501 mean the IS does not hold or does not
@@ -9116,14 +9073,19 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             {
                 return dispatch_err(req, rt, 502U, "M_UNREACHABLE", "identity server is not reachable");
             }
-            guard.unlock();
-            auto id_client = merovingian::identity::IdentityServerClient{
-                *rt.homeserver.outbound_client, *rt.homeserver.cached_discovery,
-                rt.homeserver.config.server().identity_server, &rt.homeserver.test_forced_identity_resolution};
-            auto const is_result =
-                id_client.request_email_token(base_url, id_access_token, client_secret, email,
-                                              next_link.has_value() ? *next_link : std::string_view{});
-            guard.lock();
+            // Network-bound call: runtime.mutex is released for its duration, via
+            // RAII (0.12.5 audit, finding 14). A manual unlock/lock pair left the
+            // mutex unlocked if the outbound call threw between them, which
+            // serialises every client request and inbound federation transaction
+            // behind a lock nobody holds.
+            auto const is_result = [&] {
+                auto const released = merovingian::homeserver::ScopedGuardRelease{guard};
+                auto id_client = merovingian::identity::IdentityServerClient{
+                    *rt.homeserver.outbound_client, *rt.homeserver.cached_discovery,
+                    rt.homeserver.config.server().identity_server, &rt.homeserver.test_forced_identity_resolution};
+                return id_client.request_email_token(base_url, id_access_token, client_secret, email,
+                                                     next_link.has_value() ? *next_link : std::string_view{});
+            }();
             if (!is_result.ok)
             {
                 return dispatch_err(req, rt, 502U, "M_UNREACHABLE", "identity server is not reachable");
@@ -9213,14 +9175,19 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             {
                 return dispatch_err(req, rt, 502U, "M_UNREACHABLE", "identity server is not reachable");
             }
-            guard.unlock();
-            auto id_client = merovingian::identity::IdentityServerClient{
-                *rt.homeserver.outbound_client, *rt.homeserver.cached_discovery,
-                rt.homeserver.config.server().identity_server, &rt.homeserver.test_forced_identity_resolution};
-            auto const is_result =
-                id_client.request_msisdn_token(base_url, id_access_token, client_secret, country, phone_number,
-                                               next_link.has_value() ? *next_link : std::string_view{});
-            guard.lock();
+            // Network-bound call: runtime.mutex is released for its duration, via
+            // RAII (0.12.5 audit, finding 14). A manual unlock/lock pair left the
+            // mutex unlocked if the outbound call threw between them, which
+            // serialises every client request and inbound federation transaction
+            // behind a lock nobody holds.
+            auto const is_result = [&] {
+                auto const released = merovingian::homeserver::ScopedGuardRelease{guard};
+                auto id_client = merovingian::identity::IdentityServerClient{
+                    *rt.homeserver.outbound_client, *rt.homeserver.cached_discovery,
+                    rt.homeserver.config.server().identity_server, &rt.homeserver.test_forced_identity_resolution};
+                return id_client.request_msisdn_token(base_url, id_access_token, client_secret, country, phone_number,
+                                                      next_link.has_value() ? *next_link : std::string_view{});
+            }();
             if (!is_result.ok)
             {
                 return dispatch_err(req, rt, 502U, "M_UNREACHABLE", "identity server is not reachable");
@@ -9845,14 +9812,19 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             {
                 return dispatch_err(req, rt, 502U, "M_UNREACHABLE", "identity server is not reachable");
             }
-            guard.unlock();
-            auto id_client = merovingian::identity::IdentityServerClient{
-                *rt.homeserver.outbound_client, *rt.homeserver.cached_discovery,
-                rt.homeserver.config.server().identity_server, &rt.homeserver.test_forced_identity_resolution};
-            auto const is_result =
-                id_client.request_email_token(base_url, id_access_token, client_secret, email,
-                                              next_link.has_value() ? *next_link : std::string_view{});
-            guard.lock();
+            // Network-bound call: runtime.mutex is released for its duration, via
+            // RAII (0.12.5 audit, finding 14). A manual unlock/lock pair left the
+            // mutex unlocked if the outbound call threw between them, which
+            // serialises every client request and inbound federation transaction
+            // behind a lock nobody holds.
+            auto const is_result = [&] {
+                auto const released = merovingian::homeserver::ScopedGuardRelease{guard};
+                auto id_client = merovingian::identity::IdentityServerClient{
+                    *rt.homeserver.outbound_client, *rt.homeserver.cached_discovery,
+                    rt.homeserver.config.server().identity_server, &rt.homeserver.test_forced_identity_resolution};
+                return id_client.request_email_token(base_url, id_access_token, client_secret, email,
+                                                     next_link.has_value() ? *next_link : std::string_view{});
+            }();
             if (!is_result.ok)
             {
                 return dispatch_err(req, rt, 502U, "M_UNREACHABLE", "identity server is not reachable");
@@ -9943,14 +9915,19 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             {
                 return dispatch_err(req, rt, 502U, "M_UNREACHABLE", "identity server is not reachable");
             }
-            guard.unlock();
-            auto id_client = merovingian::identity::IdentityServerClient{
-                *rt.homeserver.outbound_client, *rt.homeserver.cached_discovery,
-                rt.homeserver.config.server().identity_server, &rt.homeserver.test_forced_identity_resolution};
-            auto const is_result =
-                id_client.request_msisdn_token(base_url, id_access_token, client_secret, country, phone_number,
-                                               next_link.has_value() ? *next_link : std::string_view{});
-            guard.lock();
+            // Network-bound call: runtime.mutex is released for its duration, via
+            // RAII (0.12.5 audit, finding 14). A manual unlock/lock pair left the
+            // mutex unlocked if the outbound call threw between them, which
+            // serialises every client request and inbound federation transaction
+            // behind a lock nobody holds.
+            auto const is_result = [&] {
+                auto const released = merovingian::homeserver::ScopedGuardRelease{guard};
+                auto id_client = merovingian::identity::IdentityServerClient{
+                    *rt.homeserver.outbound_client, *rt.homeserver.cached_discovery,
+                    rt.homeserver.config.server().identity_server, &rt.homeserver.test_forced_identity_resolution};
+                return id_client.request_msisdn_token(base_url, id_access_token, client_secret, country, phone_number,
+                                                      next_link.has_value() ? *next_link : std::string_view{});
+            }();
             if (!is_result.ok)
             {
                 return dispatch_err(req, rt, 502U, "M_UNREACHABLE", "identity server is not reachable");
@@ -10425,12 +10402,18 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
             // IS call is network-bound: drop runtime.mutex for the duration (same
             // convention as the call_local lambda above and room_service.cpp).
-            guard.unlock();
-            auto id_client = merovingian::identity::IdentityServerClient{
-                *rt.homeserver.outbound_client, *rt.homeserver.cached_discovery,
-                rt.homeserver.config.server().identity_server, &rt.homeserver.test_forced_identity_resolution};
-            auto const is_result = id_client.bind(base_url, id_access_token, client_secret, sid, mxid);
-            guard.lock();
+            // Network-bound call: runtime.mutex is released for its duration, via
+            // RAII (0.12.5 audit, finding 14). A manual unlock/lock pair left the
+            // mutex unlocked if the outbound call threw between them, which
+            // serialises every client request and inbound federation transaction
+            // behind a lock nobody holds.
+            auto const is_result = [&] {
+                auto const released = merovingian::homeserver::ScopedGuardRelease{guard};
+                auto id_client = merovingian::identity::IdentityServerClient{
+                    *rt.homeserver.outbound_client, *rt.homeserver.cached_discovery,
+                    rt.homeserver.config.server().identity_server, &rt.homeserver.test_forced_identity_resolution};
+                return id_client.bind(base_url, id_access_token, client_secret, sid, mxid);
+            }();
             if (!is_result.ok)
             {
                 return dispatch_err(req, rt, 502U, "M_UNREACHABLE", "identity server is not reachable");
@@ -10508,12 +10491,18 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             {
                 return dispatch_err(req, rt, 502U, "M_UNREACHABLE", "identity server is not reachable");
             }
-            guard.unlock();
-            auto id_client = merovingian::identity::IdentityServerClient{
-                *rt.homeserver.outbound_client, *rt.homeserver.cached_discovery,
-                rt.homeserver.config.server().identity_server, &rt.homeserver.test_forced_identity_resolution};
-            auto const is_result = id_client.bind(base_url, id_access_token_str, client_secret_str, sid_str, mxid);
-            guard.lock();
+            // Network-bound call: runtime.mutex is released for its duration, via
+            // RAII (0.12.5 audit, finding 14). A manual unlock/lock pair left the
+            // mutex unlocked if the outbound call threw between them, which
+            // serialises every client request and inbound federation transaction
+            // behind a lock nobody holds.
+            auto const is_result = [&] {
+                auto const released = merovingian::homeserver::ScopedGuardRelease{guard};
+                auto id_client = merovingian::identity::IdentityServerClient{
+                    *rt.homeserver.outbound_client, *rt.homeserver.cached_discovery,
+                    rt.homeserver.config.server().identity_server, &rt.homeserver.test_forced_identity_resolution};
+                return id_client.bind(base_url, id_access_token_str, client_secret_str, sid_str, mxid);
+            }();
             if (!is_result.ok)
             {
                 return dispatch_err(req, rt, 502U, "M_UNREACHABLE", "identity server is not reachable");
@@ -10590,14 +10579,20 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             {
                 return dispatch_err(req, rt, 502U, "M_UNREACHABLE", "identity server is not reachable");
             }
-            guard.unlock();
-            auto id_client = merovingian::identity::IdentityServerClient{
-                *rt.homeserver.outbound_client, *rt.homeserver.cached_discovery,
-                rt.homeserver.config.server().identity_server, &rt.homeserver.test_forced_identity_resolution};
-            // Mode 2: empty bearer — the IS authenticates the unbind via the
-            // client_secret + sid carried in the body (build_unbind_body).
-            auto const is_result = id_client.unbind(base_url, std::string_view{}, client_secret, sid, medium, address);
-            guard.lock();
+            // Network-bound call: runtime.mutex is released for its duration, via
+            // RAII (0.12.5 audit, finding 14). A manual unlock/lock pair left the
+            // mutex unlocked if the outbound call threw between them, which
+            // serialises every client request and inbound federation transaction
+            // behind a lock nobody holds.
+            auto const is_result = [&] {
+                auto const released = merovingian::homeserver::ScopedGuardRelease{guard};
+                auto id_client = merovingian::identity::IdentityServerClient{
+                    *rt.homeserver.outbound_client, *rt.homeserver.cached_discovery,
+                    rt.homeserver.config.server().identity_server, &rt.homeserver.test_forced_identity_resolution};
+                // Mode 2: empty bearer — the IS authenticates the unbind via the
+                // client_secret + sid carried in the body (build_unbind_body).
+                return id_client.unbind(base_url, std::string_view{}, client_secret, sid, medium, address);
+            }();
             if (!is_result.ok)
             {
                 // Fail closed: leave the local binding intact so the user can retry.
@@ -10674,12 +10669,18 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             {
                 return dispatch_err(req, rt, 502U, "M_UNREACHABLE", "identity server is not reachable");
             }
-            guard.unlock();
-            auto id_client = merovingian::identity::IdentityServerClient{
-                *rt.homeserver.outbound_client, *rt.homeserver.cached_discovery,
-                rt.homeserver.config.server().identity_server, &rt.homeserver.test_forced_identity_resolution};
-            auto const is_result = id_client.unbind(base_url, std::string_view{}, client_secret, sid, medium, address);
-            guard.lock();
+            // Network-bound call: runtime.mutex is released for its duration, via
+            // RAII (0.12.5 audit, finding 14). A manual unlock/lock pair left the
+            // mutex unlocked if the outbound call threw between them, which
+            // serialises every client request and inbound federation transaction
+            // behind a lock nobody holds.
+            auto const is_result = [&] {
+                auto const released = merovingian::homeserver::ScopedGuardRelease{guard};
+                auto id_client = merovingian::identity::IdentityServerClient{
+                    *rt.homeserver.outbound_client, *rt.homeserver.cached_discovery,
+                    rt.homeserver.config.server().identity_server, &rt.homeserver.test_forced_identity_resolution};
+                return id_client.unbind(base_url, std::string_view{}, client_secret, sid, medium, address);
+            }();
             if (!is_result.ok)
             {
                 return dispatch_err(req, rt, 502U, "M_UNREACHABLE", "identity server is not reachable");
@@ -11000,28 +11001,32 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             if (can_call_appservices)
             {
                 auto client = appservice::AppserviceClient{*outbound_client, *cached_discovery};
-                guard.unlock();
-                for (auto const& registration : registrations)
                 {
-                    for (auto const& protocol_name : registration.protocols)
+                    // runtime.mutex is released across these network calls via RAII
+                    // (0.12.5 audit, finding 14): a manual unlock/lock pair left the
+                    // mutex unlocked if a call threw between them.
+                    auto const released = merovingian::homeserver::ScopedGuardRelease{guard};
+                    for (auto const& registration : registrations)
                     {
-                        auto const already_resolved =
-                            std::ranges::any_of(protocols_obj, [&protocol_name](canonicaljson::ObjectMember const& m) {
-                                return m.key == protocol_name;
-                            });
-                        if (already_resolved)
+                        for (auto const& protocol_name : registration.protocols)
                         {
-                            continue;
-                        }
-                        auto const result = client.query_thirdparty_protocol(registration, protocol_name);
-                        if (result.ok && result.found)
-                        {
-                            protocols_obj.push_back(
-                                json_member(protocol_name, thirdparty_protocol_json(result.protocol, registration.id)));
+                            auto const already_resolved = std::ranges::any_of(
+                                protocols_obj, [&protocol_name](canonicaljson::ObjectMember const& m) {
+                                    return m.key == protocol_name;
+                                });
+                            if (already_resolved)
+                            {
+                                continue;
+                            }
+                            auto const result = client.query_thirdparty_protocol(registration, protocol_name);
+                            if (result.ok && result.found)
+                            {
+                                protocols_obj.push_back(json_member(
+                                    protocol_name, thirdparty_protocol_json(result.protocol, registration.id)));
+                            }
                         }
                     }
                 }
-                guard.lock();
             }
             return dispatch_resp(req, rt, 200U, json_serialize(json_obj(std::move(protocols_obj))));
         }
@@ -11081,19 +11086,23 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             {
                 auto const fields = thirdparty_query_fields(req.target);
                 auto client = appservice::AppserviceClient{*outbound_client, *cached_discovery};
-                guard.unlock();
-                for (auto const* owner : owners)
                 {
-                    auto const result = client.query_thirdparty_location_by_protocol(*owner, protocol_name, fields);
-                    if (result.ok && result.found)
+                    // runtime.mutex is released across these network calls via RAII
+                    // (0.12.5 audit, finding 14): a manual unlock/lock pair left the
+                    // mutex unlocked if a call threw between them.
+                    auto const released = merovingian::homeserver::ScopedGuardRelease{guard};
+                    for (auto const* owner : owners)
                     {
-                        for (auto const& location : result.locations)
+                        auto const result = client.query_thirdparty_location_by_protocol(*owner, protocol_name, fields);
+                        if (result.ok && result.found)
                         {
-                            locations.push_back(thirdparty_location_json(location));
+                            for (auto const& location : result.locations)
+                            {
+                                locations.push_back(thirdparty_location_json(location));
+                            }
                         }
                     }
                 }
-                guard.lock();
             }
             if (locations.empty())
             {
@@ -11113,19 +11122,23 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             if (can_call_appservices)
             {
                 auto client = appservice::AppserviceClient{*outbound_client, *cached_discovery};
-                guard.unlock();
-                for (auto const& registration : registrations)
                 {
-                    auto const result = client.query_thirdparty_location_by_alias(registration, *alias);
-                    if (result.ok && result.found)
+                    // runtime.mutex is released across these network calls via RAII
+                    // (0.12.5 audit, finding 14): a manual unlock/lock pair left the
+                    // mutex unlocked if a call threw between them.
+                    auto const released = merovingian::homeserver::ScopedGuardRelease{guard};
+                    for (auto const& registration : registrations)
                     {
-                        for (auto const& location : result.locations)
+                        auto const result = client.query_thirdparty_location_by_alias(registration, *alias);
+                        if (result.ok && result.found)
                         {
-                            locations.push_back(thirdparty_location_json(location));
+                            for (auto const& location : result.locations)
+                            {
+                                locations.push_back(thirdparty_location_json(location));
+                            }
                         }
                     }
                 }
-                guard.lock();
             }
             if (locations.empty())
             {
@@ -11157,19 +11170,23 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             {
                 auto const fields = thirdparty_query_fields(req.target);
                 auto client = appservice::AppserviceClient{*outbound_client, *cached_discovery};
-                guard.unlock();
-                for (auto const* owner : owners)
                 {
-                    auto const result = client.query_thirdparty_user_by_protocol(*owner, protocol_name, fields);
-                    if (result.ok && result.found)
+                    // runtime.mutex is released across these network calls via RAII
+                    // (0.12.5 audit, finding 14): a manual unlock/lock pair left the
+                    // mutex unlocked if a call threw between them.
+                    auto const released = merovingian::homeserver::ScopedGuardRelease{guard};
+                    for (auto const* owner : owners)
                     {
-                        for (auto const& found_user : result.users)
+                        auto const result = client.query_thirdparty_user_by_protocol(*owner, protocol_name, fields);
+                        if (result.ok && result.found)
                         {
-                            users.push_back(thirdparty_user_json(found_user));
+                            for (auto const& found_user : result.users)
+                            {
+                                users.push_back(thirdparty_user_json(found_user));
+                            }
                         }
                     }
                 }
-                guard.lock();
             }
             if (users.empty())
             {
@@ -11189,19 +11206,23 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             if (can_call_appservices)
             {
                 auto client = appservice::AppserviceClient{*outbound_client, *cached_discovery};
-                guard.unlock();
-                for (auto const& registration : registrations)
                 {
-                    auto const result = client.query_thirdparty_user_by_userid(registration, *userid);
-                    if (result.ok && result.found)
+                    // runtime.mutex is released across these network calls via RAII
+                    // (0.12.5 audit, finding 14): a manual unlock/lock pair left the
+                    // mutex unlocked if a call threw between them.
+                    auto const released = merovingian::homeserver::ScopedGuardRelease{guard};
+                    for (auto const& registration : registrations)
                     {
-                        for (auto const& found_user : result.users)
+                        auto const result = client.query_thirdparty_user_by_userid(registration, *userid);
+                        if (result.ok && result.found)
                         {
-                            users.push_back(thirdparty_user_json(found_user));
+                            for (auto const& found_user : result.users)
+                            {
+                                users.push_back(thirdparty_user_json(found_user));
+                            }
                         }
                     }
                 }
-                guard.lock();
             }
             if (users.empty())
             {
