@@ -113,10 +113,18 @@ struct AuthChain final
 auto append_auth_chain_event(AuthChain& chain, std::string_view event_id) -> void;
 
 [[nodiscard]] auto parse_membership_state(std::string_view membership) noexcept -> std::optional<MembershipState>;
-[[nodiscard]] auto extract_user_power_level(canonicaljson::Value const& power_levels_event,
-                                            std::string_view user_id) noexcept -> std::int64_t;
+// `allow_string_values` reflects RoomVersionPolicy::power_levels_require_integers
+// inverted: room versions 1-9 permit an integer power level to be encoded as a
+// string, and such an event is valid. Reading it as absent would silently apply
+// a default instead of the level the room actually set, so the flag must follow
+// the room's own version rather than defaulting per call site. It defaults to
+// false (strict) so a caller that has not considered the question gets the v10+
+// behaviour rather than the more permissive one.
+[[nodiscard]] auto extract_user_power_level(canonicaljson::Value const& power_levels_event, std::string_view user_id,
+                                            bool allow_string_values = false) noexcept -> std::int64_t;
 [[nodiscard]] auto extract_power_level_key(canonicaljson::Value const& power_levels_event, std::string_view key,
-                                           std::int64_t default_value) noexcept -> std::int64_t;
+                                           std::int64_t default_value,
+                                           bool allow_string_values = false) noexcept -> std::int64_t;
 [[nodiscard]] auto domain_of(std::string_view matrix_id) noexcept -> std::string_view;
 [[nodiscard]] auto extract_content_membership(canonicaljson::Value const& event) noexcept -> std::string;
 

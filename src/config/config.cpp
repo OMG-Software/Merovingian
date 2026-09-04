@@ -989,6 +989,31 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
             {"security.federation.join_parallelism", "federation join parallelism must be a positive integer"});
     }
 
+    // Pre-authentication key-resolution budgets. An invalid policy or a zero
+    // in-flight cap must be a startup error, never a silent "no limit" or a
+    // cap that rejects every resolution -- both turn a protective control into
+    // an outage or an open door depending on which way the code reads it.
+    if (!http::rate_limit_policy_is_valid(config.security().federation.key_resolution_per_ip_rate))
+    {
+        findings.push_back({"security.federation.key_resolution_per_ip_rate",
+                            "federation key-resolution per-IP rate must be a positive N/Ns policy"});
+    }
+
+    if (config.security().federation.key_resolution_max_in_flight == 0U)
+    {
+        findings.push_back({"security.federation.key_resolution_max_in_flight",
+                            "federation key-resolution in-flight cap must be a positive integer"});
+    }
+
+    // "0s" is a legitimate value here (negative caching disabled), so only a
+    // malformed duration is a finding.
+    if (!parse_duration_seconds(config.security().federation.key_resolution_failure_ttl).valid &&
+        config.security().federation.key_resolution_failure_ttl != "0s")
+    {
+        findings.push_back({"security.federation.key_resolution_failure_ttl",
+                            "federation key-resolution failure TTL must be a bounded duration (or 0s to disable)"});
+    }
+
     auto const federation_join_race_deadline = parse_duration_seconds(config.security().federation.join_race_deadline);
     if (!federation_join_race_deadline.valid)
     {

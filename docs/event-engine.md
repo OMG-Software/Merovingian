@@ -32,7 +32,40 @@ Implemented now:
   and demotion guard over the union of old and new `users` keys (per spec
   rule 9.8 — a user at or above the sender's power cannot be changed or
   removed by a non-superior sender), state-default and events-default power
-  enforcement. Kick/unban and ban additionally require the sender's power to
+  enforcement.
+- **rule 1 (`m.room.create`)**, complete since 0.12.4: no `prev_events`; the
+  `room_id`/`sender` domain relationship for v1-v11 and the absence of
+  `room_id` for v12 (MSC4291); a recognised `content.room_version`; and the
+  creator fields (`content.creator` before v11, `content.additional_creators`
+  validated as user IDs in v12). None of these was enforced before 0.12.4,
+  which let a federating server mint a room whose ID claimed another
+  homeserver's domain.
+- **rule 8**, since 0.12.4: a state event whose `state_key` starts with `@`
+  must have that key equal the `sender`. `m.room.member` never reaches this
+  rule — it returns from its own branch, exactly as the spec's rule 5 does.
+- **rule 9 in full**, since 0.12.4. Previously only 9.8 and 9.9 (the
+  `content.users` map) were implemented. Now also: 9.1-9.3 (type validation of
+  the scalar keys, of `events`/`notifications`, and of `users`), 9.5 (every
+  alteration of `users_default`, `events_default`, `state_default`, `ban`,
+  `redact`, `kick` or `invite` is bounded by the sender's power in both the old
+  and the new direction) and 9.6/9.7 (the same two-sided bound per entry of
+  `events` and `notifications`). The gap allowed a moderator to set
+  `users_default` above their own level and take the room.
+- **one deliberate deviation, stricter than the spec.** Rule 9.4 says a
+  `m.room.power_levels` event is allowed outright when the room has no previous
+  one. This server instead still requires the default `state_default` (50) in
+  that case. Its `AuthEventMap` is built from local resolved state rather than
+  from the event's declared `auth_events`, so "no previous power_levels" can
+  also mean "this server does not have that state yet", under which a blanket
+  allow would be a fail-open. The room-creation bootstrap is unaffected (the
+  creator resolves to 100, or to infinite under v12). This can only reject
+  where the spec would allow, never the reverse.
+- **`content.events` never resolves a scalar power key.** That map keys event
+  *types* to levels, so `ban`, `kick`, `redact`, `invite`, `users_default`,
+  `events_default` and `state_default` are not names it can carry. Until
+  0.12.4 `extract_power_level_key` fell back to it when a top-level key was
+  absent, which let a sender smuggle a scalar value in under an event-type
+  name and, for example, drop the effective ban level to zero. Kick/unban and ban additionally require the sender's power to
   be strictly greater than the target's own power level (spec rules 5.4/6.2)
   — the `redact`/`ban` power levels are not consulted when authorizing
   `m.room.redaction` itself (issue #410); it is authorized through the same

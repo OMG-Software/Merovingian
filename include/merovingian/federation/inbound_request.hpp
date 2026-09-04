@@ -77,10 +77,13 @@ struct SignedFederationRequest final
     // signature is absent in this case; only the verified identity travels.
     bool signature_verified{false};
     std::string body{};
-    // Non-empty when the request arrived on a TLS connection. The inbound
-    // handler compares this against the X-Matrix origin claim so a relay
-    // cannot spoof origin through header injection.
-    std::string tls_peer_server_name{};
+    // Source IP of the direct peer (or the trusted-proxy-resolved client IP),
+    // copied from LocalHttpRequest::remote_addr. Used solely to budget
+    // pre-authentication remote-key resolution: at that point no identity has
+    // been verified, so the IP is the only thing about the sender that is not
+    // simply asserted in a header. Empty in tests and on paths that do not
+    // resolve keys, which the budget treats as a single shared bucket.
+    std::string remote_addr{};
 };
 
 struct FederationPdu final
@@ -139,6 +142,21 @@ struct FederationRateLimitBucket final
 // signals that resolution failed and the request must be rejected.
 using RemoteKeyResolver =
     std::function<std::optional<FederationRemoteRuntime>(std::string_view server_name, std::string_view key_id)>;
+
+// Answers "is a still-valid key for this (server_name, key_id) already in the
+// persistent key cache?" without touching the network. Used to decide whether a
+// resolution needs to be charged to the pre-authentication network budget: a
+// resolver call the key cache will serve does no outbound work and must not
+// consume a budget that exists to bound outbound work.
+//
+// This matters because a FederationRemoteRuntime carries a single signing key, so
+// a peer that legitimately signs with a second published key takes the key-id
+// mismatch path on every such request. Without this probe those requests would
+// each be charged, and a peer alternating two valid keys would be rejected with
+// 429 once the per-source rate was reached despite every request being genuine.
+//
+// Optional: when unset, every resolution is charged, which is the safe default.
+using RemoteKeyCacheProbe = std::function<bool(std::string_view server_name, std::string_view key_id)>;
 
 // Result of a federation `query/directory` lookup. found=false means the alias
 // is unknown to this server and the handler responds 404 M_NOT_FOUND.
@@ -210,6 +228,29 @@ using RoomVersionResolver = std::function<std::string(std::string_view room_id)>
 using RoomServerAclProvider = std::function<bool(std::string_view room_id, std::string_view server_name)>;
 using FederationRuntimeMutex = std::shared_ptr<std::recursive_mutex>; // SHARED_PTR: reviewed
 
+// Per-source-IP window for pre-authentication remote-key resolution.
+struct KeyResolutionBucket final
+{
+    std::string source{};
+    std::uint32_t resolutions_seen{0U};
+    std::chrono::steady_clock::time_point window_start{};
+};
+
+// Negative cache entry: an origin whose key resolution failed, remembered until
+// `expires_at` so repeats of the same name are cheap.
+struct KeyResolutionFailure final
+{
+    std::string origin{};
+    // Scoped to the requested key ID as well as the origin. Keying on the origin
+    // alone let an unauthenticated sender poison a legitimate third party: name a
+    // real server with a bogus key_id, the resolver fetches that server's real
+    // keys successfully but returns nothing for the bogus id, and an
+    // origin-scoped failure entry then rejects that server's genuine requests
+    // for the whole TTL. A bogus key ID must only ever poison itself.
+    std::string key_id{};
+    std::chrono::steady_clock::time_point expires_at{};
+};
+
 struct FederationRuntimeState final
 {
     RuntimeFederationConfig config{};
@@ -233,6 +274,20 @@ struct FederationRuntimeState final
     std::deque<observability::AuditLogEvent> audit_events{};
     std::size_t unsafe_audit_events{0U};
     RemoteKeyResolver remote_key_resolver{};
+    RemoteKeyCacheProbe remote_key_cache_probe{};
+    // Pre-authentication key-resolution budget state. Unlike rate_limit_buckets
+    // above -- which is keyed on an already-verified origin and so bounded by
+    // the number of real federating peers -- these are reachable before any
+    // identity is established, so both containers are explicitly capped with
+    // FIFO eviction (kMaxKeyResolutionBuckets / kMaxKeyResolutionFailures in
+    // inbound_request.cpp). An unbounded pre-auth map is the very DoS this
+    // budget exists to prevent.
+    std::deque<KeyResolutionBucket> key_resolution_buckets{};
+    std::deque<KeyResolutionFailure> key_resolution_failures{};
+    // Resolutions currently in flight process-wide. Guarded by `mutex`; the
+    // resolver call itself runs unlocked, so this is incremented before the
+    // call and decremented after by a scope guard.
+    std::uint32_t key_resolutions_in_flight{0U};
     // Optional ingestion hooks. When set, accepted PDUs are appended to the
     // event graph via pdu_sink and accepted EDUs are routed to runtime
     // surfaces (typing tracker, receipt store, etc.) via edu_sink. Both

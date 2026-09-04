@@ -76,6 +76,13 @@ struct AdminAuthResult
     -> std::optional<auth::AccountState>;
 [[nodiscard]] auto logout_local_user(HomeserverRuntime& runtime, std::string_view access_token) -> OperationResult;
 [[nodiscard]] auto logout_all_local_user(HomeserverRuntime& runtime, std::string_view access_token) -> OperationResult;
+
+// Permanently deactivates the account owning `access_token`: marks the user
+// deactivated, revokes every access and refresh token including the caller's
+// own, and replaces the password hash with an unmatchable value. Irreversible --
+// there is deliberately no reactivate counterpart. The caller must have
+// completed UIA before calling this.
+[[nodiscard]] auto deactivate_local_user(HomeserverRuntime& runtime, std::string_view access_token) -> OperationResult;
 [[nodiscard]] auto delete_local_device(HomeserverRuntime& runtime, std::string_view user_id, std::string_view device_id)
     -> OperationResult;
 [[nodiscard]] auto change_local_user_password(HomeserverRuntime& runtime, std::string_view access_token,

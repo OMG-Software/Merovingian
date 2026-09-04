@@ -34,6 +34,11 @@ struct PersistentUser final
     bool locked{false};
     bool suspended{false};
     bool admin{false};
+    // Permanent, irreversible account closure (spec: POST /account/deactivate).
+    // Distinct from `locked`/`suspended`, which are reversible admin actions: a
+    // deactivated account can never log in again and its localpart is never
+    // reissued.
+    bool deactivated{false};
 };
 
 struct PersistentDevice final
@@ -763,6 +768,11 @@ struct RoomReloadSnapshot final
 // change and mirrors it into the in-memory store. Returns false if the user is
 // not found. Does NOT revoke access tokens — per spec v1.19, locking and
 // suspending keep existing sessions intact and enforce via request-path gates.
+// Marks a server-local user permanently deactivated. Irreversible: there is no
+// corresponding "reactivate" call, by design (spec: "removing all ability for
+// the user to login again").
+[[nodiscard]] auto set_user_deactivated(PersistentStore& store, std::string_view user_id) -> bool;
+
 [[nodiscard]] auto set_user_account_state(PersistentStore& store, std::string_view user_id, bool suspended, bool locked)
     -> bool;
 [[nodiscard]] auto store_device(PersistentStore& store, PersistentDevice device) -> bool;

@@ -360,6 +360,30 @@ remaining work before PostgreSQL-backed production operation.
   triggering event), not a background/async dispatch like push notification
   delivery — see `dispatch_appservice_delivery`'s doc comment for why, and
   `docs/todos/capability-gaps.md` for the documented follow-up.
+- `users.deactivated` column (schema version `14`, migration
+  `migrations/014_user_deactivation.sql`) is a `TEXT NOT NULL DEFAULT
+  'false'` column added to the existing `users` table (no new table), set by
+  `POST /_matrix/client/v3/account/deactivate` (see `docs/auth-identity.md`
+  "Account deactivation"). It is deliberately distinct from the existing
+  reversible `locked`/`suspended` columns: a deactivated account can never
+  log in again, and its row is retained (not deleted) so the localpart is
+  never reissued to a new registration. The runtime migration path uses the
+  compiled catalog in `src/database/migration.cpp` (upgrade step version
+  `14` "user_deactivation", an `ALTER TABLE users ADD COLUMN` statement;
+  downgrade step version `13` "drop_user_deactivation"); `schema::current_
+  schema_version()` returns `14U`. `set_user_deactivated`
+  ([persistent_store.hpp](../include/merovingian/database/persistent_store.hpp))
+  updates the column and mirrors the change into the in-memory
+  `PersistentUser`, following the same pattern as `set_user_account_state`
+  above; implemented for both SQLite and PostgreSQL, hydrated on backend
+  open. Adding a sixth column to `users` also exposed a latent risk in
+  `store_user`'s insert statement: it previously used a bare `INSERT INTO
+  users VALUES (...)`, which binds parameters by position and would have
+  silently mismatched had the column order or count changed elsewhere.
+  `store_user` now names every column explicitly (`INSERT INTO users
+  (user_id, password_hash, locked, suspended, admin, deactivated) VALUES
+  (...)`), so a future schema change to `users` fails loudly (wrong
+  parameter count) rather than silently binding a value to the wrong column.
 - `/sync` calls `database::ensure_sync_stream_id_ahead_of()` when the client's
   `since` token is ahead of the server's counter. This recovers live deployments
   whose counter rolled back below a stored token (for example, when the watermark

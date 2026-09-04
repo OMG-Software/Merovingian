@@ -11,8 +11,7 @@ NNN_snake_case_description.sql
 
 `NNN` is a zero-padded three-digit integer: `001`, `002`, ..., `010`, `011`, ...
 The next migration number is always `max(existing) + 1`.
-Current highest: `012`.
-Current highest: `013`.
+Current highest: `014`.
 
 Schema version `2` introduced the `sync_stream_watermark` table via
 `002_sync_stream_watermark.sql` to support live pre-production deployments that
@@ -79,6 +78,15 @@ appservice delivery dispatch for how retries reuse the same `pending_txn_id`
 and event range rather than growing it, per the spec's "Homeservers MUST NOT
 alter ... events they were going to send within that transaction ID on
 retries."
+
+  Schema version `14` (`014_user_deactivation.sql`) adds a `deactivated` TEXT
+column to `users`, defaulting to `'false'`, so `POST
+/_matrix/client/v3/account/deactivate` can close an account permanently. It is
+deliberately distinct from the existing reversible `locked`/`suspended` admin
+flags: a deactivated account can never log in again, and its row is retained so
+the localpart is never reissued. Adding the column also required naming the
+columns explicitly in `insert_user` — the previous bare `INSERT INTO users
+VALUES (...)` would have broken silently on the sixth column.
 
 ## File format
 

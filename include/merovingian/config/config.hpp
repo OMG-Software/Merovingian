@@ -295,6 +295,34 @@ struct FederationSecurityConfig final
     // weighted transaction/PDU/EDU trio above and is exempt so a transaction
     // and its contents are never double-counted.
     http::RateLimitPolicy per_origin_request_rate{600U, 60U};
+    // Budgets for remote signing-key resolution, which necessarily happens
+    // BEFORE a request's X-Matrix signature can be checked -- verifying the
+    // signature requires the key. Without a budget, an unauthenticated sender
+    // can name any origin in an X-Matrix header and make this server perform
+    // .well-known + SRV + DNS discovery and an outbound GET
+    // /_matrix/key/v2/server against a host of their choosing: a DoS surface
+    // here and a reflection vector at the named third party. Unlike the
+    // per_origin_* budgets above, these are keyed on the source IP, because
+    // the origin is precisely the field the attacker controls and varies.
+    //
+    // `security.federation.default_policy=deny` with a populated
+    // `allowed_servers` list closes this independently -- the policy check runs
+    // before resolution -- so allow-list deployments are unaffected either way.
+    //
+    // key_resolution_per_ip_rate bounds how often one source IP may cause a
+    // resolution of an origin this server has no usable cached key for.
+    http::RateLimitPolicy key_resolution_per_ip_rate{10U, 60U};
+    // Cap on resolutions in flight across the whole process, so a sender
+    // spreading across many source IPs still cannot exhaust the outbound path.
+    // Over the cap the request is rejected rather than queued: queuing converts
+    // an overload into a slower overload while holding the resources anyway.
+    // Must be >= 1 (validated); 0 would deadlock every resolution.
+    std::uint32_t key_resolution_max_in_flight{8U};
+    // How long a failed resolution is remembered, so repeated requests naming
+    // the same unresolvable origin are cheap. Bounds the honest-misconfiguration
+    // case; a sender varying the origin defeats it by design, which is what the
+    // two budgets above are for. "0s" disables the negative cache.
+    std::string key_resolution_failure_ttl{"300s"};
     std::string remote_timeout{"60s"};
     // Separate, extendable budget for the make_join/send_join/make_leave/send_leave
     // membership dance. A large remote room's make_join can take longer than the

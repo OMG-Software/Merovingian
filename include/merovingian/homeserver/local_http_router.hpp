@@ -55,6 +55,20 @@ struct LocalHttpResponse final
     std::vector<std::pair<std::string, std::string>> headers{};
 };
 
+// Resolves the client address to attribute a request to, honouring
+// `server.trusted_proxies`: when the direct TCP peer is a configured trusted
+// proxy, the leftmost valid IP literal in X-Forwarded-For is used instead, so a
+// per-IP bucket isolates each downstream caller rather than collapsing everything
+// arriving through the proxy into one. Returns "unknown" when no peer address is
+// available (test paths that skip the transport layer), never an empty string, so
+// callers cannot accidentally treat "no address" as "no limit".
+//
+// Shared by the client-server rate limiter and the federation key-resolution
+// budget. Both need it for the same reason: behind the reverse-proxy deployment
+// the shipped example config describes, every caller's direct peer is 127.0.0.1.
+[[nodiscard]] auto effective_client_ip(LocalHttpRequest const& request, std::vector<std::string> const& trusted_proxies)
+    -> std::string;
+
 [[nodiscard]] auto handle_local_http_request(HomeserverRuntime& runtime, LocalHttpRequest const& request)
     -> LocalHttpResponse;
 [[nodiscard]] auto handle_federation_http_request(HomeserverRuntime& runtime, LocalHttpRequest const& request)

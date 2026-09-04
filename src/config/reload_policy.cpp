@@ -28,6 +28,15 @@ auto reload_policy_for_key(std::string_view key) noexcept -> ReloadPolicy
     // via SIGHUP would change the per-request OutboundRequest cap immediately
     // but leave the already-running worker's undersized frame budget in
     // place, silently dropping any response that grew into the gap.
+    // The key-resolution budgets live in RuntimeFederationConfig, which
+    // make_runtime_federation_config builds once at startup and SIGHUP does not
+    // rebuild. Reporting these as reloadable would tell an operator a tightened
+    // budget had taken effect while the old one stayed live.
+    if (starts_with(key, "security.federation.key_resolution_"))
+    {
+        return ReloadPolicy::restart_required;
+    }
+
     if (key == "security.federation.join_response_max_size")
     {
         return ReloadPolicy::restart_required;

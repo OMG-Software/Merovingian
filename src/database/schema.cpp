@@ -11,7 +11,7 @@ namespace merovingian::database
 namespace
 {
 
-    constexpr auto schema_version = std::uint32_t{13U};
+    constexpr auto schema_version = std::uint32_t{14U};
 
     // Tables introduced after the v1 initial schema are listed here so the
     // bootstrap path can create the original v1 shape and then apply numbered
@@ -77,6 +77,13 @@ namespace
     constexpr auto core_tables = std::array{
         SchemaTableDefinition{"schema_migrations",
                               "version TEXT PRIMARY KEY, name TEXT NOT NULL, direction TEXT NOT NULL"                                                                   },
+        // Deliberately the v1-era column shape: `deactivated` is added by
+        // migration 014, not listed here. core_tables feeds
+        // initial_schema_migration(), so a column that a later ALTER migration
+        // adds must NOT also appear here — the v1 CREATE would make it, and the
+        // ALTER would then fail with a duplicate column and abort the whole
+        // chain. `account_threepids` omits its v7 client_secret/sid columns for
+        // exactly this reason.
         SchemaTableDefinition{"users",                   "user_id TEXT PRIMARY KEY, password_hash TEXT NOT NULL, locked TEXT NOT NULL, "
                                        "suspended TEXT NOT NULL, admin TEXT NOT NULL"                                             },
         SchemaTableDefinition{"devices",                 "user_id TEXT NOT NULL, device_id TEXT NOT NULL, display_name TEXT NOT NULL, "

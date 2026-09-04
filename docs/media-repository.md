@@ -186,6 +186,38 @@ The worker requires the system `libpng` and `libjpeg-turbo` libraries. When they
 are not present at build time the worker is not built and every thumbnail request
 returns `404`.
 
+## Response security headers
+
+Client-facing download and thumbnail responses previously carried only
+`Content-Type` and the CORS headers. `apply_media_security_headers()`
+(`src/homeserver/client_server.cpp`) now also sets:
+
+- `Content-Security-Policy: sandbox; default-src 'none'; script-src 'none';
+  plugin-types application/pdf; style-src 'unsafe-inline'; object-src
+  'self';` — the spec's recommended sandboxing policy for the content
+  repository.
+- `Cross-Origin-Resource-Policy: cross-origin`.
+- `Content-Disposition: inline` for the content types in the spec's
+  "Serving inline content" allowlist (`text/css`, `text/plain`, `text/csv`,
+  `application/json`, `application/ld+json`, `image/jpeg`, `image/gif`,
+  `image/png`, `image/apng`, `image/webp`, `image/avif`, `video/mp4`,
+  `video/webm`, `video/ogg`, `video/quicktime`, `audio/mp4`, `audio/webm`,
+  `audio/aac`, `audio/mpeg`, `audio/ogg`, `audio/wave`, `audio/wav`,
+  `audio/x-wav`, `audio/x-pn-wav`, `audio/flac`, `audio/x-flac`), matched
+  against the media type only — a trailing `charset` or other parameter
+  does not defeat the match, and does not let an unlisted type slip through
+  by prefix. `Content-Disposition: attachment` is set for every other
+  content type, which is the mitigation the spec names against stored XSS
+  through uploaded files. `Content-Disposition` was previously carried only
+  on the federation multipart body, not on client-facing responses.
+
+**Remaining gap: no `filename` parameter is emitted.** This server does not
+persist the upload's original filename, and the spec permits omitting it
+("When the header is not supplied, or does not supply a filename, the local
+download response does not include a filename") — but it means a client
+cannot recover the original filename from a download response either. See
+`docs/todos/capability-gaps.md`.
+
 ## Status Codes
 
 The local HTTP router preserves the media repository status code instead of flattening failures:

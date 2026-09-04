@@ -1,3 +1,204 @@
+## 0.12.4
+
+Security audit of the 0.12.3 tree. Two of the findings below are privilege
+escalations reachable by an ordinary room moderator or a federating peer.
+
+- **Authorization rule 9 was implemented only for `content.users`.** Sub-rules
+  9.1-9.3 (type validation), 9.5 (the scalar keys `users_default`,
+  `events_default`, `state_default`, `ban`, `redact`, `kick`, `invite`) and
+  9.6/9.7 (the `events` and `notifications` maps) were absent, so the only bound
+  on a `m.room.power_levels` event was that its sender met the *old*
+  `state_default`. A moderator at power 50 could set `users_default: 100`, drop
+  their own `users` entry — permitted by 9.8's own-entry carve-out — and resolve
+  to power 100 along with every other member, taking the room. Setting `ban: 0`
+  or `kick: 0` handed those powers to everyone at less effort. All of rule 9 is
+  now enforced, bounded in both directions as the spec specifies.
+- **`content.events` no longer shadows the scalar power-level keys.**
+  `extract_power_level_key` fell back to looking a missing top-level key up
+  inside `content.events`, which maps *event types* to levels. Omitting
+  top-level `ban` and sending `events: {"ban": 0}` therefore set the effective
+  ban level to zero — a second, independent route to the same escalation, and
+  one that needed no rule-9 gap at all.
+- **`m.room.create` authorization rule 1 was entirely unimplemented.** None of
+  1.1 (no `prev_events`), 1.2 (the `room_id`/`sender` domain relationship, or
+  in v12 that no `room_id` is present), 1.3 (a recognised `content.room_version`)
+  or 1.4 (`content.creator` before v11; `content.additional_creators` in v12)
+  was checked. Under 1.2 in particular, any federating server could mint a room
+  whose ID claimed another homeserver's domain. The gap was held in place by a
+  conformance scenario asserting that room versions 1-5 have no domain check —
+  a premise the repository's own vendored `rooms/v1.md` contradicts, and whose
+  fixture put the room ID and sender in the same domain so it never exercised
+  the case either way. That scenario now asserts what it builds, and the
+  mismatching case has its own.
+- **Authorization rule 8 is enforced.** A state event whose `state_key` starts
+  with `@` must have that key match the sender. Without it any member holding
+  `state_default` could write state keyed to another user's MXID, which clients
+  routinely read as authored by that user.
+- **Local event authorization no longer fails open.** In `room_service.cpp` the
+  authorization call sat inside three nested guards with no else branch, so a
+  parse failure, an unrecognised room version, or a room whose `m.room.create`
+  was absent from local state all fell through to composing and returning the
+  event unauthorized. The denial for a missing create event already existed as
+  rule 2 inside `authorize_event_against_auth_events`; it was simply never
+  reached. Every path is now fail-closed. The federation ingest path and state
+  resolution always called the check unconditionally and were unaffected.
+- **Canonical JSON duplicate-key detection is O(n) instead of O(n²).** Both the
+  parser's per-key `std::ranges::any_of` scan and the serializer's nested
+  `object_has_duplicate_keys` loop were quadratic in an object's member count,
+  bounded only by the 1 MiB body cap — roughly 1.1×10¹⁰ string comparisons for a
+  body of ~150,000 unique keys, on unauthenticated endpoints such as `/login`
+  and `/register`. Both now use a hash set, and the parser enforces an explicit
+  `max_object_members` cap of 65536 as defence in depth.
+- **The master key is no longer read from disk twice per authenticated request.**
+  `lookup_token_hashes` derives both the v3 and v4 access-token HMAC keys, and
+  each derivation opened and read the operator's master key file — so every
+  authenticated request performed two blocking reads of the server's root secret
+  and two `sodium_mlock`/`munlock` cycles on a 4 KiB buffer. Under concurrency
+  that mlock churn could exhaust `RLIMIT_MEMLOCK`, at which point `SecretBuffer`
+  silently falls back to swappable memory for the key every other key is derived
+  from. Both keys are now derived once and cached, invalidated on the file's
+  (path, size, mtime) identity so replacing the key still takes effect without a
+  restart — the steady-state cost is one `stat` instead of two full reads.
+- **A failed `mlock` of the master key is now reported.** `SecretBuffer` already
+  recorded it and exposed `is_locked()`; nothing ever called it, so a server
+  holding its root secret in swappable memory said nothing at any log level. It
+  now warns once per process, naming the remedy. Deliberately not fatal: refusing
+  to start would turn a hardening shortfall into an outage.
+- **Media responses carry the spec's content-security headers.** Client-facing
+  download and thumbnail responses set only `Content-Type` and CORS headers —
+  `Content-Security-Policy` appeared nowhere in the tree, and
+  `Content-Disposition` only on the federation multipart body. All three of CSP,
+  `Cross-Origin-Resource-Policy: cross-origin` and `Content-Disposition` are now
+  set, with `inline` used only for the content types the spec's "Serving inline
+  content" allowlist permits and `attachment` for everything else. No `filename`
+  parameter is emitted yet — this server does not persist the upload filename,
+  which the spec permits and which is now tracked as a gap.
+- **`/login` is throttled per account, not only per source IP.** The rate
+  limiter's per-user tier keys on the authenticated user, which pre-login is
+  nobody, so guesses against one account spread across many source IPs
+  accumulated against nothing. Failures are now counted against the claimed
+  user ID — whether or not it exists, so the throttle cannot be used to probe
+  which accounts are real — with a lockout after five failures in fifteen
+  minutes, cleared by any successful login.
+- **`POST /_matrix/client/v3/account/deactivate` is implemented.** It previously
+  had no handler at all; the path appeared only as a literal in the
+  suspended-user allowlist, so a user whose credentials were compromised could
+  not close their own account — only an admin could apply a reversible
+  lock/suspend. The endpoint now performs `m.login.password` UIA, marks the
+  account permanently deactivated (schema version 14 adds a `deactivated` column
+  to `users`), revokes every access and refresh token including the caller's own,
+  and replaces the password hash with an unmatchable value. The users row is
+  retained so the localpart is never reissued. Every identity-server-bound 3PID
+  the account holds is unbound as part of deactivation, reusing the stored
+  `id_server`/`client_secret`/`sid` through the same trusted-base-URL SSRF gate
+  as `POST /account/3pid/unbind`; `id_server_unbind_result` is `success` only
+  when every identifier was unbound, `no-support` when any could not be. Unlike
+  the standalone unbind endpoint, a failure there does not fail the
+  deactivation — it is irreversible and leaves no owner to retry with.
+- **`membership_acceptor` and `invite_handler` take the runtime lock.** Both
+  mutated `store.rooms`/`state`/`events` and the stream-ordering counters with no
+  lock held, where their sibling `ingest_pdu_event` locks correctly. Not a live
+  race in any shippable configuration — the worker-relay path already held the
+  global mutex and is always constructed when federation is enabled — but a trap
+  for the first change that made the worker optional. They now take the global
+  recursive mutex only: acquiring a room stripe there would invert the
+  documented stripe-then-global order against `ingest_pdu_event`.
+- **The dead X-Matrix/TLS peer cross-check was removed.**
+  `SignedFederationRequest::tls_peer_server_name` was assigned nowhere in
+  production, only in four conformance tests, so its `!empty()` guard could never
+  fire while its comment and those passing tests asserted a defence-in-depth
+  control that did not exist at runtime. Inbound federation TLS is one-way — the
+  originating server presents no client certificate and SNI carries our own
+  hostname — so there is no legitimate peer name to compare. X-Matrix Ed25519
+  verification remains the actual, fail-closed gate and is untouched.
+- **Sliding-sync connection state is now bounded.**
+  `HomeserverRuntime::sliding_sync_connections` is keyed on a client-chosen
+  `conn_id` and was only ever erased on the `M_UNKNOWN_POS` path, so a client
+  varying `conn_id` grew it until the process was OOM-killed. `sliding_sync.hpp`
+  documented a one-hour idle eviction and `last_used` was written on every
+  request — but never read, and no sweep existed. Idle connections are now
+  evicted after that hour, and each user/device is capped at eight with
+  least-recently-used eviction.
+- **Review round (PR #488).** Codex review found nineteen issues on the branch
+  above; the ones that changed behaviour are recorded here rather than folded
+  silently into the entries they correct.
+  - The key-resolution negative cache was keyed on the origin alone, so naming a
+    real server with a bogus key ID poisoned that server's own traffic for the
+    full TTL — a denial of service against a third party, worse than the
+    amplification the budget was added to bound. Now scoped to (origin, key ID).
+  - The budget keyed on the direct TCP peer, which behind the reverse-proxy
+    deployment the example config describes is `127.0.0.1` for every remote
+    server. Trusted-proxy resolution is now a shared helper used by both the
+    client-server limiter and the federation budget.
+  - A resolution the key cache can serve does no network work and is no longer
+    charged, so a peer signing with a second published key is not throttled.
+  - Rule 9 validation was written against room version 11 and applied to all
+    versions. Versions 1-9 permit a string-encoded integer power level, so
+    integer-only validation rejected valid historical events; `notifications`
+    joined the rules only in v6; and rule 1.4 tests for the presence of
+    `creator`, not its type. All three are now version-aware, and string-encoded
+    levels are read as their value rather than silently defaulted.
+  - Deactivation discarded both token-revocation results and still returned 200.
+    A failed refresh-token update was directly exploitable, because
+    `refresh_local_session` checked only that the user existed. Revocation
+    failure now fails the request, and a deactivated user cannot refresh at all —
+    two independent gates rather than one.
+  - Deactivation ignored the request's `id_server`, so a client selecting a
+    trusted identity server got a result implying its choice was honoured.
+  - A throttled login returned 429 with `M_FORBIDDEN` and no delay; it is now
+    `M_LIMIT_EXCEEDED` carrying `retry_after_ms`.
+  - The sliding-sync connection key joined user, device and connection ID with
+    `/`, which a device ID may contain, so device `A/B`'s state was counted and
+    evicted under device `A`. Components are now length-prefixed. Pruning also
+    evicted a connection to make room that an existing-key poll did not need.
+  - The master-key cache identity was (path, size, mtime), which `cp -p` and
+    reproducible deployment tooling preserve; it now uses inode, device and
+    ctime, which an in-place overwrite cannot leave unchanged.
+  - `object_has_duplicate_keys` kept its `noexcept` after gaining an allocation,
+    turning `bad_alloc` into `std::terminate`.
+  - `KeyResolutionSlot` held its runtime by raw pointer.
+- **`scripts/reject-unsafe.sh` no longer flags comments as libsodium
+  violations.** Its comment-exclusion filter, `grep -vE '^[[:space:]]*//'`, ran
+  *after* `grep --line-number` had already prefixed every hit with `path:line:`,
+  so the anchor could never match and the filter excluded nothing. Any comment
+  that merely named a libsodium symbol failed the pre-commit gate. A gate that
+  reports violations where there are none is one people learn to bypass, which
+  is the more serious failure. The anchor now accounts for the prefix; the rule
+  itself is unchanged and still rejects real calls.
+- **Pre-authentication remote-key resolution is now budgeted.**
+  `resolve_inbound_remote` calls the remote-key resolver *before*
+  `check_inbound_request_signature` — necessarily, since verifying a signature
+  requires the key being resolved — so under the shipped
+  `security.federation.default_policy=allow` an unauthenticated sender could
+  name any origin in an `X-Matrix` header and make this server perform
+  `.well-known` + SRV + DNS discovery plus an outbound
+  `GET /_matrix/key/v2/server` against a host of their choosing. That is load
+  here and a reflection vector at whoever was named, and `CachedServerDiscovery`
+  gave no protection because it is keyed on the very field the attacker varies.
+  Bounded now by `key_resolution_per_ip_rate` (10/60s),
+  `key_resolution_max_in_flight` (8, rejecting rather than queuing over the cap)
+  and `key_resolution_failure_ttl` (300s negative cache) — keyed on source IP,
+  because the origin is attacker-chosen. Both pre-authentication containers are
+  capped with FIFO eviction; an unbounded pre-auth map would have been the same
+  class of bug this fixes. A throttled resolution logs `key_resolution.throttled`
+  at warning with the origin and the budget that denied it, because the failure
+  this risks introducing — a new federation partner intermittently failing to
+  join — is otherwise very hard to diagnose. `default_policy=deny` with a
+  populated `allowed_servers` list already closed this independently.
+- **`config/merovingian.conf.example` was missing 21 of the 109 configuration
+  keys the parser accepts**, plus two whole prefix families. All 109 keys were
+  documented in the user manual, so this was an example-file gap rather than an
+  undocumented-feature one — but an operator working from the example had no
+  sign that SSO, OIDC discovery, Application Services, the PostgreSQL role
+  separation added in 0.12.3, the per-origin federation budgets, or the
+  rate-limit tiers existed at all. Added with the reasoning for each, and the
+  file re-verified against the parser: `--dry-run` reports "Configuration
+  validation passed" with zero findings, and an unknown key is still rejected,
+  so the check is meaningful rather than vacuous.
+- **`migrations/AGENTS.md` carried two contradictory "Current highest" lines**
+  (`012` and `013`) — the 013 branch added a line instead of updating the
+  existing one. Now a single line, reading `014`.
+
 ## 0.12.3
 
 - **PostgreSQL privilege separation is applied rather than only provisioned.**

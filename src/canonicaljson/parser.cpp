@@ -13,6 +13,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <unordered_set>
 #include <utility>
 
 namespace merovingian::canonicaljson
@@ -229,6 +230,16 @@ namespace
             return {Value{std::move(array)}, ParseError::none};
         }
         case MEROVINGIAN_YYJSON_TYPE_OBJECT: {
+            // Defense-in-depth cap: reject pathologically wide objects before
+            // doing any conversion work at all. See parser.hpp for the
+            // max_object_members size rationale. yyjson_obj_size (wrapped by
+            // merovingian_yyjson_object_size) reports the raw syntactic
+            // member count, independent of the duplicate-key check below.
+            if (merovingian_yyjson_object_size(value) > max_object_members)
+            {
+                return {{}, ParseError::too_many_object_members};
+            }
+
             auto object = Object{};
             object.reserve(merovingian_yyjson_object_size(value));
 
@@ -236,10 +247,21 @@ namespace
             {
                 Object* object;
                 std::size_t depth;
+                // Tracks keys already inserted into *object so the duplicate
+                // check below is O(1) amortized per member instead of the
+                // previous O(n) std::ranges::any_of scan, which made the
+                // overall parse O(n^2) in the member count — exploitable as
+                // an unauthenticated CPU-exhaustion DoS (a ~1 MiB body of
+                // unique keys drove roughly 1e10 comparisons). Owns copies
+                // of the keys rather than aliasing *object's strings, so the
+                // duplicate check keeps running exactly where it did before
+                // (ahead of converting the member's value) without depending
+                // on *object's iterator/reference stability.
+                std::unordered_set<std::string> seen_keys;
                 ParseError error{ParseError::none};
             };
 
-            auto context = ObjectContext{&object, depth};
+            auto context = ObjectContext{&object, depth, {}};
             auto const completed = merovingian_yyjson_object_foreach(
                 value,
                 [](char const* key_data, std::size_t key_length, MerovingianYyjsonValue* member_value,
@@ -251,11 +273,7 @@ namespace
                         return 0;
                     }
                     auto key_value = std::string{key_data, key_length};
-                    auto const duplicate =
-                        std::ranges::any_of(*callback_context.object, [&key_value](ObjectMember const& member) {
-                            return member.key == key_value;
-                        });
-                    if (duplicate)
+                    if (!callback_context.seen_keys.insert(key_value).second)
                     {
                         callback_context.error = ParseError::duplicate_object_key;
                         return 0;
@@ -315,6 +333,8 @@ auto parse_error_name(ParseError error) noexcept -> char const*
         return "duplicate_object_key";
     case ParseError::nesting_too_deep:
         return "nesting_too_deep";
+    case ParseError::too_many_object_members:
+        return "too_many_object_members";
     }
 
     return "unexpected_token";

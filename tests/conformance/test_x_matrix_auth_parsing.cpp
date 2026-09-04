@@ -2,64 +2,11 @@
 
 #include "federation_signing_test_support.hpp"
 #include "merovingian/federation/inbound_request.hpp"
-#include "merovingian/federation/runtime_federation.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <string>
 #include <string_view>
-
-#include <sodium.h>
-
-namespace
-{
-
-[[nodiscard]] auto runtime_config() -> merovingian::federation::RuntimeFederationConfig
-{
-    auto config = merovingian::federation::RuntimeFederationConfig{};
-    config.enabled = true;
-    config.default_policy = "allow";
-    config.require_valid_tls = true;
-    config.verify_json_signatures = true;
-    config.max_transaction_bytes = 4096U;
-    config.remote_timeout_seconds = 30U;
-    return config;
-}
-
-[[nodiscard]] auto remote_for(std::string const& origin, std::string const& key_id, std::string const& key_seed)
-    -> merovingian::federation::FederationRemoteRuntime
-{
-    auto remote = merovingian::federation::FederationRemoteRuntime{};
-    remote.server_name = origin;
-    remote.signing_key = {origin, key_id, 2000U, merovingian::federation::test::keypair_from_seed(key_seed).public_key};
-    remote.discovery.server_name = origin;
-    remote.discovery.well_known_host = origin;
-    remote.discovery.resolved_host = origin;
-    remote.discovery.resolved_addresses = {"203.0.113.10"};
-    remote.discovery.tls_required = true;
-    remote.trust.reputation_score = 100U;
-    return remote;
-}
-
-[[nodiscard]] auto signed_request(std::string const& origin, std::string const& key_id, std::string const& key_seed,
-                                  std::string const& body) -> merovingian::federation::SignedFederationRequest
-{
-    auto request = merovingian::federation::SignedFederationRequest{};
-    request.method = "PUT";
-    request.target = "/_matrix/federation/v1/send/txn-tls-test";
-    request.origin = origin;
-    request.destination = "local.example.org";
-    request.key_id = key_id;
-    request.now_ts = 1000U;
-    request.canonical_json_verified = true;
-    request.body = body;
-    request.signature = merovingian::federation::make_federation_signature(
-        request.origin, request.destination, request.method, request.target, request.body,
-        merovingian::federation::test::keypair_from_seed(key_seed).secret_key);
-    return request;
-}
-
-} // namespace
 
 SCENARIO("X-Matrix Authorization header is parsed into credentials", "[federation][x-matrix][parsing]")
 {
@@ -184,16 +131,14 @@ SCENARIO("X-Matrix Authorization header is parsed into credentials", "[federatio
 // So a sender is entitled to leave token-shaped values unquoted, and the recipient
 // MUST accept them. Rejecting the header outright drops the request — for
 // PUT /_matrix/federation/v1/send/{txnId} that silently discards a peer's PDUs.
-SCENARIO("X-Matrix parameter values that are valid RFC 9110 tokens may be unquoted",
-         "[federation][x-matrix][parsing]")
+SCENARIO("X-Matrix parameter values that are valid RFC 9110 tokens may be unquoted", "[federation][x-matrix][parsing]")
 {
     GIVEN("a header with an unquoted origin and quoted non-token values")
     {
         // "matrix.example.org" is a valid token (ALPHA/DIGIT and '.'), so it needs no
         // quotes. "ed25519:key1" contains ':' and the signature contains '/' and '=',
         // none of which are tchars, so those stay quoted.
-        auto const header =
-            std::string_view{R"(X-Matrix origin=matrix.example.org,key="ed25519:key1",sig="ab/c+d==")"};
+        auto const header = std::string_view{R"(X-Matrix origin=matrix.example.org,key="ed25519:key1",sig="ab/c+d==")"};
 
         WHEN("the header is parsed")
         {
@@ -211,9 +156,8 @@ SCENARIO("X-Matrix parameter values that are valid RFC 9110 tokens may be unquot
 
     GIVEN("a header whose unquoted values are separated by spaces around the commas")
     {
-        auto const header =
-            std::string_view{R"(X-Matrix origin=matrix.example.org , destination=local.example.org , )"
-                             R"(key="ed25519:key1" , sig="abc==")"};
+        auto const header = std::string_view{R"(X-Matrix origin=matrix.example.org , destination=local.example.org , )"
+                                             R"(key="ed25519:key1" , sig="abc==")"};
 
         WHEN("the header is parsed")
         {
@@ -322,68 +266,6 @@ SCENARIO("X-Matrix quoted values handle backslash-escaped quotes per RFC 7230",
                 REQUIRE(result->origin == "matrix.example.org");
                 REQUIRE(result->key_id == "ed25519:a\"b");
                 REQUIRE(result->signature == "sigval==");
-            }
-        }
-    }
-}
-
-SCENARIO("TLS-bound origin validation gates inbound federation requests", "[federation][inbound][tls]")
-{
-    GIVEN("a runtime with a known remote and a valid signed request")
-    {
-        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
-        auto const origin = std::string{"matrix.example.org"};
-        auto const key_id = std::string{"ed25519:auto"};
-        auto const token = std::string{"tls-test-token"};
-        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
-        auto base_request = signed_request(origin, key_id, token, "{}");
-
-        WHEN("tls_peer_server_name matches origin exactly")
-        {
-            auto request = base_request;
-            request.tls_peer_server_name = origin;
-            auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
-
-            THEN("the request is accepted past the TLS gate")
-            {
-                REQUIRE(response.status != 403U);
-            }
-        }
-
-        WHEN("tls_peer_server_name is empty")
-        {
-            auto request = base_request;
-            request.tls_peer_server_name = "";
-            auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
-
-            THEN("no TLS validation is applied and the request proceeds normally")
-            {
-                REQUIRE(response.status != 403U);
-            }
-        }
-
-        WHEN("tls_peer_server_name differs from the X-Matrix origin")
-        {
-            auto request = base_request;
-            request.tls_peer_server_name = "attacker.example.com";
-            auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
-
-            THEN("the request is rejected with 403 and an origin-mismatch reason")
-            {
-                REQUIRE(response.status == 403U);
-                REQUIRE(response.body == "TLS peer name does not match request origin");
-            }
-        }
-
-        WHEN("tls_peer_server_name is a prefix of origin (not a full match)")
-        {
-            auto request = base_request;
-            request.tls_peer_server_name = "matrix.example";
-            auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
-
-            THEN("the request is rejected because a prefix is not a match")
-            {
-                REQUIRE(response.status == 403U);
             }
         }
     }

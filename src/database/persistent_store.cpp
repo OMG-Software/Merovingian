@@ -469,13 +469,19 @@ namespace
     {
         return false;
     }
-    if (!record_and_persist(store, record_statement("insert_user", "INSERT INTO users VALUES ($1, $2, $3, $4, $5)",
-                                                    {
-                                                        {user.user_id,                      false},
-                                                        {user.password_hash,                true },
-                                                        {user.locked ? "true" : "false",    false},
-                                                        {user.suspended ? "true" : "false", false},
-                                                        {user.admin ? "true" : "false",     false}
+    // Columns are named explicitly rather than relying on a bare VALUES list:
+    // positional inserts silently break the moment the table gains a column.
+    if (!record_and_persist(
+            store, record_statement("insert_user",
+                                    "INSERT INTO users (user_id, password_hash, locked, suspended, admin, "
+                                    "deactivated) VALUES ($1, $2, $3, $4, $5, $6)",
+                                    {
+                                        {user.user_id,                        false},
+                                        {user.password_hash,                  true },
+                                        {user.locked ? "true" : "false",      false},
+                                        {user.suspended ? "true" : "false",   false},
+                                        {user.admin ? "true" : "false",       false},
+                                        {user.deactivated ? "true" : "false", false}
     })))
     {
         return false;
@@ -502,6 +508,26 @@ namespace
         return false;
     }
     it->password_hash = std::string{new_hash};
+    return true;
+}
+
+[[nodiscard]] auto set_user_deactivated(PersistentStore& store, std::string_view user_id) -> bool
+{
+    auto const it = std::ranges::find_if(store.users, [user_id](PersistentUser const& u) {
+        return u.user_id == user_id;
+    });
+    if (it == store.users.end())
+    {
+        return false;
+    }
+    auto const statement = record_statement("update_user_deactivated",
+                                            "UPDATE users SET deactivated = 'true' WHERE user_id = $1",
+                                            {public_value(user_id)});
+    if (!record_and_persist(store, statement))
+    {
+        return false;
+    }
+    it->deactivated = true;
     return true;
 }
 

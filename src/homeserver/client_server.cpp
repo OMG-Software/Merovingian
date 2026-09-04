@@ -195,6 +195,75 @@ namespace
     // Origin` so intermediate caches do not collapse responses across
     // origins. For OPTIONS preflight also attaches the methods, headers,
     // and max-age so the browser can short-circuit the next request.
+    // Content types the spec permits to be served with Content-Disposition:
+    // inline, from §"Serving inline content". Anything outside this list is
+    // served as an attachment so a browser cannot render it as active content in
+    // the media origin's context.
+    // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#serving-inline-content
+    [[nodiscard]] auto content_type_is_inline_safe(std::string_view content_type) -> bool
+    {
+        // Compare only the media type: a charset or other parameter must not
+        // defeat the match, and must not let an unlisted type slip through by
+        // prefixing a listed one.
+        auto const semicolon = content_type.find(';');
+        auto media_type = semicolon == std::string_view::npos ? content_type : content_type.substr(0U, semicolon);
+        while (!media_type.empty() && media_type.back() == ' ')
+        {
+            media_type.remove_suffix(1U);
+        }
+
+        static constexpr auto inline_safe = std::array{
+            std::string_view{"text/css"},
+            std::string_view{"text/plain"},
+            std::string_view{"text/csv"},
+            std::string_view{"application/json"},
+            std::string_view{"application/ld+json"},
+            std::string_view{"image/jpeg"},
+            std::string_view{"image/gif"},
+            std::string_view{"image/png"},
+            std::string_view{"image/apng"},
+            std::string_view{"image/webp"},
+            std::string_view{"image/avif"},
+            std::string_view{"video/mp4"},
+            std::string_view{"video/webm"},
+            std::string_view{"video/ogg"},
+            std::string_view{"video/quicktime"},
+            std::string_view{"audio/mp4"},
+            std::string_view{"audio/webm"},
+            std::string_view{"audio/aac"},
+            std::string_view{"audio/mpeg"},
+            std::string_view{"audio/ogg"},
+            std::string_view{"audio/wave"},
+            std::string_view{"audio/wav"},
+            std::string_view{"audio/x-wav"},
+            std::string_view{"audio/x-pn-wav"},
+            std::string_view{"audio/flac"},
+            std::string_view{"audio/x-flac"},
+        };
+        return std::ranges::find(inline_safe, media_type) != inline_safe.end();
+    }
+
+    // #487: client-facing media responses previously carried only Content-Type
+    // and the CORS headers. The spec asks for a sandboxing Content-Security-Policy
+    // and Cross-Origin-Resource-Policy when serving content, and made
+    // Content-Disposition required in v1.12 — it is the mitigation named by
+    // §"Serving inline content" against stored XSS through uploaded files.
+    // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#content-repository
+    //
+    // No filename parameter is emitted: this server does not yet persist the
+    // upload filename, and the spec permits omitting it when unavailable ("When
+    // the header is not supplied, or does not supply a filename, the local
+    // download response does not include a filename").
+    auto apply_media_security_headers(LocalHttpResponse& response, std::string_view content_type) -> void
+    {
+        append_header_if_missing(response.headers, "Content-Security-Policy",
+                                 "sandbox; default-src 'none'; script-src 'none'; plugin-types application/pdf; "
+                                 "style-src 'unsafe-inline'; object-src 'self';");
+        append_header_if_missing(response.headers, "Cross-Origin-Resource-Policy", "cross-origin");
+        append_header_if_missing(response.headers, "Content-Disposition",
+                                 content_type_is_inline_safe(content_type) ? "inline" : "attachment");
+    }
+
     auto apply_cors_headers(LocalHttpRequest const& req, LocalHttpResponse& response, config::CorsConfig const& cors)
         -> void
     {
@@ -1871,6 +1940,98 @@ namespace
         return std::optional<std::string>{*match};
     }
 
+    // Unbinds one 3PID from its identity server as part of account deactivation,
+    // clearing the local binding either way. Returns true when the identifier is
+    // known to be unbound at the IS, false when it could not be (no identity
+    // server recorded, the operator has withdrawn trust for it, or the IS was
+    // unreachable or refused) -- which the caller aggregates into the response's
+    // id_server_unbind_result.
+    //
+    // Split out from the POST /account/3pid/unbind handler rather than shared
+    // with it because the two want opposite failure dispositions: that endpoint
+    // fails closed and keeps the local binding so the user can retry, whereas
+    // deactivation is irreversible and must not strand a binding on an account
+    // that no longer has an owner to retry with.
+    //
+    // `guard` is the dispatch-wide runtime lock; it is dropped around the
+    // outbound call and reacquired before touching the store again, per
+    // src/homeserver/AGENTS.md "The runtime lock and blocking calls".
+    [[nodiscard]] auto unbind_threepid_for_deactivation(ClientServerRuntime& rt,
+                                                        std::unique_lock<std::recursive_mutex>& guard,
+                                                        std::string_view user_id, std::string_view medium,
+                                                        std::string_view address,
+                                                        std::optional<std::string> const& requested_id_server) -> bool
+    {
+        auto const clear_local = [&rt, user_id, medium, address]() {
+            // Re-find rather than reuse a pointer: the store may have moved.
+            auto* refreshed = find_account_threepid(rt, user_id, medium, address);
+            if (refreshed != nullptr)
+            {
+                refreshed->bound = false;
+                refreshed->id_server.reset();
+                refreshed->client_secret.reset();
+                refreshed->sid.reset();
+                std::ignore = database::store_account_threepid(rt.homeserver.database.persistent_store, *refreshed);
+            }
+        };
+
+        auto* record = find_account_threepid(rt, user_id, medium, address);
+        if (record == nullptr)
+        {
+            return true;
+        }
+        if (!record->id_server.has_value() || !record->client_secret.has_value() || !record->sid.has_value())
+        {
+            // Never IS-delegated, or bound before the credentials were persisted
+            // (migration 007). Nothing to unbind remotely; clear it locally.
+            clear_local();
+            return false;
+        }
+        // Spec: "The identity server to unbind all of the user's 3PIDs from. If not
+        // provided, the homeserver MUST use the id_server that was originally used
+        // to bind each identifier." An explicitly requested server therefore wins
+        // over the one recorded on the binding; without this the field was accepted
+        // and silently ignored, and a client selecting a different trusted server
+        // got a result implying its choice had been honoured.
+        auto const unbind_target = requested_id_server.has_value() ? *requested_id_server : *record->id_server;
+        auto const trusted_base =
+            resolve_trusted_identity_base_url(rt.homeserver.config.server().identity_server, unbind_target);
+        if (!trusted_base.has_value())
+        {
+            // The operator has withdrawn trust for the IS holding this binding, so
+            // it is no longer reachable through the SSRF gate. Clear locally.
+            clear_local();
+            return false;
+        }
+        if (rt.homeserver.outbound_client == nullptr || rt.homeserver.cached_discovery == nullptr)
+        {
+            clear_local();
+            return false;
+        }
+
+        auto const base_url = std::string{*trusted_base};
+        auto const client_secret = std::string{*record->client_secret};
+        auto const sid = std::string{*record->sid};
+        auto const medium_copy = std::string{medium};
+        auto const address_copy = std::string{address};
+
+        guard.unlock();
+        auto id_client = merovingian::identity::IdentityServerClient{
+            *rt.homeserver.outbound_client, *rt.homeserver.cached_discovery,
+            rt.homeserver.config.server().identity_server, &rt.homeserver.test_forced_identity_resolution};
+        // Mode 2: empty bearer -- the IS authenticates the unbind via the
+        // client_secret + sid carried in the body.
+        auto const is_result =
+            id_client.unbind(base_url, std::string_view{}, client_secret, sid, medium_copy, address_copy);
+        guard.lock();
+
+        clear_local();
+        // 200 is a real unbind. 404/501 mean the IS does not hold or does not
+        // support this binding, which the spec models as "no-support" rather than
+        // an error. Anything else (transport failure, 401/403) is also no-support.
+        return is_result.ok && is_result.status == 200U;
+    }
+
     [[nodiscard]] auto parse_register_email_request_body(std::string_view body)
         -> std::optional<MatrixRegisterEmailRequestBody>
     {
@@ -2530,55 +2691,10 @@ namespace
         // client rather than collapsing all traffic through the
         // proxy into a single bucket.
         auto const& trusted_proxies = rt.homeserver.config.server().trusted_proxies;
-        auto effective_ip = [&]() -> std::string {
-            auto const& raw = req.remote_addr;
-            if (raw.empty())
-            {
-                return "unknown";
-            }
-            // Check if the peer is one of the operator-configured trusted proxies.
-            auto const is_trusted = std::ranges::find(trusted_proxies, raw) != trusted_proxies.end();
-            if (is_trusted)
-            {
-                // Honour the leftmost non-empty value in X-Forwarded-For.
-                // Case-insensitive header name comparison per RFC 7230.
-                for (auto const& h : req.headers)
-                {
-                    auto lower = h.name;
-                    std::ranges::transform(lower, lower.begin(), [](unsigned char c) {
-                        return static_cast<char>(std::tolower(c));
-                    });
-                    if (lower == "x-forwarded-for")
-                    {
-                        auto sv = std::string_view{h.value};
-                        auto const comma = sv.find(',');
-                        auto first = comma == std::string_view::npos ? sv : sv.substr(0U, comma);
-                        // Trim leading and trailing ASCII spaces.
-                        while (!first.empty() && first.front() == ' ')
-                        {
-                            first.remove_prefix(1U);
-                        }
-                        while (!first.empty() && first.back() == ' ')
-                        {
-                            first.remove_suffix(1U);
-                        }
-                        // A trusted proxy is only trusted to forward its own view of the
-                        // client address correctly — not to hand us an arbitrary string. A
-                        // malformed or non-IP-literal value (e.g. a proxy that appends
-                        // whatever a client sent, or fails to overwrite an inbound header)
-                        // must not be trusted as an effective IP: falling through to the
-                        // direct peer address below lets an attacker rotate through
-                        // spoofed X-Forwarded-For values to defeat per-IP rate limiting.
-                        if (!first.empty() && federation::ip_address_is_valid(first))
-                        {
-                            return std::string{first};
-                        }
-                        break;
-                    }
-                }
-            }
-            return raw;
-        }();
+        // Single implementation shared with the federation key-resolution budget
+        // (see local_http_router.hpp): both need trusted-proxy resolution for the
+        // same reason, and two copies would be free to drift apart.
+        auto const effective_ip = effective_client_ip(req, trusted_proxies);
         // Per-IP bucket keyed by (effective_ip, normalised_route) so
         // different endpoints get independent counters and route
         // templates (e.g. /rooms/{roomId}/send) coalesce into the
@@ -4093,6 +4209,82 @@ namespace
         return obj;
     }
 
+    // Idle window after which a sliding-sync connection is discarded. Matches the
+    // one hour documented on SlidingSyncConnectionState::last_used. A client that
+    // returns after this simply gets a fresh initial snapshot.
+    constexpr auto sliding_sync_idle_ttl = std::chrono::hours{1};
+
+    // Ceiling on concurrent connections for one user/device pair. MSC4186 clients
+    // in practice hold one or two (matrix-rust-sdk uses "room-list" and
+    // "encryption"); this leaves generous headroom while bounding what a client
+    // minting fresh conn_ids can retain.
+    constexpr auto sliding_sync_connections_per_device = std::size_t{8U};
+
+    // Evicts idle sliding-sync connection state, then bounds how many connections
+    // one user/device may hold, discarding least-recently-used first. See the
+    // call site in sliding_sync_json for why this is required (#487).
+    // Length-prefixes each component so the composed key is unambiguous. A plain
+    // "user/device/conn" join is not: a Matrix device ID may itself contain '/',
+    // so every connection belonging to device "A/B" also carries the prefix built
+    // for device "A", and pruning device A would count and evict A/B's state.
+    [[nodiscard]] auto sliding_sync_device_prefix(std::string_view user, std::string_view device_id) -> std::string
+    {
+        return std::to_string(user.size()) + ':' + std::string{user} + std::to_string(device_id.size()) + ':' +
+               std::string{device_id};
+    }
+
+    [[nodiscard]] auto sliding_sync_connection_key(std::string_view user, std::string_view device_id,
+                                                   std::string_view conn_id) -> std::string
+    {
+        return sliding_sync_device_prefix(user, device_id) + std::to_string(conn_id.size()) + ':' +
+               std::string{conn_id};
+    }
+
+    auto prune_sliding_sync_connections(HomeserverRuntime& runtime, std::string_view user, std::string_view device_id,
+                                        std::string const& conn_key) -> void
+    {
+        auto const now = std::chrono::steady_clock::now();
+        auto& connections = runtime.sliding_sync_connections;
+
+        for (auto it = connections.begin(); it != connections.end();)
+        {
+            // A default-constructed last_used is the clock's epoch and so reads as
+            // arbitrarily old; every entry is stamped immediately after insertion,
+            // so only genuinely idle connections match here.
+            it = (now - it->second.last_used) > sliding_sync_idle_ttl ? connections.erase(it) : std::next(it);
+        }
+
+        // A poll on a connection that already exists needs no room made for it.
+        // Reserving a slot unconditionally meant a device sitting at exactly the
+        // cap evicted its least-recently-used connection on every ordinary poll,
+        // cycling all of them out despite never exceeding the documented limit.
+        if (connections.contains(conn_key))
+        {
+            return;
+        }
+
+        auto const prefix = sliding_sync_device_prefix(user, device_id);
+        auto owned = std::vector<std::map<std::string, sync::SlidingSyncConnectionState>::iterator>{};
+        for (auto it = connections.lower_bound(prefix); it != connections.end() && it->first.starts_with(prefix); ++it)
+        {
+            owned.push_back(it);
+        }
+        if (owned.size() < sliding_sync_connections_per_device)
+        {
+            return;
+        }
+
+        // Keep the cap-1 most recently used, leaving room for the new connection.
+        std::ranges::sort(owned, [](auto const& left, auto const& right) {
+            return left->second.last_used < right->second.last_used;
+        });
+        auto const to_evict = owned.size() - (sliding_sync_connections_per_device - 1U);
+        for (auto index = std::size_t{0U}; index < to_evict; ++index)
+        {
+            connections.erase(owned[index]);
+        }
+    }
+
     [[nodiscard]] auto sliding_sync_json(ClientServerRuntime& rt, std::string_view user, std::string_view device_id,
                                          sync::SlidingSyncRequest const& ssreq,
                                          std::optional<sync::StreamToken> const& pos, std::uint64_t timeout_ms,
@@ -4106,8 +4298,8 @@ namespace
         // extensions below — never re-read per event.
         auto const ignored_senders = trust_safety::resolve_ignored_users(store, user);
 
-        auto const conn_key = std::string{user} + "/" + std::string{device_id} + "/" +
-                              (ssreq.conn_id.has_value() ? *ssreq.conn_id : "__default__");
+        auto const conn_key = sliding_sync_connection_key(
+            user, device_id, ssreq.conn_id.has_value() ? std::string_view{*ssreq.conn_id} : "__default__");
 
         // MSC4186: a pos this server did not issue cannot be served
         // incrementally — respond 400 M_UNKNOWN_POS so the client expires the
@@ -4146,6 +4338,18 @@ namespace
         // Per-connection state keyed user/device/conn_id.  Looked up early so
         // that the since values below can fall back to the connection's last
         // known position when the client omits pos (e.g. timeout=0 polls).
+        // #487: the connection key embeds a client-chosen conn_id, so without a
+        // bound an authenticated client that varies conn_id — or an SDK looping on
+        // fresh ones, which this project has already seen once — grows this map
+        // until the process is OOM-killed. Each entry holds rooms_seen,
+        // lazy_members_sent (a member-ID set per room) and possibly a full pending
+        // timeline snapshot. sliding_sync.hpp documented a one-hour idle eviction;
+        // nothing implemented it, and last_used was written and never read.
+        //
+        // Pruned before taking the reference below, so the reference cannot be to
+        // an entry this sweep then erases.
+        prune_sliding_sync_connections(rt.homeserver, std::string_view{user}, device_id, conn_key);
+
         auto& conn = rt.homeserver.sliding_sync_connections[conn_key];
         conn.last_used = std::chrono::steady_clock::now();
 
@@ -6327,7 +6531,8 @@ namespace
         auto end_token = std::string{};
         // Senders appearing in the chunk, for lazy-loaded membership state below.
         auto chunk_senders = std::unordered_set<std::string>{};
-        auto const append = [&chunk, &chunk_senders, &start_token, &end_token, &store, limit](database::PersistentEvent const& event) {
+        auto const append = [&chunk, &chunk_senders, &start_token, &end_token, &store,
+                             limit](database::PersistentEvent const& event) {
             if (chunk.size() >= limit)
             {
                 return false;
@@ -6371,12 +6576,11 @@ namespace
         }
         // The request's own RoomEventFilter drives this: it carries
         // lazy_load_members, and a default-constructed filter silently ignored it.
-        auto const state_filter =
-            sync::parse_room_event_filter_argument(messages_query_value(target, "filter"))
-                .value_or(sync::RoomFilter{})
-                .timeline;
-        auto state = build_chunk_relevant_state_events_array(rt.homeserver.database.persistent_store,
-                                                            state_filter, room_id, chunk_senders);
+        auto const state_filter = sync::parse_room_event_filter_argument(messages_query_value(target, "filter"))
+                                      .value_or(sync::RoomFilter{})
+                                      .timeline;
+        auto state = build_chunk_relevant_state_events_array(rt.homeserver.database.persistent_store, state_filter,
+                                                             room_id, chunk_senders);
         return json_serialize(json_obj({
             json_member("chunk", json_arr(std::move(chunk))),
             json_member("start", json_str(start_token)),
@@ -7306,6 +7510,7 @@ namespace
         auto const content_type = std::string_view{local_response.body}.substr(0U, pipe_pos);
         auto const bytes = std::string_view{local_response.body}.substr(pipe_pos + 1U);
         auto response = LocalHttpResponse{200U, std::string{bytes}, {{"Content-Type", std::string{content_type}}}};
+        apply_media_security_headers(response, content_type);
         apply_cors_headers(req, response, rt.cors);
         return DispatchResult{DispatchResult::Status::complete, std::move(response), {}};
     }
@@ -8640,7 +8845,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 // from this handler leaves the guard held.
                 auto const released = merovingian::homeserver::ScopedGuardRelease{guard};
                 return perform_sync_outbound_call(rt.homeserver, {}, tx, key_id, secret, "public_rooms.proxy",
-                                           rt.homeserver.federation.config.remote_timeout_seconds);
+                                                  rt.homeserver.federation.config.remote_timeout_seconds);
             }();
             if (!ok)
                 return dispatch_err(req, rt, 502U, "M_UNKNOWN", "Failed to fetch public rooms from remote server");
@@ -8717,7 +8922,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 // from this handler leaves the guard held.
                 auto const released = merovingian::homeserver::ScopedGuardRelease{guard};
                 return perform_sync_outbound_call(rt.homeserver, {}, tx, key_id, secret, "public_rooms.proxy",
-                                           rt.homeserver.federation.config.remote_timeout_seconds);
+                                                  rt.homeserver.federation.config.remote_timeout_seconds);
             }();
             if (!ok)
                 return dispatch_err(req, rt, 502U, "M_UNKNOWN", "Failed to fetch public rooms from remote server");
@@ -8749,7 +8954,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 // from this handler leaves the guard held.
                 auto const released = merovingian::homeserver::ScopedGuardRelease{guard};
                 return perform_sync_outbound_call(rt.homeserver, {}, tx, key_id, secret, "directory.room.proxy",
-                                           rt.homeserver.federation.config.remote_timeout_seconds);
+                                                  rt.homeserver.federation.config.remote_timeout_seconds);
             }();
             if (!ok)
             {
@@ -9382,6 +9587,14 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                    body->supports_refresh_tokens);
         if (!result.ok)
         {
+            // A throttled login is a rate-limit outcome, not a credential
+            // refusal: the spec's error for it is M_LIMIT_EXCEEDED carrying
+            // retry_after_ms. Collapsing it into M_FORBIDDEN told a compliant
+            // client the password was wrong and gave it nothing to back off on.
+            if (result.status == 429U)
+            {
+                return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", result.reason, result.retry_after_ms);
+            }
             return dispatch_err(req, rt, result.status, "M_FORBIDDEN", result.reason);
         }
         if (find_device(rt, body->user_id, body->device_id) == nullptr)
@@ -10025,6 +10238,94 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                 result.reason);
         }
         return dispatch_resp(req, rt, 200U, "{}");
+    }
+    // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#account-deactivation
+    //
+    // #487: this endpoint had no handler at all -- the path appeared only as a
+    // literal in the suspended-user allowlist. A user whose credentials were
+    // compromised had no way to close their own account; only an admin-initiated
+    // lock/suspend existed, and that is reversible rather than final.
+    if (req.method == "POST" && req.target == "/_matrix/client/v3/account/deactivate")
+    {
+        auto const object = parsed_json_object(req.body);
+        if (!object.has_value())
+        {
+            return dispatch_err(req, rt, 400U, "M_BAD_JSON", "deactivate body must be JSON");
+        }
+        // UIA, exactly as POST /account/password: prove account ownership with
+        // m.login.password. A missing, incomplete or wrong-credential auth block
+        // returns the 401 challenge, never 403.
+        auto const uia_challenge = json_obj({
+            json_member("flows",
+                        json_arr({json_obj({json_member("stages", json_arr({json_str("m.login.password")}))})})),
+            json_member("params", json_obj({})),
+            json_member("session", json_str("account_deactivate")),
+        });
+        auto const* auth = object_member_object(*object, "auth");
+        if (auth == nullptr)
+        {
+            return dispatch_resp(req, rt, 401U, json_serialize(uia_challenge));
+        }
+        auto const* auth_type = string_member(*auth, "type");
+        if (auth_type == nullptr || *auth_type != "m.login.password")
+        {
+            return dispatch_resp(req, rt, 401U, json_serialize(uia_challenge));
+        }
+        auto const* current_password = string_member(*auth, "password");
+        if (current_password == nullptr || current_password->empty())
+        {
+            return dispatch_resp(req, rt, 401U, json_serialize(uia_challenge));
+        }
+        if (!verify_local_user_password(rt.homeserver, req.access_token, *current_password))
+        {
+            return dispatch_resp(req, rt, 401U, json_serialize(uia_challenge));
+        }
+        auto const result = deactivate_local_user(rt.homeserver, req.access_token);
+        if (!result.ok)
+        {
+            return dispatch_err(req, rt, result.status, result.status == 401U ? "M_UNKNOWN_TOKEN" : "M_FORBIDDEN",
+                                result.reason);
+        }
+        // Unbind every identity-server-bound 3PID the account holds. Spec: the
+        // 200 response's id_server_unbind_result is "success" only when *all*
+        // identifiers were unbound -- and when there were none to unbind --
+        // and "no-support" when one or more could not be, whether because the
+        // identity server refused or because none could be determined.
+        //
+        // Deactivation itself has already happened and is not undone by an
+        // unbind failure: the spec models a partial unbind as a 200 carrying
+        // "no-support", not as a failed deactivation. This is the opposite
+        // disposition to POST /account/3pid/unbind, which fails closed so the
+        // user can retry -- there is no retry after deactivation.
+        //
+        // Addresses are copied out before the loop: the outbound call drops the
+        // runtime lock, so the store vector can move and any iterator, pointer
+        // or index taken across it would dangle.
+        // Optional per spec; when absent each binding's own recorded id_server is
+        // used instead.
+        auto const requested_id_server = [&object]() -> std::optional<std::string> {
+            auto const* value = string_member(*object, "id_server");
+            return value == nullptr || value->empty() ? std::nullopt : std::optional<std::string>{*value};
+        }();
+        auto pending_unbinds = std::vector<std::pair<std::string, std::string>>{};
+        for (auto const& record : rt.homeserver.database.persistent_store.account_threepids)
+        {
+            if (record.user_id == result.value && record.bound)
+            {
+                pending_unbinds.emplace_back(record.medium, record.address);
+            }
+        }
+        auto unbind_result = std::string_view{"success"};
+        for (auto const& [medium, address] : pending_unbinds)
+        {
+            if (!unbind_threepid_for_deactivation(rt, guard, result.value, medium, address, requested_id_server))
+            {
+                unbind_result = "no-support";
+            }
+        }
+        return dispatch_resp(
+            req, rt, 200U,
+            json_serialize(json_obj({json_member("id_server_unbind_result", json_str(unbind_result))})));
     }
     if (req.method == "GET" && req.target == "/_matrix/client/v3/account/3pid")
     {
@@ -13033,8 +13334,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     federation::make_outbound_transaction(std::string{alias_server}, "GET", target, our_server, {});
                 auto const [ok, body] = [&] {
                     auto const released = merovingian::homeserver::ScopedGuardRelease{guard};
-                    return perform_sync_outbound_call(rt.homeserver, {}, tx, key_id, secret, "room.join.alias_lookup_failed",
-                                                   rt.homeserver.federation.config.remote_timeout_seconds);
+                    return perform_sync_outbound_call(rt.homeserver, {}, tx, key_id, secret,
+                                                      "room.join.alias_lookup_failed",
+                                                      rt.homeserver.federation.config.remote_timeout_seconds);
                 }();
                 if (!ok)
                 {

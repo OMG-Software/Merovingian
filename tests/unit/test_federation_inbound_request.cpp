@@ -21,9 +21,11 @@
 #include <chrono>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -2110,6 +2112,419 @@ SCENARIO("Inbound federation media download serves local media as multipart/mixe
             {
                 REQUIRE(response.status == 404U);
                 REQUIRE(response.body.find("M_NOT_FOUND") != std::string::npos);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Pre-authentication remote-key resolution budgets (#487)
+//
+// resolve_inbound_remote calls remote_key_resolver BEFORE
+// check_inbound_request_signature, because verifying a signature requires the
+// key the resolver fetches. The ordering is inherent and cannot be reversed, so
+// the resolution path is reachable by an unauthenticated sender who simply
+// names any origin in an X-Matrix header — making this server perform
+// .well-known + SRV + DNS discovery and an outbound GET /_matrix/key/v2/server
+// against a host of their choosing. These scenarios pin the three budgets that
+// bound it: a per-source-IP rate, a process-wide in-flight cap, and a negative
+// cache for failures.
+//
+// The resolver is a std::function, so every scenario below counts invocations
+// with no network involved.
+// ---------------------------------------------------------------------------
+
+namespace
+{
+
+// A request that will always miss the remote cache, from a chosen source IP and
+// origin. The signature is deliberately never valid: these scenarios assert on
+// what happens BEFORE verification, and a valid one would prove nothing about
+// the pre-auth path.
+[[nodiscard]] auto key_resolution_request(std::string const& origin, std::string const& source_ip)
+    -> merovingian::federation::SignedFederationRequest
+{
+    auto request = merovingian::federation::SignedFederationRequest{};
+    request.method = "GET";
+    request.target = "/_matrix/federation/v1/query/directory";
+    request.origin = origin;
+    request.destination = "local.example.org";
+    request.key_id = "ed25519:probe";
+    request.now_ts = 1000U;
+    request.canonical_json_verified = true;
+    request.signature = "AAAA";
+    request.remote_addr = source_ip;
+    return request;
+}
+
+} // namespace
+
+SCENARIO("Remote-key resolution is budgeted per source IP before authentication",
+         "[federation][inbound][key-resolution][security]")
+{
+    GIVEN("a runtime allowing three key resolutions per source IP per minute")
+    {
+        auto config = runtime_config();
+        config.key_resolution_per_ip_rate = {3U, 60U};
+        config.key_resolution_max_in_flight = 8U;
+        // Negative caching off, so this scenario isolates the per-IP rate: with
+        // it on, the failing resolutions would be refused by the cache instead
+        // and the rate limit would never be the thing under test.
+        config.key_resolution_failure_ttl_seconds = 0U;
+        auto runtime = merovingian::federation::make_federation_runtime_state(config);
+
+        auto resolver_calls = 0;
+        runtime.remote_key_resolver =
+            [&resolver_calls](std::string_view,
+                              std::string_view) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+            ++resolver_calls;
+            return std::nullopt;
+        };
+
+        WHEN("one source names six different unknown origins")
+        {
+            for (auto index = 0; index < 6; ++index)
+            {
+                auto const request =
+                    key_resolution_request("evil" + std::to_string(index) + ".example", "198.51.100.7");
+                std::ignore = merovingian::federation::handle_inbound_federation_request(runtime, request);
+            }
+
+            THEN("only the budgeted number of resolutions reach the resolver")
+            {
+                // Varying the origin defeats any origin-keyed cache, which is
+                // exactly why the budget is keyed on the source instead.
+                REQUIRE(resolver_calls == 3);
+            }
+        }
+    }
+}
+
+SCENARIO("A throttled key resolution is refused rather than served unverified",
+         "[federation][inbound][key-resolution][security]")
+{
+    GIVEN("a runtime that allows a single key resolution per source")
+    {
+        auto config = runtime_config();
+        config.key_resolution_per_ip_rate = {1U, 60U};
+        config.key_resolution_failure_ttl_seconds = 0U;
+        auto runtime = merovingian::federation::make_federation_runtime_state(config);
+        runtime.remote_key_resolver =
+            [](std::string_view,
+               std::string_view) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+            return std::nullopt;
+        };
+
+        WHEN("the budget is exhausted and another request arrives")
+        {
+            std::ignore = merovingian::federation::handle_inbound_federation_request(
+                runtime, key_resolution_request("first.example", "198.51.100.8"));
+            auto const throttled = merovingian::federation::handle_inbound_federation_request(
+                runtime, key_resolution_request("second.example", "198.51.100.8"));
+
+            THEN("the request is rejected, and never accepted on an unresolved key")
+            {
+                REQUIRE(throttled.status != 200U);
+            }
+        }
+    }
+}
+
+SCENARIO("Each source IP gets its own key-resolution budget",
+         "[federation][inbound][key-resolution][conformance]")
+{
+    GIVEN("a runtime allowing one key resolution per source per minute")
+    {
+        auto config = runtime_config();
+        config.key_resolution_per_ip_rate = {1U, 60U};
+        config.key_resolution_failure_ttl_seconds = 0U;
+        auto runtime = merovingian::federation::make_federation_runtime_state(config);
+
+        auto resolver_calls = 0;
+        runtime.remote_key_resolver =
+            [&resolver_calls](std::string_view,
+                              std::string_view) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+            ++resolver_calls;
+            return std::nullopt;
+        };
+
+        WHEN("three distinct sources each make one request")
+        {
+            for (auto const* source : {"198.51.100.1", "198.51.100.2", "198.51.100.3"})
+            {
+                std::ignore = merovingian::federation::handle_inbound_federation_request(
+                    runtime, key_resolution_request("peer.example", std::string{source}));
+            }
+
+            THEN("one source exhausting its budget does not deny the others")
+            {
+                REQUIRE(resolver_calls == 3);
+            }
+        }
+    }
+}
+
+SCENARIO("A failed key resolution is negatively cached", "[federation][inbound][key-resolution][conformance]")
+{
+    GIVEN("a runtime with negative caching enabled and a generous per-source rate")
+    {
+        auto config = runtime_config();
+        config.key_resolution_per_ip_rate = {100U, 60U};
+        config.key_resolution_failure_ttl_seconds = 300U;
+        auto runtime = merovingian::federation::make_federation_runtime_state(config);
+
+        auto resolver_calls = 0;
+        runtime.remote_key_resolver =
+            [&resolver_calls](std::string_view,
+                              std::string_view) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+            ++resolver_calls;
+            return std::nullopt;
+        };
+
+        WHEN("the same unresolvable origin is named five times")
+        {
+            for (auto index = 0; index < 5; ++index)
+            {
+                std::ignore = merovingian::federation::handle_inbound_federation_request(
+                    runtime, key_resolution_request("broken.example", "198.51.100.9"));
+            }
+
+            THEN("only the first attempt reaches the resolver")
+            {
+                REQUIRE(resolver_calls == 1);
+            }
+        }
+    }
+}
+
+SCENARIO("A resolvable peer is not blocked by the key-resolution budget",
+         "[federation][inbound][key-resolution][conformance]")
+{
+    GIVEN("a runtime whose resolver knows the peer, and a budget of one resolution")
+    {
+        auto config = runtime_config();
+        // One resolution is all a legitimate peer should need: the resolved
+        // record is upserted into the runtime, so subsequent requests from that
+        // peer never reach the resolver again.
+        config.key_resolution_per_ip_rate = {1U, 60U};
+        config.key_resolution_failure_ttl_seconds = 300U;
+        auto runtime = merovingian::federation::make_federation_runtime_state(config);
+
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const token = std::string{"verify-token"};
+        auto resolver_calls = 0;
+        runtime.remote_key_resolver =
+            [origin, key_id, token, &resolver_calls](
+                std::string_view server_name,
+                std::string_view request_key_id) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+            ++resolver_calls;
+            if (server_name != origin || request_key_id != key_id)
+            {
+                return std::nullopt;
+            }
+            return remote_for(origin, key_id, token);
+        };
+
+        WHEN("the peer sends three properly signed transactions")
+        {
+            auto accepted = 0;
+            for (auto index = 0; index < 3; ++index)
+            {
+                auto const json_pdu = signed_json_pdu(origin, key_id, token);
+                auto request = signed_request(origin, key_id, token, transaction_body(origin, json_pdu));
+                request.target = "/_matrix/federation/v1/send/txn" + std::to_string(index);
+                request.signature = merovingian::federation::make_federation_signature(
+                    request.origin, request.destination, request.method, request.target, request.body,
+                    merovingian::federation::test::keypair_from_seed(token).secret_key);
+                request.remote_addr = "203.0.113.10";
+                auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
+                if (response.status == 200U)
+                {
+                    ++accepted;
+                }
+            }
+
+            THEN("all three are accepted from a single resolution")
+            {
+                REQUIRE(resolver_calls == 1);
+                REQUIRE(accepted == 3);
+            }
+        }
+    }
+}
+
+// PR #488 review: keying the negative cache on the origin alone let an
+// unauthenticated sender deny service to a legitimate third party. Name a real
+// server with a bogus key ID; the resolver fetches that server's real keys
+// successfully but returns nothing for the bogus ID, and an origin-scoped
+// failure entry then rejected that server's genuine requests for the whole TTL.
+SCENARIO("A bogus key ID does not poison other key IDs for the same origin",
+         "[federation][inbound][key-resolution][security]")
+{
+    GIVEN("a runtime whose resolver knows one key ID for a peer and nothing for any other")
+    {
+        auto config = runtime_config();
+        config.key_resolution_per_ip_rate = {100U, 60U};
+        config.key_resolution_failure_ttl_seconds = 300U;
+        auto runtime = merovingian::federation::make_federation_runtime_state(config);
+
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const token = std::string{"verify-token"};
+        runtime.remote_key_resolver =
+            [origin, key_id, token](
+                std::string_view server_name,
+                std::string_view request_key_id) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+            if (server_name != origin || request_key_id != key_id)
+            {
+                return std::nullopt;
+            }
+            return remote_for(origin, key_id, token);
+        };
+
+        WHEN("an attacker first probes that origin with a bogus key ID")
+        {
+            auto probe = key_resolution_request(origin, "198.51.100.66");
+            probe.key_id = "ed25519:bogus";
+            std::ignore = merovingian::federation::handle_inbound_federation_request(runtime, probe);
+
+            THEN("the peer's own properly signed request is still accepted")
+            {
+                auto const json_pdu = signed_json_pdu(origin, key_id, token);
+                auto request = signed_request(origin, key_id, token, transaction_body(origin, json_pdu));
+                request.remote_addr = "203.0.113.10";
+                auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
+                REQUIRE(response.status == 200U);
+            }
+        }
+    }
+}
+
+// The negative cache must still do its job for the exact pair that failed.
+SCENARIO("A repeated bogus key ID is refused from the negative cache",
+         "[federation][inbound][key-resolution][conformance]")
+{
+    GIVEN("a runtime with negative caching enabled and a resolver that never succeeds")
+    {
+        auto config = runtime_config();
+        config.key_resolution_per_ip_rate = {100U, 60U};
+        config.key_resolution_failure_ttl_seconds = 300U;
+        auto runtime = merovingian::federation::make_federation_runtime_state(config);
+
+        auto resolver_calls = 0;
+        runtime.remote_key_resolver =
+            [&resolver_calls](std::string_view,
+                              std::string_view) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+            ++resolver_calls;
+            return std::nullopt;
+        };
+
+        WHEN("the same origin and key ID are named four times")
+        {
+            for (auto index = 0; index < 4; ++index)
+            {
+                auto request = key_resolution_request("broken.example", "198.51.100.67");
+                request.key_id = "ed25519:same";
+                std::ignore = merovingian::federation::handle_inbound_federation_request(runtime, request);
+            }
+
+            THEN("only the first reaches the resolver")
+            {
+                REQUIRE(resolver_calls == 1);
+            }
+        }
+    }
+}
+
+// An origin that cannot be a Matrix server name is refused before the resolver
+// and before anything is stored, so oversized values cannot be used to retain
+// far more memory than the failure-cache entry count suggests.
+SCENARIO("A malformed origin is rejected without reaching the resolver",
+         "[federation][inbound][key-resolution][security]")
+{
+    GIVEN("a runtime with a resolver that would accept anything")
+    {
+        auto config = runtime_config();
+        config.key_resolution_per_ip_rate = {100U, 60U};
+        auto runtime = merovingian::federation::make_federation_runtime_state(config);
+
+        auto resolver_calls = 0;
+        runtime.remote_key_resolver =
+            [&resolver_calls](std::string_view,
+                              std::string_view) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+            ++resolver_calls;
+            return std::nullopt;
+        };
+
+        WHEN("origins that are not valid server names are presented")
+        {
+            // No dot; and longer than the 255-byte server-name limit.
+            std::ignore = merovingian::federation::handle_inbound_federation_request(
+                runtime, key_resolution_request("nodothere", "198.51.100.68"));
+            std::ignore = merovingian::federation::handle_inbound_federation_request(
+                runtime, key_resolution_request(std::string(300U, 'a') + ".example", "198.51.100.68"));
+
+            THEN("neither reaches the resolver")
+            {
+                REQUIRE(resolver_calls == 0);
+            }
+        }
+    }
+}
+
+// A resolution the key cache can serve does no outbound work, so it must not be
+// charged to a budget that exists to bound outbound work. Without this, a peer
+// signing with a second published key -- which always takes the key-id mismatch
+// path, because a remote runtime holds one key -- would be rejected with 429.
+SCENARIO("A cache-served key resolution is not charged to the network budget",
+         "[federation][inbound][key-resolution][conformance]")
+{
+    GIVEN("a runtime with a budget of one resolution and a probe reporting a cached key")
+    {
+        auto config = runtime_config();
+        config.key_resolution_per_ip_rate = {1U, 60U};
+        config.key_resolution_failure_ttl_seconds = 0U;
+        auto runtime = merovingian::federation::make_federation_runtime_state(config);
+
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const token = std::string{"verify-token"};
+        runtime.remote_key_cache_probe = [](std::string_view, std::string_view) -> bool {
+            return true;
+        };
+        runtime.remote_key_resolver =
+            [origin, key_id, token](
+                std::string_view server_name,
+                std::string_view request_key_id) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+            if (server_name != origin || request_key_id != key_id)
+            {
+                return std::nullopt;
+            }
+            return remote_for(origin, key_id, token);
+        };
+
+        WHEN("the peer sends five properly signed transactions")
+        {
+            auto accepted = 0;
+            for (auto index = 0; index < 5; ++index)
+            {
+                auto const json_pdu = signed_json_pdu(origin, key_id, token);
+                auto request = signed_request(origin, key_id, token, transaction_body(origin, json_pdu));
+                request.target = "/_matrix/federation/v1/send/probe" + std::to_string(index);
+                request.signature = merovingian::federation::make_federation_signature(
+                    request.origin, request.destination, request.method, request.target, request.body,
+                    merovingian::federation::test::keypair_from_seed(token).secret_key);
+                request.remote_addr = "203.0.113.11";
+                if (merovingian::federation::handle_inbound_federation_request(runtime, request).status == 200U)
+                {
+                    ++accepted;
+                }
+            }
+
+            THEN("none is rejected by the one-resolution budget")
+            {
+                REQUIRE(accepted == 5);
             }
         }
     }

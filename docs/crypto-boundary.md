@@ -71,6 +71,30 @@ implementing custom cryptographic primitives.
   value types — unlike `SecretBuffer`, which is heap-based and move-only, a
   mismatch for these small keys that are passed by value throughout the
   codebase.
+- **The master key file is no longer read once per HMAC key derivation.**
+  `token_hmac_keys()` (`src/homeserver/auth_service.cpp`) derives the v3 and
+  v4 access-token HMAC keys once and caches them, invalidated on the file's
+  `(path, size, mtime)` identity so replacing the key still takes effect
+  without a restart. Previously every authenticated request opened and read
+  the master key file twice (once per key version) and ran the load-time
+  `sodium_mlock`/`munlock` cycle on a fresh 4 KiB scratch buffer twice —
+  narrowing that to a `stat()` on the steady-state path matters for a crypto
+  boundary specifically because it shrinks how often the root secret every
+  other key is derived from is actually materialised in process memory, and
+  removes the concurrent `mlock` churn that could exhaust `RLIMIT_MEMLOCK`
+  under load.
+- **`core::SecretBuffer::is_locked()` is now consulted.**
+  `crypto::load_master_key_material()` already recorded whether
+  `sodium_mlock` succeeded on the buffer holding the master key, but nothing
+  ever read it back, so a server whose `mlock` call failed held its root
+  secret in swappable memory with no indication anywhere. It now warns once
+  per process (not on every load — the condition is a deployment-level fault,
+  and repeating it per load would be noise) naming the remedy: raise
+  `RLIMIT_MEMLOCK` for the service or grant it `CAP_IPC_LOCK`. This is
+  deliberately a warning, not a fatal error — refusing to start over a failed
+  `mlock` would turn a hardening shortfall into an outage, and the key is
+  still zeroised on destruction either way (`SecretBuffer`'s destructor falls
+  back to plain `sodium_memzero` when the mlock did not hold).
 
 ## Security posture
 

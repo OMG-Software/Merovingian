@@ -35,6 +35,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <unordered_map>
 #include <vector>
 
 namespace merovingian::homeserver
@@ -92,6 +93,9 @@ struct LocalUser final
     bool locked{false};
     bool suspended{false};
     bool admin{false};
+    // Permanent account closure (POST /account/deactivate). Unlike locked and
+    // suspended this is irreversible, and the localpart is never reissued.
+    bool deactivated{false};
 };
 
 struct LocalSession final
@@ -200,6 +204,20 @@ struct TestOnlyForcedOutboundResolution final
     std::string trusted_ca_pem{};
 };
 
+// Per-account failed-login accounting for the login throttle. Lives on the
+// runtime, not in a file-scope static: a static is shared by every runtime in
+// the process, which in the test binary means lockout state leaks between
+// unrelated scenarios and makes them order-dependent. It did exactly that --
+// a scenario that deliberately exhausts the threshold for one localpart broke a
+// later, unrelated scenario registering the same name under a different RNG
+// seed. Guarded by HomeserverRuntime::mutex.
+struct FailedLoginRecord final
+{
+    std::size_t count{0U};
+    std::chrono::steady_clock::time_point first_failure{};
+    std::chrono::steady_clock::time_point last_failure{};
+};
+
 struct HomeserverRuntime final
 {
     HomeserverRuntime();
@@ -305,6 +323,8 @@ struct HomeserverRuntime final
     // Per-connection MSC4186 sliding sync state.
     // Key: user_id + "/" + device_id + "/" + conn_id (or "__default__").
     std::map<std::string, sync::SlidingSyncConnectionState> sliding_sync_connections{};
+    // Failed-login counters keyed on the claimed user ID. See FailedLoginRecord.
+    std::unordered_map<std::string, FailedLoginRecord> failed_logins{};
     std::uint64_t next_request_sequence{1U};
     // Guards mutable runtime state when requests are handled concurrently.
     // Handlers must release it before outbound network I/O so unrelated
@@ -400,6 +420,12 @@ struct OperationResult final
     std::uint16_t status{500U};
     std::string value{};
     std::string reason{};
+    // Milliseconds the caller should wait before retrying, for results that are
+    // throttled rather than refused. Carried here so a 429 can be rendered as the
+    // Matrix-standard M_LIMIT_EXCEEDED with retry_after_ms instead of collapsing
+    // into the generic failure mapping, which would drop the delay this server
+    // has already computed. Zero for every other outcome.
+    std::uint32_t retry_after_ms{0U};
 };
 
 struct SessionRefreshResult final

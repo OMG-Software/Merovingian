@@ -54,6 +54,15 @@ struct RuntimeFederationConfig final
     // server's identity (notably the backfill response). Mirrors
     // `config::Config::server_name`.
     std::string server_name{};
+    // Pre-authentication remote-key resolution budgets. See
+    // config::FederationSecurityConfig for the full reasoning; in short,
+    // resolving a signing key necessarily precedes verifying the signature that
+    // key is for, so the resolution path is reachable by unauthenticated
+    // senders and has to be budgeted rather than ordered away. Keyed on source
+    // IP, not origin: the origin is the attacker-controlled field.
+    http::RateLimitPolicy key_resolution_per_ip_rate{10U, 60U};
+    std::uint32_t key_resolution_max_in_flight{8U};
+    std::uint32_t key_resolution_failure_ttl_seconds{300U};
 };
 
 struct FederationServerPolicyDecision final

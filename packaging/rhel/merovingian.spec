@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.12.3
+Version:        0.12.4
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -97,6 +97,12 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Wed Sep 02 2026 James Chapman <claude@ping.me.uk> - 0.12.4-1
+- Enforce Matrix authorization rules 1, 8 and 9 in full
+- Close a fail-open in local event authorization
+- Implement POST /account/deactivate and per-account login throttling
+- Set media content-security headers and bound sliding-sync state
+
 * Tue Sep 02 2026 James Chapman <claude@ping.me.uk> - 0.12.3-1
 - Apply PostgreSQL privilege separation on connect
 - Refuse email pushers instead of discarding them

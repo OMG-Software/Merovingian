@@ -59,6 +59,30 @@ server.http.keep_alive=true
 server.http.keep_alive_idle_seconds=15
 server.http.keep_alive_max_connections=8
 
+# Identity Service API — third-party identifiers (3PIDs: email, msisdn)
+# Governs 3PID invites, bind, unbind and requestToken. All of it is OFF until
+# trusted_servers is set: with an empty allow-list every operation that needs an
+# identity server fails closed rather than silently minting tokens locally, and
+# a 3PID naming an id_server outside the list is refused. That allow-list is the
+# SSRF boundary for outbound identity-server calls, so keep it as narrow as the
+# deployment allows. default_server must itself appear in trusted_servers, and
+# every URL must be HTTPS.
+#
+# allowed_bind_domains is parsed and validated but NOT yet enforced: no bind or
+# requestToken path consults it, so setting it does not currently restrict which
+# domains a user may bind an address for. It is documented here as inert rather
+# than omitted, because a key that looks like a security control and silently
+# does nothing is worse than one that is absent. Tracked in
+# docs/todos/capability-gaps.md.
+#
+# These keys are read at startup — changing any of them
+# requires a restart, not a SIGHUP reload.
+# server.identity_server.trusted_servers=https://vector.im,https://matrix.org
+# server.identity_server.default_server=https://vector.im
+# server.identity_server.allowed_bind_domains=example.org
+# server.identity_server.connect_timeout_seconds=10
+# server.identity_server.total_timeout_seconds=30
+
 # TURN server for VoIP relay (optional)
 # When server.turn.server is empty, GET /_matrix/client/v3/voip/turnServer
 # returns an empty object so clients gracefully disable relay support.
@@ -110,6 +134,28 @@ listeners.federation.tls_private_key_file=
 #database.role=runtime
 #database.pool_size=16
 
+# PostgreSQL privilege separation (optional, PostgreSQL only)
+# Provision the two roles with packaging/postgresql/provision-roles.sql, then
+# name them here. The server serves every request as runtime_role, which holds
+# DML only, applied whether or not a migration ran, so a steady-state restart is
+# as constrained as a fresh upgrade. If runtime_role is set and cannot be
+# assumed, the server refuses to open the database rather than serving with
+# wider privileges than asked for. Leaving both empty issues no SET ROLE, which
+# is the behaviour of a single-role deployment.
+#
+# migration_role is NOT yet assumed for the DDL phase. Migrations run as the
+# connection's own login role, because migrations 007 and 011 use ALTER TABLE,
+# which PostgreSQL permits only to a table's owner, and the existing tables are
+# owned by the login role. The key is accepted and validated so a deployment can
+# be provisioned ahead of the live db-migrate tool that will use it, but setting
+# it does not today narrow the privileges migrations run with. See
+# src/database/postgresql_store.cpp and docs/todos/capability-gaps.md.
+# Both keys must be set together or both left empty.
+# Changing either requires a restart: roles are assumed at connect time, so a
+# SIGHUP reload would leave every open connection on its old role.
+#database.migration_role=merovingian_migration
+#database.runtime_role=merovingian_runtime
+
 # SQLite connection — uncomment both lines below to switch to SQLite.
 # Remove or comment out the three PostgreSQL keys above when doing so.
 #database.backend=sqlite
@@ -152,6 +198,48 @@ security.federation.verify_json_signatures=true
 security.federation.deny_ip_ranges=127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,::1/128,fc00::/7
 security.federation.max_transaction_size=20MiB
 security.federation.remote_timeout=60s
+
+# Inbound transaction caps and per-origin budgets.
+# max_transaction_pdus/edus bound a single PUT /send transaction; the spec caps
+# PDUs at 50 and EDUs at 100 per transaction, and a sender exceeding either is
+# rejected rather than silently truncated.
+# The per_origin_* budgets are the abuse controls for inbound federation: they
+# are counted per originating server, so one noisy or hostile peer cannot spend
+# the whole server's capacity. transaction/pdu/edu rates bound /send volume;
+# request_rate bounds every authenticated federation request regardless of
+# endpoint. Format is N/Ns, as with client_rate_limits below.
+security.federation.max_transaction_pdus=50
+security.federation.max_transaction_edus=100
+security.federation.per_origin_transaction_rate=120/60s
+security.federation.per_origin_pdu_rate=600/60s
+security.federation.per_origin_edu_rate=1200/60s
+security.federation.per_origin_request_rate=600/60s
+
+# Pre-authentication remote-key resolution budgets
+# Resolving a peer's signing key necessarily happens BEFORE its request
+# signature can be checked -- verifying the signature needs the key. So the
+# resolution path is reachable by an unauthenticated sender: name any origin in
+# an X-Matrix header and this server performs .well-known + SRV + DNS discovery
+# and an outbound GET /_matrix/key/v2/server against that host. That is a load
+# vector here and a reflection vector at whoever was named. These budgets bound
+# it. They are keyed on the SOURCE IP, not the origin, because the origin is
+# precisely the field an attacker varies to miss every cache.
+#
+# Setting default_policy=deny with a populated allowed_servers list above closes
+# this independently -- the policy check runs before resolution -- so an
+# allow-list deployment is already covered.
+#
+# per_ip_rate bounds how often one source may cause resolution of an origin with
+# no usable cached key. max_in_flight caps resolutions process-wide, so a sender
+# spread across many IPs still cannot exhaust the outbound path; over the cap
+# requests are rejected rather than queued. failure_ttl remembers a failed
+# resolution so repeats of the same name are cheap (0s disables it).
+# A legitimate new peer needs exactly one resolution, after which its record is
+# cached, so these defaults are generous for real federation traffic.
+# Changing any of them requires a restart.
+security.federation.key_resolution_per_ip_rate=10/60s
+security.federation.key_resolution_max_in_flight=8
+security.federation.key_resolution_failure_ttl=300s
 
 # Join/leave membership budget
 # make_join/send_join/make_leave/send_leave get a separate, longer budget than
@@ -283,6 +371,61 @@ security.media.decode_in_sandbox=true
 # server.push.connect_timeout_seconds=10
 # server.push.total_timeout_seconds=30
 
+# SSO login (m.login.sso)
+# Disabled by default and fails closed: with enabled=false the flow is not
+# advertised by GET /login and GET /login/sso/redirect[/{idpId}] returns 404,
+# rather than half-serving a misconfigured flow.
+# Merovingian does not implement CAS/SAML/OIDC itself. authorization_url is the
+# external system's HTTPS login endpoint that /login/sso/redirect sends the
+# browser to; that system's own adapter then maps the verified identity to a
+# local user and completes the login. See docs/auth-identity.md.
+#
+# redirect_url_allowlist is what stops /login/sso/redirect being an open
+# redirect: a client's redirectUrl must match one of these HTTPS prefixes
+# before the homeserver will ever send a browser -- or a login token -- there.
+# Leaving it empty with SSO enabled means no redirectUrl is accepted.
+#
+# Identity providers are keyed server.sso.identity_providers.<idpId>.<field>,
+# where field is name, icon or brand. idpId is an opaque identifier and may
+# itself contain dots, so the last segment is always the field name. id and
+# name are required per spec; icon (an mxc:// URI) and brand are optional UI
+# hints omitted from the advertised flow when empty.
+# server.sso.enabled=true
+# server.sso.authorization_url=https://sso.example.org/login
+# server.sso.redirect_url_allowlist=https://app.example.org/,https://element.example.org/
+# server.sso.identity_providers.com.example.idp.github.name=GitHub
+# server.sso.identity_providers.com.example.idp.github.brand=github
+# server.sso.identity_providers.com.example.idp.github.icon=mxc://example.org/githubicon
+
+# OIDC authorisation server metadata (MSC2965 discovery)
+# Advertisement only: enabling this makes GET /_matrix/client/v1/auth_metadata
+# return RFC 8414 metadata built from these fields. No OAuth flow is
+# implemented here -- the endpoints named below belong to your authorisation
+# server, and this block only tells clients where to find them. With
+# enabled=false the endpoint returns 404 M_UNRECOGNIZED.
+# account_management_uri and the supported-actions list are what an OAuth-aware
+# client is told to send users to instead of calling POST /account/deactivate
+# directly (spec: OAuth 2.0 aware clients).
+# server.oidc.enabled=true
+# server.oidc.issuer=https://auth.example.org/
+# server.oidc.authorization_endpoint=https://auth.example.org/authorize
+# server.oidc.token_endpoint=https://auth.example.org/token
+# server.oidc.registration_endpoint=https://auth.example.org/register
+# server.oidc.revocation_endpoint=https://auth.example.org/revoke
+# server.oidc.device_authorization_endpoint=https://auth.example.org/device
+# server.oidc.account_management_uri=https://auth.example.org/account
+# server.oidc.account_management_actions_supported=org.matrix.profile,org.matrix.sessions_list,org.matrix.account_deactivate
+
+# Application Services (Matrix v1.19 Application Service API)
+# Each path is a registration document describing one appservice: its as_token,
+# hs_token, sender_localpart and the user/alias/room namespaces it owns. With
+# no registration files the entire Application Service surface is inert.
+# These are high-privilege credentials -- an appservice can act as any user in
+# its own namespaces -- so the files must be owner-only and kept out of this
+# config. Namespace ownership is enforced on every AS-authenticated request,
+# so an appservice cannot masquerade outside what its registration declares.
+# appservice.registration_files=/etc/merovingian/appservices/bridge.yaml
+
 # Logging redaction
 # Structured logs are enabled, but token values and event content stay redacted
 # so operational logs do not become a credential or message-content sink.
@@ -309,6 +452,22 @@ client_rate_limits.per_ip./_matrix/client/v3/login=20/60s
 client_rate_limits.per_ip./_matrix/client/v3/register=20/60s
 client_rate_limits.per_user./_matrix/client/v3/login=5/60s
 client_rate_limits.default_per_ip=90/60s
+
+# Per-tier budgets. Every route belongs to exactly one tier, so a tier line
+# retunes a whole class of endpoints without naming each path. An unknown tier
+# name is a startup error rather than a silently ignored key. The six tiers are:
+#   auth_sensitive  login, register, password, deactivate
+#   media           upload, download, thumbnail
+#   sync            /sync and sliding sync (long-polling; needs a high budget)
+#   federation      inbound federation requests
+#   admin           operator-only endpoints
+#   generic         everything else
+#client_rate_limits.tier.auth_sensitive=20/60s
+#client_rate_limits.tier.media=60/60s
+#client_rate_limits.tier.sync=90/60s
+#client_rate_limits.tier.federation=600/60s
+#client_rate_limits.tier.admin=30/60s
+#client_rate_limits.tier.generic=90/60s
 
 # Per-module log level overrides
 # Each entry maps a logger name to a level (trace|debug|info|notice|

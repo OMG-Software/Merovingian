@@ -391,18 +391,20 @@ namespace
 
     auto load_persistent_rows(PostgresqlConnection& connection, PersistentStore& store) -> bool
     {
-        auto users = query_rows(connection, "postgresql_load_users",
-                                "SELECT user_id, password_hash, locked, suspended, admin FROM users ORDER BY user_id");
+        auto users =
+            query_rows(connection, "postgresql_load_users",
+                       "SELECT user_id, password_hash, locked, suspended, admin, deactivated FROM users "
+                       "ORDER BY user_id");
         if (!users.ok)
         {
             return false;
         }
         for (auto const& row : users.rows)
         {
-            if (row.size() >= 5U)
+            if (row.size() >= 6U)
             {
-                store.users.push_back(
-                    {row[0], row[1], text_is_true(row[2]), text_is_true(row[3]), text_is_true(row[4])});
+                store.users.push_back({row[0], row[1], text_is_true(row[2]), text_is_true(row[3]),
+                                       text_is_true(row[4]), text_is_true(row[5])});
             }
         }
 

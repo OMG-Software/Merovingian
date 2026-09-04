@@ -56,6 +56,14 @@ struct RoomVersionPolicy final
     // create event's content.additional_creators hold an effectively infinite
     // power level that outranks any integer power level.
     bool privilege_room_creators{false};
+    // Room v10 onwards require every value in m.room.power_levels to be a real
+    // integer. Versions 1-9 accept a string representation of an integer for
+    // backwards compatibility, and events using it are valid and must be both
+    // accepted and read correctly -- rejecting them, or reading them as absent,
+    // breaks federation with older rooms.
+    // Spec: ../../docs/matrix-v1.19-spec/rooms/v10.md
+    //       "Values in m.room.power_levels events must be integers"
+    bool power_levels_require_integers{false};
 };
 
 [[nodiscard]] auto known_room_versions() -> std::vector<RoomVersionPolicy>;

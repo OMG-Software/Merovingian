@@ -77,6 +77,14 @@ production-gated.
   `token.unkeyed_hash_fallback` diagnostic is logged at `warning` so operators
   notice the degraded mode instead of discovering it in a post-breach audit
   (a DB leak of unkeyed v2 hashes is offline-brute-forceable).
+- The v3 and v4 HMAC keys are derived from the master key file once and
+  cached (`token_hmac_keys`, `src/homeserver/auth_service.cpp`) rather than
+  re-read and re-derived on every request — every authenticated request
+  previously performed two blocking reads of the operator's root secret and
+  two `sodium_mlock`/`munlock` cycles. The cache is invalidated on the file's
+  `(path, size, mtime)` identity, so replacing the master key still takes
+  effect without a restart. See `docs/crypto-boundary.md` for why this
+  matters as a crypto-boundary property, not just a performance one.
 - `redacted_token_for_log()` (issue #437) discloses only a coarse size bucket
   (`tiny`/`short`/`medium`/`long`), never the exact byte length — the precise
   length was a minor side channel that let an observer of logs distinguish
@@ -363,6 +371,84 @@ external protocol is left to the operator's own SSO gateway, configured via
   caller (`403 M_FORBIDDEN`), matching how password login already
   collapses "unknown user" and "bad password" into the same external
   result.
+
+## Account deactivation
+
+`POST /_matrix/client/v3/account/deactivate` (Matrix v1.19 CS API §"Account
+deactivation") is implemented. Previously this endpoint had no handler at
+all — the path appeared only as a literal in the suspended-user allowlist —
+so a user whose credentials were compromised had no way to close their own
+account; only an admin-initiated lock or suspend existed, and both of those
+are reversible where deactivation is not.
+
+- **UIA**, exactly as `POST /account/password`: the request must carry a
+  completed `m.login.password` auth stage proving current knowledge of the
+  password. A missing, incomplete, or wrong-credential `auth` block returns
+  the `401` UIA challenge, never `403`.
+- **`homeserver::deactivate_local_user`** (`src/homeserver/auth_service.cpp`)
+  marks the account permanently deactivated, revokes every access and
+  refresh token for the user — including the caller's own, unlike a
+  password change, since there is no session left worth preserving — and
+  overwrites the password hash with the literal `!deactivated`, a value
+  `auth::password_matches` can never match, so a credential leak predating
+  deactivation cannot be replayed even if a future change were to soften the
+  login gate.
+- **The `users` row is retained**, not deleted: `deactivated` is a new
+  column (schema version 14 — see `docs/database-persistence.md`), not a row
+  removal, so registration's existing duplicate-`user_id` check keeps
+  rejecting a re-registration of the same localpart.
+- **Both login gates check it first.** `complete_login`'s shared tail and
+  the token-login path in `login_local_user_by_id` (`src/homeserver/
+  auth_service.cpp`) each reject `user.deactivated` with `403` "account
+  deactivated" before evaluating the reversible `locked`/`suspended`
+  states — deactivation outranks them because it is permanent where they
+  are not.
+- **3PIDs are unbound from their identity servers.**
+  `unbind_threepid_for_deactivation` (`src/homeserver/client_server.cpp`)
+  walks every bound 3PID the account holds and drives IS unbind auth mode 2
+  with the stored `id_server` + `client_secret` + `sid` (migration `007`),
+  through the same `resolve_trusted_identity_base_url` SSRF gate as
+  `POST /account/3pid/unbind`. The local binding is cleared either way.
+- **`id_server_unbind_result`**, required in the `200` response body, is
+  `"success"` only when every identifier was unbound — and when there were
+  none to unbind — and `"no-support"` when any could not be: no identity
+  server recorded against the binding, operator trust withdrawn for the one
+  that holds it, or the identity server unreachable or refusing.
+- **A failed unbind does not fail the deactivation.** This is the opposite
+  disposition to `POST /account/3pid/unbind`, which fails closed and keeps
+  the local binding so the user can retry. Deactivation is irreversible and
+  leaves no owner to retry with, so it completes and reports `no-support`
+  rather than stranding the account half-closed. The spec models a partial
+  unbind as a `200` carrying `no-support`, not as a failed deactivation.
+- **Irreversible by design**: there is no reactivate endpoint.
+
+**Not yet done**, tracked in `docs/todos/capability-gaps.md`: the request
+body's `erase` parameter is parsed as part of the JSON body but never
+inspected, so it has no effect either way — the spec's erasure behaviour is
+a SHOULD, not a MUST, so this is not a conformance violation, but a client
+that explicitly asks for erasure gets the same silent no-op as a client that
+does not. The account's rooms are also not left on its behalf.
+
+## Per-account failed-login throttle
+
+`/login` was previously throttled only per source IP, because the runtime
+rate limiter's per-user tier keys on the *authenticated* user — someone who,
+before a login succeeds, does not exist yet (see `docs/http-transport.md`
+"Rate-limit policy"). Guesses against one account spread across many source
+IPs therefore accumulated against nothing at all.
+
+`login_local_user` (`src/homeserver/auth_service.cpp`) now tracks failures
+against the *claimed* user ID, whether or not that user exists, so the
+throttle cannot itself be used to probe which accounts are real: five
+failures within a fifteen-minute window lock that claimed identity out for
+fifteen minutes, returning `429`. Any successful login clears the account's
+failure history. Tracking a claimed identity does mean a third party can
+deliberately trip a real account's lockout — the standard account-lockout
+trade-off — bounded by the window being fixed and short rather than
+escalating or sticky, and by a real login clearing it immediately. The
+thresholds (five failures, fifteen-minute window, fifteen-minute lockout)
+are compile-time constants; exposing them as configuration is not done (see
+`docs/todos/capability-gaps.md`).
 
 ## Security posture
 

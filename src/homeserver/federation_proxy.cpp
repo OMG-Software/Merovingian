@@ -80,6 +80,16 @@ auto FederationProxy::handle(LocalHttpRequest const& request) -> LocalHttpRespon
                 .count());
         signed_request.canonical_json_verified = true;
         signed_request.body = request.body;
+        // Budgets pre-authentication remote-key resolution (#487). This is the
+        // production path: verification happens here in the main process, before
+        // anything is forwarded to the worker, so this is where the budget bites.
+        //
+        // Resolved through trusted_proxies rather than taken raw: behind the
+        // reverse-proxy deployment the shipped example config describes, every
+        // remote server's direct TCP peer is 127.0.0.1, which would collapse all
+        // of them into one bucket and let ten new-peer resolutions a minute
+        // reject every unrelated legitimate peer.
+        signed_request.remote_addr = effective_client_ip(request, runtime_.config.server().trusted_proxies);
         signed_request_opt = std::move(signed_request);
     }
     if (!signed_request_opt.has_value())

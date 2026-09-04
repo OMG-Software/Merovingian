@@ -724,6 +724,30 @@ namespace
                 security.federation.per_origin_request_rate = *policy;
             }
         }
+        else if (key == "security.federation.key_resolution_per_ip_rate")
+        {
+            auto const policy = parse_rate_limit_policy(value);
+            if (!policy.has_value())
+            {
+                add_parse_finding(findings, std::string{key},
+                                  "expected rate-limit policy of the form N/Ns (e.g. 10/60s)");
+            }
+            else
+            {
+                security.federation.key_resolution_per_ip_rate = *policy;
+            }
+        }
+        else if (key == "security.federation.key_resolution_max_in_flight")
+        {
+            if (!parse_u32_value(value, security.federation.key_resolution_max_in_flight))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
+        else if (key == "security.federation.key_resolution_failure_ttl")
+        {
+            security.federation.key_resolution_failure_ttl = std::string{value};
+        }
         else if (key == "security.federation.remote_timeout")
         {
             security.federation.remote_timeout = std::string{value};

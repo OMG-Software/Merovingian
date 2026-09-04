@@ -49,6 +49,10 @@ auto make_runtime_federation_config(config::Config const& config) -> RuntimeFede
     auto const join_timeout = config::parse_duration_seconds(config.security().federation.join_timeout);
     auto const join_race_deadline = config::parse_duration_seconds(config.security().federation.join_race_deadline);
     auto const join_response_max_size = config::parse_size_limit(config.security().federation.join_response_max_size);
+    // An unparsable TTL yields 0 (negative caching off) rather than a wild
+    // value; config validation has already rejected a malformed one by here.
+    auto const key_resolution_failure_ttl =
+        config::parse_duration_seconds(config.security().federation.key_resolution_failure_ttl);
 
     return {
         config.security().federation.enabled,
@@ -73,6 +77,9 @@ auto make_runtime_federation_config(config::Config const& config) -> RuntimeFede
         config.security().federation.join_state_key_parallelism,
         join_response_max_size.valid ? join_response_max_size.bytes : 0U,
         config.server().server_name,
+        config.security().federation.key_resolution_per_ip_rate,
+        config.security().federation.key_resolution_max_in_flight,
+        key_resolution_failure_ttl.valid ? key_resolution_failure_ttl.seconds : 0U,
     };
 }
 
@@ -95,7 +102,10 @@ auto federation_summary(RuntimeFederationConfig const& config) -> std::string
            " join_race_deadline_seconds=" + std::to_string(config.join_race_deadline_seconds) +
            " join_max_candidates=" + std::to_string(config.join_max_candidates) +
            " join_state_key_parallelism=" + std::to_string(config.join_state_key_parallelism) +
-           " join_response_max_bytes=" + std::to_string(config.join_response_max_bytes);
+           " join_response_max_bytes=" + std::to_string(config.join_response_max_bytes) +
+           " key_resolution_per_ip_rate=" + rate_limit_policy_string(config.key_resolution_per_ip_rate) +
+           " key_resolution_max_in_flight=" + std::to_string(config.key_resolution_max_in_flight) +
+           " key_resolution_failure_ttl_seconds=" + std::to_string(config.key_resolution_failure_ttl_seconds);
 }
 
 auto federation_server_policy(RuntimeFederationConfig const& config, std::string_view server_name)
