@@ -149,6 +149,30 @@ earlier on this branch; this entry covers the code changes.
   the rest of its life. NetBSD has no equivalent in-process primitive and keeps
   rlimits alone; that gap is recorded in `docs/hardening.md`.
 
+### PostgreSQL privilege separation covers migrations (finding 18)
+
+- **DDL now runs as the migration role, not the login role.** Both roles were
+  provisioned and the request path already dropped to the DML-only runtime role,
+  but schema migrations ran as the login role — which carries every privilege
+  both sibling roles have — so the separation did not cover the one operation
+  that actually needs DDL. `open_postgresql_persistent_store()` now takes
+  `database.migration_role`, assumes it before applying pending migrations, and
+  resets the session before assuming the runtime role.
+- **Fail-closed.** A migration role that cannot be assumed refuses the open
+  rather than falling back to the login role, which would silently restore the
+  privilege level the separation removes. A pending migration is the only thing
+  that reaches the role switch, so a misconfigured `migration_role` breaks an
+  upgrade rather than every routine restart, and leaving it unset keeps
+  single-role deployments working exactly as before.
+- **Upgrading needs one operator step.** `ALTER TABLE` is permitted only to an
+  object's owner, and objects created before 0.12.5 are owned by the login role
+  — which is precisely why migrations ran as the login role until now. Run
+  `REASSIGN OWNED BY <login_role> TO <migration_role>;` once against the
+  Merovingian database before upgrading; `packaging/postgresql/provision-roles.sql`
+  documents it, the startup diagnostic names it if it was missed, and the
+  PostgreSQL CI job runs the same statement so the sequence is exercised. A
+  fresh install needs nothing.
+
 ## 0.12.4
 
 Security audit of the 0.12.3 tree. Two of the findings below are privilege

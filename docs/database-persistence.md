@@ -531,19 +531,33 @@ These remain deferred:
    every PostgreSQL connection assumes it after opening — not just the
    bootstrap one, since connections are created per operation — and an
    unassumable role refuses the open rather than serving with the login
-   role's wider privileges. Migrations deliberately continue to run as the
-   login role: they use `ALTER TABLE`, which PostgreSQL permits only to a
-   table's owner, and the provisioned migration role does not own the login
-   role's tables.
+   role's wider privileges.
 
-   Still open: (a) `merovingian-db-migrate` becoming a real tool that
-   connects and owns what it creates, at which point the migration role has
-   a user; (b) the server refusing to auto-apply migrations when a migration
-   role is configured. The config-driven startup path is covered by the
-   role-separation scenario in `test_postgresql_persistence_flow.cpp`, which
-   drives `open_postgresql_persistent_store` itself rather than the
-   primitive in isolation — note it requires a live PostgreSQL URI and role
-   environment variables, so it runs only in `postgres-integration`. See `packaging/postgresql/provision-roles.sql` for
-   the interim operator-driven alternative (provision the roles, run
-   migrations out-of-band as the more privileged role, point
-   `database.uri_file` at a login restricted to the runtime role).
+   **Closed for the server in 0.12.5** (audit finding 18). Migrations had
+   continued to run as the login role because `ALTER TABLE` is permitted only
+   to an object's owner and the migration role owned nothing — so the
+   separation did not cover the one operation that actually needs DDL. The
+   answer is for the migration role to own the schema:
+
+   - `provision-roles.sql` creates objects under `:migration_role`, and
+     documents the single `REASSIGN OWNED BY :login_role TO :migration_role`
+     an existing database needs before upgrading. The `postgres-integration`
+     CI job runs the same statement, so the operator sequence is exercised.
+   - `open_postgresql_persistent_store()` takes `database.migration_role`,
+     `SET ROLE`s to it before applying pending migrations, and resets the
+     session before assuming the runtime role.
+   - An unassumable migration role refuses the open rather than falling back
+     to the login role. Only a *pending* migration reaches the role switch, so
+     a misconfigured `migration_role` breaks an upgrade rather than every
+     routine restart; leaving it unset keeps single-role deployments working.
+
+   Still open: `merovingian-db-migrate` becoming a real tool that connects
+   rather than printing an offline plan. The startup path is covered by the
+   role-separation and migration-role scenarios in
+   `test_postgresql_persistence_flow.cpp`, which drive
+   `open_postgresql_persistent_store` itself rather than the primitive in
+   isolation — note they require a live PostgreSQL URI and role environment
+   variables, so they run only in `postgres-integration`. See
+   `packaging/postgresql/provision-roles.sql` for the stricter alternative
+   (never grant the login role membership of the migration role; run
+   migrations out-of-band and leave `database.migration_role` unset).

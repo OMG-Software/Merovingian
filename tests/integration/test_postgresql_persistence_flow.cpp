@@ -819,3 +819,111 @@ SCENARIO("PostgreSQL store open assumes the configured roles and fails closed ot
         }
     }
 }
+
+// --- 0.12.5 security audit, finding 18 ---------------------------------------
+//
+// open_postgresql_persistent_store() applied pending migrations as the login
+// role, which carries every privilege both sibling roles have, so the privilege
+// separation the two roles exist for did not cover the one operation that
+// actually needs DDL. Migrations now run after SET ROLE to the configured
+// migration role, and the open fails closed if that role cannot be assumed.
+
+namespace
+{
+
+// Roll the live database back one migration so the next open has real DDL to
+// apply. Migrations are not written idempotently, so the column migration 14
+// adds is dropped alongside its schema_migrations row; re-applying the
+// migration is what restores both.
+[[nodiscard]] auto make_migration_pending(std::string_view uri) -> bool
+{
+    auto connection = merovingian::database::open_postgresql_connection(uri);
+    if (!connection.ok)
+    {
+        return false;
+    }
+    auto const dropped = connection.connection.execute(
+        {"drop_deactivated_column", "ALTER TABLE users DROP COLUMN IF EXISTS deactivated", {}});
+    auto const removed = connection.connection.execute(
+        {"forget_migration_row", "DELETE FROM schema_migrations WHERE version = '14'", {}});
+    return dropped.ok && removed.ok;
+}
+
+} // namespace
+
+SCENARIO("PostgreSQL migrations execute as the migration role, never as the login role",
+         "[database][postgresql][integration][pgroles][security]")
+{
+    GIVEN("a live PostgreSQL URI plus migration and runtime role names")
+    {
+        auto const uri = postgresql_uri_from_environment();
+        auto const runtime_role = runtime_role_from_environment();
+        auto const migration_role = migration_role_from_environment();
+        if (uri.empty() || runtime_role.empty() || migration_role.empty())
+        {
+            SUCCEED("skipped: live PG URI or role env vars are not set");
+            return;
+        }
+
+        WHEN("the schema is already current and a migration role is configured")
+        {
+            auto const opened =
+                merovingian::database::open_postgresql_persistent_store(uri, runtime_role, migration_role);
+
+            THEN("the open succeeds and the schema is at the current version")
+            {
+                REQUIRE(opened.ok);
+                REQUIRE(opened.store.schema.version == merovingian::database::current_schema_version());
+            }
+        }
+
+        WHEN("the schema is already current but the named migration role cannot be assumed")
+        {
+            auto const opened = merovingian::database::open_postgresql_persistent_store(
+                uri, runtime_role, "merovingian_migration_role_that_does_not_exist");
+
+            THEN("the open still succeeds, because no DDL is attempted")
+            {
+                // A migration role that cannot be assumed must break an upgrade,
+                // not every routine restart.
+                REQUIRE(opened.ok);
+            }
+        }
+
+        WHEN("a migration is pending and the named migration role cannot be assumed")
+        {
+            REQUIRE(make_migration_pending(uri));
+            auto const opened = merovingian::database::open_postgresql_persistent_store(
+                uri, runtime_role, "merovingian_migration_role_that_does_not_exist");
+
+            THEN("the open is refused rather than running DDL as the login role")
+            {
+                // Fail closed: falling back to the login role here would execute
+                // schema mutation with the widest privileges in the deployment,
+                // silently, on exactly the path the separation exists for.
+                REQUIRE_FALSE(opened.ok);
+                REQUIRE(opened.reason.find("migration role") != std::string::npos);
+            }
+
+            AND_THEN("the pending migration then applies under the real migration role")
+            {
+                auto const recovered =
+                    merovingian::database::open_postgresql_persistent_store(uri, runtime_role, migration_role);
+                REQUIRE(recovered.ok);
+                REQUIRE(recovered.store.schema.version == merovingian::database::current_schema_version());
+            }
+        }
+
+        WHEN("a migration is pending and no migration role is configured")
+        {
+            REQUIRE(make_migration_pending(uri));
+            auto const opened = merovingian::database::open_postgresql_persistent_store(uri, runtime_role);
+
+            THEN("it migrates as the login role, preserving single-role deployments")
+            {
+                REQUIRE(opened.ok);
+                REQUIRE(opened.store.schema.version == merovingian::database::current_schema_version());
+            }
+        }
+    }
+}
