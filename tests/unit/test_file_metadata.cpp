@@ -69,8 +69,10 @@ SCENARIO("Secret file permission policy requires owner-only non-executable acces
     {
         auto secure_secret = merovingian::platform::FileMetadata{};
         secure_secret.kind = merovingian::platform::FileKind::regular;
+        // Owner-read only. owner_write was set here until 0.12.5, when the
+        // check was tightened to match the owner-read-only rule
+        // docs/hardening.md has always documented (audit finding 22).
         secure_secret.mode.owner_read = true;
-        secure_secret.mode.owner_write = true;
 
         auto group_readable = secure_secret;
         group_readable.mode.group_read = true;
@@ -94,6 +96,57 @@ SCENARIO("Secret file permission policy requires owner-only non-executable acces
                 REQUIRE_FALSE(group_readable_valid);
                 REQUIRE_FALSE(other_readable_valid);
                 REQUIRE_FALSE(executable_valid);
+            }
+        }
+    }
+}
+
+// --- 0.12.5 security audit, finding 22 ---------------------------------------
+//
+// docs/hardening.md has always described secret files as owner-read-only, but
+// is_secure_secret_file() never checked owner_write, so a 0600 file passed. The
+// write bit matters because the service account is also the account a
+// compromised worker runs as: leaving the master key writable lets an attacker
+// with code execution substitute a key of their choosing.
+
+SCENARIO("A secret file must be owner-read-only, not merely owner-only", "[platform][file_metadata][security]")
+{
+    GIVEN("file metadata differing only in the owner-write bit")
+    {
+        auto read_only = merovingian::platform::FileMetadata{};
+        read_only.kind = merovingian::platform::FileKind::regular;
+        read_only.mode.owner_read = true;
+
+        auto owner_writable = read_only;
+        owner_writable.mode.owner_write = true;
+
+        WHEN("each is checked as a secret file")
+        {
+            auto const read_only_valid = merovingian::platform::is_secure_secret_file(read_only);
+            auto const owner_writable_valid = merovingian::platform::is_secure_secret_file(owner_writable);
+
+            THEN("only the owner-read-only file is accepted")
+            {
+                REQUIRE(read_only_valid);
+                REQUIRE_FALSE(owner_writable_valid);
+            }
+        }
+    }
+
+    GIVEN("a config file with the owner-write bit set")
+    {
+        auto config_file = merovingian::platform::FileMetadata{};
+        config_file.kind = merovingian::platform::FileKind::regular;
+        config_file.mode.owner_read = true;
+        config_file.mode.owner_write = true;
+
+        WHEN("it is checked as a config file")
+        {
+            auto const valid = merovingian::platform::is_secure_config_file(config_file);
+
+            THEN("it is still accepted: the stricter rule applies to secrets, not to config")
+            {
+                REQUIRE(valid);
             }
         }
     }

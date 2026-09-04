@@ -80,9 +80,16 @@ auto is_secure_config_file(FileMetadata const& metadata) noexcept -> bool
 
 auto is_secure_secret_file(FileMetadata const& metadata) noexcept -> bool
 {
-    return metadata.kind == FileKind::regular && !metadata.mode.group_read && !metadata.mode.group_write &&
-           !metadata.mode.group_execute && !metadata.mode.other_read && !metadata.mode.other_write &&
-           !metadata.mode.other_execute && !has_execute_bit(metadata.mode);
+    // Owner-read-only, as docs/hardening.md has always specified. 0.12.5 audit,
+    // finding 22: owner_write was not checked, so a 0600 secret was accepted
+    // despite the documented rule. The write bit matters because the service
+    // account is also the account a compromised worker runs as: leaving it
+    // writable lets an attacker who reaches code execution substitute a master
+    // key of their choosing and then decrypt or re-sign at will. 0400 costs an
+    // operator nothing — the file is never written after provisioning.
+    return metadata.kind == FileKind::regular && !metadata.mode.owner_write && !metadata.mode.group_read &&
+           !metadata.mode.group_write && !metadata.mode.group_execute && !metadata.mode.other_read &&
+           !metadata.mode.other_write && !metadata.mode.other_execute && !has_execute_bit(metadata.mode);
 }
 
 } // namespace merovingian::platform

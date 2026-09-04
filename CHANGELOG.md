@@ -97,6 +97,35 @@ earlier on this branch; this entry covers the code changes.
   `ScopedGuardRelease` scope -- an immediately-invoked lambda where the call's
   result is read after the lock is re-taken, a plain block where it is not.
 
+### Fail-closed hardening (findings 21-24)
+
+- **A failed `prctl(PR_SET_DUMPABLE, 0)` now fails the core-dump policy.** The
+  result was discarded and success reported on `setrlimit(RLIMIT_CORE, 0)`
+  alone. `RLIMIT_CORE=0` stops the kernel writing a core file for an ordinary
+  crash, but it does not clear the dumpable flag, and a `core_pattern` that pipes
+  to a handler (systemd-coredump, apport) is not bound by the process rlimit —
+  so the process image, master key included, could still be captured while the
+  policy reported success.
+- **Secret files must be owner-read-only.** `is_secure_secret_file()` never
+  checked `owner_write`, so a `0600` secret passed despite `docs/hardening.md`
+  documenting owner-read-only since the check was written. **Operators must
+  `chmod 0400` their secret files before upgrading**; the server refuses to start
+  otherwise. Packaging now provisions the registration token as `0400` owned by
+  the service account, replacing `0640 root:merovingian` — that mode was already
+  rejected by the group-read rule, so a packaged install could not start with a
+  generated token.
+- **`server.server_name` is validated against the Matrix grammar.**
+  `config::validate()` checked only that it was non-empty, so values like
+  `:8000` reached runtime and were used to build user IDs and federation routing
+  keys. It now runs through `auth::server_name_is_valid` — the same check applied
+  to every remote server name — so a name this server accepts for itself is one
+  its peers will also accept.
+- **A malformed `expires_at` is an expired token, not a permanent one.**
+  `parse_expires_at()` returned `nullopt` for an unparseable value, which every
+  caller reads as "never expires", so a corrupt or attacker-modified row became a
+  credential that could not be aged out. It now parses as the epoch, which every
+  expiry comparison reads as long past. The cost of being wrong is one re-login.
+
 ## 0.12.4
 
 Security audit of the 0.12.3 tree. Two of the findings below are privilege

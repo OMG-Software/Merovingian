@@ -89,8 +89,8 @@ install -d -o merovingian -g merovingian -m 0750 /var/log/merovingian
 TOKEN_FILE=%{_sysconfdir}/merovingian/registration-token
 if [ ! -f "${TOKEN_FILE}" ]; then
     openssl rand -base64 48 > "${TOKEN_FILE}"
-    chmod 0640 "${TOKEN_FILE}"
-    chown root:merovingian "${TOKEN_FILE}"
+    chmod 0400 "${TOKEN_FILE}"
+    chown merovingian:merovingian "${TOKEN_FILE}"
 fi
 
 %preun

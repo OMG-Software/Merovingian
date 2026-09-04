@@ -2924,3 +2924,59 @@ SCENARIO("Persistent store round-trips binary media blob bytes containing NUL an
         std::filesystem::remove(sqlite_path);
     }
 }
+
+// --- 0.12.5 security audit, finding 24 ---------------------------------------
+//
+// A malformed expires_at parsed as nullopt, which every caller reads as "never
+// expires", so a corrupt or attacker-modified row turned a token that should
+// have expired into a permanent credential.
+
+SCENARIO("A session row with a malformed expiry is treated as expired, not as never expiring",
+         "[database][persistent_store][security]")
+{
+    GIVEN("a session row whose expires_at column is not a number")
+    {
+        WHEN("the expiry is parsed")
+        {
+            auto const parsed = merovingian::database::parse_expires_at("not-a-number");
+
+            THEN("it carries a value rather than meaning no expiry")
+            {
+                REQUIRE(parsed.has_value());
+            }
+
+            THEN("that value is already in the past, so the token cannot be used")
+            {
+                REQUIRE(*parsed <= std::chrono::system_clock::now());
+            }
+        }
+    }
+
+    GIVEN("an empty expires_at column")
+    {
+        WHEN("it is parsed")
+        {
+            auto const parsed = merovingian::database::parse_expires_at("");
+
+            THEN("it still means no expiry, so non-expiring tokens keep working")
+            {
+                REQUIRE_FALSE(parsed.has_value());
+            }
+        }
+    }
+
+    GIVEN("a well-formed expires_at column")
+    {
+        WHEN("it is parsed")
+        {
+            auto const parsed = merovingian::database::parse_expires_at("1000");
+
+            THEN("it round-trips to the same instant")
+            {
+                REQUIRE(parsed.has_value());
+                REQUIRE(std::chrono::duration_cast<std::chrono::milliseconds>(parsed->time_since_epoch()).count() ==
+                        1000);
+            }
+        }
+    }
+}

@@ -90,7 +90,17 @@ POSIX metadata:
   or other write or any execute bit (`is_secure_config_file`).
 * Secret files (master key, TLS private key, registration token) must be
   regular owner_read_only, non_executable files with no group/other access
-  (`is_secure_secret_file`).
+  (`is_secure_secret_file`). Until 0.12.5 the predicate did not actually check
+  `owner_write`, so `0600` was accepted despite this line; it now enforces what
+  it documents, and operators upgrading from an earlier release need a one-time
+  `chmod 0400` on each secret file (see `docs/user-manual.md`).
+
+- **Core-dump policy.** `setrlimit(RLIMIT_CORE, 0)` *and*
+  `prctl(PR_SET_DUMPABLE, 0)` must both succeed. The prctl result was discarded
+  until 0.12.5: `RLIMIT_CORE=0` stops the kernel writing a core file for an
+  ordinary crash, but a `core_pattern` piping to a handler is not bound by the
+  process rlimit, so the process image could still be captured while the policy
+  reported success.
 * These checks run in `src/main.cpp` before any listener is created.
 
 ### Signal handling and graceful shutdown

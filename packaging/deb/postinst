@@ -18,8 +18,8 @@ case "$1" in
         if [ ! -f "${TOKEN_FILE}" ]; then
             install -d -m 0755 /etc/merovingian
             openssl rand -base64 48 > "${TOKEN_FILE}"
-            chmod 0640 "${TOKEN_FILE}"
-            chown root:merovingian "${TOKEN_FILE}"
+            chmod 0400 "${TOKEN_FILE}"
+            chown merovingian:merovingian "${TOKEN_FILE}"
         fi
         ;;
 esac

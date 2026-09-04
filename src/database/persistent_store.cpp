@@ -340,21 +340,28 @@ namespace
 }
 
 // Parse the TEXT column form back into a time_point. Empty string means no
-// expiry (nullopt). A malformed value is treated as no expiry rather than
-// rejecting the token, so a corrupt row never locks a user out.
+// expiry (nullopt).
+//
+// 0.12.5 audit, finding 24: a malformed value used to parse as nullopt — "no
+// expiry" — so a corrupt or attacker-modified row turned a token that should
+// have expired into a permanent credential. It now parses as the epoch, which
+// every expiry comparison in the codebase reads as long past, so the token is
+// rejected. Fail closed: the cost of being wrong is one re-login, and the cost
+// of the previous behaviour was a credential that never expires.
 [[nodiscard]] auto parse_expires_at(std::string_view text) -> std::optional<std::chrono::system_clock::time_point>
 {
     if (text.empty())
     {
         return std::nullopt;
     }
+    auto constexpr already_expired = std::chrono::system_clock::time_point{};
     auto buffer = std::string{text};
     char* end = nullptr;
     errno = 0;
     auto const ms = std::strtoll(buffer.c_str(), &end, 10);
     if (end == buffer.c_str() || *end != '\0' || errno != 0)
     {
-        return std::nullopt;
+        return already_expired;
     }
     return std::chrono::system_clock::time_point{std::chrono::milliseconds{ms}};
 }

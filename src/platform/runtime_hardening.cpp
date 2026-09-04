@@ -378,8 +378,15 @@ namespace
         {
             return false;
         }
-        std::ignore = ::prctl(PR_SET_DUMPABLE, 0, 0, 0, 0);
-        return true;
+        // 0.12.5 audit, finding 21: this used to discard the prctl result and
+        // report success on RLIMIT_CORE alone. RLIMIT_CORE=0 stops the kernel
+        // writing a core file for an ordinary crash, but it does not clear the
+        // dumpable flag, and a core_pattern that pipes to a handler
+        // (systemd-coredump, apport) is not bound by the process rlimit. With
+        // the flag still set, the process image — including the master key and
+        // every signing secret derived from it — can still be captured while
+        // the policy reported success.
+        return ::prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) == 0;
     }
 
     [[nodiscard]] auto apply_linux_no_new_privs() noexcept -> bool

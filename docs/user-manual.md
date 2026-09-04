@@ -628,6 +628,24 @@ install -m 0400 -o merovingian -g merovingian /dev/null /etc/merovingian/master-
 head -c 32 /dev/urandom > /etc/merovingian/master-key
 ```
 
+**Secret files must be mode `0400` (0.12.5).** Every path the server treats as a
+secret — `security.secrets.master_key_file`, `database.uri_file`,
+`security.registration.token_file`, and each listener's
+`tls_private_key_file` — must be a regular, non-executable, owner-read-only file
+owned by the service account. `0600` was accepted until 0.12.5 despite
+`docs/hardening.md` documenting owner-read-only; upgrading servers need a
+one-time `chmod 0400` on each, or startup is rejected with
+
+```
+Configuration rejected: <field>: secret file must be a regular owner-only
+non-executable file
+```
+
+The write bit matters because the service account is also the account a
+compromised worker process runs as: a writable master key lets an attacker who
+reaches code execution substitute a key of their own and then decrypt or re-sign
+at will. The file is never written after provisioning, so `0400` costs nothing.
+
 A server upgrading from an earlier version that already holds a legacy plaintext
 signing secret keeps reading it and continues to federate; configure a master key
 and rotate the signing key to re-encrypt the active secret under the at-rest

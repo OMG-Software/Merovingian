@@ -755,3 +755,112 @@ SCENARIO("Config validation rejects weakened Matrix security defaults", "[config
         }
     }
 }
+
+// --- 0.12.5 security audit, finding 23 ---------------------------------------
+//
+// config::validate() checked only that server.server_name was non-empty, so a
+// malformed value reached runtime and was used to build user IDs and federation
+// routing keys. It is now validated against the Matrix v1.19 server_name
+// grammar (appendices, "Server Name"), the same one applied to every remote
+// server name.
+
+namespace
+{
+
+[[nodiscard]] auto config_with_server_name(std::string name) -> merovingian::config::Config
+{
+    auto server = merovingian::config::ServerConfig{};
+    server.server_name = std::move(name);
+    return {
+        std::move(server),
+        merovingian::config::ListenersConfig{},
+        merovingian::config::DatabaseConfig{},
+        merovingian::config::SecurityConfig{},
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
+    };
+}
+
+[[nodiscard]] auto has_server_name_finding(merovingian::config::Config const& config) -> bool
+{
+    auto const findings = merovingian::config::validate(config);
+    return std::ranges::any_of(findings, [](merovingian::config::ConfigValidationFinding const& finding) {
+        return finding.field == "server.server_name";
+    });
+}
+
+} // namespace
+
+SCENARIO("Config validation rejects a server name that does not match the Matrix grammar",
+         "[config][validation][security]")
+{
+    GIVEN("server names that are malformed under the Matrix v1.19 server_name grammar")
+    {
+        WHEN("a bare port with no hostname is validated")
+        {
+            THEN("validation reports a server.server_name finding")
+            {
+                REQUIRE(has_server_name_finding(config_with_server_name(":8000")));
+            }
+        }
+
+        WHEN("a name with an empty label is validated")
+        {
+            THEN("validation reports a server.server_name finding")
+            {
+                REQUIRE(has_server_name_finding(config_with_server_name("example..com")));
+            }
+        }
+
+        WHEN("a name containing a space is validated")
+        {
+            THEN("validation reports a server.server_name finding")
+            {
+                REQUIRE(has_server_name_finding(config_with_server_name("exa mple.com")));
+            }
+        }
+
+        WHEN("a name with a non-numeric port is validated")
+        {
+            THEN("validation reports a server.server_name finding")
+            {
+                REQUIRE(has_server_name_finding(config_with_server_name("example.com:http")));
+            }
+        }
+    }
+
+    GIVEN("server names that are valid under the grammar")
+    {
+        WHEN("a plain DNS name is validated")
+        {
+            THEN("no server.server_name finding is reported")
+            {
+                REQUIRE_FALSE(has_server_name_finding(config_with_server_name("example.com")));
+            }
+        }
+
+        WHEN("a DNS name with a port is validated")
+        {
+            THEN("no server.server_name finding is reported")
+            {
+                REQUIRE_FALSE(has_server_name_finding(config_with_server_name("example.com:8448")));
+            }
+        }
+
+        WHEN("an IPv4 literal is validated")
+        {
+            THEN("no server.server_name finding is reported")
+            {
+                REQUIRE_FALSE(has_server_name_finding(config_with_server_name("192.0.2.1:8448")));
+            }
+        }
+
+        WHEN("a bracketed IPv6 literal is validated")
+        {
+            THEN("no server.server_name finding is reported")
+            {
+                REQUIRE_FALSE(has_server_name_finding(config_with_server_name("[2001:db8::1]:8448")));
+            }
+        }
+    }
+}
