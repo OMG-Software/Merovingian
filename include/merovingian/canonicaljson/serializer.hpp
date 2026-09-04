@@ -27,7 +27,12 @@ struct SerializeResult final
 
 [[nodiscard]] auto canonical_json_error_name(CanonicalJsonError error) noexcept -> char const*;
 [[nodiscard]] auto string_is_valid_for_json(std::string_view value) noexcept -> bool;
-[[nodiscard]] auto object_has_duplicate_keys(Object const& object) noexcept -> bool;
+// Not noexcept: the O(n) duplicate check allocates a hash set, so it can throw
+// std::bad_alloc on a wide enough object. Marking it noexcept would turn that
+// into std::terminate -- killing the homeserver under memory pressure instead
+// of failing the one request -- and src/AGENTS.md only permits noexcept on
+// functions that genuinely cannot throw.
+[[nodiscard]] auto object_has_duplicate_keys(Object const& object) -> bool;
 // General-purpose canonical serialization. Floats are permitted (and
 // serialized with a correct, shortest round-tripping representation) because
 // this is also used for ordinary, never-signed JSON responses that

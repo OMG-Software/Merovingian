@@ -119,6 +119,44 @@ escalations reachable by an ordinary room moderator or a federating peer.
   request — but never read, and no sweep existed. Idle connections are now
   evicted after that hour, and each user/device is capped at eight with
   least-recently-used eviction.
+- **Review round (PR #488).** Codex review found nineteen issues on the branch
+  above; the ones that changed behaviour are recorded here rather than folded
+  silently into the entries they correct.
+  - The key-resolution negative cache was keyed on the origin alone, so naming a
+    real server with a bogus key ID poisoned that server's own traffic for the
+    full TTL — a denial of service against a third party, worse than the
+    amplification the budget was added to bound. Now scoped to (origin, key ID).
+  - The budget keyed on the direct TCP peer, which behind the reverse-proxy
+    deployment the example config describes is `127.0.0.1` for every remote
+    server. Trusted-proxy resolution is now a shared helper used by both the
+    client-server limiter and the federation budget.
+  - A resolution the key cache can serve does no network work and is no longer
+    charged, so a peer signing with a second published key is not throttled.
+  - Rule 9 validation was written against room version 11 and applied to all
+    versions. Versions 1-9 permit a string-encoded integer power level, so
+    integer-only validation rejected valid historical events; `notifications`
+    joined the rules only in v6; and rule 1.4 tests for the presence of
+    `creator`, not its type. All three are now version-aware, and string-encoded
+    levels are read as their value rather than silently defaulted.
+  - Deactivation discarded both token-revocation results and still returned 200.
+    A failed refresh-token update was directly exploitable, because
+    `refresh_local_session` checked only that the user existed. Revocation
+    failure now fails the request, and a deactivated user cannot refresh at all —
+    two independent gates rather than one.
+  - Deactivation ignored the request's `id_server`, so a client selecting a
+    trusted identity server got a result implying its choice was honoured.
+  - A throttled login returned 429 with `M_FORBIDDEN` and no delay; it is now
+    `M_LIMIT_EXCEEDED` carrying `retry_after_ms`.
+  - The sliding-sync connection key joined user, device and connection ID with
+    `/`, which a device ID may contain, so device `A/B`'s state was counted and
+    evicted under device `A`. Components are now length-prefixed. Pruning also
+    evicted a connection to make room that an existing-key poll did not need.
+  - The master-key cache identity was (path, size, mtime), which `cp -p` and
+    reproducible deployment tooling preserve; it now uses inode, device and
+    ctime, which an in-place overwrite cannot leave unchanged.
+  - `object_has_duplicate_keys` kept its `noexcept` after gaining an allocation,
+    turning `bad_alloc` into `std::terminate`.
+  - `KeyResolutionSlot` held its runtime by raw pointer.
 - **`scripts/reject-unsafe.sh` no longer flags comments as libsodium
   violations.** Its comment-exclusion filter, `grep -vE '^[[:space:]]*//'`, ran
   *after* `grep --line-number` had already prefixed every hit with `path:line:`,

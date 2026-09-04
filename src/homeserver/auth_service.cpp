@@ -26,13 +26,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <filesystem>
+#include <limits>
 #include <mutex>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
-#include <system_error>
 #include <tuple>
 #include <unordered_map>
 #include <vector>
@@ -112,24 +111,31 @@ namespace
 
     [[nodiscard]] auto master_key_file_identity(std::string const& path) -> std::string
     {
-        auto error = std::error_code{};
-        auto const size = std::filesystem::file_size(path, error);
-        if (error)
+        // Identity, not a digest: this runs on the authenticated-request path and
+        // exists precisely to avoid re-reading the key, so it must not read it.
+        //
+        // (path, size, mtime) alone was not enough. Replacing a fixed-length key
+        // with `cp -p`, with reproducible secret-deployment tooling, or on a
+        // filesystem with coarse timestamps preserves all three, and the cache
+        // would then serve the old HMAC keys indefinitely -- leaving tokens
+        // derived from the retired key valid, and contradicting the documented
+        // promise that replacing the file takes effect without a restart.
+        //
+        // st_ino and st_dev catch a replace-by-rename, which is how atomic secret
+        // rotation is normally done. st_ctim catches an in-place overwrite: it is
+        // the inode change time, updated on any content or metadata write, and
+        // unlike st_mtim it cannot be set backwards with utimes(2). Together they
+        // leave no way to swap the contents without moving this value.
+        struct stat info{};
+        if (::stat(path.c_str(), &info) != 0)
         {
             return {};
         }
-        auto const written = std::filesystem::last_write_time(path, error);
-        if (error)
-        {
-            return {};
-        }
-        // Both counts are widened to fixed-width types before formatting.
-        // file_time_type::rep is implementation-defined -- libstdc++ makes it
-        // `long`, which picks a std::to_string overload unambiguously, while
-        // libc++ (FreeBSD, OpenBSD) uses a type that matches none of them
-        // exactly and the call fails to compile.
-        return path + '\0' + std::to_string(static_cast<std::uint64_t>(size)) + '\0' +
-               std::to_string(static_cast<std::int64_t>(written.time_since_epoch().count()));
+        auto const field = [](auto value) {
+            return std::to_string(static_cast<std::uint64_t>(value));
+        };
+        return path + '\0' + field(info.st_dev) + '\0' + field(info.st_ino) + '\0' + field(info.st_size) + '\0' +
+               field(info.st_mtime) + '\0' + field(info.st_ctime);
     }
 
     [[nodiscard]] auto token_hmac_keys(HomeserverRuntime const& runtime) -> TokenHmacKeys
@@ -983,7 +989,13 @@ auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std:
                              observability::LogEventSeverity::warning, observability::AuditCategory::auth,
                              "login.throttled", std::string{user_id}, std::string{device_id},
                              "429:too many failed login attempts");
-        return make_operation_result(false, {}, "too many failed login attempts", 429U);
+        auto throttled = make_operation_result(false, {}, "too many failed login attempts", 429U);
+        // Carry the delay already computed above so the caller can render the
+        // Matrix-standard M_LIMIT_EXCEEDED with retry_after_ms rather than a
+        // 429 a compliant client cannot schedule a retry from.
+        throttled.retry_after_ms = static_cast<std::uint32_t>(
+            std::min<std::uint64_t>(retry_after_ms, std::numeric_limits<std::uint32_t>::max()));
+        return throttled;
     }
 
     auto* user = find_user(runtime.database, user_id);
@@ -1245,9 +1257,19 @@ auto refresh_local_session(HomeserverRuntime& runtime, std::string_view refresh_
 
     auto const user_id = refresh->user_id;
     auto const device_id = refresh->device_id;
-    if (find_user(runtime.database, user_id) == nullptr || !auth::device_id_is_valid(device_id))
+    auto const* refresh_user = find_user(runtime.database, user_id);
+    if (refresh_user == nullptr || !auth::device_id_is_valid(device_id))
     {
         return {false, 401U, {}, {}, {}, {}, "refresh subject rejected"};
+    }
+    // A deactivated account must never mint a new credential, whatever state its
+    // stored rows are in. Checking only that the user still exists made a single
+    // failed revocation during deactivation directly exploitable; this is the
+    // second, independent gate that makes that failure non-exploitable rather
+    // than merely unlikely.
+    if (refresh_user->deactivated)
+    {
+        return {false, 401U, {}, {}, {}, {}, "account deactivated"};
     }
     if (database::revoke_refresh_token(runtime.database.persistent_store, refresh->token_hash) == 0U)
     {
@@ -1555,8 +1577,35 @@ auto deactivate_local_user(HomeserverRuntime& runtime, std::string_view access_t
 
     // Every credential dies with the account, including the caller's own -- unlike
     // a password change, there is no session to preserve.
+    //
+    // These results are checked, not discarded. A failed refresh-token update is
+    // immediately exploitable: refresh_local_session accepts any unrevoked row,
+    // so a held refresh token could still mint fresh access and refresh tokens
+    // for an account the endpoint had just reported closed. A failed access-token
+    // update restores the token on the next restart, when the persistent rows are
+    // rehydrated over the in-memory revocations below. Reporting 200 while either
+    // is true tells the user their account is closed when it is not.
+    //
+    // revoke_*_for_user return the number of rows changed, so zero is the normal
+    // answer for an account with no tokens of that kind and is not a failure.
+    // What must not pass is a persistence failure, which store_* surfaces by
+    // leaving the row unchanged; both calls are re-checked below against the
+    // store to make the outcome, not the return count, the thing that decides.
     std::ignore = database::revoke_access_tokens_for_user(runtime.database.persistent_store, session->user_id);
     std::ignore = database::revoke_refresh_tokens_for_user(runtime.database.persistent_store, session->user_id);
+    auto const credentials_remain =
+        std::ranges::any_of(runtime.database.persistent_store.access_tokens,
+                            [&session](database::PersistentAccessToken const& token) {
+                                return token.user_id == session->user_id && !token.revoked;
+                            }) ||
+        std::ranges::any_of(runtime.database.persistent_store.refresh_tokens,
+                            [&session](database::PersistentRefreshToken const& token) {
+                                return token.user_id == session->user_id && !token.revoked;
+                            });
+    if (credentials_remain)
+    {
+        return make_operation_result(false, {}, "token revocation failed during deactivation", 500U);
+    }
     for (auto& candidate : runtime.database.sessions)
     {
         if (candidate.user_id == session->user_id)

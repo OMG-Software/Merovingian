@@ -403,6 +403,12 @@ struct OperationResult final
     std::uint16_t status{500U};
     std::string value{};
     std::string reason{};
+    // Milliseconds the caller should wait before retrying, for results that are
+    // throttled rather than refused. Carried here so a 429 can be rendered as the
+    // Matrix-standard M_LIMIT_EXCEEDED with retry_after_ms instead of collapsing
+    // into the generic failure mapping, which would drop the delay this server
+    // has already computed. Zero for every other outcome.
+    std::uint32_t retry_after_ms{0U};
 };
 
 struct SessionRefreshResult final

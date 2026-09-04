@@ -1959,7 +1959,8 @@ namespace
     [[nodiscard]] auto unbind_threepid_for_deactivation(ClientServerRuntime& rt,
                                                         std::unique_lock<std::recursive_mutex>& guard,
                                                         std::string_view user_id, std::string_view medium,
-                                                        std::string_view address) -> bool
+                                                        std::string_view address,
+                                                        std::optional<std::string> const& requested_id_server) -> bool
     {
         auto const clear_local = [&rt, user_id, medium, address]() {
             // Re-find rather than reuse a pointer: the store may have moved.
@@ -1986,8 +1987,15 @@ namespace
             clear_local();
             return false;
         }
+        // Spec: "The identity server to unbind all of the user's 3PIDs from. If not
+        // provided, the homeserver MUST use the id_server that was originally used
+        // to bind each identifier." An explicitly requested server therefore wins
+        // over the one recorded on the binding; without this the field was accepted
+        // and silently ignored, and a client selecting a different trusted server
+        // got a result implying its choice had been honoured.
+        auto const unbind_target = requested_id_server.has_value() ? *requested_id_server : *record->id_server;
         auto const trusted_base =
-            resolve_trusted_identity_base_url(rt.homeserver.config.server().identity_server, *record->id_server);
+            resolve_trusted_identity_base_url(rt.homeserver.config.server().identity_server, unbind_target);
         if (!trusted_base.has_value())
         {
             // The operator has withdrawn trust for the IS holding this binding, so
@@ -4215,8 +4223,25 @@ namespace
     // Evicts idle sliding-sync connection state, then bounds how many connections
     // one user/device may hold, discarding least-recently-used first. See the
     // call site in sliding_sync_json for why this is required (#487).
-    auto prune_sliding_sync_connections(HomeserverRuntime& runtime, std::string_view user, std::string_view device_id)
-        -> void
+    // Length-prefixes each component so the composed key is unambiguous. A plain
+    // "user/device/conn" join is not: a Matrix device ID may itself contain '/',
+    // so every connection belonging to device "A/B" also carries the prefix built
+    // for device "A", and pruning device A would count and evict A/B's state.
+    [[nodiscard]] auto sliding_sync_device_prefix(std::string_view user, std::string_view device_id) -> std::string
+    {
+        return std::to_string(user.size()) + ':' + std::string{user} + std::to_string(device_id.size()) + ':' +
+               std::string{device_id};
+    }
+
+    [[nodiscard]] auto sliding_sync_connection_key(std::string_view user, std::string_view device_id,
+                                                   std::string_view conn_id) -> std::string
+    {
+        return sliding_sync_device_prefix(user, device_id) + std::to_string(conn_id.size()) + ':' +
+               std::string{conn_id};
+    }
+
+    auto prune_sliding_sync_connections(HomeserverRuntime& runtime, std::string_view user, std::string_view device_id,
+                                        std::string const& conn_key) -> void
     {
         auto const now = std::chrono::steady_clock::now();
         auto& connections = runtime.sliding_sync_connections;
@@ -4229,9 +4254,16 @@ namespace
             it = (now - it->second.last_used) > sliding_sync_idle_ttl ? connections.erase(it) : std::next(it);
         }
 
-        // The key is user + "/" + device_id + "/" + conn_id, so this prefix selects
-        // exactly the connections belonging to this device.
-        auto const prefix = std::string{user} + "/" + std::string{device_id} + "/";
+        // A poll on a connection that already exists needs no room made for it.
+        // Reserving a slot unconditionally meant a device sitting at exactly the
+        // cap evicted its least-recently-used connection on every ordinary poll,
+        // cycling all of them out despite never exceeding the documented limit.
+        if (connections.contains(conn_key))
+        {
+            return;
+        }
+
+        auto const prefix = sliding_sync_device_prefix(user, device_id);
         auto owned = std::vector<std::map<std::string, sync::SlidingSyncConnectionState>::iterator>{};
         for (auto it = connections.lower_bound(prefix); it != connections.end() && it->first.starts_with(prefix); ++it)
         {
@@ -4242,8 +4274,7 @@ namespace
             return;
         }
 
-        // Keep the cap-1 most recently used, leaving room for the connection the
-        // caller is about to insert or refresh.
+        // Keep the cap-1 most recently used, leaving room for the new connection.
         std::ranges::sort(owned, [](auto const& left, auto const& right) {
             return left->second.last_used < right->second.last_used;
         });
@@ -4267,8 +4298,8 @@ namespace
         // extensions below — never re-read per event.
         auto const ignored_senders = trust_safety::resolve_ignored_users(store, user);
 
-        auto const conn_key = std::string{user} + "/" + std::string{device_id} + "/" +
-                              (ssreq.conn_id.has_value() ? *ssreq.conn_id : "__default__");
+        auto const conn_key = sliding_sync_connection_key(
+            user, device_id, ssreq.conn_id.has_value() ? std::string_view{*ssreq.conn_id} : "__default__");
 
         // MSC4186: a pos this server did not issue cannot be served
         // incrementally — respond 400 M_UNKNOWN_POS so the client expires the
@@ -4317,7 +4348,7 @@ namespace
         //
         // Pruned before taking the reference below, so the reference cannot be to
         // an entry this sweep then erases.
-        prune_sliding_sync_connections(rt.homeserver, std::string_view{user}, device_id);
+        prune_sliding_sync_connections(rt.homeserver, std::string_view{user}, device_id, conn_key);
 
         auto& conn = rt.homeserver.sliding_sync_connections[conn_key];
         conn.last_used = std::chrono::steady_clock::now();
@@ -9556,6 +9587,14 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                    body->supports_refresh_tokens);
         if (!result.ok)
         {
+            // A throttled login is a rate-limit outcome, not a credential
+            // refusal: the spec's error for it is M_LIMIT_EXCEEDED carrying
+            // retry_after_ms. Collapsing it into M_FORBIDDEN told a compliant
+            // client the password was wrong and gave it nothing to back off on.
+            if (result.status == 429U)
+            {
+                return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", result.reason, result.retry_after_ms);
+            }
             return dispatch_err(req, rt, result.status, "M_FORBIDDEN", result.reason);
         }
         if (find_device(rt, body->user_id, body->device_id) == nullptr)
@@ -10262,6 +10301,12 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         // Addresses are copied out before the loop: the outbound call drops the
         // runtime lock, so the store vector can move and any iterator, pointer
         // or index taken across it would dangle.
+        // Optional per spec; when absent each binding's own recorded id_server is
+        // used instead.
+        auto const requested_id_server = [&object]() -> std::optional<std::string> {
+            auto const* value = string_member(*object, "id_server");
+            return value == nullptr || value->empty() ? std::nullopt : std::optional<std::string>{*value};
+        }();
         auto pending_unbinds = std::vector<std::pair<std::string, std::string>>{};
         for (auto const& record : rt.homeserver.database.persistent_store.account_threepids)
         {
@@ -10273,7 +10318,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         auto unbind_result = std::string_view{"success"};
         for (auto const& [medium, address] : pending_unbinds)
         {
-            if (!unbind_threepid_for_deactivation(rt, guard, result.value, medium, address))
+            if (!unbind_threepid_for_deactivation(rt, guard, result.value, medium, address, requested_id_server))
             {
                 unbind_result = "no-support";
             }

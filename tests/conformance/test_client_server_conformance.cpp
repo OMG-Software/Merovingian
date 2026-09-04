@@ -16172,3 +16172,102 @@ SCENARIO("POST /account/deactivate closes the account permanently",
         }
     }
 }
+
+// PR #488 review: a deactivated account must never mint a new credential, even
+// if a persistent revocation failed. refresh_local_session previously checked
+// only that the user still existed, so one failed row update during deactivation
+// left a held refresh token able to produce fresh access and refresh tokens for
+// an account the endpoint had just reported closed.
+SCENARIO("A deactivated account cannot refresh its session",
+         "[conformance][client-server][account][deactivate][security]")
+{
+    GIVEN("a logged-in user holding a refresh token")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    started.runtime,
+                    {"POST", "/_matrix/client/v3/register",
+                     {}, merovingian::tests::registration_json("carol", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            started.runtime,
+            {"POST", "/_matrix/client/v3/login", {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@carol:example.org"},)"
+             R"("password":"CorrectHorse7!","device_id":"CAROLDEV","refresh_token":true})"});
+        REQUIRE(login.response.status == 200U);
+        auto const login_body = parse_object(login.response.body);
+        auto const* access_token = string_member(login_body, "access_token");
+        auto const* refresh_token = string_member(login_body, "refresh_token");
+        REQUIRE(access_token != nullptr);
+        REQUIRE(refresh_token != nullptr);
+        auto const token = *access_token;
+        auto const refresh = *refresh_token;
+
+        WHEN("the account is deactivated and the refresh token is then presented")
+        {
+            auto const deactivated = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"POST",
+                                  "/_matrix/client/v3/account/deactivate",
+                                  token,
+                                  R"({"auth":{"type":"m.login.password","password":"CorrectHorse7!"}})",
+                                  {}});
+            REQUIRE(deactivated.response.status == 200U);
+
+            auto const refreshed = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"POST", "/_matrix/client/v3/refresh", {},
+                                  R"({"refresh_token":")" + refresh + R"("})"});
+
+            THEN("the refresh is refused rather than minting a new credential")
+            {
+                REQUIRE(refreshed.response.status != 200U);
+            }
+        }
+    }
+}
+
+// PR #488 review: a throttled login is a rate-limit outcome, not a credential
+// refusal. Collapsing it into M_FORBIDDEN told a compliant client its password
+// was wrong and gave it no delay to back off on.
+SCENARIO("A locked-out login returns M_LIMIT_EXCEEDED with a retry delay",
+         "[conformance][client-server][auth][rate-limit]")
+{
+    GIVEN("a registered user and repeated wrong-password attempts")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    started.runtime,
+                    {"POST", "/_matrix/client/v3/register",
+                     {}, merovingian::tests::registration_json("dave", "CorrectHorse7!")})
+                    .response.status == 200U);
+
+        WHEN("the per-account failure threshold is exceeded")
+        {
+            auto const attempt_login = [&started]() {
+                return merovingian::homeserver::handle_client_server_request(
+                    started.runtime,
+                    {"POST", "/_matrix/client/v3/login", {},
+                     R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@dave:example.org"},)"
+                     R"("password":"WrongPassword1!"})"});
+            };
+            // Five failures reach the threshold; the sixth is refused by it.
+            for (auto attempt = 0; attempt < 5; ++attempt)
+            {
+                std::ignore = attempt_login();
+            }
+            auto const last = attempt_login();
+
+            THEN("the final response is 429 M_LIMIT_EXCEEDED carrying retry_after_ms")
+            {
+                REQUIRE(last.response.status == 429U);
+                auto const body = parse_object(last.response.body);
+                auto const* errcode = string_member(body, "errcode");
+                REQUIRE(errcode != nullptr);
+                REQUIRE(*errcode == "M_LIMIT_EXCEEDED");
+                // The delay must actually be carried, not merely a 429 shape.
+                REQUIRE(last.response.body.find("retry_after_ms") != std::string::npos);
+            }
+        }
+    }
+}

@@ -304,7 +304,7 @@ auto string_is_valid_for_json(std::string_view value) noexcept -> bool
     return utf8_is_valid(value);
 }
 
-auto object_has_duplicate_keys(Object const& object) noexcept -> bool
+auto object_has_duplicate_keys(Object const& object) -> bool
 {
     // Previously an O(n^2) nested begin/end scan, called at the top of
     // serialize_object on every serialize_canonical / serialize_canonical_strict
