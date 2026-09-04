@@ -25,6 +25,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <future>
@@ -149,6 +150,23 @@ struct LocalDatabase final
     std::unique_ptr<KeyServerCache> key_server_cache{std::make_unique<KeyServerCache>()};
     std::uint64_t next_stream_ordering{1U};
 };
+
+// Caps on the in-memory ephemeral state a federating peer can create
+// (0.12.5 audit, findings 12 and 13).
+//
+// Both vectors are fed straight from federation EDUs. `typing_users` only ever
+// shrank when a previously-seen user sent typing=false, and `receipts` was
+// upserted but never reaped, so a malicious peer could grow either without
+// bound by varying room_id and user_id — monotonic memory growth from remote
+// input, ending in an OOM kill.
+//
+// The primary bound is membership: an EDU for a room this server holds no
+// membership row for is dropped, so a peer can only create entries for rooms we
+// actually participate in. These caps are the backstop for a peer that is a
+// legitimate member of a large room and simply floods it; the oldest entry is
+// evicted, since ephemeral state that old is already stale.
+constexpr auto max_inbound_typing_entries = std::size_t{4096U};
+constexpr auto max_inbound_receipt_entries = std::size_t{65536U};
 
 struct InboundTypingUser final
 {

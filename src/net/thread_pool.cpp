@@ -72,8 +72,10 @@ namespace
 
 } // namespace
 
-ThreadPool::ThreadPool(std::size_t worker_count, std::function<void()> on_thread_start)
-    : on_thread_start_{std::move(on_thread_start)}
+ThreadPool::ThreadPool(std::size_t worker_count, std::function<void()> on_thread_start,
+                       std::size_t max_queue_depth)
+    : max_queue_depth_{max_queue_depth}
+    , on_thread_start_{std::move(on_thread_start)}
 {
     workers_.reserve(worker_count);
     try
@@ -110,6 +112,17 @@ auto ThreadPool::submit(std::function<void()> work) -> bool
         {
             log_diagnostic("submit.dropped", {
                                                  {"reason", "pool_stopped", false}
+            });
+            return false;
+        }
+        // Backpressure (0.12.5 audit, finding 11). Refusing here is what makes
+        // the queue bounded; the accept loops respond by closing the connection
+        // rather than letting the queue grow until the process is OOM-killed.
+        if (max_queue_depth_ != 0U && queue_.size() >= max_queue_depth_)
+        {
+            log_diagnostic("submit.dropped", {
+                                                 {"reason", "queue_full",                        false},
+                                                 {"depth",  std::to_string(max_queue_depth_), false}
             });
             return false;
         }

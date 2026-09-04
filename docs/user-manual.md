@@ -528,6 +528,14 @@ opaque provider id (may itself contain dots, e.g.
 | `listeners.federation.reverse_proxy` | `true` | Set `false` for a direct public TLS listener; must be `true` for loopback cleartext. |
 | `listeners.federation.tls_certificate_file` | (empty) | Required when federation TLS is enabled. |
 | `listeners.federation.tls_private_key_file` | (empty) | Required when federation TLS is enabled. |
+| `listeners.max_queued_connections` | `1024` | Connections allowed to wait for a worker thread before new ones are refused. `0` disables the cap. |
+
+`listeners.max_queued_connections` bounds the accept loops' work queues. Each
+accepted connection queues one closure, so without a cap a connection flood
+grows the queue until the process is killed by the OOM reaper. Past the cap the
+listener closes the connection immediately, which sheds load in the one way the
+client can observe and retry. Raise it if legitimate bursts are being refused;
+lower it to shed load sooner under a smaller memory budget. Restart required.
 
 A listener with `tls=false` must bind to a loopback address (`127.0.0.1`,
 `localhost`, `::1`, or `[::1]`) **and** declare `reverse_proxy=true`, which is
@@ -840,6 +848,17 @@ Service API".
 | Key | Default | When to change |
 |---|---|---|
 | `security.media.max_upload_size` | `50MiB` | Maximum local upload size. Match your reverse-proxy body-size limit. |
+| `security.media.max_total_size` | (empty) | Cap on total stored media bytes. Empty means no limit. |
+| `security.media.max_size_per_user` | (empty) | Per-user media quota in bytes. Empty means no limit. |
+| `security.media.max_records` | `0` | Cap on stored media records. `0` means no limit. |
+
+The three capacity limits bound the in-memory media index, which is otherwise
+unbounded: upload spam, or a large cache of remote media, grows it until the
+process runs out of memory. An upload that would cross any limit is refused with
+`507 M_LIMIT_EXCEEDED`; nothing is evicted, because clients hold `mxc://` URIs
+for what is already stored and eviction would break those links rather than shed
+load. Bytes are counted over stored blobs, so a deduplicated upload consumes a
+record but no additional bytes.
 | `security.media.allowed_mime_types` | built-in list | Comma-separated allow-list; keep `application/octet-stream` so encrypted-room attachments are accepted. |
 | `security.media.quarantine_unknown_mime` | `true` | Quarantine uploads whose MIME type is not in the allow-list. |
 | `security.media.block_private_ip_fetches` | `true` | Block private/loopback origins when fetching remote media. |

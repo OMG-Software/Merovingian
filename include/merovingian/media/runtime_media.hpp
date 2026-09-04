@@ -15,6 +15,19 @@ namespace merovingian::media
 struct RuntimeMediaConfig final
 {
     std::uint64_t max_upload_bytes{0U};
+    // Repository capacity limits (0.12.5 audit, finding 19). The in-memory
+    // media index had no cap on total records, total bytes, or per-user usage,
+    // so upload spam or a large remote-media cache grew it until the process was
+    // OOM-killed. An upload that would cross any of these is refused with 507
+    // rather than evicting: media is addressable content a client already holds
+    // an mxc:// URI for, so silently dropping the oldest blob would turn a
+    // capacity problem into broken links.
+    //
+    // All three default to 0, meaning no limit — the pre-0.12.5 behaviour.
+    // Operators set them from the media config keys of the same name.
+    std::uint64_t max_records{0U};
+    std::uint64_t max_total_bytes{0U};
+    std::uint64_t max_bytes_per_user{0U};
     std::vector<std::string> allowed_mime_types{"image/png", "image/jpeg", "image/gif", "text/plain",
                                                 "application/pdf"};
     bool quarantine_unknown_mime{true};

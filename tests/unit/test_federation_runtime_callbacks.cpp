@@ -1331,6 +1331,12 @@ SCENARIO("Typing EDU parses a user_id containing an escaped quote correctly inst
         auto const key_id = std::string{"ed25519:auto"};
         merovingian::federation::upsert_remote(runtime.federation, remote_for(origin, key_id, "typing-quote-seed"));
 
+        // Typing EDUs are only accepted for rooms this server is in (0.12.5
+        // audit, finding 12), so the room needs a membership row before the
+        // parsing behaviour under test can be reached.
+        runtime.database.persistent_store.memberships.push_back(
+            {"!room:matrix.example.org", "@local:example.org", "join", 1U});
+
         auto request = merovingian::homeserver::LocalHttpRequest{};
         request.method = "PUT";
         request.target = "/_matrix/federation/v1/send/txn-typing-quote";

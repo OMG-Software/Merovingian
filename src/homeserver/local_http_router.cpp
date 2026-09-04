@@ -770,6 +770,24 @@ namespace
         return !user_id.empty() && server_name_from_user_id(user_id) == origin;
     }
 
+    // True if this server holds any membership row for the room.
+    //
+    // 0.12.5 audit, findings 12 and 13: ephemeral federation state (typing,
+    // receipts) is only meaningful for a room we are actually in, and gating on
+    // it is what bounds those vectors. Without it a peer could mint entries for
+    // arbitrary invented room_ids and grow them without limit.
+    //
+    // Any membership, not only "join": a room we have been invited to or have
+    // left still has rows a client may sync, and the gate exists to reject rooms
+    // this server has never heard of, not to re-derive visibility rules.
+    [[nodiscard]] auto room_has_local_membership(HomeserverRuntime const& runtime, std::string_view room_id) -> bool
+    {
+        auto const& memberships = runtime.database.persistent_store.memberships;
+        return std::ranges::any_of(memberships, [room_id](database::PersistentMembership const& membership) {
+            return membership.room_id == room_id;
+        });
+    }
+
     // Outcome of a direct_to_device enqueue attempt. `targeted` counts every
     // per-device entry that was well-formed enough to attempt a store;
     // `stored` counts how many of those actually persisted. The two can
@@ -971,6 +989,15 @@ namespace
                     return {federation::EduDispositionStatus::rejected_invalid,
                             "user_id domain does not match envelope origin"};
                 }
+                // 0.12.5 audit, finding 12: bound what a peer can put here. The
+                // primary bound is membership — this server has no use for
+                // typing state in a room it is not in, and without the check a
+                // peer could mint an entry for any room_id it invented.
+                if (!room_has_local_membership(*rt, room_id))
+                {
+                    return {federation::EduDispositionStatus::rejected_invalid,
+                            "typing EDU for a room this server has no membership in"};
+                }
                 auto const previous_users = current_typing_users_in_room(*rt, room_id);
                 auto existing = std::ranges::find_if(rt->typing_users, [&](auto const& t) {
                     return t.room_id == room_id && t.user_id == user_id;
@@ -983,6 +1010,13 @@ namespace
                     }
                     else
                     {
+                        // Backstop for a peer that is a legitimate member of a
+                        // very large room. Typing state is ephemeral, so the
+                        // oldest entry is already the least useful one.
+                        if (rt->typing_users.size() >= max_inbound_typing_entries)
+                        {
+                            rt->typing_users.erase(rt->typing_users.begin());
+                        }
                         rt->typing_users.push_back({room_id, user_id, true, std::uint64_t{0U}});
                     }
                 }
@@ -1015,6 +1049,14 @@ namespace
                     {
                         return {federation::EduDispositionStatus::rejected_invalid,
                                 "receipt room entry must be an object"};
+                    }
+                    // 0.12.5 audit, finding 13: skip rooms this server holds no
+                    // membership in. Skipping rather than rejecting the whole
+                    // EDU: a receipt transaction legitimately batches several
+                    // rooms, and one stale room_id must not discard the rest.
+                    if (!room_has_local_membership(*rt, room_member.key))
+                    {
+                        continue;
                     }
                     for (auto const& receipt_type_member : *receipt_types)
                     {
@@ -1066,6 +1108,14 @@ namespace
                             }
                             else
                             {
+                                // 0.12.5 audit, finding 13. Same shape as the
+                                // typing cap: the membership check above is the
+                                // real bound, this evicts the oldest read
+                                // receipt if a peer floods a room it is in.
+                                if (rt->receipts.size() >= max_inbound_receipt_entries)
+                                {
+                                    rt->receipts.erase(rt->receipts.begin());
+                                }
                                 rt->receipts.push_back({room_member.key, receipt_type_member.key, user_member.key,
                                                         *first_event_id, ts, stream_id});
                             }

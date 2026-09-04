@@ -217,6 +217,14 @@ struct ListenersConfig final
 {
     ListenerConfig client{"127.0.0.1:8008", false};
     ListenerConfig federation{"127.0.0.1:8009", false};
+    // Maximum connections waiting for a worker thread before new connections
+    // are refused (0.12.5 audit, finding 11). The accept loops queue one
+    // closure per accepted connection, so without a cap a connection flood
+    // grows the work queue until the process is OOM-killed. Beyond the cap the
+    // listener closes the connection immediately, which sheds load in the one
+    // way the client can observe and retry. 0 disables the cap and restores the
+    // pre-0.12.5 unbounded behaviour.
+    std::uint32_t max_queued_connections{1024U};
 };
 
 enum class DatabaseBackend
@@ -366,6 +374,15 @@ struct FederationSecurityConfig final
 struct MediaSecurityConfig final
 {
     std::string max_upload_size{"50MiB"};
+    // Repository capacity limits (0.12.5 audit, finding 19). The in-memory media
+    // index was unbounded, so upload spam or a large remote-media cache could
+    // exhaust memory. An upload that would cross any of these is refused with
+    // 507 M_LIMIT_EXCEEDED rather than evicting an older blob: clients hold
+    // mxc:// URIs for what is already stored, and eviction would break them.
+    // Empty means no limit, which is the pre-0.12.5 behaviour.
+    std::string max_total_size{};
+    std::string max_size_per_user{};
+    std::uint64_t max_records{0U};
     std::vector<std::string> allowed_mime_types{};
     bool quarantine_unknown_mime{true};
     bool enable_av_scanner{true};

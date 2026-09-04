@@ -43,6 +43,34 @@ earlier on this branch; this entry covers the code changes.
   wiping our own read buffer still left plaintext root-secret bytes in the
   process.
 
+### Unbounded resources reachable from the network (findings 11-13, 19)
+
+- **The `ThreadPool` work queue is bounded.** Both accept loops queue one
+  closure per accepted connection into an unbounded `std::queue`, so a
+  connection flood grew it until the OOM reaper fired. `submit()` now refuses
+  past `listeners.max_queued_connections` (default 1024) and the listener closes
+  the refused connection, which sheds load in the one way a client can see and
+  retry. The IPC dispatch pools keep the unbounded default: their producer is
+  the local supervisor, not a remote peer, and dropping a message there would
+  silently lose federation work rather than shed a connection.
+- **Federation typing and receipt EDUs can no longer grow memory without
+  bound.** `typing_users` only shrank when a previously-seen user sent
+  `typing=false`, and `receipts` was upserted but never reaped, so a peer could
+  grow either indefinitely by varying `room_id` and `user_id`. The real bound is
+  membership: an EDU for a room this server holds no membership row for is now
+  dropped — ephemeral state for a room we are not in has no use, and without the
+  check a peer could mint entries for room ids it simply invented. Hard caps back
+  that up for a peer that is a legitimate member of a very large room, evicting
+  the oldest entry. A receipt transaction legitimately batches several rooms, so
+  an unknown room is skipped rather than failing the whole EDU.
+- **The media repository has capacity limits.** `security.media.max_records`,
+  `security.media.max_total_size` and `security.media.max_size_per_user` bound
+  the in-memory index, which previously had no cap on records, bytes, or per-user
+  usage. All three default to no limit. An upload past a limit is refused with
+  507; nothing is evicted, because clients hold `mxc://` URIs for what is stored
+  and eviction would break those links rather than shed load. Bytes are counted
+  over stored blobs, so a deduplicated upload consumes a record but no bytes.
+
 ## 0.12.4
 
 Security audit of the 0.12.3 tree. Two of the findings below are privilege
