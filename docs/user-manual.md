@@ -592,14 +592,38 @@ creates a normal user; admin accounts can only be created through
 
 | Key | Default | When to change |
 |---|---|---|
-| `security.secrets.master_key_file` | `/etc/merovingian/master-key` | Path to the 32-byte master key file. |
+| `security.secrets.master_key_file` | `/etc/merovingian/master-key` | Path to the 32-byte master key file. **Required.** |
 
-When a master key is configured, the Ed25519 server signing secret is
-encrypted at rest with `secret_box` (`secretbox:v1:...`) before being stored
-in the database. If no master key is configured, the secret is stored as a
-legacy plaintext base64 value for backward compatibility and a one-time
-diagnostic warns the operator. Rotating the signing key after enabling the
-master key re-encrypts the active secret under the new at-rest format.
+The Ed25519 server signing secret is encrypted at rest with `secret_box`
+(`secretbox:v1:...`) before being stored in the database, under a key derived
+from this file.
+
+**A master key is required to start (0.12.5).** The server will not write a
+signing secret it cannot encrypt, so with no usable master key it has no signing
+key and refuses to start:
+
+```
+start.rejected reason="no server signing key: set security.secrets.master_key_file
+so the signing secret can be encrypted at rest"
+```
+
+The file must also be lockable into memory. If `sodium_mlock()` fails — normally
+`RLIMIT_MEMLOCK` exhaustion — the key is refused rather than used from swappable
+memory, and startup fails with the second form of that message. Raise
+`RLIMIT_MEMLOCK` for the service (`LimitMEMLOCK=` in the systemd unit) or grant
+`CAP_IPC_LOCK`.
+
+Generate one with:
+
+```bash
+install -m 0400 -o merovingian -g merovingian /dev/null /etc/merovingian/master-key
+head -c 32 /dev/urandom > /etc/merovingian/master-key
+```
+
+A server upgrading from an earlier version that already holds a legacy plaintext
+signing secret keeps reading it and continues to federate; configure a master key
+and rotate the signing key to re-encrypt the active secret under the at-rest
+format.
 
 #### Token lifetimes — `security.*_token_lifetime_ms`
 

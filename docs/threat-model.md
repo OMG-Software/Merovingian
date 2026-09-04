@@ -126,10 +126,21 @@ threat it closes; the controls above are the standing defences these reinforce.
   secret seed was persisted as a base64 plaintext value in the database, so a DB
   exfiltration attacker could forge federation signatures and impersonate the
   server. Fixed by encrypting the seed with `secret_box` under a domain-separated
-  XSalsa20-Poly1305 key derived from `security.secrets.master_key_file`; a
-  transparent plaintext fallback remains for deployments that have not yet
-  provisioned a master key, with a one-time diagnostic so operators can rotate
-  to encrypted storage.
+  XSalsa20-Poly1305 key derived from `security.secrets.master_key_file`. The
+  transparent plaintext fallback that remained for deployments without a master
+  key was itself a hole — an attacker who could exfiltrate the database of an
+  unconfigured server got the signing key regardless — and was removed in 0.12.5:
+  both first generation and rotation now fail closed, and the server refuses to
+  start without a usable master key. Legacy plaintext rows are still read so
+  existing deployments keep federating until they rotate.
+
+- **Master key usable from swappable memory:** `load_master_key_material()`
+  tolerated a failed `sodium_mlock()` and returned the root secret in ordinary
+  pageable memory after a one-time warning, so `RLIMIT_MEMLOCK` exhaustion
+  silently downgraded every key derived from it (access-token HMAC, signing-secret
+  box, IPC auth) and exposed them to swap and core dumps. Fixed in 0.12.5: an
+  unlockable master key is refused outright. The remedy is a deployment change —
+  raise `RLIMIT_MEMLOCK` for the service, or grant `CAP_IPC_LOCK`.
 
 - **Registration token stored and compared as plaintext:** the shared
   registration token was loaded from config and compared with `sodium_memcmp`,

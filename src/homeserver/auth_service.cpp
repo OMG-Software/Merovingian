@@ -99,44 +99,15 @@ namespace
     // exhaust RLIMIT_MEMLOCK under concurrency, at which point SecretBuffer
     // silently falls back to unpinned (swappable) memory for the root secret.
     //
-    // The cache is invalidated on the file's identity (path, size, mtime) rather
-    // than on the path alone, so replacing the master key file still takes effect
-    // without a restart — the steady-state cost is one stat() instead of two full
-    // reads.
+    // The cache is invalidated on the file's identity (see
+    // crypto::master_key_file_identity) rather than on the path alone, so
+    // replacing the master key file still takes effect without a restart — the
+    // steady-state cost is one stat() instead of two full reads.
     struct TokenHmacKeys final
     {
         std::optional<crypto::TokenHmacKey> v3{};
         std::optional<crypto::TokenHmacKey> v4{};
     };
-
-    [[nodiscard]] auto master_key_file_identity(std::string const& path) -> std::string
-    {
-        // Identity, not a digest: this runs on the authenticated-request path and
-        // exists precisely to avoid re-reading the key, so it must not read it.
-        //
-        // (path, size, mtime) alone was not enough. Replacing a fixed-length key
-        // with `cp -p`, with reproducible secret-deployment tooling, or on a
-        // filesystem with coarse timestamps preserves all three, and the cache
-        // would then serve the old HMAC keys indefinitely -- leaving tokens
-        // derived from the retired key valid, and contradicting the documented
-        // promise that replacing the file takes effect without a restart.
-        //
-        // st_ino and st_dev catch a replace-by-rename, which is how atomic secret
-        // rotation is normally done. st_ctim catches an in-place overwrite: it is
-        // the inode change time, updated on any content or metadata write, and
-        // unlike st_mtim it cannot be set backwards with utimes(2). Together they
-        // leave no way to swap the contents without moving this value.
-        struct stat info{};
-        if (::stat(path.c_str(), &info) != 0)
-        {
-            return {};
-        }
-        auto const field = [](auto value) {
-            return std::to_string(static_cast<std::uint64_t>(value));
-        };
-        return path + '\0' + field(info.st_dev) + '\0' + field(info.st_ino) + '\0' + field(info.st_size) + '\0' +
-               field(info.st_mtime) + '\0' + field(info.st_ctime);
-    }
 
     [[nodiscard]] auto token_hmac_keys(HomeserverRuntime const& runtime) -> TokenHmacKeys
     {
@@ -152,7 +123,7 @@ namespace
         static auto cached_identity = std::string{};
         static auto cached_keys = TokenHmacKeys{};
 
-        auto const identity = master_key_file_identity(path);
+        auto const identity = crypto::master_key_file_identity(path);
         auto guard = std::lock_guard{cache_mutex};
         // An unreadable file yields an empty identity, which never matches the
         // cached one, so this falls through to a fresh (and failing) load rather

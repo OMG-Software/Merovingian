@@ -32,8 +32,8 @@ using namespace merovingian;
     auto keypair = crypto::generate_ed25519_keypair().value();
     auto const public_key_view =
         std::string_view{reinterpret_cast<char const*>(keypair.public_key.data()), keypair.public_key.size()};
-    auto const secret_key_view =
-        std::string_view{reinterpret_cast<char const*>(keypair.secret_key.data()), keypair.secret_key.size()};
+    auto const secret_key_view = std::string_view{reinterpret_cast<char const*>(keypair.secret_key.bytes().data()),
+                                                  keypair.secret_key.bytes().size()};
 
     auto record = database::PersistentServerSigningKey{
         std::move(server_name),
@@ -45,11 +45,11 @@ using namespace merovingian;
     return {std::move(record), std::move(keypair)};
 }
 
-[[nodiscard]] auto secret_array(crypto::Ed25519Keypair const& keypair) -> std::array<unsigned char, 64U>
+// Provider secrets are core::SecretBuffer (move-only, mlocked), so each caller
+// takes its own locked copy rather than sharing one plain array.
+[[nodiscard]] auto secret_copy(crypto::Ed25519Keypair const& keypair) -> core::SecretBuffer
 {
-    auto array = std::array<unsigned char, 64U>{};
-    std::copy(keypair.secret_key.begin(), keypair.secret_key.end(), array.begin());
-    return array;
+    return core::SecretBuffer{keypair.secret_key.bytes()};
 }
 
 [[nodiscard]] auto public_key_string(crypto::Ed25519Keypair const& keypair) -> std::string
@@ -157,8 +157,12 @@ SCENARIO("sign_for_server falls back to the next active key when the preferred k
         std::ignore = keypair_a;
 
         auto real_provider = crypto::RuntimeMultiKeyEd25519Provider{
-            std::vector{std::pair{active_a.key_id, secret_array(keypair_a)},
-                        std::pair{active_b.key_id, secret_array(keypair_b)}}
+            [&] {
+                auto keys = std::vector<std::pair<std::string, core::SecretBuffer>>{};
+                keys.emplace_back(active_a.key_id, secret_copy(keypair_a));
+                keys.emplace_back(active_b.key_id, secret_copy(keypair_b));
+                return keys;
+            }()
         };
         auto failing_provider = FailingForKeyProvider{active_a.key_id, real_provider};
 
@@ -189,8 +193,12 @@ SCENARIO("sign_for_server produces a verifiable signature with a chosen active k
         auto const [active_b, keypair_b] = make_test_key(server_name, "ed25519:e4f5a6b7");
 
         auto provider = crypto::RuntimeMultiKeyEd25519Provider{
-            std::vector{std::pair{active_a.key_id, secret_array(keypair_a)},
-                        std::pair{active_b.key_id, secret_array(keypair_b)}}
+            [&] {
+                auto keys = std::vector<std::pair<std::string, core::SecretBuffer>>{};
+                keys.emplace_back(active_a.key_id, secret_copy(keypair_a));
+                keys.emplace_back(active_b.key_id, secret_copy(keypair_b));
+                return keys;
+            }()
         };
         auto store = homeserver::RuntimeSigningKeyStore{
             server_name, std::vector{active_a, active_b}

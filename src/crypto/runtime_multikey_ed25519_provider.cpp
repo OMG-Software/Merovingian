@@ -12,7 +12,7 @@ namespace merovingian::crypto
 {
 
 RuntimeMultiKeyEd25519Provider::RuntimeMultiKeyEd25519Provider(
-    std::vector<std::pair<std::string, std::array<unsigned char, 64U>>> keys)
+    std::vector<std::pair<std::string, core::SecretBuffer>> keys)
 {
     for (auto&& entry : keys)
     {
@@ -24,7 +24,7 @@ auto RuntimeMultiKeyEd25519Provider::sign(Ed25519SecretKeyHandle const& key, std
     -> SignatureResult
 {
     auto const it = secrets_.find(key.key_id);
-    if (it == secrets_.end())
+    if (it == secrets_.end() || it->second.bytes().size() != ed25519_secret_key_bytes)
     {
         return {{}, "signing key not held: " + key.key_id};
     }
@@ -32,7 +32,7 @@ auto RuntimeMultiKeyEd25519Provider::sign(Ed25519SecretKeyHandle const& key, std
     auto signature = std::string(64U, '\0');
     if (crypto_sign_detached(reinterpret_cast<unsigned char*>(signature.data()), nullptr,
                              reinterpret_cast<unsigned char const*>(message.data()), message.size(),
-                             it->second.data()) != 0)
+                             it->second.bytes().data()) != 0)
     {
         return {{}, "Ed25519 signing failed"};
     }

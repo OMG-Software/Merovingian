@@ -3,6 +3,7 @@
 // Matrix Server-Server API v1.19 conformance for:
 //   GET /_matrix/key/v2/server
 
+#include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/value.hpp"
@@ -27,6 +28,9 @@ namespace
 [[nodiscard]] auto key_publication_config() -> merovingian::config::Config
 {
     auto security = merovingian::config::SecurityConfig{};
+    // A runtime refuses to mint a signing secret it cannot encrypt at rest
+    // (0.12.5 audit, finding 1), so every fixture needs a master key.
+    security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
     merovingian::tests::enable_token_registration(security);
 
     auto server = merovingian::config::ServerConfig{};
@@ -641,7 +645,7 @@ SCENARIO("GET /_matrix/key/v2/server advertises multiple simultaneously-active s
             auto const public_key_b64 = merovingian::events::matrix_base64_from_bytes(std::string_view{
                 reinterpret_cast<char const*>(second_keypair.public_key.data()), second_keypair.public_key.size()});
             auto const secret_key_b64 = merovingian::events::matrix_base64_from_bytes(std::string_view{
-                reinterpret_cast<char const*>(second_keypair.secret_key.data()), second_keypair.secret_key.size()});
+                reinterpret_cast<char const*>(second_keypair.secret_key.bytes().data()), second_keypair.secret_key.bytes().size()});
             auto constexpr seven_days_ms = std::uint64_t{7U * 24U * 60U * 60U * 1000U};
             auto const now_ms = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
                                                                std::chrono::system_clock::now().time_since_epoch())

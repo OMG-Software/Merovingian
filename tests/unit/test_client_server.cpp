@@ -20,6 +20,7 @@
 // |  concluding that a failing assertion is wrong.                           |
 // +-------------------------------------------------------------------------+
 
+#include "../support/master_key.hpp"
 #include "../federation_signing_test_support.hpp"
 #include "../support/json_test_support.hpp"
 #include "../support/registration_token.hpp"
@@ -46,6 +47,9 @@ namespace
 [[nodiscard]] auto registration_enabled_config() -> merovingian::config::Config
 {
     auto security = merovingian::config::SecurityConfig{};
+    // A runtime refuses to mint a signing secret it cannot encrypt at rest
+    // (0.12.5 audit, finding 1), so every fixture needs a master key.
+    security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
     merovingian::tests::enable_token_registration(security);
     return {
         merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
@@ -57,6 +61,9 @@ namespace
 [[nodiscard]] auto turn_enabled_config() -> merovingian::config::Config
 {
     auto security = merovingian::config::SecurityConfig{};
+    // A runtime refuses to mint a signing secret it cannot encrypt at rest
+    // (0.12.5 audit, finding 1), so every fixture needs a master key.
+    security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
     merovingian::tests::enable_token_registration(security);
     auto server = merovingian::config::ServerConfig{};
     server.turn.server = "turn:turn.example.org:3478?transport=udp";
@@ -72,6 +79,9 @@ namespace
 [[nodiscard]] auto oidc_enabled_config() -> merovingian::config::Config
 {
     auto security = merovingian::config::SecurityConfig{};
+    // A runtime refuses to mint a signing secret it cannot encrypt at rest
+    // (0.12.5 audit, finding 1), so every fixture needs a master key.
+    security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
     merovingian::tests::enable_token_registration(security);
     auto server = merovingian::config::ServerConfig{};
     server.oidc.enabled = true;
@@ -89,6 +99,9 @@ namespace
 [[nodiscard]] auto sso_enabled_config() -> merovingian::config::Config
 {
     auto security = merovingian::config::SecurityConfig{};
+    // A runtime refuses to mint a signing secret it cannot encrypt at rest
+    // (0.12.5 audit, finding 1), so every fixture needs a master key.
+    security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
     merovingian::tests::enable_token_registration(security);
     auto server = merovingian::config::ServerConfig{};
     server.sso.enabled = true;
@@ -3869,6 +3882,9 @@ SCENARIO("OPTIONS preflight echoes back an explicit single origin from the allow
     {
         auto server = merovingian::config::ServerConfig{};
         auto security = merovingian::config::SecurityConfig{};
+        // A runtime refuses to mint a signing secret it cannot encrypt at rest
+        // (0.12.5 audit, finding 1), so every fixture needs a master key.
+        security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
         merovingian::tests::enable_token_registration(security);
         auto config = merovingian::config::Config{server, {}, {}, security, {}, {}};
         // Configure the allow-list via the runtime's CORS snapshot. (The
@@ -3905,6 +3921,9 @@ SCENARIO("OPTIONS preflight from an origin not in the allow-list omits Allow-Ori
     {
         auto server = merovingian::config::ServerConfig{};
         auto security = merovingian::config::SecurityConfig{};
+        // A runtime refuses to mint a signing secret it cannot encrypt at rest
+        // (0.12.5 audit, finding 1), so every fixture needs a master key.
+        security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
         merovingian::tests::enable_token_registration(security);
         auto config = merovingian::config::Config{server, {}, {}, security, {}, {}};
         config.server().cors.allowed_origins = {"https://app.example.com"};
@@ -4051,6 +4070,9 @@ SCENARIO("Well-known client discovery endpoint serves homeserver base URL",
         auto server = merovingian::config::ServerConfig{};
         server.public_baseurl = "https://matrix.example.org";
         auto security = merovingian::config::SecurityConfig{};
+        // A runtime refuses to mint a signing secret it cannot encrypt at rest
+        // (0.12.5 audit, finding 1), so every fixture needs a master key.
+        security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
         merovingian::tests::enable_token_registration(security);
         auto config = merovingian::config::Config{server, {}, {}, security, {}, {}};
         auto started = merovingian::homeserver::start_client_server(config);

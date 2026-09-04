@@ -356,7 +356,7 @@ auto find_cached_remote_key(database::PersistentStore const& store, std::string_
     record.key_id = persistent->key_id;
     record.public_key_bytes = events::matrix_bytes_from_base64(persistent->public_key);
     record.valid_until_ts = persistent->valid_until_ts;
-    auto constexpr expected_public_bytes = crypto::Ed25519Keypair{}.public_key.size();
+    auto constexpr expected_public_bytes = crypto::ed25519_public_key_bytes;
     if (record.public_key_bytes.size() != expected_public_bytes)
     {
         return std::nullopt;
@@ -378,7 +378,7 @@ auto find_any_cached_remote_key(database::PersistentStore const& store, std::str
         record.key_id = persistent.key_id;
         record.public_key_bytes = events::matrix_bytes_from_base64(persistent.public_key);
         record.valid_until_ts = persistent.valid_until_ts;
-        auto constexpr expected_public_bytes = crypto::Ed25519Keypair{}.public_key.size();
+        auto constexpr expected_public_bytes = crypto::ed25519_public_key_bytes;
         if (record.public_key_bytes.size() == expected_public_bytes)
         {
             return record;

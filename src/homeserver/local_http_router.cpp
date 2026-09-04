@@ -1758,7 +1758,7 @@ namespace
                     runtime.database.persistent_store, *outbound, *discovery, timeout, key_clock);
             }
             auto key = ensure_runtime_server_signing_key(runtime);
-            auto constexpr expected_secret_bytes = crypto::Ed25519Keypair{}.secret_key.size();
+            auto constexpr expected_secret_bytes = crypto::ed25519_secret_key_bytes;
             if (!key.has_value() || runtime.database.signing_secret_key.bytes().size() != expected_secret_bytes)
             {
                 log_diagnostic("dispatch.start.rejected", {

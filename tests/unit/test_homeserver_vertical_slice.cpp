@@ -53,9 +53,26 @@
 namespace
 {
 
+// The stock config plus a master key. Since 0.12.5 a server refuses to mint a
+// signing secret it cannot encrypt at rest (audit finding 1), so a bare
+// config::Config{} no longer starts — every other default is unchanged.
+[[nodiscard]] auto default_config() -> merovingian::config::Config
+{
+    auto security = merovingian::config::SecurityConfig{};
+    security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
+    return {
+        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
+        merovingian::config::DatabaseConfig{},         security,
+        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+    };
+}
+
 [[nodiscard]] auto registration_enabled_config() -> merovingian::config::Config
 {
     auto security = merovingian::config::SecurityConfig{};
+    // A runtime refuses to mint a signing secret it cannot encrypt at rest
+    // (0.12.5 audit, finding 1), so every fixture needs a master key.
+    security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
     merovingian::tests::enable_token_registration(security);
     return {
         merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
@@ -67,6 +84,9 @@ namespace
 [[nodiscard]] auto config_with_short_token_lifetime() -> merovingian::config::Config
 {
     auto security = merovingian::config::SecurityConfig{};
+    // A runtime refuses to mint a signing secret it cannot encrypt at rest
+    // (0.12.5 audit, finding 1), so every fixture needs a master key.
+    security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
     merovingian::tests::enable_token_registration(security);
     security.access_token_lifetime_ms = 50LL;
     return {
@@ -80,6 +100,9 @@ namespace
     -> merovingian::config::Config
 {
     auto security = merovingian::config::SecurityConfig{};
+    // A runtime refuses to mint a signing secret it cannot encrypt at rest
+    // (0.12.5 audit, finding 1), so every fixture needs a master key.
+    security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
     merovingian::tests::enable_token_registration(security);
     security.secrets.master_key_file = std::move(master_key_path);
     return {
@@ -96,6 +119,9 @@ namespace
     database.backend = merovingian::config::DatabaseBackend::sqlite;
     database.sqlite_path = sqlite_path.string();
     auto security = merovingian::config::SecurityConfig{};
+    // A runtime refuses to mint a signing secret it cannot encrypt at rest
+    // (0.12.5 audit, finding 1), so every fixture needs a master key.
+    security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
     merovingian::tests::enable_token_registration(security);
     return {
         merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},  database, security,
@@ -173,7 +199,7 @@ SCENARIO("Homeserver runtime starts from validated config with listeners databas
 {
     GIVEN("the default config")
     {
-        auto const config = merovingian::config::Config{};
+        auto const config = default_config();
 
         WHEN("the runtime is started")
         {
@@ -276,7 +302,7 @@ SCENARIO("Homeserver registration follows runtime registration config", "[homese
 {
     GIVEN("a runtime with registration disabled")
     {
-        auto started = merovingian::homeserver::start_runtime(merovingian::config::Config{});
+        auto started = merovingian::homeserver::start_runtime(default_config());
         REQUIRE(started.started);
 
         WHEN("a client attempts registration")
@@ -489,13 +515,17 @@ SCENARIO("Homeserver admin observability endpoints expose runtime metrics and du
 //
 // Passwords MUST be stored as Argon2id hashes - never in plaintext, never as
 // a weaker algorithm. Access tokens MUST be stored as versioned hashes and MUST
-// be random and unique per session. With a master key configured, tokens use
-// the master-key-derived v4 hash; without a master key, v3/v4 are unavailable
-// (issue #322 moved v3 off the Ed25519 seed onto a master-key-derived key) and
-// the code falls back to the unkeyed v2 hash so local operations still work.
+// be random and unique per session. Tokens use the master-key-derived v4 hash.
+//
+// This scenario used to assert the unkeyed v2 fallback that applied when no
+// master key was configured. Since 0.12.5 (audit finding 1) a server without a
+// usable master key refuses to start at all, because it would otherwise have to
+// write its federation signing secret to the database in plaintext — so the
+// unkeyed fallback is no longer a state a running server can be in, and the
+// keyed v4 hash is the only outcome left to assert.
 SCENARIO("Homeserver local auth stores hardened password and token hashes", "[homeserver][vertical][auth][security]")
 {
-    GIVEN("a started runtime with local registration enabled but no master key")
+    GIVEN("a started runtime with local registration enabled and a master key")
     {
         auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
         REQUIRE(started.started);
@@ -542,11 +572,12 @@ SCENARIO("Homeserver local auth stores hardened password and token hashes", "[ho
                 // Spec MUST: two distinct sessions MUST be stored for two logins.
                 // Do NOT remove - fewer sessions means tokens were aliased, breaking revocation.
                 REQUIRE(runtime.database.sessions.size() == 2U);
-                // Spec MUST (#322): with no master key, v3/v4 are unavailable and the issued hash
-                // MUST carry the "token-hash:v2:" prefix (the unkeyed fallback). v3 is no longer
-                // backed by the Ed25519 seed; it now requires a master key, so it is not issued here.
-                REQUIRE(runtime.database.sessions.front().access_token_hash.rfind("token-hash:v2:", 0U) == 0U);
-                REQUIRE(runtime.database.sessions.back().access_token_hash.rfind("token-hash:v2:", 0U) == 0U);
+                // Spec MUST (#322): with a master key configured, the issued hash MUST carry the
+                // "token-hash:v4:" prefix — the key is derived from the master key, not from the
+                // Ed25519 signing seed. Do NOT relax this back to v2: the unkeyed fallback stores a
+                // token hash that anyone holding the database can recompute offline.
+                REQUIRE(runtime.database.sessions.front().access_token_hash.rfind("token-hash:v4:", 0U) == 0U);
+                REQUIRE(runtime.database.sessions.back().access_token_hash.rfind("token-hash:v4:", 0U) == 0U);
                 // Spec MUST: stored token hashes MUST be distinct across sessions.
                 // Do NOT remove - identical hashes allow one token to authenticate as another.
                 REQUIRE(runtime.database.sessions.front().access_token_hash !=

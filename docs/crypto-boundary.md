@@ -120,13 +120,23 @@ persisted rows.
   is never copied into an unpinned, unzeroised `std::string` to sign a request.
 
 The runtime signing key is generated using `crypto_sign_keypair`, which produces
-a cryptographically random keypair. When `security.secrets.master_key_file` is
-configured, the secret seed is encrypted at rest with `secret_box` and a
-random nonce, stored as `secretbox:v1:<base64(nonce || mac || ciphertext)>`, and
-transparently decrypted on restart. If no master key is configured the secret is
-stored as a legacy plaintext base64 value and a one-time diagnostic warns the
-operator; this fallback preserves backward compatibility with existing
-deployments and test configurations. An explicit rotation is available via
+a cryptographically random keypair, written directly into a `core::SecretBuffer`
+so the seed is mlocked and zeroised for its whole lifetime rather than passing
+through a plain `std::array` between generation and storage. The secret seed is
+encrypted at rest with `secret_box` and a random nonce, stored as
+`secretbox:v1:<base64(nonce || mac || ciphertext)>`, and transparently decrypted
+on restart.
+
+**`security.secrets.master_key_file` is mandatory (0.12.5).** There is no
+plaintext fallback: a server that cannot read, lock, and derive from a master
+key refuses to mint a signing secret, and `start_runtime` then refuses to start
+with `no server signing key: ...`. Writing the seed as base64 with
+`encrypted='false'` handed any database-exfiltration attacker a forgery-capable
+federation key, which is the entire threat this column exists to defend against.
+Rows written by earlier versions are still *read* through the legacy plaintext
+branch, so an existing deployment keeps federating and can rotate on its own
+schedule — but it can no longer write a new one. The same rule applies to
+rotation as to first generation. An explicit rotation is available via
 `rotate_server_signing_key`: it retires the active key (setting its
 `valid_until_ts` to now so it publishes under `old_verify_keys` with a past
 `expired_ts`) and activates a freshly generated key.

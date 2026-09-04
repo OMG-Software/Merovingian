@@ -15,6 +15,7 @@
 // |  not weaken the assertions.                                             |
 // +-------------------------------------------------------------------------+
 
+#include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/crypto/ed25519.hpp"
@@ -37,6 +38,9 @@ namespace
 [[nodiscard]] auto signing_lifecycle_config() -> merovingian::config::Config
 {
     auto security = merovingian::config::SecurityConfig{};
+    // A runtime refuses to mint a signing secret it cannot encrypt at rest
+    // (0.12.5 audit, finding 1), so every fixture needs a master key.
+    security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
     merovingian::tests::enable_token_registration(security);
     return {
         merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},

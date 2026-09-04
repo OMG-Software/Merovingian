@@ -278,17 +278,20 @@ auto reset_runtime_crypto_provider(HomeserverRuntime& runtime) -> void
         return;
     }
 
-    auto constexpr expected_secret_bytes = crypto::Ed25519Keypair{}.secret_key.size();
-    auto key_entries = std::vector<std::pair<std::string, std::array<unsigned char, expected_secret_bytes>>>{};
+    // Every copy below lands in a core::SecretBuffer (0.12.5 audit, finding 5).
+    // This used to stage the seeds through a std::vector of plain std::array,
+    // which put a second, unlocked and never-zeroised copy of every active
+    // signing secret in ordinary heap memory on each provider rebuild.
+    auto key_entries = std::vector<std::pair<std::string, core::SecretBuffer>>{};
     key_entries.reserve(secrets.size());
-    for (auto&& entry : secrets)
+    for (auto const& entry : secrets)
     {
-        auto array = std::array<unsigned char, expected_secret_bytes>{};
-        std::copy(entry.secret.bytes().begin(), entry.secret.bytes().end(), array.begin());
-        // Copy, do not move, the key_id: the second loop below stores the same id
-        // in runtime.database.signing_secret_keys. Moving it here left that vector
-        // holding empty key ids, so any lookup by key_id silently missed.
-        key_entries.emplace_back(entry.key_id, std::move(array));
+        // Copy, do not move, the key_id: the loop below stores the same id in
+        // runtime.database.signing_secret_keys. Moving it here left that vector
+        // holding empty key ids, so any lookup by key_id silently missed. The
+        // secret is copied rather than moved for the same reason — the provider
+        // and the runtime store each need their own locked copy.
+        key_entries.emplace_back(entry.key_id, core::SecretBuffer{entry.secret.bytes()});
     }
 
     runtime.database.signing_secret_keys.clear();
@@ -302,10 +305,7 @@ auto reset_runtime_crypto_provider(HomeserverRuntime& runtime) -> void
     // pagination-token derivation). The vector is sorted with the preferred
     // key first, so front() is the same key the pre-multi-key code chose.
     runtime.database.signing_secret_key =
-        core::SecretBuffer{runtime.database.signing_secret_keys.front().second.bytes().size()};
-    std::copy(runtime.database.signing_secret_keys.front().second.bytes().begin(),
-              runtime.database.signing_secret_keys.front().second.bytes().end(),
-              runtime.database.signing_secret_key.bytes().begin());
+        core::SecretBuffer{runtime.database.signing_secret_keys.front().second.bytes()};
 
     runtime.crypto_provider_owned = std::make_unique<crypto::RuntimeMultiKeyEd25519Provider>(std::move(key_entries));
     runtime.crypto_provider = runtime.crypto_provider_owned.get();
@@ -725,13 +725,33 @@ auto start_runtime(RuntimeStartOptions opts) -> RuntimeStartResult
     }
     else
     {
-        std::ignore = ensure_runtime_server_signing_key(runtime);
+        auto const signing_key = ensure_runtime_server_signing_key(runtime);
         reset_runtime_crypto_provider(runtime);
         log_diagnostic("start.crypto_provider_ready",
                        {
                            {"available", runtime.crypto_provider != nullptr ? "true" : "false", false}
         },
                        observability::LogEventSeverity::info);
+
+        // 0.12.5 audit, finding 1: signing secrets are never stored in
+        // plaintext, so a server with no usable master key can no longer mint
+        // one. Say so here rather than letting it surface three steps later as
+        // a failure to derive an unrelated pagination-token key: without a
+        // signing key this server cannot sign an event or a federation request,
+        // and starting it would only produce silent federation failures.
+        if (!signing_key.has_value())
+        {
+            auto const reason = runtime.config.security().secrets.master_key_file.empty()
+                                    ? std::string{"no server signing key: set security.secrets.master_key_file so the "
+                                                  "signing secret can be encrypted at rest"}
+                                    : std::string{"no server signing key: the configured "
+                                                  "security.secrets.master_key_file could not be read, locked into "
+                                                  "memory, or used to encrypt a new signing secret"};
+            log_diagnostic("start.rejected", {
+                                                 {"reason", reason, false}
+            });
+            return {false, reason, {}};
+        }
 
         // Derive the server-scoped pagination-token key from the signing secret.
         // This keeps tokens opaque and tied to this deployment without needing a

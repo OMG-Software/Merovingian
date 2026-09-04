@@ -16,6 +16,7 @@
 //   - create_room with is_direct: m.direct account data is written/appended for
 //     the creator so that a second device can classify the room via sliding sync
 
+#include "../support/master_key.hpp"
 #include "../support/json_test_support.hpp"
 #include "../support/registration_token.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
@@ -49,6 +50,9 @@ namespace
 [[nodiscard]] auto registration_enabled_config() -> merovingian::config::Config
 {
     auto security = merovingian::config::SecurityConfig{};
+    // A runtime refuses to mint a signing secret it cannot encrypt at rest
+    // (0.12.5 audit, finding 1), so every fixture needs a master key.
+    security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
     merovingian::tests::enable_token_registration(security);
     return merovingian::config::Config{
         merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
@@ -1639,7 +1643,7 @@ SCENARIO("join_room accepts a valid third_party_signed join", "[homeserver][room
         auto const keypair = merovingian::crypto::generate_ed25519_keypair();
         REQUIRE(keypair.has_value());
         auto const secret_key =
-            std::string{reinterpret_cast<char const*>(keypair->secret_key.data()), keypair->secret_key.size()};
+            std::string{reinterpret_cast<char const*>(keypair->secret_key.bytes().data()), keypair->secret_key.bytes().size()};
         auto const public_key_b64 = merovingian::events::matrix_base64_from_bytes(
             {reinterpret_cast<char const*>(keypair->public_key.data()), keypair->public_key.size()});
 
@@ -1721,8 +1725,8 @@ SCENARIO("join_room rejects a third_party_signed join with a forged signature",
 
         auto const forged_keypair = merovingian::crypto::generate_ed25519_keypair();
         REQUIRE(forged_keypair.has_value());
-        auto const forged_secret = std::string{reinterpret_cast<char const*>(forged_keypair->secret_key.data()),
-                                               forged_keypair->secret_key.size()};
+        auto const forged_secret = std::string{reinterpret_cast<char const*>(forged_keypair->secret_key.bytes().data()),
+                                               forged_keypair->secret_key.bytes().size()};
         auto const forged_signed_obj =
             make_signed_third_party_object(bob_reg.value, alice_reg.value, invite_token, forged_secret, "example.org");
 

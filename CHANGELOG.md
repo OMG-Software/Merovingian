@@ -1,8 +1,47 @@
 ## 0.12.5
 
-Record the full security-audit findings from the 0.12.4 review in a machine-
-actionable file so subsequent fix branches can be driven from a single source
-of truth. No production code is changed in this branch.
+Fixes for the security audit recorded in
+`security/audit-findings-2026-09-04.md`. The findings file itself was added
+earlier on this branch; this entry covers the code changes.
+
+### Signing-secret lifecycle (findings 1-7, 16, 20)
+
+- **The plaintext server signing-secret fallback is gone.** A server with no
+  `security.secrets.master_key_file` used to persist its Ed25519 seed as base64
+  with `encrypted='false'`, so anyone who exfiltrated the database obtained a
+  forgery-capable federation signing key — the exact threat that column exists
+  to defend against. Both first generation *and* rotation now fail closed. The
+  audit cited only the generation path; the rotation path carried the same
+  fallback and was fixed with it.
+- **A master key is now required to start.** With no signing key a server cannot
+  sign an event or a federation request, so `start_runtime` refuses to start and
+  says why, rather than surfacing three steps later as a failure to derive an
+  unrelated pagination-token key. Legacy plaintext rows are still *read*, so an
+  existing deployment keeps federating and can rotate on its own schedule.
+- **An unlockable master key is refused.** `load_master_key_material()` tolerated
+  a failed `sodium_mlock()` and returned the root secret in swappable memory
+  after a one-time warning. `RLIMIT_MEMLOCK` exhaustion therefore silently
+  downgraded every key derived from it. This reverses the #487 decision to keep
+  the condition non-fatal: an unlocked root secret is a crypto-boundary failure,
+  and the remedy (raise `RLIMIT_MEMLOCK`, or grant `CAP_IPC_LOCK`) is a
+  deployment change.
+- **Ed25519 secrets live in `core::SecretBuffer` end to end.** `Ed25519Keypair`,
+  `RuntimeEd25519Provider`, `RuntimeMultiKeyEd25519Provider` and the return of
+  `secret_box_decrypt` all held 64-byte seeds in plain `std::array`/`std::vector`
+  — unlocked, never zeroised, and in the provider's case for the whole life of
+  the process. `crypto_sign_keypair` now generates straight into the locked
+  buffer and `crypto_secretbox_open_easy` decrypts straight into one, so no
+  intermediate unprotected copy exists at any point. `rebuild_signing_provider`
+  no longer stages every active secret through a `std::vector` of plain arrays.
+- **The signing-secret box key is cached.** Encrypt and decrypt each re-read the
+  master key file and re-derived the box key on every call, re-materialising the
+  root secret and churning a 4 KiB mlock/munlock pair per operation. It is now
+  cached against the master key file's identity, the same way #487 fixed the
+  access-token HMAC keys; the identity helper is shared between the two.
+- **The master key file is read unbuffered.** `std::filebuf` kept its own copy of
+  every byte read in ordinary heap memory that is freed without zeroisation, so
+  wiping our own read buffer still left plaintext root-secret bytes in the
+  process.
 
 ## 0.12.4
 

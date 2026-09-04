@@ -9,6 +9,7 @@
 #include "merovingian/crypto/master_key.hpp"
 #include "merovingian/crypto/random.hpp"
 #include "merovingian/crypto/runtime_ed25519_provider.hpp"
+#include "merovingian/crypto/runtime_multikey_ed25519_provider.hpp"
 #include "merovingian/crypto/secret_box.hpp"
 #include "merovingian/crypto/signing_service.hpp"
 #include "merovingian/crypto/token_key.hpp"
@@ -17,6 +18,7 @@
 
 #include <algorithm>
 #include <array>
+#include <ranges>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -27,6 +29,7 @@
 #include <string_view>
 #include <tuple>
 #include <utility>
+#include <vector>
 
 #include <sodium.h>
 
@@ -331,7 +334,7 @@ SCENARIO("SecretBox round-trips plaintext through authenticated encryption", "[c
             THEN("the decrypted bytes match the original plaintext")
             {
                 REQUIRE(decrypted.has_value());
-                REQUIRE(*decrypted == plaintext);
+                REQUIRE(std::ranges::equal(decrypted->bytes(), plaintext));
             }
         }
     }
@@ -396,8 +399,8 @@ SCENARIO("SecretBox encryption uses a fresh nonce per call", "[crypto][secret_bo
                 REQUIRE(a.has_value());
                 REQUIRE(b.has_value());
                 REQUIRE(a->bytes != b->bytes);
-                REQUIRE(*merovingian::crypto::secret_box_decrypt(*a, *key) == plaintext);
-                REQUIRE(*merovingian::crypto::secret_box_decrypt(*b, *key) == plaintext);
+                REQUIRE(std::ranges::equal(merovingian::crypto::secret_box_decrypt(*a, *key)->bytes(), plaintext));
+                REQUIRE(std::ranges::equal(merovingian::crypto::secret_box_decrypt(*b, *key)->bytes(), plaintext));
             }
         }
     }
@@ -1058,9 +1061,9 @@ SCENARIO("RuntimeEd25519Provider signs and verifies with its own keypair", "[cry
 {
     GIVEN("a generated Ed25519 keypair")
     {
-        auto const keypair = merovingian::crypto::generate_ed25519_keypair();
+        auto keypair = merovingian::crypto::generate_ed25519_keypair();
         REQUIRE(keypair.has_value());
-        auto provider = merovingian::crypto::RuntimeEd25519Provider{keypair->secret_key};
+        auto provider = merovingian::crypto::RuntimeEd25519Provider{std::move(keypair->secret_key)};
         auto const handle = merovingian::crypto::Ed25519SecretKeyHandle{"ed25519:auto"};
         auto const public_key = merovingian::crypto::Ed25519PublicKey{
             std::string{reinterpret_cast<char const*>(keypair->public_key.data()), keypair->public_key.size()}
@@ -1194,7 +1197,7 @@ SCENARIO("Crypto Ed25519 low-level primitives reject invalid material", "[crypto
         WHEN("verification receives mismatched shapes")
         {
             auto const good_signature =
-                merovingian::crypto::ed25519_sign_detached(std::span{keypair->secret_key}, "message");
+                merovingian::crypto::ed25519_sign_detached(keypair->secret_key.bytes(), "message");
             REQUIRE(good_signature.has_value());
 
             auto const bad_public_key = merovingian::crypto::Ed25519PublicKey{std::string(31U, 'p')};
@@ -1213,6 +1216,132 @@ SCENARIO("Crypto Ed25519 low-level primitives reject invalid material", "[crypto
                 REQUIRE_FALSE(bad_key_result.error.empty());
                 REQUIRE_FALSE(bad_sig_result.valid);
                 REQUIRE_FALSE(bad_sig_result.error.empty());
+            }
+        }
+    }
+}
+
+// --- 0.12.5 security audit: signing-secret lifecycle -------------------------
+//
+// Findings 2, 7 and 16 of security/audit-findings-2026-09-04.md. Every one of
+// them is the same defect in a different container: forgery-capable Ed25519
+// seed material, or the master key it is encrypted under, sitting in ordinary
+// swappable heap memory that is freed without being zeroised.
+
+SCENARIO("A generated Ed25519 keypair holds its secret in locked secret memory", "[crypto][signing][security]")
+{
+    GIVEN("libsodium is available")
+    {
+        WHEN("a fresh signing keypair is generated")
+        {
+            auto const keypair = merovingian::crypto::generate_ed25519_keypair();
+
+            THEN("the secret seed is a SecretBuffer of the libsodium secret-key size, not a plain array")
+            {
+                REQUIRE(keypair.has_value());
+                REQUIRE(keypair->secret_key.bytes().size() == merovingian::crypto::ed25519_secret_key_bytes);
+            }
+
+            THEN("the secret seed memory is mlocked so it cannot be paged to swap")
+            {
+                REQUIRE(keypair.has_value());
+                REQUIRE(keypair->secret_key.is_locked());
+            }
+        }
+    }
+}
+
+SCENARIO("secret_box_decrypt returns plaintext already inside a SecretBuffer", "[crypto][secret_box][security]")
+{
+    GIVEN("a derived key and an encrypted signing secret")
+    {
+        auto const master = std::vector<std::uint8_t>{0x11U, 0x22U, 0x33U, 0x44U};
+        auto const key = merovingian::crypto::derive_secret_box_key(master);
+        REQUIRE(key.has_value());
+
+        auto const plaintext = std::vector<std::uint8_t>{0xa0U, 0xa1U, 0xa2U, 0xa3U, 0xa4U};
+        auto const ciphertext = merovingian::crypto::secret_box_encrypt(plaintext, *key);
+        REQUIRE(ciphertext.has_value());
+
+        WHEN("the ciphertext is decrypted")
+        {
+            auto const decrypted = merovingian::crypto::secret_box_decrypt(*ciphertext, *key);
+
+            THEN("the caller receives the plaintext in mlocked, zeroise-on-destruction memory")
+            {
+                REQUIRE(decrypted.has_value());
+                REQUIRE(decrypted->is_locked());
+                REQUIRE(std::equal(decrypted->bytes().begin(), decrypted->bytes().end(), plaintext.begin(),
+                                   plaintext.end()));
+            }
+        }
+    }
+}
+
+SCENARIO("Master key material is refused when it cannot be locked into memory", "[crypto][master_key][security]")
+{
+    GIVEN("the fail-closed policy for master key material")
+    {
+        WHEN("the buffer holding the root secret could not be mlocked")
+        {
+            auto const accepted = merovingian::crypto::master_key_material_is_acceptable(false);
+
+            THEN("the material is rejected rather than used from swappable memory")
+            {
+                REQUIRE_FALSE(accepted);
+            }
+        }
+
+        WHEN("the buffer holding the root secret was successfully mlocked")
+        {
+            auto const accepted = merovingian::crypto::master_key_material_is_acceptable(true);
+
+            THEN("the material is accepted")
+            {
+                REQUIRE(accepted);
+            }
+        }
+    }
+}
+
+SCENARIO("The multi-key signing provider takes ownership of secrets in locked memory",
+         "[crypto][signing][security]")
+{
+    GIVEN("an Ed25519 keypair whose secret is held in a SecretBuffer")
+    {
+        auto keypair = merovingian::crypto::generate_ed25519_keypair();
+        REQUIRE(keypair.has_value());
+
+        auto const public_key =
+            merovingian::crypto::Ed25519PublicKey{std::string{reinterpret_cast<char const*>(
+                                                                 keypair->public_key.data()),
+                                                             keypair->public_key.size()}};
+
+        auto entries = std::vector<std::pair<std::string, merovingian::core::SecretBuffer>>{};
+        entries.emplace_back("ed25519:audit", std::move(keypair->secret_key));
+
+        WHEN("the provider is constructed from those secrets and asked to sign")
+        {
+            auto provider = merovingian::crypto::RuntimeMultiKeyEd25519Provider{std::move(entries)};
+            auto const result = provider.sign(merovingian::crypto::Ed25519SecretKeyHandle{"ed25519:audit"}, "message");
+
+            THEN("the signature verifies against the matching public key")
+            {
+                REQUIRE(result.error.empty());
+                auto const verified = merovingian::crypto::ed25519_verify(public_key, "message", result.signature);
+                REQUIRE(verified.valid);
+            }
+        }
+
+        WHEN("a key id the provider does not hold is requested")
+        {
+            auto provider = merovingian::crypto::RuntimeMultiKeyEd25519Provider{std::move(entries)};
+            auto const result = provider.sign(merovingian::crypto::Ed25519SecretKeyHandle{"ed25519:absent"}, "message");
+
+            THEN("signing fails closed rather than signing with an unrelated key")
+            {
+                REQUIRE_FALSE(result.error.empty());
+                REQUIRE(result.signature.bytes.empty());
             }
         }
     }

@@ -13,6 +13,7 @@
 // |  covered elsewhere as they land.                                       |
 // +-------------------------------------------------------------------------+
 
+#include "../support/master_key.hpp"
 #include "../support/json_test_support.hpp"
 #include "../support/registration_token.hpp"
 #include "merovingian/config/config.hpp"
@@ -56,6 +57,9 @@ using namespace merovingian::tests;
         out << irc_bridge_registration_json();
     }
     auto security = merovingian::config::SecurityConfig{};
+    // A runtime refuses to mint a signing secret it cannot encrypt at rest
+    // (0.12.5 audit, finding 1), so every fixture needs a master key.
+    security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
     // Ordinary (non-appservice) registration must stay reachable so the
     // exclusivity scenarios below can prove a HUMAN is blocked from an
     // exclusive namespace, not merely that registration itself is off.
@@ -278,9 +282,13 @@ SCENARIO("GET /login advertises m.login.application_service", "[appservice][conf
 {
     GIVEN("any homeserver")
     {
+        // A runtime refuses to mint a signing secret it cannot encrypt at rest
+        // (0.12.5 audit, finding 1), so every fixture needs a master key.
+        auto security = merovingian::config::SecurityConfig{};
+        security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
         auto const config = merovingian::config::Config{
             merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
-            merovingian::config::DatabaseConfig{},         merovingian::config::SecurityConfig{},
+            merovingian::config::DatabaseConfig{},         security,
             merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
         };
         auto started = merovingian::homeserver::start_client_server(config);

@@ -106,7 +106,7 @@ auto secret_box_encrypt(std::span<std::uint8_t const> plaintext, SecretBoxKey co
 }
 
 auto secret_box_decrypt(SecretBoxCiphertext const& ciphertext, SecretBoxKey const& key)
-    -> std::optional<std::vector<std::uint8_t>>
+    -> std::optional<core::SecretBuffer>
 {
     auto const min_size = crypto_secretbox_NONCEBYTES + crypto_secretbox_MACBYTES;
     if (!sodium_is_ready() || ciphertext.bytes.size() < min_size)
@@ -118,9 +118,12 @@ auto secret_box_decrypt(SecretBoxCiphertext const& ciphertext, SecretBoxKey cons
     auto const encrypted = ciphertext.bytes.data() + crypto_secretbox_NONCEBYTES;
     auto const encrypted_size = ciphertext.bytes.size() - crypto_secretbox_NONCEBYTES;
 
-    auto plaintext = std::vector<std::uint8_t>(encrypted_size - crypto_secretbox_MACBYTES);
+    // Decrypt straight into locked memory. The plaintext here is the server
+    // signing secret; opening into a std::vector first would put a
+    // forgery-capable copy in ordinary heap memory that is freed unwiped.
+    auto plaintext = core::SecretBuffer{encrypted_size - crypto_secretbox_MACBYTES};
 
-    if (crypto_secretbox_open_easy(plaintext.data(), encrypted, encrypted_size, nonce, key.bytes.data()) != 0)
+    if (crypto_secretbox_open_easy(plaintext.bytes().data(), encrypted, encrypted_size, nonce, key.bytes.data()) != 0)
     {
         return std::nullopt;
     }
