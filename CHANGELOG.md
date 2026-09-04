@@ -234,6 +234,24 @@ properties, asserted through their observable half (every surviving secret
 holder is a locked buffer; the unbuffered read returns exact bytes across chunk
 boundaries) rather than by inspecting freed heap.
 
+### Test lifetime fix surfaced by the sanitizer build
+
+- **`test_http_server_listener_flow.cpp` destroyed the runtime before the thread
+  pool that was still using it.** All twelve scenarios declared the pool before
+  the runtime, so reverse-declaration destruction ran `~runtime` first while a
+  pool worker could still be inside `serve_connection` holding a
+  `ConnectionContext` that references it. Each scenario fires the shutdown
+  signal and joins the accept-loop thread, but that only stops *new* work being
+  submitted — the per-connection closures already handed to the pool are still
+  in flight, and `~ThreadPool` is what joins those. The pool is now declared
+  last, so it is destroyed first.
+
+  Pre-existing and unrelated to the audit: `http_server.cpp` is untouched on
+  this branch. It is timing-dependent — the sanitizer job passed on one CI run
+  and reported `stack-use-after-scope` on the next, naming the exact frame and
+  object. It does not reproduce locally with or without the fix, so the fix
+  rests on the destruction-order guarantee rather than on a reproduction.
+
 ## 0.12.4
 
 Security audit of the 0.12.3 tree. Two of the findings below are privilege

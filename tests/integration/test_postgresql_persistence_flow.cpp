@@ -831,6 +831,63 @@ SCENARIO("PostgreSQL store open assumes the configured roles and fails closed ot
 namespace
 {
 
+// Hand ownership of the public schema to the migration role, exactly as the
+// transfer at the end of packaging/postgresql/provision-roles.sql does.
+//
+// ALTER TABLE is permitted only to an object's owner, so a database whose
+// schema was created by the login role cannot be migrated under the migration
+// role until this runs -- that is the whole of audit finding 18's upgrade step.
+// The scenario below arranges it rather than assuming an external provisioning
+// step already did: in CI that step necessarily runs before any schema exists,
+// so it matches nothing and the schema is created by the login role afterwards.
+[[nodiscard]] auto grant_schema_ownership_to(std::string_view uri, std::string_view migration_role) -> bool
+{
+    auto connection = merovingian::database::open_postgresql_connection(uri);
+    if (!connection.ok)
+    {
+        return false;
+    }
+
+    // Listed and altered from here rather than inside a DO $$ ... $$ block:
+    // dollar-quoting collides with libpq's own $n parameter scanning, so the
+    // block is rejected before PostgreSQL ever sees it.
+    //
+    // Scoped to what the connecting role owns, not REASSIGN OWNED: that
+    // operates on everything the role owns including pinned system objects,
+    // and fails outright when the login role is the cluster bootstrap
+    // superuser -- which is what CI's postgres container produces.
+    auto const alter_all = [&connection, migration_role](std::string_view list_sql,
+                                                         std::string_view alter_prefix) -> bool {
+        auto const listed = connection.connection.execute({"list_owned_objects", std::string{list_sql}, {}});
+        if (!listed.ok)
+        {
+            return false;
+        }
+        for (auto const& row : listed.rows)
+        {
+            if (row.empty())
+            {
+                continue;
+            }
+            // Object names here come from the catalogue for a schema this test
+            // just created, not from user input.
+            auto const sql = std::string{alter_prefix} + "\"" + row.front() + "\" OWNER TO \"" +
+                             std::string{migration_role} + "\"";
+            if (!connection.connection.execute({"alter_object_owner", sql, {}}).ok)
+            {
+                return false;
+            }
+        }
+        return true;
+    };
+
+    return alter_all("SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tableowner = current_user",
+                     "ALTER TABLE public.") &&
+           alter_all(
+               "SELECT sequencename FROM pg_sequences WHERE schemaname = 'public' AND sequenceowner = current_user",
+               "ALTER SEQUENCE public.");
+}
+
 // Roll the live database back one migration so the next open has real DDL to
 // apply. Migrations are not written idempotently, so the column migration 14
 // adds is dropped alongside its schema_migrations row; re-applying the
@@ -892,6 +949,7 @@ SCENARIO("PostgreSQL migrations execute as the migration role, never as the logi
 
         WHEN("a migration is pending and the named migration role cannot be assumed")
         {
+            REQUIRE(grant_schema_ownership_to(uri, migration_role));
             REQUIRE(make_migration_pending(uri));
             auto const opened = merovingian::database::open_postgresql_persistent_store(
                 uri, runtime_role, "merovingian_migration_role_that_does_not_exist");
