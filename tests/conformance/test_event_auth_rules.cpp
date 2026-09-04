@@ -3209,3 +3209,247 @@ SCENARIO("Auth rules do not resolve a scalar power key from the content.events m
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// PR #488 review: room-version-dependent power-level typing and rule scoping.
+//
+// Rule 9's validation was written against room version 11 and applied to every
+// version. Three things differ in older rooms, and getting them wrong rejects
+// events those versions declare valid -- which breaks federation with them.
+// ---------------------------------------------------------------------------
+
+// Spec: ../../docs/matrix-v1.19-spec/rooms/v10.md — "Values in m.room.power_levels
+// events must be integers": "In other room versions, such as v9, power levels
+// could be represented as strings for backwards compatibility. This backwards
+// compatibility is removed in this room version."
+SCENARIO("Auth rules accept string-encoded power levels before room version 10",
+         "[events][auth][power-levels][rule9][room-version]")
+{
+    GIVEN("a v9 room whose power_levels encode their values as strings")
+    {
+        auto const prior = std::string_view{"{\"ban\":\"50\",\"kick\":\"50\",\"redact\":\"50\",\"invite\":\"0\","
+                                            "\"users_default\":\"0\",\"state_default\":\"50\","
+                                            "\"events_default\":\"0\","
+                                            "\"users\":{\"@admin:example.org\":\"100\",\"@alice:example.org\":\"50\"}}"};
+        auto const pl_json = make_power_levels_event_raw(
+            "@alice:example.org", "{\"ban\":\"50\",\"kick\":\"25\",\"redact\":\"50\",\"invite\":\"0\","
+                                  "\"users_default\":\"0\",\"state_default\":\"50\",\"events_default\":\"0\","
+                                  "\"users\":{\"@admin:example.org\":\"100\",\"@alice:example.org\":\"50\"}}");
+        auto const parsed = merovingian::canonicaljson::parse_lossless(pl_json);
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+        auto const* policy = merovingian::rooms::find_room_version_policy("9");
+        REQUIRE(policy != nullptr);
+        auto const auth_events = moderator_auth_events(prior);
+
+        WHEN("a moderator lowers kick from 50 to 25, both encoded as strings")
+        {
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(parsed.value, *policy, auth_events);
+
+            THEN("the event is allowed — v9 permits string-encoded power levels")
+            {
+                REQUIRE(decision.allowed);
+            }
+        }
+    }
+}
+
+// The same content is invalid from v10 onwards.
+SCENARIO("Auth rules reject string-encoded power levels from room version 10",
+         "[events][auth][power-levels][rule9][room-version]")
+{
+    GIVEN("a v10 room presented with string-encoded power levels")
+    {
+        auto const pl_json = make_power_levels_event_raw(
+            "@alice:example.org", "{\"ban\":\"50\",\"kick\":50,\"redact\":50,\"invite\":0,\"users_default\":0,"
+                                  "\"state_default\":50,\"events_default\":0,"
+                                  "\"users\":{\"@admin:example.org\":100,\"@alice:example.org\":50}}");
+        auto const parsed = merovingian::canonicaljson::parse_lossless(pl_json);
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+        auto const* policy = merovingian::rooms::find_room_version_policy("10");
+        REQUIRE(policy != nullptr);
+        auto const auth_events = moderator_auth_events(k_moderator_prior_power_levels);
+
+        WHEN("the power_levels event is authorized")
+        {
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(parsed.value, *policy, auth_events);
+
+            THEN("the event is rejected — v10 removed the string compatibility")
+            {
+                REQUIRE_FALSE(decision.allowed);
+            }
+        }
+    }
+}
+
+// A string-encoded level must be *read* as its value, not treated as absent.
+// Reading it as absent would silently apply a default in place of the level the
+// room actually set, which is a weaker bound than the room intended.
+SCENARIO("String-encoded power levels are honoured, not defaulted, before room version 10",
+         "[events][auth][power-levels][rule9][room-version][security]")
+{
+    GIVEN("a v9 room where the ban level is the string \"100\" and the sender has 50")
+    {
+        auto const prior =
+            std::string_view{"{\"ban\":\"100\",\"kick\":\"50\",\"redact\":\"50\",\"invite\":\"0\","
+                             "\"users_default\":\"0\",\"state_default\":\"50\",\"events_default\":\"0\","
+                             "\"users\":{\"@admin:example.org\":\"100\",\"@alice:example.org\":\"50\"}}"};
+        // Lowering ban from 100 to 50 must be refused: rule 9.5.1 bounds the
+        // value being replaced, and 100 exceeds the sender's 50. If the string
+        // were read as absent, the default would be used and this would pass.
+        auto const pl_json = make_power_levels_event_raw(
+            "@alice:example.org", "{\"ban\":\"50\",\"kick\":\"50\",\"redact\":\"50\",\"invite\":\"0\","
+                                  "\"users_default\":\"0\",\"state_default\":\"50\",\"events_default\":\"0\","
+                                  "\"users\":{\"@admin:example.org\":\"100\",\"@alice:example.org\":\"50\"}}");
+        auto const parsed = merovingian::canonicaljson::parse_lossless(pl_json);
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+        auto const* policy = merovingian::rooms::find_room_version_policy("9");
+        REQUIRE(policy != nullptr);
+        auto const auth_events = moderator_auth_events(prior);
+
+        WHEN("the moderator tries to lower it")
+        {
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(parsed.value, *policy, auth_events);
+
+            THEN("the event is rejected — the string value is read as 100")
+            {
+                REQUIRE_FALSE(decision.allowed);
+            }
+        }
+    }
+}
+
+// Spec: ../../docs/matrix-v1.19-spec/rooms/v6.md — "[New in this version]
+// Additionally, the authorisation rules for events of type m.room.power_levels
+// now include a notifications property under content." Room versions 1-5 bound
+// only the events map, so applying the notifications bound there rejects changes
+// those versions allow.
+SCENARIO("Auth rules do not bound the notifications map before room version 6",
+         "[events][auth][power-levels][rule9][room-version]")
+{
+    GIVEN("a v5 room whose notifications.room sits above the sender's power")
+    {
+        auto const prior = std::string_view{"{\"ban\":50,\"kick\":50,\"redact\":50,\"invite\":0,"
+                                            "\"users_default\":0,\"state_default\":50,\"events_default\":0,"
+                                            "\"notifications\":{\"room\":100},"
+                                            "\"users\":{\"@admin:example.org\":100,\"@alice:example.org\":50}}"};
+        // Removing that entry would be refused by rule 9.6 from v6 onwards.
+        auto const pl_json = make_power_levels_event_raw(
+            "@alice:example.org", "{\"ban\":50,\"kick\":50,\"redact\":50,\"invite\":0,\"users_default\":0,"
+                                  "\"state_default\":50,\"events_default\":0,"
+                                  "\"users\":{\"@admin:example.org\":100,\"@alice:example.org\":50}}");
+        auto const parsed = merovingian::canonicaljson::parse_lossless(pl_json);
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+        auto const* policy = merovingian::rooms::find_room_version_policy("5");
+        REQUIRE(policy != nullptr);
+        auto const auth_events = moderator_auth_events(prior);
+
+        WHEN("a moderator removes the notifications entry")
+        {
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(parsed.value, *policy, auth_events);
+
+            THEN("the event is allowed — notifications is not bounded before v6")
+            {
+                REQUIRE(decision.allowed);
+            }
+        }
+    }
+}
+
+// The same removal is bounded from v6 onwards.
+SCENARIO("Auth rules bound the notifications map from room version 6",
+         "[events][auth][power-levels][rule9][room-version]")
+{
+    GIVEN("a v6 room whose notifications.room sits above the sender's power")
+    {
+        auto const prior = std::string_view{"{\"ban\":50,\"kick\":50,\"redact\":50,\"invite\":0,"
+                                            "\"users_default\":0,\"state_default\":50,\"events_default\":0,"
+                                            "\"notifications\":{\"room\":100},"
+                                            "\"users\":{\"@admin:example.org\":100,\"@alice:example.org\":50}}"};
+        auto const pl_json = make_power_levels_event_raw(
+            "@alice:example.org", "{\"ban\":50,\"kick\":50,\"redact\":50,\"invite\":0,\"users_default\":0,"
+                                  "\"state_default\":50,\"events_default\":0,"
+                                  "\"users\":{\"@admin:example.org\":100,\"@alice:example.org\":50}}");
+        auto const parsed = merovingian::canonicaljson::parse_lossless(pl_json);
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+        auto const* policy = merovingian::rooms::find_room_version_policy("6");
+        REQUIRE(policy != nullptr);
+        auto const auth_events = moderator_auth_events(prior);
+
+        WHEN("a moderator removes the notifications entry")
+        {
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(parsed.value, *policy, auth_events);
+
+            THEN("the event is rejected — its current value exceeds the sender's power")
+            {
+                REQUIRE_FALSE(decision.allowed);
+            }
+        }
+    }
+}
+
+// Spec rule 1.4 for room versions 1-10 rejects a create event only when content
+// has no `creator` property. It says nothing about that property's type, so a
+// present non-string creator must not be treated as absent.
+SCENARIO("Auth rules accept a pre-v11 create event whose creator is present but not a string",
+         "[events][auth][create][rule1][room-version]")
+{
+    GIVEN("a v10 create event whose content.creator is a number")
+    {
+        auto const create_json =
+            std::string{"{\"type\":\"m.room.create\",\"state_key\":\"\",\"sender\":\"@alice:example.org\","
+                        "\"room_id\":\"!room:example.org\",\"content\":{\"creator\":42},"
+                        "\"origin_server_ts\":1,\"depth\":0,\"prev_events\":[],\"auth_events\":[],"
+                        "\"hashes\":{\"sha256\":\"hash\"}}"};
+        auto const parsed = merovingian::canonicaljson::parse_lossless(create_json);
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+        auto const* policy = merovingian::rooms::find_room_version_policy("10");
+        REQUIRE(policy != nullptr);
+        auto const auth_events = merovingian::events::AuthEventMap{};
+
+        WHEN("the create event is authorized")
+        {
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(parsed.value, *policy, auth_events);
+
+            THEN("the event is allowed — rule 1.4 tests presence, not type")
+            {
+                REQUIRE(decision.allowed);
+            }
+        }
+    }
+}
+
+// Rule 9.3 requires the users map's keys to be valid user IDs. A prefix-only
+// check passed values that cannot be one.
+SCENARIO("Auth rules reject a users key containing whitespace or control characters",
+         "[events][auth][power-levels][rule9][security]")
+{
+    GIVEN("a power_levels event whose users key has a space in the server name")
+    {
+        auto const pl_json = make_power_levels_event_raw(
+            "@alice:example.org", "{\"ban\":50,\"kick\":50,\"redact\":50,\"invite\":0,\"users_default\":0,"
+                                  "\"state_default\":50,\"events_default\":0,"
+                                  "\"users\":{\"@alice:not a server\":50}}");
+        auto const parsed = merovingian::canonicaljson::parse_lossless(pl_json);
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+        auto const* policy = merovingian::rooms::find_room_version_policy("11");
+        REQUIRE(policy != nullptr);
+        auto const auth_events = moderator_auth_events(k_moderator_prior_power_levels);
+
+        WHEN("the power_levels event is authorized")
+        {
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(parsed.value, *policy, auth_events);
+
+            THEN("the event is rejected — that is not a valid user ID")
+            {
+                REQUIRE_FALSE(decision.allowed);
+            }
+        }
+    }
+}

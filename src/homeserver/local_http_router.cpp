@@ -19,6 +19,7 @@
 #include "merovingian/federation/outbound_transaction.hpp"
 #include "merovingian/federation/remote_key_cache.hpp"
 #include "merovingian/federation/server_acl.hpp"
+#include "merovingian/federation/security.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/media_service.hpp"
 #include "merovingian/homeserver/request_lock.hpp"
@@ -33,6 +34,7 @@
 #include "merovingian/trust_safety/policy_engine.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <array>
 #include <chrono>
 #include <cstdint>
@@ -608,7 +610,8 @@ namespace
 
     // Pipe-delimited federation auth token used by integration-test fixtures:
     // origin|key_id|signature|destination|now_ts|canonical_json_verified.
-    [[nodiscard]] auto parse_signed_federation_request(LocalHttpRequest const& request)
+    [[nodiscard]] auto parse_signed_federation_request(LocalHttpRequest const& request,
+                                                      std::vector<std::string> const& trusted_proxies)
         -> std::optional<federation::SignedFederationRequest>
     {
         auto const fields = split_pipe_6(request.access_token);
@@ -633,8 +636,9 @@ namespace
         signed_request.canonical_json_verified = *canonical_json_verified;
         signed_request.body = request.body;
         // Budgets pre-authentication remote-key resolution (#487); see
-        // SignedFederationRequest::remote_addr.
-        signed_request.remote_addr = request.remote_addr;
+        // SignedFederationRequest::remote_addr. Resolved through trusted_proxies
+        // for the same reason as the federation_proxy path.
+        signed_request.remote_addr = effective_client_ip(request, trusted_proxies);
         return signed_request;
     }
 
@@ -1732,6 +1736,17 @@ namespace
                                                       std::chrono::system_clock::now().time_since_epoch())
                                                       .count());
             };
+            // Lets the inbound budget tell a cache-served resolution from one
+            // that will actually go to the network. Reads the same persistent
+            // store and freshness rule the resolver itself consults first, so the
+            // two cannot disagree about whether an outbound call is needed.
+            runtime.federation.remote_key_cache_probe = [&runtime, key_clock](std::string_view server_name,
+                                                                             std::string_view key_id) -> bool {
+                auto const cached_key =
+                    federation::find_cached_remote_key(runtime.database.persistent_store, server_name, key_id);
+                return cached_key.has_value() &&
+                       !federation::remote_key_needs_refresh(cached_key->valid_until_ts, key_clock());
+            };
             if (cached != nullptr)
             {
                 runtime.federation.remote_key_resolver = federation::make_persistent_remote_key_resolver(
@@ -2013,6 +2028,56 @@ auto apply_runtime_membership(LocalDatabase& database, std::string_view room_id,
     }
 }
 
+auto effective_client_ip(LocalHttpRequest const& request, std::vector<std::string> const& trusted_proxies)
+    -> std::string
+{
+    auto const& raw = request.remote_addr;
+    if (raw.empty())
+    {
+        // Test paths that skip the transport layer. "unknown" rather than "" so
+        // every such caller shares one bucket instead of bypassing the limit.
+        return "unknown";
+    }
+    auto const is_trusted = std::ranges::find(trusted_proxies, raw) != trusted_proxies.end();
+    if (!is_trusted)
+    {
+        return raw;
+    }
+    // Case-insensitive header name comparison per RFC 7230.
+    for (auto const& header : request.headers)
+    {
+        auto lower = header.name;
+        std::ranges::transform(lower, lower.begin(), [](unsigned char c) {
+            return static_cast<char>(std::tolower(c));
+        });
+        if (lower != "x-forwarded-for")
+        {
+            continue;
+        }
+        auto value = std::string_view{header.value};
+        auto const comma = value.find(',');
+        auto first = comma == std::string_view::npos ? value : value.substr(0U, comma);
+        while (!first.empty() && first.front() == ' ')
+        {
+            first.remove_prefix(1U);
+        }
+        while (!first.empty() && first.back() == ' ')
+        {
+            first.remove_suffix(1U);
+        }
+        // A trusted proxy is trusted to report its own view of the client
+        // address, not to hand us an arbitrary string. A malformed or non-literal
+        // value falls through to the direct peer below, so an attacker cannot
+        // rotate spoofed X-Forwarded-For values to defeat per-IP limiting.
+        if (!first.empty() && federation::ip_address_is_valid(first))
+        {
+            return std::string{first};
+        }
+        break;
+    }
+    return raw;
+}
+
 auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
 {
     wire_federation_callbacks_impl(runtime);
@@ -2124,7 +2189,7 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
     }
     if (starts_with(request.target, "/_matrix/federation/"))
     {
-        auto signed_request = parse_signed_federation_request(request);
+        auto signed_request = parse_signed_federation_request(request, runtime.config.server().trusted_proxies);
         if (!signed_request.has_value())
         {
             log_diagnostic("federation.auth.rejected",

@@ -11,8 +11,12 @@ namespace merovingian::rooms
 namespace
 {
 
-    // Fields after `stable`: create_event_is_room_id (MSC4291), privilege_room_creators (MSC4289).
-    // Both are room-v12 features; v1-v11 leave them disabled.
+    // Fields after `stable`: create_event_is_room_id (MSC4291),
+    // privilege_room_creators (MSC4289), power_levels_require_integers.
+    // The first two are room-v12 features; v1-v11 leave them disabled. The last
+    // is set from v10 onwards: v1-v9 accept string-encoded integer power levels
+    // for backwards compatibility (rooms/v10.md, "Values in m.room.power_levels
+    // events must be integers").
     constexpr auto policies = std::array{
         RoomVersionPolicy{"1",  EventFormat::room_v1_v2,   RedactionRules::room_v1_v7,    AuthRules::room_v1,
                           StateResolutionAlgorithm::v1, EventIdFormat::reference_hash, true, false, false},
@@ -35,11 +39,11 @@ namespace
         RoomVersionPolicy{"9",  EventFormat::room_v3_plus, RedactionRules::room_v8_v10,   AuthRules::room_v6_plus,
                           StateResolutionAlgorithm::v2, EventIdFormat::reference_hash, true, false, false},
         RoomVersionPolicy{"10", EventFormat::room_v3_plus, RedactionRules::room_v8_v10,   AuthRules::room_v6_plus,
-                          StateResolutionAlgorithm::v2, EventIdFormat::reference_hash, true, false, false},
+                          StateResolutionAlgorithm::v2, EventIdFormat::reference_hash, true, false, false, true},
         RoomVersionPolicy{"11", EventFormat::room_v3_plus, RedactionRules::room_v11_plus, AuthRules::room_v6_plus,
-                          StateResolutionAlgorithm::v2, EventIdFormat::reference_hash, true, false, false},
+                          StateResolutionAlgorithm::v2, EventIdFormat::reference_hash, true, false, false, true},
         RoomVersionPolicy{"12", EventFormat::room_v3_plus, RedactionRules::room_v11_plus, AuthRules::room_v12,
-                          StateResolutionAlgorithm::v2, EventIdFormat::reference_hash, true, true,  true },
+                          StateResolutionAlgorithm::v2, EventIdFormat::reference_hash, true, true,  true, true},
     };
 
 } // namespace

@@ -143,6 +143,21 @@ struct FederationRateLimitBucket final
 using RemoteKeyResolver =
     std::function<std::optional<FederationRemoteRuntime>(std::string_view server_name, std::string_view key_id)>;
 
+// Answers "is a still-valid key for this (server_name, key_id) already in the
+// persistent key cache?" without touching the network. Used to decide whether a
+// resolution needs to be charged to the pre-authentication network budget: a
+// resolver call the key cache will serve does no outbound work and must not
+// consume a budget that exists to bound outbound work.
+//
+// This matters because a FederationRemoteRuntime carries a single signing key, so
+// a peer that legitimately signs with a second published key takes the key-id
+// mismatch path on every such request. Without this probe those requests would
+// each be charged, and a peer alternating two valid keys would be rejected with
+// 429 once the per-source rate was reached despite every request being genuine.
+//
+// Optional: when unset, every resolution is charged, which is the safe default.
+using RemoteKeyCacheProbe = std::function<bool(std::string_view server_name, std::string_view key_id)>;
+
 // Result of a federation `query/directory` lookup. found=false means the alias
 // is unknown to this server and the handler responds 404 M_NOT_FOUND.
 struct FederationDirectory final
@@ -226,6 +241,13 @@ struct KeyResolutionBucket final
 struct KeyResolutionFailure final
 {
     std::string origin{};
+    // Scoped to the requested key ID as well as the origin. Keying on the origin
+    // alone let an unauthenticated sender poison a legitimate third party: name a
+    // real server with a bogus key_id, the resolver fetches that server's real
+    // keys successfully but returns nothing for the bogus id, and an
+    // origin-scoped failure entry then rejects that server's genuine requests
+    // for the whole TTL. A bogus key ID must only ever poison itself.
+    std::string key_id{};
     std::chrono::steady_clock::time_point expires_at{};
 };
 
@@ -252,6 +274,7 @@ struct FederationRuntimeState final
     std::deque<observability::AuditLogEvent> audit_events{};
     std::size_t unsafe_audit_events{0U};
     RemoteKeyResolver remote_key_resolver{};
+    RemoteKeyCacheProbe remote_key_cache_probe{};
     // Pre-authentication key-resolution budget state. Unlike rate_limit_buckets
     // above -- which is keyed on an already-verified origin and so bounded by
     // the number of real federating peers -- these are reachable before any

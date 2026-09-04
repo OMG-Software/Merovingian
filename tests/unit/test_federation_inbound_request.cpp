@@ -2353,3 +2353,179 @@ SCENARIO("A resolvable peer is not blocked by the key-resolution budget",
         }
     }
 }
+
+// PR #488 review: keying the negative cache on the origin alone let an
+// unauthenticated sender deny service to a legitimate third party. Name a real
+// server with a bogus key ID; the resolver fetches that server's real keys
+// successfully but returns nothing for the bogus ID, and an origin-scoped
+// failure entry then rejected that server's genuine requests for the whole TTL.
+SCENARIO("A bogus key ID does not poison other key IDs for the same origin",
+         "[federation][inbound][key-resolution][security]")
+{
+    GIVEN("a runtime whose resolver knows one key ID for a peer and nothing for any other")
+    {
+        auto config = runtime_config();
+        config.key_resolution_per_ip_rate = {100U, 60U};
+        config.key_resolution_failure_ttl_seconds = 300U;
+        auto runtime = merovingian::federation::make_federation_runtime_state(config);
+
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const token = std::string{"verify-token"};
+        runtime.remote_key_resolver =
+            [origin, key_id, token](
+                std::string_view server_name,
+                std::string_view request_key_id) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+            if (server_name != origin || request_key_id != key_id)
+            {
+                return std::nullopt;
+            }
+            return remote_for(origin, key_id, token);
+        };
+
+        WHEN("an attacker first probes that origin with a bogus key ID")
+        {
+            auto probe = key_resolution_request(origin, "198.51.100.66");
+            probe.key_id = "ed25519:bogus";
+            std::ignore = merovingian::federation::handle_inbound_federation_request(runtime, probe);
+
+            THEN("the peer's own properly signed request is still accepted")
+            {
+                auto const json_pdu = signed_json_pdu(origin, key_id, token);
+                auto request = signed_request(origin, key_id, token, transaction_body(origin, json_pdu));
+                request.remote_addr = "203.0.113.10";
+                auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
+                REQUIRE(response.status == 200U);
+            }
+        }
+    }
+}
+
+// The negative cache must still do its job for the exact pair that failed.
+SCENARIO("A repeated bogus key ID is refused from the negative cache",
+         "[federation][inbound][key-resolution][conformance]")
+{
+    GIVEN("a runtime with negative caching enabled and a resolver that never succeeds")
+    {
+        auto config = runtime_config();
+        config.key_resolution_per_ip_rate = {100U, 60U};
+        config.key_resolution_failure_ttl_seconds = 300U;
+        auto runtime = merovingian::federation::make_federation_runtime_state(config);
+
+        auto resolver_calls = 0;
+        runtime.remote_key_resolver =
+            [&resolver_calls](std::string_view,
+                              std::string_view) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+            ++resolver_calls;
+            return std::nullopt;
+        };
+
+        WHEN("the same origin and key ID are named four times")
+        {
+            for (auto index = 0; index < 4; ++index)
+            {
+                auto request = key_resolution_request("broken.example", "198.51.100.67");
+                request.key_id = "ed25519:same";
+                std::ignore = merovingian::federation::handle_inbound_federation_request(runtime, request);
+            }
+
+            THEN("only the first reaches the resolver")
+            {
+                REQUIRE(resolver_calls == 1);
+            }
+        }
+    }
+}
+
+// An origin that cannot be a Matrix server name is refused before the resolver
+// and before anything is stored, so oversized values cannot be used to retain
+// far more memory than the failure-cache entry count suggests.
+SCENARIO("A malformed origin is rejected without reaching the resolver",
+         "[federation][inbound][key-resolution][security]")
+{
+    GIVEN("a runtime with a resolver that would accept anything")
+    {
+        auto config = runtime_config();
+        config.key_resolution_per_ip_rate = {100U, 60U};
+        auto runtime = merovingian::federation::make_federation_runtime_state(config);
+
+        auto resolver_calls = 0;
+        runtime.remote_key_resolver =
+            [&resolver_calls](std::string_view,
+                              std::string_view) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+            ++resolver_calls;
+            return std::nullopt;
+        };
+
+        WHEN("origins that are not valid server names are presented")
+        {
+            // No dot; and longer than the 255-byte server-name limit.
+            std::ignore = merovingian::federation::handle_inbound_federation_request(
+                runtime, key_resolution_request("nodothere", "198.51.100.68"));
+            std::ignore = merovingian::federation::handle_inbound_federation_request(
+                runtime, key_resolution_request(std::string(300U, 'a') + ".example", "198.51.100.68"));
+
+            THEN("neither reaches the resolver")
+            {
+                REQUIRE(resolver_calls == 0);
+            }
+        }
+    }
+}
+
+// A resolution the key cache can serve does no outbound work, so it must not be
+// charged to a budget that exists to bound outbound work. Without this, a peer
+// signing with a second published key -- which always takes the key-id mismatch
+// path, because a remote runtime holds one key -- would be rejected with 429.
+SCENARIO("A cache-served key resolution is not charged to the network budget",
+         "[federation][inbound][key-resolution][conformance]")
+{
+    GIVEN("a runtime with a budget of one resolution and a probe reporting a cached key")
+    {
+        auto config = runtime_config();
+        config.key_resolution_per_ip_rate = {1U, 60U};
+        config.key_resolution_failure_ttl_seconds = 0U;
+        auto runtime = merovingian::federation::make_federation_runtime_state(config);
+
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const token = std::string{"verify-token"};
+        runtime.remote_key_cache_probe = [](std::string_view, std::string_view) -> bool {
+            return true;
+        };
+        runtime.remote_key_resolver =
+            [origin, key_id, token](
+                std::string_view server_name,
+                std::string_view request_key_id) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+            if (server_name != origin || request_key_id != key_id)
+            {
+                return std::nullopt;
+            }
+            return remote_for(origin, key_id, token);
+        };
+
+        WHEN("the peer sends five properly signed transactions")
+        {
+            auto accepted = 0;
+            for (auto index = 0; index < 5; ++index)
+            {
+                auto const json_pdu = signed_json_pdu(origin, key_id, token);
+                auto request = signed_request(origin, key_id, token, transaction_body(origin, json_pdu));
+                request.target = "/_matrix/federation/v1/send/probe" + std::to_string(index);
+                request.signature = merovingian::federation::make_federation_signature(
+                    request.origin, request.destination, request.method, request.target, request.body,
+                    merovingian::federation::test::keypair_from_seed(token).secret_key);
+                request.remote_addr = "203.0.113.11";
+                if (merovingian::federation::handle_inbound_federation_request(runtime, request).status == 200U)
+                {
+                    ++accepted;
+                }
+            }
+
+            THEN("none is rejected by the one-resolution budget")
+            {
+                REQUIRE(accepted == 5);
+            }
+        }
+    }
+}

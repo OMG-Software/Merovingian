@@ -11,10 +11,13 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <variant>
 #include <vector>
 
@@ -122,14 +125,59 @@ namespace
         return content == nullptr ? nullptr : string_member(*content, key);
     }
 
-    [[nodiscard]] auto extract_user_level_from_users(canonicaljson::Object const& users_object,
-                                                     std::string_view user_id) noexcept -> std::int64_t
+    // Reads a power level that may be encoded either as an integer or, in room
+    // versions 1-9, as a string representation of one. Returns nullopt when the
+    // value is absent or is not a power level in a form this room version accepts.
+    // Spec: ../../docs/matrix-v1.19-spec/rooms/v10.md — "Values in
+    // m.room.power_levels events must be integers" (and, for v1-v9, v9's
+    // "m.room.power_levels events accept values as strings").
+    [[nodiscard]] auto power_level_value(canonicaljson::Value const* value, bool allow_string_values) noexcept
+        -> std::optional<std::int64_t>
     {
-        if (auto const* level = integer_member(users_object, user_id); level != nullptr)
+        if (value == nullptr)
         {
-            return *level;
+            return std::nullopt;
         }
-        return -1;
+        if (auto const* integer = std::get_if<std::int64_t>(&value->storage()); integer != nullptr)
+        {
+            return *integer;
+        }
+        if (!allow_string_values)
+        {
+            return std::nullopt;
+        }
+        auto const* text = std::get_if<std::string>(&value->storage());
+        if (text == nullptr || text->empty())
+        {
+            return std::nullopt;
+        }
+        // Only a plain optionally-signed decimal integer counts. from_chars
+        // rejects leading whitespace, "+", "0x" and trailing junk, and the
+        // end-pointer check rejects anything it stopped short on, so "10abc" and
+        // "1.5" are not power levels.
+        auto parsed = std::int64_t{0};
+        auto const* first = text->data();
+        auto const* last = first + text->size();
+        auto const result = std::from_chars(first, last, parsed);
+        if (result.ec != std::errc{} || result.ptr != last)
+        {
+            return std::nullopt;
+        }
+        return parsed;
+    }
+
+    [[nodiscard]] auto power_level_member(canonicaljson::Object const& object, std::string_view key,
+                                          bool allow_string_values) noexcept -> std::optional<std::int64_t>
+    {
+        return power_level_value(object_member(object, key), allow_string_values);
+    }
+
+    [[nodiscard]] auto extract_user_level_from_users(canonicaljson::Object const& users_object,
+                                                     std::string_view user_id, bool allow_string_values) noexcept
+        -> std::int64_t
+    {
+        auto const level = power_level_member(users_object, user_id, allow_string_values);
+        return level.has_value() ? *level : -1;
     }
 
     [[nodiscard]] auto membership_at_least_one_of(MembershipState current,
@@ -204,7 +252,7 @@ namespace
         }
         if (value_has_content(power_levels))
         {
-            return extract_user_power_level(power_levels, sender);
+            return extract_user_power_level(power_levels, sender, !policy.power_levels_require_integers);
         }
         auto const* creator = event_content_string(create_event, "creator");
         if (creator != nullptr && sender == *creator)
@@ -404,26 +452,80 @@ namespace
         {
             return false;
         }
+        // Split at the FIRST colon: the localpart may not contain one, so a second
+        // colon belongs to the server name's port and anything before it does not.
         auto const separator = user_id.find(':');
-        return separator != std::string_view::npos && separator + 1U < user_id.size();
+        if (separator == std::string_view::npos || separator + 1U >= user_id.size())
+        {
+            return false;
+        }
+        auto const localpart = user_id.substr(1U, separator - 1U);
+        auto const server_name = user_id.substr(separator + 1U);
+
+        // Deliberately permissive on the localpart's character set -- historical
+        // user IDs carry bytes the current grammar would reject, and this runs on
+        // events other servers have already accepted. What it will not accept is
+        // anything that cannot be a user ID at all: an embedded NUL, a control
+        // character, or whitespace. A prefix-only check passed all of those, so
+        // values like "@alice:not a server" satisfied a rule that exists
+        // specifically to require valid user IDs.
+        auto const is_structurally_invalid = [](char c) {
+            auto const byte = static_cast<unsigned char>(c);
+            return byte <= 0x20U || byte == 0x7FU;
+        };
+        if (std::ranges::any_of(localpart, is_structurally_invalid) ||
+            std::ranges::any_of(server_name, is_structurally_invalid))
+        {
+            return false;
+        }
+        // The server-name half must additionally look like a host: no colons
+        // beyond an optional single port separator, and a non-empty host.
+        auto const port_separator = server_name.find(':');
+        auto const host = server_name.substr(0U, port_separator);
+        if (host.empty())
+        {
+            return false;
+        }
+        return port_separator == std::string_view::npos ||
+               server_name.find(':', port_separator + 1U) == std::string_view::npos;
     }
 
     // Rules 9.1, 9.2 and 9.3: structural validation of an m.room.power_levels
     // content object. Returns an empty string when well formed, else the reason.
-    [[nodiscard]] auto power_levels_content_rejection_reason(canonicaljson::Object const& content) -> std::string
+    // The power-level maps rule 9 bounds. `notifications` joined the algorithm in
+    // room version 6: for v1-v5 the rules speak only of `events`, so iterating
+    // both there would reject changes those versions explicitly allow.
+    // Spec: ../../docs/matrix-v1.19-spec/rooms/v6.md — "the authorisation rules
+    // for events of type m.room.power_levels now include a notifications property".
+    [[nodiscard]] auto bounded_power_level_maps(rooms::RoomVersionPolicy const& policy) -> std::vector<std::string_view>
     {
-        // 9.1 — scalar keys must be integers when present.
+        if (policy.auth_rules == rooms::AuthRules::room_v1)
+        {
+            return {std::string_view{"events"}};
+        }
+        return {std::string_view{"events"}, std::string_view{"notifications"}};
+    }
+
+    [[nodiscard]] auto power_levels_content_rejection_reason(canonicaljson::Object const& content,
+                                                             rooms::RoomVersionPolicy const& policy) -> std::string
+    {
+        // Room versions 1-9 accept an integer power level encoded as a string;
+        // v10 removed that compatibility. Validating unconditionally as integers
+        // rejected valid historical events such as "events_default":"0".
+        auto const allow_strings = !policy.power_levels_require_integers;
+
+        // 9.1 — scalar keys must be power-level values when present.
         for (auto const& key : scalar_power_level_keys)
         {
             auto const* value = object_member(content, key);
-            if (value != nullptr && std::get_if<std::int64_t>(&value->storage()) == nullptr)
+            if (value != nullptr && !power_level_value(value, allow_strings).has_value())
             {
                 return std::string{key} + " must be an integer";
             }
         }
 
-        // 9.2 — events and notifications must be objects whose values are integers.
-        for (auto const& key : {std::string_view{"events"}, std::string_view{"notifications"}})
+        // 9.2 — the bounded maps must be objects of power-level values.
+        for (auto const& key : bounded_power_level_maps(policy))
         {
             auto const* value = object_member(content, key);
             if (value == nullptr)
@@ -437,14 +539,14 @@ namespace
             }
             for (auto const& entry : *map)
             {
-                if (entry.value == nullptr || std::get_if<std::int64_t>(&entry.value->storage()) == nullptr)
+                if (!power_level_value(entry.value.get(), allow_strings).has_value())
                 {
                     return std::string{key} + " values must be integers";
                 }
             }
         }
 
-        // 9.3 — users must map valid user IDs to integers.
+        // 9.3 — users must map valid user IDs to power-level values.
         auto const* users_value = object_member(content, "users");
         if (users_value == nullptr)
         {
@@ -461,7 +563,7 @@ namespace
             {
                 return "users keys must be valid user IDs";
             }
-            if (entry.value == nullptr || std::get_if<std::int64_t>(&entry.value->storage()) == nullptr)
+            if (!power_level_value(entry.value.get(), allow_strings).has_value())
             {
                 return "users values must be integers";
             }
@@ -476,25 +578,26 @@ namespace
     // users_default, ban, kick, redact and invite without bound (#487).
     [[nodiscard]] auto scalar_power_level_rejection_reason(canonicaljson::Object const& old_content,
                                                            canonicaljson::Object const& new_content,
-                                                           std::int64_t sender_power) -> std::string
+                                                           std::int64_t sender_power, bool allow_string_values)
+        -> std::string
     {
         for (auto const& key : scalar_power_level_keys)
         {
-            auto const* old_level = integer_member(old_content, key);
-            auto const* new_level = integer_member(new_content, key);
-            auto const unchanged = (old_level == nullptr && new_level == nullptr) ||
-                                   (old_level != nullptr && new_level != nullptr && *old_level == *new_level);
+            auto const old_level = power_level_member(old_content, key, allow_string_values);
+            auto const new_level = power_level_member(new_content, key, allow_string_values);
+            auto const unchanged = (!old_level.has_value() && !new_level.has_value()) ||
+                                   (old_level.has_value() && new_level.has_value() && *old_level == *new_level);
             if (unchanged)
             {
                 continue;
             }
             // 9.5.1 — the value being replaced must be within the sender's reach.
-            if (old_level != nullptr && *old_level > sender_power)
+            if (old_level.has_value() && *old_level > sender_power)
             {
                 return "cannot alter " + std::string{key} + ": its current value exceeds the sender's power level";
             }
             // 9.5.2 — and so must the value replacing it.
-            if (new_level != nullptr && *new_level > sender_power)
+            if (new_level.has_value() && *new_level > sender_power)
             {
                 return "cannot set " + std::string{key} + " above the sender's own power level";
             }
@@ -508,8 +611,8 @@ namespace
     // in their new value (when added or changed).
     [[nodiscard]] auto power_level_map_rejection_reason(canonicaljson::Object const& old_content,
                                                         canonicaljson::Object const& new_content,
-                                                        std::string_view map_key, std::int64_t sender_power)
-        -> std::string
+                                                        std::string_view map_key, std::int64_t sender_power,
+                                                        bool allow_string_values) -> std::string
     {
         auto const* old_map = object_member_as_object(old_content, map_key);
         auto const* new_map = object_member_as_object(new_content, map_key);
@@ -519,14 +622,15 @@ namespace
         {
             for (auto const& entry : *old_map)
             {
-                auto const* old_level =
-                    entry.value == nullptr ? nullptr : std::get_if<std::int64_t>(&entry.value->storage());
-                if (old_level == nullptr)
+                auto const old_level = power_level_value(entry.value.get(), allow_string_values);
+                if (!old_level.has_value())
                 {
                     continue;
                 }
-                auto const* new_level = new_map == nullptr ? nullptr : integer_member(*new_map, entry.key);
-                auto const removed_or_changed = (new_level == nullptr) || (*new_level != *old_level);
+                auto const new_level = new_map == nullptr
+                                           ? std::optional<std::int64_t>{}
+                                           : power_level_member(*new_map, entry.key, allow_string_values);
+                auto const removed_or_changed = !new_level.has_value() || (*new_level != *old_level);
                 if (removed_or_changed && *old_level > sender_power)
                 {
                     return std::string{map_key} + " entry '" + entry.key +
@@ -540,14 +644,15 @@ namespace
         {
             for (auto const& entry : *new_map)
             {
-                auto const* new_level =
-                    entry.value == nullptr ? nullptr : std::get_if<std::int64_t>(&entry.value->storage());
-                if (new_level == nullptr)
+                auto const new_level = power_level_value(entry.value.get(), allow_string_values);
+                if (!new_level.has_value())
                 {
                     continue;
                 }
-                auto const* old_level = old_map == nullptr ? nullptr : integer_member(*old_map, entry.key);
-                auto const added_or_changed = (old_level == nullptr) || (*new_level != *old_level);
+                auto const old_level = old_map == nullptr
+                                           ? std::optional<std::int64_t>{}
+                                           : power_level_member(*old_map, entry.key, allow_string_values);
+                auto const added_or_changed = !old_level.has_value() || (*new_level != *old_level);
                 if (added_or_changed && *new_level > sender_power)
                 {
                     return std::string{map_key} + " entry '" + entry.key + "' exceeds the sender's power level";
@@ -610,7 +715,11 @@ namespace
         // bucket identifies the pre-v11 versions exactly.
         auto const creator_field_required =
             !policy.create_event_is_room_id && policy.redaction_rules != rooms::RedactionRules::room_v11_plus;
-        if (creator_field_required && (content == nullptr || string_member(*content, "creator") == nullptr))
+        // Presence, not type: rule 1.4 rejects a create event only when content
+        // has no `creator` property. It says nothing about that property's value,
+        // so testing with string_member treated a present non-string creator as
+        // absent and rejected historical events other servers must accept.
+        if (creator_field_required && (content == nullptr || object_member(*content, "creator") == nullptr))
         {
             return "create event content requires a creator";
         }
@@ -771,8 +880,8 @@ auto extract_content_membership(canonicaljson::Value const& event) noexcept -> s
     return membership == nullptr ? std::string{} : *membership;
 }
 
-auto extract_user_power_level(canonicaljson::Value const& power_levels_event, std::string_view user_id) noexcept
-    -> std::int64_t
+auto extract_user_power_level(canonicaljson::Value const& power_levels_event, std::string_view user_id,
+                              bool allow_string_values) noexcept -> std::int64_t
 {
     auto const* obj = value_is_object(power_levels_event);
     if (obj == nullptr)
@@ -784,18 +893,18 @@ auto extract_user_power_level(canonicaljson::Value const& power_levels_event, st
     {
         return 0;
     }
-    auto const default_level = extract_power_level_key(power_levels_event, "users_default", 0);
+    auto const default_level = extract_power_level_key(power_levels_event, "users_default", 0, allow_string_values);
     auto const* users = object_member_as_object(*content, "users");
     if (users == nullptr)
     {
         return default_level;
     }
-    auto const user_level = extract_user_level_from_users(*users, user_id);
+    auto const user_level = extract_user_level_from_users(*users, user_id, allow_string_values);
     return user_level >= 0 ? user_level : default_level;
 }
 
 auto extract_power_level_key(canonicaljson::Value const& power_levels_event, std::string_view key,
-                             std::int64_t default_value) noexcept -> std::int64_t
+                             std::int64_t default_value, bool allow_string_values) noexcept -> std::int64_t
 {
     auto const* obj = value_is_object(power_levels_event);
     if (obj == nullptr)
@@ -807,7 +916,7 @@ auto extract_power_level_key(canonicaljson::Value const& power_levels_event, std
     {
         return default_value;
     }
-    if (auto const* level = integer_member(*content, key); level != nullptr)
+    if (auto const level = power_level_member(*content, key, allow_string_values); level.has_value())
     {
         return *level;
     }
@@ -1074,7 +1183,8 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
                     return make_denied("5", "restricted join authorising user is not joined");
                 }
                 auto const invite_power = value_has_content(auth_events.power_levels)
-                                              ? extract_power_level_key(auth_events.power_levels, "invite", 0)
+                                              ? extract_power_level_key(auth_events.power_levels, "invite", 0,
+                                                                        !policy.power_levels_require_integers)
                                               : 0;
                 auto const authorising_power =
                     effective_sender_power(auth_events.power_levels, *authorising_user, auth_events.create, policy);
@@ -1158,7 +1268,8 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
 
             // Check invite power level
             auto const invite_power = value_has_content(auth_events.power_levels)
-                                          ? extract_power_level_key(auth_events.power_levels, "invite", 0)
+                                          ? extract_power_level_key(auth_events.power_levels, "invite", 0,
+                                                                    !policy.power_levels_require_integers)
                                           : 0;
             auto const sender_power =
                 effective_sender_power(auth_events.power_levels, *sender, auth_events.create, policy);
@@ -1202,7 +1313,8 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
             if (target_current_membership == MembershipState::ban)
             {
                 auto const ban_power = value_has_content(auth_events.power_levels)
-                                           ? extract_power_level_key(auth_events.power_levels, "ban", 50)
+                                           ? extract_power_level_key(auth_events.power_levels, "ban", 50,
+                                                                     !policy.power_levels_require_integers)
                                            : 50;
                 if (sender_power < ban_power)
                 {
@@ -1214,7 +1326,8 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
             // sender's power to be at least the kick level AND strictly greater
             // than the target's own power level.
             auto const kick_power = value_has_content(auth_events.power_levels)
-                                        ? extract_power_level_key(auth_events.power_levels, "kick", 50)
+                                        ? extract_power_level_key(auth_events.power_levels, "kick", 50,
+                                                                  !policy.power_levels_require_integers)
                                         : 50;
             auto const target_power =
                 effective_sender_power(auth_events.power_levels, *state_key, auth_events.create, policy);
@@ -1237,7 +1350,8 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
             // Spec rule 6.2: ban requires the sender's power to be at least the ban
             // level AND strictly greater than the target's own power level.
             auto const ban_power = value_has_content(auth_events.power_levels)
-                                       ? extract_power_level_key(auth_events.power_levels, "ban", 50)
+                                       ? extract_power_level_key(auth_events.power_levels, "ban", 50,
+                                                                 !policy.power_levels_require_integers)
                                        : 50;
             auto const sender_power =
                 effective_sender_power(auth_events.power_levels, *sender, auth_events.create, policy);
@@ -1283,9 +1397,10 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
     // level is greater than or equal to the invite level."
     if (*event_type == "m.room.third_party_invite")
     {
-        auto const invite_power = value_has_content(auth_events.power_levels)
-                                      ? extract_power_level_key(auth_events.power_levels, "invite", 0)
-                                      : 0;
+        auto const invite_power =
+            value_has_content(auth_events.power_levels)
+                ? extract_power_level_key(auth_events.power_levels, "invite", 0, !policy.power_levels_require_integers)
+                : 0;
         auto const sender_power = effective_sender_power(auth_events.power_levels, *sender, auth_events.create, policy);
         if (sender_power < invite_power)
         {
@@ -1326,7 +1441,7 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
         // Rules 9.1, 9.2 and 9.3 — structural validation, applied before any
         // comparison so a malformed event is rejected outright rather than
         // having its unreadable keys silently treated as absent.
-        if (auto const reason = power_levels_content_rejection_reason(*content_obj); !reason.empty())
+        if (auto const reason = power_levels_content_rejection_reason(*content_obj, policy); !reason.empty())
         {
             return make_denied("11", reason);
         }
@@ -1365,20 +1480,22 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
                 // sender's power in BOTH directions. This is the check whose
                 // absence let a moderator set users_default to 100 and take the
                 // room (#487).
+                auto const allow_strings = !policy.power_levels_require_integers;
                 if (auto const reason =
-                        scalar_power_level_rejection_reason(*old_content, *content_obj, pl_sender_power);
+                        scalar_power_level_rejection_reason(*old_content, *content_obj, pl_sender_power, allow_strings);
                     !reason.empty())
                 {
                     return make_denied("11", reason);
                 }
 
                 // Rules 9.6 and 9.7 — the same two-sided bound for each entry of
-                // the events and notifications maps, so the bar for sending
-                // m.room.power_levels itself cannot be lowered from beneath it.
-                for (auto const& map_key : {std::string_view{"events"}, std::string_view{"notifications"}})
+                // the bounded maps, so the bar for sending m.room.power_levels
+                // itself cannot be lowered from beneath it. `notifications` is
+                // only one of those maps from room version 6 onwards.
+                for (auto const& map_key : bounded_power_level_maps(policy))
                 {
-                    if (auto const reason =
-                            power_level_map_rejection_reason(*old_content, *content_obj, map_key, pl_sender_power);
+                    if (auto const reason = power_level_map_rejection_reason(*old_content, *content_obj, map_key,
+                                                                             pl_sender_power, allow_strings);
                         !reason.empty())
                     {
                         return make_denied("11", reason);
@@ -1403,13 +1520,16 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
             {
                 for (auto const& user_entry : *new_users)
                 {
-                    auto const* new_level = std::get_if<std::int64_t>(&user_entry.value->storage());
-                    if (new_level == nullptr)
+                    auto const new_level =
+                        power_level_value(user_entry.value.get(), !policy.power_levels_require_integers);
+                    if (!new_level.has_value())
                     {
                         continue;
                     }
-                    auto const old_level =
-                        old_users == nullptr ? -1 : extract_user_level_from_users(*old_users, user_entry.key);
+                    auto const old_level = old_users == nullptr
+                                               ? -1
+                                               : extract_user_level_from_users(*old_users, user_entry.key,
+                                                                               !policy.power_levels_require_integers);
                     auto const added_or_changed = (old_level < 0) || (*new_level != old_level);
                     // Rule 9.9 — applies to the sender's own entry too (no self-exemption).
                     if (added_or_changed && *new_level > pl_sender_power)
@@ -1426,13 +1546,17 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
                     {
                         continue; // Rule 9.8 exempts the sender's own entry.
                     }
-                    auto const old_level = extract_user_level_from_users(*old_users, old_entry.key);
+                    auto const old_level =
+                        extract_user_level_from_users(*old_users, old_entry.key, !policy.power_levels_require_integers);
                     if (old_level < 0)
                     {
                         continue;
                     }
-                    auto const* new_level = new_users == nullptr ? nullptr : integer_member(*new_users, old_entry.key);
-                    auto const removed = (new_level == nullptr);
+                    auto const new_level =
+                        new_users == nullptr
+                            ? std::optional<std::int64_t>{}
+                            : power_level_member(*new_users, old_entry.key, !policy.power_levels_require_integers);
+                    auto const removed = !new_level.has_value();
                     auto const changed = !removed && (*new_level != old_level);
                     if ((removed || changed) && old_level >= pl_sender_power)
                     {
@@ -1454,7 +1578,8 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
         // retained knowingly; it can only reject where the spec would allow, never
         // the reverse. See docs/event-engine.md.
         auto const state_default = value_has_content(auth_events.power_levels)
-                                       ? extract_power_level_key(auth_events.power_levels, "state_default", 50)
+                                       ? extract_power_level_key(auth_events.power_levels, "state_default", 50,
+                                                                 !policy.power_levels_require_integers)
                                        : 50;
         if (pl_sender_power < state_default)
         {
@@ -1476,7 +1601,8 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
     if (is_state_event)
     {
         auto const state_default = value_has_content(auth_events.power_levels)
-                                       ? extract_power_level_key(auth_events.power_levels, "state_default", 50)
+                                       ? extract_power_level_key(auth_events.power_levels, "state_default", 50,
+                                                                 !policy.power_levels_require_integers)
                                        : 50;
 
         // Check per-event-type power level in events map
@@ -1511,7 +1637,8 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
 
     // Step 14: message events
     auto const events_default = value_has_content(auth_events.power_levels)
-                                    ? extract_power_level_key(auth_events.power_levels, "events_default", 0)
+                                    ? extract_power_level_key(auth_events.power_levels, "events_default", 0,
+                                                              !policy.power_levels_require_integers)
                                     : 0;
 
     auto const events_message_level = value_has_content(auth_events.power_levels) ? [&]() -> std::int64_t {

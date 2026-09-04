@@ -2683,55 +2683,10 @@ namespace
         // client rather than collapsing all traffic through the
         // proxy into a single bucket.
         auto const& trusted_proxies = rt.homeserver.config.server().trusted_proxies;
-        auto effective_ip = [&]() -> std::string {
-            auto const& raw = req.remote_addr;
-            if (raw.empty())
-            {
-                return "unknown";
-            }
-            // Check if the peer is one of the operator-configured trusted proxies.
-            auto const is_trusted = std::ranges::find(trusted_proxies, raw) != trusted_proxies.end();
-            if (is_trusted)
-            {
-                // Honour the leftmost non-empty value in X-Forwarded-For.
-                // Case-insensitive header name comparison per RFC 7230.
-                for (auto const& h : req.headers)
-                {
-                    auto lower = h.name;
-                    std::ranges::transform(lower, lower.begin(), [](unsigned char c) {
-                        return static_cast<char>(std::tolower(c));
-                    });
-                    if (lower == "x-forwarded-for")
-                    {
-                        auto sv = std::string_view{h.value};
-                        auto const comma = sv.find(',');
-                        auto first = comma == std::string_view::npos ? sv : sv.substr(0U, comma);
-                        // Trim leading and trailing ASCII spaces.
-                        while (!first.empty() && first.front() == ' ')
-                        {
-                            first.remove_prefix(1U);
-                        }
-                        while (!first.empty() && first.back() == ' ')
-                        {
-                            first.remove_suffix(1U);
-                        }
-                        // A trusted proxy is only trusted to forward its own view of the
-                        // client address correctly — not to hand us an arbitrary string. A
-                        // malformed or non-IP-literal value (e.g. a proxy that appends
-                        // whatever a client sent, or fails to overwrite an inbound header)
-                        // must not be trusted as an effective IP: falling through to the
-                        // direct peer address below lets an attacker rotate through
-                        // spoofed X-Forwarded-For values to defeat per-IP rate limiting.
-                        if (!first.empty() && federation::ip_address_is_valid(first))
-                        {
-                            return std::string{first};
-                        }
-                        break;
-                    }
-                }
-            }
-            return raw;
-        }();
+        // Single implementation shared with the federation key-resolution budget
+        // (see local_http_router.hpp): both need trusted-proxy resolution for the
+        // same reason, and two copies would be free to drift apart.
+        auto const effective_ip = effective_client_ip(req, trusted_proxies);
         // Per-IP bucket keyed by (effective_ip, normalised_route) so
         // different endpoints get independent counters and route
         // templates (e.g. /rooms/{roomId}/send) coalesce into the

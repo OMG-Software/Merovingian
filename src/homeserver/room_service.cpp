@@ -5211,7 +5211,14 @@ namespace
         }();
 
         auto const power_levels_value = room_power_levels_event_value(store, room.room_id);
-        auto const sender_power_level = events::extract_user_power_level(power_levels_value, sender);
+        // Room versions 1-9 may encode a power level as a string. Reading such a
+        // value as absent would silently apply a default instead of the level the
+        // room actually set, so the room's own version decides how it is read.
+        auto const* push_room_policy = rooms::find_room_version_policy(room_version_for_room(store, room.room_id));
+        auto const push_allow_string_levels =
+            push_room_policy == nullptr || !push_room_policy->power_levels_require_integers;
+        auto const sender_power_level =
+            events::extract_user_power_level(power_levels_value, sender, push_allow_string_levels);
         auto notification_power_levels = std::unordered_map<std::string, std::int64_t>{};
         if (auto const* pl_object = std::get_if<canonicaljson::Object>(&power_levels_value.storage());
             pl_object != nullptr)

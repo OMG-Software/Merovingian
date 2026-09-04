@@ -66,9 +66,16 @@ server.http.keep_alive_max_connections=8
 # a 3PID naming an id_server outside the list is refused. That allow-list is the
 # SSRF boundary for outbound identity-server calls, so keep it as narrow as the
 # deployment allows. default_server must itself appear in trusted_servers, and
-# every URL must be HTTPS. allowed_bind_domains restricts which domains a user
-# may bind an address for, which stops a user binding someone else's domain;
-# empty means any domain. These keys are read at startup — changing any of them
+# every URL must be HTTPS.
+#
+# allowed_bind_domains is parsed and validated but NOT yet enforced: no bind or
+# requestToken path consults it, so setting it does not currently restrict which
+# domains a user may bind an address for. It is documented here as inert rather
+# than omitted, because a key that looks like a security control and silently
+# does nothing is worse than one that is absent. Tracked in
+# docs/todos/capability-gaps.md.
+#
+# These keys are read at startup — changing any of them
 # requires a restart, not a SIGHUP reload.
 # server.identity_server.trusted_servers=https://vector.im,https://matrix.org
 # server.identity_server.default_server=https://vector.im
@@ -129,12 +136,21 @@ listeners.federation.tls_private_key_file=
 
 # PostgreSQL privilege separation (optional, PostgreSQL only)
 # Provision the two roles with packaging/postgresql/provision-roles.sql, then
-# name them here. The server assumes migration_role for the DDL phase, then
-# drops to runtime_role -- which holds DML only -- to serve every request,
-# whether or not a migration ran. If either role is set and cannot be assumed,
-# the server refuses to open the database rather than serving with wider
-# privileges than asked for. Leaving both empty issues no SET ROLE, which is
-# the behaviour of a single-role deployment.
+# name them here. The server serves every request as runtime_role, which holds
+# DML only, applied whether or not a migration ran, so a steady-state restart is
+# as constrained as a fresh upgrade. If runtime_role is set and cannot be
+# assumed, the server refuses to open the database rather than serving with
+# wider privileges than asked for. Leaving both empty issues no SET ROLE, which
+# is the behaviour of a single-role deployment.
+#
+# migration_role is NOT yet assumed for the DDL phase. Migrations run as the
+# connection's own login role, because migrations 007 and 011 use ALTER TABLE,
+# which PostgreSQL permits only to a table's owner, and the existing tables are
+# owned by the login role. The key is accepted and validated so a deployment can
+# be provisioned ahead of the live db-migrate tool that will use it, but setting
+# it does not today narrow the privileges migrations run with. See
+# src/database/postgresql_store.cpp and docs/todos/capability-gaps.md.
+# Both keys must be set together or both left empty.
 # Changing either requires a restart: roles are assumed at connect time, so a
 # SIGHUP reload would leave every open connection on its old role.
 #database.migration_role=merovingian_migration

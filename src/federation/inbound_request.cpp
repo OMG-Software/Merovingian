@@ -274,8 +274,8 @@ namespace
     };
 
     // Drops negative-cache entries whose TTL has elapsed. Caller holds the guard.
-    auto expire_key_resolution_failures(FederationRuntimeState& runtime,
-                                        std::chrono::steady_clock::time_point now) -> void
+    auto expire_key_resolution_failures(FederationRuntimeState& runtime, std::chrono::steady_clock::time_point now)
+        -> void
     {
         while (!runtime.key_resolution_failures.empty() && runtime.key_resolution_failures.front().expires_at <= now)
         {
@@ -283,19 +283,22 @@ namespace
         }
     }
 
-    // True when this origin is in the negative cache. Caller holds the guard.
+    // True when this (origin, key_id) pair is in the negative cache. Caller holds
+    // the guard. Scoping on both halves is load-bearing: an origin-only key let a
+    // bogus key_id for a real server poison that server's genuine traffic.
     [[nodiscard]] auto key_resolution_recently_failed(FederationRuntimeState& runtime, std::string_view origin,
+                                                      std::string_view key_id,
                                                       std::chrono::steady_clock::time_point now) -> bool
     {
         expire_key_resolution_failures(runtime, now);
-        return std::ranges::any_of(runtime.key_resolution_failures,
-                                   [origin, now](KeyResolutionFailure const& failure) {
-                                       return failure.origin == origin && failure.expires_at > now;
-                                   });
+        return std::ranges::any_of(
+            runtime.key_resolution_failures, [origin, key_id, now](KeyResolutionFailure const& failure) {
+                return failure.origin == origin && failure.key_id == key_id && failure.expires_at > now;
+            });
     }
 
     auto remember_key_resolution_failure(FederationRuntimeState& runtime, std::string_view origin,
-                                         std::chrono::steady_clock::time_point now) -> void
+                                         std::string_view key_id, std::chrono::steady_clock::time_point now) -> void
     {
         auto const ttl = runtime.config.key_resolution_failure_ttl_seconds;
         if (ttl == 0U)
@@ -312,13 +315,23 @@ namespace
             runtime.key_resolution_failures.pop_front();
         }
         runtime.key_resolution_failures.push_back(
-            KeyResolutionFailure{std::string{origin}, now + std::chrono::seconds{ttl}});
+            KeyResolutionFailure{std::string{origin}, std::string{key_id}, now + std::chrono::seconds{ttl}});
+    }
+
+    // True when the persistent key cache already holds a still-valid key for this
+    // pair, so the resolver will answer without any outbound call. Such a
+    // resolution must not be charged to a budget whose whole purpose is bounding
+    // outbound work. Absent probe => charge, which is the safe default.
+    [[nodiscard]] auto key_resolution_is_cache_served(FederationRuntimeState const& runtime, std::string_view origin,
+                                                     std::string_view key_id) -> bool
+    {
+        return runtime.remote_key_cache_probe && runtime.remote_key_cache_probe(origin, key_id);
     }
 
     // Budgets a pre-authentication remote-key resolution. Reserves an in-flight
     // slot on success; the caller must release it.
     [[nodiscard]] auto admit_key_resolution(FederationRuntimeState& runtime, std::string_view source,
-                                            std::string_view origin) -> KeyResolutionAdmission
+                                            std::string_view origin, std::string_view key_id) -> KeyResolutionAdmission
     {
         auto const now = std::chrono::steady_clock::now();
         auto const& policy = runtime.config.key_resolution_per_ip_rate;
@@ -328,11 +341,28 @@ namespace
             return {false, "invalid key-resolution rate-limit policy"};
         }
 
+        // Reject a malformed origin or key ID before anything else. This is both
+        // cheaper than resolving one (no discovery, no outbound call) and what
+        // bounds the negative cache: server_name_is_valid caps a server name at
+        // 255 bytes with no control characters, and the key ID is capped here, so
+        // an attacker cannot retain far more memory than the entry count suggests
+        // by varying oversized origins. Nothing failing these could ever name a
+        // real key, so nothing is lost by refusing it outright.
+        auto constexpr max_key_id_bytes = std::size_t{255U};
+        if (!server_name_is_valid(origin))
+        {
+            return {false, "origin is not a valid server name"};
+        }
+        if (key_id.empty() || key_id.size() > max_key_id_bytes)
+        {
+            return {false, "key id is missing or oversized"};
+        }
+
         auto guard = federation_guard(runtime);
 
-        if (key_resolution_recently_failed(runtime, origin, now))
+        if (key_resolution_recently_failed(runtime, origin, key_id, now))
         {
-            return {false, "origin key resolution recently failed"};
+            return {false, "key resolution for this origin and key id recently failed"};
         }
 
         if (runtime.key_resolutions_in_flight >= runtime.config.key_resolution_max_in_flight)
@@ -387,21 +417,26 @@ namespace
     class KeyResolutionSlot final
     {
     public:
+        // The runtime is held by reference, not pointer: the slot is always
+        // constructed from a live reference and always dereferences it in the
+        // destructor, so a nullable representation would add a state that cannot
+        // legally occur. Deleting the copy and move operations is what makes the
+        // reference member safe here.
         explicit KeyResolutionSlot(FederationRuntimeState& runtime) noexcept
-            : m_runtime(&runtime)
+            : m_runtime(runtime)
         {
         }
         KeyResolutionSlot(KeyResolutionSlot const&) = delete;
         auto operator=(KeyResolutionSlot const&) -> KeyResolutionSlot& = delete;
         KeyResolutionSlot(KeyResolutionSlot&&) = delete;
         auto operator=(KeyResolutionSlot&&) -> KeyResolutionSlot& = delete;
-        ~KeyResolutionSlot()
+        ~KeyResolutionSlot() noexcept
         {
-            release_key_resolution(*m_runtime);
+            release_key_resolution(m_runtime);
         }
 
     private:
-        FederationRuntimeState* m_runtime;
+        FederationRuntimeState& m_runtime;
     };
 
     [[nodiscard]] auto prepare_weighted_bucket(std::uint32_t count, std::chrono::steady_clock::time_point window_start,
@@ -2092,7 +2127,10 @@ namespace
             // #487: this runs BEFORE the signature is checked -- verifying it
             // needs the key -- so it is reachable by an unauthenticated sender
             // naming any origin they like, and has to be budgeted.
-            auto const admission = admit_key_resolution(runtime, request.remote_addr, request.origin);
+            auto const cache_served = key_resolution_is_cache_served(runtime, request.origin, request.key_id);
+            auto const admission =
+                cache_served ? KeyResolutionAdmission{true, {}}
+                             : admit_key_resolution(runtime, request.remote_addr, request.origin, request.key_id);
             if (!admission.allowed)
             {
                 log_diagnostic("key_resolution.throttled",
@@ -2110,7 +2148,8 @@ namespace
             auto resolved = runtime.remote_key_resolver(request.origin, request.key_id);
             if (!resolved.has_value())
             {
-                remember_key_resolution_failure(runtime, request.origin, std::chrono::steady_clock::now());
+                remember_key_resolution_failure(runtime, request.origin, request.key_id,
+                                                std::chrono::steady_clock::now());
             }
             if (resolved.has_value())
             {
@@ -2154,7 +2193,16 @@ namespace
             // mismatched cached key sends us back to the network, so an attacker
             // who can name an origin with an expired cached key would otherwise
             // have an unbudgeted route to the same outbound call.
-            auto const refresh_admission = admit_key_resolution(runtime, request.remote_addr, request.origin);
+            // A key-id mismatch is the common shape for a peer signing with a
+            // second published key, and a FederationRemoteRuntime holds only one.
+            // If the cache already has that key the resolver does no network work,
+            // so charging it here would reject a wholly legitimate peer.
+            auto const refresh_cache_served =
+                key_resolution_is_cache_served(runtime, request.origin, request.key_id);
+            auto const refresh_admission =
+                refresh_cache_served
+                    ? KeyResolutionAdmission{true, {}}
+                    : admit_key_resolution(runtime, request.remote_addr, request.origin, request.key_id);
             if (!refresh_admission.allowed)
             {
                 log_diagnostic("key_resolution.throttled",
