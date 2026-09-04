@@ -6,7 +6,8 @@
 // The main homeserver NEVER decodes untrusted image bytes in-process. It spawns
 // this short-lived worker, which:
 //   1. clamps its own resources (address space, CPU, file size, descriptors)
-//      and installs the seccomp-bpf syscall filter before reading any input,
+//      and enters the platform sandbox (Linux seccomp-bpf, OpenBSD pledge,
+//      FreeBSD Capsicum) before reading any input,
 //   2. reads a single framed request from stdin (see media/thumbnailer.hpp),
 //   3. decodes PNG (libpng) or JPEG (libjpeg-turbo) into an RGBA8 buffer,
 //      enforcing a pixel-count bomb guard,
@@ -34,6 +35,10 @@
 
 #if defined(__linux__)
 #include <sys/prctl.h>
+#endif
+
+#if defined(__FreeBSD__)
+#include <sys/capsicum.h>
 #endif
 
 namespace
@@ -86,8 +91,20 @@ struct Rgba final
     std::uint32_t height{0U};
 };
 
-// Applies self-imposed resource limits and the syscall filter. Best-effort:
-// a kernel without seccomp still runs, but the rlimits always apply.
+// Applies self-imposed resource limits and the platform sandbox. Best-effort in
+// the same sense as the rest of this file: the rlimits always apply, and a
+// kernel that cannot install the sandbox still runs the worker with them.
+//
+// 0.12.5 audit, finding 9: the sandbox step used to be seccomp-only under
+// `#if defined(__linux__)`, so on FreeBSD, OpenBSD and NetBSD — all documented
+// Tier 1 platforms — this process decoded untrusted PNG and JPEG bytes with
+// nothing but rlimits between an image-decoder bug and the rest of the system.
+// FreeBSD and OpenBSD both have a primitive that fits a process this shape
+// exactly: by the time harden() runs, stdin and stdout are already open and the
+// worker needs nothing else for the rest of its life.
+//
+// NetBSD has no equivalent in-process primitive, so it keeps rlimits alone;
+// that remaining gap is recorded in docs/hardening.md.
 auto harden() -> void
 {
     auto const apply = [](int resource, std::uint64_t value) {
@@ -118,6 +135,17 @@ auto harden() -> void
     {
         std::ignore = merovingian::platform::apply_seccomp_filter();
     }
+#elif defined(__OpenBSD__)
+    // "stdio" covers read/write on already-open descriptors, memory allocation
+    // and clock reads — everything libpng and libjpeg-turbo need once the
+    // request is being decoded. It grants no filesystem, socket, exec or
+    // process-creation access, so a decoder exploit has nothing to reach for.
+    std::ignore = ::pledge("stdio", nullptr);
+#elif defined(__FreeBSD__)
+    // Capability mode: the process keeps the descriptors it already holds and
+    // loses the global namespaces entirely — no open(2) by path, no socket(2),
+    // no exec. Same shape as the pledge above.
+    std::ignore = ::cap_enter();
 #endif
 }
 

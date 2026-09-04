@@ -126,6 +126,29 @@ earlier on this branch; this entry covers the code changes.
   credential that could not be aged out. It now parses as the epoch, which every
   expiry comparison reads as long past. The cost of being wrong is one re-login.
 
+### BSD platform hardening (findings 9, 10)
+
+- **The startup hardening self-check no longer blocks BSD startup.** Privilege
+  drop, filesystem restrictions and core-dump policy sat behind an `__linux__`
+  guard even though `geteuid()` and `getrlimit()` are POSIX, so a FreeBSD,
+  OpenBSD or NetBSD server reported `unknown` for controls it had actually
+  applied — and `is_ready()`, which treats anything but `enabled` as a blocker,
+  then refused to start it. All three are documented Tier 1 platforms. Those
+  probes now run everywhere; `no_new_privs` and capability bounding, which have
+  no BSD equivalent to probe, use the "not applicable on this platform" idiom the
+  pledge/unveil and Capsicum checks already use on Linux.
+- **BSD servers now clamp `RLIMIT_CORE`.** `setrlimit(RLIMIT_CORE, 0)` is POSIX
+  but was only applied on the Linux path, so a BSD server could dump core with
+  its master key and every signing secret in the image.
+- **The thumbnail worker is sandboxed on FreeBSD and OpenBSD.** The sandbox step
+  was seccomp-only under `#if defined(__linux__)`, so on the BSDs the worker
+  decoded untrusted PNG and JPEG bytes with nothing but rlimits between an
+  image-decoder bug and the rest of the system. It now enters `pledge("stdio")`
+  on OpenBSD and Capsicum capability mode on FreeBSD — by the time `harden()`
+  runs, stdin and stdout are already open and the worker needs nothing else for
+  the rest of its life. NetBSD has no equivalent in-process primitive and keeps
+  rlimits alone; that gap is recorded in `docs/hardening.md`.
+
 ## 0.12.4
 
 Security audit of the 0.12.3 tree. Two of the findings below are privilege

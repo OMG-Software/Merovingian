@@ -496,6 +496,23 @@ auto apply_freebsd_capsicum_capability_mode() -> HardeningPlanDecision
 
 #endif // __FreeBSD__
 
+namespace
+{
+
+    // Clamp both the soft and hard core-dump limit to zero. POSIX, so it is the
+    // one core-dump control every supported platform shares; the Linux path adds
+    // prctl(PR_SET_DUMPABLE, 0) on top of it.
+    [[nodiscard]] auto apply_posix_core_dump_limit() noexcept -> bool
+    {
+        auto const limit = ::rlimit{
+            .rlim_cur = 0,
+            .rlim_max = 0,
+        };
+        return ::setrlimit(RLIMIT_CORE, &limit) == 0;
+    }
+
+} // namespace
+
 auto apply_runtime_hardening_controls(RuntimeHardeningProfile const& profile) -> HardeningPlanDecision
 {
     auto profile_decision = evaluate_runtime_hardening_profile(profile);
@@ -527,6 +544,15 @@ auto apply_runtime_hardening_controls(RuntimeHardeningProfile const& profile) ->
 
     if (profile.platform == HardeningPlatform::bsd)
     {
+        // setrlimit(RLIMIT_CORE, 0) is POSIX, not a Linux control. It was only
+        // ever applied on the Linux path, so a BSD server dumped core with its
+        // master key and every signing secret in the image -- and, once the
+        // self-check stopped treating that control as Linux-only (0.12.5 audit,
+        // findings 10 and 21), also failed the startup readiness gate.
+        if (!apply_posix_core_dump_limit())
+        {
+            return reject_if_required(profile.mode, "failed to clamp RLIMIT_CORE to zero");
+        }
 #ifdef __OpenBSD__
         if (!apply_openbsd_pledge_unveil(profile))
         {

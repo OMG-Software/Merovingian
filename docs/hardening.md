@@ -95,12 +95,48 @@ POSIX metadata:
   it documents, and operators upgrading from an earlier release need a one-time
   `chmod 0400` on each secret file (see `docs/user-manual.md`).
 
-- **Core-dump policy.** `setrlimit(RLIMIT_CORE, 0)` *and*
+- **Core-dump policy.** `setrlimit(RLIMIT_CORE, 0)` *and*, on Linux,
   `prctl(PR_SET_DUMPABLE, 0)` must both succeed. The prctl result was discarded
   until 0.12.5: `RLIMIT_CORE=0` stops the kernel writing a core file for an
   ordinary crash, but a `core_pattern` piping to a handler is not bound by the
   process rlimit, so the process image could still be captured while the policy
-  reported success.
+  reported success. `setrlimit` is POSIX and was only ever applied on the Linux
+  path; BSD servers now clamp it too.
+
+## Platform coverage of the hardening controls
+
+The startup self-check runs the same probe on every platform where the control
+exists, and reports "not applicable on this platform" only where the mechanism
+itself does not exist. Before 0.12.5 the POSIX probes were behind an `__linux__`
+guard, so a BSD server reported `unknown` for controls it had applied and
+`is_ready()` refused to start it — on platforms that are documented Tier 1.
+
+| Control | Linux | FreeBSD | OpenBSD | NetBSD |
+|---|---|---|---|---|
+| Privilege drop / filesystem restrictions (`geteuid`) | probed | probed | probed | probed |
+| Core-dump policy (`RLIMIT_CORE`) | probed, plus `PR_GET_DUMPABLE` | probed | probed | probed |
+| `no_new_privs` | probed | n/a | n/a | n/a |
+| Capability bounding | probed | n/a | n/a | n/a |
+| seccomp-bpf | probed | n/a | n/a | n/a |
+| pledge / unveil | n/a | n/a | probed | n/a |
+| Capsicum | n/a | probed | n/a | n/a |
+
+### Thumbnail worker sandbox
+
+The out-of-process thumbnail worker decodes untrusted PNG and JPEG bytes, so it
+enters a sandbox before reading any input. By that point stdin and stdout are
+already open and it needs nothing else for the rest of its life.
+
+| Platform | Primitive |
+|---|---|
+| Linux | seccomp-bpf syscall allowlist |
+| OpenBSD | `pledge("stdio")` |
+| FreeBSD | Capsicum capability mode (`cap_enter`) |
+| NetBSD | **rlimits only** — no equivalent in-process primitive |
+
+NetBSD is the remaining gap. Until one exists, run the worker under whatever
+confinement the service manager provides; the rlimits (address space, CPU, file
+size, descriptor count) still apply.
 * These checks run in `src/main.cpp` before any listener is created.
 
 ### Signal handling and graceful shutdown
