@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "../support/temp_directory.hpp"
+#include "merovingian/core/secret_buffer.hpp"
 #include "merovingian/crypto/constant_time.hpp"
 #include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/crypto/encoding.hpp"
@@ -1518,6 +1519,80 @@ SCENARIO("The unbuffered master key loader returns exact bytes across chunk boun
             }
 
             std::filesystem::remove(path);
+        }
+    }
+}
+
+// --- 0.12.5 audit, finding 17: the sanctioned way to erase secret bytes ------
+//
+// core::secure_zero is what modules outside the crypto boundary use to clear a
+// buffer that held secret material, since they must not call libsodium
+// directly. It is reached in production through
+// database::PersistentServerSigningKey, but the primitive is worth pinning on
+// its own: a version that silently did nothing would leave no trace at the call
+// sites that depend on it.
+
+SCENARIO("secure_zero erases a buffer in place", "[core][secret_buffer][security]")
+{
+    GIVEN("a buffer holding recognisable secret bytes")
+    {
+        auto secret = std::string{"master-key-material"};
+
+        WHEN("it is erased through secure_zero")
+        {
+            merovingian::core::secure_zero(std::as_writable_bytes(std::span{secret}));
+
+            THEN("every byte is zero, and none of the original content survives")
+            {
+                REQUIRE(std::ranges::all_of(secret, [](char c) {
+                    return c == '\0';
+                }));
+                REQUIRE(secret.find("master-key") == std::string::npos);
+            }
+        }
+    }
+
+    GIVEN("an empty buffer")
+    {
+        auto empty = std::string{};
+
+        WHEN("it is erased")
+        {
+            THEN("the call is a no-op rather than dereferencing a null data pointer")
+            {
+                merovingian::core::secure_zero(std::as_writable_bytes(std::span{empty}));
+                REQUIRE(empty.empty());
+            }
+        }
+    }
+}
+
+SCENARIO("The signing-secret box key is unavailable when no master key path is configured",
+         "[crypto][master_key][security]")
+{
+    GIVEN("an empty master key path, as an unconfigured server has")
+    {
+        WHEN("the signing-secret box key is requested")
+        {
+            auto const key = merovingian::crypto::signing_secret_box_key("");
+
+            THEN("no key is produced, so the caller cannot encrypt or decrypt a signing secret")
+            {
+                REQUIRE_FALSE(key.has_value());
+            }
+        }
+    }
+
+    GIVEN("a master key path that does not exist")
+    {
+        WHEN("the signing-secret box key is requested")
+        {
+            auto const key = merovingian::crypto::signing_secret_box_key("/nonexistent/merovingian-master-key");
+
+            THEN("no key is produced")
+            {
+                REQUIRE_FALSE(key.has_value());
+            }
         }
     }
 }

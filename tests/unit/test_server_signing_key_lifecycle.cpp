@@ -18,7 +18,10 @@
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "merovingian/config/config.hpp"
+#include "merovingian/core/secret_buffer.hpp"
 #include "merovingian/crypto/ed25519.hpp"
+#include "merovingian/crypto/master_key.hpp"
+#include "merovingian/crypto/secret_box.hpp"
 #include "merovingian/events/event_signer.hpp"
 #include "merovingian/crypto/secret_box.hpp"
 #include "merovingian/crypto/runtime_multikey_ed25519_provider.hpp"
@@ -33,6 +36,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <span>
+#include <vector>
 #include <string>
 
 namespace
@@ -641,6 +646,161 @@ SCENARIO("Every holder of an active signing secret keeps it in locked memory",
                     runtime.crypto_provider->sign(merovingian::crypto::Ed25519SecretKeyHandle{key_id}, "payload");
                 REQUIRE(signed_result.error.empty());
                 REQUIRE_FALSE(signed_result.signature.bytes.empty());
+            }
+        }
+    }
+}
+
+// --- 0.12.5 audit: the fail-closed branches on the stored-secret path ---------
+//
+// Every one of these refuses to produce a signing identity rather than
+// proceeding with material it cannot vouch for. They are the branches that
+// decide whether a server signs with a key it has actually authenticated, so
+// each is pinned separately: a regression that silently downgraded any of them
+// would otherwise show up only as forged-signature acceptance in the field.
+
+namespace
+{
+
+// Build the at-rest form of a secret exactly as room_service stores it:
+// "secretbox:v1:" + base64(nonce || mac || ciphertext), sealed under the
+// secret-box key derived from `master_key_path`.
+[[nodiscard]] auto sealed_secret_under(std::string const& master_key_path, std::span<std::uint8_t const> plaintext)
+    -> std::string
+{
+    auto const key = merovingian::crypto::signing_secret_box_key(master_key_path);
+    REQUIRE(key.has_value());
+    auto const sealed = merovingian::crypto::secret_box_encrypt(plaintext, *key);
+    REQUIRE(sealed.has_value());
+    return std::string{merovingian::crypto::secret_box_storage_prefix} +
+           merovingian::events::matrix_base64_from_bytes(
+               std::string_view{reinterpret_cast<char const*>(sealed->bytes.data()), sealed->bytes.size()});
+}
+
+// Replace the server's stored signing secret, leaving the rest of the row as
+// the running server wrote it.
+auto overwrite_stored_secret(merovingian::homeserver::HomeserverRuntime& runtime, std::string secret) -> void
+{
+    auto& keys = runtime.database.persistent_store.server_signing_keys;
+    auto const own = std::ranges::find_if(keys, [](auto const& key) {
+        return !key.secret_key.empty();
+    });
+    REQUIRE(own != keys.end());
+    own->secret_key = std::move(secret);
+}
+
+} // namespace
+
+SCENARIO("An encrypted signing secret is refused when no master key is configured",
+         "[homeserver][signing][security]")
+{
+    GIVEN("a server whose stored secret is encrypted, started without a master key")
+    {
+        auto started = merovingian::homeserver::start_runtime(signing_lifecycle_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        // The row is already `secretbox:v1:` from startup; only the config changes.
+        runtime.config = config_without_master_key();
+
+        WHEN("the runtime tries to load its signing key")
+        {
+            auto const loaded = merovingian::homeserver::ensure_runtime_server_signing_key(runtime);
+
+            THEN("it refuses rather than treating the ciphertext as key material")
+            {
+                // Reading the envelope as raw bytes would produce a
+                // wrong-length "secret" and, worse, a signing identity nobody
+                // can verify. Refusing is the only safe answer.
+                REQUIRE_FALSE(loaded.has_value());
+            }
+        }
+    }
+}
+
+SCENARIO("A signing secret sealed under a different master key is refused",
+         "[homeserver][signing][security]")
+{
+    GIVEN("a stored secret sealed under one master key and a server holding another")
+    {
+        auto started = merovingian::homeserver::start_runtime(signing_lifecycle_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const other_master_key = merovingian::tests::master_key_file();
+        auto const seed = std::vector<std::uint8_t>(merovingian::crypto::ed25519_secret_key_bytes, 0x5aU);
+        overwrite_stored_secret(runtime, sealed_secret_under(other_master_key, seed));
+
+        WHEN("the runtime tries to load its signing key")
+        {
+            auto const loaded = merovingian::homeserver::ensure_runtime_server_signing_key(runtime);
+
+            THEN("the authentication tag failure is fatal, not ignored")
+            {
+                // secret_box is authenticated: a tag mismatch means the row was
+                // written under a different key or has been tampered with.
+                // Either way it must not yield a signing identity.
+                REQUIRE_FALSE(loaded.has_value());
+            }
+        }
+    }
+}
+
+SCENARIO("A stored secret that decrypts to the wrong length is refused", "[homeserver][signing][security]")
+{
+    GIVEN("a correctly sealed secret whose plaintext is not an Ed25519 secret key")
+    {
+        auto started = merovingian::homeserver::start_runtime(signing_lifecycle_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        // Sealed under the *right* master key, so it decrypts cleanly -- the
+        // only thing wrong with it is its length.
+        auto const truncated = std::vector<std::uint8_t>(16U, 0x11U);
+        overwrite_stored_secret(runtime,
+                                sealed_secret_under(runtime.config.security().secrets.master_key_file, truncated));
+
+        WHEN("the runtime tries to load its signing key")
+        {
+            auto const loaded = merovingian::homeserver::ensure_runtime_server_signing_key(runtime);
+
+            THEN("it is refused rather than used to produce corrupt signatures")
+            {
+                // Signing with wrong-length material does not fail loudly; it
+                // produces signatures no peer can verify, which surfaces as
+                // unexplained federation rejection rather than as an error here.
+                REQUIRE_FALSE(loaded.has_value());
+            }
+        }
+
+        WHEN("the active signing secrets are collected for the crypto provider")
+        {
+            auto const secrets = merovingian::homeserver::active_server_signing_key_secrets(runtime);
+
+            THEN("the wrong-length row is skipped rather than handed to the provider")
+            {
+                REQUIRE(secrets.empty());
+            }
+        }
+    }
+}
+
+SCENARIO("A legacy row holding undecodable base64 yields no signing secret", "[homeserver][signing][security]")
+{
+    GIVEN("a legacy plaintext row whose contents are not valid base64")
+    {
+        auto started = merovingian::homeserver::start_runtime(signing_lifecycle_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        // No secretbox prefix, so this takes the legacy decode path.
+        overwrite_stored_secret(runtime, "!!!not-base64!!!");
+
+        WHEN("the runtime tries to load its signing key")
+        {
+            auto const loaded = merovingian::homeserver::ensure_runtime_server_signing_key(runtime);
+
+            THEN("it is refused rather than yielding an empty or partial key")
+            {
+                REQUIRE_FALSE(loaded.has_value());
             }
         }
     }

@@ -2,6 +2,7 @@
 
 #include "merovingian/config/config_parser.hpp"
 
+#include <algorithm>
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstdint>
@@ -714,6 +715,150 @@ SCENARIO("Key-value config parser applies the HTTP keep-alive transport policy",
                 REQUIRE(has_finding(merovingian::config::validate(over_cap_idle_result.config),
                                     "server.http.keep_alive_idle_seconds"));
                 REQUIRE_FALSE(merovingian::config::is_valid(over_cap_idle_result.config));
+            }
+        }
+    }
+}
+
+// --- 0.12.5 audit, findings 11 and 19: the new capacity keys ----------------
+//
+// These four keys are the operator's only control over how much memory a
+// connection flood or upload spam can consume. A parser that silently dropped
+// one -- or accepted a malformed value and left the field at its default --
+// would leave a server running unbounded while its config file said otherwise,
+// which is the failure mode hardest to notice.
+
+SCENARIO("Key-value config parser applies the resource capacity limits", "[config][parser][security]")
+{
+    GIVEN("a config setting every capacity key introduced in 0.12.5")
+    {
+        auto const input = std::string{"listeners.max_queued_connections=2048\n"
+                                       "security.media.max_total_size=10GiB\n"
+                                       "security.media.max_size_per_user=512MiB\n"
+                                       "security.media.max_records=100000\n"};
+
+        WHEN("the config is parsed")
+        {
+            auto const result = merovingian::config::parse_key_value_config(input);
+
+            THEN("each value is applied rather than silently left at its default")
+            {
+                REQUIRE(result.findings.empty());
+                REQUIRE(result.config.listeners().max_queued_connections == 2048U);
+                REQUIRE(result.config.security().media.max_total_size == "10GiB");
+                REQUIRE(result.config.security().media.max_size_per_user == "512MiB");
+                REQUIRE(result.config.security().media.max_records == 100000U);
+            }
+        }
+    }
+
+    GIVEN("a config that disables every capacity limit explicitly")
+    {
+        auto const input = std::string{"listeners.max_queued_connections=0\n"
+                                       "security.media.max_records=0\n"};
+
+        WHEN("the config is parsed")
+        {
+            auto const result = merovingian::config::parse_key_value_config(input);
+
+            THEN("zero is accepted, since it is the documented way to turn a cap off")
+            {
+                REQUIRE(result.findings.empty());
+                REQUIRE(result.config.listeners().max_queued_connections == 0U);
+                REQUIRE(result.config.security().media.max_records == 0U);
+            }
+        }
+    }
+}
+
+SCENARIO("Key-value config parser rejects malformed resource capacity limits", "[config][parser][security]")
+{
+    GIVEN("a non-numeric connection queue depth")
+    {
+        WHEN("the config is parsed")
+        {
+            auto const result =
+                merovingian::config::parse_key_value_config("listeners.max_queued_connections=lots\n");
+
+            THEN("the key is reported rather than quietly falling back to the default")
+            {
+                REQUIRE_FALSE(result.findings.empty());
+                REQUIRE(std::ranges::any_of(result.findings, [](auto const& finding) {
+                    return finding.field == "listeners.max_queued_connections";
+                }));
+            }
+        }
+    }
+
+    GIVEN("a non-numeric media record cap")
+    {
+        WHEN("the config is parsed")
+        {
+            auto const result = merovingian::config::parse_key_value_config("security.media.max_records=many\n");
+
+            THEN("the key is reported")
+            {
+                REQUIRE_FALSE(result.findings.empty());
+                REQUIRE(std::ranges::any_of(result.findings, [](auto const& finding) {
+                    return finding.field == "security.media.max_records";
+                }));
+            }
+        }
+    }
+
+    GIVEN("a negative media record cap")
+    {
+        WHEN("the config is parsed")
+        {
+            auto const result = merovingian::config::parse_key_value_config("security.media.max_records=-1\n");
+
+            THEN("it is rejected: an unsigned cap has no negative form, and wrapping it would disable the cap")
+            {
+                REQUIRE_FALSE(result.findings.empty());
+                REQUIRE(std::ranges::any_of(result.findings, [](auto const& finding) {
+                    return finding.field == "security.media.max_records";
+                }));
+            }
+        }
+    }
+}
+
+SCENARIO("Key-value config parser accepts the full unsigned 64-bit range for a record cap",
+         "[config][parser][security][u64]")
+{
+    GIVEN("a media record cap at the maximum representable value")
+    {
+        auto const input = std::string{"security.media.max_records=18446744073709551615\n"};
+
+        WHEN("the config is parsed")
+        {
+            auto const result = merovingian::config::parse_key_value_config(input);
+
+            THEN("it is accepted exactly, without overflowing to zero")
+            {
+                // Overflowing to zero would read as "no limit" -- the opposite
+                // of what the operator asked for.
+                REQUIRE(result.findings.empty());
+                REQUIRE(result.config.security().media.max_records ==
+                        std::numeric_limits<std::uint64_t>::max());
+            }
+        }
+    }
+
+    GIVEN("a media record cap one digit beyond the representable range")
+    {
+        auto const input = std::string{"security.media.max_records=18446744073709551616\n"};
+
+        WHEN("the config is parsed")
+        {
+            auto const result = merovingian::config::parse_key_value_config(input);
+
+            THEN("it is rejected rather than wrapping")
+            {
+                REQUIRE_FALSE(result.findings.empty());
+                REQUIRE(std::ranges::any_of(result.findings, [](auto const& finding) {
+                    return finding.field == "security.media.max_records";
+                }));
             }
         }
     }

@@ -259,6 +259,38 @@ boundaries) rather than by inspecting freed heap.
   commit history for the OpenBSD timeout that followed it and the evidence that
   neither proposed mechanism for that timeout survived scrutiny.
 
+### Cover the fail-closed branches the audit fixes introduced
+
+Coverage measurement over the branch's own added lines found three clusters
+with no test driving them. Two are now covered; the third cannot be, and is
+recorded here rather than left to look like an oversight.
+
+- **The stored-secret refusal paths.** Four branches decide whether the server
+  signs with a key it has actually authenticated, and none was exercised: an
+  encrypted secret with no master key configured, a secret sealed under a
+  *different* master key (a Poly1305 tag mismatch, meaning a rewritten or
+  tampered row), a secret that decrypts cleanly but is not an Ed25519 secret
+  key's length, and a legacy row holding undecodable base64. Each now has a
+  scenario asserting refusal. Signing with wrong-length material does not fail
+  loudly — it produces signatures no peer can verify — so the length check in
+  particular is worth pinning.
+- **The new capacity config keys.** `listeners.max_queued_connections`,
+  `security.media.max_total_size`, `security.media.max_size_per_user` and
+  `security.media.max_records` are an operator's only control over how much
+  memory a connection flood or upload spam can consume. Now covered for applied
+  values, explicit `0` (the documented way to disable a cap), malformed and
+  negative input, and the full unsigned 64-bit range — an overflow to zero would
+  read as "no limit", the opposite of what was asked for.
+- **`core::secure_zero`** is pinned directly rather than only through its caller.
+
+Still uncovered, deliberately: the identity-server call sites in
+`client_server.cpp` (they need a live or mocked IS, and the RAII rewrite only
+moved pre-existing untested code), the PostgreSQL migration-role path (it needs
+a live database, so the Linux coverage job cannot reach it), and two branches in
+`crypto/master_key.cpp` that require `sodium_mlock` or a key derivation to fail
+— neither of which a test can provoke without a seam that would itself weaken
+the code under test.
+
 ## 0.12.4
 
 Security audit of the 0.12.3 tree. Two of the findings below are privilege
