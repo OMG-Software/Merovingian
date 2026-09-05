@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "../support/master_key.hpp"
 #include "../federation_signing_test_support.hpp"
 #include "../support/registration_token.hpp"
 #include "../support/temp_directory.hpp"
@@ -75,6 +76,9 @@ private:
 [[nodiscard]] auto registration_enabled_config() -> merovingian::config::Config
 {
     auto security = merovingian::config::SecurityConfig{};
+    // A runtime refuses to mint a signing secret it cannot encrypt at rest
+    // (0.12.5 audit, finding 1), so every fixture needs a master key.
+    security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
     merovingian::tests::enable_token_registration(security);
     return {
         merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
@@ -87,6 +91,9 @@ private:
     -> merovingian::config::Config
 {
     auto security = merovingian::config::SecurityConfig{};
+    // A runtime refuses to mint a signing secret it cannot encrypt at rest
+    // (0.12.5 audit, finding 1), so every fixture needs a master key.
+    security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
     security.registration.enabled = true;
     security.registration.require_token = true;
     security.registration.token_file = token_file.string();
@@ -498,6 +505,12 @@ SCENARIO("Inbound receipt EDUs read event_ids arrays instead of ad hoc event_id 
         auto constexpr remote_key_seed = "receipt-review-seed";
         merovingian::federation::upsert_remote(runtime.homeserver.federation,
                                                remote_runtime(remote_origin, remote_key_id, remote_key_seed));
+
+        // Receipt EDUs are only stored for rooms this server is in (0.12.5
+        // audit, finding 13), so the room needs a membership row before the
+        // event_ids shape behaviour under test can be reached.
+        runtime.homeserver.database.persistent_store.memberships.push_back(
+            {"!room:example.org", "@local:example.org", "join", 1U});
 
         auto const content =
             R"({"!room:example.org":{"m.read":{"@alice:remote.example.org":{"event_ids":["$event:remote.example.org"],"data":{"ts":42}}}}})";

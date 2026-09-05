@@ -30,8 +30,8 @@ POST-INSTALL)
     if [ ! -f "${TOKEN_FILE}" ]; then
         mkdir -p /etc/merovingian
         openssl rand -base64 48 > "${TOKEN_FILE}"
-        chmod 0640 "${TOKEN_FILE}"
-        chown root:merovingian "${TOKEN_FILE}"
+        chmod 0400 "${TOKEN_FILE}"
+        chown merovingian:merovingian "${TOKEN_FILE}"
     fi
 
     echo ""

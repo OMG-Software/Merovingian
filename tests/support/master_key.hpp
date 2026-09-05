@@ -33,4 +33,17 @@ inline auto master_key_file() -> std::string
     return path.string();
 }
 
+// One master key file per test process, created on first use.
+//
+// Since 0.12.5 a server refuses to mint a signing secret it cannot encrypt at
+// rest, so every fixture that starts a runtime needs a master key configured.
+// It must be the *same* key for the whole process: a test that stops and
+// restarts a runtime over the same store has to decrypt the signing secret the
+// first run wrote, which a freshly generated key would not do.
+inline auto shared_master_key_file() -> std::string
+{
+    static auto const path = master_key_file();
+    return path;
+}
+
 } // namespace merovingian::tests

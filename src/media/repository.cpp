@@ -217,6 +217,64 @@ namespace
         return 400U;
     }
 
+    // Repository capacity accounting (0.12.5 audit, finding 19).
+    //
+    // Bytes are counted over live *blobs*, not records: two records that
+    // deduplicate onto one blob occupy one blob's worth of memory, so charging
+    // both would refuse uploads long before the repository was actually full.
+
+    [[nodiscard]] auto live_blob_bytes(LocalMediaRepository const& repository) noexcept -> std::uint64_t
+    {
+        auto total = std::uint64_t{0U};
+        for (auto const& blob : repository.blobs)
+        {
+            if (blob.ref_count > 0U)
+            {
+                total += blob.size_bytes;
+            }
+        }
+        return total;
+    }
+
+    [[nodiscard]] auto live_bytes_for_owner(LocalMediaRepository const& repository, std::string_view owner_user_id)
+        noexcept -> std::uint64_t
+    {
+        auto total = std::uint64_t{0U};
+        for (auto const& record : repository.records)
+        {
+            if (record.owner_user_id == owner_user_id && record.state != LocalMediaState::removed)
+            {
+                total += record.size_bytes;
+            }
+        }
+        return total;
+    }
+
+    // Which capacity limit, if any, this upload would cross. Empty means it
+    // fits. `stores_new_blob` is false for an upload that deduplicates onto an
+    // existing blob, which adds a record but no bytes.
+    [[nodiscard]] auto capacity_rejection_reason(LocalMediaRepository const& repository,
+                                                 LocalMediaUploadRequest const& request, std::uint64_t size_bytes,
+                                                 bool stores_new_blob) -> std::string
+    {
+        auto const& limits = repository.config;
+        if (limits.max_records != 0U && repository.records.size() >= limits.max_records)
+        {
+            return "media repository record limit reached";
+        }
+        if (stores_new_blob && limits.max_total_bytes != 0U &&
+            live_blob_bytes(repository) + size_bytes > limits.max_total_bytes)
+        {
+            return "media repository storage limit reached";
+        }
+        if (stores_new_blob && limits.max_bytes_per_user != 0U &&
+            live_bytes_for_owner(repository, request.owner_user_id) + size_bytes > limits.max_bytes_per_user)
+        {
+            return "media quota for this user is exhausted";
+        }
+        return {};
+    }
+
     [[nodiscard]] auto make_metric(std::string name, std::uint64_t value) -> observability::MetricSample
     {
         return {std::move(name), static_cast<std::int64_t>(value), true};
@@ -420,8 +478,23 @@ auto upload_local_media(LocalMediaRepository& repository, std::string_view serve
                 decoder_decision.reason};
     }
 
+    // 0.12.5 audit, finding 19: refuse before storing anything. Refusing rather
+    // than evicting is deliberate — a client already holds an mxc:// URI for
+    // everything in here, so dropping the oldest blob would silently break
+    // existing links rather than shed load.
     auto deduplicated = false;
     auto* blob = find_live_blob(repository, "blake2b", digest, size_bytes);
+    if (auto const capacity_reason = capacity_rejection_reason(repository, request, size_bytes, blob == nullptr);
+        !capacity_reason.empty())
+    {
+        ++repository.metrics.uploads_rejected;
+        log_diagnostic("upload.rejected", {
+                                              {"owner",  request.owner_user_id, false},
+                                              {"reason", capacity_reason,       false}
+        });
+        return {false,       507U,  {},    {},    content_type, size_bytes, "blake2b", digest, false, false,
+                capacity_reason};
+    }
     if (blob == nullptr)
     {
         auto new_blob = LocalMediaBlob{};
@@ -568,7 +641,14 @@ auto build_federation_media_download_body(std::string_view media_content_type, s
     body += "Content-Type: application/json\r\n\r\n{}\r\n";
     body += "--" + boundary + "\r\n";
     body += std::string{"Content-Type: "} + std::string{canonical_type} + "\r\n";
-    body += "Content-Disposition: inline\r\n\r\n";
+    // 0.12.5 audit, finding 8: derive the disposition from the same
+    // inline-safe allow-list the client-facing download path uses. This was
+    // hardcoded to `inline`, so a peer's clients were told to render an
+    // executable or a scripted document inline -- bypassing the allow-list
+    // entirely for anything served over federation. Unknown and
+    // non-inline-safe types fail closed to `attachment`.
+    body += content_type_is_inline_safe(canonical_type) ? "Content-Disposition: inline\r\n\r\n"
+                                                        : "Content-Disposition: attachment\r\n\r\n";
     body += std::string{bytes} + "\r\n";
     body += "--" + boundary + "--\r\n";
     return {std::move(body), "multipart/mixed; boundary=" + boundary};

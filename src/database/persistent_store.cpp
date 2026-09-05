@@ -3,6 +3,10 @@
 
 #include "merovingian/database/persistent_store.hpp"
 
+#include "merovingian/core/secret_buffer.hpp"
+
+#include <span>
+
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/crypto/constant_time.hpp"
@@ -26,6 +30,90 @@
 
 namespace merovingian::database
 {
+
+namespace
+{
+
+    // Wipe a string's characters in place before it is dropped or overwritten.
+    // shrink_to_fit is deliberately not called: it may reallocate, which would
+    // copy the bytes we are trying to erase into a fresh buffer and free the
+    // old one unwiped.
+    auto wipe_secret_string(std::string& value) noexcept -> void
+    {
+        core::secure_zero(std::as_writable_bytes(std::span{value}));
+        value.clear();
+    }
+
+} // namespace
+
+PersistentServerSigningKey::PersistentServerSigningKey(std::string server_name_value, std::string key_id_value,
+                                                       std::string public_key_value,
+                                                       std::uint64_t valid_until_ts_value,
+                                                       std::string secret_key_value)
+    : server_name{std::move(server_name_value)}
+    , key_id{std::move(key_id_value)}
+    , public_key{std::move(public_key_value)}
+    , valid_until_ts{valid_until_ts_value}
+    , secret_key{std::move(secret_key_value)}
+{
+}
+
+PersistentServerSigningKey::PersistentServerSigningKey(PersistentServerSigningKey const& other)
+    : server_name{other.server_name}
+    , key_id{other.key_id}
+    , public_key{other.public_key}
+    , valid_until_ts{other.valid_until_ts}
+    , secret_key{other.secret_key}
+{
+}
+
+auto PersistentServerSigningKey::operator=(PersistentServerSigningKey const& other) -> PersistentServerSigningKey&
+{
+    if (this != &other)
+    {
+        // Wipe first: assigning over the old secret would otherwise release its
+        // buffer (or leave its tail) without erasing it.
+        wipe_secret_string(secret_key);
+        server_name = other.server_name;
+        key_id = other.key_id;
+        public_key = other.public_key;
+        valid_until_ts = other.valid_until_ts;
+        secret_key = other.secret_key;
+    }
+    return *this;
+}
+
+PersistentServerSigningKey::PersistentServerSigningKey(PersistentServerSigningKey&& other) noexcept
+    : server_name{std::move(other.server_name)}
+    , key_id{std::move(other.key_id)}
+    , public_key{std::move(other.public_key)}
+    , valid_until_ts{other.valid_until_ts}
+    , secret_key{std::move(other.secret_key)}
+{
+    // A moved-from std::string is valid but unspecified: with the small-string
+    // optimisation it may still hold the original characters. Wipe it.
+    wipe_secret_string(other.secret_key);
+}
+
+auto PersistentServerSigningKey::operator=(PersistentServerSigningKey&& other) noexcept -> PersistentServerSigningKey&
+{
+    if (this != &other)
+    {
+        wipe_secret_string(secret_key);
+        server_name = std::move(other.server_name);
+        key_id = std::move(other.key_id);
+        public_key = std::move(other.public_key);
+        valid_until_ts = other.valid_until_ts;
+        secret_key = std::move(other.secret_key);
+        wipe_secret_string(other.secret_key);
+    }
+    return *this;
+}
+
+PersistentServerSigningKey::~PersistentServerSigningKey()
+{
+    wipe_secret_string(secret_key);
+}
 namespace
 {
 
@@ -340,21 +428,28 @@ namespace
 }
 
 // Parse the TEXT column form back into a time_point. Empty string means no
-// expiry (nullopt). A malformed value is treated as no expiry rather than
-// rejecting the token, so a corrupt row never locks a user out.
+// expiry (nullopt).
+//
+// 0.12.5 audit, finding 24: a malformed value used to parse as nullopt — "no
+// expiry" — so a corrupt or attacker-modified row turned a token that should
+// have expired into a permanent credential. It now parses as the epoch, which
+// every expiry comparison in the codebase reads as long past, so the token is
+// rejected. Fail closed: the cost of being wrong is one re-login, and the cost
+// of the previous behaviour was a credential that never expires.
 [[nodiscard]] auto parse_expires_at(std::string_view text) -> std::optional<std::chrono::system_clock::time_point>
 {
     if (text.empty())
     {
         return std::nullopt;
     }
+    auto constexpr already_expired = std::chrono::system_clock::time_point{};
     auto buffer = std::string{text};
     char* end = nullptr;
     errno = 0;
     auto const ms = std::strtoll(buffer.c_str(), &end, 10);
     if (end == buffer.c_str() || *end != '\0' || errno != 0)
     {
-        return std::nullopt;
+        return already_expired;
     }
     return std::chrono::system_clock::time_point{std::chrono::milliseconds{ms}};
 }

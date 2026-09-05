@@ -62,13 +62,24 @@ struct PostgresqlConnectionOpenResult final
 // issues no SET ROLE, preserving a single-role deployment. A role that cannot
 // be assumed aborts the open rather than serving with wider privileges.
 //
-// There is deliberately no migration_role parameter: migrations use ALTER TABLE,
-// which PostgreSQL allows only to a table's owner, and the provisioned migration
-// role does not own the login role's tables. Migrations therefore run as the
-// login role; the migration role is for a future live db-migrate tool that owns
-// what it creates.
+// `migration_role` is the DDL-capable role from the same script. When set, any
+// pending migration is applied under it and the session is reset before the
+// runtime role is assumed, so the login role's own (wider) privileges are never
+// what executes DDL. Empty runs migrations as the login role, preserving a
+// single-role deployment.
+//
+// 0.12.5 audit, finding 18. Until then migrations ran as the login role even
+// when both roles were configured, because ALTER TABLE requires table ownership
+// and the migration role owned nothing. The answer is for the migration role to
+// own the schema: provision-roles.sql now creates objects under it, and an
+// existing database is moved across with one REASSIGN OWNED (see that script).
+// If the migration role cannot be assumed, or cannot alter what it finds, the
+// open fails rather than silently falling back to the login role -- a fallback
+// would quietly restore exactly the privilege level this separation exists to
+// remove.
 [[nodiscard]] auto open_postgresql_persistent_store(std::string_view conninfo,
-                                                    std::string_view runtime_role = {})
+                                                    std::string_view runtime_role = {},
+                                                    std::string_view migration_role = {})
     -> PersistentStoreOpenResult;
 
 // Switch the session role on `connection` to `role_name`. Returns false if

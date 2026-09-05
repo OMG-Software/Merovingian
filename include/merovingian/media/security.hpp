@@ -10,6 +10,24 @@
 namespace merovingian::media
 {
 
+// Content types the spec permits to be served with `Content-Disposition:
+// inline` (CS API section "Serving inline content"). Anything outside this list
+// must be served as an attachment so a browser cannot render it as active
+// content in the media origin's context.
+//
+// Shared between the client-facing download path and the federation multipart
+// body (0.12.5 audit, finding 8): the federation builder used to hardcode
+// `inline` for every type, so a peer's clients were told to render an
+// executable or a scripted HTML document inline -- bypassing the very
+// allow-list the local path applies.
+//
+// The comparison is on the media type only: a charset or other parameter must
+// not defeat the match, and must not let an unlisted type slip through by
+// prefixing a listed one.
+//
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#serving-inline-content
+[[nodiscard]] auto content_type_is_inline_safe(std::string_view content_type) noexcept -> bool;
+
 enum class MediaDisposition
 {
     accept,

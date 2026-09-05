@@ -3,6 +3,8 @@
 
 #include "merovingian/config/config.hpp"
 
+#include "merovingian/auth/identity.hpp"
+
 #include "merovingian/config/config_parser.hpp"
 #include "merovingian/http/keep_alive.hpp"
 
@@ -546,6 +548,18 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
     if (config.server().server_name.empty())
     {
         findings.push_back({"server.server_name", "server name must not be empty"});
+    }
+    // 0.12.5 audit, finding 23: server_name was only checked for emptiness, so
+    // malformed values such as ":8000" reached runtime and were used to build
+    // user IDs and federation routing keys. Validated against the same grammar
+    // the runtime applies to every remote server name (auth::server_name_is_valid,
+    // Matrix v1.19 appendices "Server Name"), so a name this server accepts for
+    // itself is one its peers will also accept.
+    else if (!auth::server_name_is_valid(config.server().server_name))
+    {
+        findings.push_back({"server.server_name",
+                            "server name must match the Matrix v1.19 server_name grammar: a DNS name, IPv4 "
+                            "literal, or bracketed IPv6 literal, with an optional :port"});
     }
 
     // Role separation is all-or-nothing. Configuring only one role is worse

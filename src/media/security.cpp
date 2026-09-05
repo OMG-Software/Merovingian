@@ -13,6 +13,38 @@
 
 namespace merovingian::media
 {
+
+auto content_type_is_inline_safe(std::string_view content_type) noexcept -> bool
+{
+    // Compare only the media type: a charset or other parameter must not
+    // defeat the match, and must not let an unlisted type slip through by
+    // prefixing a listed one.
+    auto const semicolon = content_type.find(';');
+    auto media_type = semicolon == std::string_view::npos ? content_type : content_type.substr(0U, semicolon);
+    while (!media_type.empty() && media_type.back() == ' ')
+    {
+        media_type.remove_suffix(1U);
+    }
+
+    static constexpr auto inline_safe = std::array{
+        std::string_view{"text/css"},        std::string_view{"text/plain"},
+        std::string_view{"text/csv"},        std::string_view{"application/json"},
+        std::string_view{"application/ld+json"},
+        std::string_view{"image/jpeg"},      std::string_view{"image/gif"},
+        std::string_view{"image/png"},       std::string_view{"image/apng"},
+        std::string_view{"image/webp"},      std::string_view{"image/avif"},
+        std::string_view{"video/mp4"},       std::string_view{"video/webm"},
+        std::string_view{"video/ogg"},       std::string_view{"video/quicktime"},
+        std::string_view{"audio/mp4"},       std::string_view{"audio/webm"},
+        std::string_view{"audio/aac"},       std::string_view{"audio/mpeg"},
+        std::string_view{"audio/ogg"},       std::string_view{"audio/wave"},
+        std::string_view{"audio/wav"},       std::string_view{"audio/x-wav"},
+        std::string_view{"audio/x-pn-wav"},  std::string_view{"audio/flac"},
+        std::string_view{"audio/x-flac"},
+    };
+    return std::ranges::find(inline_safe, media_type) != inline_safe.end();
+}
+
 namespace
 {
 

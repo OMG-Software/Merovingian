@@ -477,6 +477,28 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected boolean value");
             }
         }
+        else if (key == "security.media.max_total_size")
+        {
+            security.media.max_total_size = std::string{value};
+        }
+        else if (key == "security.media.max_size_per_user")
+        {
+            security.media.max_size_per_user = std::string{value};
+        }
+        else if (key == "security.media.max_records")
+        {
+            if (!parse_u64_value(value, security.media.max_records))
+            {
+                add_parse_finding(findings, std::string{key}, "expected non-negative integer");
+            }
+        }
+        else if (key == "listeners.max_queued_connections")
+        {
+            if (!parse_u32_value(value, listeners.max_queued_connections))
+            {
+                add_parse_finding(findings, std::string{key}, "expected non-negative integer");
+            }
+        }
         else if (key == "listeners.federation.bind")
         {
             listeners.federation.bind = std::string{value};
@@ -990,6 +1012,33 @@ auto parse_u32_value(std::string_view value, std::uint32_t& output) noexcept -> 
 
         auto const digit = static_cast<std::uint32_t>(character - '0');
         if (parsed > (std::numeric_limits<std::uint32_t>::max() - digit) / 10U)
+        {
+            return false;
+        }
+        parsed = (parsed * 10U) + digit;
+    }
+
+    output = parsed;
+    return true;
+}
+
+auto parse_u64_value(std::string_view value, std::uint64_t& output) noexcept -> bool
+{
+    if (value.empty())
+    {
+        return false;
+    }
+
+    auto parsed = std::uint64_t{0U};
+    for (auto const character : value)
+    {
+        if (!is_ascii_digit(character))
+        {
+            return false;
+        }
+
+        auto const digit = static_cast<std::uint64_t>(character - '0');
+        if (parsed > (std::numeric_limits<std::uint64_t>::max() - digit) / 10U)
         {
             return false;
         }

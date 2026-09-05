@@ -20,6 +20,7 @@
 // |  dispatch_push_deliveries).                                             |
 // +-------------------------------------------------------------------------+
 
+#include "../support/master_key.hpp"
 #include "../support/json_test_support.hpp"
 #include "../support/registration_token.hpp"
 #include "../support/tls_mock_server.hpp"
@@ -52,6 +53,9 @@ using namespace merovingian::tests;
 [[nodiscard]] auto push_test_config() -> merovingian::config::Config
 {
     auto security = merovingian::config::SecurityConfig{};
+    // A runtime refuses to mint a signing secret it cannot encrypt at rest
+    // (0.12.5 audit, finding 1), so every fixture needs a master key.
+    security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
     merovingian::tests::enable_token_registration(security);
     // push.enabled defaults to false; scenarios that need delivery flip it on
     // explicitly against started.runtime.homeserver.config.

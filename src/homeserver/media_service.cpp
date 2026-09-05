@@ -517,7 +517,7 @@ namespace
                                                                   std::string_view trusted_ca_pem)
         -> std::optional<OperationResult>
     {
-        auto constexpr expected_secret_bytes = crypto::Ed25519Keypair{}.secret_key.size();
+        auto constexpr expected_secret_bytes = crypto::ed25519_secret_key_bytes;
         auto const signing_key = ensure_runtime_server_signing_key(runtime);
         if (!signing_key.has_value() || runtime.database.signing_secret_key.bytes().size() != expected_secret_bytes)
         {

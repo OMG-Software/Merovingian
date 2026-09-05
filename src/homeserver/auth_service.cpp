@@ -99,44 +99,15 @@ namespace
     // exhaust RLIMIT_MEMLOCK under concurrency, at which point SecretBuffer
     // silently falls back to unpinned (swappable) memory for the root secret.
     //
-    // The cache is invalidated on the file's identity (path, size, mtime) rather
-    // than on the path alone, so replacing the master key file still takes effect
-    // without a restart — the steady-state cost is one stat() instead of two full
-    // reads.
+    // The cache is invalidated on the file's identity (see
+    // crypto::master_key_file_identity) rather than on the path alone, so
+    // replacing the master key file still takes effect without a restart — the
+    // steady-state cost is one stat() instead of two full reads.
     struct TokenHmacKeys final
     {
         std::optional<crypto::TokenHmacKey> v3{};
         std::optional<crypto::TokenHmacKey> v4{};
     };
-
-    [[nodiscard]] auto master_key_file_identity(std::string const& path) -> std::string
-    {
-        // Identity, not a digest: this runs on the authenticated-request path and
-        // exists precisely to avoid re-reading the key, so it must not read it.
-        //
-        // (path, size, mtime) alone was not enough. Replacing a fixed-length key
-        // with `cp -p`, with reproducible secret-deployment tooling, or on a
-        // filesystem with coarse timestamps preserves all three, and the cache
-        // would then serve the old HMAC keys indefinitely -- leaving tokens
-        // derived from the retired key valid, and contradicting the documented
-        // promise that replacing the file takes effect without a restart.
-        //
-        // st_ino and st_dev catch a replace-by-rename, which is how atomic secret
-        // rotation is normally done. st_ctim catches an in-place overwrite: it is
-        // the inode change time, updated on any content or metadata write, and
-        // unlike st_mtim it cannot be set backwards with utimes(2). Together they
-        // leave no way to swap the contents without moving this value.
-        struct stat info{};
-        if (::stat(path.c_str(), &info) != 0)
-        {
-            return {};
-        }
-        auto const field = [](auto value) {
-            return std::to_string(static_cast<std::uint64_t>(value));
-        };
-        return path + '\0' + field(info.st_dev) + '\0' + field(info.st_ino) + '\0' + field(info.st_size) + '\0' +
-               field(info.st_mtime) + '\0' + field(info.st_ctime);
-    }
 
     [[nodiscard]] auto token_hmac_keys(HomeserverRuntime const& runtime) -> TokenHmacKeys
     {
@@ -152,7 +123,7 @@ namespace
         static auto cached_identity = std::string{};
         static auto cached_keys = TokenHmacKeys{};
 
-        auto const identity = master_key_file_identity(path);
+        auto const identity = crypto::master_key_file_identity(path);
         auto guard = std::lock_guard{cache_mutex};
         // An unreadable file yields an empty identity, which never matches the
         // cached one, so this falls through to a fresh (and failing) load rather
@@ -376,11 +347,36 @@ namespace
 
     // SSO redirectUrl allowlist check (docs/threat-model.md, "open redirect
     // via SSO redirectUrl"): a prefix match against each operator-configured
-    // HTTPS allowlist entry. Prefix (rather than exact-origin) matching lets
-    // an operator scope the allowlist down to a specific path under a
-    // trusted origin when they want to; an entry that names a bare origin
-    // still behaves as an origin allowlist because every same-origin URL has
-    // that origin as a prefix.
+    // HTTPS allowlist entry, terminated at a URL delimiter. Prefix (rather
+    // than exact) matching lets an operator scope the allowlist down to a
+    // specific path under a trusted origin when they want to; an entry that
+    // names a bare origin still behaves as an origin allowlist.
+    //
+    // 0.12.5 audit, finding 15: the match used to be a bare starts_with(),
+    // with no boundary. An entry naming a bare origin --
+    // "https://client.example.com", the natural way to write "this whole
+    // origin" -- therefore also matched
+    // "https://client.example.com.evil.test/callback", and an attacker who
+    // registered that domain received a freshly minted m.login.token.
+    // Requiring the next character to be a URL delimiter closes it: `/` ends
+    // the authority, `?` and `#` end the path, and end-of-string is the bare
+    // origin itself. An entry that already ends in a delimiter (e.g. a
+    // trailing `/`) has consumed its own boundary and needs no further check.
+    [[nodiscard]] auto redirect_url_boundary_is_valid(std::string_view allowed,
+                                                      std::string_view redirect_url) noexcept -> bool
+    {
+        constexpr auto delimiters = std::string_view{"/?#"};
+        if (!allowed.empty() && delimiters.find(allowed.back()) != std::string_view::npos)
+        {
+            return true;
+        }
+        if (redirect_url.size() == allowed.size())
+        {
+            return true;
+        }
+        return delimiters.find(redirect_url[allowed.size()]) != std::string_view::npos;
+    }
+
     [[nodiscard]] auto redirect_url_is_allowed(config::SsoConfig const& sso, std::string_view redirect_url) noexcept
         -> bool
     {
@@ -389,7 +385,8 @@ namespace
             return false;
         }
         return std::ranges::any_of(sso.redirect_url_allowlist, [redirect_url](std::string const& allowed) {
-            return !allowed.empty() && redirect_url.starts_with(allowed);
+            return !allowed.empty() && redirect_url.starts_with(allowed) &&
+                   redirect_url_boundary_is_valid(allowed, redirect_url);
         });
     }
 

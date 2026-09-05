@@ -1331,6 +1331,12 @@ SCENARIO("Typing EDU parses a user_id containing an escaped quote correctly inst
         auto const key_id = std::string{"ed25519:auto"};
         merovingian::federation::upsert_remote(runtime.federation, remote_for(origin, key_id, "typing-quote-seed"));
 
+        // Typing EDUs are only accepted for rooms this server is in (0.12.5
+        // audit, finding 12), so the room needs a membership row before the
+        // parsing behaviour under test can be reached.
+        runtime.database.persistent_store.memberships.push_back(
+            {"!room:matrix.example.org", "@local:example.org", "join", 1U});
+
         auto request = merovingian::homeserver::LocalHttpRequest{};
         request.method = "PUT";
         request.target = "/_matrix/federation/v1/send/txn-typing-quote";
@@ -1450,6 +1456,231 @@ SCENARIO("send_join v2 response echoes the signed join event in the 'event' fiel
                 // would be a protocol-shape regression.
                 REQUIRE(response.status == 200U);
                 REQUIRE(response.body.find(R"("event")") == std::string::npos);
+            }
+        }
+    }
+}
+
+// --- 0.12.5 security audit, findings 12 and 13 -------------------------------
+//
+// HomeserverRuntime::typing_users only ever shrank when a previously-seen user
+// sent typing=false, and ::receipts was upserted but never reaped, so a
+// federating peer could grow either without bound by varying room_id and
+// user_id -- monotonic memory growth driven entirely by remote input.
+//
+// The primary bound is membership: ephemeral state for a room this server is not
+// in has no use, and without the check a peer could mint entries for room ids it
+// simply invented. The caps are the backstop for a peer that is a legitimate
+// member of a very large room.
+
+namespace
+{
+
+// A runtime that trusts `origin` and is a member of every room in `rooms`.
+[[nodiscard]] auto edu_runtime(std::string const& origin, std::string const& key_id, std::string const& seed,
+                               std::vector<std::string> const& rooms)
+    -> std::unique_ptr<merovingian::homeserver::HomeserverRuntime>
+{
+    auto runtime = std::make_unique<merovingian::homeserver::HomeserverRuntime>();
+    runtime->started = true;
+    runtime->federation = merovingian::federation::make_federation_runtime_state(runtime_config());
+    merovingian::federation::upsert_remote(runtime->federation, remote_for(origin, key_id, seed));
+    for (auto const& room : rooms)
+    {
+        runtime->database.persistent_store.memberships.push_back({room, "@local:example.org", "join", 1U});
+    }
+    return runtime;
+}
+
+[[nodiscard]] auto edu_request(std::string const& origin, std::string const& key_id, std::string const& txn,
+                               std::string const& edu_type, std::string const& content_json)
+    -> merovingian::homeserver::LocalHttpRequest
+{
+    auto request = merovingian::homeserver::LocalHttpRequest{};
+    request.method = "PUT";
+    request.target = "/_matrix/federation/v1/send/" + txn;
+    request.sig_verified = true;
+    request.verified_origin = origin;
+    request.verified_key_id = key_id;
+    request.body = R"({"origin":")" + origin + R"(","origin_server_ts":1000,"pdus":[],"edus":[{"edu_type":")" +
+                   edu_type + R"(","content":)" + content_json + "}]}";
+    return request;
+}
+
+[[nodiscard]] auto typing_content(std::string const& room, std::string const& user) -> std::string
+{
+    return R"({"room_id":")" + room + R"(","user_id":")" + user + R"(","typing":true})";
+}
+
+} // namespace
+
+SCENARIO("A typing EDU for a room this server is not in is rejected",
+         "[homeserver][federation][typing][security]")
+{
+    GIVEN("a trusted remote and a server that is a member of one room only")
+    {
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto runtime = edu_runtime(origin, key_id, "typing-bound-seed", {"!known:matrix.example.org"});
+
+        WHEN("the remote sends typing for a room id the server has never heard of")
+        {
+            auto const response = merovingian::homeserver::handle_federation_http_request(
+                *runtime, edu_request(origin, key_id, "txn-typing-unknown", "m.typing",
+                                      typing_content("!invented:matrix.example.org", "@a:matrix.example.org")));
+
+            THEN("the transaction is still accepted, per the EDU contract")
+            {
+                REQUIRE(response.status == 200U);
+            }
+
+            THEN("no typing state is stored for the invented room")
+            {
+                // This is the bound: without it a peer mints an entry per
+                // invented room id, for free, forever.
+                REQUIRE(runtime->typing_users.empty());
+            }
+        }
+
+        WHEN("the remote sends typing for the room the server is actually in")
+        {
+            auto const response = merovingian::homeserver::handle_federation_http_request(
+                *runtime, edu_request(origin, key_id, "txn-typing-known", "m.typing",
+                                      typing_content("!known:matrix.example.org", "@a:matrix.example.org")));
+
+            THEN("the typing state is stored, so the gate has not broken normal operation")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(runtime->typing_users.size() == 1U);
+                REQUIRE(runtime->typing_users.front().room_id == "!known:matrix.example.org");
+                REQUIRE(runtime->typing_users.front().user_id == "@a:matrix.example.org");
+            }
+        }
+    }
+}
+
+SCENARIO("Typing state stays bounded when a peer floods a room it is legitimately in",
+         "[homeserver][federation][typing][security]")
+{
+    GIVEN("a server at the typing entry cap for one room")
+    {
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto runtime = edu_runtime(origin, key_id, "typing-cap-seed", {"!busy:matrix.example.org"});
+
+        // Fill directly rather than through the wire path: the cap is what is
+        // under test, not the parser, and thousands of signed transactions
+        // would make this scenario minutes long for no extra coverage.
+        for (auto index = std::size_t{0U}; index < merovingian::homeserver::max_inbound_typing_entries; ++index)
+        {
+            runtime->typing_users.push_back(
+                {"!busy:matrix.example.org", "@user" + std::to_string(index) + ":matrix.example.org", true, 0U});
+        }
+        auto const oldest = runtime->typing_users.front().user_id;
+
+        WHEN("one more distinct user starts typing")
+        {
+            auto const response = merovingian::homeserver::handle_federation_http_request(
+                *runtime, edu_request(origin, key_id, "txn-typing-cap", "m.typing",
+                                      typing_content("!busy:matrix.example.org", "@overflow:matrix.example.org")));
+
+            THEN("the transaction is accepted and memory stays bounded")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(runtime->typing_users.size() == merovingian::homeserver::max_inbound_typing_entries);
+            }
+
+            THEN("the oldest entry was evicted and the newest is present")
+            {
+                auto const still_has_oldest =
+                    std::ranges::any_of(runtime->typing_users, [&oldest](auto const& entry) {
+                        return entry.user_id == oldest;
+                    });
+                REQUIRE_FALSE(still_has_oldest);
+                REQUIRE(runtime->typing_users.back().user_id == "@overflow:matrix.example.org");
+            }
+        }
+    }
+}
+
+SCENARIO("A receipt EDU skips rooms this server is not in without discarding the rest",
+         "[homeserver][federation][receipt][security]")
+{
+    GIVEN("a trusted remote and a server that is a member of one of two rooms")
+    {
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto runtime = edu_runtime(origin, key_id, "receipt-bound-seed", {"!known:matrix.example.org"});
+
+        WHEN("one receipt EDU batches a known room and an invented one")
+        {
+            auto const unknown_room = std::string{R"("!invented:matrix.example.org":{"m.read":{)"} +
+                                      R"("@a:matrix.example.org":{"event_ids":)" +
+                                      R"(["$x:matrix.example.org"],"data":{"ts":1}}}})";
+            auto const known_room = std::string{R"("!known:matrix.example.org":{"m.read":{)"} +
+                                    R"("@b:matrix.example.org":{"event_ids":)" +
+                                    R"(["$y:matrix.example.org"],"data":{"ts":2}}}})";
+            auto const content = "{" + unknown_room + "," + known_room + "}";
+            auto const response = merovingian::homeserver::handle_federation_http_request(
+                *runtime, edu_request(origin, key_id, "txn-receipt-mixed", "m.receipt", content));
+
+            THEN("only the known room's receipt is stored")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(runtime->receipts.size() == 1U);
+                REQUIRE(runtime->receipts.front().room_id == "!known:matrix.example.org");
+                REQUIRE(runtime->receipts.front().user_id == "@b:matrix.example.org");
+            }
+
+            THEN("the unknown room did not cause the whole EDU to be discarded")
+            {
+                // A receipt transaction legitimately batches several rooms, so
+                // one stale room id must not throw away the others.
+                REQUIRE(response.status == 200U);
+                REQUIRE_FALSE(runtime->receipts.empty());
+            }
+        }
+    }
+}
+
+SCENARIO("Receipt state stays bounded when a peer floods a room it is legitimately in",
+         "[homeserver][federation][receipt][security]")
+{
+    GIVEN("a server at the receipt entry cap for one room")
+    {
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto runtime = edu_runtime(origin, key_id, "receipt-cap-seed", {"!busy:matrix.example.org"});
+
+        for (auto index = std::size_t{0U}; index < merovingian::homeserver::max_inbound_receipt_entries; ++index)
+        {
+            runtime->receipts.push_back({"!busy:matrix.example.org", "m.read",
+                                         "@user" + std::to_string(index) + ":matrix.example.org",
+                                         "$e:matrix.example.org", 1U, 0U});
+        }
+        auto const oldest = runtime->receipts.front().user_id;
+
+        WHEN("one more distinct user sends a read receipt")
+        {
+            auto const content =
+                std::string{R"({"!busy:matrix.example.org":{"m.read":{"@overflow:matrix.example.org":)"} +
+                R"({"event_ids":["$z:matrix.example.org"],"data":{"ts":3}}}}})";
+            auto const response = merovingian::homeserver::handle_federation_http_request(
+                *runtime, edu_request(origin, key_id, "txn-receipt-cap", "m.receipt", content));
+
+            THEN("the transaction is accepted and memory stays bounded")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(runtime->receipts.size() == merovingian::homeserver::max_inbound_receipt_entries);
+            }
+
+            THEN("the oldest entry was evicted and the newest is present")
+            {
+                auto const still_has_oldest = std::ranges::any_of(runtime->receipts, [&oldest](auto const& entry) {
+                    return entry.user_id == oldest;
+                });
+                REQUIRE_FALSE(still_has_oldest);
+                REQUIRE(runtime->receipts.back().user_id == "@overflow:matrix.example.org");
             }
         }
     }

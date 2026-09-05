@@ -12,6 +12,7 @@
 //  endpoints, per-PDU inside /send transactions, and per-room-local EDU.    |
 // +-------------------------------------------------------------------------+
 
+#include "../support/master_key.hpp"
 #include "../federation_signing_test_support.hpp"
 #include "../support/json_test_support.hpp"
 #include "../support/registration_token.hpp"
@@ -42,6 +43,9 @@ auto constexpr local_server_name = std::string_view{"example.org"};
 [[nodiscard]] auto acl_test_config() -> merovingian::config::Config
 {
     auto security = merovingian::config::SecurityConfig{};
+    // A runtime refuses to mint a signing secret it cannot encrypt at rest
+    // (0.12.5 audit, finding 1), so every fixture needs a master key.
+    security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
     enable_token_registration(security);
     security.federation.enabled = true;
     security.federation.default_policy = "allow";

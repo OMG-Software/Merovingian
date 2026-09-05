@@ -333,6 +333,76 @@ SCENARIO("Local media processing rejects decompression bombs before blob storage
     }
 }
 
+// --- 0.12.5 security audit, finding 8 ----------------------------------------
+//
+// build_federation_media_download_body() hardcoded "Content-Disposition: inline"
+// for every content type, so a peer's clients were told to render whatever we
+// served -- an executable, a scripted HTML document -- inline in the media
+// origin's context, bypassing the inline-safe allow-list the local download path
+// applies. Spec: CS API section "Serving inline content".
+
+SCENARIO("Federation media download derives Content-Disposition from the inline-safe allow-list",
+         "[media][repository][federation][security]")
+{
+    GIVEN("a non-inline-safe content type")
+    {
+        auto const content_type = std::string{"application/x-msdownload"};
+
+        WHEN("the federation download body is built")
+        {
+            auto const envelope = merovingian::media::build_federation_media_download_body(content_type, "MZ-bytes");
+
+            THEN("the media part is marked as an attachment, not inline")
+            {
+                REQUIRE(envelope.body.find("Content-Disposition: attachment") != std::string::npos);
+                REQUIRE(envelope.body.find("Content-Disposition: inline") == std::string::npos);
+            }
+        }
+    }
+
+    GIVEN("no declared content type at all")
+    {
+        WHEN("the federation download body is built")
+        {
+            auto const envelope = merovingian::media::build_federation_media_download_body({}, "unknown-bytes");
+
+            THEN("it falls back to application/octet-stream and fails closed to attachment")
+            {
+                REQUIRE(envelope.body.find("Content-Type: application/octet-stream") != std::string::npos);
+                REQUIRE(envelope.body.find("Content-Disposition: attachment") != std::string::npos);
+            }
+        }
+    }
+
+    GIVEN("an inline-safe content type carrying a charset parameter")
+    {
+        WHEN("the federation download body is built")
+        {
+            auto const envelope =
+                merovingian::media::build_federation_media_download_body("text/plain; charset=utf-8", "hello");
+
+            THEN("it is served inline: the parameter must not defeat the allow-list match")
+            {
+                REQUIRE(envelope.body.find("Content-Disposition: inline") != std::string::npos);
+            }
+        }
+    }
+
+    GIVEN("a type that merely has an inline-safe type as a prefix")
+    {
+        WHEN("the federation download body is built")
+        {
+            auto const envelope =
+                merovingian::media::build_federation_media_download_body("text/plain-evil", "payload");
+
+            THEN("it is served as an attachment: a prefix must not pass the allow-list")
+            {
+                REQUIRE(envelope.body.find("Content-Disposition: attachment") != std::string::npos);
+            }
+        }
+    }
+}
+
 SCENARIO("Federation media download body is a valid multipart/mixed envelope", "[media][repository][federation]")
 {
     GIVEN("a media content type and raw bytes")
@@ -358,6 +428,153 @@ SCENARIO("Federation media download body is a valid multipart/mixed envelope", "
                                       "\r\nContent-Type: image/png\r\nContent-Disposition: inline\r\n\r\n" + bytes +
                                       "\r\n--" + boundary + "--\r\n";
                 REQUIRE(envelope.body == expected);
+            }
+        }
+    }
+}
+
+// --- 0.12.5 security audit, finding 19 ---------------------------------------
+//
+// upload_local_media() pushed every accepted blob into an in-memory vector with
+// no cap on total records, total bytes, or per-user quota, and fetch_remote_media
+// reused the same path. Upload spam — or a large remote media cache — grew the
+// repository until the process was OOM-killed.
+
+SCENARIO("Local media repository refuses uploads past its record cap", "[media][repository][security]")
+{
+    GIVEN("a repository configured to hold at most two media records")
+    {
+        auto repository = test_repository();
+        repository.config.max_records = 2U;
+
+        WHEN("a third distinct upload is attempted")
+        {
+            auto const first = merovingian::media::upload_local_media(
+                repository, "example.org", {"@alice:example.org", "text/plain", "text/plain", "one", true});
+            auto const second = merovingian::media::upload_local_media(
+                repository, "example.org", {"@alice:example.org", "text/plain", "text/plain", "two", true});
+            auto const third = merovingian::media::upload_local_media(
+                repository, "example.org", {"@alice:example.org", "text/plain", "text/plain", "three", true});
+
+            THEN("the uploads within the cap succeed and the one past it is refused")
+            {
+                REQUIRE(first.ok);
+                REQUIRE(second.ok);
+                REQUIRE_FALSE(third.ok);
+                REQUIRE(third.status == 507U);
+            }
+
+            THEN("the refused upload stores nothing, so memory stays bounded")
+            {
+                REQUIRE(repository.records.size() == 2U);
+                REQUIRE(repository.blobs.size() == 2U);
+            }
+        }
+    }
+}
+
+SCENARIO("Local media repository refuses uploads past its total byte cap", "[media][repository][security]")
+{
+    GIVEN("a repository configured to hold at most eight bytes of media")
+    {
+        auto repository = test_repository();
+        repository.config.max_total_bytes = 8U;
+
+        WHEN("uploads exceed the total byte budget")
+        {
+            auto const first = merovingian::media::upload_local_media(
+                repository, "example.org", {"@alice:example.org", "text/plain", "text/plain", "12345", true});
+            auto const second = merovingian::media::upload_local_media(
+                repository, "example.org", {"@alice:example.org", "text/plain", "text/plain", "67890", true});
+
+            THEN("the upload that would cross the budget is refused and nothing is stored for it")
+            {
+                REQUIRE(first.ok);
+                REQUIRE_FALSE(second.ok);
+                REQUIRE(second.status == 507U);
+                REQUIRE(repository.blobs.size() == 1U);
+            }
+        }
+    }
+}
+
+SCENARIO("Local media repository enforces a per-user byte quota", "[media][repository][security]")
+{
+    GIVEN("a repository with a per-user quota of eight bytes")
+    {
+        auto repository = test_repository();
+        repository.config.max_bytes_per_user = 8U;
+
+        WHEN("one user exceeds the quota and another user uploads within it")
+        {
+            auto const alice_first = merovingian::media::upload_local_media(
+                repository, "example.org", {"@alice:example.org", "text/plain", "text/plain", "12345", true});
+            auto const alice_second = merovingian::media::upload_local_media(
+                repository, "example.org", {"@alice:example.org", "text/plain", "text/plain", "67890", true});
+            auto const bob = merovingian::media::upload_local_media(
+                repository, "example.org", {"@bob:example.org", "text/plain", "text/plain", "abcde", true});
+
+            THEN("only the over-quota user is refused; the quota is per user, not global")
+            {
+                REQUIRE(alice_first.ok);
+                REQUIRE_FALSE(alice_second.ok);
+                REQUIRE(alice_second.status == 507U);
+                REQUIRE(bob.ok);
+            }
+        }
+    }
+}
+
+SCENARIO("Deduplicated uploads do not consume repository capacity twice", "[media][repository][security]")
+{
+    GIVEN("a repository at its byte cap holding one blob")
+    {
+        auto repository = test_repository();
+        repository.config.max_total_bytes = 5U;
+        auto const first = merovingian::media::upload_local_media(
+            repository, "example.org", {"@alice:example.org", "text/plain", "text/plain", "12345", true});
+        REQUIRE(first.ok);
+
+        WHEN("the identical content is uploaded again")
+        {
+            auto const duplicate = merovingian::media::upload_local_media(
+                repository, "example.org", {"@alice:example.org", "text/plain", "text/plain", "12345", true});
+
+            THEN("it is accepted, because deduplication stores no additional bytes")
+            {
+                REQUIRE(duplicate.ok);
+                REQUIRE(duplicate.deduplicated);
+                REQUIRE(repository.blobs.size() == 1U);
+            }
+        }
+    }
+}
+
+SCENARIO("An uncapped media repository keeps its previous unbounded behaviour", "[media][repository][security]")
+{
+    GIVEN("a repository with every capacity limit left at its disabled default")
+    {
+        auto repository = test_repository();
+        REQUIRE(repository.config.max_records == 0U);
+        REQUIRE(repository.config.max_total_bytes == 0U);
+        REQUIRE(repository.config.max_bytes_per_user == 0U);
+
+        WHEN("several distinct uploads are made")
+        {
+            auto accepted = 0U;
+            for (auto const* body : {"a1", "a2", "a3", "a4", "a5"})
+            {
+                if (merovingian::media::upload_local_media(
+                        repository, "example.org", {"@alice:example.org", "text/plain", "text/plain", body, true})
+                        .ok)
+                {
+                    ++accepted;
+                }
+            }
+
+            THEN("all of them are accepted")
+            {
+                REQUIRE(accepted == 5U);
             }
         }
     }

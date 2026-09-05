@@ -6,6 +6,7 @@
 #include "merovingian/platform/seccomp_hardening.hpp"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -62,5 +63,25 @@ private:
 // `HardeningStatus::alpha_exception` no longer exists; the server refuses to
 // start unless every hardening check reports `enabled`.
 [[nodiscard]] auto seccomp_check_from_probe(SeccompProbeResult const& result) -> HardeningCheck;
+
+// Is the core-dump policy fully in force, given the observed process state?
+//
+// `dumpable` is the PR_GET_DUMPABLE flag on Linux, and std::nullopt on a
+// platform that has no such flag -- there, clamping RLIMIT_CORE is the whole
+// policy.
+//
+// 0.12.5 audit, finding 21: the probe used to answer this from RLIMIT_CORE
+// alone. RLIMIT_CORE=0 stops the kernel writing a core file for an ordinary
+// crash, but a core_pattern that pipes to a handler (systemd-coredump, apport)
+// is not bound by the process rlimit, so a still-dumpable process could have
+// its memory -- master key included -- captured while the check reported the
+// policy applied.
+//
+// Split out as a pure predicate because the live probe reads process state a
+// test cannot safely set: lowering RLIMIT_CORE's hard limit is irreversible
+// for a non-root process, so a test that set it would poison every test after
+// it in the same binary.
+[[nodiscard]] auto core_dump_policy_is_satisfied(std::uint64_t rlimit_core_soft, std::uint64_t rlimit_core_hard,
+                                                 std::optional<bool> dumpable) noexcept -> bool;
 
 } // namespace merovingian::platform

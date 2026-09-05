@@ -1,3 +1,296 @@
+## 0.12.5
+
+Fixes for the security audit recorded in
+`security/audit-findings-2026-09-04.md`. The findings file itself was added
+earlier on this branch; this entry covers the code changes.
+
+### Signing-secret lifecycle (findings 1-7, 16, 20)
+
+- **The plaintext server signing-secret fallback is gone.** A server with no
+  `security.secrets.master_key_file` used to persist its Ed25519 seed as base64
+  with `encrypted='false'`, so anyone who exfiltrated the database obtained a
+  forgery-capable federation signing key — the exact threat that column exists
+  to defend against. Both first generation *and* rotation now fail closed. The
+  audit cited only the generation path; the rotation path carried the same
+  fallback and was fixed with it.
+- **A master key is now required to start.** With no signing key a server cannot
+  sign an event or a federation request, so `start_runtime` refuses to start and
+  says why, rather than surfacing three steps later as a failure to derive an
+  unrelated pagination-token key. Legacy plaintext rows are still *read*, so an
+  existing deployment keeps federating and can rotate on its own schedule.
+- **An unlockable master key is refused.** `load_master_key_material()` tolerated
+  a failed `sodium_mlock()` and returned the root secret in swappable memory
+  after a one-time warning. `RLIMIT_MEMLOCK` exhaustion therefore silently
+  downgraded every key derived from it. This reverses the #487 decision to keep
+  the condition non-fatal: an unlocked root secret is a crypto-boundary failure,
+  and the remedy (raise `RLIMIT_MEMLOCK`, or grant `CAP_IPC_LOCK`) is a
+  deployment change.
+- **Ed25519 secrets live in `core::SecretBuffer` end to end.** `Ed25519Keypair`,
+  `RuntimeEd25519Provider`, `RuntimeMultiKeyEd25519Provider` and the return of
+  `secret_box_decrypt` all held 64-byte seeds in plain `std::array`/`std::vector`
+  — unlocked, never zeroised, and in the provider's case for the whole life of
+  the process. `crypto_sign_keypair` now generates straight into the locked
+  buffer and `crypto_secretbox_open_easy` decrypts straight into one, so no
+  intermediate unprotected copy exists at any point. `rebuild_signing_provider`
+  no longer stages every active secret through a `std::vector` of plain arrays.
+- **The signing-secret box key is cached.** Encrypt and decrypt each re-read the
+  master key file and re-derived the box key on every call, re-materialising the
+  root secret and churning a 4 KiB mlock/munlock pair per operation. It is now
+  cached against the master key file's identity, the same way #487 fixed the
+  access-token HMAC keys; the identity helper is shared between the two.
+- **The master key file is read unbuffered.** `std::filebuf` kept its own copy of
+  every byte read in ordinary heap memory that is freed without zeroisation, so
+  wiping our own read buffer still left plaintext root-secret bytes in the
+  process.
+- **The stored signing-key row wipes its own secret (finding 17).**
+  `PersistentServerSigningKey.secret_key` is a `std::string`, so the in-memory
+  store held the signing secret's at-rest form in heap memory freed without
+  being wiped, and every copy or move left another unwiped buffer behind. The
+  field cannot become a `core::SecretBuffer` without making the row move-only,
+  which the store's row vectors and query paths depend on it not being, so the
+  row now zeroises the field on destruction, on move, and before an assignment
+  overwrites it. This is a mitigation, not `SecretBuffer`'s guarantee — the
+  bytes are still swappable while live. What protects them at rest is that
+  since finding 1 they are always ciphertext.
+
+### Unbounded resources reachable from the network (findings 11-13, 19)
+
+- **The `ThreadPool` work queue is bounded.** Both accept loops queue one
+  closure per accepted connection into an unbounded `std::queue`, so a
+  connection flood grew it until the OOM reaper fired. `submit()` now refuses
+  past `listeners.max_queued_connections` (default 1024) and the listener closes
+  the refused connection, which sheds load in the one way a client can see and
+  retry. The IPC dispatch pools keep the unbounded default: their producer is
+  the local supervisor, not a remote peer, and dropping a message there would
+  silently lose federation work rather than shed a connection.
+- **Federation typing and receipt EDUs can no longer grow memory without
+  bound.** `typing_users` only shrank when a previously-seen user sent
+  `typing=false`, and `receipts` was upserted but never reaped, so a peer could
+  grow either indefinitely by varying `room_id` and `user_id`. The real bound is
+  membership: an EDU for a room this server holds no membership row for is now
+  dropped — ephemeral state for a room we are not in has no use, and without the
+  check a peer could mint entries for room ids it simply invented. Hard caps back
+  that up for a peer that is a legitimate member of a very large room, evicting
+  the oldest entry. A receipt transaction legitimately batches several rooms, so
+  an unknown room is skipped rather than failing the whole EDU.
+- **The media repository has capacity limits.** `security.media.max_records`,
+  `security.media.max_total_size` and `security.media.max_size_per_user` bound
+  the in-memory index, which previously had no cap on records, bytes, or per-user
+  usage. All three default to no limit. An upload past a limit is refused with
+  507; nothing is evicted, because clients hold `mxc://` URIs for what is stored
+  and eviction would break those links rather than shed load. Bytes are counted
+  over stored blobs, so a deduplicated upload consumes a record but no bytes.
+
+### High-severity correctness (findings 8, 14, 15)
+
+- **An SSO `redirectUrl` allowlist entry naming a bare origin no longer matches
+  other origins.** `redirect_url_is_allowed()` was a bare `starts_with()` with no
+  boundary, so an entry of `https://client.example.com` -- the natural way to
+  write "this whole origin" -- also matched
+  `https://client.example.com.evil.test/callback`. An attacker who registered
+  that domain received a freshly minted `m.login.token`. The character after the
+  matched prefix must now be a URL delimiter (`/`, `?`, `#`) or end-of-string, so
+  a bare-origin entry still works as an origin allowlist and a path-scoped entry
+  still works as a path allowlist.
+- **Federation media downloads derive `Content-Disposition` from the inline-safe
+  allow-list.** `build_federation_media_download_body()` hardcoded `inline` for
+  every content type, so a peer's clients were told to render whatever we served
+  -- an executable, a scripted HTML document -- inline in the media origin's
+  context, bypassing the allow-list the local download path applies. The
+  allow-list now lives in `media::content_type_is_inline_safe()` and both paths
+  use it; unknown types fail closed to `attachment`.
+- **Every manual `runtime.mutex` unlock/lock pair around an outbound call is now
+  RAII.** Fourteen endpoints released the global runtime mutex by hand before a
+  blocking outbound call and re-took it afterwards. A throw between the two left
+  the mutex unlocked, which serialises every client request and inbound
+  federation transaction behind a lock nobody holds. Each is now a
+  `ScopedGuardRelease` scope -- an immediately-invoked lambda where the call's
+  result is read after the lock is re-taken, a plain block where it is not.
+
+### Fail-closed hardening (findings 21-24)
+
+- **A failed `prctl(PR_SET_DUMPABLE, 0)` now fails the core-dump policy.** The
+  result was discarded and success reported on `setrlimit(RLIMIT_CORE, 0)`
+  alone. `RLIMIT_CORE=0` stops the kernel writing a core file for an ordinary
+  crash, but it does not clear the dumpable flag, and a `core_pattern` that pipes
+  to a handler (systemd-coredump, apport) is not bound by the process rlimit —
+  so the process image, master key included, could still be captured while the
+  policy reported success.
+- **Secret files must be owner-read-only.** `is_secure_secret_file()` never
+  checked `owner_write`, so a `0600` secret passed despite `docs/hardening.md`
+  documenting owner-read-only since the check was written. **Operators must
+  `chmod 0400` their secret files before upgrading**; the server refuses to start
+  otherwise. Packaging now provisions the registration token as `0400` owned by
+  the service account, replacing `0640 root:merovingian` — that mode was already
+  rejected by the group-read rule, so a packaged install could not start with a
+  generated token.
+- **`server.server_name` is validated against the Matrix grammar.**
+  `config::validate()` checked only that it was non-empty, so values like
+  `:8000` reached runtime and were used to build user IDs and federation routing
+  keys. It now runs through `auth::server_name_is_valid` — the same check applied
+  to every remote server name — so a name this server accepts for itself is one
+  its peers will also accept.
+- **A malformed `expires_at` is an expired token, not a permanent one.**
+  `parse_expires_at()` returned `nullopt` for an unparseable value, which every
+  caller reads as "never expires", so a corrupt or attacker-modified row became a
+  credential that could not be aged out. It now parses as the epoch, which every
+  expiry comparison reads as long past. The cost of being wrong is one re-login.
+
+### BSD platform hardening (findings 9, 10)
+
+- **The startup hardening self-check no longer blocks BSD startup.** Privilege
+  drop, filesystem restrictions and core-dump policy sat behind an `__linux__`
+  guard even though `geteuid()` and `getrlimit()` are POSIX, so a FreeBSD,
+  OpenBSD or NetBSD server reported `unknown` for controls it had actually
+  applied — and `is_ready()`, which treats anything but `enabled` as a blocker,
+  then refused to start it. All three are documented Tier 1 platforms. Those
+  probes now run everywhere; `no_new_privs` and capability bounding, which have
+  no BSD equivalent to probe, use the "not applicable on this platform" idiom the
+  pledge/unveil and Capsicum checks already use on Linux.
+- **BSD servers now clamp `RLIMIT_CORE`.** `setrlimit(RLIMIT_CORE, 0)` is POSIX
+  but was only applied on the Linux path, so a BSD server could dump core with
+  its master key and every signing secret in the image.
+- **The thumbnail worker is sandboxed on FreeBSD and OpenBSD.** The sandbox step
+  was seccomp-only under `#if defined(__linux__)`, so on the BSDs the worker
+  decoded untrusted PNG and JPEG bytes with nothing but rlimits between an
+  image-decoder bug and the rest of the system. It now enters `pledge("stdio")`
+  on OpenBSD and Capsicum capability mode on FreeBSD — by the time `harden()`
+  runs, stdin and stdout are already open and the worker needs nothing else for
+  the rest of its life. NetBSD has no equivalent in-process primitive and keeps
+  rlimits alone; that gap is recorded in `docs/hardening.md`.
+
+### PostgreSQL privilege separation covers migrations (finding 18)
+
+- **DDL now runs as the migration role, not the login role.** Both roles were
+  provisioned and the request path already dropped to the DML-only runtime role,
+  but schema migrations ran as the login role — which carries every privilege
+  both sibling roles have — so the separation did not cover the one operation
+  that actually needs DDL. `open_postgresql_persistent_store()` now takes
+  `database.migration_role`, assumes it before applying pending migrations, and
+  resets the session before assuming the runtime role.
+- **Fail-closed.** A migration role that cannot be assumed refuses the open
+  rather than falling back to the login role, which would silently restore the
+  privilege level the separation removes. A pending migration is the only thing
+  that reaches the role switch, so a misconfigured `migration_role` breaks an
+  upgrade rather than every routine restart, and leaving it unset keeps
+  single-role deployments working exactly as before.
+- **Upgrading needs one operator step.** `ALTER TABLE` is permitted only to an
+  object's owner, and objects created before 0.12.5 are owned by the login role
+  — which is precisely why migrations ran as the login role until now. Re-run
+  `packaging/postgresql/provision-roles.sql` before upgrading: it ends with a
+  scoped transfer of the `public` tables and sequences the login role owns. The
+  startup diagnostic names that step if it was missed, and the PostgreSQL CI job
+  runs the same statements so the sequence is exercised. A fresh install needs
+  nothing.
+
+  Not `REASSIGN OWNED`: that operates on everything the role owns, including
+  objects the system pins, so it fails outright when the login role is the
+  cluster bootstrap superuser — which is what the official postgres container
+  produces and what an operator reusing the `postgres` role has.
+
+### Regression cover for the audit fixes
+
+Every finding above now has a test that fails without its fix. The ones that
+resisted a direct assertion were made testable rather than left uncovered:
+
+- **The core-dump policy decision is a pure predicate.**
+  `platform::core_dump_policy_is_satisfied()` takes the observed `RLIMIT_CORE`
+  pair and dumpable flag, so finding 21 is asserted directly. The live probe
+  cannot be driven from a test: lowering `RLIMIT_CORE`'s hard limit is
+  irreversible for a non-root process, so a test that set it would poison every
+  test after it in the same binary.
+- **The signing-secret key cache is observed through an unreadable file.**
+  Making the master key file unreadable while leaving its identity unchanged
+  means a second call that still returns a key can only have come from the
+  cache (finding 3) — no seam required. The scenario skips loudly when run as
+  root, where the permission bits would not bite and it would otherwise pass
+  without proving anything.
+- **Rotation is exercised through a legacy plaintext row.** An encrypted key
+  cannot be loaded without the master key at all, so rotation refuses one step
+  earlier and never reaches the encrypt path finding 1 is about. The scenario
+  rewrites the stored row into the pre-0.12.5 format first, which is exactly
+  the state of a server being upgraded, and asserts on the refusal *reason* so
+  it cannot pass on an unrelated failure.
+- **Manual lock release is now a `scripts/reject-unsafe.sh` gate.** Finding 14's
+  fix is structural, so the guard against regression is too: a new
+  `guard.unlock()` in `include/` or `src/` is rejected unless annotated
+  `// LOCK_RELEASE: reviewed — <reason>`. The handful of legitimate releases
+  that remain — releasing before `notify_one`, or before a function that
+  self-locks — are annotated rather than refactored: each guard is a
+  function-local `std::unique_lock`, so an early exit releases it rather than
+  stranding it, and converting them would buy no safety.
+- **The thumbnail worker round-trip is named as the sandbox guard.** Finding 9's
+  restrictions apply to a child process and cannot be asserted from the parent;
+  a correctly sandboxed child is indistinguishable from an unsandboxed one
+  except by what it can still accomplish. The existing integration scenario is
+  that test, on whichever Tier 1 platform's CI job runs it.
+- **`docs/security-coding-rules.md`** gains the three rules these findings
+  established: secret files are `0400`, non-crypto modules erase secrets through
+  `core::secure_zero()`, and request guards are released with
+  `ScopedGuardRelease`.
+
+Findings 5 and 20 remain covered only indirectly — both are memory-residue
+properties, asserted through their observable half (every surviving secret
+holder is a locked buffer; the unbuffered read returns exact bytes across chunk
+boundaries) rather than by inspecting freed heap.
+
+### Connection-test teardown (sanitizer finding)
+
+- **`test_http_server_listener_flow.cpp` let the runtime die while pool workers
+  were still using it.** All twelve scenarios declared the thread pool before the
+  runtime, so reverse-declaration destruction ran `~runtime` first while a worker
+  could still be inside `serve_connection` holding a `ConnectionContext` that
+  references it. Firing the shutdown signal and joining the accept-loop thread
+  only stops *new* work being submitted; the per-connection closures already
+  handed to the pool are still in flight, and `~ThreadPool` is what joins those.
+  ASan reported `stack-use-after-scope` naming exactly that read.
+
+  Fixed in two independent ways rather than one. Each scenario now calls
+  `pool.request_stop()` immediately after joining the accept-loop thread, at a
+  point where the client sockets are already closed so a parked worker sees EOF
+  and exits promptly — and where a hang, if one ever happened, would name that
+  line instead of timing out the whole binary. The pool is also declared after
+  the runtime, so unwind order is correct even if a future scenario forgets the
+  explicit stop.
+
+  Pre-existing and unrelated to the audit: `http_server.cpp` is untouched on this
+  branch. It is timing-dependent, which is why the first attempt at this fix
+  relied on declaration order alone and could not be shown to be safe — see the
+  commit history for the OpenBSD timeout that followed it and the evidence that
+  neither proposed mechanism for that timeout survived scrutiny.
+
+### Cover the fail-closed branches the audit fixes introduced
+
+Coverage measurement over the branch's own added lines found three clusters
+with no test driving them. Two are now covered; the third cannot be, and is
+recorded here rather than left to look like an oversight.
+
+- **The stored-secret refusal paths.** Four branches decide whether the server
+  signs with a key it has actually authenticated, and none was exercised: an
+  encrypted secret with no master key configured, a secret sealed under a
+  *different* master key (a Poly1305 tag mismatch, meaning a rewritten or
+  tampered row), a secret that decrypts cleanly but is not an Ed25519 secret
+  key's length, and a legacy row holding undecodable base64. Each now has a
+  scenario asserting refusal. Signing with wrong-length material does not fail
+  loudly — it produces signatures no peer can verify — so the length check in
+  particular is worth pinning.
+- **The new capacity config keys.** `listeners.max_queued_connections`,
+  `security.media.max_total_size`, `security.media.max_size_per_user` and
+  `security.media.max_records` are an operator's only control over how much
+  memory a connection flood or upload spam can consume. Now covered for applied
+  values, explicit `0` (the documented way to disable a cap), malformed and
+  negative input, and the full unsigned 64-bit range — an overflow to zero would
+  read as "no limit", the opposite of what was asked for.
+- **`core::secure_zero`** is pinned directly rather than only through its caller.
+
+Still uncovered, deliberately: the identity-server call sites in
+`client_server.cpp` (they need a live or mocked IS, and the RAII rewrite only
+moved pre-existing untested code), the PostgreSQL migration-role path (it needs
+a live database, so the Linux coverage job cannot reach it), and two branches in
+`crypto/master_key.cpp` that require `sodium_mlock` or a key derivation to fail
+— neither of which a test can provoke without a seam that would itself weaken
+the code under test.
+
 ## 0.12.4
 
 Security audit of the 0.12.3 tree. Two of the findings below are privilege

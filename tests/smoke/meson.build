@@ -415,7 +415,7 @@ test(
     tmp_smoke_prefix
       + 'secure_secret="$tmpdir/db-uri-secure-smoke.secret" && secure_secret_config="$tmpdir/secret-secure-smoke.conf"'
       + ' && printf "%s\n" "postgresql://merovingian@example.invalid/merovingian" > "$secure_secret"'
-      + ' && chmod 0600 "$secure_secret"'
+      + ' && chmod 0400 "$secure_secret"'
       + ' && printf "%s\n" "database.uri_file=$secure_secret" > "$secure_secret_config"'
       + ' && chmod 0644 "$secure_secret_config"'
       + ' && '
@@ -451,7 +451,7 @@ test(
     tmp_smoke_prefix
       + 'redaction_secret="$tmpdir/db-uri-redaction-smoke.secret" && redaction_config="$tmpdir/redaction-smoke.conf"'
       + ' && printf "%s\n" "postgresql://merovingian:topsecret@example.invalid/merovingian" > "$redaction_secret"'
-      + ' && chmod 0600 "$redaction_secret"'
+      + ' && chmod 0400 "$redaction_secret"'
       + ' && printf "%s\n" "database.uri_file=$redaction_secret" > "$redaction_config"'
       + ' && chmod 0644 "$redaction_config"'
       + ' && output=$( '

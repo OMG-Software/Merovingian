@@ -1368,7 +1368,8 @@ auto open_postgresql_connection(std::string_view conninfo) -> PostgresqlConnecti
     return {true, {}, redacted, PostgresqlConnection{std::move(handle)}};
 }
 
-auto open_postgresql_persistent_store(std::string_view conninfo, std::string_view runtime_role)
+auto open_postgresql_persistent_store(std::string_view conninfo, std::string_view runtime_role,
+                                      std::string_view migration_role)
     -> PersistentStoreOpenResult
 {
     log_diagnostic("store.opening", {
@@ -1423,24 +1424,46 @@ auto open_postgresql_persistent_store(std::string_view conninfo, std::string_vie
     store.backend = PersistentStoreBackend::postgresql;
     store.postgresql_conninfo = std::string{conninfo};
     store.schema = std::move(*schema);
-    // Migrations deliberately run as the connection's own login role, NOT as
-    // migration_role. Migrations 007 and 011 use ALTER TABLE, which PostgreSQL
-    // permits only to a table's owner; provision-roles.sql grants migration_role
-    // CREATE on the schema but the existing tables are owned by the login role,
-    // so switching here would break exactly the upgrades this separation is
-    // meant to protect. migration_role exists for a future live db-migrate tool
-    // that owns what it creates.
+    // 0.12.5 audit, finding 18: DDL runs as migration_role, not as the login
+    // role. Until then the login role -- which carries every privilege both
+    // sibling roles have -- was what executed CREATE TABLE and ALTER TABLE,
+    // so the privilege separation the two roles exist for did not apply to the
+    // one operation that actually needs DDL.
+    //
+    // The reason it used to run as the login role was ownership: ALTER TABLE is
+    // permitted only to a table's owner, and migration_role owned nothing.
+    // provision-roles.sql now creates the schema objects under migration_role,
+    // ends with a scoped transfer of the objects an existing database still
+    // has owned by the login role.
     if (store.schema.version < current_schema_version())
     {
         log_diagnostic("store.migrating", {
                                               {"from", std::to_string(store.schema.version),     false},
-                                              {"to",   std::to_string(current_schema_version()), false}
+                                              {"to",   std::to_string(current_schema_version()), false},
+                                              {"role", std::string{migration_role},              false}
         });
+        if (!migration_role.empty() && !set_postgresql_role(connection, migration_role))
+        {
+            // Fail closed. Continuing as the login role would silently restore
+            // the privilege level this separation removes, on the one code path
+            // where it matters most.
+            log_diagnostic("store.rejected", {
+                                                 {"reason", "unable to assume migration role", false}
+            });
+            return {false, "unable to assume PostgreSQL migration role", {}};
+        }
         auto migrated = apply_pending_migrations(connection, store.schema);
         if (!migrated.has_value())
         {
-            log_diagnostic("store.rejected", {
-                                                 {"reason", "migration failed", false}
+            log_diagnostic("store.rejected",
+                           {
+                               {"reason", migration_role.empty()
+                                              ? std::string{"migration failed"}
+                                              : std::string{"migration failed as the configured migration role; if "
+                                                            "this is an upgrade, the schema objects may still be owned "
+                                                            "by the login role -- see the ownership transfer step in "
+                                                            "packaging/postgresql/provision-roles.sql"},
+                                false}
             });
             return {false, "unable to migrate PostgreSQL schema", {}};
         }
@@ -1448,6 +1471,16 @@ auto open_postgresql_persistent_store(std::string_view conninfo, std::string_vie
                                              {"version", std::to_string(migrated->version), false}
         });
         store.schema = std::move(*migrated);
+        // Drop back to the login role so the SET ROLE below can reach the
+        // runtime role: PostgreSQL will not let a session that has already
+        // SET ROLE to one role switch to a sibling.
+        if (!migration_role.empty() && !reset_postgresql_role(connection))
+        {
+            log_diagnostic("store.rejected", {
+                                                 {"reason", "unable to reset role after migration", false}
+            });
+            return {false, "unable to reset PostgreSQL role after migration", {}};
+        }
     }
     // Serve as the DML-only runtime role. Applied whether or not a migration
     // ran, so a steady-state restart is just as constrained as a fresh upgrade.

@@ -58,7 +58,10 @@ auto generate_ed25519_keypair() -> std::optional<Ed25519Keypair>
         return std::nullopt;
     }
     auto keypair = Ed25519Keypair{};
-    if (crypto_sign_keypair(keypair.public_key.data(), keypair.secret_key.data()) != 0)
+    keypair.secret_key = core::SecretBuffer{ed25519_secret_key_bytes};
+    // Generate straight into the locked buffer. Writing to a stack array first
+    // and copying would leave an unwiped duplicate of the seed behind.
+    if (crypto_sign_keypair(keypair.public_key.data(), keypair.secret_key.bytes().data()) != 0)
     {
         return std::nullopt;
     }

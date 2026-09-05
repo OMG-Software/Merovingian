@@ -49,7 +49,7 @@
 namespace
 {
 
-constexpr auto version = std::string_view{"0.12.4"};
+constexpr auto version = std::string_view{"0.12.5"};
 
 struct BootstrapConfigResult final
 {
@@ -699,11 +699,17 @@ struct ListenerBinding final
     auto const install_audit_sink_hook = [&runtime]() {
         merovingian::homeserver::install_local_audit_database(&runtime.homeserver.database);
     };
-    auto pool = merovingian::net::ThreadPool{8U, install_audit_sink_hook};
+    // Both pools are fed directly by the accept loops, one closure per accepted
+    // connection, so both are bounded (0.12.5 audit, finding 11). Past the cap
+    // the listener closes the connection instead of queueing it, which sheds
+    // load visibly rather than growing the queue until the OOM reaper fires.
+    auto const max_queued_connections =
+        static_cast<std::size_t>(runtime.homeserver.config.listeners().max_queued_connections);
+    auto pool = merovingian::net::ThreadPool{8U, install_audit_sink_hook, max_queued_connections};
     // Dedicated pool for /sync long-polls. Each waiting sync client occupies one
     // thread here rather than in the main pool, so regular requests (join, send,
     // login, federation) are always serviced without delay.
-    auto sync_pool = merovingian::net::ThreadPool{32U, install_audit_sink_hook};
+    auto sync_pool = merovingian::net::ThreadPool{32U, install_audit_sink_hook, max_queued_connections};
     auto threads = std::vector<std::thread>{};
     threads.reserve(bindings.size());
 

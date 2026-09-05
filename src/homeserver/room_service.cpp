@@ -261,21 +261,6 @@ namespace
     // single source of truth for reading this file, shared with the
     // federation worker and auth service — rather than re-reading it here,
     // so the two copies cannot drift apart on size limits or error handling.
-    [[nodiscard]] auto load_master_key_material_logged(std::string_view path) -> std::optional<core::SecretBuffer>
-    {
-        auto material = crypto::load_master_key_material(path);
-        if (!material.has_value())
-        {
-            log_diagnostic("signing_key.master_key_file_unreadable",
-                           {
-                               {"path",   std::string{path},                                             false},
-                               {"reason", "master key file is missing, unreadable, empty, or too large", false}
-            });
-            return std::nullopt;
-        }
-        return material;
-    }
-
     // Build the database value for an encrypted signing secret:
     //   secretbox:v1:<base64(nonce || mac || ciphertext)>
     [[nodiscard]] auto encode_encrypted_secret_for_storage(crypto::SecretBoxCiphertext const& ciphertext) -> std::string
@@ -310,15 +295,18 @@ namespace
     [[nodiscard]] auto encrypt_signing_secret(HomeserverRuntime const& runtime, std::span<std::uint8_t const> secret)
         -> std::optional<std::string>
     {
-        auto const master_key_material =
-            load_master_key_material_logged(runtime.config.security().secrets.master_key_file);
-        if (!master_key_material.has_value())
-        {
-            return std::nullopt;
-        }
-        auto const key = crypto::derive_secret_box_key(master_key_material->bytes());
+        // Cached against the master key file's identity (finding 3): this used
+        // to re-read the root secret and re-derive the box key on every call.
+        auto const key = crypto::signing_secret_box_key(runtime.config.security().secrets.master_key_file);
         if (!key.has_value())
         {
+            log_diagnostic("signing_key.master_key_unavailable",
+                           {
+                               {"path",   std::string{runtime.config.security().secrets.master_key_file},        false},
+                               {"reason", "master key file is missing, unreadable, empty, too large, or could "
+                                          "not be locked into memory",
+                                false                                                                                 }
+            });
             return std::nullopt;
         }
         auto const ciphertext = crypto::secret_box_encrypt(secret, *key);
@@ -1666,7 +1654,7 @@ namespace
         resolved_port = resolution.resolved_port;
         pinned_addresses = resolution.pinned_addresses;
     }
-    auto constexpr expected_secret_bytes = crypto::Ed25519Keypair{}.secret_key.size();
+    auto constexpr expected_secret_bytes = crypto::ed25519_secret_key_bytes;
     if (secret_key.size() != expected_secret_bytes)
     {
         log_diagnostic(diagnostic_event, {
@@ -1811,27 +1799,24 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
 // but cannot be decrypted (wrong master key / corrupted).  For legacy plaintext
 // rows, returns the decoded bytes directly.
 [[nodiscard]] auto decrypt_stored_signing_secret(HomeserverRuntime const& runtime, std::string_view stored)
-    -> std::optional<std::vector<std::uint8_t>>
+    -> std::optional<core::SecretBuffer>
 {
     if (auto const ciphertext = decode_encrypted_secret_from_storage(stored); ciphertext.has_value())
     {
-        auto const master_key_material =
-            crypto::load_master_key_material(runtime.config.security().secrets.master_key_file);
-        if (!master_key_material.has_value())
+        // Cached against the master key file's identity (finding 3).
+        auto const key = crypto::signing_secret_box_key(runtime.config.security().secrets.master_key_file);
+        if (!key.has_value())
         {
             log_diagnostic(
                 "signing_key.decryption_failed",
                 {
-                    {"reason", "encrypted signing secret requires security.secrets.master_key_file", false}
+                    {"reason", "encrypted signing secret requires a readable, lockable "
+                               "security.secrets.master_key_file",
+                     false}
             });
             return std::nullopt;
         }
-        auto const key = crypto::derive_secret_box_key(master_key_material->bytes());
-        if (!key.has_value())
-        {
-            return std::nullopt;
-        }
-        auto const plaintext = crypto::secret_box_decrypt(*ciphertext, *key);
+        auto plaintext = crypto::secret_box_decrypt(*ciphertext, *key);
         if (!plaintext.has_value())
         {
             log_diagnostic("signing_key.decryption_failed",
@@ -1843,18 +1828,22 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
         return plaintext;
     }
 
-    // Legacy plaintext base64 secret: decode and return as-is.  A diagnostic
-    // is emitted so operators can rotate to an encrypted secret.
+    // Legacy plaintext base64 secret: decode into locked memory so the secret is
+    // protected from here on. Rows like this can no longer be *written* (finding
+    // 1), but pre-0.12.5 servers have them and must keep federating; the
+    // diagnostic tells operators to rotate.
     auto const decoded = events::matrix_bytes_from_base64(stored);
-    if (!decoded.empty())
+    if (decoded.empty())
     {
-        log_diagnostic(
-            "signing_key.legacy_plaintext",
-            {
-                {"reason", "signing secret is stored plaintext; rotate to enable at-rest encryption", false}
-        });
+        return core::SecretBuffer{};
     }
-    return std::vector<std::uint8_t>{decoded.begin(), decoded.end()};
+    log_diagnostic(
+        "signing_key.legacy_plaintext",
+        {
+            {"reason", "signing secret is stored plaintext; rotate to enable at-rest encryption", false}
+    });
+    return core::SecretBuffer{
+        std::span<std::uint8_t const>{reinterpret_cast<std::uint8_t const*>(decoded.data()), decoded.size()}};
 }
 
 [[nodiscard]] auto ensure_runtime_server_signing_key(HomeserverRuntime& runtime)
@@ -1906,18 +1895,18 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
         // size before trusting it.  Fail closed if the secret cannot hydrate into a
         // full Ed25519 secret key — attempting to sign with wrong-length material
         // produces corrupt signatures.
-        auto constexpr expected_secret_bytes = crypto::Ed25519Keypair{}.secret_key.size();
+        auto constexpr expected_secret_bytes = crypto::ed25519_secret_key_bytes;
         auto const raw_secret = decrypt_stored_signing_secret(runtime, record.secret_key);
-        if (!raw_secret.has_value() || raw_secret->size() != expected_secret_bytes)
+        auto const raw_secret_size = raw_secret.has_value() ? raw_secret->bytes().size() : std::size_t{0U};
+        if (raw_secret_size != expected_secret_bytes)
         {
-            log_diagnostic(
-                "signing_key.rejected",
-                {
-                    {"server_name", std::string{server_name},                                                false},
-                    {"key_id",      record.key_id,                                                           false},
-                    {"reason",      "secret_size_invalid",                                                   false},
-                    {"secret_size", std::to_string(raw_secret.value_or(std::vector<std::uint8_t>{}).size()), false},
-                    {"expected",    std::to_string(expected_secret_bytes),                                   false}
+            log_diagnostic("signing_key.rejected",
+                           {
+                               {"server_name", std::string{server_name},              false},
+                               {"key_id",      record.key_id,                         false},
+                               {"reason",      "secret_size_invalid",                 false},
+                               {"secret_size", std::to_string(raw_secret_size),       false},
+                               {"expected",    std::to_string(expected_secret_bytes), false}
             });
             return std::nullopt;
         }
@@ -1958,8 +1947,7 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
             }
         }
 
-        runtime.database.signing_secret_key = core::SecretBuffer{raw_secret->size()};
-        std::copy(raw_secret->begin(), raw_secret->end(), runtime.database.signing_secret_key.bytes().begin());
+        runtime.database.signing_secret_key = core::SecretBuffer{raw_secret->bytes()};
         // Debug, not info: this runs on every request path that needs the signing
         // identity, so at info it drowns the log. The state-changing events
         // (window refreshed, key generated, provider rebuilt) are the info-level ones.
@@ -1967,7 +1955,7 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
                                                  {"server_name", std::string{server_name},           false},
                                                  {"key_id",      record.key_id,                      false},
                                                  {"public_key",  record.public_key,                  false},
-                                                 {"secret_size", std::to_string(raw_secret->size()), false}
+                                                 {"secret_size", std::to_string(raw_secret->bytes().size()), false}
         });
         ensure_crypto_provider_holds_key(runtime, record.key_id);
         return record;
@@ -2001,36 +1989,31 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
     // id; stale notary-cache entries for old ids become irrelevant after rotation.
     auto const key_id = derive_ed25519_key_id(keypair->public_key);
 
-    // Encrypt the secret at rest when a master key is configured.  For backwards
-    // compatibility a server without a configured master key falls back to the
-    // legacy plaintext base64 format, but a diagnostic is emitted so operators know
-    // the secret is not protected at rest.
-    auto secret_span = std::span<std::uint8_t const>{keypair->secret_key.data(), keypair->secret_key.size()};
-    auto stored_secret = encrypt_signing_secret(runtime, secret_span);
-    auto encrypted = std::string{"true"};
+    // Encrypt the secret at rest. There is no plaintext fallback (0.12.5 audit,
+    // finding 1): a server with no master key configured used to write the
+    // Ed25519 seed as base64 with encrypted='false', so anyone who exfiltrated
+    // the database obtained forgery-capable federation signing material. That is
+    // the whole threat this column exists to defend against, so a missing or
+    // unusable master key is now a hard failure at generation time rather than a
+    // diagnostic. Rows written by earlier versions still decrypt through the
+    // legacy branch of decrypt_stored_signing_secret, so existing servers keep
+    // federating and can rotate on their own schedule.
+    auto const secret_span = keypair->secret_key.bytes();
+    auto const stored_secret = encrypt_signing_secret(runtime, secret_span);
+    auto const encrypted = std::string{"true"};
     if (!stored_secret.has_value())
     {
-        if (runtime.config.security().secrets.master_key_file.empty())
-        {
-            log_diagnostic(
-                "signing_key.plaintext_fallback",
-                {
-                    {"server_name", std::string{server_name},                                                               false},
-                    {"reason",      "security.secrets.master_key_file not configured; storing signing secret in plaintext",
-                     false                                                                                                       }
-            });
-            stored_secret = events::matrix_base64_from_bytes(std::string_view{
-                reinterpret_cast<char const*>(keypair->secret_key.data()), keypair->secret_key.size()});
-            encrypted = "false";
-        }
-        else
-        {
-            log_diagnostic("signing_key.generation_failed", {
-                                                                {"server_name", std::string{server_name},           false},
-                                                                {"reason",      "signing secret encryption failed", false}
-            });
-            return std::nullopt;
-        }
+        log_diagnostic(
+            "signing_key.generation_failed",
+            {
+                {"server_name", std::string{server_name}, false},
+                {"reason",      runtime.config.security().secrets.master_key_file.empty()
+                                    ? "security.secrets.master_key_file is not configured; refusing to store a "
+                                      "server signing secret in plaintext"
+                                    : "signing secret encryption failed",
+                 false                                                                                        }
+        });
+        return std::nullopt;
     }
 
     auto key = database::PersistentServerSigningKey{
@@ -2053,9 +2036,7 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
     {
         return std::nullopt;
     }
-    runtime.database.signing_secret_key = core::SecretBuffer{keypair->secret_key.size()};
-    std::copy(keypair->secret_key.begin(), keypair->secret_key.end(),
-              runtime.database.signing_secret_key.bytes().begin());
+    runtime.database.signing_secret_key = core::SecretBuffer{keypair->secret_key.bytes()};
     ensure_crypto_provider_holds_key(runtime, key.key_id);
     return key;
 }
@@ -2130,19 +2111,19 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
         return {};
     }
 
-    auto constexpr expected_secret_bytes = crypto::Ed25519Keypair{}.secret_key.size();
+    auto constexpr expected_secret_bytes = crypto::ed25519_secret_key_bytes;
     auto result = std::vector<ActiveServerSigningKeySecret>{};
     result.reserve(active_records.size());
     for (auto const& record : active_records)
     {
         auto raw_secret = decrypt_stored_signing_secret(runtime, record.secret_key);
-        if (!raw_secret.has_value() || raw_secret->size() != expected_secret_bytes)
+        if (!raw_secret.has_value() || raw_secret->bytes().size() != expected_secret_bytes)
         {
             continue;
         }
-        auto secret = core::SecretBuffer{raw_secret->size()};
-        std::copy(raw_secret->begin(), raw_secret->end(), secret.bytes().begin());
-        result.push_back(ActiveServerSigningKeySecret{record.key_id, std::move(secret)});
+        // Already locked and zeroise-on-destruction: move it, do not copy it
+        // through an intermediate buffer.
+        result.push_back(ActiveServerSigningKeySecret{record.key_id, std::move(*raw_secret)});
     }
     return result;
 }
@@ -2324,21 +2305,21 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
     }
     auto const key_id = derive_ed25519_key_id(keypair->public_key);
 
-    auto stored_secret = encrypt_signing_secret(
-        runtime, std::span<std::uint8_t const>{keypair->secret_key.data(), keypair->secret_key.size()});
-    auto encrypted = std::string{"true"};
+    // Rotation carries the same rule as generation (0.12.5 audit, finding 1,
+    // which cited only the generation path): a rotated signing secret is never
+    // written in plaintext. Rotating into an unencrypted row would have handed
+    // a database-exfiltration attacker a fresh forgery-capable key on exactly
+    // the operation an operator performs to recover from a suspected leak.
+    auto const stored_secret = encrypt_signing_secret(runtime, keypair->secret_key.bytes());
+    auto const encrypted = std::string{"true"};
     if (!stored_secret.has_value())
     {
-        if (runtime.config.security().secrets.master_key_file.empty())
-        {
-            stored_secret = events::matrix_base64_from_bytes(std::string_view{
-                reinterpret_cast<char const*>(keypair->secret_key.data()), keypair->secret_key.size()});
-            encrypted = "false";
-        }
-        else
-        {
-            return make_operation_result(false, {}, "failed to encrypt rotated signing secret", 500U);
-        }
+        return make_operation_result(false, {},
+                                     runtime.config.security().secrets.master_key_file.empty()
+                                         ? "security.secrets.master_key_file is not configured; refusing to store a "
+                                           "rotated signing secret in plaintext"
+                                         : "failed to encrypt rotated signing secret",
+                                     500U);
     }
 
     auto new_key = database::PersistentServerSigningKey{
@@ -2353,9 +2334,7 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
     {
         return make_operation_result(false, {}, "failed to store rotated signing key", 500U);
     }
-    runtime.database.signing_secret_key = core::SecretBuffer{keypair->secret_key.size()};
-    std::copy(keypair->secret_key.begin(), keypair->secret_key.end(),
-              runtime.database.signing_secret_key.bytes().begin());
+    runtime.database.signing_secret_key = core::SecretBuffer{keypair->secret_key.bytes()};
     reset_runtime_crypto_provider(runtime);
 
     // The dispatch worker snapshots the signing identity when it is constructed, and
@@ -3411,7 +3390,9 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
         auto const signing_key = find_active_server_signing_key(runtime);
         auto const key_id = signing_key.has_value() ? signing_key->key_id : std::string{};
         auto const secret_key = runtime.database.signing_secret_key.bytes();
-        guard.unlock();
+        guard.unlock(); // LOCK_RELEASE: reviewed — the federated-join network work below must not hold
+                        // runtime.mutex. The guard is function-local, so each of the early returns in
+                        // that window releases it rather than stranding it.
         // Parallel make_join race: fire up to join_parallelism concurrent make_join
         // calls and return on the first successful response. Still-running losers are
         // moved into runtime.orphan_futures_ to complete in the background; they are
@@ -3480,7 +3461,8 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
                         {
                             if (--race_state->remaining == 0)
                             {
-                                lk.unlock();
+                                lk.unlock(); // LOCK_RELEASE: reviewed — notify outside the lock so the
+                                             // waiter does not immediately block on it.
                                 race_state->cv.notify_one();
                             }
                             return;
@@ -3502,7 +3484,8 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
                     }
                     if (--race_state->remaining == 0 || race_state->winner.has_value())
                     {
-                        lk.unlock();
+                        lk.unlock(); // LOCK_RELEASE: reviewed — notify outside the lock so the waiter
+                                     // does not immediately block on it.
                         race_state->cv.notify_one();
                     }
                 }));
@@ -4715,7 +4698,9 @@ auto split_send_join_state_events(canonicaljson::Array const& state_arr, std::st
         return make_operation_result(false, {}, "identity server is not trusted", 403U);
     }
     auto base_url = std::string{*trusted_match};
-    guard.unlock();
+    guard.unlock(); // LOCK_RELEASE: reviewed — the identity-server call below is network-bound and must
+                    // not hold runtime.mutex. The guard is function-local, so every exit from here
+                    // releases it rather than stranding it.
 
     // IS store-invite call: network-bound, deliberately outside runtime.mutex
     // (matches the convention at filter_verified_send_join_events above).

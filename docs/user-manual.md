@@ -528,6 +528,14 @@ opaque provider id (may itself contain dots, e.g.
 | `listeners.federation.reverse_proxy` | `true` | Set `false` for a direct public TLS listener; must be `true` for loopback cleartext. |
 | `listeners.federation.tls_certificate_file` | (empty) | Required when federation TLS is enabled. |
 | `listeners.federation.tls_private_key_file` | (empty) | Required when federation TLS is enabled. |
+| `listeners.max_queued_connections` | `1024` | Connections allowed to wait for a worker thread before new ones are refused. `0` disables the cap. |
+
+`listeners.max_queued_connections` bounds the accept loops' work queues. Each
+accepted connection queues one closure, so without a cap a connection flood
+grows the queue until the process is killed by the OOM reaper. Past the cap the
+listener closes the connection immediately, which sheds load in the one way the
+client can observe and retry. Raise it if legitimate bursts are being refused;
+lower it to shed load sooner under a smaller memory budget. Restart required.
 
 A listener with `tls=false` must bind to a loopback address (`127.0.0.1`,
 `localhost`, `::1`, or `[::1]`) **and** declare `reverse_proxy=true`, which is
@@ -592,14 +600,56 @@ creates a normal user; admin accounts can only be created through
 
 | Key | Default | When to change |
 |---|---|---|
-| `security.secrets.master_key_file` | `/etc/merovingian/master-key` | Path to the 32-byte master key file. |
+| `security.secrets.master_key_file` | `/etc/merovingian/master-key` | Path to the 32-byte master key file. **Required.** |
 
-When a master key is configured, the Ed25519 server signing secret is
-encrypted at rest with `secret_box` (`secretbox:v1:...`) before being stored
-in the database. If no master key is configured, the secret is stored as a
-legacy plaintext base64 value for backward compatibility and a one-time
-diagnostic warns the operator. Rotating the signing key after enabling the
-master key re-encrypts the active secret under the new at-rest format.
+The Ed25519 server signing secret is encrypted at rest with `secret_box`
+(`secretbox:v1:...`) before being stored in the database, under a key derived
+from this file.
+
+**A master key is required to start (0.12.5).** The server will not write a
+signing secret it cannot encrypt, so with no usable master key it has no signing
+key and refuses to start:
+
+```
+start.rejected reason="no server signing key: set security.secrets.master_key_file
+so the signing secret can be encrypted at rest"
+```
+
+The file must also be lockable into memory. If `sodium_mlock()` fails — normally
+`RLIMIT_MEMLOCK` exhaustion — the key is refused rather than used from swappable
+memory, and startup fails with the second form of that message. Raise
+`RLIMIT_MEMLOCK` for the service (`LimitMEMLOCK=` in the systemd unit) or grant
+`CAP_IPC_LOCK`.
+
+Generate one with:
+
+```bash
+install -m 0400 -o merovingian -g merovingian /dev/null /etc/merovingian/master-key
+head -c 32 /dev/urandom > /etc/merovingian/master-key
+```
+
+**Secret files must be mode `0400` (0.12.5).** Every path the server treats as a
+secret — `security.secrets.master_key_file`, `database.uri_file`,
+`security.registration.token_file`, and each listener's
+`tls_private_key_file` — must be a regular, non-executable, owner-read-only file
+owned by the service account. `0600` was accepted until 0.12.5 despite
+`docs/hardening.md` documenting owner-read-only; upgrading servers need a
+one-time `chmod 0400` on each, or startup is rejected with
+
+```
+Configuration rejected: <field>: secret file must be a regular owner-only
+non-executable file
+```
+
+The write bit matters because the service account is also the account a
+compromised worker process runs as: a writable master key lets an attacker who
+reaches code execution substitute a key of their own and then decrypt or re-sign
+at will. The file is never written after provisioning, so `0400` costs nothing.
+
+A server upgrading from an earlier version that already holds a legacy plaintext
+signing secret keeps reading it and continues to federate; configure a master key
+and rotate the signing key to re-encrypt the active secret under the at-rest
+format.
 
 #### Token lifetimes — `security.*_token_lifetime_ms`
 
@@ -816,6 +866,17 @@ Service API".
 | Key | Default | When to change |
 |---|---|---|
 | `security.media.max_upload_size` | `50MiB` | Maximum local upload size. Match your reverse-proxy body-size limit. |
+| `security.media.max_total_size` | (empty) | Cap on total stored media bytes. Empty means no limit. |
+| `security.media.max_size_per_user` | (empty) | Per-user media quota in bytes. Empty means no limit. |
+| `security.media.max_records` | `0` | Cap on stored media records. `0` means no limit. |
+
+The three capacity limits bound the in-memory media index, which is otherwise
+unbounded: upload spam, or a large cache of remote media, grows it until the
+process runs out of memory. An upload that would cross any limit is refused with
+`507 M_LIMIT_EXCEEDED`; nothing is evicted, because clients hold `mxc://` URIs
+for what is already stored and eviction would break those links rather than shed
+load. Bytes are counted over stored blobs, so a deduplicated upload consumes a
+record but no additional bytes.
 | `security.media.allowed_mime_types` | built-in list | Comma-separated allow-list; keep `application/octet-stream` so encrypted-room attachments are accepted. |
 | `security.media.quarantine_unknown_mime` | `true` | Quarantine uploads whose MIME type is not in the allow-list. |
 | `security.media.block_private_ip_fetches` | `true` | Block private/loopback origins when fetching remote media. |

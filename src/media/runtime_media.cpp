@@ -31,6 +31,9 @@ namespace
 auto make_runtime_media_config(config::Config const& config) -> RuntimeMediaConfig
 {
     auto const upload_limit = config::parse_size_limit(config.security().media.max_upload_size);
+    // Empty (the default) parses as invalid, which maps to 0 — no limit.
+    auto const total_limit = config::parse_size_limit(config.security().media.max_total_size);
+    auto const per_user_limit = config::parse_size_limit(config.security().media.max_size_per_user);
     auto const remote_timeout = config::parse_duration_seconds(config.security().media.remote_fetch_timeout);
     auto const& configured_types = config.security().media.allowed_mime_types;
     auto allowed_types =
@@ -38,6 +41,9 @@ auto make_runtime_media_config(config::Config const& config) -> RuntimeMediaConf
 
     return {
         upload_limit.valid ? upload_limit.bytes : 0U,
+        config.security().media.max_records,
+        total_limit.valid ? total_limit.bytes : 0U,
+        per_user_limit.valid ? per_user_limit.bytes : 0U,
         std::move(allowed_types),
         config.security().media.quarantine_unknown_mime,
         config.security().media.enable_av_scanner,

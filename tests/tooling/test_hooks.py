@@ -44,6 +44,26 @@ class HookToolingTests(unittest.TestCase):
         self.assertIn("sh scripts/check-unit-test-registration.sh", hook)
         self.assertIn("sh scripts/check-staged-changelog-docs.sh", hook)
 
+    def test_reject_unsafe_gate_requires_review_for_manual_lock_release(self) -> None:
+        # GIVEN the project safety gate the pre-commit hook runs.
+        gate = REPO_ROOT / "scripts" / "reject-unsafe.sh"
+        self.assertTrue(gate.is_file(), "reject-unsafe.sh is missing")
+        script = gate.read_text(encoding="utf-8")
+
+        # WHEN a developer replaces a ScopedGuardRelease scope with a manual
+        # unlock/lock pair (0.12.5 security audit, finding 14).
+        # THEN the gate rejects it unless they annotate why RAII does not fit.
+        self.assertIn("LOCK_RELEASE: reviewed", script)
+        self.assertIn("ScopedGuardRelease", script)
+        # AND the rule is scoped to production code: tests drive locking
+        # primitives directly on purpose, so scanning them would only produce
+        # annotations that say "this is a test".
+        rule_line = next(
+            line for line in script.splitlines() if line.startswith("LOCK_RELEASE_HITS=")
+        )
+        self.assertIn("include src", rule_line)
+        self.assertNotIn("tests", rule_line)
+
     def test_codex_post_edit_hook_formats_cpp_sources(self) -> None:
         # GIVEN the project-local Codex hook configuration.
         self.assertTrue(CODEX_HOOKS_CONFIG.is_file(), "Codex hooks config is missing")

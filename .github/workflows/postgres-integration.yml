@@ -105,12 +105,51 @@ jobs:
             GRANT merovingian_runtime TO merovingian_test;
             GRANT CREATE, USAGE ON SCHEMA public TO merovingian_migration;
             GRANT USAGE ON SCHEMA public TO merovingian_runtime;
-            -- Tables created by the login user inherit these grants so the
-            -- runtime role can read/write rows the test bootstrap created.
+            -- Tables inherit these grants so the runtime role can read and
+            -- write rows regardless of which role created them. Both grantors
+            -- are named: ALTER DEFAULT PRIVILEGES is keyed on the creating
+            -- role, and since 0.12.5 migrations create tables as
+            -- merovingian_migration while the test bootstrap still creates
+            -- some as the login user.
             ALTER DEFAULT PRIVILEGES FOR ROLE merovingian_test IN SCHEMA public
               GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO merovingian_runtime;
             ALTER DEFAULT PRIVILEGES FOR ROLE merovingian_test IN SCHEMA public
               GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO merovingian_runtime;
+            ALTER DEFAULT PRIVILEGES FOR ROLE merovingian_migration IN SCHEMA public
+              GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO merovingian_runtime;
+            ALTER DEFAULT PRIVILEGES FOR ROLE merovingian_migration IN SCHEMA public
+              GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO merovingian_runtime;
+          SQL
+
+      # Mirrors the one-time upgrade step in
+      # packaging/postgresql/provision-roles.sql. Since 0.12.5 migrations run
+      # as merovingian_migration, and ALTER TABLE is permitted only to an
+      # object's owner, so anything the login user created has to move across
+      # before a migration can touch it. On a database this job creates from
+      # scratch it matches nothing; it is here so CI exercises the exact
+      # sequence an operator upgrading a real deployment runs.
+      #
+      # Scoped to public tables and sequences rather than REASSIGN OWNED:
+      # merovingian_test is this container's bootstrap superuser, so REASSIGN
+      # OWNED hits its pinned shared dependency and fails with "required by the
+      # database system" -- which is exactly how this step first broke.
+      - name: Move schema ownership to the migration role
+        env:
+          PGHOST: 127.0.0.1
+          PGPORT: '5432'
+          PGUSER: merovingian_test
+          PGPASSWORD: test-password
+          PGDATABASE: merovingian_test
+        run: |
+          psql -v ON_ERROR_STOP=1 <<'SQL'
+            SELECT format('ALTER TABLE public.%I OWNER TO %I', tablename, 'merovingian_migration')
+              FROM pg_tables
+             WHERE schemaname = 'public' AND tableowner = 'merovingian_test'
+            \gexec
+            SELECT format('ALTER SEQUENCE public.%I OWNER TO %I', sequencename, 'merovingian_migration')
+              FROM pg_sequences
+             WHERE schemaname = 'public' AND sequenceowner = 'merovingian_test'
+            \gexec
           SQL
 
       - name: Build

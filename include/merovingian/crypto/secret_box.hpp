@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/core/secret_buffer.hpp"
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -52,8 +54,13 @@ struct SecretBoxCiphertext final
 
 // Decrypt a ciphertext produced by secret_box_encrypt.  Returns nullopt if the
 // ciphertext is too short, corrupted, or the authentication tag does not match.
+//
+// The plaintext is returned in a core::SecretBuffer, not a std::vector: what
+// this function decrypts is the server signing secret, and an intermediate
+// vector would leave a forgery-capable copy in freed, unwiped heap memory
+// between the decrypt and the caller's own SecretBuffer.
 [[nodiscard]] auto secret_box_decrypt(SecretBoxCiphertext const& ciphertext, SecretBoxKey const& key)
-    -> std::optional<std::vector<std::uint8_t>>;
+    -> std::optional<core::SecretBuffer>;
 
 // Prefix stored in the database to distinguish encrypted secrets from legacy
 // plaintext base64 secrets.  Legacy rows have no prefix and are decrypted by

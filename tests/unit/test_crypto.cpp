@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "../support/temp_directory.hpp"
+#include "merovingian/core/secret_buffer.hpp"
 #include "merovingian/crypto/constant_time.hpp"
 #include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/crypto/encoding.hpp"
@@ -9,6 +10,7 @@
 #include "merovingian/crypto/master_key.hpp"
 #include "merovingian/crypto/random.hpp"
 #include "merovingian/crypto/runtime_ed25519_provider.hpp"
+#include "merovingian/crypto/runtime_multikey_ed25519_provider.hpp"
 #include "merovingian/crypto/secret_box.hpp"
 #include "merovingian/crypto/signing_service.hpp"
 #include "merovingian/crypto/token_key.hpp"
@@ -17,6 +19,7 @@
 
 #include <algorithm>
 #include <array>
+#include <ranges>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -27,8 +30,10 @@
 #include <string_view>
 #include <tuple>
 #include <utility>
+#include <vector>
 
 #include <sodium.h>
+#include <unistd.h>
 
 namespace
 {
@@ -331,7 +336,7 @@ SCENARIO("SecretBox round-trips plaintext through authenticated encryption", "[c
             THEN("the decrypted bytes match the original plaintext")
             {
                 REQUIRE(decrypted.has_value());
-                REQUIRE(*decrypted == plaintext);
+                REQUIRE(std::ranges::equal(decrypted->bytes(), plaintext));
             }
         }
     }
@@ -396,8 +401,8 @@ SCENARIO("SecretBox encryption uses a fresh nonce per call", "[crypto][secret_bo
                 REQUIRE(a.has_value());
                 REQUIRE(b.has_value());
                 REQUIRE(a->bytes != b->bytes);
-                REQUIRE(*merovingian::crypto::secret_box_decrypt(*a, *key) == plaintext);
-                REQUIRE(*merovingian::crypto::secret_box_decrypt(*b, *key) == plaintext);
+                REQUIRE(std::ranges::equal(merovingian::crypto::secret_box_decrypt(*a, *key)->bytes(), plaintext));
+                REQUIRE(std::ranges::equal(merovingian::crypto::secret_box_decrypt(*b, *key)->bytes(), plaintext));
             }
         }
     }
@@ -1058,9 +1063,9 @@ SCENARIO("RuntimeEd25519Provider signs and verifies with its own keypair", "[cry
 {
     GIVEN("a generated Ed25519 keypair")
     {
-        auto const keypair = merovingian::crypto::generate_ed25519_keypair();
+        auto keypair = merovingian::crypto::generate_ed25519_keypair();
         REQUIRE(keypair.has_value());
-        auto provider = merovingian::crypto::RuntimeEd25519Provider{keypair->secret_key};
+        auto provider = merovingian::crypto::RuntimeEd25519Provider{std::move(keypair->secret_key)};
         auto const handle = merovingian::crypto::Ed25519SecretKeyHandle{"ed25519:auto"};
         auto const public_key = merovingian::crypto::Ed25519PublicKey{
             std::string{reinterpret_cast<char const*>(keypair->public_key.data()), keypair->public_key.size()}
@@ -1194,7 +1199,7 @@ SCENARIO("Crypto Ed25519 low-level primitives reject invalid material", "[crypto
         WHEN("verification receives mismatched shapes")
         {
             auto const good_signature =
-                merovingian::crypto::ed25519_sign_detached(std::span{keypair->secret_key}, "message");
+                merovingian::crypto::ed25519_sign_detached(keypair->secret_key.bytes(), "message");
             REQUIRE(good_signature.has_value());
 
             auto const bad_public_key = merovingian::crypto::Ed25519PublicKey{std::string(31U, 'p')};
@@ -1213,6 +1218,380 @@ SCENARIO("Crypto Ed25519 low-level primitives reject invalid material", "[crypto
                 REQUIRE_FALSE(bad_key_result.error.empty());
                 REQUIRE_FALSE(bad_sig_result.valid);
                 REQUIRE_FALSE(bad_sig_result.error.empty());
+            }
+        }
+    }
+}
+
+// --- 0.12.5 security audit: signing-secret lifecycle -------------------------
+//
+// Findings 2, 7 and 16 of security/audit-findings-2026-09-04.md. Every one of
+// them is the same defect in a different container: forgery-capable Ed25519
+// seed material, or the master key it is encrypted under, sitting in ordinary
+// swappable heap memory that is freed without being zeroised.
+
+SCENARIO("A generated Ed25519 keypair holds its secret in locked secret memory", "[crypto][signing][security]")
+{
+    GIVEN("libsodium is available")
+    {
+        WHEN("a fresh signing keypair is generated")
+        {
+            auto const keypair = merovingian::crypto::generate_ed25519_keypair();
+
+            THEN("the secret seed is a SecretBuffer of the libsodium secret-key size, not a plain array")
+            {
+                REQUIRE(keypair.has_value());
+                REQUIRE(keypair->secret_key.bytes().size() == merovingian::crypto::ed25519_secret_key_bytes);
+            }
+
+            THEN("the secret seed memory is mlocked so it cannot be paged to swap")
+            {
+                REQUIRE(keypair.has_value());
+                REQUIRE(keypair->secret_key.is_locked());
+            }
+        }
+    }
+}
+
+SCENARIO("secret_box_decrypt returns plaintext already inside a SecretBuffer", "[crypto][secret_box][security]")
+{
+    GIVEN("a derived key and an encrypted signing secret")
+    {
+        auto const master = std::vector<std::uint8_t>{0x11U, 0x22U, 0x33U, 0x44U};
+        auto const key = merovingian::crypto::derive_secret_box_key(master);
+        REQUIRE(key.has_value());
+
+        auto const plaintext = std::vector<std::uint8_t>{0xa0U, 0xa1U, 0xa2U, 0xa3U, 0xa4U};
+        auto const ciphertext = merovingian::crypto::secret_box_encrypt(plaintext, *key);
+        REQUIRE(ciphertext.has_value());
+
+        WHEN("the ciphertext is decrypted")
+        {
+            auto const decrypted = merovingian::crypto::secret_box_decrypt(*ciphertext, *key);
+
+            THEN("the caller receives the plaintext in mlocked, zeroise-on-destruction memory")
+            {
+                REQUIRE(decrypted.has_value());
+                REQUIRE(decrypted->is_locked());
+                REQUIRE(std::equal(decrypted->bytes().begin(), decrypted->bytes().end(), plaintext.begin(),
+                                   plaintext.end()));
+            }
+        }
+    }
+}
+
+SCENARIO("Master key material is refused when it cannot be locked into memory", "[crypto][master_key][security]")
+{
+    GIVEN("the fail-closed policy for master key material")
+    {
+        WHEN("the buffer holding the root secret could not be mlocked")
+        {
+            auto const accepted = merovingian::crypto::master_key_material_is_acceptable(false);
+
+            THEN("the material is rejected rather than used from swappable memory")
+            {
+                REQUIRE_FALSE(accepted);
+            }
+        }
+
+        WHEN("the buffer holding the root secret was successfully mlocked")
+        {
+            auto const accepted = merovingian::crypto::master_key_material_is_acceptable(true);
+
+            THEN("the material is accepted")
+            {
+                REQUIRE(accepted);
+            }
+        }
+    }
+}
+
+SCENARIO("The multi-key signing provider takes ownership of secrets in locked memory",
+         "[crypto][signing][security]")
+{
+    GIVEN("an Ed25519 keypair whose secret is held in a SecretBuffer")
+    {
+        auto keypair = merovingian::crypto::generate_ed25519_keypair();
+        REQUIRE(keypair.has_value());
+
+        auto const public_key =
+            merovingian::crypto::Ed25519PublicKey{std::string{reinterpret_cast<char const*>(
+                                                                 keypair->public_key.data()),
+                                                             keypair->public_key.size()}};
+
+        auto entries = std::vector<std::pair<std::string, merovingian::core::SecretBuffer>>{};
+        entries.emplace_back("ed25519:audit", std::move(keypair->secret_key));
+
+        WHEN("the provider is constructed from those secrets and asked to sign")
+        {
+            auto provider = merovingian::crypto::RuntimeMultiKeyEd25519Provider{std::move(entries)};
+            auto const result = provider.sign(merovingian::crypto::Ed25519SecretKeyHandle{"ed25519:audit"}, "message");
+
+            THEN("the signature verifies against the matching public key")
+            {
+                REQUIRE(result.error.empty());
+                auto const verified = merovingian::crypto::ed25519_verify(public_key, "message", result.signature);
+                REQUIRE(verified.valid);
+            }
+        }
+
+        WHEN("a key id the provider does not hold is requested")
+        {
+            auto provider = merovingian::crypto::RuntimeMultiKeyEd25519Provider{std::move(entries)};
+            auto const result = provider.sign(merovingian::crypto::Ed25519SecretKeyHandle{"ed25519:absent"}, "message");
+
+            THEN("signing fails closed rather than signing with an unrelated key")
+            {
+                REQUIRE_FALSE(result.error.empty());
+                REQUIRE(result.signature.bytes.empty());
+            }
+        }
+    }
+}
+
+// --- 0.12.5 security audit, finding 3 ----------------------------------------
+//
+// encrypt_signing_secret() and decrypt_stored_signing_secret() each re-read the
+// master key file and re-derived the secret-box key on every call, so every
+// signing-secret operation re-materialised the root secret and churned a 4 KiB
+// sodium_mlock/munlock pair. crypto::signing_secret_box_key() caches the derived
+// key against the file's identity instead -- the same fix #487 applied to the
+// access-token HMAC keys.
+
+SCENARIO("The signing-secret box key is cached rather than re-derived from the master key file",
+         "[crypto][master_key][secret_box][security]")
+{
+    GIVEN("a master key file that has been used once")
+    {
+        if (::geteuid() == 0U)
+        {
+            // Root ignores the permission bits, so the unreadable-file lever
+            // below would be a no-op and this scenario would pass without
+            // proving anything. Skip loudly rather than pass trivially -- some
+            // CI jobs run in a container as root.
+            SUCCEED("skipped: running as root, where the unreadable-file probe cannot bite");
+            return;
+        }
+
+        auto const path = write_master_key_file("cache-probe-master-key-material");
+        auto const first = merovingian::crypto::signing_secret_box_key(path.string());
+        REQUIRE(first.has_value());
+
+        WHEN("the file is made unreadable but its identity is unchanged")
+        {
+            // stat() still succeeds, so the cached identity still matches, but
+            // an open() would now fail. A second call that returned a key can
+            // therefore only have come from the cache -- which is exactly the
+            // property the finding asks for, observed without a test seam.
+            std::filesystem::permissions(path, std::filesystem::perms::none);
+
+            auto const second = merovingian::crypto::signing_secret_box_key(path.string());
+
+            THEN("the same derived key is returned without re-reading the file")
+            {
+                REQUIRE(second.has_value());
+                REQUIRE(second->bytes == first->bytes);
+            }
+
+            std::filesystem::permissions(path, std::filesystem::perms::owner_read |
+                                                   std::filesystem::perms::owner_write);
+        }
+
+        std::filesystem::remove(path);
+    }
+}
+
+SCENARIO("A replaced master key file invalidates the cached signing-secret box key",
+         "[crypto][master_key][secret_box][security]")
+{
+    GIVEN("a derived key cached from one master key file")
+    {
+        auto const path = write_master_key_file("original-master-key-material");
+        auto const original = merovingian::crypto::signing_secret_box_key(path.string());
+        REQUIRE(original.has_value());
+
+        WHEN("the file is replaced with different material")
+        {
+            // The cache must not outlive the key it was derived from: an
+            // operator who rotates the master key expects that to take effect,
+            // and a cache keyed on the path alone would serve the retired key
+            // indefinitely.
+            std::filesystem::remove(path);
+            auto const replaced = write_master_key_file("replacement-master-key-material");
+
+            auto const derived = merovingian::crypto::signing_secret_box_key(replaced.string());
+
+            THEN("a different key is derived")
+            {
+                REQUIRE(derived.has_value());
+                REQUIRE(derived->bytes != original->bytes);
+            }
+
+            std::filesystem::remove(replaced);
+        }
+    }
+}
+
+SCENARIO("The master key file identity changes when the file's contents are replaced",
+         "[crypto][master_key][security]")
+{
+    GIVEN("a master key file")
+    {
+        auto const path = write_master_key_file("identity-probe-material");
+        auto const identity = merovingian::crypto::master_key_file_identity(path.string());
+
+        WHEN("the identity is read again with no change")
+        {
+            THEN("it is stable, so the cache is not invalidated on every call")
+            {
+                REQUIRE_FALSE(identity.empty());
+                REQUIRE(merovingian::crypto::master_key_file_identity(path.string()) == identity);
+            }
+        }
+
+        WHEN("the identity of a path that does not exist is read")
+        {
+            THEN("it is empty, so an unreadable file never matches a cached entry")
+            {
+                REQUIRE(merovingian::crypto::master_key_file_identity("/nonexistent/master-key").empty());
+            }
+        }
+
+        std::filesystem::remove(path);
+    }
+}
+
+// --- 0.12.5 security audit, finding 20 ---------------------------------------
+//
+// The loader reads through std::ifstream, whose std::filebuf keeps its own copy
+// of every byte read in ordinary heap memory freed without zeroisation -- so
+// wiping only our own read buffer still left plaintext root-secret bytes in the
+// process. The stream is now unbuffered via pubsetbuf(nullptr, 0) before it is
+// opened.
+//
+// Heap residue cannot be asserted portably. What this covers is that the
+// unbuffered read still returns the file's exact bytes across the multi-chunk
+// path, which is where an unbuffered stream would most plausibly go wrong.
+
+SCENARIO("The unbuffered master key loader returns exact bytes across chunk boundaries",
+         "[crypto][master_key][security]")
+{
+    GIVEN("master key files spanning one, several and the maximum number of read chunks")
+    {
+        // The loader reads in 1024-byte chunks. Distinct content per chunk
+        // catches an unbuffered read that drops, duplicates or reorders one.
+        auto content = std::string{};
+        for (auto chunk = 0U; chunk < 4U; ++chunk)
+        {
+            content.append(std::string(1024U, static_cast<char>('a' + chunk)));
+        }
+        REQUIRE(content.size() == 4096U);
+
+        WHEN("a file spanning exactly four chunks is loaded")
+        {
+            auto const path = write_master_key_file(content);
+            auto const material = merovingian::crypto::load_master_key_material(path.string());
+
+            THEN("every byte of every chunk survives in order")
+            {
+                REQUIRE(material.has_value());
+                REQUIRE(material->bytes().size() == content.size());
+                REQUIRE(std::equal(material->bytes().begin(), material->bytes().end(), content.begin(), content.end(),
+                                   [](std::uint8_t lhs, char rhs) noexcept {
+                                       return lhs == static_cast<std::uint8_t>(rhs);
+                                   }));
+            }
+
+            std::filesystem::remove(path);
+        }
+
+        WHEN("a file straddling a chunk boundary by one byte is loaded")
+        {
+            auto const straddling = content.substr(0U, 1025U);
+            auto const path = write_master_key_file(straddling);
+            auto const material = merovingian::crypto::load_master_key_material(path.string());
+
+            THEN("the trailing partial chunk is neither truncated nor padded")
+            {
+                REQUIRE(material.has_value());
+                REQUIRE(material->bytes().size() == 1025U);
+                REQUIRE(material->bytes().back() == static_cast<std::uint8_t>('b'));
+            }
+
+            std::filesystem::remove(path);
+        }
+    }
+}
+
+// --- 0.12.5 audit, finding 17: the sanctioned way to erase secret bytes ------
+//
+// core::secure_zero is what modules outside the crypto boundary use to clear a
+// buffer that held secret material, since they must not call libsodium
+// directly. It is reached in production through
+// database::PersistentServerSigningKey, but the primitive is worth pinning on
+// its own: a version that silently did nothing would leave no trace at the call
+// sites that depend on it.
+
+SCENARIO("secure_zero erases a buffer in place", "[core][secret_buffer][security]")
+{
+    GIVEN("a buffer holding recognisable secret bytes")
+    {
+        auto secret = std::string{"master-key-material"};
+
+        WHEN("it is erased through secure_zero")
+        {
+            merovingian::core::secure_zero(std::as_writable_bytes(std::span{secret}));
+
+            THEN("every byte is zero, and none of the original content survives")
+            {
+                REQUIRE(std::ranges::all_of(secret, [](char c) {
+                    return c == '\0';
+                }));
+                REQUIRE(secret.find("master-key") == std::string::npos);
+            }
+        }
+    }
+
+    GIVEN("an empty buffer")
+    {
+        auto empty = std::string{};
+
+        WHEN("it is erased")
+        {
+            THEN("the call is a no-op rather than dereferencing a null data pointer")
+            {
+                merovingian::core::secure_zero(std::as_writable_bytes(std::span{empty}));
+                REQUIRE(empty.empty());
+            }
+        }
+    }
+}
+
+SCENARIO("The signing-secret box key is unavailable when no master key path is configured",
+         "[crypto][master_key][security]")
+{
+    GIVEN("an empty master key path, as an unconfigured server has")
+    {
+        WHEN("the signing-secret box key is requested")
+        {
+            auto const key = merovingian::crypto::signing_secret_box_key("");
+
+            THEN("no key is produced, so the caller cannot encrypt or decrypt a signing secret")
+            {
+                REQUIRE_FALSE(key.has_value());
+            }
+        }
+    }
+
+    GIVEN("a master key path that does not exist")
+    {
+        WHEN("the signing-secret box key is requested")
+        {
+            auto const key = merovingian::crypto::signing_secret_box_key("/nonexistent/merovingian-master-key");
+
+            THEN("no key is produced")
+            {
+                REQUIRE_FALSE(key.has_value());
             }
         }
     }

@@ -10,4 +10,5 @@ config_lib = static_library(
   'merovingian-config',
   config_sources,
   include_directories: inc,
+  link_with: [auth_lib],
 )

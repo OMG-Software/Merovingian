@@ -113,6 +113,10 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "listeners.client.bind");
     }
+    if (current.listeners().max_queued_connections != next.listeners().max_queued_connections)
+    {
+        add_change(plan, "listeners.max_queued_connections");
+    }
     if (current.listeners().client.tls != next.listeners().client.tls)
     {
         add_change(plan, "listeners.client.tls");

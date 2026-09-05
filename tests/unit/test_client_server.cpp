@@ -20,6 +20,7 @@
 // |  concluding that a failing assertion is wrong.                           |
 // +-------------------------------------------------------------------------+
 
+#include "../support/master_key.hpp"
 #include "../federation_signing_test_support.hpp"
 #include "../support/json_test_support.hpp"
 #include "../support/registration_token.hpp"
@@ -46,6 +47,9 @@ namespace
 [[nodiscard]] auto registration_enabled_config() -> merovingian::config::Config
 {
     auto security = merovingian::config::SecurityConfig{};
+    // A runtime refuses to mint a signing secret it cannot encrypt at rest
+    // (0.12.5 audit, finding 1), so every fixture needs a master key.
+    security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
     merovingian::tests::enable_token_registration(security);
     return {
         merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
@@ -57,6 +61,9 @@ namespace
 [[nodiscard]] auto turn_enabled_config() -> merovingian::config::Config
 {
     auto security = merovingian::config::SecurityConfig{};
+    // A runtime refuses to mint a signing secret it cannot encrypt at rest
+    // (0.12.5 audit, finding 1), so every fixture needs a master key.
+    security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
     merovingian::tests::enable_token_registration(security);
     auto server = merovingian::config::ServerConfig{};
     server.turn.server = "turn:turn.example.org:3478?transport=udp";
@@ -72,6 +79,9 @@ namespace
 [[nodiscard]] auto oidc_enabled_config() -> merovingian::config::Config
 {
     auto security = merovingian::config::SecurityConfig{};
+    // A runtime refuses to mint a signing secret it cannot encrypt at rest
+    // (0.12.5 audit, finding 1), so every fixture needs a master key.
+    security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
     merovingian::tests::enable_token_registration(security);
     auto server = merovingian::config::ServerConfig{};
     server.oidc.enabled = true;
@@ -89,6 +99,9 @@ namespace
 [[nodiscard]] auto sso_enabled_config() -> merovingian::config::Config
 {
     auto security = merovingian::config::SecurityConfig{};
+    // A runtime refuses to mint a signing secret it cannot encrypt at rest
+    // (0.12.5 audit, finding 1), so every fixture needs a master key.
+    security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
     merovingian::tests::enable_token_registration(security);
     auto server = merovingian::config::ServerConfig{};
     server.sso.enabled = true;
@@ -3869,6 +3882,9 @@ SCENARIO("OPTIONS preflight echoes back an explicit single origin from the allow
     {
         auto server = merovingian::config::ServerConfig{};
         auto security = merovingian::config::SecurityConfig{};
+        // A runtime refuses to mint a signing secret it cannot encrypt at rest
+        // (0.12.5 audit, finding 1), so every fixture needs a master key.
+        security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
         merovingian::tests::enable_token_registration(security);
         auto config = merovingian::config::Config{server, {}, {}, security, {}, {}};
         // Configure the allow-list via the runtime's CORS snapshot. (The
@@ -3905,6 +3921,9 @@ SCENARIO("OPTIONS preflight from an origin not in the allow-list omits Allow-Ori
     {
         auto server = merovingian::config::ServerConfig{};
         auto security = merovingian::config::SecurityConfig{};
+        // A runtime refuses to mint a signing secret it cannot encrypt at rest
+        // (0.12.5 audit, finding 1), so every fixture needs a master key.
+        security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
         merovingian::tests::enable_token_registration(security);
         auto config = merovingian::config::Config{server, {}, {}, security, {}, {}};
         config.server().cors.allowed_origins = {"https://app.example.com"};
@@ -4051,6 +4070,9 @@ SCENARIO("Well-known client discovery endpoint serves homeserver base URL",
         auto server = merovingian::config::ServerConfig{};
         server.public_baseurl = "https://matrix.example.org";
         auto security = merovingian::config::SecurityConfig{};
+        // A runtime refuses to mint a signing secret it cannot encrypt at rest
+        // (0.12.5 audit, finding 1), so every fixture needs a master key.
+        security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
         merovingian::tests::enable_token_registration(security);
         auto config = merovingian::config::Config{server, {}, {}, security, {}, {}};
         auto started = merovingian::homeserver::start_client_server(config);
@@ -4731,6 +4753,113 @@ SCENARIO("GET /login advertises m.login.sso with identity_providers when SSO is 
                 REQUIRE(response.response.body.find("\"id\":\"com.example.idp.github\"") != std::string::npos);
                 REQUIRE(response.response.body.find("\"name\":\"GitHub\"") != std::string::npos);
                 REQUIRE(response.response.body.find("\"brand\":\"github\"") != std::string::npos);
+            }
+        }
+    }
+}
+
+// --- 0.12.5 security audit, finding 15 ---------------------------------------
+//
+// redirect_url_is_allowed() was a bare starts_with() against each allowlist
+// entry, with no origin or path boundary. An operator entry naming a bare
+// origin -- "https://client.example.com", the natural way to write "this whole
+// origin" -- therefore also matched "https://client.example.com.evil.test/",
+// because that string starts with it. An attacker who registers such a domain
+// receives a freshly minted m.login.token.
+[[nodiscard]] auto bare_origin_sso_config() -> merovingian::config::Config
+{
+    auto security = merovingian::config::SecurityConfig{};
+    security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
+    merovingian::tests::enable_token_registration(security);
+    auto server = merovingian::config::ServerConfig{};
+    server.sso.enabled = true;
+    server.sso.authorization_url = "https://sso.example.org/authorize";
+    // Deliberately no trailing slash: this is the shape the bypass needs.
+    server.sso.redirect_url_allowlist = {"https://client.example.com"};
+    return {
+        std::move(server),   merovingian::config::ListenersConfig{},        merovingian::config::DatabaseConfig{},
+        std::move(security), merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+    };
+}
+
+SCENARIO("An SSO redirectUrl allowlist entry naming a bare origin does not match other origins",
+         "[homeserver][client-server][sso][security]")
+{
+    GIVEN("an allowlist containing only the bare origin https://client.example.com")
+    {
+        auto started = merovingian::homeserver::start_client_server(bare_origin_sso_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        WHEN("redirectUrl is on a different origin that merely starts with the allowed string")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET",
+                          "/_matrix/client/v3/login/sso/redirect?redirectUrl=https%3A%2F%2Fclient.example.com.evil."
+                          "test%2Fsteal",
+                          {},
+                          {}});
+
+            THEN("the homeserver refuses to redirect there")
+            {
+                REQUIRE(response.response.status == 400U);
+                REQUIRE(response.response.body.find("M_INVALID_PARAM") != std::string::npos);
+            }
+        }
+
+        WHEN("redirectUrl appends characters to the host with no delimiter")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"GET",
+                 "/_matrix/client/v3/login/sso/redirect?redirectUrl=https%3A%2F%2Fclient.example.comevil.test%2Fx",
+                 {},
+                 {}});
+
+            THEN("the homeserver refuses to redirect there")
+            {
+                REQUIRE(response.response.status == 400U);
+            }
+        }
+
+        WHEN("redirectUrl is the allowed origin exactly")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"GET", "/_matrix/client/v3/login/sso/redirect?redirectUrl=https%3A%2F%2Fclient.example.com", {}, {}});
+
+            THEN("the redirect is allowed, so a bare-origin entry still works as an origin allowlist")
+            {
+                REQUIRE(response.response.status == 302U);
+            }
+        }
+
+        WHEN("redirectUrl is a path under the allowed origin")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET",
+                          "/_matrix/client/v3/login/sso/redirect?redirectUrl=https%3A%2F%2Fclient.example.com%2Fapp"
+                          "%3Fx%3D1",
+                          {},
+                          {}});
+
+            THEN("the redirect is allowed: a path boundary follows the origin")
+            {
+                REQUIRE(response.response.status == 302U);
+            }
+        }
+
+        WHEN("redirectUrl carries a query directly after the allowed origin")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"GET", "/_matrix/client/v3/login/sso/redirect?redirectUrl=https%3A%2F%2Fclient.example.com%3Fx%3D1",
+                 {},
+                 {}});
+
+            THEN("the redirect is allowed: ? is a valid boundary too")
+            {
+                REQUIRE(response.response.status == 302U);
             }
         }
     }

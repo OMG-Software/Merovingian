@@ -226,3 +226,117 @@ SCENARIO("ThreadPool request_stop asserts when invoked from inside a worker", "[
     }
 }
 #endif
+
+// --- 0.12.5 security audit, finding 11 ---------------------------------------
+//
+// The work queue was unbounded, and both the plain-HTTP and TLS accept loops
+// submit one closure per accepted connection. A connection flood therefore grew
+// the queue without bound until the process was killed by the OOM reaper.
+
+SCENARIO("ThreadPool refuses work once the queue reaches its configured depth", "[net][thread_pool][security]")
+{
+    GIVEN("a single-worker pool with a queue depth of 2, whose worker is blocked")
+    {
+        auto release = std::atomic<bool>{false};
+        auto pool = merovingian::net::ThreadPool{1U, {}, 2U};
+
+        // Occupy the one worker so nothing drains while the queue fills.
+        REQUIRE(pool.submit([&] {
+            while (!release.load())
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds{1});
+            }
+        }));
+        // Wait for the worker to actually pick that item up, so the two
+        // submissions below are queue depth and not work in flight.
+        std::this_thread::sleep_for(std::chrono::milliseconds{50});
+
+        WHEN("more work is submitted than the queue can hold")
+        {
+            auto const first = pool.submit([] {});
+            auto const second = pool.submit([] {});
+            auto const beyond_cap = pool.submit([] {});
+
+            THEN("submissions up to the cap are accepted and the one beyond it is refused")
+            {
+                REQUIRE(first);
+                REQUIRE(second);
+                REQUIRE_FALSE(beyond_cap);
+            }
+
+            release.store(true);
+        }
+    }
+}
+
+SCENARIO("ThreadPool accepts work again once the queue drains", "[net][thread_pool][security]")
+{
+    GIVEN("a single-worker pool with a queue depth of 1 that has refused a submission")
+    {
+        auto release = std::atomic<bool>{false};
+        auto completed = std::atomic<std::size_t>{0U};
+        auto pool = merovingian::net::ThreadPool{1U, {}, 1U};
+
+        REQUIRE(pool.submit([&] {
+            while (!release.load())
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds{1});
+            }
+        }));
+        std::this_thread::sleep_for(std::chrono::milliseconds{50});
+        REQUIRE(pool.submit([&] {
+            ++completed;
+        }));
+        REQUIRE_FALSE(pool.submit([&] {
+            ++completed;
+        }));
+
+        WHEN("the blocked worker is released and the queue drains")
+        {
+            release.store(true);
+            std::this_thread::sleep_for(std::chrono::milliseconds{200});
+
+            THEN("the backpressure lifts and new work is accepted again")
+            {
+                REQUIRE(pool.submit([&] {
+                    ++completed;
+                }));
+                std::this_thread::sleep_for(std::chrono::milliseconds{200});
+                REQUIRE(completed.load() == 2U);
+            }
+        }
+    }
+}
+
+SCENARIO("A ThreadPool with no configured depth stays unbounded", "[net][thread_pool][security]")
+{
+    GIVEN("a single-worker pool constructed without a queue cap, whose worker is blocked")
+    {
+        auto release = std::atomic<bool>{false};
+        auto pool = merovingian::net::ThreadPool{1U};
+
+        REQUIRE(pool.submit([&] {
+            while (!release.load())
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds{1});
+            }
+        }));
+        std::this_thread::sleep_for(std::chrono::milliseconds{50});
+
+        WHEN("many items are queued behind the blocked worker")
+        {
+            auto all_accepted = true;
+            for (auto i = 0U; i < 64U; ++i)
+            {
+                all_accepted = pool.submit([] {}) && all_accepted;
+            }
+
+            THEN("every submission is accepted, preserving the existing IPC-pool behaviour")
+            {
+                REQUIRE(all_accepted);
+            }
+
+            release.store(true);
+        }
+    }
+}

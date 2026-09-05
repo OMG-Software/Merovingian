@@ -2,6 +2,7 @@
 
 #include "merovingian/platform/hardening_self_check.hpp"
 
+#include <optional>
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
@@ -74,24 +75,22 @@ SCENARIO("Runtime hardening checks that cannot be confirmed at startup report un
             AND_THEN("privilege drop and filesystem restrictions reflect the runtime UID")
             {
                 // Indices 9 (privilege drop) and 10 (filesystem restrictions) are
-                // NOT probe-deferred: on Linux they are definitive — `enabled` when
-                // the process runs as a non-root user and `disabled` when it runs as
+                // NOT probe-deferred: they are definitive — `enabled` when the
+                // process runs as a non-root user and `disabled` when it runs as
                 // root, because the server refuses to run as root. CI distro
-                // containers run as root, so `disabled` is expected there. On
-                // non-Linux platforms the probe is not implemented and reports
-                // `unknown`.
+                // containers run as root, so `disabled` is expected there.
+                //
+                // 0.12.5 audit, finding 10: this used to expect `unknown` off
+                // Linux, because the probe was needlessly behind an __linux__
+                // guard even though geteuid() is POSIX. The effect was that a
+                // BSD server could not satisfy is_ready() and refused to start.
                 auto const& checks = self_check.checks();
                 REQUIRE(checks[9].name == "privilege drop");
                 REQUIRE(checks[10].name == "filesystem restrictions");
-#ifdef __linux__
                 REQUIRE((checks[9].status == merovingian::platform::HardeningStatus::enabled ||
                          checks[9].status == merovingian::platform::HardeningStatus::disabled));
                 REQUIRE((checks[10].status == merovingian::platform::HardeningStatus::enabled ||
                          checks[10].status == merovingian::platform::HardeningStatus::disabled));
-#else
-                REQUIRE(checks[9].status == merovingian::platform::HardeningStatus::unknown);
-                REQUIRE(checks[10].status == merovingian::platform::HardeningStatus::unknown);
-#endif
             }
 
             AND_THEN("probe-derived checks are never disabled")
@@ -282,21 +281,107 @@ SCENARIO("Hardening self-check maps Linux-only controls to appropriate non-Linux
             }
         }
 
+        // 0.12.5 audit, finding 10: these three used to report `unknown` on
+        // every non-Linux host, and since is_ready() treats anything but
+        // `enabled` as a production blocker, a FreeBSD, OpenBSD or NetBSD
+        // server could not start at all — despite all three being documented
+        // Tier 1 platforms (docs/platform-support.md).
+        WHEN("the core dump policy is examined on a non-Linux host")
+        {
+            THEN("it is probed for real rather than written off as Linux-only")
+            {
+                // getrlimit(RLIMIT_CORE) is POSIX. This test process has not
+                // applied the hardening controls, so the limit is not clamped
+                // and the probe correctly reports it is not in force — the
+                // point is that the answer now comes from a probe rather than
+                // from a platform check.
+                REQUIRE(checks[11].name == "core dump policy");
+                REQUIRE(checks[11].status != merovingian::platform::HardeningStatus::disabled);
+            }
+        }
+
         WHEN("Linux process-capability controls are examined on a non-Linux host")
         {
-            THEN("core dump policy, no_new_privs, and capability bounding are unknown")
+            THEN("no_new_privs and capability bounding are reported as not applicable")
             {
-                // PR_SET_DUMPABLE, PR_SET_NO_NEW_PRIVS, and cap_set_proc are Linux
-                // kernel features. On non-Linux hosts the implementation returns
-                // enabled_or_unknown(false, ...) = unknown for each.
-                REQUIRE(checks[11].name == "core dump policy");
+                // PR_SET_NO_NEW_PRIVS and the capability bounding set are Linux
+                // kernel mechanisms with no BSD equivalent to probe. They use
+                // the same "not applicable on this platform" idiom the
+                // pledge/unveil and Capsicum checks use on Linux; the
+                // equivalent BSD confinement is what those two checks report.
                 REQUIRE(checks[12].name == "no_new_privs");
                 REQUIRE(checks[13].name == "capability bounding");
-                REQUIRE(checks[11].status == merovingian::platform::HardeningStatus::unknown);
-                REQUIRE(checks[12].status == merovingian::platform::HardeningStatus::unknown);
-                REQUIRE(checks[13].status == merovingian::platform::HardeningStatus::unknown);
+                REQUIRE(checks[12].status == merovingian::platform::HardeningStatus::enabled);
+                REQUIRE(checks[13].status == merovingian::platform::HardeningStatus::enabled);
+                REQUIRE(checks[12].note == "Not applicable on this platform.");
+                REQUIRE(checks[13].note == "Not applicable on this platform.");
             }
         }
     }
 }
 #endif // !__linux__
+
+// --- 0.12.5 security audit, finding 21 ---------------------------------------
+//
+// apply_linux_core_dump_policy() returned success whenever setrlimit(RLIMIT_CORE)
+// succeeded, discarding the prctl(PR_SET_DUMPABLE, 0) result, and the matching
+// self-check probed only RLIMIT_CORE. RLIMIT_CORE=0 stops the kernel writing a
+// core file for an ordinary crash, but a core_pattern that pipes to a handler
+// (systemd-coredump, apport) is not bound by the process rlimit -- so a
+// still-dumpable process could have its memory, master key included, captured
+// while the policy reported success.
+
+SCENARIO("The core-dump policy is only satisfied when the process is also undumpable",
+         "[platform][hardening][security]")
+{
+    GIVEN("a Linux process where the dumpable flag is observable")
+    {
+        WHEN("RLIMIT_CORE is clamped but the process is still dumpable")
+        {
+            auto const satisfied = merovingian::platform::core_dump_policy_is_satisfied(0U, 0U, true);
+
+            THEN("the policy is not satisfied")
+            {
+                // This is the whole finding: RLIMIT_CORE=0 alone used to report
+                // success here.
+                REQUIRE_FALSE(satisfied);
+            }
+        }
+
+        WHEN("RLIMIT_CORE is clamped and the process is undumpable")
+        {
+            auto const satisfied = merovingian::platform::core_dump_policy_is_satisfied(0U, 0U, false);
+
+            THEN("the policy is satisfied")
+            {
+                REQUIRE(satisfied);
+            }
+        }
+    }
+
+    GIVEN("a platform with no dumpable flag, where clamping RLIMIT_CORE is the whole policy")
+    {
+        WHEN("RLIMIT_CORE is clamped")
+        {
+            THEN("the policy is satisfied")
+            {
+                REQUIRE(merovingian::platform::core_dump_policy_is_satisfied(0U, 0U, std::nullopt));
+            }
+        }
+    }
+
+    GIVEN("a process whose core-dump limit is not clamped")
+    {
+        WHEN("either half of the limit is non-zero")
+        {
+            THEN("the policy is not satisfied, whatever the dumpable flag says")
+            {
+                // Both halves matter: raising the soft limit back up is exactly
+                // what an attacker with the process's own privileges would do.
+                REQUIRE_FALSE(merovingian::platform::core_dump_policy_is_satisfied(1U, 0U, false));
+                REQUIRE_FALSE(merovingian::platform::core_dump_policy_is_satisfied(0U, 1U, false));
+                REQUIRE_FALSE(merovingian::platform::core_dump_policy_is_satisfied(1U, 1U, std::nullopt));
+            }
+        }
+    }
+}

@@ -1678,7 +1678,7 @@ auto make_federation_signature(std::string_view origin, std::string_view destina
                                std::string_view target, std::string_view body, std::span<std::uint8_t const> secret_key)
     -> std::string
 {
-    auto constexpr expected_secret_bytes = crypto::Ed25519Keypair{}.secret_key.size();
+    auto constexpr expected_secret_bytes = crypto::ed25519_secret_key_bytes;
     if (secret_key.size() != expected_secret_bytes)
     {
         // Key size mismatch means no signature can be produced. Log so operators

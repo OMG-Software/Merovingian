@@ -9,15 +9,18 @@
 #include "merovingian/platform/runtime_hardening.hpp"
 #include "merovingian/platform/seccomp_hardening.hpp"
 
+#include <cstdint>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include <sys/resource.h>
+#include <unistd.h>
+
 #ifdef __linux__
 #include <linux/capability.h>
 #include <sys/prctl.h>
-#include <sys/resource.h>
-#include <unistd.h>
 #endif
 
 namespace merovingian::platform
@@ -70,17 +73,41 @@ namespace
         observability::log_diagnostic("hardening_self_check", event, fields, severity);
     }
 
-#ifdef __linux__
-
-    [[nodiscard]] auto linux_core_dump_policy_applied() noexcept -> bool
+    // getrlimit(RLIMIT_CORE) and geteuid() are POSIX, so both probes run on
+    // every supported platform. They sat behind an __linux__ guard only because
+    // the checks that used them did (0.12.5 audit, finding 10): the effect was
+    // that a FreeBSD or OpenBSD server reported "unknown" for controls it had
+    // actually applied, and is_ready() then refused to start it.
+    // Reads the live process state and hands the decision to the pure predicate
+    // core_dump_policy_is_satisfied, which is where the policy actually lives
+    // and where the tests reach it.
+    [[nodiscard]] auto core_dump_policy_applied() noexcept -> bool
     {
         auto limit = ::rlimit{};
         if (::getrlimit(RLIMIT_CORE, &limit) != 0)
         {
             return false;
         }
-        return limit.rlim_cur == 0 && limit.rlim_max == 0;
+#ifdef __linux__
+        auto const dumpable = std::optional<bool>{::prctl(PR_GET_DUMPABLE, 0, 0, 0, 0) != 0};
+#else
+        // No dumpable flag on this platform: clamping RLIMIT_CORE is the whole
+        // policy there.
+        auto const dumpable = std::optional<bool>{};
+#endif
+        return core_dump_policy_is_satisfied(static_cast<std::uint64_t>(limit.rlim_cur),
+                                             static_cast<std::uint64_t>(limit.rlim_max), dumpable);
     }
+
+    // Returns true when the process is running as a non-root user. This is the
+    // runtime signal that the service manager (systemd/OpenRC/rc.d) has applied
+    // privilege drop and UID-based filesystem restrictions.
+    [[nodiscard]] auto running_as_nonroot() noexcept -> bool
+    {
+        return ::geteuid() != 0;
+    }
+
+#ifdef __linux__
 
     [[nodiscard]] auto linux_no_new_privs_applied() noexcept -> bool
     {
@@ -97,17 +124,21 @@ namespace
         return ::prctl(PR_CAPBSET_READ, CAP_CHOWN, 0, 0, 0) == 0;
     }
 
-    // Returns true when the process is running as a non-root user. This is the
-    // runtime signal that the service manager (systemd/OpenRC) has applied
-    // privilege drop and UID-based filesystem restrictions.
-    [[nodiscard]] auto running_as_nonroot() noexcept -> bool
-    {
-        return ::geteuid() != 0;
-    }
-
 #endif
 
 } // namespace
+
+auto core_dump_policy_is_satisfied(std::uint64_t rlimit_core_soft, std::uint64_t rlimit_core_hard,
+                                   std::optional<bool> dumpable) noexcept -> bool
+{
+    if (rlimit_core_soft != 0U || rlimit_core_hard != 0U)
+    {
+        return false;
+    }
+    // Fail closed on a still-dumpable process: see the header for why
+    // RLIMIT_CORE alone is not the whole policy (0.12.5 audit, finding 21).
+    return !dumpable.value_or(false);
+}
 
 HardeningSelfCheck::HardeningSelfCheck(std::vector<HardeningCheck> checks)
     : m_checks{std::move(checks)}
@@ -215,7 +246,6 @@ auto run_startup_hardening_self_check() -> HardeningSelfCheck
     // non-root UID is the runtime signal that the service manager has applied
     // privilege drop and UID-based filesystem access controls. Running as root
     // is a hard failure — the server must never run as root in production.
-#ifdef __linux__
     auto const nonroot = running_as_nonroot();
     add("privilege drop",
         nonroot ? HardeningCheck{{}, HardeningStatus::enabled, {}}
@@ -229,24 +259,25 @@ auto run_startup_hardening_self_check() -> HardeningSelfCheck
                                  HardeningStatus::disabled,
                                  "Server is running as root. Apply UID-based or landlock filesystem restrictions."});
     add("core dump policy",
-        enabled_or_unknown(linux_core_dump_policy_applied(), "RLIMIT_CORE is not clamped to zero."));
+        enabled_or_unknown(core_dump_policy_applied(),
+                           "RLIMIT_CORE is not clamped to zero, or the process is still dumpable."));
+
+    // no_new_privs and capability bounding are Linux mechanisms with no BSD
+    // equivalent to probe. 0.12.5 audit, finding 10: they used to report
+    // `unknown` off Linux, and since is_ready() treats anything but `enabled`
+    // as a blocker, a FreeBSD or OpenBSD server could not start at all despite
+    // documented Tier 1 support. They now use the same "not applicable on this
+    // platform" idiom already used for pledge/unveil and Capsicum on Linux --
+    // the equivalent BSD controls are probed by those two checks.
+#ifdef __linux__
     add("no_new_privs", enabled_or_unknown(linux_no_new_privs_applied(), "PR_SET_NO_NEW_PRIVS is not active."));
     add("capability bounding",
         enabled_or_unknown(linux_capability_bounding_dropped(),
                            "Capability bounding set has not been dropped (apply_runtime_hardening_controls not "
                            "yet called, or called after this check)."));
 #else
-    add("privilege drop",
-        enabled_or_unknown(false,
-                           "Privilege drop probe is not implemented on this platform; configure the service manager to "
-                           "use a dedicated non-root user."));
-    add("filesystem restrictions",
-        enabled_or_unknown(
-            false, "Filesystem restriction probe is not implemented on this platform; configure the service manager "
-                   "to apply filesystem sandboxing."));
-    add("core dump policy", enabled_or_unknown(false, "Core dump policy probe is only implemented on Linux."));
-    add("no_new_privs", enabled_or_unknown(false, "PR_SET_NO_NEW_PRIVS is only implemented on Linux."));
-    add("capability bounding", enabled_or_unknown(false, "Capability bounding set drop is only implemented on Linux."));
+    add("no_new_privs", HardeningCheck{{}, HardeningStatus::enabled, "Not applicable on this platform."});
+    add("capability bounding", HardeningCheck{{}, HardeningStatus::enabled, "Not applicable on this platform."});
 #endif
     add("secret redaction policy", HardeningCheck{{}, HardeningStatus::enabled, {}});
 

@@ -41,6 +41,25 @@ if [ -n "$SHARED_PTR_HITS" ]; then
   exit 1
 fi
 
+# Manual lock release requires an explicit per-line annotation.
+#
+# 0.12.5 audit, finding 14: fourteen endpoints in client_server.cpp released the
+# runtime mutex by hand around a blocking outbound call and re-took it
+# afterwards. Every one is now a homeserver::ScopedGuardRelease scope, which
+# restores the guard on the exceptional path as well as the normal one. This
+# gate is what stops the pattern coming back: a reviewer has to look at each new
+# manual release and say why RAII does not fit.
+#
+# Add "// LOCK_RELEASE: reviewed — <reason>" on the same line to exempt.
+LOCK_RELEASE_HITS=$(grep -Rn --perl-regexp "${CPP_INCLUDES[@]}" '\.unlock\s*\(\s*\)' include src \
+  | grep -v 'LOCK_RELEASE: reviewed' \
+  | grep -vE '^[^:]*:[0-9]+:[[:space:]]*//' || true)
+if [ -n "$LOCK_RELEASE_HITS" ]; then
+  printf '%s\n' "$LOCK_RELEASE_HITS"
+  echo "Rejected pattern detected: manual lock release requires explicit review (prefer homeserver::ScopedGuardRelease; otherwise add '// LOCK_RELEASE: reviewed — <reason>')"
+  exit 1
+fi
+
 # NOTE: the comment-exclusion filter below must account for the "path:line:"
 # prefix that `grep --line-number` adds to every hit. A bare '^[[:space:]]*//'
 # never matches after that prefix, so it excluded nothing and the gate flagged
