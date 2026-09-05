@@ -452,12 +452,8 @@ SCENARIO("merovingian-server accepts an HTTP request and returns the router's re
 
         auto shutdown = merovingian::net::ShutdownSignal{};
         auto stats = merovingian::homeserver::HttpServeStats{};
-        // Order matters: ~ThreadPool joins the workers, and a worker can still
-        // be inside serve_connection holding a ConnectionContext that
-        // references `runtime`. Declaring the pool last destroys it first, so
-        // every worker is joined before the runtime it borrows goes away.
-        auto runtime = std::move(runtime_result.runtime);
         auto pool = merovingian::net::ThreadPool{4U};
+        auto runtime = std::move(runtime_result.runtime);
 
         WHEN("a client sends an HTTP/1.1 request to an unknown route")
         {
@@ -514,12 +510,8 @@ SCENARIO("merovingian-server marks accepted client sockets close-on-exec",
 
         auto shutdown = merovingian::net::ShutdownSignal{};
         auto stats = merovingian::homeserver::HttpServeStats{};
-        // Order matters: ~ThreadPool joins the workers, and a worker can still
-        // be inside serve_connection holding a ConnectionContext that
-        // references `runtime`. Declaring the pool last destroys it first, so
-        // every worker is joined before the runtime it borrows goes away.
-        auto runtime = std::move(runtime_result.runtime);
         auto pool = merovingian::net::ThreadPool{4U};
+        auto runtime = std::move(runtime_result.runtime);
 
         WHEN("a client connects and holds the connection open with an incomplete request")
         {
@@ -622,12 +614,8 @@ SCENARIO("merovingian-server accepts Matrix JSON requests over a configured TLS 
 
         auto shutdown = merovingian::net::ShutdownSignal{};
         auto stats = merovingian::homeserver::HttpServeStats{};
-        // Order matters: ~ThreadPool joins the workers, and a worker can still
-        // be inside serve_connection holding a ConnectionContext that
-        // references `runtime`. Declaring the pool last destroys it first, so
-        // every worker is joined before the runtime it borrows goes away.
-        auto runtime = std::move(runtime_result.runtime);
         auto pool = merovingian::net::ThreadPool{4U};
+        auto runtime = std::move(runtime_result.runtime);
 
         WHEN("a TLS client sends Matrix JSON registration over TCP")
         {
@@ -685,12 +673,8 @@ SCENARIO("merovingian-server routes client listener traffic through the Matrix J
 
         auto shutdown = merovingian::net::ShutdownSignal{};
         auto stats = merovingian::homeserver::HttpServeStats{};
-        // Order matters: ~ThreadPool joins the workers, and a worker can still
-        // be inside serve_connection holding a ConnectionContext that
-        // references `runtime`. Declaring the pool last destroys it first, so
-        // every worker is joined before the runtime it borrows goes away.
-        auto runtime = std::move(runtime_result.runtime);
         auto pool = merovingian::net::ThreadPool{4U};
+        auto runtime = std::move(runtime_result.runtime);
 
         WHEN("a client sends Matrix JSON registration over TCP")
         {
@@ -741,12 +725,8 @@ SCENARIO("merovingian-server rejects an oversized request head with a 4xx status
 
         auto shutdown = merovingian::net::ShutdownSignal{};
         auto stats = merovingian::homeserver::HttpServeStats{};
-        // Order matters: ~ThreadPool joins the workers, and a worker can still
-        // be inside serve_connection holding a ConnectionContext that
-        // references `runtime`. Declaring the pool last destroys it first, so
-        // every worker is joined before the runtime it borrows goes away.
-        auto runtime = std::move(runtime_result.runtime);
         auto pool = merovingian::net::ThreadPool{4U};
+        auto runtime = std::move(runtime_result.runtime);
 
         auto server_thread = std::thread{[&]() {
             merovingian::homeserver::serve_http(acceptor, runtime, shutdown, stats,
@@ -803,12 +783,8 @@ SCENARIO("merovingian-server serves sequential requests over one persistent HTTP
 
         auto shutdown = merovingian::net::ShutdownSignal{};
         auto stats = merovingian::homeserver::HttpServeStats{};
-        // Order matters: ~ThreadPool joins the workers, and a worker can still
-        // be inside serve_connection holding a ConnectionContext that
-        // references `runtime`. Declaring the pool last destroys it first, so
-        // every worker is joined before the runtime it borrows goes away.
-        auto runtime = std::move(runtime_result.runtime);
         auto pool = merovingian::net::ThreadPool{4U};
+        auto runtime = std::move(runtime_result.runtime);
 
         WHEN("a client sends two sequential requests over the same connection")
         {
@@ -863,12 +839,8 @@ SCENARIO("merovingian-server drains a request body exactly before serving the ne
 
         auto shutdown = merovingian::net::ShutdownSignal{};
         auto stats = merovingian::homeserver::HttpServeStats{};
-        // Order matters: ~ThreadPool joins the workers, and a worker can still
-        // be inside serve_connection holding a ConnectionContext that
-        // references `runtime`. Declaring the pool last destroys it first, so
-        // every worker is joined before the runtime it borrows goes away.
-        auto runtime = std::move(runtime_result.runtime);
         auto pool = merovingian::net::ThreadPool{4U};
+        auto runtime = std::move(runtime_result.runtime);
 
         WHEN("a client pipelines a POST body and a follow-up request in one write")
         {
@@ -936,12 +908,8 @@ SCENARIO("merovingian-server rate limits a route per IP, answers 429 on the kept
 
         auto shutdown = merovingian::net::ShutdownSignal{};
         auto stats = merovingian::homeserver::HttpServeStats{};
-        // Order matters: ~ThreadPool joins the workers, and a worker can still
-        // be inside serve_connection holding a ConnectionContext that
-        // references `runtime`. Declaring the pool last destroys it first, so
-        // every worker is joined before the runtime it borrows goes away.
-        auto runtime = std::move(runtime_result.runtime);
         auto pool = merovingian::net::ThreadPool{4U};
+        auto runtime = std::move(runtime_result.runtime);
 
         WHEN("a client issues three requests over one persistent connection, waits out the window, then retries")
         {
@@ -1010,12 +978,8 @@ SCENARIO("merovingian-server honours a client Connection close request and close
 
         auto shutdown = merovingian::net::ShutdownSignal{};
         auto stats = merovingian::homeserver::HttpServeStats{};
-        // Order matters: ~ThreadPool joins the workers, and a worker can still
-        // be inside serve_connection holding a ConnectionContext that
-        // references `runtime`. Declaring the pool last destroys it first, so
-        // every worker is joined before the runtime it borrows goes away.
-        auto runtime = std::move(runtime_result.runtime);
         auto pool = merovingian::net::ThreadPool{4U};
+        auto runtime = std::move(runtime_result.runtime);
 
         WHEN("a client sends a request carrying Connection: close")
         {
@@ -1064,12 +1028,8 @@ SCENARIO("merovingian-server closes a kept-alive connection after the configured
 
         auto shutdown = merovingian::net::ShutdownSignal{};
         auto stats = merovingian::homeserver::HttpServeStats{};
-        // Order matters: ~ThreadPool joins the workers, and a worker can still
-        // be inside serve_connection holding a ConnectionContext that
-        // references `runtime`. Declaring the pool last destroys it first, so
-        // every worker is joined before the runtime it borrows goes away.
-        auto runtime = std::move(runtime_result.runtime);
         auto pool = merovingian::net::ThreadPool{4U};
+        auto runtime = std::move(runtime_result.runtime);
 
         WHEN("a client sends one request and then goes idle on the kept-alive connection")
         {
@@ -1121,12 +1081,8 @@ SCENARIO("merovingian-server caps how many connections it holds open waiting for
 
         auto shutdown = merovingian::net::ShutdownSignal{};
         auto stats = merovingian::homeserver::HttpServeStats{};
-        // Order matters: ~ThreadPool joins the workers, and a worker can still
-        // be inside serve_connection holding a ConnectionContext that
-        // references `runtime`. Declaring the pool last destroys it first, so
-        // every worker is joined before the runtime it borrows goes away.
-        auto runtime = std::move(runtime_result.runtime);
         auto pool = merovingian::net::ThreadPool{4U};
+        auto runtime = std::move(runtime_result.runtime);
 
         WHEN("three clients each hold a connection open after their first request")
         {
@@ -1197,12 +1153,8 @@ SCENARIO("merovingian-server serves two sequential requests over one persistent 
 
         auto shutdown = merovingian::net::ShutdownSignal{};
         auto stats = merovingian::homeserver::HttpServeStats{};
-        // Order matters: ~ThreadPool joins the workers, and a worker can still
-        // be inside serve_connection holding a ConnectionContext that
-        // references `runtime`. Declaring the pool last destroys it first, so
-        // every worker is joined before the runtime it borrows goes away.
-        auto runtime = std::move(runtime_result.runtime);
         auto pool = merovingian::net::ThreadPool{4U};
+        auto runtime = std::move(runtime_result.runtime);
 
         WHEN("a TLS client sends two sequential requests over the same TLS connection")
         {
