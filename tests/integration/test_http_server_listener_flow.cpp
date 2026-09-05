@@ -452,8 +452,15 @@ SCENARIO("merovingian-server accepts an HTTP request and returns the router's re
 
         auto shutdown = merovingian::net::ShutdownSignal{};
         auto stats = merovingian::homeserver::HttpServeStats{};
-        auto pool = merovingian::net::ThreadPool{4U};
+        // The pool is declared after the runtime so it is destroyed first.
+        // ~ThreadPool joins the workers, and a worker can still be inside
+        // serve_connection holding a ConnectionContext that references
+        // `runtime` -- ASan caught exactly that read landing in this frame
+        // after it had gone. Each WHEN block also stops the pool explicitly
+        // (see below), so this ordering is the backstop rather than the only
+        // thing standing between a worker and a destroyed runtime.
         auto runtime = std::move(runtime_result.runtime);
+        auto pool = merovingian::net::ThreadPool{4U};
 
         WHEN("a client sends an HTTP/1.1 request to an unknown route")
         {
@@ -474,6 +481,11 @@ SCENARIO("merovingian-server accepts an HTTP request and returns the router's re
 
             shutdown.fire();
             server_thread.join();
+            // Joins the connection workers here, not during unwind: the client
+            // sockets are already closed at this point so a parked worker sees
+            // EOF and exits promptly, and if one ever does not, the failure
+            // names this line instead of timing out the whole binary.
+            pool.request_stop();
 
             THEN("the response status line and router body are returned and the connection closes")
             {
@@ -510,8 +522,15 @@ SCENARIO("merovingian-server marks accepted client sockets close-on-exec",
 
         auto shutdown = merovingian::net::ShutdownSignal{};
         auto stats = merovingian::homeserver::HttpServeStats{};
-        auto pool = merovingian::net::ThreadPool{4U};
+        // The pool is declared after the runtime so it is destroyed first.
+        // ~ThreadPool joins the workers, and a worker can still be inside
+        // serve_connection holding a ConnectionContext that references
+        // `runtime` -- ASan caught exactly that read landing in this frame
+        // after it had gone. Each WHEN block also stops the pool explicitly
+        // (see below), so this ordering is the backstop rather than the only
+        // thing standing between a worker and a destroyed runtime.
         auto runtime = std::move(runtime_result.runtime);
+        auto pool = merovingian::net::ThreadPool{4U};
 
         WHEN("a client connects and holds the connection open with an incomplete request")
         {
@@ -614,8 +633,15 @@ SCENARIO("merovingian-server accepts Matrix JSON requests over a configured TLS 
 
         auto shutdown = merovingian::net::ShutdownSignal{};
         auto stats = merovingian::homeserver::HttpServeStats{};
-        auto pool = merovingian::net::ThreadPool{4U};
+        // The pool is declared after the runtime so it is destroyed first.
+        // ~ThreadPool joins the workers, and a worker can still be inside
+        // serve_connection holding a ConnectionContext that references
+        // `runtime` -- ASan caught exactly that read landing in this frame
+        // after it had gone. Each WHEN block also stops the pool explicitly
+        // (see below), so this ordering is the backstop rather than the only
+        // thing standing between a worker and a destroyed runtime.
         auto runtime = std::move(runtime_result.runtime);
+        auto pool = merovingian::net::ThreadPool{4U};
 
         WHEN("a TLS client sends Matrix JSON registration over TCP")
         {
@@ -645,6 +671,11 @@ SCENARIO("merovingian-server accepts Matrix JSON requests over a configured TLS 
 
             shutdown.fire();
             server_thread.join();
+            // Joins the connection workers here, not during unwind: the client
+            // sockets are already closed at this point so a parked worker sees
+            // EOF and exits promptly, and if one ever does not, the failure
+            // names this line instead of timing out the whole binary.
+            pool.request_stop();
 
             THEN("the listener performs the TLS handshake and returns the Matrix JSON response")
             {
@@ -673,8 +704,15 @@ SCENARIO("merovingian-server routes client listener traffic through the Matrix J
 
         auto shutdown = merovingian::net::ShutdownSignal{};
         auto stats = merovingian::homeserver::HttpServeStats{};
-        auto pool = merovingian::net::ThreadPool{4U};
+        // The pool is declared after the runtime so it is destroyed first.
+        // ~ThreadPool joins the workers, and a worker can still be inside
+        // serve_connection holding a ConnectionContext that references
+        // `runtime` -- ASan caught exactly that read landing in this frame
+        // after it had gone. Each WHEN block also stops the pool explicitly
+        // (see below), so this ordering is the backstop rather than the only
+        // thing standing between a worker and a destroyed runtime.
         auto runtime = std::move(runtime_result.runtime);
+        auto pool = merovingian::net::ThreadPool{4U};
 
         WHEN("a client sends Matrix JSON registration over TCP")
         {
@@ -698,6 +736,11 @@ SCENARIO("merovingian-server routes client listener traffic through the Matrix J
 
             shutdown.fire();
             server_thread.join();
+            // Joins the connection workers here, not during unwind: the client
+            // sockets are already closed at this point so a parked worker sees
+            // EOF and exits promptly, and if one ever does not, the failure
+            // names this line instead of timing out the whole binary.
+            pool.request_stop();
 
             THEN("the listener returns the Matrix JSON registration response")
             {
@@ -725,8 +768,15 @@ SCENARIO("merovingian-server rejects an oversized request head with a 4xx status
 
         auto shutdown = merovingian::net::ShutdownSignal{};
         auto stats = merovingian::homeserver::HttpServeStats{};
-        auto pool = merovingian::net::ThreadPool{4U};
+        // The pool is declared after the runtime so it is destroyed first.
+        // ~ThreadPool joins the workers, and a worker can still be inside
+        // serve_connection holding a ConnectionContext that references
+        // `runtime` -- ASan caught exactly that read landing in this frame
+        // after it had gone. Each WHEN block also stops the pool explicitly
+        // (see below), so this ordering is the backstop rather than the only
+        // thing standing between a worker and a destroyed runtime.
         auto runtime = std::move(runtime_result.runtime);
+        auto pool = merovingian::net::ThreadPool{4U};
 
         auto server_thread = std::thread{[&]() {
             merovingian::homeserver::serve_http(acceptor, runtime, shutdown, stats,
@@ -754,6 +804,11 @@ SCENARIO("merovingian-server rejects an oversized request head with a 4xx status
 
             shutdown.fire();
             server_thread.join();
+            // Joins the connection workers here, not during unwind: the client
+            // sockets are already closed at this point so a parked worker sees
+            // EOF and exits promptly, and if one ever does not, the failure
+            // names this line instead of timing out the whole binary.
+            pool.request_stop();
 
             THEN("the oversized request gets a 4xx and the listener continues to serve")
             {
@@ -783,8 +838,15 @@ SCENARIO("merovingian-server serves sequential requests over one persistent HTTP
 
         auto shutdown = merovingian::net::ShutdownSignal{};
         auto stats = merovingian::homeserver::HttpServeStats{};
-        auto pool = merovingian::net::ThreadPool{4U};
+        // The pool is declared after the runtime so it is destroyed first.
+        // ~ThreadPool joins the workers, and a worker can still be inside
+        // serve_connection holding a ConnectionContext that references
+        // `runtime` -- ASan caught exactly that read landing in this frame
+        // after it had gone. Each WHEN block also stops the pool explicitly
+        // (see below), so this ordering is the backstop rather than the only
+        // thing standing between a worker and a destroyed runtime.
         auto runtime = std::move(runtime_result.runtime);
+        auto pool = merovingian::net::ThreadPool{4U};
 
         WHEN("a client sends two sequential requests over the same connection")
         {
@@ -809,6 +871,11 @@ SCENARIO("merovingian-server serves sequential requests over one persistent HTTP
 
             shutdown.fire();
             server_thread.join();
+            // Joins the connection workers here, not during unwind: the client
+            // sockets are already closed at this point so a parked worker sees
+            // EOF and exits promptly, and if one ever does not, the failure
+            // names this line instead of timing out the whole binary.
+            pool.request_stop();
 
             THEN("both responses are served over the single accepted connection")
             {
@@ -839,8 +906,15 @@ SCENARIO("merovingian-server drains a request body exactly before serving the ne
 
         auto shutdown = merovingian::net::ShutdownSignal{};
         auto stats = merovingian::homeserver::HttpServeStats{};
-        auto pool = merovingian::net::ThreadPool{4U};
+        // The pool is declared after the runtime so it is destroyed first.
+        // ~ThreadPool joins the workers, and a worker can still be inside
+        // serve_connection holding a ConnectionContext that references
+        // `runtime` -- ASan caught exactly that read landing in this frame
+        // after it had gone. Each WHEN block also stops the pool explicitly
+        // (see below), so this ordering is the backstop rather than the only
+        // thing standing between a worker and a destroyed runtime.
         auto runtime = std::move(runtime_result.runtime);
+        auto pool = merovingian::net::ThreadPool{4U};
 
         WHEN("a client pipelines a POST body and a follow-up request in one write")
         {
@@ -864,6 +938,11 @@ SCENARIO("merovingian-server drains a request body exactly before serving the ne
 
             shutdown.fire();
             server_thread.join();
+            // Joins the connection workers here, not during unwind: the client
+            // sockets are already closed at this point so a parked worker sees
+            // EOF and exits promptly, and if one ever does not, the failure
+            // names this line instead of timing out the whole binary.
+            pool.request_stop();
 
             THEN("the full body is drained and the follow-up request is served on the same connection")
             {
@@ -908,8 +987,15 @@ SCENARIO("merovingian-server rate limits a route per IP, answers 429 on the kept
 
         auto shutdown = merovingian::net::ShutdownSignal{};
         auto stats = merovingian::homeserver::HttpServeStats{};
-        auto pool = merovingian::net::ThreadPool{4U};
+        // The pool is declared after the runtime so it is destroyed first.
+        // ~ThreadPool joins the workers, and a worker can still be inside
+        // serve_connection holding a ConnectionContext that references
+        // `runtime` -- ASan caught exactly that read landing in this frame
+        // after it had gone. Each WHEN block also stops the pool explicitly
+        // (see below), so this ordering is the backstop rather than the only
+        // thing standing between a worker and a destroyed runtime.
         auto runtime = std::move(runtime_result.runtime);
+        auto pool = merovingian::net::ThreadPool{4U};
 
         WHEN("a client issues three requests over one persistent connection, waits out the window, then retries")
         {
@@ -943,6 +1029,11 @@ SCENARIO("merovingian-server rate limits a route per IP, answers 429 on the kept
 
             shutdown.fire();
             server_thread.join();
+            // Joins the connection workers here, not during unwind: the client
+            // sockets are already closed at this point so a parked worker sees
+            // EOF and exits promptly, and if one ever does not, the failure
+            // names this line instead of timing out the whole binary.
+            pool.request_stop();
 
             THEN("the third round is a 429 with the spec error shape and the fourth is served after the window")
             {
@@ -978,8 +1069,15 @@ SCENARIO("merovingian-server honours a client Connection close request and close
 
         auto shutdown = merovingian::net::ShutdownSignal{};
         auto stats = merovingian::homeserver::HttpServeStats{};
-        auto pool = merovingian::net::ThreadPool{4U};
+        // The pool is declared after the runtime so it is destroyed first.
+        // ~ThreadPool joins the workers, and a worker can still be inside
+        // serve_connection holding a ConnectionContext that references
+        // `runtime` -- ASan caught exactly that read landing in this frame
+        // after it had gone. Each WHEN block also stops the pool explicitly
+        // (see below), so this ordering is the backstop rather than the only
+        // thing standing between a worker and a destroyed runtime.
         auto runtime = std::move(runtime_result.runtime);
+        auto pool = merovingian::net::ThreadPool{4U};
 
         WHEN("a client sends a request carrying Connection: close")
         {
@@ -999,6 +1097,11 @@ SCENARIO("merovingian-server honours a client Connection close request and close
 
             shutdown.fire();
             server_thread.join();
+            // Joins the connection workers here, not during unwind: the client
+            // sockets are already closed at this point so a parked worker sees
+            // EOF and exits promptly, and if one ever does not, the failure
+            // names this line instead of timing out the whole binary.
+            pool.request_stop();
 
             THEN("the response echoes Connection: close and the server closes the connection")
             {
@@ -1028,8 +1131,15 @@ SCENARIO("merovingian-server closes a kept-alive connection after the configured
 
         auto shutdown = merovingian::net::ShutdownSignal{};
         auto stats = merovingian::homeserver::HttpServeStats{};
-        auto pool = merovingian::net::ThreadPool{4U};
+        // The pool is declared after the runtime so it is destroyed first.
+        // ~ThreadPool joins the workers, and a worker can still be inside
+        // serve_connection holding a ConnectionContext that references
+        // `runtime` -- ASan caught exactly that read landing in this frame
+        // after it had gone. Each WHEN block also stops the pool explicitly
+        // (see below), so this ordering is the backstop rather than the only
+        // thing standing between a worker and a destroyed runtime.
         auto runtime = std::move(runtime_result.runtime);
+        auto pool = merovingian::net::ThreadPool{4U};
 
         WHEN("a client sends one request and then goes idle on the kept-alive connection")
         {
@@ -1051,6 +1161,11 @@ SCENARIO("merovingian-server closes a kept-alive connection after the configured
 
             shutdown.fire();
             server_thread.join();
+            // Joins the connection workers here, not during unwind: the client
+            // sockets are already closed at this point so a parked worker sees
+            // EOF and exits promptly, and if one ever does not, the failure
+            // names this line instead of timing out the whole binary.
+            pool.request_stop();
 
             THEN("the response keeps the connection alive and the idle window closes it afterwards")
             {
@@ -1081,8 +1196,15 @@ SCENARIO("merovingian-server caps how many connections it holds open waiting for
 
         auto shutdown = merovingian::net::ShutdownSignal{};
         auto stats = merovingian::homeserver::HttpServeStats{};
-        auto pool = merovingian::net::ThreadPool{4U};
+        // The pool is declared after the runtime so it is destroyed first.
+        // ~ThreadPool joins the workers, and a worker can still be inside
+        // serve_connection holding a ConnectionContext that references
+        // `runtime` -- ASan caught exactly that read landing in this frame
+        // after it had gone. Each WHEN block also stops the pool explicitly
+        // (see below), so this ordering is the backstop rather than the only
+        // thing standing between a worker and a destroyed runtime.
         auto runtime = std::move(runtime_result.runtime);
+        auto pool = merovingian::net::ThreadPool{4U};
 
         WHEN("three clients each hold a connection open after their first request")
         {
@@ -1121,6 +1243,11 @@ SCENARIO("merovingian-server caps how many connections it holds open waiting for
 
             shutdown.fire();
             server_thread.join();
+            // Joins the connection workers here, not during unwind: the client
+            // sockets are already closed at this point so a parked worker sees
+            // EOF and exits promptly, and if one ever does not, the failure
+            // names this line instead of timing out the whole binary.
+            pool.request_stop();
 
             THEN("the first two connections are kept alive and the third is closed instead of parked")
             {
@@ -1153,8 +1280,15 @@ SCENARIO("merovingian-server serves two sequential requests over one persistent 
 
         auto shutdown = merovingian::net::ShutdownSignal{};
         auto stats = merovingian::homeserver::HttpServeStats{};
-        auto pool = merovingian::net::ThreadPool{4U};
+        // The pool is declared after the runtime so it is destroyed first.
+        // ~ThreadPool joins the workers, and a worker can still be inside
+        // serve_connection holding a ConnectionContext that references
+        // `runtime` -- ASan caught exactly that read landing in this frame
+        // after it had gone. Each WHEN block also stops the pool explicitly
+        // (see below), so this ordering is the backstop rather than the only
+        // thing standing between a worker and a destroyed runtime.
         auto runtime = std::move(runtime_result.runtime);
+        auto pool = merovingian::net::ThreadPool{4U};
 
         WHEN("a TLS client sends two sequential requests over the same TLS connection")
         {
@@ -1186,6 +1320,11 @@ SCENARIO("merovingian-server serves two sequential requests over one persistent 
 
             shutdown.fire();
             server_thread.join();
+            // Joins the connection workers here, not during unwind: the client
+            // sockets are already closed at this point so a parked worker sees
+            // EOF and exits promptly, and if one ever does not, the failure
+            // names this line instead of timing out the whole binary.
+            pool.request_stop();
 
             THEN("both responses are served over the single accepted TLS connection")
             {

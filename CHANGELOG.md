@@ -234,6 +234,31 @@ properties, asserted through their observable half (every surviving secret
 holder is a locked buffer; the unbuffered read returns exact bytes across chunk
 boundaries) rather than by inspecting freed heap.
 
+### Connection-test teardown (sanitizer finding)
+
+- **`test_http_server_listener_flow.cpp` let the runtime die while pool workers
+  were still using it.** All twelve scenarios declared the thread pool before the
+  runtime, so reverse-declaration destruction ran `~runtime` first while a worker
+  could still be inside `serve_connection` holding a `ConnectionContext` that
+  references it. Firing the shutdown signal and joining the accept-loop thread
+  only stops *new* work being submitted; the per-connection closures already
+  handed to the pool are still in flight, and `~ThreadPool` is what joins those.
+  ASan reported `stack-use-after-scope` naming exactly that read.
+
+  Fixed in two independent ways rather than one. Each scenario now calls
+  `pool.request_stop()` immediately after joining the accept-loop thread, at a
+  point where the client sockets are already closed so a parked worker sees EOF
+  and exits promptly — and where a hang, if one ever happened, would name that
+  line instead of timing out the whole binary. The pool is also declared after
+  the runtime, so unwind order is correct even if a future scenario forgets the
+  explicit stop.
+
+  Pre-existing and unrelated to the audit: `http_server.cpp` is untouched on this
+  branch. It is timing-dependent, which is why the first attempt at this fix
+  relied on declaration order alone and could not be shown to be safe — see the
+  commit history for the OpenBSD timeout that followed it and the evidence that
+  neither proposed mechanism for that timeout survived scrutiny.
+
 ## 0.12.4
 
 Security audit of the 0.12.3 tree. Two of the findings below are privilege
