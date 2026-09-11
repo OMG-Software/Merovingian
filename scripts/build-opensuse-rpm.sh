@@ -1,6 +1,6 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Build an RPM package for merovingian 0.11.6 on OpenSUSE Tumbleweed.
+# Build an RPM package for merovingian 0.12.12 on OpenSUSE Tumbleweed.
 #
 # Uses packaging/opensuse/merovingian.spec which adapts BuildRequires to
 # OpenSUSE package names (libopenssl-devel, postgresql-devel, libpng16-devel,

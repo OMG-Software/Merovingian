@@ -1,6 +1,6 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Build an RPM package for merovingian 0.11.6 using rpmbuild.
+# Build an RPM package for merovingian 0.12.12 using rpmbuild.
 set -e
 
 VERSION="0.12.12"

@@ -100,6 +100,9 @@ fi
 * Fri Sep 11 2026 James Chapman <claude@ping.me.uk> - 0.12.12-1
 - docs: correct stale and inaccurate documentation found by a full audit against the code; add module guides for federation_worker, ipc and push
 
+* Fri Sep 11 2026 James Chapman <claude@ping.me.uk> - 0.12.11-1
+- fix: correct duplicate hashes in federated join and leave templates
+
 * Fri Sep 11 2026 James Chapman <claude@ping.me.uk> - 0.12.10-1
 - fix(e2ee): devices of users on other servers always showed as unverified. The /keys/query federation proxy discarded remote master and self-signing keys; the requester's own user-signing signature over a remote master key was never merged back; signatures on cross-signing keys were looked up under the wrong key ID; keys served over federation and in m.device_list_update lacked the owner's cross-signing signatures; m.signing_key_update was neither sent nor handled. The proxy now also drops keys for users the remote server was not asked about. Signature visibility defined in ADR-0060; remote keys proxied not cached per ADR-0061.
 

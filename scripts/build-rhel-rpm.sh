@@ -1,6 +1,6 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Build an RPM package for merovingian 0.11.6 targeting RHEL 10 / AlmaLinux 10.
+# Build an RPM package for merovingian 0.12.12 targeting RHEL 10 / AlmaLinux 10.
 #
 # Differs from build-rpm.sh only in the spec file used: packaging/rhel/merovingian.spec
 # omits catch-devel from BuildRequires (Catch2 is not reliably available in EPEL 10
