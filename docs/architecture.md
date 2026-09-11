@@ -86,7 +86,9 @@ Entry points: `src/main.cpp` (`merovingian-server`), `src/db_migrate.cpp`
 
 Modules form a layered dependency graph. Edge transport and routing sit at the
 top; protocol/domain services in the middle; shared foundations at the bottom.
-Dependencies point downward - foundations never depend on services.
+Dependencies point downward - foundations never depend on services, with one
+exception: `config` links `auth` (`src/config/meson.build`) because
+`config.cpp` validates the server name via `auth::server_name_is_valid`.
 
 ```mermaid
 flowchart TB
@@ -128,11 +130,12 @@ flowchart TB
     push --> http & federation
     sync --> trust_safety
     services --> database
-    events --> crypto & canonicaljson
-    federation --> crypto & canonicaljson
+    events --> crypto & canonicaljson & rooms
+    federation --> crypto & canonicaljson & events & rooms
     auth --> crypto
     services --> observability
     homeserver --> config
+    config --> auth
 ```
 
 All foundation modules depend on `core` (RAII utilities, `not_null`,
@@ -452,7 +455,7 @@ Worker request execution uses two pools. `local_pool` (`federation.worker.thread
 
 ## Federation
 
-**Inbound** (`federation/inbound_request.hpp`, `inbound_ingestion.hpp`): `FederationRuntimeState` holds config, remote caches, accepted transactions, audit events, and injected function hooks: `remote_key_resolver`, `pdu_sink`, `edu_sink`, `state_conflict_resolver`, `membership_template_provider`, `membership_acceptor`, `invite_handler`, `backfill_provider`, `profile_query_provider`, E2EE key hooks, event-graph query hooks. Its federation-local mutex protects remote-cache/trust updates, accepted transaction IDs, and audit events when multiple federation requests run concurrently. `handle_inbound_federation_request()` parses X-Matrix auth, verifies signatures, and dispatches to endpoint handlers. `PUT /_matrix/federation/v1/send/{txnId}` follows the Matrix v1.19 transaction envelope: `origin`, `origin_server_ts`, and a `pdus` array are required, `edus` is optional but must be an array when present, empty `pdus: []` remains valid, and individual PDU failures are returned inside the `pdus` response object rather than as a non-200 transaction status. See [Server-Server API: Request Authentication](matrix-v1.19-spec/server-server-api.md#request-authentication), [Transactions](matrix-v1.19-spec/server-server-api.md#transactions), [Authorization rules](matrix-v1.19-spec/server-server-api.md#authorization-rules), and [Signing Events](matrix-v1.19-spec/server-server-api.md#signing-events).
+**Inbound** (`federation/inbound_request.hpp`, `inbound_ingestion.hpp`): `FederationRuntimeState` holds config, remote caches, accepted transactions, audit events, and injected function hooks: `remote_key_resolver`, `pdu_sink`, `edu_sink`, `state_conflict_resolver`, `membership_template_provider`, `membership_acceptor`, `invite_handler`, `backfill_provider`, `profile_query_provider`, E2EE key hooks, event-graph query hooks. Its federation-local mutex protects remote-cache/trust updates, accepted transaction IDs, and audit events when multiple federation requests run concurrently. `handle_inbound_federation_request()` parses X-Matrix auth, verifies signatures, and dispatches to endpoint handlers. `PUT /_matrix/federation/v1/send/{txnId}` follows the Matrix v1.19 transaction envelope: `origin`, `origin_server_ts`, and a `pdus` array are required, `edus` is optional but must be an array when present, empty `pdus: []` remains valid, and individual PDU failures are returned inside the `pdus` response object rather than as a non-200 transaction status. See [Server-Server API: Request Authentication](matrix-v1.19-spec/server-server-api.md#request-authentication), [Transactions](matrix-v1.19-spec/server-server-api.md#transactions), [Authorization rules](matrix-v1.19-spec/server-server-api.md#authorisation-rules), and [Signing Events](matrix-v1.19-spec/server-server-api.md#signing-events).
 
 Implemented endpoints: `PUT /send/{txnId}`, `GET/PUT /make_join`, `GET/PUT /make_leave`, `GET/PUT /make_knock`, `PUT /send_join` (v1/v2), `PUT /send_leave` (v1/v2), `PUT /send_knock` (v2), `PUT /invite` (v1/v2), `GET /event/{eventId}`, `GET /state/{roomId}`, `GET /state_ids/{roomId}`, `GET /backfill/{roomId}`, `POST /get_missing_events/{roomId}`, `GET /hierarchy/{roomId}`, `GET /query/directory`, `GET /query/profile`, `GET/POST /publicRooms`, E2EE device keys/OTK/claim/device-list routes, and `GET /_matrix/key/v2/server`. Backfill decodes URI path/query Matrix IDs before dispatch and walks stored `prev_events` from each requested event to return the requested PDU plus predecessors up to the request limit. See [Joining Rooms](matrix-v1.19-spec/server-server-api.md#joining-rooms), [Backfilling and retrieving missing events](matrix-v1.19-spec/server-server-api.md#backfilling-and-retrieving-missing-events), [Room State Resolution](matrix-v1.19-spec/server-server-api.md#room-state-resolution), [Published Room Directory](matrix-v1.19-spec/server-server-api.md#published-room-directory), and [Retrieving server keys](matrix-v1.19-spec/server-server-api.md#retrieving-server-keys).
 

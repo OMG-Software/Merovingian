@@ -338,11 +338,6 @@ remaining work before PostgreSQL-backed production operation.
   alone, and returns `nullopt` on any miss (unknown, expired, or
   already-used token are indistinguishable to the caller). Implemented for
   both SQLite and PostgreSQL, hydrated on backend open.
-  `migrations/012_login_tokens.sql`) belongs to a sibling feature branch
-  (SSO login) and carries no C++ store/find/hydration code in this codebase
-  — it is registered in `schema.cpp`/`migration.cpp` purely so this branch's
-  own migration chain has no version gap between the sibling branch's `12`
-  and this branch's `13` below.
 - `appservice_txn_cursor` table (schema version `13`, migration
   `migrations/013_appservice_txn_cursor.sql`) persists the outbound
   `PUT /_matrix/app/v1/transactions/{txnId}` delivery cursor for each
@@ -461,7 +456,7 @@ remaining work before PostgreSQL-backed production operation.
   parameterised, room_id-scoped queries (never a full-table re-read). A no-op
   (returns `true`) for the `memory` backend. Used by the federation worker to
   refresh its otherwise-stale `PersistentStore` snapshot — see
-  [architecture.md, "Federation worker room staleness"](architecture.md#federation-worker-room-staleness).
+  [architecture.md, "Federation worker room staleness"](architecture.md#federation-worker-consistency-model).
 - `database::reconstruct_event_relations(store)` re-derives every
   `PersistentEvent::prev_event_ids`/`auth_event_ids`/`signatures` from the flat
   `event_edges`/`event_auth`/`event_signatures` tables. Those fields are only
@@ -543,10 +538,9 @@ The boundary provides these guarantees:
 
 These remain deferred:
 
-- PostgreSQL-backed federation queues, policy rules, push rules, and
-  full media repository blob metadata hydration.
-- SQLite-backed federation queues, policy-rule management, push rules, and
-  full media repository blob metadata hydration.
+- Hydration of the federation queue tables (`federation_destinations`,
+  `federation_transactions`) and of `push_rules`, on both backends. Policy
+  rules and media blob metadata are hydrated on both backends (see above).
 
 ## Next starting points
 

@@ -13,7 +13,10 @@ v*-alpha*
 Pushing a matching tag triggers [release.yml](../.github/workflows/release.yml).
 That workflow:
 
-- builds packages for all Tier 1 platforms (Linux, FreeBSD, OpenBSD, NetBSD) with the hardened profile
+- builds hardened packages for Linux and FreeBSD (`linux-alpha-package`,
+  `freebsd-alpha-package`) — OpenBSD and NetBSD packages are not part of the
+  alpha release workflow; they are built by the rolling `packages.yml`
+  workflow and published to its `latest` GitHub release instead
 - runs the full Meson test suite on both platforms
 - runs Linux phase 1 configuration validation
 - runs the unsafe-source gate

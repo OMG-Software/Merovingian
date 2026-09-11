@@ -306,6 +306,8 @@ merovingian-server --plan-config-reload current.conf next.conf
 | `66` | Config file open/read failure |
 | `78` | Config parse failure |
 | `79` | Config validation failure |
+| `80` | Runtime start error: hardening self-check refused start, runtime/federation-worker start failure, or `--bootstrap-admin` failure |
+| `81` | Listener error: listener bind failure or signal-handler setup failure |
 
 ### Fail-closed startup
 
@@ -367,9 +369,9 @@ change them.
 
 | Key | Default | When to change |
 |---|---|---|
-| `server.name` | `matrix.example.org` | **Required.** The Matrix server name used in user IDs and federation. Must match the host part served by your reverse proxy. |
+| `server.name` | `example.org` | **Required.** The Matrix server name used in user IDs and federation. Must match the host part served by your reverse proxy. The shipped `config/merovingian.conf.example` sets `example.org`. |
 | `server.public_baseurl` | `https://matrix.example.org` | **Required.** The HTTPS URL clients use. Must be HTTPS. |
-| `server.trusted_proxies` | `127.0.0.1` | **Required behind a reverse proxy.** Comma-separated list of proxy IPs whose `X-Forwarded-For` header is trusted for rate limiting. Without this, every client shares one per-IP bucket. |
+| `server.trusted_proxies` | (empty) | **Required behind a reverse proxy.** Comma-separated list of proxy IPs whose `X-Forwarded-For` header is trusted for rate limiting. Without this, every client shares one per-IP bucket. The shipped example sets `127.0.0.1`. |
 
 #### CORS policy — `server.cors.*`
 
@@ -458,7 +460,7 @@ an identity server fails closed rather than silently minting tokens locally.
 |---|---|---|
 | `server.identity_server.trusted_servers` | (empty) | Comma-separated allow-list of identity server base URLs (must be HTTPS). A 3PID operation naming an `id_server` outside this list is refused. |
 | `server.identity_server.default_server` | (empty) | Identity server used when a client omits `id_server`. Must be HTTPS and must also appear in `trusted_servers`. |
-| `server.identity_server.allowed_bind_domains` | (empty) | Restricts which email/phone domains a user may bind a 3PID for. Empty allows any domain. |
+| `server.identity_server.allowed_bind_domains` | (empty) | Parsed and validated, but not currently enforced — no bind or `requestToken` path reads it (see [ADR-0051](adr/0051-document-inert-configuration-keys-rather-than-removing-them.md)), so setting it restricts nothing today. |
 | `server.identity_server.connect_timeout_seconds` | `10` | Outbound connect timeout for identity server HTTP calls. |
 | `server.identity_server.total_timeout_seconds` | `30` | Outbound total timeout for identity server HTTP calls. Must be `>=` `connect_timeout_seconds`. |
 
@@ -577,7 +579,7 @@ federation port `8448`.
 | `database.migration_role` | (empty) | PostgreSQL role assumed for the DDL/migration phase only. Must be set together with `database.runtime_role`. |
 | `database.runtime_role` | (empty) | PostgreSQL role assumed to serve requests, dropping DDL rights. Both empty issues no `SET ROLE`, leaving an existing single-role deployment unchanged. |
 | `database.pool_size` | `16` | Tune based on workload; reloadable. |
-| `database.sqlite_path` | (commented out) | Path for SQLite single-file store. |
+| `database.sqlite_path` | `/var/lib/merovingian/merovingian.sqlite3` | Path for SQLite single-file store. Commented out in the shipped example, which defaults to PostgreSQL. |
 
 #### Registration — `security.registration.*`
 
@@ -585,7 +587,7 @@ federation port `8448`.
 |---|---|---|
 | `security.registration.enabled` | `false` | Set `true` to allow public self-registration. |
 | `security.registration.require_token` | `true` | Set `false` only on private test servers; open public registration without a token is rejected by the parser unless explicitly allowed. |
-| `security.registration.token_file` | `/etc/merovingian/registration-token` | Owner-only file containing the registration token. |
+| `security.registration.token_file` | (empty) | **Required** when registration is enabled with `require_token=true` (the default). Owner-only file containing the registration token. The shipped example sets `/etc/merovingian/registration-token`. |
 
 The token file is read on startup and should contain the registration token
 on its first line. Treat it as a secret — owner-only, non-executable, outside
@@ -600,7 +602,7 @@ creates a normal user; admin accounts can only be created through
 
 | Key | Default | When to change |
 |---|---|---|
-| `security.secrets.master_key_file` | `/etc/merovingian/master-key` | Path to the 32-byte master key file. **Required.** |
+| `security.secrets.master_key_file` | (empty) | Path to the 32-byte master key file. **Required.** The shipped example sets `/etc/merovingian/master-key`. |
 
 The Ed25519 server signing secret is encrypted at rest with `secret_box`
 (`secretbox:v1:...`) before being stored in the database, under a key derived
@@ -692,7 +694,7 @@ rooms.
 | `security.federation.verify_json_signatures` | `true` | Disable only in controlled test labs. |
 | `security.federation.deny_ip_ranges` | private/loopback ranges | Ranges blocked during remote discovery/fetching. Keep the defaults. |
 | `security.federation.remote_timeout` | `60s` | General outbound federation HTTP timeout. |
-| `security.federation.max_transaction_size` | `20MiB` | Cap on inbound transaction body size. |
+| `security.federation.max_transaction_size` | `10MiB` | Cap on inbound transaction body size. The shipped example sets `20MiB`. |
 
 #### Federation join/leave budget — `security.federation.join_*`
 
@@ -819,8 +821,8 @@ in-process fallback — requests return `503` while a crashed worker restarts.
 |---|---|---|
 | `federation.worker.threads` | `4` | Thread pool for endpoints answered entirely from the worker's own local snapshot (`make_join`/`make_leave`/`make_knock`, `backfill`, directory/state queries, `get_missing_events`, `hierarchy`) — these never block on main, so this can stay small. |
 | `federation.worker.relay_threads` | `32` | Thread pool for endpoints that can block on a synchronous IPC round-trip to main (PDU-bearing `send`, `send_join`/`send_leave`/`send_knock`, `invite`, profile/key queries, `event/{eventId}`) or on outbound HTTP. Deliberately separate and generously sized from `threads`, since sharing one pool would let a burst of slow relay calls starve the fast local endpoints — see [`docs/architecture.md`](architecture.md), "Federation worker relay pool separation". |
-| `federation.worker.shards` | `2` | Number of independent worker processes. Requests are routed by `fnv1a_32(room_id) % shards`; non-room endpoints go to shard 0. Must be `>= 1`. |
-| `federation.worker.request_timeout_seconds` | `30` | Base per-request IPC timeout in seconds. The actual IPC timeout for inbound federation requests is `max(request_timeout_seconds, security.federation.remote_timeout) + 10 s`, so a worker-side outbound HTTP call can complete before main gives up. A request slower than the effective timeout returns `504` to the remote server. |
+| `federation.worker.shards` | `1` | Number of independent worker processes. Requests are routed by `fnv1a_32(room_id) % shards`; non-room endpoints go to shard 0. Must be `>= 1`. The shipped example sets `2`. |
+| `federation.worker.request_timeout_seconds` | `120` | Base per-request IPC timeout in seconds. The actual IPC timeout for inbound federation requests is `max(request_timeout_seconds, security.federation.remote_timeout) + 10 s`, so a worker-side outbound HTTP call can complete before main gives up. A request slower than the effective timeout returns `504` to the remote server. The shipped example sets `30`. |
 | `federation.worker.apply_hardening` | `true` | Apply seccomp/capability sandboxing to workers. Keep `true` in production. |
 | `federation.worker.binary` | (empty) | Absolute path to `merovingian-fed-worker`; empty uses the compile-time libexec path (`$libexecdir/merovingian/merovingian-fed-worker`). |
 
@@ -883,6 +885,7 @@ record but no additional bytes.
 | `security.media.remote_fetch_enabled` | `false` | Opt-in for live remote media fetching. |
 | `security.media.remote_fetch_timeout` | `30s` | Parsed and validated, but the live path still uses hard-coded timeouts. |
 | `security.media.decode_in_sandbox` | `true` | Decode/thumbnail media inside a sandboxed child process. |
+| `security.media.enable_av_scanner` | `true` | Does not launch a real antivirus engine — with it on, uploads are checked only for the EICAR test signature (`media::content_matches_eicar_test_signature`). See the warning below. |
 | `security.media.local_upload_policy` | `allow-after-scan` | `allow`/`allow-after-scan`/`quarantine`/`deny`. |
 | `security.media.remote_fetch_media_policy` | `quarantine` | Same values; defaults to `quarantine` because federated origins are unaccountable. |
 
@@ -975,6 +978,7 @@ or zero-cap policy at startup. Changes require a server restart.
 | `client_rate_limits.per_ip.<target>` | see defaults below | Per-IP cap for requests matching `<target>` prefix. |
 | `client_rate_limits.per_user.<target>` | see defaults below | Per-user cap keyed by authenticated `user_id`. |
 | `client_rate_limits.default_per_ip` | `90/60s` | Fallback cap for unmatched targets. |
+| `client_rate_limits.tier.<auth_sensitive\|media\|sync\|federation\|admin\|generic>` | see engine defaults | Per-tier override. An unknown tier name is a config parse error. |
 
 Default route-aware policies applied when no override is configured:
 
@@ -1044,23 +1048,27 @@ only reports what *would* happen.
 | `database.runtime_role` | Restart required |
 | `listeners.*.tls_certificate_file` | Restart required |
 | `listeners.*.tls_private_key_file` | Restart required |
+| `listeners.*.reverse_proxy` | Restart required |
+| `security.registration.token_file` | Restart required |
+| `security.federation.key_resolution_*` | Restart required |
 | `security.federation.join_response_max_size` | Restart required |
+| `client_rate_limits.*` | Restart required |
+| `log_modules.*` | Restart required |
+| `security.secrets.master_key_file` | Restart required |
 | `federation.worker.*` | Restart required |
 | `server.cors.*` | Restart required |
 | `server.http.*` | Restart required |
-| `security.secrets.master_key_file` | Restart required |
-| `client_rate_limits.*` | Restart required |
-| `log_modules.*` | Restart required |
 | `server.identity_server.*` | Restart required |
 | `server.push.*` | Restart required |
+| `appservice.*` | Restart required |
 | `database.pool_size` | Reloadable |
 | `server.turn.*` | Reloadable |
 | `security.trust_safety.*` | Reloadable |
 | `security.access_token_lifetime_ms` / `security.refresh_token_lifetime_ms` | Reloadable |
-| Other `listeners.*` keys | Reloadable |
-| `security.registration.*` | Reloadable |
+| Other `listeners.*` keys (except `reverse_proxy`) | Reloadable |
+| `security.registration.*` (except `token_file`) | Reloadable |
 | `security.encryption.*` | Reloadable |
-| `security.federation.*` (except `join_response_max_size`) | Reloadable |
+| `security.federation.*` (except `join_response_max_size` and `key_resolution_*`) | Reloadable |
 | `security.media.*` | Reloadable |
 | `security.logging.*` | Reloadable |
 | `server.oidc.*` | Reloadable |
@@ -2040,6 +2048,30 @@ admin endpoint:
 ```sh
 curl 'http://127.0.0.1:8008/_merovingian/admin/audit?category=policy'
 ```
+
+### Admin API
+
+All `/_merovingian/admin/*` routes require a normal client access token
+(`Authorization: Bearer <token>`) belonging to a user whose account has the
+`admin` flag set: a missing or invalid token returns `401`, a valid token for
+a non-admin user returns `403`. Implemented routes:
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/_merovingian/admin/health` | Health summary. |
+| `GET` | `/_merovingian/admin/metrics` | Prometheus-format server metrics. |
+| `GET` | `/_merovingian/admin/media/metrics` | Media-repository metrics. |
+| `GET` | `/_merovingian/admin/audit` | Audit log query (`?category=`, `?event_type=`). |
+| `POST` | `/_merovingian/admin/media/quarantine/{mediaId}` | Quarantine a stored media item. |
+| `POST` | `/_merovingian/admin/media/release/{mediaId}` | Release a quarantined media item. |
+| `POST` | `/_merovingian/admin/media/remove/{mediaId}` | Remove a stored media item. |
+
+`/_merovingian/admin/accounts/{userId}`, `/_merovingian/admin/review/{targetType}/{targetId}`,
+and `/_merovingian/admin/shutdown` appear in `observability::admin_routes()`
+(`include/merovingian/observability/observability.hpp`,
+`src/observability/observability.cpp`) but are not wired into either HTTP
+dispatcher (`src/homeserver/local_http_router.cpp`,
+`src/homeserver/client_server.cpp`) — they are unreachable today.
 
 ## Maintenance
 

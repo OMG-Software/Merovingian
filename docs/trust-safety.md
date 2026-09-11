@@ -20,6 +20,9 @@ This capability note describes runtime-wired trust-and-safety behavior.
   `GET /_matrix/client/v3/admin/safety/policy_rules`,
   `PUT /_matrix/client/v3/admin/safety/policy_rules/{scope}/{entity}`, and
   `DELETE /_matrix/client/v3/admin/safety/policy_rules/{scope}/{entity}`.
+  A rule's action is one of `allow`, `deny`, `quarantine`, `lock_account` or
+  `suspend_account`; any other value is rejected. The engine's `PolicyAction`
+  also has `accept_report`, used only for event-report decisions.
 - Remote policy-server transport through
   `security.trust_safety.policy_server_url` and the fail-closed
   `PolicyServerHook` path.
@@ -54,6 +57,8 @@ event content.
 - Moderator queues beyond the current audit/admin action summaries.
 - Multipart or streaming moderation inputs beyond the current request-local
   transport contract.
+- User reporting, `POST /_matrix/client/v3/users/{userId}/report` (Matrix
+  v1.19 CS API). Only event reporting is routed.
 
 ### What ignoring a user does NOT protect against
 

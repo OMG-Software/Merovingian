@@ -8,6 +8,8 @@ Static fixtures used by the integration and complement test runners.
 |---|---|
 | `complement/` | JSON fixture files driving `test_sync_complement_fixture.cpp` |
 | `complement/client_server_v1_19.json` | Client-server API flow tests: register, login, send, sync, media |
+| `complement/sync_v1_19.json` | Sync-focused flow steps, loaded via `run_complement_fixture("sync_v1_19.json", ...)` in `test_sync_complement_fixture.cpp` |
+| `complement/federation_v1_19.json` | Federation-flow fixture; **not currently loaded by any test** (no `.cpp` references `federation_v1_19.json` — confirmed by repo-wide grep). Wire it into a fixture runner or remove it. |
 
 ## Complement fixture format
 

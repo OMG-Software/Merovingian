@@ -1,5 +1,5 @@
 ## Project Overview
-The most secure Matrix Protocol homeserver ever created. Secure by design, implementation, and during runtime.
+A Matrix homeserver built with security as the top priority: secure by design, in implementation, and at runtime.
 
 ## Language & Stack
 - C++26
@@ -7,17 +7,6 @@ The most secure Matrix Protocol homeserver ever created. Secure by design, imple
 - PostgreSQL
 - SQLite
 - Meson build system
-
-## Code Presentation
-- Always wrap code in code blocks with the relevant language tag.
-- Include clear, concise inline comments explaining non-obvious logic.
-- Show complete, runnable code — avoid partial snippets unless explicitly asked.
-- After each code block, briefly explain what changed and why (2–5 sentences max).
-
-## Tone & Style
-- Be direct and concise. No filler phrases or lengthy preambles.
-- Get to the answer first, then add context if needed.
-- Avoid over-explaining things that are straightforward.
 
 ## General Rules
 - Check the Matrix spec, we MUST conform to v1.19 of the spec.
@@ -165,28 +154,34 @@ Ignore these dirs:
 
 ## Project Layout
 Source headers (`include/merovingian/`) and implementations (`src/`) mirror each other by module.
+The one exception is `bootstrap/`, which is header-only.
 
 ```
-├── include/merovingian/   # Public headers (1:1 with src/)
-│   ├── auth/              #   Auth service, session tokens, authorization
-│   ├── bootstrap/         #   Server bootstrap
-│   ├── canonicaljson/     #   Canonical JSON (parser, serializer)
-│   ├── config/            #   Runtime config, parser, reload
-│   ├── core/              #   Error, file_descriptor, not_null, query_params, secret_buffer
-│   ├── crypto/            #   Ed25519, signing, constant-time ops
-│   ├── database/          #   Connection, migration, persistent_store, postgresql/sqlite
-│   ├── events/            #   Event, event_id, state_resolution, redaction, room_version_policy
-│   ├── federation/        #   Inbound/outbound, transactions, key cache, server_discovery, membership
-│   ├── homeserver/        #   Server, runtime, listeners, shutdown
-│   ├── http/              #   HTTP server, request, rate_limit, connection_guard, tls, session
-│   ├── media/             #   Media service, file_metadata
-│   ├── net/               #   TCP acceptor, outbound client
+├── include/merovingian/   # Public headers (1:1 with src/, except bootstrap/)
+│   ├── appservice/        #   Application Service registration, namespaces, outbound client
+│   ├── auth/              #   Password hashing, session tokens, identity, key API, OIDC discovery
+│   ├── bootstrap/         #   Process exit codes (header-only)
+│   ├── canonicaljson/     #   Canonical JSON (value, parser, serializer, signable)
+│   ├── config/            #   Config model, parser, runtime config, reload plan/policy
+│   ├── core/              #   Error, file_descriptor, socket_handle, not_null, query_params, secret_buffer
+│   ├── crypto/            #   Ed25519, signing service, secret box, master key, IPC cipher, constant-time ops
+│   ├── database/          #   Connection, statement, schema, migrations, persistent_store, postgresql/sqlite
+│   ├── events/            #   Event, event_id, event_signer, authorization, state_resolution, redaction, limits
+│   ├── federation/        #   Inbound/outbound, transactions, key cache/query, server_discovery, membership, ACLs
+│   ├── federation_worker/ #   Out-of-process federation worker (argument parsing; entry point in src/)
+│   ├── homeserver/        #   Runtime, client-server dispatch, local router, federation proxy, worker supervisor, TLS
+│   ├── http/              #   HTTP server, request, request limits, rate_limit, connection_guard, keep-alive, outbound client
+│   ├── identity/          #   Identity Service API client (outbound only)
+│   ├── ipc/               #   Authenticated, encrypted AF_UNIX channel between main process and federation worker
+│   ├── media/             #   Media repository, MIME/quarantine security, sandboxed thumbnailer
+│   ├── net/               #   Listener, TCP acceptor, thread pool, shutdown signal
 │   ├── observability/     #   Logger, observability
-│   ├── platform/          #   Runtime hardening, file metadata, self-check
-│   ├── rooms/             #   Room service
-│   ├── sync/              #   Sync filter, notifier, stream token
-│   └── trust_safety/      #   Policy engine, encryption policy
-├── src/                   # Implementations (same module dirs as include/)
+│   ├── platform/          #   Runtime hardening, seccomp, ELF probe, file metadata, self-check
+│   ├── push/              #   Push rules evaluation, push gateway client
+│   ├── rooms/             #   Room version policy, encryption policy
+│   ├── sync/              #   Sync filter, notifier, stream token, device-list deltas, sliding sync (MSC4186)
+│   └── trust_safety/      #   Policy engine, ignore list
+├── src/                   # Implementations (same module dirs as include/), plus the executables' main files
 ├── tests/
 │   ├── conformance/       #   Catch2 BDD Matrix spec conformance tests
 │   ├── unit/              #   Catch2 BDD unit tests (test_*.cpp)
@@ -194,7 +189,9 @@ Source headers (`include/merovingian/`) and implementations (`src/`) mirror each
 │   ├── fuzz/              #   Fuzz targets
 │   ├── smoke/             #   Smoke tests
 │   ├── fixtures/          #   Test fixtures (complement)
-│   └── support/           #   Test helpers (federation_signing_test_support.hpp)
+│   ├── support/           #   Test helpers (json_test_support, master_key, registration_token, temp_directory, tls_mock_server)
+│   ├── sanitizer/         #   Sanitizer suppression files (tsan.supp)
+│   └── tooling/           #   Python tests for CI workflows, dependency wraps, example config, logger filter
 ├── migrations/            #   Numbered SQL migrations (001_*.sql …)
 ├── docs/                  #   All project docs (see list below)
 ├── scripts/               #   Build, format, lint, dev-setup scripts
@@ -208,12 +205,15 @@ Source headers (`include/merovingian/`) and implementations (`src/`) mirror each
 ```
 
 ### Key entry points
-- `src/homeserver/main.cpp` — Application entry point
-- `include/merovingian/homeserver/server.hpp` — Top-level server orchestrator
-- `include/merovingian/homeserver/runtime.hpp` — Runtime state manager
+- `src/main.cpp` — `merovingian-server` entry point: config, database, listeners, hardening, runtime start-up
+- `src/db_migrate.cpp` — `merovingian-db-migrate` entry point: offline schema migration
+- `src/federation_worker/main.cpp` — `merovingian-fed-worker` entry point: the sandboxed federation worker process
+- `src/media/thumbnail_worker_main.cpp` — `merovingian-thumbnail-worker` entry point: the sandboxed image decoder (built only when libpng and libturbojpeg are found)
+- `include/merovingian/homeserver/runtime.hpp` — `HomeserverRuntime`, the runtime state manager
+- `include/merovingian/homeserver/client_server.hpp` — Client-Server API dispatch
 
 ### Key docs
-`architecture.md` · `adr/index.md` · `coding-rules.md` · `security-coding-rules.md` · `testing-standards.md` · `versioning.md` · `threat-model.md` · `security-review-checklist.md` · `crypto-boundary.md` · `database-persistence.md` · `user-manual.md` · `auth-identity.md` · `event-engine.md` · `http-transport.md` · `media-repository.md` · `dev-environment.md` · `platform-support.md` · `build-warning-policy.md` · `hardening.md` · `release-process.md` · `canonical-json.md` · `trust-safety.md` · `observability-audit.md` · `matrix-v1.19-client-server-api.md` · `todos/production-milestone.md` · `todos/capability-gaps.md`
+`architecture.md` · `adr/index.md` · `coding-rules.md` · `security-coding-rules.md` · `testing-standards.md` · `versioning.md` · `threat-model.md` · `security-review-checklist.md` · `crypto-boundary.md` · `database-persistence.md` · `user-manual.md` · `auth-identity.md` · `event-engine.md` · `http-transport.md` · `media-repository.md` · `dev-environment.md` · `platform-support.md` · `build-warning-policy.md` · `hardening.md` · `release-process.md` · `canonical-json.md` · `trust-safety.md` · `observability-audit.md` · `debug-logging.md` · `log-filtering.md` · `dependencies/index.md` · `matrix-v1.19-client-server-api.md` · `todos/production-milestone.md` · `todos/capability-gaps.md`
 
 ## Subdirectory AGENTS.md Files
 
@@ -223,6 +223,7 @@ More specific guidance lives alongside the code it governs. Read the relevant fi
 |---|---|
 | `src/AGENTS.md` | Implementation conventions: SPDX header, include order, anonymous namespaces, error handling |
 | `include/merovingian/AGENTS.md` | Header design: `#pragma once`, forward declarations, namespace rules |
+| `src/appservice/AGENTS.md` | Application Service API: registration parsing, namespace matching, masquerading, outbound client |
 | `src/auth/AGENTS.md` | Auth: token lifecycle, UIAA, constant-time comparison, password hashing |
 | `src/canonicaljson/AGENTS.md` | Canonical JSON: encoding rules, signing pipeline, serializer constraints |
 | `src/config/AGENTS.md` | Config: parse-time validation, hot-reload, size limit parsing |
@@ -231,12 +232,16 @@ More specific guidance lives alongside the code it governs. Read the relevant fi
 | `src/database/AGENTS.md` | Database: prepared statements, backend abstraction, migration rules |
 | `src/events/AGENTS.md` | Event pipeline: canonical JSON, signing, auth rules, state resolution, redaction |
 | `src/federation/AGENTS.md` | Federation security rules: X-Matrix auth, PDU verification, key cache |
+| `src/federation_worker/AGENTS.md` | Federation worker process: no signing secret, relay-to-main rules, thread pools, hardening |
 | `src/homeserver/AGENTS.md` | Homeserver orchestration: client-server dispatch, local router boundary, media upload |
 | `src/http/AGENTS.md` | HTTP transport: rate limiting, header lookup, outbound client |
+| `src/identity/AGENTS.md` | Identity Service client: SSRF-safe resolution, HTTPS only, trusted-server allowlist |
+| `src/ipc/AGENTS.md` | Worker IPC: authenticated handshake, AEAD framing, reader/dispatch thread split |
 | `src/media/AGENTS.md` | Media: internal pipe format, MIME policy, quarantine, thumbnail worker |
 | `src/net/AGENTS.md` | Network: TCP acceptor, thread pool, graceful shutdown, CLOEXEC |
 | `src/observability/AGENTS.md` | Logging: level policy, audit events, secret redaction |
-| `src/platform/AGENTS.md` | Platform hardening: seccomp, ELF probe, self-check, file metadata safety |
+| `src/platform/AGENTS.md` | Platform hardening: seccomp, pledge/Capsicum, ELF probe, self-check, file metadata safety |
+| `src/push/AGENTS.md` | Push: pure rule evaluation, gateway SSRF and URL rules, delivery caps |
 | `src/rooms/AGENTS.md` | Rooms: room version policy, encryption policy, power levels |
 | `src/sync/AGENTS.md` | Sync: stream tokens, sliding sync, long-poll, sync notifier |
 | `src/trust_safety/AGENTS.md` | Trust & safety: policy engine, content moderation |
@@ -272,7 +277,7 @@ Base: docs/matrix-v1.19-spec/index.md
 - [Security Threat Model](docs/matrix-v1.19-spec/appendices.md#security-threat-model)
 - [Room Versions](docs/matrix-v1.19-spec/rooms/index.md) — v1–v12 feature matrix
 - [Room v10](docs/matrix-v1.19-spec/rooms/v10.md) · [v11](docs/matrix-v1.19-spec/rooms/v11.md) · [v12 (MSC4291)](docs/matrix-v1.19-spec/rooms/v12.md)
-- [Event Authorization Rules](docs/matrix-v1.19-spec/server-server-api.md#authorization-rules)
+- [Event Authorization Rules](docs/matrix-v1.19-spec/server-server-api.md#authorisation-rules)
 - [Signing Events (Federation)](docs/matrix-v1.19-spec/server-server-api.md#signing-events)
 - [State Resolution](docs/matrix-v1.19-spec/server-server-api.md#room-state-resolution)
 - [Joining Rooms](docs/matrix-v1.19-spec/server-server-api.md#joining-rooms)
@@ -286,17 +291,17 @@ Base: docs/matrix-v1.19-spec/index.md
 | PDU | Persistent Data Unit — a room event propagated over federation | `federation/`, [spec §pdus](docs/matrix-v1.19-spec/server-server-api.md#pdus) |
 | EDU | Ephemeral Data Unit — non-persisted federation message (typing, presence) | `federation/`, [spec §edus](docs/matrix-v1.19-spec/server-server-api.md#edus) |
 | Event ID | Unique identifier for a room event (format varies by room version) | `events/event_id.hpp` |
-| Auth chain | Sequence of auth events proving an event's validity | `auth/`, [spec §authorization-rules](docs/matrix-v1.19-spec/server-server-api.md#authorization-rules) |
+| Auth chain | Sequence of auth events proving an event's validity | `events/authorization.hpp`, [spec §authorisation-rules](docs/matrix-v1.19-spec/server-server-api.md#authorisation-rules) |
 | State resolution | Algorithm to merge divergent room state across forks | `events/state_resolution.hpp`, [spec](docs/matrix-v1.19-spec/server-server-api.md#room-state-resolution) |
 | Canonical JSON | Deterministic JSON encoding for signing/hashing | `canonicaljson/`, [spec](docs/matrix-v1.19-spec/appendices.md#canonical-json) |
 | Signing key | Ed25519 key pair used to sign events and federation requests | `crypto/ed25519.hpp` |
 | Stream token | Monotonic token for sync pagination | `sync/stream_token.hpp` |
-| Room version | Defines event format, auth rules, and state resolution algorithm | `events/room_version_policy.hpp`, [spec](docs/matrix-v1.19-spec/rooms/index.md) |
+| Room version | Defines event format, auth rules, and state resolution algorithm | `rooms/room_version_policy.hpp`, [spec](docs/matrix-v1.19-spec/rooms/index.md) |
 | Via servers | List of server names used to route joins (v12/MSC4291) | `federation/` |
 | Content hash | SHA-256 hash of event content, used for integrity checks | [spec](docs/matrix-v1.19-spec/server-server-api.md#calculating-the-content-hash-for-an-event) |
 | Reference hash | Hash of redacted event, used in event IDs | [spec](docs/matrix-v1.19-spec/server-server-api.md#calculating-the-reference-hash-for-an-event) |
 | Redaction | Strips non-essential keys from an event, preserving integrity | `events/redaction.hpp` |
-| Power levels | Per-user permission levels in a room (ban, kick, redact, etc.) | `auth/authorization.hpp` |
+| Power levels | Per-user permission levels in a room (ban, kick, redact, etc.) | `events/authorization.hpp` |
 | Membership | User's room membership state (join, leave, invite, ban, knock) | `federation/membership_endpoints.hpp` |
 | Backfill | Retrieving historical events from other servers to fill gaps | [spec](docs/matrix-v1.19-spec/server-server-api.md#backfilling-and-retrieving-missing-events) |
 | Transaction | Batch of PDUs/EDUs sent between servers | `federation/transactions.hpp` |

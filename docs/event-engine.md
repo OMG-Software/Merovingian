@@ -143,16 +143,16 @@ Not implemented yet:
 - full Matrix room-version conformance fixture suite
 - resident-side restricted-join allow-condition evaluation (requires checking
   parent-space membership when choosing whether to grant a join)
-- accepting third-party invites end-to-end: `POST /invite` with a 3PID
-  address/`id_server` (requires an identity-server HTTP client — otherwise the
-  homeserver has no real party to source `public_key`/`public_keys` from) and
-  `third_party_signed` on `/join` (requires the
-  `PUT /_matrix/federation/v1/exchange_third_party_invite/{roomId}` endpoint,
-  or local authority to sign an intermediate invite event on behalf of the
-  original inviter — a different sender than the joining user). The auth-rule
-  engine above already validates either shape correctly once such an invite
-  event exists in room state; only the endpoints that create/exchange it are
-  outstanding
+- the `PUT /_matrix/federation/v1/exchange_third_party_invite/{roomId}`
+  endpoint (signing an intermediate invite on behalf of a remote inviter).
+  `POST /invite` with a 3PID address (a real identity-server round trip,
+  `homeserver::invite_user_by_threepid`, 0.12.6) and `third_party_signed`
+  validation on `/join` (`verify_third_party_signed`) are implemented and
+  covered by `tests/conformance/test_3pid_invite_conformance.cpp`
+- room versions 1 and 2 event handling: both are registered in
+  `room_version_policy.cpp`, but `EventFormat::room_v1_v2` is never consumed and
+  `EventIdFormat` has only `reference_hash`, so the `$localpart:server` event-ID
+  format those versions use is not implemented (see `docs/todos/capability-gaps.md`)
 
 ## Runtime wiring
 

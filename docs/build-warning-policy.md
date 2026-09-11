@@ -39,10 +39,11 @@ staged curl external-project library directories through `LD_LIBRARY_PATH`.
 This keeps Fedora and BSD test execution aligned with the wrap-built runtime
 library that can still be loaded from the current Meson tree.
 
-The aggregate Catch2 unit-test binary has an explicit 120 second Meson timeout.
-That test executable now covers enough runtime behavior that fallback,
-coverage, and sanitizer jobs can exceed Meson's 30 second default even when all
-assertions pass.
+The aggregate Catch2 unit, conformance, and integration test binaries each have
+an explicit 600 second Meson timeout, and the load-test binary an explicit 900
+second timeout (`tests/meson.build`). Those test executables now cover enough
+runtime behavior that fallback, coverage, and sanitizer jobs can exceed
+Meson's 30 second default even when all assertions pass.
 
 Post-build validation scripts that execute `merovingian-server` directly must
 also expose staged curl runtime libraries from the selected build directory.

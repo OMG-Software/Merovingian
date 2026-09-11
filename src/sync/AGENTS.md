@@ -18,6 +18,8 @@ Spec authority:
 | `sliding_sync_room_list.cpp` | Builds the ordered room list for a sliding sync response |
 | `sliding_sync_room_builder.cpp` | Constructs per-room response data (timeline, state, heroes) |
 | `sliding_sync_extensions.cpp` | MSC4186 extensions (to_device, e2ee, account_data, typing, receipts) |
+| `sliding_sync.hpp` (header-only) | Core sliding-sync connection-state, request and response types shared by the files above |
+| `device_list_delta.cpp` | Device-list `changed` / `left` deltas for `/sync` and the e2ee extension |
 
 ## Stream token format
 
@@ -58,7 +60,9 @@ both changed and left to whichever came last. Do not walk
 ## Long-poll behaviour
 
 `sync_notifier` holds requests until an event arrives or `timeout` expires.
-- The timeout is capped at the configured maximum and polled in 5-second slices
+- On the `sync_pool` path the wait is polled in 1-second slices (`http_server.cpp`), which bounds
+  shutdown and dropped-client detection to one second; the no-pool fallback and the sliding-sync
+  re-wait loop wait for the full remaining timeout in a single call
 - The sync thread pool (`sync_pool`) is separate from the main thread pool to prevent
   long-polling clients from starving federation and other short-lived requests
 

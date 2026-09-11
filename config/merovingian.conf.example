@@ -143,13 +143,12 @@ listeners.federation.tls_private_key_file=
 # wider privileges than asked for. Leaving both empty issues no SET ROLE, which
 # is the behaviour of a single-role deployment.
 #
-# migration_role is NOT yet assumed for the DDL phase. Migrations run as the
-# connection's own login role, because migrations 007 and 011 use ALTER TABLE,
-# which PostgreSQL permits only to a table's owner, and the existing tables are
-# owned by the login role. The key is accepted and validated so a deployment can
-# be provisioned ahead of the live db-migrate tool that will use it, but setting
-# it does not today narrow the privileges migrations run with. See
-# src/database/postgresql_store.cpp and docs/todos/capability-gaps.md.
+# migration_role IS assumed for the DDL/migration phase: the server issues
+# SET ROLE to migration_role before applying pending migrations (0.12.5 audit
+# finding 18), so DDL no longer runs as the connection's own login role.
+# Setting it does not otherwise narrow the privileges migrations run with
+# beyond assuming the role. See src/database/postgresql_store.cpp and
+# docs/todos/capability-gaps.md.
 # Both keys must be set together or both left empty.
 # Changing either requires a restart: roles are assumed at connect time, so a
 # SIGHUP reload would leave every open connection on its old role.

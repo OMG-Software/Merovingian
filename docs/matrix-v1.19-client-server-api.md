@@ -1,6 +1,8 @@
 # Matrix v1.19 Client-Server API Reference
 
 > Generated file. Do not edit endpoint rows by hand; regenerate with `node scripts/generate-matrix-v119-spec-doc.mjs`.
+>
+> This lists every operation in the v1.19 OpenAPI document. It is a spec reference, not an implementation-status tracker: operations the server does not route are listed in `docs/todos/capability-gaps.md`.
 
 ## Source
 

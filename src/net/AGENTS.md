@@ -7,8 +7,8 @@ No Matrix-specific logic lives here.
 
 | File | Responsibility |
 |---|---|
-| `tcp_acceptor.cpp` | Accepts inbound TCP connections; hands off to HTTP layer |
-| `listener.cpp` | Binds listening sockets (IPv4 / IPv6 / dual-stack); sets `SO_REUSEADDR`, `CLOEXEC` |
+| `tcp_acceptor.cpp` | Opens and binds listening sockets with `SOCK_CLOEXEC` and `SO_REUSEADDR`; accepts inbound TCP connections and hands them to the HTTP layer |
+| `listener.cpp` | Builds `ListenerPlan` / `RuntimeListeners` from config (client and federation bind addresses, TLS settings); makes no socket calls |
 | `thread_pool.cpp` | Fixed-size thread pool; tasks submitted via `post()` |
 | `shutdown_signal.cpp` | Catches `SIGTERM` / `SIGINT` and initiates graceful shutdown |
 

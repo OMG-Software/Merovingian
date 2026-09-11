@@ -78,7 +78,6 @@ Not implemented yet:
 
 - `llhttp` dependency wrapper
 - request body streaming implementation
-- per-endpoint rate-limit enforcement
 - runtime application of the slowloris progress policy to the request-head
   read deadline (the head deadline and inter-byte caps in `http_server.cpp`
   are the inline enforcement of that policy)

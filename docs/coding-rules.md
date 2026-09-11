@@ -16,10 +16,14 @@ Rules:
 - Local project includes use `""`.
 - Third-party includes use `<>`.
 - Standard library includes use `<>`.
-- Include ordering must be:
+- Include ordering must be (enforced by `.clang-format`, `IncludeBlocks: Regroup`,
+  with a source file's matching header placed first):
   1. local project includes
-  2. third-party includes
+  2. third-party includes under a library directory (`<curl/curl.h>`)
   3. standard library includes
+  4. any other angle-bracket header, such as `<sodium.h>`, `<libpq-fe.h>` and
+     POSIX headers — `.clang-format` only recognises third-party headers that
+     sit under a directory, so these land after the standard library
 - Never hold `HomeserverRuntime::mutex` across a blocking network call. That one
   mutex serialises every client-server request and every inbound federation
   transaction, so a call held across it converts one slow peer into a

@@ -6,11 +6,11 @@ Parses, validates, and hot-reloads the server configuration.
 
 | File | Responsibility |
 |---|---|
-| `config.cpp` | `ServerConfig` struct — typed representation of every config option |
-| `config_parser.cpp` | Parses the key-value `.conf` file into `ServerConfig`; validates ranges and required fields |
-| `runtime_config.cpp` | Holds the live `ServerConfig` and exposes it thread-safely for other modules |
+| `config.cpp` | `Config` class and its section structs (`ServerConfig`, `ListenersConfig`, `DatabaseConfig`, `SecurityConfig`, …) — typed representation of every config option; `validate_config()`, `parse_size_limit()` |
+| `config_parser.cpp` | Parses the key-value `.conf` file into `Config`; validates ranges and required fields |
+| `runtime_config.cpp` | Holds the live `Config` and exposes it thread-safely for other modules |
 | `reload_plan.cpp` | Diffs old vs new config to determine which changes can be applied live |
-| `reload_policy.cpp` | Rules for what is hot-reloadable (log level, rate limits) vs requires restart (TLS cert, port) |
+| `reload_policy.cpp` | `reload_policy_for_key()`: which keys need a restart. Keys are reloadable by default. Restart is required for `server.name`, the `database.*` URI and role keys, listener TLS certificate/key and `reverse_proxy` keys, `security.registration.token_file`, `security.secrets.master_key_file`, `security.federation.key_resolution_*`, `security.federation.join_response_max_size`, `client_rate_limits.*`, `log_modules.*`, `federation.worker.*`, `server.cors.*`, `server.http.*`, `server.identity_server.*`, `server.push.*` and `appservice.*`. The rate-limit engine and per-module log map are built once at start-up, so they are not hot-reloadable. |
 
 ## Rules
 
