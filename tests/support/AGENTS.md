@@ -12,6 +12,16 @@ Shared test utilities used across unit, conformance, and integration tests.
 | `temp_directory.hpp` | Fallback-aware temporary-directory helper for test scratch files |
 | `tls_mock_server.hpp` | Self-signed certificate generation plus one-shot and path-dispatching local TLS servers, for tests that need a real HTTPS peer (e.g. a mock identity server) |
 
+Note: `tests/federation_signing_test_support.hpp` — a deterministic Ed25519
+federation-signing helper (`merovingian::federation::test`, seed-derived
+keypairs for signing federation requests/PDUs against a matching remote key)
+— lives at the top level of `tests/`, **not** in this directory. It is shared
+across unit, conformance, and integration suites (confirmed by grep: used in
+`tests/conformance/test_federation_conformance.cpp`,
+`test_x_matrix_auth_parsing.cpp`, and others; `tests/integration/test_join_room_flow.cpp`
+and other flow tests; and several `tests/unit/` files), so look for it there
+first rather than assuming every shared helper lives under `tests/support/`.
+
 ## Rules
 
 - **`master_key.hpp` is for tests only.** The key material is deterministic (fixed seed) and

@@ -41,5 +41,3 @@ and is built from the pinned Meson wrap.
 ## Current limitations
 
 - SQLite is not the target backend for large production deployments.
-- Full federation queues, account data, policy rules, push rules, and media blob
-  metadata are not fully persisted yet.

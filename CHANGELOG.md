@@ -57,6 +57,10 @@ wrong statements, and filled the gaps agents and operators were tripping over.
   (`PUT /rooms/{roomId}/redact/...`) are not routed.
 - Three admin routes are declared but unreachable, and `http::Server` is dead
   code.
+- Thirteen further v1.19 Client-Server operations are not routed (among them
+  `admin/whois`, URL previews, password-reset `requestToken`, `login/get_token`
+  and `timestamp_to_event`). `matrix-v1.19-client-server-api.md` and its
+  generator now state that the file is a spec reference, not a status tracker.
 
 ## 0.12.10
 

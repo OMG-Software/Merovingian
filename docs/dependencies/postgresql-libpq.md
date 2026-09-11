@@ -58,8 +58,14 @@ resolved from the operating-system PostgreSQL client package.
 
 - Live integration tests against a temporary PostgreSQL server are gated by
   `MEROVINGIAN_TEST_POSTGRESQL_URI`.
-- Separate PostgreSQL users/grants for runtime and migration roles are not yet
-  enforced by database permissions.
+- Separate PostgreSQL users/grants for runtime and migration roles are enforced
+  at connection time: `open_postgresql_persistent_store()` (`src/database/postgresql_store.cpp`)
+  runs `SET ROLE` to the configured migration role before applying any DDL and
+  to the runtime role before serving traffic, refusing to open the store if
+  either role cannot be assumed. This depends on the two roles existing and
+  owning the schema objects — provision them with
+  `packaging/postgresql/provision-roles.sql` before pointing
+  `database.migration_role`/`database.runtime_role` at a deployment.
 
 ## Source references
 
