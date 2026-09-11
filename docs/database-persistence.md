@@ -461,7 +461,7 @@ remaining work before PostgreSQL-backed production operation.
   parameterised, room_id-scoped queries (never a full-table re-read). A no-op
   (returns `true`) for the `memory` backend. Used by the federation worker to
   refresh its otherwise-stale `PersistentStore` snapshot — see
-  [architecture.md, "Federation worker room staleness"](architecture.md#federation-worker-room-staleness).
+  [architecture.md, "Federation worker room staleness"](architecture.md#federation-worker-consistency-model).
 - `database::reconstruct_event_relations(store)` re-derives every
   `PersistentEvent::prev_event_ids`/`auth_event_ids`/`signatures` from the flat
   `event_edges`/`event_auth`/`event_signatures` tables. Those fields are only

@@ -20,7 +20,8 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
 4. **Run authorization rules** (`events/authorization.hpp`) before persisting any inbound PDU.
 
 5. **Reject soft-failed events** — do not forward or act on events that fail auth but are kept for
-   state resolution purposes.
+   state resolution purposes. **Not implemented yet:** there is no soft-fail check (auth against
+   the room's current state) anywhere in `src/`; see `docs/todos/capability-gaps.md`.
 
 6. **Never relay a remote server's answer about users unfiltered.** Keep only the users that
    server was asked about, and only records that describe the user they are filed under. For
@@ -40,8 +41,14 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
 | `membership_endpoints.cpp` | /make_join, /send_join, /make_leave, /send_leave |
 | `key_query.cpp` | E2EE key responses served over federation, key EDU contents, filtering remote key-query responses |
 | `key_signatures.cpp` | The one place uploaded key signatures are merged into published keys (visibility per ADR-0060) |
-| `security.cpp` | Federation-layer security checks (rate limits, origin validation) |
+| `security.cpp` | Federation-layer security checks (rate limits, origin validation, SSRF address policy) |
 | `transactions.cpp` | Transaction batching and deduplication |
+| `server_acl.cpp` | Parses and evaluates `m.room.server_acl` allow/deny lists |
+| `dispatch_worker.cpp` | Background outbound PDU/EDU delivery with per-destination retry and back-off |
+| `event_query.cpp` | Serves `GET /_matrix/federation/v1/event/{eventId}` |
+| `outbound_membership.cpp` | Outbound `make_join` / `make_leave` / `make_knock` calls |
+| `cached_server_discovery.cpp` | TTL-bounded in-memory cache in front of server discovery |
+| `runtime_federation.cpp` | Federation route registration and per-origin request caps |
 
 ## Adding a new federation endpoint
 
@@ -55,8 +62,8 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
 
 - [Request authentication (X-Matrix)](../../docs/matrix-v1.19-spec/server-server-api.md#request-authentication)
 - [PDUs](../../docs/matrix-v1.19-spec/server-server-api.md#pdus)
-- [Authorization rules](../../docs/matrix-v1.19-spec/server-server-api.md#authorization-rules)
+- [Authorisation rules](../../docs/matrix-v1.19-spec/server-server-api.md#authorisation-rules)
 - [Resolving server names](../../docs/matrix-v1.19-spec/server-server-api.md#resolving-server-names)
 - [Transactions](../../docs/matrix-v1.19-spec/server-server-api.md#transactions)
 - [Joining rooms](../../docs/matrix-v1.19-spec/server-server-api.md#joining-rooms)
-- [Key publication](../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixkeyv2server)
+- [Key publication](../../docs/matrix-v1.19-spec/server-server-api.md#publishing-keys)

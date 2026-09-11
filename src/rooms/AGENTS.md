@@ -28,12 +28,17 @@ See `docs/matrix-v1.19-spec/rooms/index.md` for the feature matrix.
 
 ## Encryption policy
 
-Rooms with `m.room.encryption` state require all messages to be encrypted.
-`encryption_policy.hpp` tracks this per room and is consulted before accepting a plaintext
-`m.room.message` event.
+`encryption_policy.cpp` decides whether a new room is created encrypted
+(`room_creation_encryption_policy`, driven by the preset, DM flag and federation settings) and
+provides log-redaction helpers so encrypted payloads never reach the logs in plaintext
+(`encrypted_event_payload_is_loggable`, `make_encrypted_event_log_summary`).
+
+The server does **not** reject plaintext events in a room that has `m.room.encryption` state;
+the Matrix spec leaves that to clients. `room_is_encrypted()` in `homeserver/client_server.cpp`
+is only used to exclude encrypted rooms from search indexing.
 
 ## Key spec sections
 
 - [Room Versions](../../docs/matrix-v1.19-spec/rooms/index.md)
 - [Room Events](../../docs/matrix-v1.19-spec/client-server-api.md#room-event-format)
-- [Power Levels](../../docs/matrix-v1.19-spec/client-server-api.md#mroompower_levels)
+- [Power Levels](../../docs/matrix-v1.19-spec/client-server-api.md#permissions)

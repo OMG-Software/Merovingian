@@ -21,17 +21,17 @@ Every test in this directory directly encodes a **MUST** or **SHOULD** from the 
 | `test_canonicaljson_parser.cpp` | [Appendices § Canonical JSON](../../docs/matrix-v1.19-spec/appendices.md#canonical-json) |
 | `test_canonicaljson_serializer.cpp` | [Appendices § Canonical JSON](../../docs/matrix-v1.19-spec/appendices.md#canonical-json) |
 | `test_client_server_conformance.cpp` | [Client-Server API](../../docs/matrix-v1.19-spec/client-server-api.md) |
-| `test_event_auth_rules.cpp` | [Auth Rules](../../docs/matrix-v1.19-spec/server-server-api.md#authorization-rules) |
-| `test_event_authorization.cpp` | [Auth Rules — Authorization](../../docs/matrix-v1.19-spec/server-server-api.md#authorization-rules) |
+| `test_event_auth_rules.cpp` | [Auth Rules](../../docs/matrix-v1.19-spec/server-server-api.md#authorisation-rules) |
+| `test_event_authorization.cpp` | [Auth Rules — Authorisation](../../docs/matrix-v1.19-spec/server-server-api.md#authorisation-rules) |
 | `test_event_relationships_conformance.cpp` | [CS API § Event Relationships](../../docs/matrix-v1.19-spec/client-server-api.md#forming-relationships-between-events) |
 | `test_events.cpp` | [SS API § Event Signing](../../docs/matrix-v1.19-spec/server-server-api.md#signing-events) · [§ Content Hash](../../docs/matrix-v1.19-spec/server-server-api.md#calculating-the-content-hash-for-an-event) |
 | `test_federation_conformance.cpp` | [Server-Server API](../../docs/matrix-v1.19-spec/server-server-api.md) |
-| `test_federation_media_conformance.cpp` | [SS API § Content Repository — GET /_matrix/federation/v1/media/download/{mediaId}](../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1mediadownloadmediaid) |
-| `test_federation_transaction_conformance.cpp` | [SS API § PUT /send/{txnId}](../../docs/matrix-v1.19-spec/server-server-api.md#put_matrixfederationv1sendtxnid) |
+| `test_federation_media_conformance.cpp` | [SS API § Content Repository — GET /_matrix/federation/v1/media/download/{mediaId}](../../docs/matrix-v1.19-spec/server-server-api.md#content-repository) |
+| `test_federation_transaction_conformance.cpp` | [SS API § PUT /send/{txnId}](../../docs/matrix-v1.19-spec/server-server-api.md#transactions) |
 | `test_identifier_grammar.cpp` | [Appendices § Identifier Grammar](../../docs/matrix-v1.19-spec/appendices.md#identifier-grammar) |
-| `test_key_publication_conformance.cpp` | [SS API § Key publication](../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixkeyv2server) |
+| `test_key_publication_conformance.cpp` | [SS API § Key publication](../../docs/matrix-v1.19-spec/server-server-api.md#publishing-keys) |
 | `test_pdu_format_conformance.cpp` | [SS API § PDUs](../../docs/matrix-v1.19-spec/server-server-api.md#pdus) |
-| `test_redaction_conformance.cpp` | [SS API § Redaction](../../docs/matrix-v1.19-spec/server-server-api.md#redactions) |
+| `test_redaction_conformance.cpp` | [SS API § Redaction](../../docs/matrix-v1.19-spec/client-server-api.md#redactions) |
 | `test_room_version_table_conformance.cpp` | [Room Versions](../../docs/matrix-v1.19-spec/rooms/index.md) |
 | `test_server_discovery.cpp` | [SS API § Resolving Server Names](../../docs/matrix-v1.19-spec/server-server-api.md#resolving-server-names) |
 | `test_signing_json_conformance.cpp` | [Appendices § Signing JSON](../../docs/matrix-v1.19-spec/appendices.md#signing-json) |

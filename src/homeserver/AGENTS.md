@@ -11,11 +11,22 @@ This is the largest and most complex module — read this file carefully before 
 | `http_server.cpp` | Binds sockets, accepts connections, dispatches to federation or client-server handlers |
 | `local_http_router.cpp` | In-process HTTP router for inter-module calls (media, auth, sync); uses pipe-delimited internal format |
 | `local_services.cpp` | Wires local service instances (auth, media, sync, rooms) into the runtime |
-| `runtime.cpp` | `Runtime` — holds all live service references; passed by reference to every handler |
-| `auth_service.cpp` | Auth service entry point (delegates to `src/auth/`) |
-| `media_service.cpp` | Media service entry point (delegates to `src/media/`) |
-| `room_service.cpp` | Room service entry point (delegates to `src/rooms/`) |
-| `tls.cpp` | TLS connection setup and cert loading |
+| `runtime.cpp` | `HomeserverRuntime` — holds all live service references and runtime state; passed by reference to every handler |
+| `runtime_mutex.cpp` | The recursive mutex guarding `HomeserverRuntime` (ADR-0002) |
+| `request_lock.cpp` | `RequestLockScope` / `RuntimeLockRelease` — releases the runtime lock around blocking calls (see below) |
+| `auth_service.cpp` | Login, session grant, token issuance and revocation, admin bootstrap (delegates primitives to `src/auth/`) |
+| `media_service.cpp` | Media service entry point (delegates to `src/media/`), including remote media fetch |
+| `room_service.cpp` | Room operations, event persistence, signing-key lifecycle, appservice and push delivery |
+| `space_hierarchy.cpp` | `GET /_matrix/client/v1/rooms/{roomId}/hierarchy` |
+| `default_push_ruleset.cpp` | The server-default push ruleset returned by `/pushrules/` |
+| `runtime_signing_key_store.cpp` | Production `SigningKeyStore` over the persisted server signing-key rows |
+| `federation_proxy.cpp` | Forwards inbound federation requests to the out-of-process federation worker over encrypted IPC; `GET /_matrix/key/v2/server` stays local |
+| `federation_request_routing.cpp` | Extracts the room ID from an inbound federation request for worker shard routing |
+| `worker_pool.cpp` | Federation worker shard selection (FNV-1a of the room ID) and the main-process side of worker IPC |
+| `worker_supervisor.cpp` | Spawns and monitors the federation worker child; restarts it with exponential back-off |
+| `worker_env.cpp` | Minimal environment allowlist for the worker child (ADR-0042) |
+| `tls.cpp` | TLS connection setup, certificate loading, non-blocking read/write retry loop (ADR-0054) |
+| `local_smoke_flow.cpp` | In-process register → login → room → message flow exercised by the vertical-slice integration test |
 
 ## Architecture boundaries
 
@@ -92,7 +103,9 @@ blocking network calls".
 `client_server.cpp` is responsible for:
 1. Matching `/_matrix/media/v3/upload` and `/_matrix/client/v1/media/upload` (with and without `?filename=...`)
 2. Extracting `Content-Type` header → `declared_mime`
-3. Building `declared_mime|declared_mime|clean|<body>` before calling `call_local()`
+3. Building `declared_mime|sniffed_mime|scanner_verdict|<body>` before calling `call_local()` —
+   `sniffed_mime` from `media::sniff_mime_type()`, `scanner_verdict` from
+   `media::content_matches_eicar_test_signature()` (see `src/media/AGENTS.md`)
 4. Mapping internal `202` (quarantined) responses to `200` toward the client with `content_uri`
 
 ## Key docs

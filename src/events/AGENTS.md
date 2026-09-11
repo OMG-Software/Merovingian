@@ -63,6 +63,6 @@ Do not trim event fields manually — the algorithm determines what survives.
 - [Content hash](../../docs/matrix-v1.19-spec/server-server-api.md#calculating-the-content-hash-for-an-event)
 - [Reference hash](../../docs/matrix-v1.19-spec/server-server-api.md#calculating-the-reference-hash-for-an-event)
 - [Event signing](../../docs/matrix-v1.19-spec/server-server-api.md#signing-events)
-- [Authorization rules](../../docs/matrix-v1.19-spec/server-server-api.md#authorization-rules)
+- [Authorisation rules](../../docs/matrix-v1.19-spec/server-server-api.md#authorisation-rules)
 - [State resolution](../../docs/matrix-v1.19-spec/server-server-api.md#room-state-resolution)
-- [Redactions](../../docs/matrix-v1.19-spec/server-server-api.md#redactions)
+- [Redactions](../../docs/matrix-v1.19-spec/client-server-api.md#redactions)

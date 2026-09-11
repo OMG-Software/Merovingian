@@ -58,7 +58,9 @@ both changed and left to whichever came last. Do not walk
 ## Long-poll behaviour
 
 `sync_notifier` holds requests until an event arrives or `timeout` expires.
-- The timeout is capped at the configured maximum and polled in 5-second slices
+- On the `sync_pool` path the wait is polled in 1-second slices (`http_server.cpp`), which bounds
+  shutdown and dropped-client detection to one second; the no-pool fallback and the sliding-sync
+  re-wait loop wait for the full remaining timeout in a single call
 - The sync thread pool (`sync_pool`) is separate from the main thread pool to prevent
   long-polling clients from starving federation and other short-lived requests
 
