@@ -11,6 +11,11 @@ Implemented now:
   URL-safe unpadded Base64
 - Matrix content-hash calculation that removes `unsigned`, `signatures`, and
   `hashes` before canonical JSON hashing
+- federated join and leave templates replace any existing `hashes` object
+  with the freshly calculated `sha256` content hash before signing, so a
+  resident server's template cannot cause duplicate JSON members in the
+  outgoing event (Matrix v1.19
+  [adding hashes and signatures](matrix-v1.19-spec/server-server-api.md#adding-hashes-and-signatures-to-outgoing-events))
 - event envelope parsing and validation for core Matrix fields
 - event signing payload construction that redacts by room version and excludes
   `unsigned` and `signatures`

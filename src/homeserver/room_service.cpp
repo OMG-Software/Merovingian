@@ -104,6 +104,26 @@ namespace
         }
     }
 
+    // Replace an existing object member with the same key, or append if absent.
+    // Used when preparing remote membership templates: a resident server's
+    // make_join / make_leave response may already contain a `hashes` field,
+    // and appending a second one would produce duplicate_object_key during
+    // canonical JSON serialization.
+    auto replace_or_add_member(canonicaljson::Object& object, std::string key, canonicaljson::Value value) -> void
+    {
+        auto const it = std::ranges::find_if(object, [&](auto const& member) {
+            return member.key == key;
+        });
+        if (it != object.end())
+        {
+            *it = canonicaljson::make_member(std::move(key), std::move(value));
+        }
+        else
+        {
+            object.push_back(canonicaljson::make_member(std::move(key), std::move(value)));
+        }
+    }
+
     // Portable counting semaphore — std::counting_semaphore is not available on
     // all supported platforms (e.g. NetBSD libc++).
     class PortableSemaphore
@@ -303,9 +323,9 @@ namespace
             log_diagnostic("signing_key.master_key_unavailable",
                            {
                                {"path",   std::string{runtime.config.security().secrets.master_key_file},        false},
-                               {"reason", "master key file is missing, unreadable, empty, too large, or could "
-                                          "not be locked into memory",
-                                false                                                                                 }
+                               {"reason",
+                                "master key file is missing, unreadable, empty, too large, or could "
+                                "not be locked into memory",                                              false}
             });
             return std::nullopt;
         }
@@ -1812,12 +1832,11 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
         auto const key = crypto::signing_secret_box_key(runtime.config.security().secrets.master_key_file);
         if (!key.has_value())
         {
-            log_diagnostic(
-                "signing_key.decryption_failed",
+            log_diagnostic("signing_key.decryption_failed",
                 {
-                    {"reason", "encrypted signing secret requires a readable, lockable "
-                               "security.secrets.master_key_file",
-                     false}
+                               {"reason",
+                                "encrypted signing secret requires a readable, lockable "
+                                "security.secrets.master_key_file", false}
             });
             return std::nullopt;
         }
@@ -1842,13 +1861,13 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
     {
         return core::SecretBuffer{};
     }
-    log_diagnostic(
-        "signing_key.legacy_plaintext",
+    log_diagnostic("signing_key.legacy_plaintext",
         {
             {"reason", "signing secret is stored plaintext; rotate to enable at-rest encryption", false}
     });
     return core::SecretBuffer{
-        std::span<std::uint8_t const>{reinterpret_cast<std::uint8_t const*>(decoded.data()), decoded.size()}};
+        std::span<std::uint8_t const>{reinterpret_cast<std::uint8_t const*>(decoded.data()), decoded.size()}
+    };
 }
 
 [[nodiscard]] auto ensure_runtime_server_signing_key(HomeserverRuntime& runtime)
@@ -1905,8 +1924,7 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
         auto const raw_secret_size = raw_secret.has_value() ? raw_secret->bytes().size() : std::size_t{0U};
         if (raw_secret_size != expected_secret_bytes)
         {
-            log_diagnostic("signing_key.rejected",
-                           {
+            log_diagnostic("signing_key.rejected", {
                                {"server_name", std::string{server_name},              false},
                                {"key_id",      record.key_id,                         false},
                                {"reason",      "secret_size_invalid",                 false},
@@ -2008,11 +2026,11 @@ auto ensure_crypto_provider_holds_key(HomeserverRuntime& runtime, std::string_vi
     auto const encrypted = std::string{"true"};
     if (!stored_secret.has_value())
     {
-        log_diagnostic(
-            "signing_key.generation_failed",
+        log_diagnostic("signing_key.generation_failed",
             {
                 {"server_name", std::string{server_name}, false},
-                {"reason",      runtime.config.security().secrets.master_key_file.empty()
+                           {"reason",
+                            runtime.config.security().secrets.master_key_file.empty()
                                     ? "security.secrets.master_key_file is not configured; refusing to store a "
                                       "server signing secret in plaintext"
                                     : "signing secret encryption failed",
@@ -3512,7 +3530,7 @@ struct FederatedJoinOutcome final
     }
     auto hashes_obj = canonicaljson::Object{};
     hashes_obj.push_back(canonicaljson::make_member("sha256", canonicaljson::Value{content_hash.sha256}));
-    event_object.push_back(canonicaljson::make_member("hashes", canonicaljson::Value{std::move(hashes_obj)}));
+        replace_or_add_member(event_object, "hashes", canonicaljson::Value{std::move(hashes_obj)});
 
     auto event_to_sign = canonicaljson::Value{event_object};
     // Sign the event with our server's signing key.
@@ -3652,8 +3670,7 @@ struct FederatedJoinOutcome final
     // signing keys with bounded parallelism rather than trusting the
     // resident server's response wholesale. Unverifiable events are
     // silently dropped, not persisted.
-    auto verified_critical_state =
-        filter_verified_send_join_events(runtime, critical_state, *policy, our_server);
+        auto verified_critical_state = filter_verified_send_join_events(runtime, critical_state, *policy, our_server);
     auto const auth_arr_member = std::ranges::find_if(*send_obj, [](canonicaljson::ObjectMember const& m) {
         return m.key == "auth_chain";
     });
@@ -4575,7 +4592,7 @@ struct FederatedJoinOutcome final
             }
             auto hashes_obj = canonicaljson::Object{};
             hashes_obj.push_back(canonicaljson::make_member("sha256", canonicaljson::Value{content_hash.sha256}));
-            event_object.push_back(canonicaljson::make_member("hashes", canonicaljson::Value{std::move(hashes_obj)}));
+            replace_or_add_member(event_object, "hashes", canonicaljson::Value{std::move(hashes_obj)});
 
             auto event_to_sign = canonicaljson::Value{event_object};
             auto const* policy = rooms::find_room_version_policy(room_version);

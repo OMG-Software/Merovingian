@@ -24,8 +24,9 @@
 // |  production construction path.                                        |
 // +-------------------------------------------------------------------------+
 
-#include "../support/master_key.hpp"
 #include "../federation_signing_test_support.hpp"
+#include "../support/json_test_support.hpp"
+#include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "../support/temp_directory.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
@@ -43,9 +44,11 @@
 #include "merovingian/rooms/room_version_policy.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -244,7 +247,7 @@ struct FileDeleter final
 // thing distinguishing the two requests on the wire.
 auto run_resident_server(merovingian::net::TcpAcceptor& acceptor,
                          merovingian::homeserver::TlsServerContext& tls_context, std::string const& make_join_response,
-                         std::string const& send_join_response) noexcept -> void
+                         std::string const& send_join_response, std::vector<std::string>& captured_requests) noexcept
 {
     for (auto request_index = 0; request_index < 2; ++request_index)
     {
@@ -262,7 +265,8 @@ auto run_resident_server(merovingian::net::TcpAcceptor& acceptor,
         auto& connection = *tls_result.connection;
         auto buffer = std::array<char, 8192>{};
         auto request_bytes = std::string{};
-        while (request_bytes.find("\r\n\r\n") == std::string::npos)
+        auto expected_bytes = std::size_t{0U};
+        while (request_bytes.find("\r\n\r\n") == std::string::npos || request_bytes.size() < expected_bytes)
         {
             auto const bytes_read = connection.read(buffer.data(), buffer.size());
             if (bytes_read <= 0)
@@ -270,14 +274,113 @@ auto run_resident_server(merovingian::net::TcpAcceptor& acceptor,
                 break;
             }
             request_bytes.append(buffer.data(), static_cast<std::size_t>(bytes_read));
+            auto const header_end = request_bytes.find("\r\n\r\n");
+            if (header_end != std::string::npos && expected_bytes == 0U)
+            {
+                auto const length_marker = request_bytes.find("Content-Length:");
+                if (length_marker != std::string::npos)
+                {
+                    auto const value_start = length_marker + std::string{"Content-Length:"}.size();
+                    auto const value_end = request_bytes.find("\r\n", value_start);
+                    auto content_length = std::size_t{0U};
+                    auto length_begin = value_start;
+                    while (length_begin < value_end &&
+                           (request_bytes[length_begin] == ' ' || request_bytes[length_begin] == '\t'))
+                    {
+                        ++length_begin;
+                    }
+                    auto const length_text = request_bytes.substr(length_begin, value_end - length_begin);
+                    auto const parsed_length =
+                        std::from_chars(length_text.data(), length_text.data() + length_text.size(), content_length);
+                    expected_bytes =
+                        parsed_length.ec == std::errc{} ? header_end + 4U + content_length : header_end + 4U;
+                }
+                else
+                {
+                    expected_bytes = header_end + 4U;
+                }
+            }
             if (static_cast<std::size_t>(bytes_read) < buffer.size())
             {
-                break;
+                if (request_bytes.find("\r\n\r\n") != std::string::npos && request_bytes.size() >= expected_bytes)
+                {
+                    break;
+                }
             }
         }
-        auto const is_send_join = request_bytes.find("send_join") != std::string::npos;
-        static_cast<void>(connection.write(is_send_join ? send_join_response : make_join_response));
+        captured_requests.push_back(request_bytes);
+        auto const is_send = request_bytes.find("/send_join/") != std::string::npos ||
+                             request_bytes.find("/send_leave/") != std::string::npos;
+        static_cast<void>(connection.write(is_send ? send_join_response : make_join_response));
     }
+}
+
+[[nodiscard]] auto request_body(std::string const& request) -> std::string
+{
+    auto const separator = request.find("\r\n\r\n");
+    return separator == std::string::npos ? std::string{} : request.substr(separator + 4U);
+}
+
+[[nodiscard]] auto event_from_send_request(std::string const& request) -> merovingian::canonicaljson::Value
+{
+    auto const parsed = merovingian::canonicaljson::parse_lossless(request_body(request));
+    REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+    return parsed.value;
+}
+
+[[nodiscard]] auto object_member_count(merovingian::canonicaljson::Value const& value,
+                                       std::string_view key) -> std::size_t
+{
+    auto const* object = std::get_if<merovingian::canonicaljson::Object>(&value.storage());
+    REQUIRE(object != nullptr);
+    return static_cast<std::size_t>(std::ranges::count_if(*object, [&](auto const& member) {
+        return member.key == key;
+    }));
+}
+
+auto require_membership_event_integrity(merovingian::homeserver::HomeserverRuntime& runtime,
+                                        merovingian::canonicaljson::Value const& event,
+                                        merovingian::rooms::RoomVersionPolicy const& policy) -> void
+{
+    REQUIRE(object_member_count(event, "hashes") == 1U);
+    auto const* object = std::get_if<merovingian::canonicaljson::Object>(&event.storage());
+    REQUIRE(object != nullptr);
+    auto const* hashes = merovingian::tests::object_member(*object, "hashes");
+    REQUIRE(hashes != nullptr);
+    REQUIRE(object_member_count(*hashes, "sha256") == 1U);
+    auto const content_hash = merovingian::events::make_content_hash(event);
+    REQUIRE(content_hash.error.empty());
+    auto const* hashes_object = std::get_if<merovingian::canonicaljson::Object>(&hashes->storage());
+    REQUIRE(hashes_object != nullptr);
+    auto const* sha256 = merovingian::tests::object_member(*hashes_object, "sha256");
+    REQUIRE(sha256 != nullptr);
+    REQUIRE(std::get<std::string>(sha256->storage()) == content_hash.sha256);
+
+    REQUIRE(object_member_count(event, "signatures") == 1U);
+    auto const key_it =
+        std::ranges::find_if(runtime.database.persistent_store.server_signing_keys, [&](auto const& key) {
+            return key.server_name == runtime.config.server().server_name;
+        });
+    REQUIRE(key_it != runtime.database.persistent_store.server_signing_keys.end());
+    auto const payload = merovingian::events::make_event_signing_payload(event, policy);
+    REQUIRE(payload.error == merovingian::canonicaljson::CanonicalJsonError::none);
+    auto const* signatures = merovingian::tests::object_member(*object, "signatures");
+    REQUIRE(signatures != nullptr);
+    auto const* signatures_object = std::get_if<merovingian::canonicaljson::Object>(&signatures->storage());
+    REQUIRE(signatures_object != nullptr);
+    auto const* server_signatures = merovingian::tests::object_member(*signatures_object, key_it->server_name);
+    REQUIRE(server_signatures != nullptr);
+    auto const* server_signature_object =
+        std::get_if<merovingian::canonicaljson::Object>(&server_signatures->storage());
+    REQUIRE(server_signature_object != nullptr);
+    auto const* signature = merovingian::tests::object_member(*server_signature_object, key_it->key_id);
+    REQUIRE(signature != nullptr);
+    auto const signature_bytes =
+        merovingian::events::matrix_bytes_from_base64(std::get<std::string>(signature->storage()));
+    auto const verified = merovingian::crypto::ed25519_verify(
+        merovingian::crypto::Ed25519PublicKey{merovingian::events::matrix_bytes_from_base64(key_it->public_key)},
+        payload.output, merovingian::crypto::Ed25519Signature{signature_bytes});
+    REQUIRE(verified.valid);
 }
 
 // --- Federation fixture construction --------------------------------------
@@ -359,11 +462,12 @@ auto constexpr resident_key_seed = "join-room-flow-resident-seed";
 } // namespace
 
 SCENARIO("join_room completes a live federated join and defers the bulk membership list to a background task",
-         "[homeserver][federation][join][integration]")
+         "[membership-template-hashes][homeserver][federation][join][integration]")
 {
     GIVEN("a real HomeserverRuntime, a logged-in local user, and a real TLS resident server")
     {
         REQUIRE(sodium_init() >= 0);
+        auto const template_has_hashes = GENERATE(false, true);
         // Declared before `started`/`runtime` so it destructs AFTER them:
         // HomeserverRuntime's destructor blocks until every orphaned
         // background future (see orphan_futures_) has finished draining, and
@@ -430,7 +534,8 @@ SCENARIO("join_room completes a live federated join and defers the bulk membersh
         auto const make_join_event = std::string{R"({"type":"m.room.member","state_key":")"} + alice +
                                      R"(","room_id":")" + room_id + R"(","sender":")" + alice +
                                      R"(","depth":6,"origin_server_ts":1000,)"
-                                     R"("prev_events":[],"auth_events":[],)"
+                                     R"("prev_events":[],"auth_events":[],)" +
+                                     (template_has_hashes ? R"("hashes":{"sha256":"stale"},)" : "") +
                                      R"("content":{"membership":"join"}})";
         auto const make_join_body = std::string{R"({"room_version":"10","event":)"} + make_join_event + "}";
 
@@ -488,8 +593,10 @@ SCENARIO("join_room completes a live federated join and defers the bulk membersh
 
         WHEN("join_room is called with the resident server as the sole via candidate")
         {
+            auto captured_requests = std::vector<std::string>{};
             auto server_thread = std::thread{[&]() {
-                run_resident_server(acceptor, *tls_context.context, make_join_response, send_join_response);
+                run_resident_server(acceptor, *tls_context.context, make_join_response, send_join_response,
+                                    captured_requests);
             }};
 
             auto const result =
@@ -499,9 +606,13 @@ SCENARIO("join_room completes a live federated join and defers the bulk membersh
 
             THEN("the join succeeds immediately with critical room state already persisted")
             {
+                CAPTURE(template_has_hashes, result.reason);
                 REQUIRE(result.ok);
                 REQUIRE(result.status == 200U);
                 REQUIRE(result.value == room_id);
+                REQUIRE(captured_requests.size() == 2U);
+                auto const join_event = event_from_send_request(captured_requests[1]);
+                require_membership_event_integrity(runtime, join_event, policy);
 
                 // The background member-fill task (see HomeserverRuntime::orphan_futures_)
                 // is still running at this point and writes to persistent_store under
@@ -562,6 +673,73 @@ SCENARIO("join_room completes a live federated join and defers the bulk membersh
                 REQUIRE_FALSE(changed_rooms.empty());
                 REQUIRE(std::ranges::all_of(changed_rooms, [&](auto const& logged_room_id) {
                     return logged_room_id == room_id;
+                }));
+            }
+        }
+    }
+}
+
+SCENARIO("leave_room signs remote membership templates with and without existing hashes",
+         "[membership-template-hashes][homeserver][federation][integration]")
+{
+    GIVEN("a logged-in local user with a persisted remote membership and a TLS resident server")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto const template_has_hashes = GENERATE(false, true);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const reg = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                      merovingian::tests::registration_token);
+        REQUIRE(reg.ok);
+        auto const login = merovingian::homeserver::login_local_user(runtime, reg.value, "CorrectHorse7!", "DEVICE1");
+        REQUIRE(login.ok);
+        auto const alice = reg.value;
+        auto const room_id = std::string{"!leavehashes:"} + resident_server;
+        {
+            auto const lock = std::lock_guard{runtime.mutex};
+            runtime.database.persistent_store.memberships.push_back({room_id, alice, "join", 1U});
+        }
+
+        auto const certificate = write_test_tls_certificate();
+        auto tls_context = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
+                                                                            certificate.private_key_file);
+        REQUIRE(tls_context.ok());
+        auto acceptor = merovingian::net::TcpAcceptor{};
+        REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+        runtime.test_forced_outbound_resolution[resident_server] =
+            merovingian::homeserver::TestOnlyForcedOutboundResolution{
+                "localhost", acceptor.bound_port(), {"127.0.0.1"}, certificate.certificate_pem};
+
+        auto const leave_event =
+            std::string{R"({"type":"m.room.member","state_key":")"} + alice + R"(","room_id":")" + room_id +
+            R"(","sender":")" + alice + R"(","depth":7,"origin_server_ts":1001,"prev_events":[],"auth_events":[],)" +
+            (template_has_hashes ? R"("hashes":{"sha256":"stale"},)" : "") + R"("content":{"membership":"leave"}})";
+        auto const make_leave_response =
+            json_http_response("200 OK", std::string{R"({"room_version":"10","event":)"} + leave_event + "}");
+        auto const send_response = json_http_response("200 OK", "{}");
+        auto captured_requests = std::vector<std::string>{};
+
+        WHEN("leave_room performs make_leave and send_leave against the resident server")
+        {
+            auto server_thread = std::thread{[&]() {
+                run_resident_server(acceptor, *tls_context.context, make_leave_response, send_response,
+                                    captured_requests);
+            }};
+            auto const result = merovingian::homeserver::leave_room(runtime, login.value, room_id);
+            server_thread.join();
+
+            THEN("the leave succeeds and the outbound event has one correct hash and a valid local signature")
+            {
+                CAPTURE(template_has_hashes, result.reason);
+                REQUIRE(result.ok);
+                REQUIRE(result.value == room_id);
+                REQUIRE(captured_requests.size() == 2U);
+                auto const leave = event_from_send_request(captured_requests[1]);
+                auto const policy = *merovingian::rooms::find_room_version_policy("10");
+                require_membership_event_integrity(runtime, leave, policy);
+                REQUIRE(std::ranges::any_of(runtime.database.persistent_store.memberships, [&](auto const& member) {
+                    return member.room_id == room_id && member.user_id == alice && member.membership == "leave";
                 }));
             }
         }
