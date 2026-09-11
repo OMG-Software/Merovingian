@@ -1798,6 +1798,16 @@ SCENARIO("POST /keys/signatures/upload response contains failures object", "[con
     }
 }
 
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3keyssignaturesupload
+//
+// The request is "a map of user ID to a map of key ID to signed JSON object".
+// The key ID is the device ID for a device key and, per the spec's request
+// example ("base64+master+public+key" for a key whose `keys` entry is
+// "ed25519:base64+master+public+key"), the unpadded base64 public key — no
+// algorithm prefix — for a cross-signing key. This scenario previously
+// uploaded the master-key signature under "ed25519:MASTER", which is not the
+// spec's form and is not what clients send; that is why it missed that
+// signatures uploaded under the real form were never merged (0.12.10).
 SCENARIO("POST /keys/signatures/upload then POST /keys/query returns the uploaded signatures",
          "[conformance][client-server][e2ee][keys]")
 {
@@ -1823,7 +1833,7 @@ SCENARIO("POST /keys/signatures/upload then POST /keys/query returns the uploade
             merovingian::homeserver::handle_client_server_request(
                 started.runtime,
                 {"POST", "/_matrix/client/v3/keys/signatures/upload", token,
-                 R"({"@alice:example.org":{"DEVICE1":{"signatures":{"@alice:example.org":{"ed25519:MASTER":"device-sig"}}},"ed25519:MASTER":{"signatures":{"@alice:example.org":{"ed25519:DEVICE1":"master-sig"}}}}})"})
+                 R"({"@alice:example.org":{"DEVICE1":{"signatures":{"@alice:example.org":{"ed25519:MASTER":"device-sig"}}},"MASTER":{"signatures":{"@alice:example.org":{"ed25519:DEVICE1":"master-sig"}}}}})"})
                 .response.status == 200U);
 
         WHEN("the device queries its own keys")
@@ -1862,6 +1872,69 @@ SCENARIO("POST /keys/signatures/upload then POST /keys/query returns the uploade
                 auto const* master_sig = string_member(*alice_master_signatures, "ed25519:DEVICE1");
                 REQUIRE(master_sig != nullptr);
                 REQUIRE(*master_sig == "master-sig");
+            }
+        }
+    }
+}
+
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3keysquery
+//
+// master_keys: "the information returned will be the same as uploaded via
+// /keys/device_signing/upload, along with the signatures uploaded via
+// /keys/signatures/upload that the requesting user is allowed to see". A
+// user-signing signature over another user's master key records that the
+// signer verified that user; it is the signer's to see, not everyone's.
+SCENARIO("POST /keys/query shows a user-signing signature over a master key only to its signer",
+         "[conformance][client-server][e2ee][keys][privacy]")
+{
+    GIVEN("bob has verified alice by signing her master key with his user-signing key")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const alice_token = logged_in_token(started.runtime);
+        auto const bob_token = register_and_login(started.runtime, "bob");
+        auto const carol_token = register_and_login(started.runtime, "carol");
+
+        REQUIRE(
+            merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/keys/device_signing/upload", alice_token,
+                 R"({"master_key":{"user_id":"@alice:example.org","usage":["master"],"keys":{"ed25519:ALICEMASTER":"ALICEMASTER"}},"auth":{"type":"m.login.password","password":"CorrectHorse7!"}})"})
+                .response.status == 200U);
+        REQUIRE(
+            merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/keys/signatures/upload", bob_token,
+                 R"({"@alice:example.org":{"ALICEMASTER":{"user_id":"@alice:example.org","usage":["master"],"keys":{"ed25519:ALICEMASTER":"ALICEMASTER"},"signatures":{"@bob:example.org":{"ed25519:BOBUSK":"bob-usk-sig"}}}}})"})
+                .response.status == 200U);
+
+        auto const bob_signature_seen_by = [&](std::string const& token) -> bool {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/keys/query", token, R"({"device_keys":{"@alice:example.org":[]}})"});
+            REQUIRE(response.response.status == 200U);
+            auto const body = parse_object(response.response.body);
+            auto const* master_keys = object_member_as_object(body, "master_keys");
+            REQUIRE(master_keys != nullptr);
+            auto const* alice_master = object_member_as_object(*master_keys, "@alice:example.org");
+            REQUIRE(alice_master != nullptr);
+            auto const* signatures = object_member_as_object(*alice_master, "signatures");
+            auto const* bob_signatures =
+                signatures == nullptr ? nullptr : object_member_as_object(*signatures, "@bob:example.org");
+            return bob_signatures != nullptr && string_member(*bob_signatures, "ed25519:BOBUSK") != nullptr;
+        };
+
+        WHEN("bob and carol each query alice's keys")
+        {
+            auto const bob_sees = bob_signature_seen_by(bob_token);
+            auto const carol_sees = bob_signature_seen_by(carol_token);
+
+            THEN("bob sees his own signature and carol does not")
+            {
+                // Spec MUST: the signature is returned to a requester allowed to see it.
+                REQUIRE(bob_sees);
+                // Spec MUST: only signatures the requester is allowed to see are returned.
+                REQUIRE_FALSE(carol_sees);
             }
         }
     }

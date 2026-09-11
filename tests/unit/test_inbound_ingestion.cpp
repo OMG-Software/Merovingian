@@ -101,6 +101,11 @@ SCENARIO("EDU classifier recognises the federation-handled types", "[federation]
                     merovingian::federation::EduType::direct_to_device);
             REQUIRE(merovingian::federation::classify_edu_type("m.device_list_update") ==
                     merovingian::federation::EduType::device_list_update);
+            // Spec: SS API v1.19 §m.signing_key_update — sent when a user
+            // updates their cross-signing keys. Dropping it as unknown leaves
+            // local clients holding a remote user's stale cross-signing identity.
+            REQUIRE(merovingian::federation::classify_edu_type("m.signing_key_update") ==
+                    merovingian::federation::EduType::signing_key_update);
         }
     }
 
@@ -160,6 +165,34 @@ SCENARIO("EDU content validators enforce per-type shape", "[federation][inbound-
         {
             REQUIRE_FALSE(merovingian::federation::edu_content_is_valid(
                 merovingian::federation::EduType::device_list_update, content));
+        }
+    }
+
+    GIVEN("an m.signing_key_update payload naming its user")
+    {
+        // Spec: SS API v1.19 §m.signing_key_update — user_id is required;
+        // master_key and self_signing_key are optional CrossSigningKey objects.
+        auto const content = std::string{
+            R"({"master_key":{"keys":{"ed25519:M":"M"},"usage":["master"],"user_id":"@alice:example.org"},"user_id":"@alice:example.org"})"};
+
+        THEN("the validator accepts it")
+        {
+            REQUIRE(merovingian::federation::edu_content_is_valid(merovingian::federation::EduType::signing_key_update,
+                                                                  content));
+        }
+    }
+
+    GIVEN("an m.signing_key_update payload with no user_id, or a non-string one")
+    {
+        auto const missing = std::string{R"({"master_key":{"keys":{"ed25519:M":"M"},"usage":["master"]}})"};
+        auto const not_string = std::string{R"({"user_id":7})"};
+
+        THEN("the validator rejects both")
+        {
+            REQUIRE_FALSE(merovingian::federation::edu_content_is_valid(
+                merovingian::federation::EduType::signing_key_update, missing));
+            REQUIRE_FALSE(merovingian::federation::edu_content_is_valid(
+                merovingian::federation::EduType::signing_key_update, not_string));
         }
     }
 }
