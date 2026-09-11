@@ -97,6 +97,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Fri Sep 11 2026 James Chapman <claude@ping.me.uk> - 0.12.10-1
+- fix(e2ee): devices of users on other servers always showed as unverified. The /keys/query federation proxy discarded remote master and self-signing keys; the requester's own user-signing signature over a remote master key was never merged back; signatures on cross-signing keys were looked up under the wrong key ID; keys served over federation and in m.device_list_update lacked the owner's cross-signing signatures; m.signing_key_update was neither sent nor handled. The proxy now also drops keys for users the remote server was not asked about. Signature visibility defined in ADR-0060; remote keys proxied not cached per ADR-0061.
+
 * Tue Sep 08 2026 James Chapman <claude@ping.me.uk> - 0.12.9-1
 - fix(security): September 2026 security audit - all 33 confirmed findings fixed. POST /refresh bypassed the locked-account gate and could mint access tokens for a locked account indefinitely (H-01); refresh resurrected deleted devices (H-02); accepted plain-HTTP sockets stayed blocking on send, so one slow reader parked a worker (H-03); per-PDU trust failures were zeroed at transaction end, letting a peer flood forged PDUs without ever tripping the circuit breaker (H-04); the event signer logged full signing payloads and signed event bodies (H-05); v2 state resolution omitted authorising_user_member for restricted joins (H-06) and ignored string-encoded power levels in room versions 1-9 (H-07). Eleven medium and fifteen low findings also fixed, covering registration-token rotation, HashDoS-resistant rate-limit buckets, CORS on transport errors, v1 invite room versions, the exported federation verifier, the literal discovery overload, Ed25519 secret validation, 3PID secret bindings, byte-exact BYTEA round-tripping, cross-process migration serialisation, and log redaction. ADR-0057, ADR-0058, ADR-0059 recorded.
 

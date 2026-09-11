@@ -954,6 +954,29 @@ threat it closes; the controls above are the standing defences these reinforce.
   dedicated `[security]`-tagged test that proves an off-allowlist
   `redirectUrl` is rejected.
 
+- **A remote server injecting E2EE identities for users it does not own.**
+  The `/keys/query` federation proxy (0.12.10) now passes a remote server's
+  `master_keys` and `self_signing_keys` to the client, and a client treats a
+  master key it is shown as that user's cross-signing identity. A malicious
+  server answering a query for its own user could also answer for
+  `@alice:good.example`, and the client would take the injected master key
+  and devices as Alice's. Mitigated in
+  `federation::accept_remote_key_query_response()`: only users the server was
+  asked about (all of them its own) are kept, and within those only keys that
+  describe the user they are filed under — a device whose `user_id` and
+  `device_id` match its position, a cross-signing key whose `user_id` matches
+  and whose `usage` names its role. The same rule had never been applied to
+  `device_keys` either: before 0.12.10 any user ID in the response was passed
+  through. Covered by `[federation][keys][query][remote][security]` unit tests
+  and the `[cross-signing]` integration flow.
+
+- **Leaking who has verified whom.** A user-signing signature over another
+  user's master key records that the signer verified them. Before 0.12.10
+  every uploaded signature was merged into the key for every requester, and a
+  user could also upload an entry under someone else's name. Now an upload is
+  visible only to its uploader unless the uploader owns the key, and only the
+  uploader's own signer entry is ever merged (ADR-0060).
+
 - **Self-inflicted denial of service through the global runtime lock.**
   `HomeserverRuntime::mutex` serialises every client-server request and every
   inbound federation transaction. Any blocking outbound call made while holding

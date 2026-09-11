@@ -5,6 +5,7 @@ federation_sources = files(
   'inbound_ingestion.cpp',
   'inbound_request.cpp',
   'key_query.cpp',
+  'key_signatures.cpp',
   'membership_endpoints.cpp',
   'outbound_membership.cpp',
   'outbound_transaction.cpp',

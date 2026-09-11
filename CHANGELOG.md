@@ -1,3 +1,87 @@
+## 0.12.10
+
+Fixes devices of users on other servers always showing as unverified, even
+when their owners had verified them. A client decides a device is verified
+when its owner's self-signing key has signed it, and a user is verified when
+the viewer's own user-signing key has signed that user's master key. Every link
+in that chain was being lost between servers, in both directions.
+
+### Your users looking at remote users
+
+- **The `/keys/query` federation proxy threw away remote cross-signing keys.**
+  It copied only `device_keys` from the remote `/user/keys/query` response and
+  discarded `master_keys` and `self_signing_keys`, so a client could never
+  check a remote device against its owner. They are now passed through.
+- **Your own verification of a remote user never stuck.** The user-signing
+  signature a client uploads over a remote user's master key is stored here,
+  never on the remote server. It is now merged back into that master key for
+  the user who made it, and for nobody else (spec: signatures "that the
+  requesting user is allowed to see").
+- **The proxy trusted whatever the remote server said.** Any user ID in the
+  response, on any server, was passed to the client. A malicious server could
+  have injected devices, and after this fix a master key, for users it does not
+  own. `federation::accept_remote_key_query_response()` now keeps only the
+  users that were asked about, and only keys that describe the user they are
+  filed under.
+- **Inbound `m.signing_key_update` was dropped** as an unknown EDU type, so a
+  remote user resetting their cross-signing never reached local clients. It
+  now puts the user in `device_lists.changed`, as `m.device_list_update` does.
+
+### Remote users looking at your users
+
+- **Keys served over federation carried no uploaded signatures.**
+  `/user/keys/query` and `/user/devices/{userId}` sent device keys without the
+  owner's self-signing signature, so remote servers saw every device here as
+  not verified by its owner.
+- **Outbound `m.device_list_update` carried unsigned keys.** Remote servers
+  such as Synapse apply the EDU's `keys` directly to their cache when
+  `prev_id` is empty, so they cached the unsigned form.
+- **`m.signing_key_update` was never sent.** Remote servers that serve
+  `/keys/query` from their cache never learned your users' cross-signing keys.
+  Uploading a master or self-signing key now sends it to every server the user
+  shares a room with. An upload of only the private user-signing key sends
+  nothing.
+
+### Both directions
+
+- **Signatures on cross-signing keys were never found.** `/keys/signatures/upload`
+  addresses a cross-signing key by its unpadded base64 public key, as in the
+  spec's request example. The lookup used `ed25519:<key>`, so signatures on
+  master keys, including every user-signing signature, were stored but never
+  returned. The conformance scenario "POST /keys/signatures/upload then POST
+  /keys/query returns the uploaded signatures" had uploaded with the prefixed
+  form, which is not the spec's and is not what clients send. Its request body
+  now uses the spec form; its assertions are unchanged.
+- **Signature visibility is now defined and applied everywhere.** All paths
+  that serve keys go through `federation/key_signatures.hpp`. An upload by the
+  key's owner is public. Any other upload is visible only to its uploader. Only
+  the uploader's own signer entry is ever merged, so no upload can publish a
+  signature under another user's name. Before, every stored signature was
+  shown to every local requester.
+  [ADR-0060](docs/adr/0060-show-an-uploaded-key-signature-only-to-its-owner-audience.md).
+- Remote users' keys are proxied live and never cached; inbound
+  `m.signing_key_update` is a change signal only.
+  [ADR-0061](docs/adr/0061-proxy-remote-cross-signing-keys-rather-than-caching-them.md).
+
+### Tests
+
+- New `tests/unit/test_federation_key_signatures.cpp`: key-ID form, owner and
+  viewer visibility, forged signer entries.
+- `tests/unit/test_federation_key_query.cpp`: signatures in `/user/keys/query`
+  and `/user/devices`; remote response filtering (injection, mismatched
+  `user_id`/`device_id`/`usage`, non-object bodies); `m.signing_key_update` and
+  `m.device_list_update` content.
+- `tests/unit/test_inbound_ingestion.cpp`: `m.signing_key_update`
+  classification and content validation.
+- New `tests/integration/test_federation_cross_signing_flow.cpp`: the proxy
+  against a real TLS peer (remote cross-signing keys returned, the requester's
+  own signature merged, injected users dropped, and a third user not seeing
+  the signature); `m.signing_key_update` sent on upload, not on a USK-only
+  upload; inbound `m.signing_key_update` reaching `/sync`, and rejected from
+  the wrong origin.
+- `tests/conformance/test_client_server_conformance.cpp`: a user-signing
+  signature over a master key is shown only to its signer.
+
 ## 0.12.9
 
 Fixes all 33 confirmed findings of the September 2026 security audit

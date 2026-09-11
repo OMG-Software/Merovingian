@@ -27,6 +27,8 @@
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/events/event_signer.hpp"
 #include "merovingian/federation/event_query.hpp"
+#include "merovingian/federation/key_query.hpp"
+#include "merovingian/federation/key_signatures.hpp"
 #include "merovingian/federation/outbound_membership.hpp"
 #include "merovingian/federation/outbound_transaction.hpp"
 #include "merovingian/federation/security.hpp"
@@ -428,40 +430,48 @@ namespace
             {
                 continue;
             }
-            // Build EDU content per spec v1.19 device-list-updates-between-servers.
-            auto content_obj = canonicaljson::Object{};
-            content_obj.push_back(canonicaljson::make_member("device_id", canonicaljson::Value{device.device_id}));
-            // Include device identity keys so the receiving server (e.g. Synapse)
-            // updates its cache immediately without a separate GET /user/devices
-            // fetch.  Without this field there is a race window between the EDU
-            // and the async refetch: if the remote client encrypts during that
-            // window it uses stale keys, producing OlmError::MissingCiphertext on
-            // the Merovingian-side recipient (Matrix spec v1.19 §m.device_list_update).
-            auto const dk_it =
-                std::ranges::find_if(store.device_keys, [&device, user_id](database::PersistentDeviceKey const& dk) {
-                    return dk.user_id == user_id && dk.device_id == device.device_id;
-                });
-            if (dk_it != store.device_keys.end())
-            {
-                auto const parsed_keys = canonicaljson::parse_lossless(dk_it->json);
-                if (parsed_keys.error == canonicaljson::ParseError::none)
-                {
-                    content_obj.push_back(canonicaljson::make_member("keys", parsed_keys.value));
-                }
-            }
-            content_obj.push_back(canonicaljson::make_member("prev_id", canonicaljson::Value{canonicaljson::Array{}}));
-            content_obj.push_back(canonicaljson::make_member("stream_id", canonicaljson::Value{stream_id}));
-            content_obj.push_back(canonicaljson::make_member("user_id", canonicaljson::Value{std::string{user_id}}));
-            auto const serialized = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(content_obj)});
-            if (serialized.error != canonicaljson::CanonicalJsonError::none)
+            // The EDU carries the device identity keys so the receiving server
+            // (e.g. Synapse) updates its cache immediately without a separate
+            // GET /user/devices fetch. Without them there is a race window
+            // between the EDU and the async refetch: if the remote client
+            // encrypts during that window it uses stale keys, producing
+            // OlmError::MissingCiphertext on the Merovingian-side recipient
+            // (Matrix spec v1.19 §m.device_list_update). The keys include the
+            // owner's cross-signing signatures, or the remote side caches the
+            // device as not verified by its owner.
+            auto const content =
+                federation::build_device_list_update_content(store, user_id, device.device_id, stream_id);
+            if (!content.has_value())
             {
                 continue;
             }
             for (auto const& destination : destinations)
             {
-                std::ignore =
-                    dispatch_edu_to_server(rt.homeserver, destination, "m.device_list_update", serialized.output);
+                std::ignore = dispatch_edu_to_server(rt.homeserver, destination, "m.device_list_update", *content);
             }
+        }
+    }
+
+    // Send an m.signing_key_update EDU announcing user_id's current master and
+    // self-signing keys to each server in destinations, so remote servers that
+    // cache the user's keys pick up the change (Matrix spec v1.19
+    // §m.signing_key_update). Called after /keys/device_signing/upload.
+    auto broadcast_signing_key_update(ClientServerRuntime& rt, std::string_view user_id,
+                                      std::vector<std::string> const& destinations) -> void
+    {
+        if (destinations.empty())
+        {
+            return;
+        }
+        auto const content =
+            federation::build_signing_key_update_content(rt.homeserver.database.persistent_store, user_id);
+        if (!content.has_value())
+        {
+            return;
+        }
+        for (auto const& destination : destinations)
+        {
+            std::ignore = dispatch_edu_to_server(rt.homeserver, destination, "m.signing_key_update", *content);
         }
     }
 
@@ -4948,70 +4958,6 @@ namespace
         }
     }
 
-    [[nodiscard]] auto first_key_id_in_key_object(canonicaljson::Object const& object) -> std::optional<std::string>
-    {
-        auto const* keys = object_member_as_object(object, "keys");
-        if (keys == nullptr || keys->empty())
-        {
-            return std::nullopt;
-        }
-        return keys->front().key;
-    }
-
-    auto merge_signature_members(canonicaljson::Object& target_signatures,
-                                 canonicaljson::Object const& source_signatures) -> void
-    {
-        for (auto const& signer_member : source_signatures)
-        {
-            auto signer_signatures = canonicaljson::Object{};
-            if (auto const* existing_signer = object_member_as_object(target_signatures, signer_member.key);
-                existing_signer != nullptr)
-            {
-                signer_signatures = *existing_signer;
-            }
-            auto const* source_signer = std::get_if<canonicaljson::Object>(&signer_member.value->storage());
-            if (source_signer == nullptr)
-            {
-                continue;
-            }
-            for (auto const& signature_member : *source_signer)
-            {
-                set_object_member(signer_signatures, signature_member.key, *signature_member.value);
-            }
-            set_object_member(target_signatures, signer_member.key, json_obj(std::move(signer_signatures)));
-        }
-    }
-
-    auto merge_uploaded_signatures(canonicaljson::Object& target_object, database::PersistentStore const& store,
-                                   std::string_view target_user_id, std::string_view target_key_id) -> void
-    {
-        auto signatures = canonicaljson::Object{};
-        if (auto const* existing_signatures = object_member_as_object(target_object, "signatures");
-            existing_signatures != nullptr)
-        {
-            signatures = *existing_signatures;
-        }
-        for (auto const& stored_signature : store.key_signatures)
-        {
-            if (stored_signature.target_user_id != target_user_id || stored_signature.target_device_id != target_key_id)
-            {
-                continue;
-            }
-            auto const parsed = parsed_json_object(stored_signature.json);
-            if (!parsed.has_value())
-            {
-                continue;
-            }
-            auto const* uploaded_signatures = object_member_as_object(*parsed, "signatures");
-            if (uploaded_signatures == nullptr)
-            {
-                continue;
-            }
-            merge_signature_members(signatures, *uploaded_signatures);
-        }
-        set_object_member(target_object, "signatures", json_obj(std::move(signatures)));
-    }
-
     [[nodiscard]] auto key_backup_version_for_user(database::PersistentStore const& store, std::string_view user_id,
                                                    std::optional<std::string_view> version = std::nullopt)
         -> database::PersistentKeyBackupVersion const*
@@ -5658,6 +5604,7 @@ namespace
         auto remote_by_server = std::map<std::string, std::vector<std::string>>{};
 
         auto users = canonicaljson::Object{};
+        auto local_users = std::vector<std::string>{};
         for (auto const& user_request : *requests)
         {
             auto const* requested_devices = std::get_if<canonicaljson::Array>(&user_request.value->storage());
@@ -5675,23 +5622,24 @@ namespace
                 continue;
             }
 
+            // Every key is published with the signatures the requesting user
+            // is allowed to see (federation/key_signatures.hpp, ADR-0060).
             auto devices = canonicaljson::Object{};
             if (requested_devices->empty())
             {
                 for (auto const& key : store.device_keys)
                 {
-                    if (key.user_id == user_request.key)
+                    if (key.user_id != user_request.key)
                     {
-                        auto value = parsed_json_object(key.json);
-                        if (!value.has_value())
-                        {
-                            continue;
-                        }
-                        auto device_object = *value;
-                        merge_uploaded_signatures(device_object, store, user_request.key, key.device_id);
-                        normalize_device_key_object_for_client(rt, device_object, user_request.key, key.device_id);
-                        devices.push_back(json_member(key.device_id, json_obj(std::move(device_object))));
+                        continue;
                     }
+                    auto device_object = federation::published_device_keys(store, key, requesting_user);
+                    if (!device_object.has_value())
+                    {
+                        continue;
+                    }
+                    normalize_device_key_object_for_client(rt, *device_object, user_request.key, key.device_id);
+                    devices.push_back(json_member(key.device_id, json_obj(std::move(*device_object))));
                 }
             }
             else
@@ -5704,78 +5652,48 @@ namespace
                         return err(400U, "M_BAD_JSON", "device_keys entries must be device IDs");
                     }
                     auto const key = database::find_device_key(store, user_request.key, *requested_device_id);
-                    if (key.has_value())
+                    if (!key.has_value())
                     {
-                        auto value = parsed_json_object(key->json);
-                        if (!value.has_value())
-                        {
-                            continue;
-                        }
-                        auto device_object = *value;
-                        merge_uploaded_signatures(device_object, store, user_request.key, *requested_device_id);
-                        normalize_device_key_object_for_client(rt, device_object, user_request.key,
-                                                               *requested_device_id);
-                        devices.push_back(json_member(*requested_device_id, json_obj(std::move(device_object))));
+                        continue;
                     }
+                    auto device_object = federation::published_device_keys(store, *key, requesting_user);
+                    if (!device_object.has_value())
+                    {
+                        continue;
+                    }
+                    normalize_device_key_object_for_client(rt, *device_object, user_request.key, *requested_device_id);
+                    devices.push_back(json_member(*requested_device_id, json_obj(std::move(*device_object))));
                 }
             }
             users.push_back(json_member(user_request.key, json_obj(std::move(devices))));
+            local_users.push_back(user_request.key);
         }
-        // Collect cross-signing keys per user for the queried users.
+        // Collect cross-signing keys for the queried local users. Remote
+        // users' keys come from their own server below; none are cached here.
         auto master_keys = canonicaljson::Object{};
         auto self_signing_keys = canonicaljson::Object{};
         auto user_signing_keys = canonicaljson::Object{};
-        for (auto const& user_request : *requests)
+        for (auto const& user_id : local_users)
         {
-            for (auto const& cskey : store.cross_signing_keys)
+            if (auto key = federation::published_cross_signing_key(store, user_id, "master", requesting_user);
+                key.has_value())
             {
-                if (cskey.user_id != user_request.key)
-                {
-                    continue;
-                }
-                if (cskey.key_type == "master")
-                {
-                    auto value = parsed_json_object(cskey.json);
-                    if (!value.has_value())
-                    {
-                        continue;
-                    }
-                    auto key_object = *value;
-                    if (auto const key_id = first_key_id_in_key_object(key_object); key_id.has_value())
-                    {
-                        merge_uploaded_signatures(key_object, store, user_request.key, *key_id);
-                    }
-                    master_keys.push_back(json_member(user_request.key, json_obj(std::move(key_object))));
-                }
-                else if (cskey.key_type == "self_signing")
-                {
-                    auto value = parsed_json_object(cskey.json);
-                    if (!value.has_value())
-                    {
-                        continue;
-                    }
-                    auto key_object = *value;
-                    if (auto const key_id = first_key_id_in_key_object(key_object); key_id.has_value())
-                    {
-                        merge_uploaded_signatures(key_object, store, user_request.key, *key_id);
-                    }
-                    self_signing_keys.push_back(json_member(user_request.key, json_obj(std::move(key_object))));
-                }
-                // Spec §11.11.3: user_signing_key MUST only be returned to the user themselves.
-                else if (cskey.key_type == "user_signing" && user_request.key == requesting_user)
-                {
-                    auto value = parsed_json_object(cskey.json);
-                    if (!value.has_value())
-                    {
-                        continue;
-                    }
-                    auto key_object = *value;
-                    if (auto const key_id = first_key_id_in_key_object(key_object); key_id.has_value())
-                    {
-                        merge_uploaded_signatures(key_object, store, user_request.key, *key_id);
-                    }
-                    user_signing_keys.push_back(json_member(user_request.key, json_obj(std::move(key_object))));
-                }
+                master_keys.push_back(json_member(user_id, json_obj(std::move(*key))));
+            }
+            if (auto key = federation::published_cross_signing_key(store, user_id, "self_signing", requesting_user);
+                key.has_value())
+            {
+                self_signing_keys.push_back(json_member(user_id, json_obj(std::move(*key))));
+            }
+            // Spec §11.11.3: user_signing_key MUST only be returned to the user themselves.
+            if (user_id != requesting_user)
+            {
+                continue;
+            }
+            if (auto key = federation::published_cross_signing_key(store, user_id, "user_signing", requesting_user);
+                key.has_value())
+            {
+                user_signing_keys.push_back(json_member(user_id, json_obj(std::move(*key))));
             }
         }
 
@@ -5803,33 +5721,53 @@ namespace
                 auto const [ok, resp_body] =
                     perform_sync_outbound_call(rt.homeserver, {}, tx, key_id, secret, "key_query.remote",
                                                rt.homeserver.federation.config.remote_timeout_seconds);
-                if (ok)
-                {
-                    auto const parsed = canonicaljson::parse_lossless(resp_body);
-                    if (parsed.error == canonicaljson::ParseError::none)
-                    {
-                        auto const* robj = std::get_if<canonicaljson::Object>(&parsed.value.storage());
-                        if (robj != nullptr)
-                        {
-                            if (auto const* rdk = object_member_as_object(*robj, "device_keys"))
-                            {
-                                for (auto const& ue : *rdk)
-                                {
-                                    if (auto const* dm = std::get_if<canonicaljson::Object>(&ue.value->storage()))
-                                    {
-                                        users.push_back(json_member(ue.key, json_obj(*dm)));
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                else
+                if (!ok)
                 {
                     failures.push_back(json_member(server, json_obj({
                                                                json_member("errcode", json_str("M_UNKNOWN")),
                                                                json_member("error", json_str(resp_body)),
                                                            })));
+                    continue;
+                }
+                // Keep only what the server may speak for: its own requested
+                // users, with keys that describe the user they are filed under.
+                auto accepted = federation::accept_remote_key_query_response(server, resp_body, uid_list);
+                if (!accepted.has_value())
+                {
+                    failures.push_back(json_member(
+                        server, json_obj({
+                                    json_member("errcode", json_str("M_UNKNOWN")),
+                                    json_member("error", json_str("remote key query response is not a JSON object")),
+                                })));
+                    continue;
+                }
+                for (auto& user_devices : accepted->device_keys)
+                {
+                    users.push_back(std::move(user_devices));
+                }
+                // The master key is what a client checks its own user-signing
+                // signature against to show the user as verified. That
+                // signature was uploaded here, not to the remote server, so
+                // merge it back in for the user who made it.
+                for (auto const& master : accepted->master_keys)
+                {
+                    auto const* key_object = std::get_if<canonicaljson::Object>(&master.value->storage());
+                    if (key_object == nullptr)
+                    {
+                        continue;
+                    }
+                    auto merged = *key_object;
+                    if (auto const cross_signing_id = federation::cross_signing_key_id(merged);
+                        cross_signing_id.has_value())
+                    {
+                        federation::merge_visible_key_signatures(merged, store, master.key, *cross_signing_id,
+                                                                 requesting_user);
+                    }
+                    master_keys.push_back(json_member(master.key, json_obj(std::move(merged))));
+                }
+                for (auto& self_signing : accepted->self_signing_keys)
+                {
+                    self_signing_keys.push_back(std::move(self_signing));
                 }
             }
         }
@@ -8098,7 +8036,16 @@ namespace
                         std::ignore = record_device_list_change(rt, {0U, member, std::string{user}, "changed"});
                     }
                 }
-                broadcast_device_list_updates(rt, user, remote_servers_for_user(rt.homeserver, user));
+                auto const destinations = remote_servers_for_user(rt.homeserver, user);
+                broadcast_device_list_updates(rt, user, destinations);
+                // Spec v1.19 §m.signing_key_update: remote servers learn of a
+                // new master or self-signing key through this EDU. An upload of
+                // only the private user-signing key changes nothing they can see.
+                if (object_member(*cs_body, "master_key") != nullptr ||
+                    object_member(*cs_body, "self_signing_key") != nullptr)
+                {
+                    broadcast_signing_key_update(rt, user, destinations);
+                }
             }
             return resp(200U, key_api_success_body(route.endpoint));
         }
