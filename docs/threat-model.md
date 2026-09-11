@@ -10,6 +10,7 @@
 - Malicious reverse proxies
 - Supply-chain attackers
 - Compromised administrators
+- Malicious or compromised local process (e.g. a compromised federation worker)
 
 ## High-risk surfaces
 
@@ -25,6 +26,12 @@
 - Media handling
 - Image decoding (thumbnail generation; isolated in a sandboxed worker)
 - Outbound requests (SSRF via federation discovery and remote media fetch)
+- Application Service API (outbound transaction delivery, deliberately not
+  SSRF-filtered; namespace matching; masquerading)
+- Identity Service client (outbound `store-invite`/`bind`/`unbind`/`requestToken`)
+- Push gateway delivery (outbound, client-supplied URL, no operator allowlist)
+- Federation worker IPC channel (local process boundary)
+- MSC4186 sliding-sync connection state (client-chosen `conn_id`)
 - Config parsing
 - Database migrations
 

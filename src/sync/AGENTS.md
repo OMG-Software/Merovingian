@@ -18,6 +18,8 @@ Spec authority:
 | `sliding_sync_room_list.cpp` | Builds the ordered room list for a sliding sync response |
 | `sliding_sync_room_builder.cpp` | Constructs per-room response data (timeline, state, heroes) |
 | `sliding_sync_extensions.cpp` | MSC4186 extensions (to_device, e2ee, account_data, typing, receipts) |
+| `sliding_sync.hpp` (header-only) | Core sliding-sync connection-state, request and response types shared by the files above |
+| `device_list_delta.cpp` | Device-list `changed` / `left` deltas for `/sync` and the e2ee extension |
 
 ## Stream token format
 

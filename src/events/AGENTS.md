@@ -23,6 +23,11 @@ Spec authority: ../../docs/matrix-v1.19-spec/server-server-api.md
 
 Always use `event_id.hpp` — never construct an event ID manually.
 
+`event_id.hpp` implements only the reference-hash format (`make_reference_hash_event_id()`,
+`EventIdFormat::reference_hash`). Room versions 1 and 2 are registered in
+`rooms/room_version_policy.cpp`, but their `$localpart:server` format is not implemented and
+`EventFormat::room_v1_v2` is never consumed — see `docs/todos/capability-gaps.md`.
+
 ## Canonical JSON is required for signing and hashing
 
 All signing and hashing operates on canonical JSON output from `canonicaljson/serializer.hpp`.

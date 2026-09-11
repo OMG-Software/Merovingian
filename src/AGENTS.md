@@ -7,7 +7,10 @@ Module directory names match: `src/auth/` ↔ `include/merovingian/auth/`.
 
 - First line: `// SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later`
-- Include order: matching header first, then standard library (`<algorithm>`, `<string>`, …), then third-party
+- Include order is set by `.clang-format` (`IncludeBlocks: Regroup`), not by hand: matching header
+  first, then project headers (`"merovingian/…"`), then third-party headers under a library
+  directory (`<curl/curl.h>`), then the C++ standard library (`<string>`), then any other
+  angle-bracket header such as `<sodium.h>`, `<libpq-fe.h>` or POSIX `<poll.h>`
 - File-local helpers belong in an anonymous `namespace { }` block — never pollute the module namespace
 
 ## Key code patterns
@@ -40,3 +43,5 @@ Use quotes for project headers, angle brackets for standard library and third-pa
 ```
 
 Never use bare relative includes (`#include "name.hpp"` without the `merovingian/` path prefix).
+The one existing exception is `src/federation_worker/`, whose `worker_event_loop.hpp` lives beside
+its `.cpp` and is included relatively; do not add others.

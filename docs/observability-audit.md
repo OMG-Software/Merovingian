@@ -35,7 +35,9 @@ an `info` threshold.
 - Health, metric, and hardening snapshot helpers.
 - Prometheus text exposition for `GET /_merovingian/admin/metrics`.
 - Durable audit rows for runtime startup, authentication, session, device, key
-  API, room, media, federation, and trust-and-safety actions.
+  API, room, media, and trust-and-safety actions. Federation audit events are
+  *not* part of this durable set — see "Federation audit events are not
+  durable" below.
 - Durable admin action rows for moderation and trust-and-safety review actions.
 - Account-moderation audit rows: `account.locked` and `account.suspended`
   (admin category) are appended when an admin locks/unlocks or
@@ -102,14 +104,42 @@ an `info` threshold.
   room's `m.room.server_acl` (MSC4436). Diagnostic companions `pdu.acl_rejected`
   and `edu.acl_rejected` carry `origin`, `room_id`, `event_id`/`edu_type`, and
   `reason` so operators can trace why a server was blocked without exposing
-  key material.
+  key material. Like every `audit_federation` event, this row lives only in
+  the in-memory federation audit ring — see below.
+
+## Federation audit events are not durable
+
+`audit_federation()` (`src/federation/inbound_request.cpp`) appends every
+`federation.*` audit event — `federation.accepted`, `federation.rejected`,
+`federation.rate_limited`, `federation.duplicate`,
+`federation.membership_rejected`, `federation.pdu_rejected_auth`,
+`federation.acl_rejected`, and the rest of that family — to
+`FederationRuntimeState::audit_events`, a bounded in-memory deque. It never
+calls `database::append_audit_event`. This is a different code path from
+`append_local_audit()` (`src/homeserver/local_services.cpp`), which is what
+auth, room, media, and trust-and-safety call sites use, and which does write
+through to the persistent `audit_log` table.
+
+The practical consequences:
+
+- Federation audit events are lost on process restart.
+- `GET /_merovingian/admin/audit` reads only `runtime.database.persistent_store.audit_log`
+  (see `admin_audit_summary` in `src/homeserver/runtime.cpp`), so it never
+  returns `federation.*` events regardless of `?category=` or `?event_type=`.
+- The "audit category" column for `federation.*` rows still follows the same
+  `observability::AuditCategory` enum (always `policy` — `audit_federation`
+  hard-codes `AuditCategory::policy`), but that category applies to an
+  in-memory row, not a database one.
 
 ## Failure routing (0.5.0)
 
 Failure call sites use diagnostic/audit helpers that append an audit row
 at severity `warning` or above independently of the diagnostic threshold.
 The companion `request.rejected` audit row for HTTP 429 is appended directly
-to avoid a duplicate warning. The event catalogue is:
+to avoid a duplicate warning. This is not the full catalogue of audit events —
+it is only the failures that are audit-routed *instead of* also emitting a
+duplicate diagnostic warning for the same event. See "Other durably persisted
+event families" below for the rest of what `append_local_audit` records.
 
 | Call site | Logger | Audit category | Audit event type |
 |-----------|--------|----------------|------------------|
@@ -120,7 +150,39 @@ to avoid a duplicate warning. The event catalogue is:
 | Locked-user request rejected | `client_server` | `auth` | `request.user_locked` |
 | Suspended-user request rejected | `client_server` | `auth` | `request.user_suspended` |
 | Registration policy denied | `auth` | `policy` | `registration_policy.denied` |
-| Federation ACL rejected | `federation` | `federation` | `federation.acl_rejected` |
+| Federation ACL rejected | `federation` | `policy` | `federation.acl_rejected` |
+
+### Other durably persisted event families
+
+Everything above goes through `log_diagnostic_audit`, which only routes
+`warning`-or-above diagnostics to the audit log. Most durable audit rows are
+appended directly via `append_local_audit` (`src/homeserver/local_services.cpp`)
+from success and failure paths alike, independent of diagnostic severity.
+Grepping for `append_local_audit` call sites finds these event-name families:
+
+- `auth.*` (`src/auth/AGENTS.md`-covered flows, via `src/homeserver/auth_service.cpp`):
+  `auth.user_registered`, `auth.login`, `auth.refresh`, `auth.refresh.issue`,
+  `auth.refresh.rejected`, `auth.logout`, `auth.logout_all`,
+  `auth.account_deactivated`, `auth.password_changed`,
+  `auth.openid.request_token`, `auth.sso.login_token.issued`,
+  `auth.sso.login_token.redeemed`.
+- `device.*` (`src/homeserver/auth_service.cpp`, `src/homeserver/client_server.cpp`):
+  `device.deleted`, `device.updated`.
+- `account.locked` / `account.suspended` (`src/homeserver/client_server.cpp`,
+  admin category) — see "Account-moderation audit rows" above.
+- `room.*` (`src/homeserver/room_service.cpp`, admin category): `room.created`,
+  `room.joined`, `room.joined_remote`, `room.left`, `room.left_remote`,
+  `room.invited`, `room.third_party_invited`, `room.banned`, `room.kicked`,
+  `room.unbanned`, `room.forgotten`, `room.knocked`, `room.event_sent`.
+- `media.*` (`src/homeserver/media_service.cpp`, moderation category):
+  `media.upload_rejected`, `media.upload_quarantined`, `media.upload_accepted`,
+  `media.quarantined`, `media.released`, `media.removed`,
+  `media.remote_fetch_accepted`, `media.remote_fetch_rejected`.
+- `trust_safety.policy_rule.*` (`src/homeserver/client_server.cpp`, policy
+  category): `trust_safety.policy_rule.upsert`, `trust_safety.policy_rule.delete`,
+  plus the dynamic event types trust-and-safety policy matches emit via
+  `append_policy_audit`.
+- `runtime.started` (`src/homeserver/runtime.cpp`, admin category).
 
 The `access_token.rejected` row carries a `reason` that distinguishes the
 failure mode: `token hashing failed`, `session not found`, `user not found`,

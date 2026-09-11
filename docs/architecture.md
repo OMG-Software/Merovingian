@@ -86,7 +86,9 @@ Entry points: `src/main.cpp` (`merovingian-server`), `src/db_migrate.cpp`
 
 Modules form a layered dependency graph. Edge transport and routing sit at the
 top; protocol/domain services in the middle; shared foundations at the bottom.
-Dependencies point downward - foundations never depend on services.
+Dependencies point downward - foundations never depend on services, with one
+exception: `config` links `auth` (`src/config/meson.build`) because
+`config.cpp` validates the server name via `auth::server_name_is_valid`.
 
 ```mermaid
 flowchart TB
@@ -128,11 +130,12 @@ flowchart TB
     push --> http & federation
     sync --> trust_safety
     services --> database
-    events --> crypto & canonicaljson
-    federation --> crypto & canonicaljson
+    events --> crypto & canonicaljson & rooms
+    federation --> crypto & canonicaljson & events & rooms
     auth --> crypto
     services --> observability
     homeserver --> config
+    config --> auth
 ```
 
 All foundation modules depend on `core` (RAII utilities, `not_null`,

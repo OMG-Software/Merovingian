@@ -5,6 +5,8 @@ implementing custom cryptographic primitives.
 
 ## Included now
 
+- Generic hashing (`generic_hash.cpp`) and hex/base64 encoding (`encoding.cpp`)
+  wrapping libsodium's `crypto_generichash`/`sodium_bin2hex`/`sodium_bin2base64`.
 - Constant-time comparison boundary (fixed and variable-length inputs).
 - Variable-length comparison uses domain-separated hashing so it does not leak
   input length through a premature length check.
@@ -251,7 +253,12 @@ These remain deferred:
 ## Next starting points
 
 1. Add dependency review documentation for the selected crypto provider.
-2. Add a concrete production provider behind the Ed25519 and RNG interfaces.
+2. Add a concrete production provider behind the `RandomSource` interface
+   (`include/merovingian/crypto/random.hpp`) — the Ed25519 half is already done
+   (`RuntimeEd25519Provider`, `RuntimeMultiKeyEd25519Provider`, wired in
+   `src/homeserver/runtime.cpp`); production code paths call
+   `secure_random_bytes`/`secure_random_hex` directly rather than going through
+   a `RandomSource` implementation.
 3. Add audit events for signing-key lifecycle changes.
 4. Investigate hardware-backed key storage (HSM or key vault) for operator-managed
    deployments that cannot rely on a filesystem master key.

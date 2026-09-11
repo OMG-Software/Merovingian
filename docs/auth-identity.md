@@ -144,8 +144,19 @@ production-gated.
   appservice's `exclusive` namespace blocks registration/alias creation by
   anyone else (`M_EXCLUSIVE`) — enforced in the registration and
   `PUT /directory/room/{roomAlias}` / `POST /createRoom` handlers. Outbound
-  delivery to appservices (transactions, query hooks, `/thirdparty/*`) is
-  not yet implemented — see `docs/todos/capability-gaps.md`.
+  delivery to appservices is wired: `appservice::AppserviceClient`
+  (`src/appservice/appservice_client.cpp`) implements `send_transaction`
+  (`PUT /_matrix/app/v1/transactions/{txnId}`), `query_user`, `query_room_alias`,
+  and the `/thirdparty/*` queries. `dispatch_appservice_delivery` /
+  `attempt_appservice_batch` (`src/homeserver/room_service.cpp`) push one event
+  per transaction to every namespace-interested appservice, synchronously on
+  the triggering request, tracked by a per-appservice persisted cursor that
+  retries an unacknowledged batch — same `txn_id`, same event — before
+  advancing to a newer one. `query_user`/`query_room_alias` are invoked from
+  `src/homeserver/client_server.cpp` when a lookup misses local state. A
+  background, concurrent, retrying dispatcher (mirroring the push-notification
+  dispatcher) is a reasonable future optimisation, not yet implemented — see
+  `docs/todos/capability-gaps.md`.
 - Unit coverage for identity validation, account lock/suspension behavior, password policy, token activity, and log redaction.
 - Registration token verification using Argon2id (`crypto_pwhash_str` / `crypto_pwhash_str_verify`);
   only the password hash is retained, and the plaintext token is zeroised after hashing. The
@@ -538,6 +549,13 @@ The boundary establishes these guarantees:
   `POST /keys/signatures/upload` and the `/room_keys/` backup subtree — not the
   whole `/keys` prefix, which also covers key upload and one-time-key claiming
   (participation, not verification).
+- `PUT /rooms/{roomId}/redact/{eventId}/{txnId}` is already reserved on the
+  suspension allowlist (the spec permits a suspended user to redact their own
+  events), but the endpoint itself is not routed today and answers
+  `404 M_UNRECOGNIZED`. The gate cannot see an unredacted event's sender, so
+  whoever implements the route must enforce the own-events-only restriction
+  itself — see the comment on `action_allowed_while_suspended` in
+  `src/homeserver/client_server.cpp`.
 - Token *rotation* is gated as well as token issue. `POST /refresh`
   authenticates with a refresh token, so it never reaches the request-path
   moderation gate — `refresh_local_session` therefore carries the locked-account
@@ -579,8 +597,10 @@ The boundary establishes these guarantees:
 These remain deferred:
 
 - Full Matrix UI-auth fallback flows and account recovery endpoints.
-- Admin bootstrap flow.
-- Rate-limit integration.
+- An HTTP admin bootstrap endpoint (the CLI flags `--bootstrap-admin-localpart` /
+  `--bootstrap-admin-password-file` in `src/main.cpp`, backed by
+  `homeserver::bootstrap_admin_user` in `src/homeserver/auth_service.cpp`,
+  cover the bootstrap need at process start-up).
 
 ## Next starting points
 

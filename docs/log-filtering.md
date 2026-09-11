@@ -46,8 +46,14 @@ log_modules.rate_limit=debug
 
 ## Audit-routed failure lines
 
-The following failure events are persisted to `audit_log`, including when
-their diagnostic messages are filtered out:
+The following failure events are persisted to `audit_log` independently of
+diagnostic filtering — they are audit-routed instead of also emitting a
+duplicate diagnostic warning for the same event, not the full catalogue of
+durable audit events. See [Observability and audit](observability-audit.md)
+("Failure routing" and "Other durably persisted event families") for the
+complete picture, including the many success/failure event families
+(`auth.*`, `room.*`, `media.*`, etc.) that are always persisted regardless of
+severity.
 
 | Logger | Audit event type | Audit category |
 |--------|------------------|----------------|
@@ -58,6 +64,14 @@ their diagnostic messages are filtered out:
 | `client_server` | `request.user_locked` | `auth` |
 | `client_server` | `request.user_suspended` | `auth` |
 | `auth` | `registration_policy.denied` | `policy` |
+| `federation` | `federation.acl_rejected` | `policy` (in-memory only — see below) |
+
+Federation audit events (`federation.*`, including `federation.acl_rejected`)
+are the one exception: `audit_federation()` appends them only to an in-memory
+ring (`FederationRuntimeState::audit_events`), never to `audit_log`, so they do
+not survive a restart and are not returned by
+`GET /_merovingian/admin/audit`. See
+[Observability and audit](observability-audit.md#federation-audit-events-are-not-durable).
 
 For a client HTTP 429, `rate_limit.exceeded` emits the warning with the
 effective IP and cap details. The additional `request.rejected` audit record
@@ -85,7 +99,8 @@ A malformed `category=` value returns 400 with
 
 The `log_modules.<name>` keys accept any string — the bootstrap
 forwards the name to `SingleLog::set_module_log_level(name, level)`
-without a registry. The runtime uses the following conventions:
+without a registry. This is a non-exhaustive list of common module names
+used as the first argument to `observability::log_diagnostic` in `src/`:
 
 | Module | What it logs |
 |--------|--------------|
@@ -95,8 +110,12 @@ without a registry. The runtime uses the following conventions:
 | `rate_limit` | 429s and engine denials |
 | `runtime` | Runtime startup, listener ready, database ready |
 | `local_router` | Local HTTP router (audit, health, federation) |
-| `dispatch` | Federation PDU/EDU dispatch |
-| `migrate` | Database migration progress |
+| `federation` | Inbound federation policy/signature/transaction decisions |
+| `dispatch_worker` | Federation PDU/EDU dispatch |
+| `migration` | Database migration progress |
+| `rooms` | Room creation, membership writes, event composition and persistence |
+| `event_auth` | Matrix event-auth rule rejection step and reason |
+| `persistent_store` | Membership, room-membership, and event/state persistence outcomes |
 
 Unrecognised module names are accepted and the level is recorded —
 there is no error. Restart the server to apply.

@@ -223,6 +223,7 @@ More specific guidance lives alongside the code it governs. Read the relevant fi
 |---|---|
 | `src/AGENTS.md` | Implementation conventions: SPDX header, include order, anonymous namespaces, error handling |
 | `include/merovingian/AGENTS.md` | Header design: `#pragma once`, forward declarations, namespace rules |
+| `src/appservice/AGENTS.md` | Application Service API: registration parsing, namespace matching, masquerading, outbound client |
 | `src/auth/AGENTS.md` | Auth: token lifecycle, UIAA, constant-time comparison, password hashing |
 | `src/canonicaljson/AGENTS.md` | Canonical JSON: encoding rules, signing pipeline, serializer constraints |
 | `src/config/AGENTS.md` | Config: parse-time validation, hot-reload, size limit parsing |
@@ -231,12 +232,16 @@ More specific guidance lives alongside the code it governs. Read the relevant fi
 | `src/database/AGENTS.md` | Database: prepared statements, backend abstraction, migration rules |
 | `src/events/AGENTS.md` | Event pipeline: canonical JSON, signing, auth rules, state resolution, redaction |
 | `src/federation/AGENTS.md` | Federation security rules: X-Matrix auth, PDU verification, key cache |
+| `src/federation_worker/AGENTS.md` | Federation worker process: no signing secret, relay-to-main rules, thread pools, hardening |
 | `src/homeserver/AGENTS.md` | Homeserver orchestration: client-server dispatch, local router boundary, media upload |
 | `src/http/AGENTS.md` | HTTP transport: rate limiting, header lookup, outbound client |
+| `src/identity/AGENTS.md` | Identity Service client: SSRF-safe resolution, HTTPS only, trusted-server allowlist |
+| `src/ipc/AGENTS.md` | Worker IPC: authenticated handshake, AEAD framing, reader/dispatch thread split |
 | `src/media/AGENTS.md` | Media: internal pipe format, MIME policy, quarantine, thumbnail worker |
 | `src/net/AGENTS.md` | Network: TCP acceptor, thread pool, graceful shutdown, CLOEXEC |
 | `src/observability/AGENTS.md` | Logging: level policy, audit events, secret redaction |
-| `src/platform/AGENTS.md` | Platform hardening: seccomp, ELF probe, self-check, file metadata safety |
+| `src/platform/AGENTS.md` | Platform hardening: seccomp, pledge/Capsicum, ELF probe, self-check, file metadata safety |
+| `src/push/AGENTS.md` | Push: pure rule evaluation, gateway SSRF and URL rules, delivery caps |
 | `src/rooms/AGENTS.md` | Rooms: room version policy, encryption policy, power levels |
 | `src/sync/AGENTS.md` | Sync: stream tokens, sliding sync, long-poll, sync notifier |
 | `src/trust_safety/AGENTS.md` | Trust & safety: policy engine, content moderation |

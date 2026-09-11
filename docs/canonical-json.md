@@ -21,18 +21,22 @@ Implemented now:
   signing parser
 - rejection of floating-point/exponent numbers in the strict signing parser
 - a second general-purpose parser (`parse_json()`, alongside the strict
-  `parse_lossless()`) that preserves doubles and exponent notation for
-  non-signing payloads such as account data and `m.tag` room tags
+  `parse_lossless()`) that preserves doubles and exponent notation; this is
+  the project's general-purpose non-signing JSON parser, used throughout the
+  codebase (appservice registration/client payloads, federation IPC frames,
+  the worker pool, federation request routing, push gateway payloads, sliding
+  sync, trust & safety) and not limited to account data and `m.tag`
+- DoS bounds enforced during parsing: maximum nesting depth of 64
+  (`max_depth`, `src/canonicaljson/parser.cpp`) and a maximum of 65536 members
+  per object (`max_object_members`, `include/merovingian/canonicaljson/parser.hpp`),
+  with `O(n)` duplicate-key detection (`std::unordered_set`, not a quadratic
+  scan) on both parse (`parser.cpp`) and serialize (`serializer.cpp`)
 - stable parser and serializer error names
 - signable object view scaffolding
-- Matrix-style fixture tests
+- Matrix spec conformance fixture suites in `tests/conformance/`: room-version
+  table, event graph, PDU format, redaction, and state resolution
 - parser and serializer unit tests
 - parser/serializer fuzz target
-
-Not implemented yet:
-
-- room/event fixture suite beyond canonical JSON shape fixtures
-- full Matrix room-version fixture suite
 
 ## Rules
 
@@ -56,6 +60,10 @@ C adapter owns the direct `yyjson.h` include so C++ static analysis and warning
 policy stay focused on project code. The parser copies parsed data into
 `merovingian::canonicaljson::Value` and applies Matrix-specific policy there.
 No `yyjson_*` type is exposed outside the canonical JSON implementation.
+Unicode escape decoding, including surrogate-pair handling, is not
+reimplemented in project code — it is delegated entirely to vendored `yyjson`;
+`convert_yyjson_value()` (`src/canonicaljson/parser.cpp`) copies already-decoded
+string bytes out of the `yyjson` document.
 
 ## Numeric policy
 
@@ -63,9 +71,16 @@ The strict signing parser (`parse_lossless()`) only accepts integers within
 the JS-safe-integer range `[-(2^53)+1, (2^53)-1]`. Floating-point values,
 exponent notation, and integers outside that range are rejected even though
 `yyjson` can parse broader JSON number forms. This keeps Matrix signing
-inputs lossless and deterministic. The separate general-purpose parser
-(`parse_json()`) accepts doubles and exponent notation for payloads that are
-never signed.
+inputs lossless and deterministic. `is_canonical_int64_token()`
+(`src/canonicaljson/parser.cpp`, around line 102) explicitly rejects negative
+zero (`-0`, per the spec's "Numbers that are negative zero MUST NOT appear in
+canonical JSON") and any leading-zero integer token (e.g. `01`) other than the
+literal `0` itself; an explicit leading `+` sign is never seen by this
+function at all, because the underlying `yyjson` read is strict RFC 8259
+(`YYJSON_READ_NOFLAG`/`YYJSON_READ_NUMBER_AS_RAW`, no permissive extensions),
+which already excludes a leading `+` from being tokenized as a number. The
+separate general-purpose parser (`parse_json()`) accepts doubles and exponent
+notation for payloads that are never signed.
 
 The serializer mirrors this split: `serialize_canonical_strict()` rejects a
 `Value` tree containing any double with `CanonicalJsonError::float_not_allowed`

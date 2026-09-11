@@ -412,6 +412,55 @@ quickly finding everything a given `AGENTS.md` file contributed.
   injecting E2EE identities").
   Source: `src/federation/AGENTS.md`.
 
+## Application Service API
+
+- **`as_token`/`hs_token` live in `core::SecretBuffer` and are never logged;
+  compare them with `crypto::constant_time_equal`, never `==`.** The
+  `hs_token` must stay reversible (it is transmitted to the appservice) so it
+  cannot be stored as a hash the way access tokens are.
+  Why: these are long-lived bearer credentials shared with an external
+  process; the same secret-handling and timing-side-channel concerns that
+  apply to access tokens apply here.
+  Source: `src/appservice/AGENTS.md`.
+
+- **Namespace regexes are matched with `std::regex_match`, never
+  `std::regex_search`.** A namespace pattern is a claim over a whole
+  identifier, not a substring.
+  Why: under an unanchored search, the spec's own example namespace
+  `@_irc_.*` also matches `@evil@_irc_bob:example.org` — letting one
+  appservice's *exclusive* namespace claim, and so block registration of, an
+  unrelated local user whose ID merely contains the pattern as a substring.
+  Source: `src/appservice/AGENTS.md`.
+
+- **Registration `id` and `as_token` must be unique per appservice, and
+  namespace-exclusivity conflicts must fail the whole registration set
+  closed.** `validate_registrations()` enforces both at boot.
+  Why: two registrations sharing an `id`/`as_token`, or two appservices both
+  exclusively claiming an overlapping namespace, is an ambiguity that has no
+  safe resolution by load order — refusing to start is safer than guessing
+  which registration should win.
+  Source: `src/appservice/AGENTS.md`.
+
+## Identity Service client
+
+- **Every Identity Service host must resolve to SSRF-safe pinned addresses via
+  `federation::CachedServerDiscovery`'s `deny_ip_ranges` — never an ad-hoc DNS
+  lookup, and never a client-supplied address.** Fail closed when resolution
+  yields no usable address.
+  Why: an Identity Service base URL is operator configuration, but the
+  resolution path must still not trust whatever DNS or a client hands back —
+  the same private/loopback SSRF class applies here as to any other outbound
+  call the homeserver makes on a user's behalf.
+  Source: `src/identity/AGENTS.md`.
+
+- **Identity Service base URLs must be `https://`; never send the homeserver's
+  signing key or an `Authorization: X-Matrix` header to an Identity Service.**
+  Authenticated calls use the client's bearer `id_access_token` instead.
+  Why: an Identity Service is a client-facing trust boundary, not a federation
+  peer — handing it federation signing material or credentials would expose
+  them to a party the Matrix trust model never intended to hold them.
+  Source: `src/identity/AGENTS.md`.
+
 ## HTTP and network boundary
 
 - **Rate limiting is applied before any auth check.** Do not move it after auth.
@@ -434,6 +483,20 @@ quickly finding everything a given `AGENTS.md` file contributed.
   SSRF-relevant private/loopback-address blocking; an ad-hoc HTTP call from elsewhere in the
   codebase bypasses that vetted path entirely.
   Source: `src/http/AGENTS.md`.
+
+- **One documented exception: Application Service transaction delivery is not
+  SSRF-filtered.** `appservice::AppserviceClient` (`src/appservice/
+  appservice_client.cpp`) resolves an appservice's `url` directly and sets
+  `OutboundRequest::allow_cleartext_http = true`, bypassing
+  `CachedServerDiscovery`'s private/loopback rejection and permitting plain
+  `http://`. Do not generalize this pattern to any other outbound client.
+  Why: an appservice `url` comes from an operator-placed registration file
+  (`appservice.registration_files`), not network-reachable input, and most
+  real-world bridges run as plain HTTP on `127.0.0.1` — the SSRF-safe path
+  would make them unreachable. See `docs/threat-model.md`, "Outbound
+  Application Service API transaction delivery" for the full justification
+  and the condition under which this exemption must be revisited.
+  Source: `src/appservice/AGENTS.md`; `docs/threat-model.md`.
 
 - **Accepted client sockets must be `SOCK_CLOEXEC`** (both the plain-HTTP and TLS accept
   loops use `accept4(..., SOCK_CLOEXEC)`).
@@ -545,7 +608,7 @@ quickly finding everything a given `AGENTS.md` file contributed.
   moment (a password change after a compromise) the user is trying to invalidate it.
   Making the unsafe sequence unrepresentable, rather than merely unused, is what closes
   the class rather than the one instance.
-  Source: [ADR-0052](adr/0052-revocation-of-credentials-is-one-way.md).
+  Source: [ADR-0052](adr/0052-revocation-of-credentials-is-one-way.md); `src/auth/AGENTS.md`.
 
 ## Media
 
@@ -778,10 +841,12 @@ For finding everything a specific file contributed, without re-reading the whole
 | `src/core/AGENTS.md` | Memory safety; Secrets and logging |
 | `src/crypto/AGENTS.md` | Secrets and logging; Cryptography |
 | `src/canonicaljson/AGENTS.md` | Cryptography |
-| `src/auth/AGENTS.md` | Secrets and logging; Cryptography; Authentication and authorization |
+| `src/auth/AGENTS.md` | Secrets and logging; Cryptography; Authentication and authorization; Database |
 | `src/events/AGENTS.md` | Cryptography; Authentication and authorization |
 | `src/rooms/AGENTS.md` | Authentication and authorization |
 | `src/federation/AGENTS.md` | Federation |
+| `src/appservice/AGENTS.md` | Application Service API |
+| `src/identity/AGENTS.md` | Identity Service client |
 | `src/http/AGENTS.md` | HTTP and network boundary |
 | `src/net/AGENTS.md` | Memory safety; HTTP and network boundary |
 | `src/homeserver/AGENTS.md` | HTTP and network boundary |

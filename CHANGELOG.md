@@ -1,3 +1,63 @@
+## 0.12.12
+
+Documentation only — no code changes beyond the version bump. A full audit
+of every project document against the code found and corrected stale or
+wrong statements, and filled the gaps agents and operators were tripping over.
+
+### Agent guides (`AGENTS.md`)
+
+- **Root `AGENTS.md`**: the project layout omitted five modules (`appservice`,
+  `federation_worker`, `identity`, `ipc`, `push`) and two test directories;
+  the key entry points named files that do not exist (`src/homeserver/main.cpp`,
+  `homeserver/server.hpp`) and omitted three of the four executables; the
+  glossary pointed at wrong headers for power levels, auth rules and room
+  versions. The project overview is reworded.
+- **New module guides** for `src/federation_worker/`, `src/ipc/` and
+  `src/push/`, plus the missing `CLAUDE.md` shims for those and for
+  `src/appservice/` and `src/identity/`, whose guides were never loaded.
+- **Corrected module guides**: `auth` (UIAA state is in memory, not an
+  `auth_sessions` table; token hashing is BLAKE2b, keyed for v3/v4), `config`
+  (the reload-restart list was backwards for rate limits and log modules),
+  `crypto` (libsodium boundary matches `reject-unsafe.sh`; nine undocumented
+  files), `http` (three files mapped to the wrong responsibility), `net`,
+  `media` (upload default is 50 MiB), `homeserver` (twelve undocumented files;
+  the upload pipe format described a fixed bug), `federation`, `platform`
+  (an ELF-probe failure blocks start-up, it does not warn), `rooms` (the server
+  does not reject plaintext in encrypted rooms), `sync`, `trust_safety`,
+  `observability`, `events`, and the test, script and fixture guides.
+- `docs/AGENTS.md` now lists which documents to update for config, logging,
+  dependency, endpoint and new-module changes.
+
+### Operator and design documents
+
+- `user-manual.md`: eight wrong config defaults, an incomplete reload-policy
+  table, missing exit codes 80 and 81, and a new Admin API section.
+- `observability-audit.md`: federation audit events are held in memory only
+  and never reach `audit_log` or `GET /_merovingian/admin/audit`; this is now
+  stated, and the audit catalogue is complete.
+- `security-review-checklist.md`, `security-coding-rules.md` and
+  `threat-model.md` now cover the federation-worker IPC channel, Application
+  Service API, Identity Service client, push gateway delivery and cross-signing
+  over federation; the checklist no longer claims remote media fetch is
+  disabled.
+- Stale "not implemented" claims removed across `auth-identity.md`,
+  `canonical-json.md`, `crypto-boundary.md`, `http-transport.md`,
+  `event-engine.md`, `database-persistence.md`, the dependency notes and the
+  capability trackers; wrong facts corrected in `architecture.md`,
+  `build-warning-policy.md`, `release-process.md`, `log-filtering.md`,
+  `trust-safety.md`, `coding-rules.md` and `README.md`.
+- Seventeen broken links into the local Matrix spec copy fixed.
+
+### Gaps now recorded in `docs/todos/capability-gaps.md`
+
+- No soft-fail check on inbound PDUs.
+- Room versions 1 and 2 are registered, but their event-ID format is not
+  implemented.
+- User reporting (`POST /users/{userId}/report`) and redaction
+  (`PUT /rooms/{roomId}/redact/...`) are not routed.
+- Three admin routes are declared but unreachable, and `http::Server` is dead
+  code.
+
 ## 0.12.10
 
 Fixes devices of users on other servers always showing as unverified, even
