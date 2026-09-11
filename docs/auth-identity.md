@@ -178,6 +178,34 @@ production-gated.
   `/keys/query` and fetch the user's *existing* devices' keys before any
   `m.key.verification.request` can arrive — closing the cross-device verification gap where
   the new device otherwise dropped the request for lack of the sender's device keys.
+- Cross-signing across federation (0.12.10). A client shows a device as verified when it is
+  signed by its owner's self-signing key, and a user as verified when the viewer's own
+  user-signing key has signed that user's master key. Every link in that chain now crosses
+  servers:
+  - **Signatures are merged in one place.** `federation/key_signatures.hpp` merges the
+    signatures uploaded through `POST /keys/signatures/upload` into a published key. Every
+    path that serves keys uses it: client `/keys/query`, federation `/user/keys/query` and
+    `/user/devices/{userId}`, and the `keys` of outbound `m.device_list_update`.
+  - **Visibility (ADR-0060).** An upload by the key's owner is visible to everyone. Any other
+    upload — a user-signing signature over someone else's master key — is visible only to the
+    user who made it, and to no remote server. From each upload only the uploader's own signer
+    entry is merged, so nobody can publish a signature under another user's name.
+  - **Key IDs follow the spec's upload form.** A device key is addressed by its device ID; a
+    cross-signing key by its unpadded base64 public key, with no `ed25519:` prefix
+    (`cross_signing_key_id()`). Signatures on master keys used to be looked up with the prefix
+    and were never found.
+  - **Remote users' keys are proxied, not cached (ADR-0061).** `/keys/query` for a remote user
+    calls the user's server's `/user/keys/query` and returns its `device_keys`, `master_keys`
+    and `self_signing_keys`. `accept_remote_key_query_response()` keeps only the users that
+    were asked about, and only keys that describe the user they are filed under; everything
+    else is dropped and logged as `remote_key_query.entries_dropped`. The requester's own
+    user-signing signature over the remote master key is then merged back in, since it was
+    uploaded here and never reached the remote server.
+  - **`m.signing_key_update`, both ways.** Uploading a master or self-signing key sends the EDU,
+    carrying those two keys with the owner's signatures, to every server the user shares a room
+    with. An upload of only the private user-signing key sends nothing. An inbound EDU whose
+    `user_id` belongs to the sending server puts that user in local users'
+    `device_lists.changed`, the same as `m.device_list_update`, so clients re-query them.
 - Key-backup retrieval and deletion: `handle_key_api_route()` implements
   `get_key_backup_version`, `get_key_backup_version_by_id`, `get_room_key_backup`
   (session/room/batch), `get_room_key_backup_batch`, `delete_room_key_backup`,

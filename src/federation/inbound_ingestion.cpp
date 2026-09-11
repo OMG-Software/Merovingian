@@ -226,6 +226,10 @@ auto classify_edu_type(std::string_view edu_type) noexcept -> EduType
     {
         return EduType::device_list_update;
     }
+    if (edu_type == "m.signing_key_update")
+    {
+        return EduType::signing_key_update;
+    }
     return EduType::unknown;
 }
 
@@ -267,6 +271,21 @@ auto edu_content_is_valid(EduType type, std::string_view content_json) -> bool
         // device_list_update content: { user_id, device_id, stream_id }.
         return find_member(*root, "user_id") != nullptr && find_member(*root, "device_id") != nullptr &&
                find_member(*root, "stream_id") != nullptr;
+    case EduType::signing_key_update: {
+        // Spec: SS API v1.19 §m.signing_key_update — content: { user_id
+        // (required), master_key, self_signing_key }. The sink checks that
+        // user_id belongs to the sending origin, so it must be a string.
+        auto const* user_id = find_member(*root, "user_id");
+        if (user_id == nullptr || !std::holds_alternative<std::string>(user_id->storage()))
+        {
+            return false;
+        }
+        auto const key_is_object_or_absent = [root](std::string_view key) {
+            auto const* key_value = find_member(*root, key);
+            return key_value == nullptr || std::holds_alternative<canonicaljson::Object>(key_value->storage());
+        };
+        return key_is_object_or_absent("master_key") && key_is_object_or_absent("self_signing_key");
+    }
     case EduType::unknown:
         return false;
     }

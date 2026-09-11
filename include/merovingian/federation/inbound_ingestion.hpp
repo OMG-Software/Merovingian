@@ -112,6 +112,7 @@ enum class EduType : std::uint8_t
     presence,
     direct_to_device,
     device_list_update,
+    signing_key_update,
 };
 
 struct InboundEduEnvelope final

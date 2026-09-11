@@ -21,7 +21,11 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstdint>
 #include <string>
+#include <string_view>
+#include <variant>
+#include <vector>
 
 namespace
 {
@@ -431,6 +435,407 @@ SCENARIO("Federation user-devices response device entry carries the curve25519 i
                 auto const* curve_str = std::get_if<std::string>(&curve_val->storage());
                 REQUIRE(curve_str != nullptr);
                 REQUIRE(*curve_str == "AAAAAA");
+            }
+        }
+    }
+}
+
+namespace
+{
+
+namespace cj = merovingian::canonicaljson;
+namespace fed = merovingian::federation;
+
+[[nodiscard]] auto parse_root(std::string const& body) -> cj::Object
+{
+    auto parsed = cj::parse_lossless(body);
+    REQUIRE(parsed.error == cj::ParseError::none);
+    auto const* root = std::get_if<cj::Object>(&parsed.value.storage());
+    REQUIRE(root != nullptr);
+    return *root;
+}
+
+[[nodiscard]] auto object_at(cj::Object const& object, std::string const& key) -> cj::Object const*
+{
+    auto const* value = json_get(object, key);
+    return value == nullptr ? nullptr : std::get_if<cj::Object>(&value->storage());
+}
+
+[[nodiscard]] auto array_at(cj::Object const& object, std::string const& key) -> cj::Array const*
+{
+    auto const* value = json_get(object, key);
+    return value == nullptr ? nullptr : std::get_if<cj::Array>(&value->storage());
+}
+
+[[nodiscard]] auto string_at(cj::Object const& object, std::string const& key) -> std::string const*
+{
+    auto const* value = json_get(object, key);
+    return value == nullptr ? nullptr : std::get_if<std::string>(&value->storage());
+}
+
+[[nodiscard]] auto int_at(cj::Object const& object, std::string const& key) -> std::int64_t const*
+{
+    auto const* value = json_get(object, key);
+    return value == nullptr ? nullptr : std::get_if<std::int64_t>(&value->storage());
+}
+
+// signatures[signer][key_id] of a key object, or nullptr when any level is missing.
+[[nodiscard]] auto signature_of(cj::Object const& key_object, std::string const& signer, std::string const& key_id)
+    -> std::string const*
+{
+    auto const* signatures = object_at(key_object, "signatures");
+    auto const* by_signer = signatures == nullptr ? nullptr : object_at(*signatures, signer);
+    auto const* value = by_signer == nullptr ? nullptr : json_get(*by_signer, key_id);
+    return value == nullptr ? nullptr : std::get_if<std::string>(&value->storage());
+}
+
+// Alice (local) has cross-signed her device and her device has signed her
+// master key, both uploaded through /keys/signatures/upload under the spec
+// key IDs (device ID; bare base64 master public key). Carol (local) has also
+// uploaded a user-signing signature over alice's master key.
+[[nodiscard]] auto store_with_cross_signed_alice() -> merovingian::database::PersistentStore
+{
+    auto store = merovingian::database::PersistentStore{};
+    store.device_keys.push_back(
+        {"@alice:example.org", "ADEVICE",
+         R"({"algorithms":["m.olm.v1.curve25519-aes-sha2"],"device_id":"ADEVICE","keys":{"curve25519:ADEVICE":"curve","ed25519:ADEVICE":"edkey"},"signatures":{"@alice:example.org":{"ed25519:ADEVICE":"self-sig"}},"user_id":"@alice:example.org"})"});
+    store.cross_signing_keys.push_back(
+        {"@alice:example.org", "master",
+         R"({"keys":{"ed25519:ALICEMASTER":"ALICEMASTER"},"usage":["master"],"user_id":"@alice:example.org"})"});
+    store.cross_signing_keys.push_back(
+        {"@alice:example.org", "self_signing",
+         R"({"keys":{"ed25519:ALICESSK":"ALICESSK"},"signatures":{"@alice:example.org":{"ed25519:ALICEMASTER":"msk-sig"}},"usage":["self_signing"],"user_id":"@alice:example.org"})"});
+    store.cross_signing_keys.push_back(
+        {"@alice:example.org", "user_signing",
+         R"({"keys":{"ed25519:ALICEUSK":"ALICEUSK"},"usage":["user_signing"],"user_id":"@alice:example.org"})"});
+    store.key_signatures.push_back(
+        {"@alice:example.org", "@alice:example.org", "ADEVICE",
+         R"({"device_id":"ADEVICE","signatures":{"@alice:example.org":{"ed25519:ALICESSK":"ssk-sig"}},"user_id":"@alice:example.org"})"});
+    store.key_signatures.push_back(
+        {"@alice:example.org", "@alice:example.org", "ALICEMASTER",
+         R"({"keys":{"ed25519:ALICEMASTER":"ALICEMASTER"},"signatures":{"@alice:example.org":{"ed25519:ADEVICE":"device-sig"}},"usage":["master"],"user_id":"@alice:example.org"})"});
+    store.key_signatures.push_back(
+        {"@carol:example.org", "@alice:example.org", "ALICEMASTER",
+         R"({"keys":{"ed25519:ALICEMASTER":"ALICEMASTER"},"signatures":{"@carol:example.org":{"ed25519:CAROLUSK":"carol-sig"}},"usage":["master"],"user_id":"@alice:example.org"})"});
+    return store;
+}
+
+} // namespace
+
+// --- Signatures in keys served over federation -------------------------------
+// Spec: ../../docs/matrix-v1.19-spec/server-server-api.md#post_matrixfederationv1userkeysquery
+//
+// master_keys: "the information returned will be the same as uploaded via
+// /keys/device_signing/upload, along with the signatures uploaded via
+// /keys/signatures/upload that the user is allowed to see". A remote user can
+// only tell that a device is trusted by its owner if the owner's self-signing
+// signature over that device reaches them.
+SCENARIO("Federation device-key query publishes the owner's cross-signing signatures",
+         "[federation][keys][query][signatures][regression]")
+{
+    GIVEN("a local user who has cross-signed their device")
+    {
+        auto const store = store_with_cross_signed_alice();
+
+        WHEN("a remote server queries the user's keys")
+        {
+            auto const root = parse_root(
+                fed::build_device_keys_query_response(store, R"({"device_keys":{"@alice:example.org":[]}})"));
+
+            THEN("the device carries the owner's self-signing signature as well as its own")
+            {
+                auto const* device_keys = object_at(root, "device_keys");
+                REQUIRE(device_keys != nullptr);
+                auto const* alice_devices = object_at(*device_keys, "@alice:example.org");
+                REQUIRE(alice_devices != nullptr);
+                auto const* device = object_at(*alice_devices, "ADEVICE");
+                REQUIRE(device != nullptr);
+                auto const* ssk_sig = signature_of(*device, "@alice:example.org", "ed25519:ALICESSK");
+                REQUIRE(ssk_sig != nullptr);
+                REQUIRE(*ssk_sig == "ssk-sig");
+                REQUIRE(signature_of(*device, "@alice:example.org", "ed25519:ADEVICE") != nullptr);
+            }
+
+            AND_THEN("the master key carries the owner's device signature but not another user's")
+            {
+                auto const* master_keys = object_at(root, "master_keys");
+                REQUIRE(master_keys != nullptr);
+                auto const* master = object_at(*master_keys, "@alice:example.org");
+                REQUIRE(master != nullptr);
+                auto const* device_sig = signature_of(*master, "@alice:example.org", "ed25519:ADEVICE");
+                REQUIRE(device_sig != nullptr);
+                REQUIRE(*device_sig == "device-sig");
+                // A signature carol uploaded is only for carol to see.
+                REQUIRE(signature_of(*master, "@carol:example.org", "ed25519:CAROLUSK") == nullptr);
+            }
+
+            AND_THEN("the self-signing key is published and the user-signing key is not")
+            {
+                auto const* self_signing_keys = object_at(root, "self_signing_keys");
+                REQUIRE(self_signing_keys != nullptr);
+                REQUIRE(object_at(*self_signing_keys, "@alice:example.org") != nullptr);
+                // Spec: the user-signing key is only ever returned to its owner.
+                REQUIRE(json_get(root, "user_signing_keys") == nullptr);
+            }
+        }
+    }
+}
+
+// Spec: ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1userdevicescircumflex
+//
+// A remote server that resyncs a user's device list through /user/devices
+// caches these keys, so they must carry the same signatures /user/keys/query does.
+SCENARIO("Federation user-devices response publishes the owner's cross-signing signatures",
+         "[federation][keys][devices][signatures][regression]")
+{
+    GIVEN("a local user who has cross-signed their device")
+    {
+        auto const store = store_with_cross_signed_alice();
+
+        WHEN("a remote server fetches the user's device list")
+        {
+            auto const root = parse_root(fed::build_user_devices_response(store, "@alice:example.org"));
+
+            THEN("the device keys carry the owner's self-signing signature")
+            {
+                auto const* devices = array_at(root, "devices");
+                REQUIRE(devices != nullptr);
+                REQUIRE(devices->size() == 1U);
+                auto const* device = std::get_if<cj::Object>(&devices->front().storage());
+                REQUIRE(device != nullptr);
+                auto const* keys = object_at(*device, "keys");
+                REQUIRE(keys != nullptr);
+                REQUIRE(signature_of(*keys, "@alice:example.org", "ed25519:ALICESSK") != nullptr);
+            }
+
+            AND_THEN("the master key carries the owner's device signature")
+            {
+                auto const* master = object_at(root, "master_key");
+                REQUIRE(master != nullptr);
+                REQUIRE(signature_of(*master, "@alice:example.org", "ed25519:ADEVICE") != nullptr);
+                REQUIRE(signature_of(*master, "@carol:example.org", "ed25519:CAROLUSK") == nullptr);
+            }
+        }
+    }
+}
+
+// --- Remote /user/keys/query responses ----------------------------------------
+// Spec: ../../docs/matrix-v1.19-spec/server-server-api.md#post_matrixfederationv1userkeysquery
+//
+// The response carries device_keys, master_keys and self_signing_keys. A
+// client needs the remote user's master and self-signing keys to tell whether
+// a remote device is signed by its owner. The remote server can only speak
+// for its own users, and only for the users it was asked about ("Requested
+// users must be local to the receiving homeserver").
+SCENARIO("A remote key-query response yields the remote user's device and cross-signing keys",
+         "[federation][keys][query][remote][regression]")
+{
+    GIVEN("a well-formed response from bob's server")
+    {
+        auto const response = std::string{
+            R"({"device_keys":{"@bob:remote.example.org":{"BDEV":{"algorithms":["m.megolm.v1.aes-sha2"],"device_id":"BDEV","keys":{"ed25519:BDEV":"bdev"},"signatures":{"@bob:remote.example.org":{"ed25519:BOBSSK":"ssk-sig"}},"user_id":"@bob:remote.example.org"}}},)"
+            R"("master_keys":{"@bob:remote.example.org":{"keys":{"ed25519:BOBMASTER":"BOBMASTER"},"usage":["master"],"user_id":"@bob:remote.example.org"}},)"
+            R"("self_signing_keys":{"@bob:remote.example.org":{"keys":{"ed25519:BOBSSK":"BOBSSK"},"signatures":{"@bob:remote.example.org":{"ed25519:BOBMASTER":"msk-sig"}},"usage":["self_signing"],"user_id":"@bob:remote.example.org"}}})"};
+        auto const requested = std::vector<std::string>{"@bob:remote.example.org"};
+
+        WHEN("it is accepted")
+        {
+            auto const accepted = fed::accept_remote_key_query_response("remote.example.org", response, requested);
+
+            THEN("the device, master and self-signing keys are all kept")
+            {
+                REQUIRE(accepted.has_value());
+                auto const* devices = object_at(accepted->device_keys, "@bob:remote.example.org");
+                REQUIRE(devices != nullptr);
+                REQUIRE(object_at(*devices, "BDEV") != nullptr);
+                REQUIRE(object_at(accepted->master_keys, "@bob:remote.example.org") != nullptr);
+                auto const* self_signing = object_at(accepted->self_signing_keys, "@bob:remote.example.org");
+                REQUIRE(self_signing != nullptr);
+                REQUIRE(signature_of(*self_signing, "@bob:remote.example.org", "ed25519:BOBMASTER") != nullptr);
+            }
+        }
+    }
+}
+
+SCENARIO("A remote key-query response cannot inject keys for users it was not asked about",
+         "[federation][keys][query][remote][security]")
+{
+    GIVEN("a response from evil.example.org that also answers for a user on another server")
+    {
+        auto const response = std::string{
+            R"({"device_keys":{"@alice:good.example.org":{"EVIL":{"device_id":"EVIL","keys":{"ed25519:EVIL":"x"},"user_id":"@alice:good.example.org"}},)"
+            R"("@eve:evil.example.org":{"EDEV":{"device_id":"EDEV","keys":{"ed25519:EDEV":"x"},"user_id":"@eve:evil.example.org"}}},)"
+            R"("master_keys":{"@alice:good.example.org":{"keys":{"ed25519:FAKE":"FAKE"},"usage":["master"],"user_id":"@alice:good.example.org"},)"
+            R"("@eve:evil.example.org":{"keys":{"ed25519:EVE":"EVE"},"usage":["master"],"user_id":"@eve:evil.example.org"}},)"
+            R"("self_signing_keys":{"@alice:good.example.org":{"keys":{"ed25519:FAKESSK":"FAKESSK"},"usage":["self_signing"],"user_id":"@alice:good.example.org"}}})"};
+        auto const requested = std::vector<std::string>{"@eve:evil.example.org"};
+
+        WHEN("it is accepted")
+        {
+            auto const accepted = fed::accept_remote_key_query_response("evil.example.org", response, requested);
+
+            THEN("only the requested user's keys survive")
+            {
+                REQUIRE(accepted.has_value());
+                REQUIRE(object_at(accepted->device_keys, "@alice:good.example.org") == nullptr);
+                REQUIRE(object_at(accepted->master_keys, "@alice:good.example.org") == nullptr);
+                REQUIRE(object_at(accepted->self_signing_keys, "@alice:good.example.org") == nullptr);
+                REQUIRE(object_at(accepted->device_keys, "@eve:evil.example.org") != nullptr);
+                REQUIRE(object_at(accepted->master_keys, "@eve:evil.example.org") != nullptr);
+            }
+        }
+    }
+}
+
+SCENARIO("A remote key-query response drops keys that do not describe the user they are filed under",
+         "[federation][keys][query][remote][security]")
+{
+    GIVEN("a response whose entries for bob name another user, another device, or the wrong usage")
+    {
+        auto const response = std::string{
+            R"({"device_keys":{"@bob:remote.example.org":{)"
+            R"("GOOD":{"device_id":"GOOD","keys":{"ed25519:GOOD":"x"},"user_id":"@bob:remote.example.org"},)"
+            R"("WRONGID":{"device_id":"OTHER","keys":{"ed25519:OTHER":"x"},"user_id":"@bob:remote.example.org"},)"
+            R"("WRONGUSER":{"device_id":"WRONGUSER","keys":{"ed25519:WRONGUSER":"x"},"user_id":"@carl:remote.example.org"}}},)"
+            R"("master_keys":{"@bob:remote.example.org":{"keys":{"ed25519:M":"M"},"usage":["master"],"user_id":"@carl:remote.example.org"}},)"
+            R"("self_signing_keys":{"@bob:remote.example.org":{"keys":{"ed25519:S":"S"},"usage":["user_signing"],"user_id":"@bob:remote.example.org"}}})"};
+        auto const requested = std::vector<std::string>{"@bob:remote.example.org"};
+
+        WHEN("it is accepted")
+        {
+            auto const accepted = fed::accept_remote_key_query_response("remote.example.org", response, requested);
+
+            THEN("only the self-consistent device is kept")
+            {
+                REQUIRE(accepted.has_value());
+                auto const* devices = object_at(accepted->device_keys, "@bob:remote.example.org");
+                REQUIRE(devices != nullptr);
+                REQUIRE(object_at(*devices, "GOOD") != nullptr);
+                REQUIRE(object_at(*devices, "WRONGID") == nullptr);
+                REQUIRE(object_at(*devices, "WRONGUSER") == nullptr);
+                REQUIRE(object_at(accepted->master_keys, "@bob:remote.example.org") == nullptr);
+                REQUIRE(object_at(accepted->self_signing_keys, "@bob:remote.example.org") == nullptr);
+            }
+        }
+    }
+
+    GIVEN("a response body that is not a JSON object")
+    {
+        auto const requested = std::vector<std::string>{"@bob:remote.example.org"};
+
+        WHEN("it is accepted")
+        {
+            auto const not_json = fed::accept_remote_key_query_response("remote.example.org", "not json", requested);
+            auto const array = fed::accept_remote_key_query_response("remote.example.org", "[]", requested);
+
+            THEN("nothing is accepted")
+            {
+                REQUIRE_FALSE(not_json.has_value());
+                REQUIRE_FALSE(array.has_value());
+            }
+        }
+    }
+}
+
+// --- m.signing_key_update -----------------------------------------------------
+// Spec: ../../docs/matrix-v1.19-spec/server-server-api.md#msigning_key_update
+//
+// "An EDU that lets servers push details to each other when one of their
+// users updates their cross-signing keys." Content: user_id (required),
+// master_key, self_signing_key. The user-signing key is private and is never sent.
+SCENARIO("The m.signing_key_update EDU carries the user's public cross-signing keys",
+         "[federation][keys][edu][signing-key-update]")
+{
+    GIVEN("a local user with master, self-signing and user-signing keys")
+    {
+        auto const store = store_with_cross_signed_alice();
+
+        WHEN("the EDU content is built")
+        {
+            auto const content = fed::build_signing_key_update_content(store, "@alice:example.org");
+
+            THEN("it names the user and carries the master and self-signing keys only")
+            {
+                REQUIRE(content.has_value());
+                auto const root = parse_root(*content);
+                auto const* user_id = string_at(root, "user_id");
+                REQUIRE(user_id != nullptr);
+                REQUIRE(*user_id == "@alice:example.org");
+                auto const* master = object_at(root, "master_key");
+                REQUIRE(master != nullptr);
+                // The owner's own signatures travel with the key.
+                REQUIRE(signature_of(*master, "@alice:example.org", "ed25519:ADEVICE") != nullptr);
+                REQUIRE(signature_of(*master, "@carol:example.org", "ed25519:CAROLUSK") == nullptr);
+                REQUIRE(object_at(root, "self_signing_key") != nullptr);
+                REQUIRE(json_get(root, "user_signing_key") == nullptr);
+            }
+        }
+    }
+
+    GIVEN("a user with no cross-signing keys")
+    {
+        auto const store = merovingian::database::PersistentStore{};
+
+        WHEN("the EDU content is built")
+        {
+            auto const content = fed::build_signing_key_update_content(store, "@nobody:example.org");
+
+            THEN("there is nothing to send")
+            {
+                REQUIRE_FALSE(content.has_value());
+            }
+        }
+    }
+}
+
+// --- m.device_list_update -----------------------------------------------------
+// Spec: ../../docs/matrix-v1.19-spec/server-server-api.md#mdevice_list_update
+//
+// A receiving server may apply the EDU's `keys` straight to its cache
+// without refetching, so the keys must be the device keys as published —
+// with the owner's self-signing signature — or the remote side caches the
+// device as not cross-signed.
+SCENARIO("The m.device_list_update EDU carries the device keys with the owner's signatures",
+         "[federation][keys][edu][device-list-update][regression]")
+{
+    GIVEN("a local user who has cross-signed their device")
+    {
+        auto const store = store_with_cross_signed_alice();
+
+        WHEN("the EDU content is built for that device")
+        {
+            auto const content = fed::build_device_list_update_content(store, "@alice:example.org", "ADEVICE", 7);
+
+            THEN("it identifies the device and its keys carry the self-signing signature")
+            {
+                REQUIRE(content.has_value());
+                auto const root = parse_root(*content);
+                auto const* user_id = string_at(root, "user_id");
+                REQUIRE(user_id != nullptr);
+                REQUIRE(*user_id == "@alice:example.org");
+                auto const* device_id = string_at(root, "device_id");
+                REQUIRE(device_id != nullptr);
+                REQUIRE(*device_id == "ADEVICE");
+                auto const* stream_id = int_at(root, "stream_id");
+                REQUIRE(stream_id != nullptr);
+                REQUIRE(*stream_id == 7);
+                REQUIRE(array_at(root, "prev_id") != nullptr);
+                auto const* keys = object_at(root, "keys");
+                REQUIRE(keys != nullptr);
+                REQUIRE(signature_of(*keys, "@alice:example.org", "ed25519:ALICESSK") != nullptr);
+            }
+        }
+
+        WHEN("the EDU content is built for a device with no published keys")
+        {
+            auto const content = fed::build_device_list_update_content(store, "@alice:example.org", "NOKEYS", 7);
+
+            THEN("it still identifies the device but carries no keys")
+            {
+                REQUIRE(content.has_value());
+                auto const root = parse_root(*content);
+                REQUIRE(json_get(root, "device_id") != nullptr);
+                REQUIRE(json_get(root, "keys") == nullptr);
             }
         }
     }

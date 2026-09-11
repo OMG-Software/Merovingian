@@ -68,6 +68,15 @@ an `info` threshold.
   returned `EduDispositionStatus::accepted` regardless of what actually
   persisted, so a lost megolm room-key share left no trace anywhere in the
   logs (issue #464).
+- `key_query.remote_key_query.entries_dropped` and
+  `key_query.remote_key_query.rejected` (warning severity, via
+  `log_diagnostic`, 0.12.10) fire when the client `/keys/query` federation
+  proxy discards part or all of a remote `/user/keys/query` response:
+  entries for users the server was not asked about, devices whose `user_id` or
+  `device_id` does not match their position, or cross-signing keys with the
+  wrong `user_id` or `usage`. Fields: `origin` and `dropped` (a count) —
+  never the key material. A peer that keeps tripping this is either broken or
+  trying to inject E2EE identities for users it does not own.
 - `federation_proxy.authorization_unparsed` (warning severity, via
   `log_diagnostic`) fires when an inbound federation request's `Authorization`
   header cannot be parsed as X-Matrix credentials, which the proxy answers with

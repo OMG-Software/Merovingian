@@ -22,6 +22,12 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
 5. **Reject soft-failed events** — do not forward or act on events that fail auth but are kept for
    state resolution purposes.
 
+6. **Never relay a remote server's answer about users unfiltered.** Keep only the users that
+   server was asked about, and only records that describe the user they are filed under. For
+   E2EE keys use `accept_remote_key_query_response()` (`key_query.hpp`). Merge uploaded key
+   signatures only through `key_signatures.hpp`, passing `std::nullopt` as the viewer for
+   anything sent to another server (ADR-0060).
+
 ## Key files
 
 | File | Responsibility |
@@ -32,6 +38,8 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
 | `server_discovery.cpp` | Resolves `server_name` → host:port per SS API §Resolving Server Names |
 | `remote_key_cache.cpp` | Caches remote server signing keys with validity TTL |
 | `membership_endpoints.cpp` | /make_join, /send_join, /make_leave, /send_leave |
+| `key_query.cpp` | E2EE key responses served over federation, key EDU contents, filtering remote key-query responses |
+| `key_signatures.cpp` | The one place uploaded key signatures are merged into published keys (visibility per ADR-0060) |
 | `security.cpp` | Federation-layer security checks (rate limits, origin validation) |
 | `transactions.cpp` | Transaction batching and deduplication |
 

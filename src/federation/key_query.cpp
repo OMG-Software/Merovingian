@@ -6,10 +6,12 @@
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/federation/key_signatures.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -65,31 +67,84 @@ namespace
         return serialized.error == canonicaljson::CanonicalJsonError::none ? serialized.output : std::string{};
     }
 
-    // Appends the user's master / self_signing cross-signing keys to the
-    // matching response objects when the store holds them.
+    // Appends the user's master / self_signing cross-signing keys, as
+    // published to a remote server, to the matching response objects when
+    // the store holds them. The user-signing key is never served over
+    // federation: it is only ever returned to its owner.
     auto append_cross_signing(database::PersistentStore const& store, std::string_view user_id,
                               canonicaljson::Object& master_keys, canonicaljson::Object& self_signing_keys) -> void
     {
-        for (auto const& key : store.cross_signing_keys)
+        if (auto master = published_cross_signing_key(store, user_id, "master", std::nullopt); master.has_value())
         {
-            if (key.user_id != user_id)
-            {
-                continue;
-            }
-            auto value = parsed_value(key.json);
-            if (!value.has_value())
-            {
-                continue;
-            }
-            if (key.key_type == "master")
-            {
-                master_keys.push_back(canonicaljson::make_member(std::string{user_id}, std::move(*value)));
-            }
-            else if (key.key_type == "self_signing")
-            {
-                self_signing_keys.push_back(canonicaljson::make_member(std::string{user_id}, std::move(*value)));
-            }
+            master_keys.push_back(
+                canonicaljson::make_member(std::string{user_id}, canonicaljson::Value{std::move(*master)}));
         }
+        if (auto self_signing = published_cross_signing_key(store, user_id, "self_signing", std::nullopt);
+            self_signing.has_value())
+        {
+            self_signing_keys.push_back(
+                canonicaljson::make_member(std::string{user_id}, canonicaljson::Value{std::move(*self_signing)}));
+        }
+    }
+
+    [[nodiscard]] auto string_member_equals(canonicaljson::Object const& object, std::string_view key,
+                                            std::string_view expected) -> bool
+    {
+        auto const* value = member_value(object, key);
+        auto const* text = value == nullptr ? nullptr : std::get_if<std::string>(&value->storage());
+        return text != nullptr && *text == expected;
+    }
+
+    [[nodiscard]] auto has_member(canonicaljson::Object const& object, std::string_view key) -> bool
+    {
+        return member_value(object, key) != nullptr;
+    }
+
+    // A remote cross-signing key is acceptable when it describes the user it
+    // is filed under, names its role in `usage`, and holds one public key.
+    [[nodiscard]] auto remote_cross_signing_key_is_valid(canonicaljson::Object const& key, std::string_view user_id,
+                                                         std::string_view usage) -> bool
+    {
+        if (!string_member_equals(key, "user_id", user_id) || !cross_signing_key_id(key).has_value())
+        {
+            return false;
+        }
+        auto const* usages = member_value(key, "usage");
+        auto const* list = usages == nullptr ? nullptr : std::get_if<canonicaljson::Array>(&usages->storage());
+        return list != nullptr && std::ranges::any_of(*list, [usage](canonicaljson::Value const& entry) {
+                   auto const* text = std::get_if<std::string>(&entry.storage());
+                   return text != nullptr && *text == usage;
+               });
+    }
+
+    // Copies the acceptable entries of `root[section]` into `accepted`.
+    // Returns how many entries were dropped.
+    [[nodiscard]] auto accept_remote_cross_signing_keys(canonicaljson::Object const& root, std::string_view section,
+                                                        std::string_view usage,
+                                                        std::vector<std::string> const& requested_users,
+                                                        canonicaljson::Object& accepted) -> std::size_t
+    {
+        auto const* keys = as_object(member_value(root, section));
+        if (keys == nullptr)
+        {
+            return 0U;
+        }
+        auto dropped = std::size_t{0U};
+        for (auto const& user_member : *keys)
+        {
+            auto const* key = user_member.value == nullptr
+                                  ? nullptr
+                                  : std::get_if<canonicaljson::Object>(&user_member.value->storage());
+            if (key == nullptr || std::ranges::find(requested_users, user_member.key) == requested_users.end() ||
+                has_member(accepted, user_member.key) ||
+                !remote_cross_signing_key_is_valid(*key, user_member.key, usage))
+            {
+                ++dropped;
+                continue;
+            }
+            accepted.push_back(user_member);
+        }
+        return dropped;
     }
 
 } // namespace
@@ -165,10 +220,13 @@ auto build_device_keys_query_response(database::PersistentStore const& store, st
             {
                 continue;
             }
-            auto value = parsed_value(device_key.json);
-            if (value.has_value())
+            // Published with the owner's self-signing signature: without it
+            // the remote user cannot tell the device is trusted by its owner.
+            auto published = published_device_keys(store, device_key, std::nullopt);
+            if (published.has_value())
             {
-                user_devices.push_back(canonicaljson::make_member(device_key.device_id, std::move(*value)));
+                user_devices.push_back(
+                    canonicaljson::make_member(device_key.device_id, canonicaljson::Value{std::move(*published)}));
             }
         }
         if (!user_devices.empty())
@@ -188,6 +246,131 @@ auto build_device_keys_query_response(database::PersistentStore const& store, st
                                              {"device_key_users", std::to_string(device_key_user_count), false}
     });
     return serialize(std::move(response));
+}
+
+auto accept_remote_key_query_response(std::string_view origin, std::string_view response_body,
+                                      std::vector<std::string> const& requested_users)
+    -> std::optional<RemoteKeyQueryKeys>
+{
+    auto const response = parsed_value(response_body);
+    auto const* root = response.has_value() ? std::get_if<canonicaljson::Object>(&response->storage()) : nullptr;
+    if (root == nullptr)
+    {
+        log_diagnostic("remote_key_query.rejected",
+                       {
+                           {"origin", std::string{origin},             false},
+                           {"reason", "response is not a JSON object", false}
+        },
+                       observability::LogEventSeverity::warning);
+        return std::nullopt;
+    }
+
+    auto accepted = RemoteKeyQueryKeys{};
+    auto dropped = std::size_t{0U};
+    if (auto const* device_keys = as_object(member_value(*root, "device_keys")); device_keys != nullptr)
+    {
+        for (auto const& user_member : *device_keys)
+        {
+            auto const* devices = user_member.value == nullptr
+                                      ? nullptr
+                                      : std::get_if<canonicaljson::Object>(&user_member.value->storage());
+            if (devices == nullptr || std::ranges::find(requested_users, user_member.key) == requested_users.end() ||
+                has_member(accepted.device_keys, user_member.key))
+            {
+                ++dropped;
+                continue;
+            }
+            auto user_devices = canonicaljson::Object{};
+            for (auto const& device_member : *devices)
+            {
+                auto const* device = device_member.value == nullptr
+                                         ? nullptr
+                                         : std::get_if<canonicaljson::Object>(&device_member.value->storage());
+                // Spec: device_id and user_id "Must match" the device and
+                // user the keys belong to.
+                if (device == nullptr || has_member(user_devices, device_member.key) ||
+                    !string_member_equals(*device, "user_id", user_member.key) ||
+                    !string_member_equals(*device, "device_id", device_member.key))
+                {
+                    ++dropped;
+                    continue;
+                }
+                user_devices.push_back(device_member);
+            }
+            accepted.device_keys.push_back(
+                canonicaljson::make_member(user_member.key, canonicaljson::Value{std::move(user_devices)}));
+        }
+    }
+    dropped += accept_remote_cross_signing_keys(*root, "master_keys", "master", requested_users, accepted.master_keys);
+    dropped += accept_remote_cross_signing_keys(*root, "self_signing_keys", "self_signing", requested_users,
+                                                accepted.self_signing_keys);
+    if (dropped > 0U)
+    {
+        log_diagnostic("remote_key_query.entries_dropped",
+                       {
+                           {"origin",  std::string{origin},     false},
+                           {"dropped", std::to_string(dropped), false}
+        },
+                       observability::LogEventSeverity::warning);
+    }
+    return accepted;
+}
+
+auto build_signing_key_update_content(database::PersistentStore const& store, std::string_view user_id)
+    -> std::optional<std::string>
+{
+    auto master = published_cross_signing_key(store, user_id, "master", std::nullopt);
+    auto self_signing = published_cross_signing_key(store, user_id, "self_signing", std::nullopt);
+    if (!master.has_value() && !self_signing.has_value())
+    {
+        return std::nullopt;
+    }
+    auto content = canonicaljson::Object{};
+    if (master.has_value())
+    {
+        content.push_back(canonicaljson::make_member("master_key", canonicaljson::Value{std::move(*master)}));
+    }
+    if (self_signing.has_value())
+    {
+        content.push_back(
+            canonicaljson::make_member("self_signing_key", canonicaljson::Value{std::move(*self_signing)}));
+    }
+    content.push_back(canonicaljson::make_member("user_id", canonicaljson::Value{std::string{user_id}}));
+    auto serialized = serialize(std::move(content));
+    if (serialized.empty())
+    {
+        return std::nullopt;
+    }
+    return serialized;
+}
+
+auto build_device_list_update_content(database::PersistentStore const& store, std::string_view user_id,
+                                      std::string_view device_id, std::int64_t stream_id) -> std::optional<std::string>
+{
+    auto content = canonicaljson::Object{};
+    content.push_back(canonicaljson::make_member("device_id", canonicaljson::Value{std::string{device_id}}));
+    auto const device_key =
+        std::ranges::find_if(store.device_keys, [user_id, device_id](database::PersistentDeviceKey const& key) {
+            return key.user_id == user_id && key.device_id == device_id;
+        });
+    if (device_key != store.device_keys.end())
+    {
+        // A receiving server may apply these keys directly instead of
+        // refetching, so they must be exactly what /user/keys/query serves.
+        if (auto keys = published_device_keys(store, *device_key, std::nullopt); keys.has_value())
+        {
+            content.push_back(canonicaljson::make_member("keys", canonicaljson::Value{std::move(*keys)}));
+        }
+    }
+    content.push_back(canonicaljson::make_member("prev_id", canonicaljson::Value{canonicaljson::Array{}}));
+    content.push_back(canonicaljson::make_member("stream_id", canonicaljson::Value{stream_id}));
+    content.push_back(canonicaljson::make_member("user_id", canonicaljson::Value{std::string{user_id}}));
+    auto serialized = serialize(std::move(content));
+    if (serialized.empty())
+    {
+        return std::nullopt;
+    }
+    return serialized;
 }
 
 auto build_one_time_keys_claim_response(database::PersistentStore& store, std::string_view request_body) -> std::string
@@ -302,14 +485,14 @@ auto build_user_devices_response(database::PersistentStore const& store, std::st
         {
             continue;
         }
-        auto keys = parsed_value(device_key.json);
+        auto keys = published_device_keys(store, device_key, std::nullopt);
         if (!keys.has_value())
         {
             continue;
         }
         auto device = canonicaljson::Object{};
         device.push_back(canonicaljson::make_member("device_id", canonicaljson::Value{device_key.device_id}));
-        device.push_back(canonicaljson::make_member("keys", std::move(*keys)));
+        device.push_back(canonicaljson::make_member("keys", canonicaljson::Value{std::move(*keys)}));
         devices.push_back(canonicaljson::Value{std::move(device)});
     }
     auto response = canonicaljson::Object{};

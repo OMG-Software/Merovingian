@@ -332,33 +332,24 @@ namespace
             {
                 continue;
             }
-            auto const keys_it =
-                std::ranges::find_if(store.device_keys, [&device, user_id](database::PersistentDeviceKey const& keys) {
+            auto const has_keys =
+                std::ranges::any_of(store.device_keys, [&device, user_id](database::PersistentDeviceKey const& keys) {
                     return keys.user_id == user_id && keys.device_id == device.device_id;
                 });
-            if (keys_it == store.device_keys.end())
+            if (!has_keys)
             {
                 continue;
             }
-            auto const parsed_keys = canonicaljson::parse_lossless(keys_it->json);
-            if (parsed_keys.error != canonicaljson::ParseError::none)
-            {
-                continue;
-            }
-            auto content_obj = canonicaljson::Object{};
-            content_obj.push_back(canonicaljson::make_member("device_id", canonicaljson::Value{device.device_id}));
-            content_obj.push_back(canonicaljson::make_member("keys", parsed_keys.value));
-            content_obj.push_back(canonicaljson::make_member("prev_id", canonicaljson::Value{canonicaljson::Array{}}));
-            content_obj.push_back(
-                canonicaljson::make_member("stream_id", canonicaljson::Value{static_cast<std::int64_t>(stream_id)}));
-            content_obj.push_back(canonicaljson::make_member("user_id", canonicaljson::Value{std::string{user_id}}));
-            auto const content = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(content_obj)});
-            if (content.error != canonicaljson::CanonicalJsonError::none)
+            // Shared with client_server.cpp's broadcast so both carry the
+            // device keys with the owner's cross-signing signatures.
+            auto const content = federation::build_device_list_update_content(store, user_id, device.device_id,
+                                                                              static_cast<std::int64_t>(stream_id));
+            if (!content.has_value())
             {
                 continue;
             }
             auto const tx_body = federation::build_edu_transaction_body(runtime.config.server().server_name,
-                                                                        "m.device_list_update", content.output);
+                                                                        "m.device_list_update", *content);
             if (!tx_body.has_value())
             {
                 continue;
@@ -1215,19 +1206,26 @@ namespace
                 }
                 return {federation::EduDispositionStatus::accepted, {}};
             }
-            case federation::EduType::device_list_update: {
+            // m.device_list_update (a device changed) and m.signing_key_update
+            // (the user's cross-signing keys changed) both mean the same thing
+            // to a local client: that remote user's keys must be re-queried.
+            // Nothing is cached here — /keys/query always asks the remote
+            // server — so the whole job is to put the user in
+            // device_lists.changed.
+            case federation::EduType::device_list_update:
+            case federation::EduType::signing_key_update: {
                 auto const parsed = canonicaljson::parse_lossless(envelope.content_json);
                 auto const* root = std::get_if<canonicaljson::Object>(&parsed.value.storage());
                 if (parsed.error != canonicaljson::ParseError::none || root == nullptr)
                 {
                     return {federation::EduDispositionStatus::rejected_invalid,
-                            "device list update content must be an object"};
+                            envelope.edu_type + " content must be an object"};
                 }
                 auto const* user_id = object_member_as_string(*root, "user_id");
                 if (user_id == nullptr || !user_belongs_to_origin(*user_id, envelope.origin))
                 {
                     return {federation::EduDispositionStatus::rejected_invalid,
-                            "device list update user_id must belong to the sending origin"};
+                            envelope.edu_type + " user_id must belong to the sending origin"};
                 }
                 if (!user_id->empty())
                 {

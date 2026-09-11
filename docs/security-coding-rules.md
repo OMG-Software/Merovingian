@@ -402,6 +402,16 @@ quickly finding everything a given `AGENTS.md` file contributed.
   still has a real effect.
   Source: `src/federation/AGENTS.md`.
 
+- **Never relay a remote server's answer about users to a client unfiltered. Keep only
+  the users you asked that server about, and only records that describe the user they are
+  filed under.** For E2EE keys, go through `federation::accept_remote_key_query_response()`.
+  Why: a client takes a master key it is shown as that user's cross-signing identity. A
+  server answering a query for its own user could otherwise also answer for a user on any
+  other server and have its keys accepted as theirs. Before 0.12.10 the `/keys/query` proxy
+  passed through every user ID in the response (see `docs/threat-model.md`, "A remote server
+  injecting E2EE identities").
+  Source: `src/federation/AGENTS.md`.
+
 ## HTTP and network boundary
 
 - **Rate limiting is applied before any auth check.** Do not move it after auth.
