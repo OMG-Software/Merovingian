@@ -1,3 +1,8 @@
+## 0.12.13
+
+Fixes every Critical and High finding from the September 2026 full-project bug
+audit.
+
 ## 0.12.12
 
 Documentation only — no code changes beyond the version bump. A full audit
