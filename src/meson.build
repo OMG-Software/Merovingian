@@ -50,7 +50,7 @@ thumbnail_worker_exe = []
 if thumbnail_worker_available
   thumbnail_worker_exe = executable(
     'merovingian-thumbnail-worker',
-    sources: files('media/thumbnailer.cpp', 'media/thumbnail_worker_main.cpp'),
+    sources: files('media/decoder_hardening.cpp', 'media/thumbnailer.cpp', 'media/thumbnail_worker_main.cpp'),
     include_directories: inc,
     dependencies: [libpng_dep, turbojpeg_dep],
     link_with: [core_lib, platform_lib],
