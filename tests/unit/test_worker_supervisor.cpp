@@ -5,9 +5,15 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <array>
+#include <cstdint>
 #include <cstdlib>
 #include <string>
 #include <string_view>
+#include <vector>
+
+#include <fcntl.h>
+#include <unistd.h>
 
 namespace
 {
@@ -209,6 +215,80 @@ SCENARIO("The worker child environment provides a default PATH when the parent h
                 REQUIRE(env.entries[0U].rfind("PATH=", 0U) == 0U);
                 REQUIRE(env.entries[0U].size() > std::string{"PATH="}.size());
                 REQUIRE(env.argv.back() == nullptr);
+            }
+        }
+    }
+}
+
+// Finding N1 follow-up: the worker key pipe must never be inheritable in the
+// parent. main is multithreaded; any posix_spawn elsewhere (another shard's
+// restart, the thumbnail decoder) that ran while the read end had FD_CLOEXEC
+// cleared would inherit the pipe carrying the IPC auth key. The fd is made
+// inheritable only in the child, by posix_spawn_file_actions_adddup2 onto
+// kWorkerIpcKeyFd.
+SCENARIO("The worker key pipe stays close-on-exec in the parent", "[federation][worker-supervisor][security][worker_key_fd]")
+{
+    GIVEN("32 bytes of IPC auth key material")
+    {
+        auto key = std::vector<std::uint8_t>(32U);
+        for (auto i = std::size_t{0U}; i < key.size(); ++i)
+        {
+            key[i] = static_cast<std::uint8_t>(i + 1U);
+        }
+
+        WHEN("the supervisor prepares the key pipe for a worker spawn")
+        {
+            auto const read_end = merovingian::homeserver::make_worker_key_pipe(key);
+
+            THEN("the read end is still close-on-exec in the parent")
+            {
+                auto const flags = ::fcntl(read_end.get(), F_GETFD);
+                REQUIRE(flags >= 0);
+                REQUIRE((flags & FD_CLOEXEC) != 0);
+            }
+
+            THEN("the read end never occupies a fixed child fd number")
+            {
+                REQUIRE(read_end.get() != merovingian::homeserver::kWorkerIpcFd);
+                REQUIRE(read_end.get() != merovingian::homeserver::kWorkerIpcKeyFd);
+            }
+
+            THEN("the pipe yields exactly the key bytes followed by end-of-file")
+            {
+                auto buffer = std::array<std::uint8_t, 64U>{};
+                auto const count = ::read(read_end.get(), buffer.data(), buffer.size());
+                REQUIRE(count == static_cast<ssize_t>(key.size()));
+                REQUIRE(std::vector<std::uint8_t>(buffer.begin(), buffer.begin() + count) == key);
+                REQUIRE(::read(read_end.get(), buffer.data(), buffer.size()) == 0);
+            }
+        }
+    }
+}
+
+SCENARIO("The worker key fd is distinct from the IPC fd and the standard streams",
+         "[federation][worker-supervisor][security][worker_key_fd]")
+{
+    GIVEN("the fixed child fd numbers")
+    {
+        THEN("the key fd collides with neither stdio nor the IPC socket")
+        {
+            REQUIRE(merovingian::homeserver::kWorkerIpcKeyFd > 2);
+            REQUIRE(merovingian::homeserver::kWorkerIpcKeyFd != merovingian::homeserver::kWorkerIpcFd);
+        }
+    }
+}
+
+SCENARIO("The worker key pipe refuses empty key material", "[federation][worker-supervisor][security][worker_key_fd]")
+{
+    GIVEN("no key material")
+    {
+        auto const key = std::vector<std::uint8_t>{};
+
+        WHEN("the supervisor prepares the key pipe")
+        {
+            THEN("it fails closed instead of handing the worker an empty pipe")
+            {
+                REQUIRE_THROWS(merovingian::homeserver::make_worker_key_pipe(key));
             }
         }
     }

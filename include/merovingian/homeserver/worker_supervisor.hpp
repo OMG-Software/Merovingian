@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/core/file_descriptor.hpp"
 #include "merovingian/core/secret_buffer.hpp"
 #include "merovingian/ipc/channel.hpp"
 
@@ -9,6 +10,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <span>
 #include <string>
 #include <thread>
 
@@ -119,5 +121,18 @@ private:
 // Fixed fd number used for the IPC socket in the worker child process.
 // posix_spawn_file_actions_adddup2 places the socketpair end here.
 inline constexpr int kWorkerIpcFd{3};
+
+// Fixed fd number the worker key pipe occupies in the worker child process
+// (ADR-0062). Like kWorkerIpcFd it is placed by
+// posix_spawn_file_actions_adddup2, which clears FD_CLOEXEC in the child only.
+inline constexpr int kWorkerIpcKeyFd{4};
+
+// Creates the pipe that hands the worker its IPC auth key: writes `key`,
+// closes the write end, and returns the read end. The read end stays
+// FD_CLOEXEC in this (multithreaded) process, so no concurrent spawn can
+// inherit it, and never occupies kWorkerIpcFd or kWorkerIpcKeyFd, so the
+// child's dup2 file actions cannot clobber it or degenerate into a same-fd
+// dup2. Throws std::runtime_error on failure.
+[[nodiscard]] auto make_worker_key_pipe(std::span<std::uint8_t const> key) -> core::FileDescriptor;
 
 } // namespace merovingian::homeserver

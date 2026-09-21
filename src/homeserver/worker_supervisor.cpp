@@ -60,6 +60,62 @@ WorkerSupervisor::~WorkerSupervisor()
     stop();
 }
 
+auto make_worker_key_pipe(std::span<std::uint8_t const> key) -> core::FileDescriptor
+{
+    if (key.empty())
+    {
+        throw std::runtime_error{"ipc: refusing to hand the worker empty IPC auth key material"};
+    }
+
+    // Both ends start O_CLOEXEC and the read end stays that way in this
+    // process: main is multithreaded, so clearing FD_CLOEXEC here would let
+    // any concurrent spawn (another shard's restart, the thumbnail decoder)
+    // inherit the pipe carrying the key. The child receives it only through
+    // the adddup2 file action onto kWorkerIpcKeyFd.
+    auto key_fds = std::array<int, 2>{-1, -1};
+    if (::pipe2(key_fds.data(), O_CLOEXEC) != 0)
+    {
+        throw std::runtime_error{"ipc: failed to create worker key pipe: " + std::string{::strerror(errno)}};
+    }
+    auto read_end = core::FileDescriptor{key_fds[0]};
+    auto write_end = core::FileDescriptor{key_fds[1]};
+
+    // Keep the read end off the fixed child fd numbers. On kWorkerIpcFd the
+    // ipc socket's dup2 would overwrite it before its own dup2 runs; on
+    // kWorkerIpcKeyFd the dup2 would be same-fd, which some libcs treat as a
+    // no-op that leaves FD_CLOEXEC set, so the worker would lose the key.
+    if (read_end.get() == kWorkerIpcFd || read_end.get() == kWorkerIpcKeyFd)
+    {
+        auto const relocated = ::fcntl(read_end.get(), F_DUPFD_CLOEXEC, kWorkerIpcKeyFd + 1);
+        if (relocated < 0)
+        {
+            throw std::runtime_error{"ipc: failed to relocate worker key pipe fd: " + std::string{::strerror(errno)}};
+        }
+        read_end.reset(relocated);
+    }
+
+    // The key is far below PIPE_BUF, so this write never blocks on an unread
+    // pipe; the loop only covers EINTR and short writes.
+    auto written = std::size_t{0U};
+    while (written < key.size())
+    {
+        auto const write_rc = ::write(write_end.get(), key.data() + written, key.size() - written);
+        if (write_rc < 0)
+        {
+            if (errno == EINTR)
+            {
+                continue;
+            }
+            throw std::runtime_error{"ipc: failed to write worker IPC auth key: " + std::string{::strerror(errno)}};
+        }
+        written += static_cast<std::size_t>(write_rc);
+    }
+    // Closing the only write end lets the worker's read observe EOF right
+    // after the key bytes.
+    write_end.reset();
+    return read_end;
+}
+
 auto WorkerSupervisor::set_request_handler(ipc::IpcChannel::RequestHandler handler) -> void
 {
     request_handler_ = std::move(handler);
@@ -260,66 +316,10 @@ auto WorkerSupervisor::spawn_and_connect() -> void
     // Hand the already-derived auth key to the worker over a second inherited
     // fd (finding N1): the worker must never open the master key file itself,
     // so it receives only these 32 derived bytes, never the root secret they
-    // came from. Both pipe ends start O_CLOEXEC so a concurrent fork/exec
-    // elsewhere in this multithreaded process can never leak either one.
-    auto key_fds = std::array<int, 2>{-1, -1};
-    if (::pipe2(key_fds.data(), O_CLOEXEC) != 0)
-    {
-        throw std::runtime_error{"ipc: failed to create worker key pipe: " + std::string{::strerror(errno)}};
-    }
-    auto key_read_fd = core::FileDescriptor{key_fds[0]};
-    auto key_write_fd = core::FileDescriptor{key_fds[1]};
-
-    // pipe2() could in principle hand back kWorkerIpcFd for the read end
-    // (e.g. once a prior worker's fds have been closed, freeing low
-    // numbers). If it does, relocate it before anything below depends on its
-    // number: the dup2-to-kWorkerIpcFd file action for the ipc socket further
-    // down would otherwise silently replace this fd in the child's table
-    // before exec, the same hazard the addclose(server_fd) below defends
-    // against for the ipc socket's own fd.
-    if (key_read_fd.get() == kWorkerIpcFd)
-    {
-        auto const relocated = ::fcntl(key_read_fd.get(), F_DUPFD_CLOEXEC, kWorkerIpcFd + 1);
-        if (relocated < 0)
-        {
-            throw std::runtime_error{"ipc: failed to relocate worker key pipe fd: " + std::string{::strerror(errno)}};
-        }
-        key_read_fd.reset(relocated);
-    }
-
-    {
-        auto const key_bytes = ipc_auth_key_material_.bytes();
-        auto written = std::size_t{0U};
-        while (written < key_bytes.size())
-        {
-            auto const write_rc = ::write(key_write_fd.get(), key_bytes.data() + written, key_bytes.size() - written);
-            if (write_rc < 0)
-            {
-                if (errno == EINTR)
-                {
-                    continue;
-                }
-                throw std::runtime_error{"ipc: failed to write worker IPC auth key: " + std::string{::strerror(errno)}};
-            }
-            written += static_cast<std::size_t>(write_rc);
-        }
-    }
-    // Close the write end in the parent: the worker only ever reads from this
-    // pipe, and closing our only write reference lets the worker's own read
-    // observe EOF immediately after the key bytes once its inherited copy of
-    // the write end (O_CLOEXEC, so it never survives the worker's own exec)
-    // is gone too.
-    key_write_fd.reset();
-
-    // Make only the read end inheritable across the upcoming exec, at
-    // whatever fd number it already has; every other fd in this process —
-    // including the write end just closed above — stays non-inheritable.
-    auto const key_read_flags = ::fcntl(key_read_fd.get(), F_GETFD);
-    if (key_read_flags < 0 || ::fcntl(key_read_fd.get(), F_SETFD, key_read_flags & ~FD_CLOEXEC) != 0)
-    {
-        throw std::runtime_error{"ipc: failed to make worker key pipe inheritable: " + std::string{::strerror(errno)}};
-    }
-    auto const ipc_key_fd_str = std::to_string(key_read_fd.get());
+    // came from. The read end stays FD_CLOEXEC here; the adddup2 file action
+    // below makes it inheritable in the child alone (ADR-0062).
+    auto key_read_fd = make_worker_key_pipe(ipc_auth_key_material_.bytes());
+    auto const ipc_key_fd_str = std::to_string(kWorkerIpcKeyFd);
 
     auto const ipc_fd_str = std::to_string(kWorkerIpcFd);
     auto const shard_index_str = std::to_string(shard_index_);
@@ -338,6 +338,10 @@ auto WorkerSupervisor::spawn_and_connect() -> void
     ::posix_spawn_file_actions_addclose(&file_actions, server_fd.get());
     // Place client_fd at the fixed kWorkerIpcFd in the child.
     ::posix_spawn_file_actions_adddup2(&file_actions, client_fd.get(), kWorkerIpcFd);
+    // Place the key pipe at kWorkerIpcKeyFd. dup2 clears FD_CLOEXEC on the
+    // child's copy only; make_worker_key_pipe guarantees the source is neither
+    // fixed fd, so this cannot be a same-fd dup2 or be clobbered by the one above.
+    ::posix_spawn_file_actions_adddup2(&file_actions, key_read_fd.get(), kWorkerIpcKeyFd);
 
     // Minimal allowlist environment: PATH only (issue #330). The strings and
     // pointer array live for the duration of the posix_spawn call below.

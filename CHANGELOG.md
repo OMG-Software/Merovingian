@@ -30,8 +30,11 @@ audit.
   compromised worker could still read the file and derive them anyway. Main
   now derives the IPC auth key once (`WorkerPool`'s constructor) and hands it
   to the worker over a second inherited pipe fd (`--ipc-key-fd`) at spawn
-  time; `WorkerSupervisor::spawn_and_connect` writes the key, closes its
-  write end, and makes only the read end inheritable. The worker
+  time; `make_worker_key_pipe` writes the key and closes the write end, and
+  the read end stays `FD_CLOEXEC` in main — a `posix_spawn_file_actions_adddup2`
+  places it at the fixed fd 4 in the child only, so no concurrent spawn in the
+  multithreaded main process (another shard's restart, the thumbnail decoder)
+  can inherit the pipe carrying the key. The worker
   (`federation_worker::read_ipc_auth_key`, `src/federation_worker/ipc_key_fd.cpp`)
   reads exactly the expected number of bytes, requires EOF immediately after,
   and fails closed (`LOG_CRITICAL`, non-zero exit) on a short, long, or

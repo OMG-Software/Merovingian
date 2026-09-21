@@ -122,9 +122,16 @@ Chosen option for part 1: **secrets arrive over inherited fds, not files.**
 the operator master-key file, for the whole pool (not once per shard/restart).
 `homeserver::WorkerSupervisor::spawn_and_connect` — reused for every spawn and
 every automatic restart — creates a `pipe2(O_CLOEXEC)` pipe, writes exactly
-the derived key bytes into it, closes its own write end, clears `FD_CLOEXEC`
-on only the read end (so it, and only it, survives the upcoming `exec`), and
-passes that fd's number as `--ipc-key-fd` alongside the existing `--ipc-fd`.
+the derived key bytes into it and closes its own write end
+(`homeserver::make_worker_key_pipe`). The read end **stays `FD_CLOEXEC` in
+main**: main is multithreaded, and clearing the flag in the parent would let
+any concurrent spawn (another shard's restart, the thumbnail decoder) inherit
+the pipe carrying the key. Instead a `posix_spawn_file_actions_adddup2` places
+it at the fixed `kWorkerIpcKeyFd` (4) in the child, which clears `FD_CLOEXEC`
+on the child's copy only, and `--ipc-key-fd 4` is passed alongside the
+existing `--ipc-fd 3`. The helper keeps the source fd off both fixed numbers,
+so the dup2 can neither be clobbered by the ipc socket's dup2 nor degenerate
+into a same-fd dup2 (which some libcs treat as a no-op that leaves the flag set).
 The worker (`federation_worker::read_ipc_auth_key`, `src/federation_worker/ipc_key_fd.cpp`)
 reads exactly that many bytes, requires EOF immediately afterward (rejecting
 a short or long write rather than truncating or padding it), and closes the

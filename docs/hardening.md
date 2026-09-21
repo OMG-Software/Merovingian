@@ -231,8 +231,9 @@ When `federation.worker.enabled=true`, `merovingian-server` spawns
 socket pair created with `SOCK_CLOEXEC` before the child is spawned via
 `posix_spawn`. The worker inherits the client fd at file descriptor 3
 (`--ipc-fd`) and, separately, the read end of a one-shot pipe carrying the
-IPC auth key (`--ipc-key-fd`, at whatever fd number `pipe2()` returned — see
-below); every other inherited fd is closed by the `posix_spawn` file actions.
+IPC auth key at file descriptor 4 (`--ipc-key-fd`, see below); both are placed
+by `posix_spawn_file_actions_adddup2`, which clears `FD_CLOEXEC` only on the
+child's copies. Every other fd is `FD_CLOEXEC` and does not survive the exec.
 
 The channel is hardened against a local attacker who gains access to a
 separate process on the same host:
@@ -249,8 +250,11 @@ separate process on the same host:
   key file itself. As of 0.12.13 **only main ever opens that file**: `WorkerPool`
   derives the auth key once (`crypto::derive_ipc_auth_key`) and
   `WorkerSupervisor::spawn_and_connect` writes exactly those 32 bytes into a
-  `pipe2(O_CLOEXEC)` pipe, closes its own write end, clears `FD_CLOEXEC` on
-  only the read end, and passes that fd's number as `--ipc-key-fd`. The worker
+  `pipe2(O_CLOEXEC)` pipe and closes its own write end
+  (`make_worker_key_pipe`). The read end stays `FD_CLOEXEC` in main — clearing
+  it in the multithreaded parent would let a concurrent spawn inherit the key —
+  and an `adddup2` file action places it at fd 4 in the child only
+  (`--ipc-key-fd 4`). The worker
   (`federation_worker::read_ipc_auth_key`) reads exactly that many bytes,
   requires EOF immediately after (rejecting a short or long write as
   fail-closed rather than silently truncating or padding), and closes the fd.
