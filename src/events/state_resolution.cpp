@@ -1182,6 +1182,32 @@ auto resolve_state_v2(StateResolutionRequest const& request, rooms::RoomVersionP
         }
     }
 
+    if (all_conflicted.empty())
+    {
+        // No conflicted state at all: the resolved state is exactly the
+        // unconflicted state map (spec Algorithm step 5, trivially, since
+        // there is nothing else to update). Skip the auth-chain walk
+        // entirely rather than running it unconditionally — the auth
+        // difference and conflicted state subgraph only matter when there is
+        // something in dispute, and computing them anyway would require
+        // every event in every submitted state group to have a fully
+        // walkable auth chain even when nothing needs resolving, which is
+        // both wasted work and an unnecessary fail-closed risk for callers
+        // (e.g. the mainline-depth-bound test) that never triggered a
+        // conflict in the first place.
+        auto result_state = std::vector<StateEventReference>{};
+        result_state.reserve(unconflicted.size());
+        for (auto const& [key, event] : unconflicted)
+        {
+            result_state.push_back(event);
+        }
+        log_diagnostic("resolve_state_v2.resolved", {
+                                                        {"room_version", request.room_version,                false},
+                                                        {"events",       std::to_string(result_state.size()), false}
+        });
+        return {true, std::move(result_state), {}};
+    }
+
     // Auth chain walk: computes the auth difference (and, for v12, the
     // conflicted state subgraph) so power events reachable only through auth
     // chains are not silently ignored. Backed by the submitted state groups
