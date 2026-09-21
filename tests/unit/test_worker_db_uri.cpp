@@ -169,7 +169,8 @@ SCENARIO("A configured database_uri_file satisfies the requirement", "[config][w
     }
 }
 
-SCENARIO("Default config validates without findings", "[config][worker_db_uri]")
+SCENARIO("A bare default config's placeholder federation worker database_uri_file satisfies validation",
+         "[config][worker_db_uri]")
 {
     GIVEN("a bare default config")
     {

@@ -202,6 +202,25 @@ struct BootstrapConfigResult final
         return database_validation;
     }
 
+    // ADR-0062 part 2: federation.worker.database_uri_file gets the same
+    // owner-only, TOCTOU-safe metadata check as database.uri_file above,
+    // when it names a file at all. allow_missing mirrors database.uri_file's
+    // own permissiveness here deliberately: the hard, fail-closed
+    // enforcement point for "this file must actually exist and be readable"
+    // is homeserver::WorkerPool::WorkerPool at real startup (it throws,
+    // aborting the server, unless allow_shared_database_credentials=true),
+    // not this --dry-run/--check-config-reachable metadata pass — the same
+    // two-layer split database.uri_file already has.
+    if (!config.federation_worker().database_uri_file.empty())
+    {
+        auto worker_database_validation = validate_existing_secret_file_metadata(
+            config.federation_worker().database_uri_file, "federation.worker.database_uri_file", true);
+        if (!worker_database_validation.parsed.findings.empty())
+        {
+            return worker_database_validation;
+        }
+    }
+
     auto client_tls_validation = validate_existing_listener_tls_files(config.listeners().client, "listeners.client");
     if (!client_tls_validation.parsed.findings.empty())
     {
