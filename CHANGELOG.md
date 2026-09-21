@@ -3,6 +3,25 @@
 Fixes every Critical and High finding from the September 2026 full-project bug
 audit.
 
+- **Thumbnail decoder worker hardening is now fail-closed.** `harden()` in
+  `src/media/thumbnail_worker_main.cpp` discarded the result of every
+  hardening call (`setrlimit` x5, `prctl(PR_SET_DUMPABLE)`,
+  `prctl(PR_SET_NO_NEW_PRIVS)`, the decoder seccomp filter, `pledge`,
+  `cap_enter`) with `std::ignore`, then unconditionally read stdin and ran
+  libpng/libjpeg-turbo on attacker-controlled bytes — a sandbox that failed
+  to install left the decoder running fully unconfined, silently. Hardening
+  is now `media::apply_decoder_hardening()`
+  (`include/merovingian/media/decoder_hardening.hpp`,
+  `src/media/decoder_hardening.cpp`): every applicable control must succeed
+  or the worker writes the failed control's name to stderr and exits `1`
+  before reading any input. The real syscalls sit behind an injectable
+  `DecoderHardeningOps` function table so the fail-closed sequencing is unit
+  tested per control (`tests/unit/test_media_decoder_hardening.cpp`,
+  `[thumbnail_hardening]`) without installing a broken sandbox in the test
+  process. The parent (`src/media/thumbnailer.cpp`) already turns a worker
+  that exits before producing output into a normal failed-thumbnail
+  response (502), so no parent-side change was needed.
+
 ## 0.12.12
 
 Documentation only — no code changes beyond the version bump. A full audit

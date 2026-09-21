@@ -192,7 +192,20 @@ and `src/media/thumbnail_worker_main.cpp`):
   * falls back to a capped `fcntl(F_GETFD)` scan of at most 1024 descriptors.
 * Before `execv()` the child sets `prctl(PR_SET_NO_NEW_PRIVS, 1, ...)` on Linux
   so a compromised worker cannot escalate through setuid/setcap helpers.
-* Inside the worker, `harden()` clamps resources:
+* Inside the worker, `main()` calls `media::apply_decoder_hardening()`
+  (`include/merovingian/media/decoder_hardening.hpp`,
+  `src/media/decoder_hardening.cpp`) **before reading a single byte of
+  stdin**, and it is fail-closed (0.12.13 audit fix): the sequence clamps
+  resources, then installs the platform sandbox, and if any applicable
+  control fails the worker prints the failed control's name to stderr and
+  exits `1` without ever reading its input or invoking libpng/libjpeg-turbo.
+  Before 0.12.13, `harden()` discarded every hardening call's result with
+  `std::ignore`, so a sandbox that failed to install still let the worker
+  decode attacker-controlled bytes completely unconfined, silently. The
+  parent (`src/media/thumbnailer.cpp`) already treats a worker that exits
+  before producing output as a normal failed-thumbnail response (malformed/
+  empty worker response → HTTP 502), so this fails closed without any
+  parent-side change.
   * `RLIMIT_CPU` = 15 s in production release builds, 60 s in non-release builds, 120 s under sanitizers (ASan/UBSan/TSan are slow on CI QEMU);
   * `RLIMIT_FSIZE` = 64 MiB;
   * `RLIMIT_CORE` = 0;
@@ -203,6 +216,11 @@ and `src/media/thumbnail_worker_main.cpp`):
     general server filter and not `apply_worker_seccomp_filter()`; see
     "Thumbnail worker sandbox" above and
     [ADR-0053](adr/0053-the-thumbnail-decoder-gets-its-own-syscall-profile.md).
+  * Each control's syscall is behind an injectable function table
+    (`DecoderHardeningOps`) so `tests/unit/test_media_decoder_hardening.cpp`
+    can assert the fail-closed sequencing and the failed-control name for
+    every control without actually installing a broken sandbox in the test
+    process.
 * The worker rejects images whose width or height exceeds 4096 and whose pixel
   count exceeds the request's `max_pixels`.
 
