@@ -18,32 +18,32 @@ namespace
     // for backwards compatibility (rooms/v10.md, "Values in m.room.power_levels
     // events must be integers").
     constexpr auto policies = std::array{
-        RoomVersionPolicy{"1",  EventFormat::room_v1_v2,   RedactionRules::room_v1_v7,    AuthRules::room_v1,
+        RoomVersionPolicy{"1", EventFormat::room_v1_v2, RedactionRules::room_v1_v7, AuthRules::room_v1,
                           StateResolutionAlgorithm::v1, EventIdFormat::reference_hash, true, false, false},
-        RoomVersionPolicy{"2",  EventFormat::room_v1_v2,   RedactionRules::room_v1_v7,    AuthRules::room_v1,
+        RoomVersionPolicy{"2", EventFormat::room_v1_v2, RedactionRules::room_v1_v7, AuthRules::room_v1,
                           StateResolutionAlgorithm::v2, EventIdFormat::reference_hash, true, false, false},
-        RoomVersionPolicy{"3",  EventFormat::room_v3_plus, RedactionRules::room_v1_v7,    AuthRules::room_v1,
+        RoomVersionPolicy{"3", EventFormat::room_v3_plus, RedactionRules::room_v1_v7, AuthRules::room_v1,
                           StateResolutionAlgorithm::v2, EventIdFormat::reference_hash, true, false, false},
-        RoomVersionPolicy{"4",  EventFormat::room_v3_plus, RedactionRules::room_v1_v7,    AuthRules::room_v1,
+        RoomVersionPolicy{"4", EventFormat::room_v3_plus, RedactionRules::room_v1_v7, AuthRules::room_v1,
                           StateResolutionAlgorithm::v2, EventIdFormat::reference_hash, true, false, false},
-        RoomVersionPolicy{"5",  EventFormat::room_v3_plus, RedactionRules::room_v1_v7,    AuthRules::room_v1,
+        RoomVersionPolicy{"5", EventFormat::room_v3_plus, RedactionRules::room_v1_v7, AuthRules::room_v1,
                           StateResolutionAlgorithm::v2, EventIdFormat::reference_hash, true, false, false},
-        RoomVersionPolicy{"6",  EventFormat::room_v3_plus, RedactionRules::room_v1_v7,    AuthRules::room_v6_plus,
+        RoomVersionPolicy{"6", EventFormat::room_v3_plus, RedactionRules::room_v1_v7, AuthRules::room_v6_plus,
                           StateResolutionAlgorithm::v2, EventIdFormat::reference_hash, true, false, false},
-        RoomVersionPolicy{"7",  EventFormat::room_v3_plus, RedactionRules::room_v1_v7,    AuthRules::room_v6_plus,
+        RoomVersionPolicy{"7", EventFormat::room_v3_plus, RedactionRules::room_v1_v7, AuthRules::room_v6_plus,
                           StateResolutionAlgorithm::v2, EventIdFormat::reference_hash, true, false, false},
         // Room v8 introduced restricted joins (MSC3083): the allow field in
         // m.room.join_rules content is now preserved through redaction.
-        RoomVersionPolicy{"8",  EventFormat::room_v3_plus, RedactionRules::room_v8_v10,   AuthRules::room_v6_plus,
+        RoomVersionPolicy{"8", EventFormat::room_v3_plus, RedactionRules::room_v8_v10, AuthRules::room_v6_plus,
                           StateResolutionAlgorithm::v2, EventIdFormat::reference_hash, true, false, false},
-        RoomVersionPolicy{"9",  EventFormat::room_v3_plus, RedactionRules::room_v8_v10,   AuthRules::room_v6_plus,
+        RoomVersionPolicy{"9", EventFormat::room_v3_plus, RedactionRules::room_v8_v10, AuthRules::room_v6_plus,
                           StateResolutionAlgorithm::v2, EventIdFormat::reference_hash, true, false, false},
-        RoomVersionPolicy{"10", EventFormat::room_v3_plus, RedactionRules::room_v8_v10,   AuthRules::room_v6_plus,
+        RoomVersionPolicy{"10", EventFormat::room_v3_plus, RedactionRules::room_v8_v10, AuthRules::room_v6_plus,
                           StateResolutionAlgorithm::v2, EventIdFormat::reference_hash, true, false, false, true},
         RoomVersionPolicy{"11", EventFormat::room_v3_plus, RedactionRules::room_v11_plus, AuthRules::room_v6_plus,
                           StateResolutionAlgorithm::v2, EventIdFormat::reference_hash, true, false, false, true},
         RoomVersionPolicy{"12", EventFormat::room_v3_plus, RedactionRules::room_v11_plus, AuthRules::room_v12,
-                          StateResolutionAlgorithm::v2, EventIdFormat::reference_hash, true, true,  true, true},
+                          StateResolutionAlgorithm::v2_1, EventIdFormat::reference_hash, true, true, true, true},
     };
 
 } // namespace

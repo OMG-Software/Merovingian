@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -58,10 +59,22 @@ struct StateGroup final
     std::vector<StateEventReference> state{};
 };
 
+// Fetches a single event (by id) that is not present in any submitted state
+// group, so the resolver can walk auth_events chains past the two forked
+// state snapshots it was handed. Returns nullopt when the event is unknown
+// to the caller (e.g. not yet persisted). The resolver treats any such miss
+// encountered while walking an auth chain as fatal to the whole resolution
+// (fail closed) rather than proceeding with a partial chain — see
+// resolve_state_v2.
+// Spec: ../../docs/matrix-v1.19-spec/rooms/v10.md — Definitions ("Auth
+// chain", "Auth difference").
+using EventLookupFn = std::function<std::optional<StateEventReference>(std::string_view event_id)>;
+
 struct StateResolutionRequest final
 {
     std::string room_version{};
     std::vector<StateGroup> state_groups{};
+    EventLookupFn event_lookup{};
 };
 
 struct StateResolutionResult final

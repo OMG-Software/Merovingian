@@ -236,7 +236,7 @@ SCENARIO("Room version state resolution algorithm matches the spec table",
             }
         }
 
-        for (auto const* v : {"2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"})
+        for (auto const* v : {"2", "3", "4", "5", "6", "7", "8", "9", "10", "11"})
         {
             WHEN(std::string{"version "} + v + " policy is retrieved")
             {
@@ -248,6 +248,21 @@ SCENARIO("Room version state resolution algorithm matches the spec table",
                     // Spec MUST: v2+ use the State-Resolution v2 (SDSS) algorithm.
                     REQUIRE(policy->state_resolution == StateResolutionAlgorithm::v2);
                 }
+            }
+        }
+
+        WHEN("version 12 policy is retrieved")
+        {
+            auto const* policy = merovingian::rooms::find_room_version_policy("12");
+            REQUIRE(policy != nullptr);
+
+            THEN("state resolution algorithm is v2.1 (the v12 SDSS modifications)")
+            {
+                // Spec MUST: rooms/v12.md "State resolution" — "largely the same as
+                // the algorithm found in room version 2 with the following
+                // modifications" (empty starting map for iterative auth checks,
+                // conflicted state subgraph, full conflicted set changes).
+                REQUIRE(policy->state_resolution == StateResolutionAlgorithm::v2_1);
             }
         }
     }

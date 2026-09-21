@@ -49,4 +49,17 @@ inline constexpr std::size_t max_conflicted_state_keys = 10'000U;
 // have depth in the hundreds, so 10 000 prevents infinite or cyclic chains.
 inline constexpr std::size_t max_mainline_auth_chain_depth = 10'000U;
 
+// Maximum number of events the state-resolution auth-chain walker will fetch
+// (via StateResolutionRequest::event_lookup) or visit while computing the
+// auth difference, the v12 conflicted state subgraph, and the iterative auth
+// checks' own-auth-events fallback. This walk is reachable from untrusted
+// federation input (a hostile remote can propose a state fork), so it must
+// be bounded independently of the room's real size; 20 000 comfortably
+// covers a legitimate room's auth chain while still failing closed on an
+// adversarially deep or wide chain.
+// Spec: ../../docs/matrix-v1.19-spec/rooms/v10.md — Definitions ("Auth
+// chain", "Auth difference"); ../../docs/matrix-v1.19-spec/rooms/v12.md —
+// Definitions ("Conflicted state subgraph").
+inline constexpr std::size_t max_auth_chain_walk_events = 20'000U;
+
 } // namespace merovingian::events
