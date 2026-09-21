@@ -58,6 +58,17 @@ namespace
     return env_string("MEROVINGIAN_TEST_POSTGRESQL_MIGRATION_ROLE");
 }
 
+// ADR-0062 part 2 (0.12.13 audit, finding N1): the federation worker's
+// least-privilege PostgreSQL role. The CI workflow, when it provisions this
+// scenario, creates a role via packaging/postgresql/provision-federation-worker-role.sql
+// (SELECT only, no SELECT on server_signing_keys or the other tables
+// database::table_load_profile_includes excludes) and exposes its name here.
+// Locally, leaving it unset skips this scenario but still runs the rest.
+[[nodiscard]] auto worker_role_from_environment() -> std::string_view
+{
+    return env_string("MEROVINGIAN_TEST_POSTGRESQL_WORKER_ROLE");
+}
+
 } // namespace
 
 SCENARIO("PostgreSQL persistence integration is gated by an explicit test URI", "[database][postgresql][integration]")
@@ -465,6 +476,57 @@ SCENARIO("PostgreSQL role separation: runtime role cannot execute DDL", "[databa
             {
                 REQUIRE(after_set == std::string{runtime_role});
                 REQUIRE_FALSE(ddl_attempt.ok);
+            }
+        }
+    }
+}
+
+SCENARIO("PostgreSQL federation worker role: the load profile is what makes a role lacking "
+         "SELECT on server_signing_keys able to start",
+         "[database][postgresql][integration][roles][worker_db_uri]")
+{
+    GIVEN("a live PostgreSQL URI, migration role, and a federation-worker role granted no SELECT "
+          "on server_signing_keys (packaging/postgresql/provision-federation-worker-role.sql)")
+    {
+        auto const uri = postgresql_uri_from_environment();
+        auto const migration_role = migration_role_from_environment();
+        auto const worker_role = worker_role_from_environment();
+        if (uri.empty() || migration_role.empty() || worker_role.empty())
+        {
+            SUCCEED("skipped: live PG URI, migration role, or "
+                    "MEROVINGIAN_TEST_POSTGRESQL_WORKER_ROLE env vars are not set");
+            return;
+        }
+
+        // Bring the schema to the current version first (as the migration
+        // role), the same precondition every other role-enforcement scenario
+        // in this file relies on, so the two opens below exercise only the
+        // row-hydration path, not a migration under an unexpected role.
+        {
+            auto migrator = merovingian::database::open_postgresql_persistent_store(uri, {}, migration_role);
+            REQUIRE(migrator.ok);
+        }
+
+        WHEN("the store opens under that role with TableLoadProfile::federation_worker")
+        {
+            auto const opened = merovingian::database::open_postgresql_persistent_store(
+                uri, worker_role, {}, merovingian::database::TableLoadProfile::federation_worker);
+
+            THEN("it succeeds, and server_signing_keys was never hydrated into memory")
+            {
+                REQUIRE(opened.ok);
+                REQUIRE(opened.store.server_signing_keys.empty());
+            }
+        }
+
+        WHEN("the same role is asked to open with TableLoadProfile::full instead")
+        {
+            auto const opened = merovingian::database::open_postgresql_persistent_store(
+                uri, worker_role, {}, merovingian::database::TableLoadProfile::full);
+
+            THEN("the open fails, because the unrestricted profile SELECTs a table this role cannot read")
+            {
+                REQUIRE_FALSE(opened.ok);
             }
         }
     }

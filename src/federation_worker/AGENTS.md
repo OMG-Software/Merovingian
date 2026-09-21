@@ -13,10 +13,11 @@ because it is the process most exposed to hostile input, holds as little trust a
 
 | File | Responsibility |
 |---|---|
-| `main.cpp` | Entry point: parses argv, reads `--config`, validates the inherited IPC and IPC-key fds, applies worker hardening, runs the event loop |
-| `args.cpp` | Parses `--config <path>`, `--ipc-fd <fd>`, and `--ipc-key-fd <fd>` (all required) and `--shard <index>` (optional, default 0) |
+| `main.cpp` | Entry point: parses argv, reads `--config`, validates the inherited IPC, IPC-key, and (when present) db-uri fds, applies worker hardening, runs the event loop |
+| `args.cpp` | Parses `--config <path>`, `--ipc-fd <fd>`, and `--ipc-key-fd <fd>` (all required), plus `--shard <index>` and `--db-uri-fd <fd>` (both optional, default absent/0) |
 | `ipc_key_fd.cpp` / `.hpp` | `read_ipc_auth_key`: reads the IPC auth key main wrote to the inherited key-fd, fail-closed on short/long/missing input; `clear_master_key_file`: empties the worker's config copy of `security.secrets.master_key_file` |
-| `worker_event_loop.cpp` / `.hpp` | `WorkerEventLoop`: owns the `IpcChannel`, starts a `HomeserverRuntime`, wires federation callbacks to relay over IPC, runs the two request thread pools |
+| `db_uri_fd.cpp` / `.hpp` | ADR-0062 part 2. `read_worker_database_uri`: reads a separate, least-privilege database connection URI from the inherited db-uri-fd until EOF, fail-closed on empty/oversized (>4096 bytes) input; `apply_worker_database_uri`: sets the worker's config copy's `database.worker_conninfo_override` and clears `uri_file`/`runtime_role`/`migration_role` |
+| `worker_event_loop.cpp` / `.hpp` | `WorkerEventLoop`: owns the `IpcChannel`, starts a `HomeserverRuntime` with `TableLoadProfile::federation_worker`, wires federation callbacks to relay over IPC, runs the two request thread pools |
 
 `worker_event_loop.hpp` sits next to its `.cpp` and is included with a bare relative include — the
 one exception to the `merovingian/` include-path rule in `src/AGENTS.md`.
@@ -32,26 +33,42 @@ one exception to the `merovingian/` include-path rule in `src/AGENTS.md`.
    then clears `security.secrets.master_key_file` on its own config copy
    (`federation_worker::clear_master_key_file`) before starting the runtime, so no later code
    path — reached today or added in the future — can open that file from inside the worker.
-2. **The worker's own `PersistentStore` is a read-only snapshot for room-scoped federation reads —
+2. **The worker never connects to a PostgreSQL database with main's own login (ADR-0062
+   part 2).** A separate, least-privilege role's connection URI (`federation.worker.
+   database_uri_file`, provisioned by `packaging/postgresql/provision-federation-worker-role.sql`)
+   is delivered the same way as the IPC auth key — a third inherited pipe fd (`--db-uri-fd`,
+   read by `federation_worker::read_worker_database_uri` in `db_uri_fd.cpp`) — never a file the
+   worker opens. `federation_worker::apply_worker_database_uri` clears the worker's config
+   copy's `database.uri_file`/`runtime_role`/`migration_role` at the same time, so the worker's
+   restricted login connects directly with its own grants and never attempts a `SET ROLE` onto
+   roles it was never made a member of. Independently, `RuntimeStartOptions::
+   database_load_profile` is always set to `database::TableLoadProfile::federation_worker` in
+   `WorkerEventLoop::run()`: the worker never pulls `server_signing_keys` and the other
+   credential-bearing tables `database::table_load_profile_includes` excludes into its own
+   process memory, regardless of which credential it authenticated with. See
+   `docs/database-persistence.md`, "Federation worker least-privilege role". `database.
+   backend=sqlite` offers no role to separate (a single shared file) — the worker keeps
+   opening the same file there; the load profile is that backend's only protection.
+3. **The worker's own `PersistentStore` is a read-only snapshot for room-scoped federation reads —
    never the system of record.** `pdu_sink`, `membership_acceptor`, `invite_handler`, `edu_sink`,
    `one_time_keys_claim_provider`, `user_devices_provider`, `device_keys_query_provider`,
    `profile_query_provider` and `event_query_provider` all relay to main over IPC. Each was a
    shipped bug when it did not (worker-accepted joins and invites invisible to main, split-brain
    one-time-key claims, stale device and profile reads); see the comments above each override in
    `worker_event_loop.cpp`.
-3. **`local_pool` and `relay_pool` stay separate.** `local_pool` (`federation.worker.threads`)
+4. **`local_pool` and `relay_pool` stay separate.** `local_pool` (`federation.worker.threads`)
    serves endpoints answerable from the snapshot; `relay_pool` (`federation.worker.relay_threads`)
    serves endpoints that block on an IPC round trip or outbound HTTP.
    `federation::federation_endpoint_requires_main_relay` routes each request before a thread is
    committed, so slow relays cannot starve fast local reads.
-4. **`room_sync` notifications run on `local_pool`, never inline on the IPC dispatch thread.**
+5. **`room_sync` notifications run on `local_pool`, never inline on the IPC dispatch thread.**
    `database::reload_room` needs `runtime.mutex`, which a `relay_pool` transaction may hold across
    its own round trip to main; running it on the dispatch thread risks the reader/dispatch
    deadlock described in `docs/architecture.md`, "IPC reader/dispatch split".
-5. **Never call `channel->stop()` from inside a request handler.** `stop()` joins the dispatch
+6. **Never call `channel->stop()` from inside a request handler.** `stop()` joins the dispatch
    thread and a thread cannot join itself. On `"shutdown"`, signal a condition variable and let the
    worker's main thread call `stop()`.
-6. **Drain both thread pools before stopping the IPC channel on shutdown.** An in-flight handler
+7. **Drain both thread pools before stopping the IPC channel on shutdown.** An in-flight handler
    still needs the channel to send its response.
 
 ## Hardening
@@ -66,10 +83,16 @@ the seccomp profile denies the `ptrace` it needs.
 
 ## Testing
 
-- `tests/unit/test_federation_worker_args.cpp` — argv parsing, including `--ipc-key-fd` validation
+- `tests/unit/test_federation_worker_args.cpp` — argv parsing, including `--ipc-key-fd` and `--db-uri-fd` validation
 - `tests/unit/test_federation_worker_ipc_key_fd.cpp` — `read_ipc_auth_key` / `clear_master_key_file` (tag `[worker_key_fd]`)
+- `tests/unit/test_worker_db_uri.cpp` — config validation matrix, `--db-uri-fd` argv parsing, `read_worker_database_uri`,
+  `apply_worker_database_uri`, `database::table_load_profile_includes`, and the generalized worker secret pipe
+  (tag `[worker_db_uri]`)
 - `tests/unit/test_worker_event_loop.cpp` — `WorkerEventLoop` construction and `run()` lifecycle
 - `tests/integration/test_federation_worker_flow.cpp` — event loop and IPC relay behaviour
+- `tests/integration/test_postgresql_persistence_flow.cpp` — the `federation_worker` load-profile scenario against a
+  live PostgreSQL role lacking `SELECT` on `server_signing_keys` (gated by
+  `MEROVINGIAN_TEST_POSTGRESQL_WORKER_ROLE`; skipped without a live PostgreSQL test environment)
 
 ## Key docs
 

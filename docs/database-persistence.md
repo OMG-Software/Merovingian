@@ -596,3 +596,113 @@ These remain deferred:
    `packaging/postgresql/provision-roles.sql` for the stricter alternative
    (never grant the login role membership of the migration role; run
    migrations out-of-band and leave `database.migration_role` unset).
+
+## Federation worker least-privilege role (ADR-0062 part 2)
+
+The out-of-process federation worker (`merovingian-fed-worker`,
+`src/federation_worker/`) is the process most exposed to hostile input (see
+`src/federation_worker/AGENTS.md`). Before 0.12.13 finding N1 part 2, it
+opened the database with the *same* PostgreSQL login as main, so a
+compromised worker could `SELECT` `server_signing_keys.secret_key` (still
+ciphertext, but exactly what decrypts it once the operator master key is
+recovered by an unrelated bug — see ADR-0062 part 1) and every other
+credential-bearing table, even though no worker code path ever reads them.
+
+Two independent mechanisms close this, together:
+
+1. **A separate login, not `SET ROLE`.** `SET ROLE`-based separation was
+   rejected for this boundary specifically: a session holding the *login*
+   role that granted a restricted role can always `RESET ROLE` back to it,
+   so a compromised worker holding the original login credential gains
+   nothing from a restricted role it can trivially undo. Only a distinct
+   login credential the worker process never holds in the first place is a
+   real boundary — see ADR-0062's "Options considered and rejected". The new
+   config key `federation.worker.database_uri_file` names a secret file
+   holding this login's connection URI. Main reads and validates it exactly
+   like `database.uri_file` (owner-only, regular file, TOCTOU-safe —
+   `validate_existing_secret_file_metadata` in `src/main.cpp`) and hands the
+   bytes to each worker shard over a third inherited pipe fd
+   (`homeserver::kWorkerDbUriFd`, `--db-uri-fd` on the child's argv) — the
+   worker itself never opens this file. `federation_worker::
+   apply_worker_database_uri` then sets `database.worker_conninfo_override`
+   on the worker's own in-memory `Config` copy and clears `uri_file`,
+   `runtime_role`, and `migration_role`: the separate role connects
+   directly with its own grants, never attempting a `SET ROLE` against roles
+   it was never made a member of. `packaging/postgresql/
+   provision-federation-worker-role.sql` provisions the role; see that
+   file's header comment for the full GRANT/REVOKE SQL and the reasoning
+   behind each statement. It grants `SELECT` only — never `INSERT`/`UPDATE`/
+   `DELETE` — since the worker's own `PersistentStore` is a read-only
+   snapshot for room-scoped federation reads and every write it needs is
+   relayed to main over IPC (`src/federation_worker/AGENTS.md` rule 2; no
+   code path in the worker writes to its own database connection directly).
+
+2. **A load profile, so the worker never pulls that data into its own
+   memory regardless of which credential it holds.**
+   `database::TableLoadProfile` and `database::table_load_profile_includes`
+   (`include/merovingian/database/persistent_store.hpp`) decide which tables
+   `open_postgresql_persistent_store`'s row loader hydrates.
+   `TableLoadProfile::federation_worker` excludes:
+
+   | Table | Why excluded |
+   |---|---|
+   | `server_signing_keys` | `secret_key` — the encrypted Matrix signing secret (the finding's primary target) |
+   | `users` | `password_hash` |
+   | `access_tokens` | `token_hash` — bearer credential |
+   | `refresh_tokens` | `token_hash` — bearer credential |
+   | `login_tokens` | `token_hash` — single-use SSO login credential |
+   | `openid_tokens` | `token_hash` — federation userinfo credential |
+   | `account_threepids` | `client_secret` — IS-delegated unbind credential |
+
+   Every other table stays loaded: the worker's own local (non-relayed)
+   federation routes — `make_join`/`make_leave`/`make_knock` template
+   generation, backfill, `query`/`directory`, `state`, `state_ids`,
+   `get_missing_events`, and space hierarchy — read only room-scoped tables
+   (`rooms`, `membership`, `invites`, `events`, `event_edges`, `event_auth`,
+   `event_signatures`, `current_state`, `state_transitions`,
+   `federation_destinations`, `federation_transactions`). Everything else a
+   worker request might need (signing, one-time-key claims, device/profile
+   queries, PDU/EDU/membership/invite acceptance) is relayed to main over
+   IPC instead of read from this process's own store — see
+   `src/federation_worker/worker_event_loop.cpp` and
+   `src/federation_worker/AGENTS.md` rule 2. `RuntimeStartOptions::
+   database_load_profile` is set to `TableLoadProfile::federation_worker`
+   unconditionally in `WorkerEventLoop::run()`, independent of whether a
+   separate URI applies — even a worker running in the
+   `allow_shared_database_credentials=true` degraded mode never pulls this
+   material into its own process memory.
+
+   `table_load_profile_includes` and `provision-federation-worker-role.sql`'s
+   `REVOKE` list are the two authoritative places for "which tables the
+   worker cannot touch" and must be kept in sync: a new secret-bearing table
+   needs both a new exclusion in the C++ predicate and a new `REVOKE` line in
+   the SQL script.
+
+**Explicit, logged opt-out:** `federation.worker.
+allow_shared_database_credentials=true` lets the worker share main's login
+when a separate role cannot be provisioned, restoring the pre-0.12.13-part-2
+behaviour. `config::validate()` rejects `database.backend=postgresql` with
+`security.federation.enabled=true` and an empty `database_uri_file` unless
+this is set (`src/config/config.cpp`), and `homeserver::WorkerPool::
+WorkerPool` logs `CRITICAL` on every startup while it applies, so the
+downgrade cannot go unnoticed. Ignored entirely for
+`database.backend=sqlite`: a single shared file offers no role boundary to
+separate, so the worker keeps opening the same file there and the load
+profile above is its only protection (see ADR-0062 part 2, "Positive
+Consequences").
+
+**Migration role never reachable from the worker.** The worker's own
+connection always passes empty `runtime_role`/`migration_role` to
+`open_postgresql_persistent_store` (cleared by `apply_worker_database_uri`),
+so it can never `SET ROLE` to `:migration_role` even if a compromised worker
+tried — and in the normal startup order the worker only ever connects after
+main has already brought the schema to `current_schema_version()`, so the
+migration branch inside `open_postgresql_persistent_store` (`schema.version <
+current_schema_version()`) is unreachable from a worker connection in
+practice regardless.
+
+**No role is created by a migration.** PostgreSQL roles are cluster-level
+objects, not part of any one database's schema, so — consistent with
+`provision-roles.sql` — `provision-federation-worker-role.sql` is a
+separate, operator-run provisioning script, never a file under
+`migrations/`.

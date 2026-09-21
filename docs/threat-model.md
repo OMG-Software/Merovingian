@@ -401,17 +401,45 @@ threat it closes; the controls above are the standing defences these reinforce.
   config copy before `homeserver::start_runtime()` runs, so no code path in
   the worker — today's or a future one — can open the file even by accident.
   See [ADR-0062](adr/0062-federation-worker-holds-no-secret-files-secrets-arrive-over-inherited-fds.md).
-  **Residual gap until parts 2/3 land:** the worker still connects to the
-  *same* PostgreSQL/SQLite database with the *same* credentials as main (no
-  role separation yet — part 2), so a compromised worker can still read the
-  encrypted `secret_key` ciphertext via SQL (it just cannot derive the key
-  that decrypts it, from part 1 onward, via any code path this project
-  built); and the worker process still has ordinary OS-level filesystem
-  access (no Landlock yet — part 3), so a worker compromised through a
-  memory-safety bug — as opposed to one abusing a code path that intentionally
-  reads a file — could still open the master key file directly off disk. Parts
-  2 and 3 close those two remaining avenues; this entry is the running record
-  of which is closed as of any given version.
+
+  **Part 2, PostgreSQL: closed.** A PostgreSQL-backed worker now connects
+  with a *separate, least-privilege login* (`federation.worker.
+  database_uri_file`, provisioned by `packaging/postgresql/
+  provision-federation-worker-role.sql`), handed over a third inherited pipe
+  fd (`homeserver::kWorkerDbUriFd`) the same way the IPC auth key is — the
+  worker never opens that file itself. `SET ROLE`-based separation was
+  rejected: a session holding the login role that granted a restricted role
+  can always `RESET ROLE` back to it, so only a distinct login credential
+  closes this. The provisioned role has no `SELECT` on `server_signing_keys`
+  (or the other tables `database::table_load_profile_includes` excludes), so
+  a compromised worker with this role cannot read the encrypted `secret_key`
+  ciphertext at all, closing the residual gap the part-1 entry above
+  recorded. Independently, `database::TableLoadProfile::federation_worker`
+  (`RuntimeStartOptions::database_load_profile`, always set by
+  `WorkerEventLoop::run()`) means the worker never pulls that ciphertext —
+  or the other excluded tables' credential material — into its own process
+  memory even when running in the explicit, `CRITICAL`-logged
+  `allow_shared_database_credentials=true` opt-out mode. See
+  `docs/database-persistence.md`, "Federation worker least-privilege role",
+  for the full table list and the SQL.
+
+  **SQLite: not applicable, unchanged.** A single shared SQLite file offers
+  no role boundary to separate — the worker keeps opening the same file
+  there. Part 1's file-access removal is that backend's only protection for
+  the master key specifically; the load profile above still reduces (but,
+  for SQLite, does not eliminate — the file itself remains fully readable by
+  the worker process) how much credential material sits resident in the
+  worker's memory.
+
+  **Residual gap until part 3 lands:** the worker process still has ordinary
+  OS-level filesystem access (no Landlock yet), so a worker compromised
+  through a memory-safety bug — as opposed to one abusing a code path that
+  intentionally reads a file — could still open the master key file, or
+  (PostgreSQL) the file `database.uri_file` names, directly off disk, even
+  though no worker code path asks it to and (as of part 2) its own database
+  role could not use main's credentials even if it read them. Part 3 closes
+  this; this entry is the running record of which part is closed as of any
+  given version.
 
 - **Single worker as a chokepoint (v0.10.3, mitigated in v0.10.4):**
   Phase 1 used one federation worker for every room. A CPU-heavy room could

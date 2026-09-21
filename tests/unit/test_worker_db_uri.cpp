@@ -7,6 +7,7 @@
 // docs/adr/0062-federation-worker-holds-no-secret-files-secrets-arrive-over-inherited-fds.md.
 
 #include "merovingian/config/config.hpp"
+#include "merovingian/config/config_parser.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/federation_worker/args.hpp"
 #include "merovingian/federation_worker/db_uri_fd.hpp"

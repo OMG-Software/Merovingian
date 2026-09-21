@@ -226,14 +226,17 @@ and `src/media/thumbnail_worker_main.cpp`):
 
 ### Out_of_process federation worker IPC security
 
-When `federation.worker.enabled=true`, `merovingian-server` spawns
-`merovingian-fed-worker` and communicates through an `AF_UNIX SOCK_STREAM`
-socket pair created with `SOCK_CLOEXEC` before the child is spawned via
-`posix_spawn`. The worker inherits the client fd at file descriptor 3
-(`--ipc-fd`) and, separately, the read end of a one-shot pipe carrying the
-IPC auth key at file descriptor 4 (`--ipc-key-fd`, see below); both are placed
-by `posix_spawn_file_actions_adddup2`, which clears `FD_CLOEXEC` only on the
-child's copies. Every other fd is `FD_CLOEXEC` and does not survive the exec.
+When federation is enabled, `merovingian-server` spawns `merovingian-fed-worker`
+and communicates through an `AF_UNIX SOCK_STREAM` socket pair created with
+`SOCK_CLOEXEC` before the child is spawned via `posix_spawn`. The worker
+inherits the client fd at file descriptor 3 (`--ipc-fd`), the read end of a
+one-shot pipe carrying the IPC auth key at file descriptor 4 (`--ipc-key-fd`,
+see below), and — when `database.backend=postgresql` and a separate worker
+database role applies (ADR-0062 part 2, see below) — the read end of a third
+one-shot pipe carrying that role's connection URI at file descriptor 5
+(`--db-uri-fd`). All three are placed by `posix_spawn_file_actions_adddup2`,
+which clears `FD_CLOEXEC` only on the child's copies. Every other fd is
+`FD_CLOEXEC` and does not survive the exec.
 
 The channel is hardened against a local attacker who gains access to a
 separate process on the same host:
@@ -270,8 +273,27 @@ separate process on the same host:
   path reachable inside the worker, today or added later, has a path string to
   pass to `crypto::load_master_key_material`. See docs/threat-model.md,
   "Operator master key reachable from the federation worker", for the residual
-  gap (same DB credentials as main; no Landlock yet) parts 2 and 3 of this
-  change close.
+  gap (no Landlock yet) part 3 of this change closes.
+* **A separate, least-privilege database login, delivered the same way**
+  (ADR-0062 part 2): when `database.backend=postgresql`,
+  `WorkerPool::WorkerPool` reads `federation.worker.database_uri_file` once
+  (same owner-only-file validation as `database.uri_file`) and hands each
+  `WorkerSupervisor` its own `core::SecretBuffer` copy of the bytes.
+  `spawn_and_connect` creates a third `pipe2(O_CLOEXEC)` pipe
+  (`homeserver::make_worker_db_uri_pipe`, a generalization of
+  `make_worker_key_pipe` that keeps the read end off all three fixed child fd
+  numbers), writes the URI, and adds a third `adddup2` onto fd 5
+  (`homeserver::kWorkerDbUriFd`, `--db-uri-fd 5`) — again only when a separate
+  URI actually applies; a SQLite backend or the
+  `allow_shared_database_credentials=true` opt-out means neither the flag nor
+  the pipe exist at all. The worker (`federation_worker::
+  read_worker_database_uri`) reads until EOF (bounded to 4096 bytes, unlike
+  the fixed-length auth key), rejects an empty or oversized result, and
+  `federation_worker::apply_worker_database_uri` sets the delivered URI as the
+  worker's own connection override while clearing `database.uri_file`,
+  `runtime_role`, and `migration_role` on its config copy — so the worker
+  never has a path to main's credentials file and never attempts a `SET ROLE`
+  onto a role it was never granted membership of.
 * **No peer credentials in transit** (#323): the main process verifies the
   inbound X-Matrix signature itself and forwards only the verified peer identity
   (`origin`/`key_id`/`sig_verified`); the raw peer `access_token` and

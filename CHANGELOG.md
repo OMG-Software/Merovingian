@@ -48,6 +48,64 @@ audit.
   worker database login) and 3 (Linux Landlock filesystem restriction) are
   tracked follow-ups, not yet shipped.
 
+- **Federation worker no longer shares main's PostgreSQL login, and never
+  hydrates credential-bearing tables into its own memory (finding N1, part 2
+  of 3).** Before this, a PostgreSQL-backed worker connected with the exact
+  same login role as main, so a compromise could `SELECT
+  server_signing_keys.secret_key` (still ciphertext, but exactly what part
+  1's fix stops the worker from independently decrypting) and every other
+  credential-bearing table, even though no worker code path reads them. Two
+  independent mechanisms close this:
+  - **A separate, least-privilege login**, delivered the same inherited-fd
+    way as part 1's IPC auth key. New config keys
+    `federation.worker.database_uri_file` (a secret file holding the
+    role's connection URI, validated the same way as `database.uri_file`)
+    and `federation.worker.allow_shared_database_credentials` (an explicit,
+    `CRITICAL`-logged opt-out). `config::validate()` rejects
+    `database.backend=postgresql` with federation enabled and an empty
+    `database_uri_file` unless the opt-out is set.
+    `homeserver::make_worker_key_pipe`'s pipe construction is generalised
+    into `make_worker_secret_pipe(secret, reserved_fds)`, reused by the new
+    `make_worker_db_uri_pipe` (reserves fds 3, 4, and the new
+    `kWorkerDbUriFd` 5); `WorkerPool::WorkerPool` derives the URI once and
+    each `WorkerSupervisor::spawn_and_connect` passes `--db-uri-fd <n>` and a
+    third `posix_spawn_file_actions_adddup2`, only when a separate URI
+    actually applies. The worker
+    (`federation_worker::read_worker_database_uri`,
+    `src/federation_worker/db_uri_fd.cpp`) reads the URI until EOF (bounded
+    to 4096 bytes, unlike the fixed-length auth key), and
+    `federation_worker::apply_worker_database_uri` sets the delivered URI as
+    the worker's own connection override while clearing its config copy's
+    `database.uri_file`/`runtime_role`/`migration_role`, so the restricted
+    login connects directly and never attempts a `SET ROLE` onto roles it
+    was never granted. `packaging/postgresql/
+    provision-federation-worker-role.sql` provisions the role: `SELECT`
+    only (never `INSERT`/`UPDATE`/`DELETE` — the worker's own store is a
+    read-only snapshot; every write is relayed to main over IPC), granted
+    on every table except the seven listed below.
+  - **A load profile**, independent of which credential the worker holds.
+    `database::TableLoadProfile` and the pure `table_load_profile_includes`
+    predicate (`include/merovingian/database/persistent_store.hpp`) decide
+    which tables `open_postgresql_persistent_store`'s row loader hydrates.
+    `TableLoadProfile::federation_worker` excludes `server_signing_keys`,
+    `users`, `access_tokens`, `refresh_tokens`, `login_tokens`,
+    `openid_tokens`, and `account_threepids`; every other table stays
+    loaded, since the worker's own (non-relayed) federation routes read
+    only room-scoped tables and everything else is relayed to main over
+    IPC. `RuntimeStartOptions::database_load_profile` is set to
+    `federation_worker` unconditionally by `WorkerEventLoop::run()`, so
+    even a worker running in the `allow_shared_database_credentials=true`
+    degraded mode never pulls that material into its own process memory.
+    SQLite is unaffected by either mechanism — a single shared file offers
+    no role to separate; part 1's file-access removal remains that
+    backend's protection for the master key specifically, and the load
+    profile is a defense-in-depth reduction there, not a boundary.
+  See [ADR-0062](docs/adr/0062-federation-worker-holds-no-secret-files-secrets-arrive-over-inherited-fds.md)
+  and `docs/database-persistence.md`, "Federation worker least-privilege
+  role", for the full design and the GRANT/REVOKE SQL. Part 3 (Linux
+  Landlock filesystem restriction) remains a tracked follow-up, not yet
+  shipped.
+
 ## 0.12.12
 
 Documentation only — no code changes beyond the version bump. A full audit
