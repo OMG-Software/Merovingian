@@ -163,7 +163,19 @@ auto write_minimal_config(std::filesystem::path const& config_path, std::filesys
           << "database.backend=sqlite\n"
           << "database.sqlite_path=" << db_path.string() << "\n"
           << "security.secrets.master_key_file=" << master_key_path << "\n"
-          << "federation.worker.binary=" << worker_binary << "\n";
+          << "federation.worker.binary=" << worker_binary
+          << "\n"
+          // ADR-0062 part 3: this test spawns a real merovingian-server,
+          // which spawns a real worker with federation.worker.apply_hardening
+          // defaulting true. Landlock is applied unconditionally at worker
+          // startup independent of that flag, so without this opt-out the
+          // worker would refuse to start on any test/CI kernel older than
+          // Linux 5.13 or with Landlock disabled at boot, turning this
+          // hardening test into a federation-worker-availability test it was
+          // never meant to be. On a kernel that does have Landlock, it is
+          // still applied for real -- this opt-out only changes behaviour
+          // when Landlock is genuinely unavailable.
+          << "federation.worker.allow_without_landlock=true\n";
     }
     // The server rejects config files with group/other write permission.
     ::chmod(config_path.c_str(), 0644); // NOLINT(google-runtime-int)

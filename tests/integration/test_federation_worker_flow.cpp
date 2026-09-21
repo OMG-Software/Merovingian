@@ -157,6 +157,17 @@ auto write_file(std::filesystem::path const& path, std::string_view content) -> 
     // they do not regress if the worker allowlist is incomplete. The hardened
     // scenario below sets this true to validate the worker runs under the filter.
     fw.apply_hardening = false;
+    // ADR-0062 part 3: Landlock is applied unconditionally at worker startup,
+    // independent of apply_hardening above, so every scenario here spawns a
+    // real worker that attempts it. Setting the opt-out true only changes
+    // behaviour when the running kernel actually lacks Landlock (older than
+    // 5.13, or disabled at boot) -- on a kernel that has it, Landlock is
+    // still applied for real and every scenario below genuinely exercises the
+    // allowlist (this is deliberate: a missing CA/resolver/NSS path would
+    // surface here as outbound federation failing). Without this, every
+    // scenario in this file would refuse to start on any CI/dev kernel that
+    // predates Landlock, which is a regression this ADR must not introduce.
+    fw.allow_without_landlock = true;
 
     return Config{server, ListenersConfig{}, database, security, ClientRateLimitsConfig{}, LogModulesConfig{}, fw};
 }
@@ -182,6 +193,11 @@ auto write_worker_config(std::filesystem::path const& path, Config const& config
     // the bulk of scenarios run the worker unfiltered and do not regress.
     content += "federation.worker.apply_hardening=";
     content += config.federation_worker().apply_hardening ? "true" : "false";
+    content += "\n";
+    // ADR-0062 part 3: see the comment on make_federation_worker_config's
+    // fw.allow_without_landlock above.
+    content += "federation.worker.allow_without_landlock=";
+    content += config.federation_worker().allow_without_landlock ? "true" : "false";
     content += "\n";
     write_file(path, content);
 }

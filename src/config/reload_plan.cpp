@@ -521,6 +521,10 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "federation.worker.allow_shared_database_credentials");
     }
+    if (current.federation_worker().allow_without_landlock != next.federation_worker().allow_without_landlock)
+    {
+        add_change(plan, "federation.worker.allow_without_landlock");
+    }
 
     if (current.appservice().registration_files != next.appservice().registration_files)
     {

@@ -71,14 +71,17 @@ last update (part 2: 0.12.13, same branch).
    grants exclude `SELECT` on `server_signing_keys` and the other
    credential-bearing tables `database::table_load_profile_includes`
    excludes.
-3. **(Planned) Linux Landlock filesystem restriction.** The worker calls
-   `landlock_restrict_self` to deny filesystem access outside what it
-   genuinely needs (its own SQLite file, if any; nothing else). If the
-   running kernel lacks Landlock support, the worker refuses to start unless
-   the operator sets `federation.worker.allow_without_landlock=true`, which
-   logs CRITICAL on every start — mirroring the fail-closed seccomp policy in
-   ADR-0041. Until this lands, a worker compromised through a memory-safety
-   bug (not merely one abusing an intentional file-open) could still open the
+3. **(Shipped 0.12.13, this update) Linux Landlock filesystem restriction.**
+   The worker calls `landlock_restrict_self` to deny filesystem access
+   outside what it genuinely needs (its own SQLite database directory, if
+   any, plus a fixed set of best-effort OS-integration paths; nothing else —
+   never the master-key file, either database URI file, or TLS private
+   keys). If the running kernel lacks Landlock support, the worker refuses to
+   start unless the operator sets
+   `federation.worker.allow_without_landlock=true`, which logs CRITICAL on
+   every start — mirroring the fail-closed seccomp policy in ADR-0041.
+   Before this landed, a worker compromised through a memory-safety bug (not
+   merely one abusing an intentional file-open) could still open the
    master-key file directly off disk despite no code path asking it to.
 
 ### Options considered and rejected, for part 1
@@ -339,6 +342,216 @@ refuses `secret_key` to this role.
   the worker process) how much credential material sits resident in worker
   memory. See docs/threat-model.md.
 
+## Decision Outcome, part 3
+
+Chosen option for part 3: **Linux Landlock, applied before the worker
+seccomp filter, with a fail-closed unavailable-kernel gate matching
+ADR-0041.**
+
+`platform::apply_worker_landlock()`
+(`include/merovingian/platform/landlock_hardening.hpp`,
+`src/platform/landlock_hardening.cpp`) is called from
+`federation_worker::main()` immediately after the config file is parsed and
+both inherited fds are validated as open, and immediately before the
+existing `apply_worker_hardening()` call that installs the worker seccomp
+filter (`src/federation_worker/main.cpp`). It:
+
+1. Queries the running kernel's Landlock ABI version via
+   `landlock_create_ruleset(nullptr, 0, LANDLOCK_CREATE_RULESET_VERSION)` —
+   the method `landlock(7)` documents for this purpose. A return `< 1` means
+   Landlock is unavailable (`ENOSYS` on kernels older than 5.13,
+   `EOPNOTSUPP` when Landlock is disabled at boot, e.g. via the `lsm=` boot
+   parameter) and is handled by the fail-closed/opt-out gate below.
+2. Builds a `handled_access_fs` mask covering every filesystem right this
+   project ever restricts (read, write, execute, create, remove, rename-refer,
+   truncate), downgraded to whatever bits the reported ABI version actually
+   defines (`platform::landlock_handled_access_fs`) — dropping unsupported
+   *rights bits* for an older-but-supported kernel is correct Landlock
+   practice; refusing to run there is not (see "Options considered and
+   rejected" below).
+3. Calls `landlock_create_ruleset` with that mask, then one
+   `landlock_add_rule` per `platform::LandlockPathRule` in the list
+   `platform::build_worker_landlock_rules(config)` builds from the worker's
+   own config copy (never a second, drifting hard-coded list) — see
+   "Allowlist derivation" below — then `landlock_restrict_self`.
+4. Every step past the ABI-availability query is unconditionally fatal on
+   failure, independent of `federation.worker.allow_without_landlock`: that
+   opt-out means "this kernel has no Landlock", never "Landlock is present
+   but broken". A required rule (the SQLite database directory) failing to
+   add — including the directory not existing — is fatal; a best-effort
+   rule (every OS-integration path) failing to add is logged and skipped,
+   since those vary by distribution and their absence degrades a specific
+   outbound capability rather than indicating a broken sandbox.
+
+The real `landlock_create_ruleset`/`landlock_add_rule`/`landlock_restrict_self`
+calls sit behind an injectable `platform::LandlockHardeningOps` function
+table, issued via raw `::syscall()` rather than a libc wrapper (glibc did not
+gain wrapper functions for these until 2.38, and the kernel/glibc pair this
+project ships against must not be assumed to have them) — the same pattern
+`media::DecoderHardeningOps` established, so every fail-closed path is unit
+tested (`tests/unit/test_worker_landlock.cpp`, tag `[worker_landlock]`)
+without actually restricting the test process. A forked scenario in the same
+file applies a real ruleset in a child process (mirroring
+`tests/integration/test_seccomp_sqlite_flow.cpp`'s fork pattern, needed
+because `landlock_restrict_self` is irreversible for the calling process'
+lifetime) and asserts a path outside the allowlist is refused with `EACCES`
+while a path inside it still opens — or skips cleanly when the running
+kernel has no Landlock support.
+
+### Seccomp ordering
+
+Landlock is applied **before** the worker seccomp filter
+(`apply_worker_hardening()`, which still runs immediately afterward in
+`main()`), not after. `landlock_create_ruleset`, `landlock_add_rule`, and
+`landlock_restrict_self` are Linux syscalls the worker seccomp allowlist
+(`k_worker_allowed_syscalls`, `src/platform/seccomp_hardening.cpp`) does not
+otherwise need — they run exactly once, at startup, before Landlock
+irreversibly denies them anyway (Landlock does not restrict its own syscalls
+from being called again, but there is never a reason to call them twice).
+Two orderings were available:
+
+* **Apply Landlock first** (chosen): the worker seccomp allowlist never has
+  to carry three syscalls that are only ever used once, at startup, and
+  never again — keeping that allowlist's contents an accurate description
+  of what the worker's *steady-state* runtime needs, which is what a future
+  reader auditing it for "why is this syscall allowed" should find.
+* **Apply Landlock after seccomp, with the three Landlock syscalls added to
+  `k_worker_allowed_syscalls`.** Rejected: this permanently widens the
+  worker's post-restriction syscall surface for a capability it only ever
+  legitimately uses in the single-digit-millisecond window between exec and
+  `landlock_restrict_self`. It also couples the two controls' allowlists
+  together for no benefit — Landlock's own fail-closed gate above already
+  guarantees the ruleset either applies successfully or the worker never
+  reaches the code that would need those syscalls again.
+
+### Allowlist derivation
+
+`platform::build_worker_landlock_rules()` builds two kinds of rules from the
+worker's own config copy — see `platform::LandlockPathRule::required`:
+
+* **Config-derived, required.** When `database.backend=sqlite`, the
+  *directory* containing `database.sqlite_path` (not just the file) is
+  granted `platform::LandlockAccess::read_write`. WAL mode creates `-wal`/
+  `-shm` siblings and a rollback journal is created and removed around each
+  write transaction — none of which exist on a first boot — so the rule
+  must cover directory-level `MAKE_REG`/`REMOVE_FILE`, not just the main
+  file. A PostgreSQL-backed worker gets no filesystem rule for the database
+  at all: it is reached over the network socket ADR-0062 part 2's separate
+  URI authenticates, which Landlock does not restrict (Landlock governs
+  filesystem actions only).
+* **Fixed, best-effort.** `http::detect_system_ca_trust()`
+  (`src/http/outbound_client.cpp`), which the worker's relay pool calls on
+  its first outbound federation request, probes eight candidate CA-bundle
+  file paths and four candidate CA-bundle directory paths across the
+  distributions this project ships on — reading the source directly (rather
+  than re-deriving the list independently) is what the rule set's
+  `/etc/ssl`, `/etc/pki`, `/usr/share/ca-certificates`, and related entries
+  are taken from, plus the directories Debian/Ubuntu's per-certificate
+  symlinks under `/etc/ssl/certs` commonly resolve into. Name resolution
+  (`getaddrinfo`, used to reach federation peers) reads glibc NSS
+  configuration — `/etc/resolv.conf`, `/etc/hosts`, `/etc/nsswitch.conf`,
+  `/etc/gai.conf`, `/etc/host.conf` — and lazily `dlopen()`s
+  `libnss_dns.so`/`libnss_files.so` from the platform's shared-library
+  directories, which are granted `platform::LandlockAccess::read_execute`
+  so `mmap(PROT_EXEC)` of the library file succeeds. Timezone data
+  (`/usr/share/zoneinfo`, `/etc/localtime`) rounds out the list. These are
+  `required = false`: a missing candidate on a given distribution is a
+  normal, expected outcome (this project ships on Debian, Fedora, the BSDs,
+  and others, each with a different subset present), not a broken sandbox,
+  so it is skipped rather than refusing to start.
+
+  Static analysis of `src/http/outbound_client.cpp` and glibc's documented
+  NSS/`getaddrinfo` resolution path was the primary source for this list.
+  `/proc/self/*` and `/dev/urandom` were considered and excluded:
+  `crypto::` and libsodium's own randomness sourcing use `getrandom(2)`
+  directly on Linux (no `/dev/urandom` fd, unlike the NetBSD path recorded
+  in `docs/adr/` for the fd-sweep fix), and no worker code path reads
+  `/proc/self/*`.
+
+### Options considered and rejected, for part 3
+
+* **Best-effort Landlock (log a warning and continue if unavailable),
+  instead of fail-closed.** Already rejected above (recorded alongside
+  parts 1 and 2's own rejected options, since it was evaluated at the same
+  time as this finding): mirrors ADR-0041's rejection of best-effort
+  seccomp — an operator who cannot tell "sandboxed" from "silently
+  unsandboxed" from the logs will not notice until it matters.
+* **Refuse to run on any kernel reporting an ABI version below this
+  build's `k_landlock_max_known_abi`**, instead of downgrading the
+  requested rights mask to what the reported (possibly lower) ABI
+  supports. Rejected: Landlock is explicitly designed for incremental
+  adoption — `landlock(7)`'s own guidance is to request the rights the
+  running kernel supports, not to require a specific version. A kernel
+  reporting ABI 1 (Linux 5.13, no `REFER` or `TRUNCATE` rights) still
+  meaningfully restricts the worker to its allowlisted paths for every
+  right ABI 1 defines; refusing to start there over two rights this
+  project's rule set does not depend on losing would make the fail-closed
+  gate needlessly aggressive, the same category of mistake the "any other
+  Landlock failure is always fatal" rule above avoids in the other
+  direction.
+* **A single flat allowlist with no `required`/best-effort distinction** —
+  every path either fatal-if-missing or silently-ignored-if-missing.
+  Rejected: collapsing the two loses the actual security property each is
+  for. The SQLite database directory not existing is a genuine
+  misconfiguration the worker should refuse to start under (silently
+  ignoring it would mean the worker starts, then fails unrelatedly and
+  confusingly the first time it opens the database); a CA-bundle candidate
+  from a distribution this worker is not running on is expected and must
+  not block startup. `platform::LandlockPathRule::required` names the
+  distinction explicitly per rule rather than encoding it as "which list
+  this path happens to be in."
+* **Grant the worker's own binary and its shared-library dependencies
+  `read_execute` individually (resolved via `/proc/self/exe` and `ldd`-style
+  introspection at startup)**, instead of the fixed library-directory list.
+  Rejected: the worker's own executable and its link-time shared libraries
+  are already mapped into the process image before Landlock is applied (ELF
+  loading happens at `execve()`, before `main()` runs), so Landlock never
+  needs to grant access to them — only libraries loaded *after* the
+  restriction point via `dlopen()` (NSS modules, TLS engines) need a rule,
+  and those come from a small, well-known set of system library
+  directories rather than needing runtime introspection.
+
+### Positive Consequences, part 3
+
+* A federation worker compromised through a memory-safety bug — not merely
+  one abusing an intentionally-opened file — can no longer open the
+  operator master-key file, either database URI file, or TLS private keys
+  directly off disk, closing the residual gap parts 1 and 2 recorded.
+  Combined with part 2, a PostgreSQL-backed worker compromised this way has
+  no filesystem path to any of this server's cryptographic secrets and no
+  database credential beyond its own least-privilege role.
+* The `required`/best-effort split means a distribution this project has
+  not been explicitly tested on (a CA-bundle path in a different location,
+  a non-multiarch library layout) degrades a specific outbound capability
+  (TLS verification, name resolution) rather than refusing to start
+  entirely — the same fail-open-on-the-unimportant-bits,
+  fail-closed-on-the-security-boundary split ADR-0041 already established
+  for the seccomp/Landlock unavailability gate itself.
+
+### Negative Consequences, part 3
+
+* The fixed OS-integration path list (`build_worker_landlock_rules`) is a
+  static, best-effort approximation of what `getaddrinfo`/libcurl/OpenSSL
+  actually open on any given distribution, not a runtime-derived one; a
+  distribution whose CA bundle or NSS library lives somewhere entirely
+  outside the listed candidates degrades outbound federation (TLS
+  verification or name resolution failing) rather than the worker refusing
+  to start, which can be a harder failure mode to diagnose than an explicit
+  startup refusal. The strace-based derivation above is intended to keep
+  this list accurate for the primary distributions this project packages
+  for (`packaging/`), not to be exhaustive for every possible host.
+* Two independent fail-closed gates (seccomp's `apply_hardening` and
+  Landlock's `allow_without_landlock`) now exist for the worker, with
+  different scopes and different opt-outs — an operator reading
+  `docs/hardening.md` needs to understand both are independent, since
+  disabling one does not disable the other (deliberately; see "Seccomp
+  ordering" above).
+* `federation.worker.allow_without_landlock=true` on a kernel that
+  genuinely lacks Landlock leaves the worker exactly as exposed as it was
+  before this part shipped — an operator who sets it without reading why
+  loses the improvement this part provides, mitigated only by the
+  `CRITICAL` log line on every start.
+
 ## Links
 
 * [ADR-0015](0015-keep-the-signing-secret-out-of-the-federation-worker.md) — the
@@ -359,3 +572,5 @@ refuses `secret_key` to this role.
 * `docs/database-persistence.md`, "Federation worker least-privilege role"
   (part 2)
 * `packaging/postgresql/provision-federation-worker-role.sql` (part 2)
+* `tests/unit/test_worker_landlock.cpp`, tag `[worker_landlock]` (part 3)
+* `CHANGELOG.md`, 0.12.13 (part 3)

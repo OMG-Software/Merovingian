@@ -431,15 +431,28 @@ threat it closes; the controls above are the standing defences these reinforce.
   the worker process) how much credential material sits resident in the
   worker's memory.
 
-  **Residual gap until part 3 lands:** the worker process still has ordinary
-  OS-level filesystem access (no Landlock yet), so a worker compromised
-  through a memory-safety bug — as opposed to one abusing a code path that
-  intentionally reads a file — could still open the master key file, or
-  (PostgreSQL) the file `database.uri_file` names, directly off disk, even
-  though no worker code path asks it to and (as of part 2) its own database
-  role could not use main's credentials even if it read them. Part 3 closes
-  this; this entry is the running record of which part is closed as of any
-  given version.
+  **Part 3, Linux Landlock: closed.** The worker now restricts its own
+  filesystem access with `platform::apply_worker_landlock()`
+  (`landlock_create_ruleset`/`landlock_add_rule`/`landlock_restrict_self`),
+  called from `federation_worker::main()` before the worker seccomp filter
+  and before the event loop opens the database or handles any inbound
+  request. The ruleset grants only the SQLite database directory (read-write,
+  required, when `database.backend=sqlite`) and a fixed set of best-effort,
+  read-only or read-execute OS-integration paths (CA trust store candidates,
+  resolver configuration, NSS/dynamic-linker library directories, timezone
+  data) — never the master key file, either database URI file, or TLS
+  private keys. A worker compromised through a memory-safety bug — as
+  opposed to one abusing a code path that intentionally reads a file — can no
+  longer open any of those directly off disk, closing the gap the entry above
+  used to record as residual. When the running kernel has no Landlock
+  support (older than Linux 5.13, or disabled at boot), the worker refuses to
+  start unless `federation.worker.allow_without_landlock=true` is set, which
+  logs CRITICAL on every start — mirroring ADR-0041's fail-closed seccomp
+  policy; any other Landlock failure is always fatal regardless of that
+  opt-out. See
+  [ADR-0062](adr/0062-federation-worker-holds-no-secret-files-secrets-arrive-over-inherited-fds.md),
+  part 3, for the allowlist derivation and the `strace` evidence it is based
+  on.
 
 - **Single worker as a chokepoint (v0.10.3, mitigated in v0.10.4):**
   Phase 1 used one federation worker for every room. A CPU-heavy room could

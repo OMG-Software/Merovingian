@@ -959,6 +959,13 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected boolean (true/false)");
             }
         }
+        else if (key == "federation.worker.allow_without_landlock")
+        {
+            if (!parse_bool_value(value, federation_worker.allow_without_landlock))
+            {
+                add_parse_finding(findings, std::string{key}, "expected boolean (true/false)");
+            }
+        }
         else if (key == "appservice.registration_files")
         {
             appservice.registration_files = parse_string_list(value);

@@ -17,6 +17,7 @@ because it is the process most exposed to hostile input, holds as little trust a
 | `args.cpp` | Parses `--config <path>`, `--ipc-fd <fd>`, and `--ipc-key-fd <fd>` (all required), plus `--shard <index>` and `--db-uri-fd <fd>` (both optional, default absent/0) |
 | `ipc_key_fd.cpp` / `.hpp` | `read_ipc_auth_key`: reads the IPC auth key main wrote to the inherited key-fd, fail-closed on short/long/missing input; `clear_master_key_file`: empties the worker's config copy of `security.secrets.master_key_file` |
 | `db_uri_fd.cpp` / `.hpp` | ADR-0062 part 2. `read_worker_database_uri`: reads a separate, least-privilege database connection URI from the inherited db-uri-fd until EOF, fail-closed on empty/oversized (>4096 bytes) input; `apply_worker_database_uri`: sets the worker's config copy's `database.worker_conninfo_override` and clears `uri_file`/`runtime_role`/`migration_role` |
+| `main.cpp` (Landlock step) | ADR-0062 part 3. Calls `platform::apply_worker_landlock()` before the worker seccomp filter and before `WorkerEventLoop` starts — see "Rules" item 3 below |
 | `worker_event_loop.cpp` / `.hpp` | `WorkerEventLoop`: owns the `IpcChannel`, starts a `HomeserverRuntime` with `TableLoadProfile::federation_worker`, wires federation callbacks to relay over IPC, runs the two request thread pools |
 
 `worker_event_loop.hpp` sits next to its `.cpp` and is included with a bare relative include — the
@@ -49,31 +50,43 @@ one exception to the `merovingian/` include-path rule in `src/AGENTS.md`.
    `docs/database-persistence.md`, "Federation worker least-privilege role". `database.
    backend=sqlite` offers no role to separate (a single shared file) — the worker keeps
    opening the same file there; the load profile is that backend's only protection.
-3. **The worker's own `PersistentStore` is a read-only snapshot for room-scoped federation reads —
+3. **The worker restricts its own filesystem access with Linux Landlock (ADR-0062 part 3),
+   applied before the worker seccomp filter and before anything below.** `main.cpp` calls
+   `platform::apply_worker_landlock()` with the rules `platform::build_worker_landlock_rules()`
+   derives from the worker's own config copy — the SQLite database directory (read-write,
+   required, when `database.backend=sqlite`) plus a fixed set of best-effort OS-integration paths
+   (CA trust store, resolver configuration, NSS/dynamic-linker library directories, timezone
+   data). The master key file, both database URI files, and TLS private keys are never granted.
+   Landlock's three syscalls are not on the worker seccomp allowlist below, so this must run
+   first. On a kernel without Landlock the worker refuses to start unless
+   `federation.worker.allow_without_landlock=true`, which logs CRITICAL on every start; any other
+   Landlock failure is always fatal regardless of that opt-out.
+4. **The worker's own `PersistentStore` is a read-only snapshot for room-scoped federation reads —
    never the system of record.** `pdu_sink`, `membership_acceptor`, `invite_handler`, `edu_sink`,
    `one_time_keys_claim_provider`, `user_devices_provider`, `device_keys_query_provider`,
    `profile_query_provider` and `event_query_provider` all relay to main over IPC. Each was a
    shipped bug when it did not (worker-accepted joins and invites invisible to main, split-brain
    one-time-key claims, stale device and profile reads); see the comments above each override in
    `worker_event_loop.cpp`.
-4. **`local_pool` and `relay_pool` stay separate.** `local_pool` (`federation.worker.threads`)
+5. **`local_pool` and `relay_pool` stay separate.** `local_pool` (`federation.worker.threads`)
    serves endpoints answerable from the snapshot; `relay_pool` (`federation.worker.relay_threads`)
    serves endpoints that block on an IPC round trip or outbound HTTP.
    `federation::federation_endpoint_requires_main_relay` routes each request before a thread is
    committed, so slow relays cannot starve fast local reads.
-5. **`room_sync` notifications run on `local_pool`, never inline on the IPC dispatch thread.**
+6. **`room_sync` notifications run on `local_pool`, never inline on the IPC dispatch thread.**
    `database::reload_room` needs `runtime.mutex`, which a `relay_pool` transaction may hold across
    its own round trip to main; running it on the dispatch thread risks the reader/dispatch
    deadlock described in `docs/architecture.md`, "IPC reader/dispatch split".
-6. **Never call `channel->stop()` from inside a request handler.** `stop()` joins the dispatch
+7. **Never call `channel->stop()` from inside a request handler.** `stop()` joins the dispatch
    thread and a thread cannot join itself. On `"shutdown"`, signal a condition variable and let the
    worker's main thread call `stop()`.
-7. **Drain both thread pools before stopping the IPC channel on shutdown.** An in-flight handler
+8. **Drain both thread pools before stopping the IPC channel on shutdown.** An in-flight handler
    still needs the channel to send its response.
 
 ## Hardening
 
-Before the event loop opens the database or starts threads, `main.cpp` calls
+Before the event loop opens the database or starts threads, `main.cpp` first calls
+`platform::apply_worker_landlock()` (ADR-0062 part 3; see Rules item 3 above), then
 `platform::apply_worker_hardening()` (gated by `federation.worker.apply_hardening`, default
 `true`): `PR_SET_NO_NEW_PRIVS`, capability drop, and a worker seccomp profile that denies
 `execve`/`execveat` (`clone`/`clone3` stay allowed because the worker runs thread pools). On
@@ -89,6 +102,10 @@ the seccomp profile denies the `ptrace` it needs.
   `apply_worker_database_uri`, `database::table_load_profile_includes`, and the generalized worker secret pipe
   (tag `[worker_db_uri]`)
 - `tests/unit/test_worker_event_loop.cpp` — `WorkerEventLoop` construction and `run()` lifecycle
+- `tests/unit/test_worker_landlock.cpp` — `apply_worker_landlock` fail-closed paths with injected
+  `LandlockHardeningOps`, `build_worker_landlock_rules` allowlist content, ABI rights downgrade,
+  config parsing/reload classification, and a forked real-kernel enforcement scenario (tag
+  `[worker_landlock]`)
 - `tests/integration/test_federation_worker_flow.cpp` — event loop and IPC relay behaviour
 - `tests/integration/test_postgresql_persistence_flow.cpp` — the `federation_worker` load-profile scenario against a
   live PostgreSQL role lacking `SELECT` on `server_signing_keys` (gated by

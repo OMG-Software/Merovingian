@@ -117,9 +117,49 @@ audit.
     load profile is a defense-in-depth reduction there, not a boundary.
   See [ADR-0062](docs/adr/0062-federation-worker-holds-no-secret-files-secrets-arrive-over-inherited-fds.md)
   and `docs/database-persistence.md`, "Federation worker least-privilege
-  role", for the full design and the GRANT/REVOKE SQL. Part 3 (Linux
-  Landlock filesystem restriction) remains a tracked follow-up, not yet
-  shipped.
+  role", for the full design and the GRANT/REVOKE SQL.
+
+- **Federation worker now restricts its own filesystem access with Linux
+  Landlock (finding N1, part 3 of 3).** Parts 1 and 2 stopped the worker
+  opening the master-key file and main's database credentials through its own
+  intentional code paths, but the worker still ran as an ordinary process with
+  no filesystem sandbox — a compromise reached through a memory-safety bug,
+  rather than one abusing an intentionally-opened file, could still open the
+  master key, either database URI file, or TLS private keys directly off
+  disk. `platform::apply_worker_landlock()`
+  (`include/merovingian/platform/landlock_hardening.hpp`,
+  `src/platform/landlock_hardening.cpp`) is now called from
+  `federation_worker::main()` before the worker seccomp filter is installed
+  (Landlock's three syscalls are not on that filter's allowlist, and applying
+  Landlock first avoids adding them there for a one-time startup step) and
+  before the event loop opens the database or handles any inbound request.
+  It queries the running kernel's Landlock ABI version, builds a
+  `landlock_create_ruleset` handled-access mask downgraded to whatever that
+  ABI supports, adds one `landlock_add_rule` per path
+  `platform::build_worker_landlock_rules()` derives from the worker's own
+  config copy (the SQLite database directory, read-write, when
+  `database.backend=sqlite`) plus a fixed set of best-effort, read-only or
+  read-execute OS-integration paths (CA trust store candidates, resolver
+  configuration, NSS/dynamic-linker library directories, timezone data), then
+  calls `landlock_restrict_self`. The master key file, both database URI
+  files, and the TLS private key paths are never in the rule set. When the
+  running kernel has no Landlock support (older than Linux 5.13, or Landlock
+  disabled at boot), the worker refuses to start unless the new
+  `federation.worker.allow_without_landlock=true` opt-out is set, in which
+  case it logs `CRITICAL` on every start — mirroring the fail-closed seccomp
+  policy in [ADR-0041](docs/adr/0041-refuse-to-start-the-federation-worker-unsandboxed.md).
+  Any other Landlock failure (ruleset creation, a required rule, or
+  `landlock_restrict_self` itself) is always fatal, regardless of the
+  opt-out — the opt-out covers "this kernel has no Landlock", never "Landlock
+  is present but broken". The real kernel calls sit behind an injectable
+  `LandlockHardeningOps` function table (mirroring
+  `media::DecoderHardeningOps`) so every fail-closed path is unit tested
+  (`tests/unit/test_worker_landlock.cpp`, tag `[worker_landlock]`) without
+  restricting the test process itself; a forked real-kernel scenario in the
+  same file additionally proves a denied path is refused with `EACCES` and an
+  allowed path still opens, skipping cleanly on a kernel without Landlock.
+  See [ADR-0062](docs/adr/0062-federation-worker-holds-no-secret-files-secrets-arrive-over-inherited-fds.md),
+  part 3, for the full allowlist derivation and its `strace` evidence.
 
 ## 0.12.12
 

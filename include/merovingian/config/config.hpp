@@ -537,6 +537,24 @@ struct FederationWorkerConfig final
     // applies, so the downgrade cannot go unnoticed. Ignored for
     // database.backend=sqlite.
     bool allow_shared_database_credentials{false};
+    // ADR-0062 part 3 (0.12.13 audit, finding N1): on Linux, the worker
+    // restricts its own filesystem access with Landlock
+    // (platform::apply_worker_landlock) before handling any untrusted input,
+    // so that a compromise reached through a memory-safety bug cannot open
+    // the operator master key, TLS private keys, main's database URI file,
+    // or the worker's own database URI file directly off disk. When the
+    // running kernel has no Landlock support (ABI query < 1: kernel older
+    // than 5.13, or Landlock disabled at boot), the worker refuses to start
+    // unless this is set true, in which case it logs CRITICAL on every start
+    // and continues without the filesystem sandbox -- mirroring
+    // apply_hardening's fail-closed contract (ADR-0041). Any Landlock
+    // failure OTHER than "unavailable" (ruleset create/add_rule/
+    // restrict_self erroring on a kernel that does support it) is always
+    // fatal regardless of this flag. Default false so production workers
+    // refuse to run unsandboxed by default. Ignored on non-Linux platforms,
+    // which have no Landlock equivalent and already fail closed via
+    // apply_hardening's own platform gate.
+    bool allow_without_landlock{false};
 };
 
 // Matrix v1.19 Application Service API configuration. `registration_files`

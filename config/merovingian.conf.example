@@ -313,6 +313,14 @@ federation.worker.apply_hardening=true
 # startup then logs CRITICAL, since this restores the pre-part-2 exposure.
 #federation.worker.allow_shared_database_credentials=true
 
+# ADR-0062 part 3: the worker restricts its own filesystem access with Linux
+# Landlock (requires Linux 5.13+ with Landlock enabled) before handling any
+# inbound request -- never the master key file, either database URI file, or
+# TLS private keys. On a kernel without Landlock the worker refuses to start
+# unless this is set true, in which case it runs with NO filesystem sandbox
+# and logs CRITICAL on every start.
+#federation.worker.allow_without_landlock=true
+
 # Media safety policy
 # max_upload_size bounds local uploads. Unknown MIME types are quarantined,
 # private-IP remote fetches are blocked, and decoding is treated as

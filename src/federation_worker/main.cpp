@@ -5,6 +5,7 @@
 #include "merovingian/core/file_descriptor.hpp"
 #include "merovingian/federation_worker/args.hpp"
 #include "merovingian/observability/logger.hpp"
+#include "merovingian/platform/landlock_hardening.hpp"
 #include "merovingian/platform/runtime_hardening.hpp"
 #include "worker_event_loop.hpp"
 
@@ -151,6 +152,38 @@ auto main(int argc, char const* const* argv) -> int
     auto db_uri_fd = args.db_uri_fd.has_value() ? merovingian::core::FileDescriptor{raw_db_uri_fd}
                                                 : merovingian::core::FileDescriptor{};
     auto const threads = parse_result.config.federation_worker().threads;
+
+    // ADR-0062 part 3: restrict the worker's own filesystem access with
+    // Landlock before doing anything else that follows. Applied
+    // unconditionally, independent of federation.worker.apply_hardening
+    // (which gates only the seccomp/capability/core-dump sequence below) —
+    // Landlock is a distinct security boundary from seccomp, and gating it
+    // behind the same flag would let one opt-out silently disable both.
+    // Landlock syscalls are not on the worker seccomp allowlist below, so
+    // this must run first: either apply Landlock before the seccomp filter,
+    // or add landlock_create_ruleset/landlock_add_rule/landlock_restrict_self
+    // to that allowlist permanently. Applying first was chosen so the worker
+    // seccomp allowlist never has to carry three syscalls it needs for one
+    // startup step and never again.
+    {
+        auto const landlock_rules = merovingian::platform::build_worker_landlock_rules(parse_result.config);
+        auto const landlock = merovingian::platform::apply_worker_landlock(
+            landlock_rules, parse_result.config.federation_worker().allow_without_landlock);
+        if (!landlock.accepted)
+        {
+            LOG_CRITICAL("Federation worker: Landlock filesystem restriction failed: " + landlock.reason);
+            return 1;
+        }
+        if (landlock.critical_warning)
+        {
+            LOG_CRITICAL("Federation worker: " + landlock.reason);
+        }
+        else if (landlock.applied)
+        {
+            LOG_INFO("Federation worker: Landlock filesystem restriction applied (" +
+                     std::to_string(landlock_rules.size()) + " path rules)");
+        }
+    }
 
     // Apply the worker-specific runtime hardening sequence (issue #319): core
     // dump policy, PR_SET_NO_NEW_PRIVS, capability-bounding drop, then the

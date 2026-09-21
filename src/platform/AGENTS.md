@@ -9,6 +9,7 @@ This module is security-critical. Changes here affect the server's attack surfac
 |---|---|
 | `runtime_hardening.cpp` | Applies all hardening controls at startup in the correct order |
 | `seccomp_hardening.cpp` | Builds and installs the seccomp-BPF syscall allow-list |
+| `landlock_hardening.cpp` | ADR-0062 part 3: builds and installs the federation worker's Linux Landlock filesystem ruleset (`apply_worker_landlock`); real syscalls sit behind an injectable `LandlockHardeningOps` table, mirroring `media::DecoderHardeningOps` |
 | `hardening_self_check.cpp` | Verifies that hardening controls are active; aborts if a required control failed |
 | `elf_probe.cpp` | Checks ELF binary properties (PIE, stack canaries, RELRO, NX) at startup |
 | `file_metadata.cpp` | Safe file metadata helpers that avoid TOCTOU races |
@@ -35,11 +36,23 @@ This module is security-critical. Changes here affect the server's attack surfac
 4. **File paths from config must be validated** before use in `file_metadata.cpp`.
    Never pass user-supplied paths to `open()` or `stat()` without validation.
 
+5. **`apply_worker_landlock` is Linux-only, worker-specific, and fail-closed like
+   `apply_worker_hardening`.** It is called from `federation_worker::main()`
+   before the worker seccomp filter (Landlock's syscalls are not on that
+   filter's allowlist) and before the event loop opens the database or
+   handles any inbound request. Any failure other than "this kernel has no
+   Landlock" (ENOSYS/EOPNOTSUPP/ABI < 1) is always fatal, even when
+   `federation.worker.allow_without_landlock=true` — see ADR-0062 part 3.
+   Add a path to the allowlist only in `build_worker_landlock_rules()`,
+   sourced from the worker's own config copy or a documented, best-effort
+   fixed system path — never hard-code a secret file path there.
+
 ## Platform support
 
 Seccomp is Linux-only. On other platforms (`__linux__` not defined), the seccomp functions
-are no-ops. The self-check adapts accordingly — check `docs/platform-support.md` for the
-per-platform hardening matrix.
+are no-ops. Landlock (`landlock_hardening.cpp`) is likewise Linux-only and, unlike seccomp, is
+applied only to the federation worker, not the main process — the self-check adapts accordingly.
+Check `docs/platform-support.md` for the per-platform hardening matrix.
 
 ## Key docs
 

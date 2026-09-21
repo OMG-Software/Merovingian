@@ -684,6 +684,28 @@ quickly finding everything a given `AGENTS.md` file contributed.
   hardening regression in the build pipeline go unnoticed indefinitely.
   Source: `src/platform/AGENTS.md`.
 
+- **The federation worker's Landlock ruleset opt-out (`allow_without_landlock`) covers only
+  "this kernel has no Landlock" — never "Landlock is present but broken".** A ruleset-create,
+  add-rule, or `landlock_restrict_self` failure on a kernel that does support Landlock is
+  always fatal, regardless of the opt-out.
+  Why: an opt-out scoped to genuine kernel unavailability lets old-kernel deployments keep
+  running without silently widening to cover a different failure mode (a broken ruleset,
+  which would mean the sandbox never applied even though the operator believed only the
+  "old kernel" case was being accepted). This mirrors the fail-closed seccomp policy in
+  ADR-0041.
+  Source: `src/platform/AGENTS.md`, `src/federation_worker/AGENTS.md`,
+  [ADR-0062](adr/0062-federation-worker-holds-no-secret-files-secrets-arrive-over-inherited-fds.md).
+
+- **Landlock path rules for the federation worker must come from
+  `build_worker_landlock_rules()`, derived from the worker's own config copy or a documented,
+  best-effort fixed system path — never a hard-coded secret file path.**
+  Why: the whole point of the ruleset is to name the paths the worker's own config exposes
+  (the SQLite database directory) plus generic OS-integration paths, and to *never* name the
+  master key file, either database URI file, or TLS private keys. A second, drifting
+  hard-coded list is exactly the kind of duplication that silently diverges from the first.
+  Source: `src/platform/AGENTS.md`,
+  [ADR-0062](adr/0062-federation-worker-holds-no-secret-files-secrets-arrive-over-inherited-fds.md).
+
 ## Sync
 
 - **Use `stream_token.hpp` — never parse or construct sync tokens manually.**
@@ -856,6 +878,7 @@ For finding everything a specific file contributed, without re-reading the whole
 | `src/config/AGENTS.md` | Secrets and logging |
 | `src/observability/AGENTS.md` | Secrets and logging |
 | `src/platform/AGENTS.md` | Platform hardening |
+| `src/federation_worker/AGENTS.md` | Platform hardening |
 | `src/sync/AGENTS.md` | Sync |
 | `src/trust_safety/AGENTS.md` | Trust and safety |
 | `packaging/AGENTS.md` | Packaging and deployment |

@@ -272,8 +272,9 @@ separate process on the same host:
   before `homeserver::start_runtime()` is ever called — so no runtime code
   path reachable inside the worker, today or added later, has a path string to
   pass to `crypto::load_master_key_material`. See docs/threat-model.md,
-  "Operator master key reachable from the federation worker", for the residual
-  gap (no Landlock yet) part 3 of this change closes.
+  "Operator master key reachable from the federation worker" — part 3 (Linux
+  Landlock, below) closes the filesystem-level residual gap this entry used
+  to record.
 * **A separate, least-privilege database login, delivered the same way**
   (ADR-0062 part 2): when `database.backend=postgresql`,
   `WorkerPool::WorkerPool` reads `federation.worker.database_uri_file` once
@@ -294,6 +295,29 @@ separate process on the same host:
   `runtime_role`, and `migration_role` on its config copy — so the worker
   never has a path to main's credentials file and never attempts a `SET ROLE`
   onto a role it was never granted membership of.
+* **Linux Landlock filesystem restriction (ADR-0062 part 3):**
+  `federation_worker::main()` calls `platform::apply_worker_landlock()`
+  immediately before the worker seccomp filter below (Landlock's three
+  syscalls are not on that filter's allowlist — applying Landlock first
+  avoids adding a startup-only capability to it permanently) and before the
+  event loop opens the database or handles any inbound request. It queries
+  the kernel's Landlock ABI version, builds a rights mask downgraded to
+  whatever that ABI supports, and grants exactly the paths
+  `platform::build_worker_landlock_rules()` derives from the worker's own
+  config copy: the SQLite database directory (read-write, required, when
+  `database.backend=sqlite`) plus a fixed set of best-effort, read-only or
+  read-execute OS-integration paths (CA trust store candidates, resolver
+  configuration, NSS/dynamic-linker library directories, timezone data).
+  The master key file, both database URI files, and TLS private keys are
+  never in the rule set. When the running kernel has no Landlock support
+  (older than Linux 5.13, or disabled at boot), the worker refuses to start
+  unless `federation.worker.allow_without_landlock=true` is set, which logs
+  CRITICAL on every start — mirroring the fail-closed seccomp policy below;
+  any other Landlock failure (ruleset creation, a required rule, or
+  `landlock_restrict_self` itself) is always fatal regardless of that
+  opt-out. See
+  [ADR-0062](adr/0062-federation-worker-holds-no-secret-files-secrets-arrive-over-inherited-fds.md),
+  part 3, for the allowlist derivation.
 * **No peer credentials in transit** (#323): the main process verifies the
   inbound X-Matrix signature itself and forwards only the verified peer identity
   (`origin`/`key_id`/`sig_verified`); the raw peer `access_token` and
@@ -615,9 +639,15 @@ in-process syscalls:
 
 * In-process privilege drop (`setresgid`/`setresuid`) — the server must never run
   as root; the service manager supplies a dedicated user.
-* In-process Linux filesystem confinement (Landlock) — service-manager sandboxing
+* In-process Linux filesystem confinement (Landlock) **for the main
+  `merovingian-server` process** — service-manager sandboxing
   (systemd/OpenRC/FreeBSD rc.d) enforces filesystem restrictions; the
-  Merovingian hardening profile documents these requirements.
+  Merovingian hardening profile documents these requirements. The
+  **federation worker** is the exception: as of ADR-0062 part 3 (0.12.13) it
+  applies its own in-process Landlock ruleset (see "Out_of_process federation
+  worker IPC security" above) — the worker is the more exposed, more
+  frequently restarted process, so it gets an in-process control the main
+  process still relies on the service manager for.
 * A platform-specific in-process sandbox for the **federation worker**
   (`merovingian-fed-worker`) on FreeBSD/OpenBSD/NetBSD — unlike the main
   server, the worker has no pledge/unveil- or Capsicum-equivalent hardening
