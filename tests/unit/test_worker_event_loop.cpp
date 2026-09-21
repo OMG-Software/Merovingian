@@ -57,7 +57,11 @@ SCENARIO("WorkerEventLoop construction captures shard index", "[federation-worke
         WHEN("it is constructed with invalid IPC fds")
         {
             auto loop = WorkerEventLoop{FileDescriptor{FileDescriptor::invalid},
-                                        FileDescriptor{FileDescriptor::invalid}, merovingian::config::Config{}, 1U, 5U};
+                                        FileDescriptor{FileDescriptor::invalid},
+                                        FileDescriptor{FileDescriptor::invalid},
+                                        merovingian::config::Config{},
+                                        1U,
+                                        5U};
 
             THEN("the shard index is preserved")
             {
@@ -73,8 +77,9 @@ SCENARIO("WorkerEventLoop defaults to shard 0 when omitted", "[federation-worker
     {
         WHEN("it is constructed")
         {
-            auto loop = WorkerEventLoop{FileDescriptor{FileDescriptor::invalid},
-                                        FileDescriptor{FileDescriptor::invalid}, merovingian::config::Config{}, 1U};
+            auto loop =
+                WorkerEventLoop{FileDescriptor{FileDescriptor::invalid}, FileDescriptor{FileDescriptor::invalid},
+                                FileDescriptor{FileDescriptor::invalid}, merovingian::config::Config{}, 1U};
 
             THEN("shard index defaults to 0")
             {
@@ -94,8 +99,12 @@ SCENARIO("WorkerEventLoop run exits when the IPC fd is invalid", "[federation-wo
         // longer opens the master-key file itself (ADR-0062), a missing or
         // unreadable key-fd would make run() fail closed and return before
         // ever reaching the key exchange, not throw.
-        auto loop = WorkerEventLoop{FileDescriptor{FileDescriptor::invalid}, make_valid_key_fd(),
-                                    merovingian::config::Config{}, 1U, 3U};
+        auto loop = WorkerEventLoop{FileDescriptor{FileDescriptor::invalid},
+                                    make_valid_key_fd(),
+                                    FileDescriptor{FileDescriptor::invalid},
+                                    merovingian::config::Config{},
+                                    1U,
+                                    3U};
 
         WHEN("run is invoked on a separate thread")
         {

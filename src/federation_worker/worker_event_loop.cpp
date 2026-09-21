@@ -11,6 +11,7 @@
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/federation/membership_endpoints.hpp"
 #include "merovingian/federation/transactions.hpp"
+#include "merovingian/federation_worker/db_uri_fd.hpp"
 #include "merovingian/federation_worker/ipc_key_fd.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/runtime.hpp"
@@ -499,10 +500,12 @@ namespace
 
 } // namespace
 
-WorkerEventLoop::WorkerEventLoop(core::FileDescriptor ipc_fd, core::FileDescriptor ipc_key_fd, config::Config config,
-                                 std::uint32_t threads, std::uint32_t shard_index)
+WorkerEventLoop::WorkerEventLoop(core::FileDescriptor ipc_fd, core::FileDescriptor ipc_key_fd,
+                                 core::FileDescriptor db_uri_fd, config::Config config, std::uint32_t threads,
+                                 std::uint32_t shard_index)
     : ipc_fd_{std::move(ipc_fd)}
     , ipc_key_fd_{std::move(ipc_key_fd)}
+    , db_uri_fd_{std::move(db_uri_fd)}
     , config_{std::move(config)}
     , threads_{threads}
     , shard_index_{shard_index}
@@ -541,6 +544,29 @@ auto WorkerEventLoop::run() -> void
     // "Worker trust boundary".
     federation_worker::clear_master_key_file(config_);
 
+    // ADR-0062 part 2 (finding N1): apply a separate, least-privilege
+    // database connection URI when main delivered one. An invalid db_uri_fd_
+    // is the expected outcome for a SQLite backend or an explicit
+    // federation.worker.allow_shared_database_credentials=true opt-out — in
+    // that case this worker opens the database exactly as main does
+    // (config_'s own uri_file/runtime_role/migration_role, untouched). When
+    // main DID deliver one, the read is fail-closed the same way the auth
+    // key above is: a missing, empty, or oversized URI stops this worker
+    // before it starts a runtime at all, rather than silently falling back
+    // to shared credentials it was never told to use.
+    if (db_uri_fd_.valid())
+    {
+        auto const db_uri = federation_worker::read_worker_database_uri(std::move(db_uri_fd_));
+        if (!db_uri.has_value())
+        {
+            LOG_CRITICAL("Federation worker: failed to read a usable database URI from the inherited db-uri-fd");
+            return;
+        }
+        auto const uri_text =
+            std::string_view{reinterpret_cast<char const*>(db_uri->bytes().data()), db_uri->bytes().size()};
+        federation_worker::apply_worker_database_uri(config_, uri_text);
+    }
+
     // Create the IPC channel first; the blocking key exchange completes here
     // before any runtime signing operation can be requested. The worker is the
     // client side of the exchange. max_frame_bytes must match what
@@ -562,8 +588,19 @@ auto WorkerEventLoop::run() -> void
     // has its own DB connection for remote key resolution and room-version
     // lookups. It does NOT write events — accepted PDUs are sent to main via
     // pdu_ingest IPC and main commits them with the authoritative counter.
-    auto started = homeserver::start_runtime(
-        homeserver::RuntimeStartOptions{.config = config_, .signing_override = &ipc_provider});
+    auto started = homeserver::start_runtime(homeserver::RuntimeStartOptions{
+        .config = config_,
+        .signing_override = &ipc_provider,
+        // Applied unconditionally, independent of which database credential
+        // this worker connects with: the worker never needs
+        // server_signing_keys and the other tables table_load_profile_includes
+        // excludes, whether it holds a separate least-privilege role or (in
+        // the allow_shared_database_credentials opt-out) main's own shared
+        // credentials. See database::table_load_profile_includes and
+        // docs/database-persistence.md, "Federation worker least-privilege
+        // role".
+        .database_load_profile = database::TableLoadProfile::federation_worker,
+    });
     if (!started.started)
     {
         LOG_CRITICAL("Federation worker: failed to start runtime: " + started.reason);
