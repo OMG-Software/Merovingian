@@ -578,7 +578,8 @@ auto hydrate_local_database(LocalDatabase& database) -> void
     }
 }
 
-auto bootstrap_local_database(config::Config const& config, database::SchemaState existing_state) -> LocalDatabase
+auto bootstrap_local_database(config::Config const& config, database::SchemaState existing_state,
+                              database::TableLoadProfile profile) -> LocalDatabase
 {
     auto database = LocalDatabase{};
     auto opened = database::PersistentStoreOpenResult{};
@@ -588,11 +589,19 @@ auto bootstrap_local_database(config::Config const& config, database::SchemaStat
     }
     else
     {
-        auto const conninfo = read_database_uri_file(config.database().uri_file);
-        opened = conninfo.empty() ? database::open_persistent_store(std::move(existing_state))
-                                  : database::open_postgresql_persistent_store(
-                                        conninfo, config.database().runtime_role,
-                                        config.database().migration_role);
+        // ADR-0062 part 2: the federation worker never reads database.uri_file
+        // itself. When federation_worker::apply_worker_database_uri has set
+        // worker_conninfo_override on this process's own Config copy (from
+        // bytes handed over the inherited kWorkerDbUriFd pipe), that value
+        // takes priority over reading any file. Every other process leaves it
+        // empty, so this is a no-op there.
+        auto const conninfo = !config.database().worker_conninfo_override.empty()
+                                  ? config.database().worker_conninfo_override
+                                  : read_database_uri_file(config.database().uri_file);
+        opened = conninfo.empty()
+                     ? database::open_persistent_store(std::move(existing_state))
+                     : database::open_postgresql_persistent_store(conninfo, config.database().runtime_role,
+                                                                  config.database().migration_role, profile);
     }
     if (!opened.ok)
     {
@@ -669,7 +678,7 @@ auto start_runtime(RuntimeStartOptions opts) -> RuntimeStartResult
     },
                    observability::LogEventSeverity::info);
 
-    runtime.database = bootstrap_local_database(config, std::move(opts.existing_state));
+    runtime.database = bootstrap_local_database(config, std::move(opts.existing_state), opts.database_load_profile);
     // The default ctor installed `audit_sink_scope` against the
     // empty `LocalDatabase{}` placeholder. Now that `database` holds
     // the real connection state, re-seat the scope so audit rows
@@ -801,8 +810,8 @@ auto start_runtime(RuntimeStartOptions opts) -> RuntimeStartResult
     // enforce) drops every registration, since routing would otherwise be
     // ambiguous.
     {
-        auto loaded = appservice::load_registrations(config.appservice().registration_files,
-                                                     config.server().server_name);
+        auto loaded =
+            appservice::load_registrations(config.appservice().registration_files, config.server().server_name);
         for (auto const& finding : loaded.findings)
         {
             log_diagnostic("start.appservice_registration_rejected",

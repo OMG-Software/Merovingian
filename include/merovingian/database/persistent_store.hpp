@@ -27,6 +27,49 @@ enum class PersistentStoreBackend
     sqlite,
 };
 
+// ADR-0062 part 2 (0.12.13 audit, finding N1): which tables a store open
+// hydrates into memory. `full` is every process except the federation
+// worker. `federation_worker` skips the tables table_load_profile_includes
+// excludes below, so a worker connecting with a least-privilege PostgreSQL
+// role (granted no SELECT on those tables) can still start, and so a worker
+// connecting with ANY role never holds that material resident regardless of
+// backend. Only open_postgresql_persistent_store honours this today — see
+// docs/database-persistence.md, "Federation worker least-privilege role",
+// for why the SQLite loader was left unchanged.
+enum class TableLoadProfile
+{
+    full,
+    federation_worker,
+};
+
+// True if `profile` should hydrate `table_name`'s rows into memory.
+// `federation_worker` excludes every table carrying credential or
+// signing-secret material the worker's own (non-relayed) federation routes
+// never read: make_join/leave/knock templates, backfill, query/directory,
+// state, state_ids, get_missing_events, and hierarchy all read only
+// room-scoped tables (rooms, membership, invites, events, event_edges,
+// event_auth, event_signatures, current_state, state_transitions,
+// federation_destinations, federation_transactions). Everything else the
+// worker might otherwise need (signing, one-time-key claims, device/profile
+// queries, PDU/EDU/membership/invite acceptance) is relayed to main over IPC
+// instead of read from this process's own store — see
+// src/federation_worker/worker_event_loop.cpp and
+// src/federation_worker/AGENTS.md, rule 2.
+//
+// Pure and header-testable: exercised directly by
+// tests/unit/test_worker_db_uri.cpp without a database connection.
+[[nodiscard]] constexpr auto table_load_profile_includes(std::string_view table_name, TableLoadProfile profile) noexcept
+    -> bool
+{
+    if (profile == TableLoadProfile::full)
+    {
+        return true;
+    }
+    return table_name != "server_signing_keys" && table_name != "users" && table_name != "access_tokens" &&
+           table_name != "refresh_tokens" && table_name != "login_tokens" && table_name != "openid_tokens" &&
+           table_name != "account_threepids";
+}
+
 struct PersistentUser final
 {
     std::string user_id{};

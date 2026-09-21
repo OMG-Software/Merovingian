@@ -468,21 +468,25 @@ namespace
         return result;
     }
 
-    auto load_persistent_rows(PostgresqlConnection& connection, PersistentStore& store) -> bool
+    auto load_persistent_rows(PostgresqlConnection& connection, PersistentStore& store,
+                              TableLoadProfile profile = TableLoadProfile::full) -> bool
     {
-        auto users = query_rows(connection, "postgresql_load_users",
-                                "SELECT user_id, password_hash, locked, suspended, admin, deactivated FROM users "
-                                "ORDER BY user_id");
-        if (!users.ok)
+        if (table_load_profile_includes("users", profile))
         {
-            return false;
-        }
-        for (auto const& row : users.rows)
-        {
-            if (row.size() >= 6U)
+            auto users = query_rows(connection, "postgresql_load_users",
+                                    "SELECT user_id, password_hash, locked, suspended, admin, deactivated FROM users "
+                                    "ORDER BY user_id");
+            if (!users.ok)
             {
-                store.users.push_back({row[0], row[1], text_is_true(row[2]), text_is_true(row[3]), text_is_true(row[4]),
-                                       text_is_true(row[5])});
+                return false;
+            }
+            for (auto const& row : users.rows)
+            {
+                if (row.size() >= 6U)
+                {
+                    store.users.push_back({row[0], row[1], text_is_true(row[2]), text_is_true(row[3]),
+                                           text_is_true(row[4]), text_is_true(row[5])});
+                }
             }
         }
 
@@ -500,51 +504,60 @@ namespace
             }
         }
 
-        auto tokens = query_rows(
-            connection, "postgresql_load_access_tokens",
-            "SELECT user_id, device_id, token_hash, revoked, expires_at FROM access_tokens ORDER BY token_hash");
-        if (!tokens.ok)
+        if (table_load_profile_includes("access_tokens", profile))
         {
-            return false;
-        }
-        for (auto const& row : tokens.rows)
-        {
-            if (row.size() >= 4U)
+            auto tokens = query_rows(
+                connection, "postgresql_load_access_tokens",
+                "SELECT user_id, device_id, token_hash, revoked, expires_at FROM access_tokens ORDER BY token_hash");
+            if (!tokens.ok)
             {
-                store.access_tokens.push_back({row[0], row[1], row[2], text_is_true(row[3]),
-                                               row.size() >= 5U ? parse_expires_at(row[4]) : std::nullopt});
+                return false;
+            }
+            for (auto const& row : tokens.rows)
+            {
+                if (row.size() >= 4U)
+                {
+                    store.access_tokens.push_back({row[0], row[1], row[2], text_is_true(row[3]),
+                                                   row.size() >= 5U ? parse_expires_at(row[4]) : std::nullopt});
+                }
             }
         }
 
-        auto refresh_tokens = query_rows(
-            connection, "postgresql_load_refresh_tokens",
-            "SELECT user_id, device_id, token_hash, revoked, expires_at FROM refresh_tokens ORDER BY token_hash");
-        if (!refresh_tokens.ok)
+        if (table_load_profile_includes("refresh_tokens", profile))
         {
-            return false;
-        }
-        for (auto const& row : refresh_tokens.rows)
-        {
-            if (row.size() >= 4U)
+            auto refresh_tokens = query_rows(
+                connection, "postgresql_load_refresh_tokens",
+                "SELECT user_id, device_id, token_hash, revoked, expires_at FROM refresh_tokens ORDER BY token_hash");
+            if (!refresh_tokens.ok)
             {
-                store.refresh_tokens.push_back({row[0], row[1], row[2], text_is_true(row[3]),
-                                                row.size() >= 5U ? parse_expires_at(row[4]) : std::nullopt});
+                return false;
+            }
+            for (auto const& row : refresh_tokens.rows)
+            {
+                if (row.size() >= 4U)
+                {
+                    store.refresh_tokens.push_back({row[0], row[1], row[2], text_is_true(row[3]),
+                                                    row.size() >= 5U ? parse_expires_at(row[4]) : std::nullopt});
+                }
             }
         }
 
-        auto server_signing_keys =
-            query_rows(connection, "postgresql_load_server_signing_keys",
-                       "SELECT server_name, key_id, public_key, valid_until_ts, secret_key FROM server_signing_keys "
-                       "ORDER BY server_name, key_id");
-        if (!server_signing_keys.ok)
+        if (table_load_profile_includes("server_signing_keys", profile))
         {
-            return false;
-        }
-        for (auto const& row : server_signing_keys.rows)
-        {
-            if (row.size() >= 5U)
+            auto server_signing_keys =
+                query_rows(connection, "postgresql_load_server_signing_keys",
+                           "SELECT server_name, key_id, public_key, valid_until_ts, secret_key FROM "
+                           "server_signing_keys ORDER BY server_name, key_id");
+            if (!server_signing_keys.ok)
             {
-                store.server_signing_keys.push_back({row[0], row[1], row[2], parse_u64(row[3]), row[4]});
+                return false;
+            }
+            for (auto const& row : server_signing_keys.rows)
+            {
+                if (row.size() >= 5U)
+                {
+                    store.server_signing_keys.push_back({row[0], row[1], row[2], parse_u64(row[3]), row[4]});
+                }
             }
         }
 
@@ -1067,33 +1080,36 @@ namespace
             }
         }
 
-        auto account_threepids = query_rows(connection, "postgresql_load_account_threepids",
-                                            "SELECT user_id, medium, address, country, id_server, "
-                                            "added_at_ms, validated_at_ms, bound, client_secret, sid "
-                                            "FROM account_threepids ORDER BY user_id, medium, address");
-        if (!account_threepids.ok)
+        if (table_load_profile_includes("account_threepids", profile))
         {
-            return false;
-        }
-        for (auto const& row : account_threepids.rows)
-        {
-            if (row.size() >= 8U)
+            auto account_threepids = query_rows(connection, "postgresql_load_account_threepids",
+                                                "SELECT user_id, medium, address, country, id_server, "
+                                                "added_at_ms, validated_at_ms, bound, client_secret, sid "
+                                                "FROM account_threepids ORDER BY user_id, medium, address");
+            if (!account_threepids.ok)
             {
-                PersistentThreePidBinding entry{};
-                entry.user_id = row[0];
-                entry.medium = row[1];
-                entry.address = row[2];
-                entry.country = row[3].empty() ? std::nullopt : std::optional<std::string>{row[3]};
-                entry.id_server = row[4].empty() ? std::nullopt : std::optional<std::string>{row[4]};
-                entry.added_at_ms = parse_u64(row[5]);
-                entry.validated_at_ms = parse_u64(row[6]);
-                entry.bound = text_is_true(row[7]);
-                if (row.size() >= 10U)
+                return false;
+            }
+            for (auto const& row : account_threepids.rows)
+            {
+                if (row.size() >= 8U)
                 {
-                    entry.client_secret = row[8].empty() ? std::nullopt : std::optional<std::string>{row[8]};
-                    entry.sid = row[9].empty() ? std::nullopt : std::optional<std::string>{row[9]};
+                    PersistentThreePidBinding entry{};
+                    entry.user_id = row[0];
+                    entry.medium = row[1];
+                    entry.address = row[2];
+                    entry.country = row[3].empty() ? std::nullopt : std::optional<std::string>{row[3]};
+                    entry.id_server = row[4].empty() ? std::nullopt : std::optional<std::string>{row[4]};
+                    entry.added_at_ms = parse_u64(row[5]);
+                    entry.validated_at_ms = parse_u64(row[6]);
+                    entry.bound = text_is_true(row[7]);
+                    if (row.size() >= 10U)
+                    {
+                        entry.client_secret = row[8].empty() ? std::nullopt : std::optional<std::string>{row[8]};
+                        entry.sid = row[9].empty() ? std::nullopt : std::optional<std::string>{row[9]};
+                    }
+                    store.account_threepids.push_back(std::move(entry));
                 }
-                store.account_threepids.push_back(std::move(entry));
             }
         }
 
@@ -1153,42 +1169,50 @@ namespace
             }
         }
 
-        auto openid_tokens_result = query_rows(connection, "postgresql_load_openid_tokens",
-                                               "SELECT user_id, token_hash, expires_at FROM openid_tokens "
-                                               "ORDER BY user_id");
-        if (!openid_tokens_result.ok)
+        if (table_load_profile_includes("openid_tokens", profile))
         {
-            return false;
-        }
-        for (auto const& row : openid_tokens_result.rows)
-        {
-            if (row.size() >= 3U)
+            auto openid_tokens_result = query_rows(connection, "postgresql_load_openid_tokens",
+                                                   "SELECT user_id, token_hash, expires_at FROM openid_tokens "
+                                                   "ORDER BY user_id");
+            if (!openid_tokens_result.ok)
             {
-                PersistentOpenidToken entry{};
-                entry.user_id = row[0];
-                entry.token_hash = row[1];
-                entry.expires_at = std::chrono::system_clock::time_point{std::chrono::milliseconds{parse_u64(row[2])}};
-                store.openid_tokens.push_back(std::move(entry));
+                return false;
+            }
+            for (auto const& row : openid_tokens_result.rows)
+            {
+                if (row.size() >= 3U)
+                {
+                    PersistentOpenidToken entry{};
+                    entry.user_id = row[0];
+                    entry.token_hash = row[1];
+                    entry.expires_at =
+                        std::chrono::system_clock::time_point{std::chrono::milliseconds{parse_u64(row[2])}};
+                    store.openid_tokens.push_back(std::move(entry));
+                }
             }
         }
 
-        auto login_tokens_result = query_rows(connection, "postgresql_load_login_tokens",
-                                              "SELECT user_id, token_hash, expires_at, used FROM login_tokens "
-                                              "ORDER BY user_id");
-        if (!login_tokens_result.ok)
+        if (table_load_profile_includes("login_tokens", profile))
         {
-            return false;
-        }
-        for (auto const& row : login_tokens_result.rows)
-        {
-            if (row.size() >= 4U)
+            auto login_tokens_result = query_rows(connection, "postgresql_load_login_tokens",
+                                                  "SELECT user_id, token_hash, expires_at, used FROM login_tokens "
+                                                  "ORDER BY user_id");
+            if (!login_tokens_result.ok)
             {
-                PersistentLoginToken entry{};
-                entry.user_id = row[0];
-                entry.token_hash = row[1];
-                entry.expires_at = std::chrono::system_clock::time_point{std::chrono::milliseconds{parse_u64(row[2])}};
-                entry.used = text_is_true(row[3]);
-                store.login_tokens.push_back(std::move(entry));
+                return false;
+            }
+            for (auto const& row : login_tokens_result.rows)
+            {
+                if (row.size() >= 4U)
+                {
+                    PersistentLoginToken entry{};
+                    entry.user_id = row[0];
+                    entry.token_hash = row[1];
+                    entry.expires_at =
+                        std::chrono::system_clock::time_point{std::chrono::milliseconds{parse_u64(row[2])}};
+                    entry.used = text_is_true(row[3]);
+                    store.login_tokens.push_back(std::move(entry));
+                }
             }
         }
 
@@ -1307,7 +1331,8 @@ namespace
             // Blocks until the lock is free, which is the intent: the second
             // process waits for the first to finish rather than racing it.
             held_ = connection_
-                        .execute(PreparedStatement{"postgresql_migration_lock", "SELECT pg_advisory_lock($1)",
+                        .execute(PreparedStatement{"postgresql_migration_lock",
+                                                   "SELECT pg_advisory_lock($1)",
                                                    {BoundValue{std::to_string(migration_lock_key), false}}})
                         .ok;
         }
@@ -1324,7 +1349,8 @@ namespace
                 return;
             }
             std::ignore =
-                connection_.execute(PreparedStatement{"postgresql_migration_unlock", "SELECT pg_advisory_unlock($1)",
+                connection_.execute(PreparedStatement{"postgresql_migration_unlock",
+                                                      "SELECT pg_advisory_unlock($1)",
                                                       {BoundValue{std::to_string(migration_lock_key), false}}});
         }
 
@@ -1532,7 +1558,8 @@ auto open_postgresql_connection(std::string_view conninfo) -> PostgresqlConnecti
 }
 
 auto open_postgresql_persistent_store(std::string_view conninfo, std::string_view runtime_role,
-                                      std::string_view migration_role) -> PersistentStoreOpenResult
+                                      std::string_view migration_role, TableLoadProfile profile)
+    -> PersistentStoreOpenResult
 {
     log_diagnostic("store.opening", {
                                         {"backend", "postgresql", false}
@@ -1655,7 +1682,7 @@ auto open_postgresql_persistent_store(std::string_view conninfo, std::string_vie
         });
         return {false, "unable to assume PostgreSQL runtime role", {}};
     }
-    if (!load_persistent_rows(connection, store))
+    if (!load_persistent_rows(connection, store, profile))
     {
         log_diagnostic("store.rejected", {
                                              {"reason", "unable to hydrate rows", false}

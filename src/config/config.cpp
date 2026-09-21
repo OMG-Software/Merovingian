@@ -4,7 +4,6 @@
 #include "merovingian/config/config.hpp"
 
 #include "merovingian/auth/identity.hpp"
-
 #include "merovingian/config/config_parser.hpp"
 #include "merovingian/http/keep_alive.hpp"
 
@@ -856,6 +855,22 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
     {
         findings.push_back({"federation.worker.request_timeout_seconds",
                             "federation.worker.request_timeout_seconds must be greater than zero"});
+    }
+
+    // ADR-0062 part 2 (0.12.13 audit, finding N1): a PostgreSQL-backed
+    // federation worker must connect with a separate, least-privilege login,
+    // not main's own credentials -- SET ROLE was rejected for this (a
+    // session holding the login role can RESET ROLE right back). SQLite
+    // offers no role boundary to separate, so the requirement does not apply
+    // there. allow_shared_database_credentials is the explicit, logged
+    // opt-out; see homeserver::WorkerPool::WorkerPool.
+    if (config.database().backend == DatabaseBackend::postgresql && config.security().federation.enabled &&
+        config.federation_worker().database_uri_file.empty() &&
+        !config.federation_worker().allow_shared_database_credentials)
+    {
+        findings.push_back({"federation.worker.database_uri_file",
+                            "required when database.backend=postgresql and security.federation.enabled=true, "
+                            "unless federation.worker.allow_shared_database_credentials=true"});
     }
 
     if (config.security().registration.enabled && !config.security().registration.require_token)

@@ -427,6 +427,13 @@ struct RuntimeStartOptions final
     // server signing secret into this runtime. Used by the federation worker
     // to delegate signing to the main process over IPC.
     crypto::Ed25519Provider* signing_override{nullptr};
+    // ADR-0062 part 2: which tables to hydrate from the store. The federation
+    // worker sets this to TableLoadProfile::federation_worker before calling
+    // start_runtime so it never pulls server_signing_keys and the other
+    // credential-bearing tables into its own process memory, regardless of
+    // which database credentials it connects with. See
+    // database::table_load_profile_includes.
+    database::TableLoadProfile database_load_profile{database::TableLoadProfile::full};
 };
 
 struct RuntimeStartResult final
@@ -469,7 +476,8 @@ struct SessionRefreshResult final
 };
 
 [[nodiscard]] auto bootstrap_local_database(config::Config const& config) -> LocalDatabase;
-[[nodiscard]] auto bootstrap_local_database(config::Config const& config, database::SchemaState existing_state)
+[[nodiscard]] auto bootstrap_local_database(config::Config const& config, database::SchemaState existing_state,
+                                            database::TableLoadProfile profile = database::TableLoadProfile::full)
     -> LocalDatabase;
 [[nodiscard]] auto database_has_table(LocalDatabase const& database, std::string_view table_name) noexcept -> bool;
 // Allocates the next timeline stream_ordering and persists the new

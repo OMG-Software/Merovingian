@@ -948,6 +948,17 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected boolean (true/false)");
             }
         }
+        else if (key == "federation.worker.database_uri_file")
+        {
+            federation_worker.database_uri_file = std::string{value};
+        }
+        else if (key == "federation.worker.allow_shared_database_credentials")
+        {
+            if (!parse_bool_value(value, federation_worker.allow_shared_database_credentials))
+            {
+                add_parse_finding(findings, std::string{key}, "expected boolean (true/false)");
+            }
+        }
         else if (key == "appservice.registration_files")
         {
             appservice.registration_files = parse_string_list(value);

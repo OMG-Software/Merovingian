@@ -258,6 +258,15 @@ struct DatabaseConfig final
     std::string migration_role{};
     std::string runtime_role{};
     std::string sqlite_path{"/var/lib/merovingian/merovingian.sqlite3"};
+    // Process-local override for the federation worker's own database
+    // connection string (ADR-0062 part 2). Never parsed from a config file
+    // and never logged: `federation_worker::apply_worker_database_uri`
+    // populates this on the worker's own in-memory Config copy, from bytes
+    // main handed it over the inherited kWorkerDbUriFd pipe, immediately
+    // before `bootstrap_local_database` opens the store. When non-empty it
+    // takes priority over `uri_file` for that one open. Main's own Config
+    // (and every other process) always leaves this empty.
+    std::string worker_conninfo_override{};
 };
 
 struct RegistrationSecurityConfig final
@@ -501,6 +510,32 @@ struct FederationWorkerConfig final
     // binary directly set this false to avoid the strict filter while the
     // filter allowlist is validated separately in unit tests.
     bool apply_hardening{true};
+    // ADR-0062 part 2: secret file holding a PostgreSQL connection URI for a
+    // SEPARATE, least-privilege login role for the federation worker (no
+    // SELECT on server_signing_keys or the other tables
+    // database::table_load_profile_includes excludes for
+    // TableLoadProfile::federation_worker — see
+    // docs/database-persistence.md, "Federation worker least-privilege
+    // role"). Read and validated by main exactly like database.uri_file,
+    // then handed to each worker over a second inherited pipe fd
+    // (homeserver::kWorkerDbUriFd) — the worker never opens this file
+    // itself. Required when database.backend=postgresql and
+    // security.federation.enabled=true, unless
+    // allow_shared_database_credentials=true. Defaults to a placeholder
+    // path (mirroring database.uri_file's own default) so a bare,
+    // unconfigured install still validates for --dry-run inspection; a real
+    // deployment must provision the file or the worker fails to start (see
+    // homeserver::WorkerPool::WorkerPool). Ignored for
+    // database.backend=sqlite — a single shared file offers no role
+    // boundary to separate.
+    std::string database_uri_file{"/etc/merovingian/fed-worker-db-uri"};
+    // Explicit opt-out: when true and the worker cannot use a separate role
+    // (database_uri_file left empty), the worker shares main's PostgreSQL
+    // login credentials — today's pre-ADR-0062-part-2 behaviour — instead of
+    // failing config validation. Every startup logs CRITICAL while this
+    // applies, so the downgrade cannot go unnoticed. Ignored for
+    // database.backend=sqlite.
+    bool allow_shared_database_credentials{false};
 };
 
 // Matrix v1.19 Application Service API configuration. `registration_files`

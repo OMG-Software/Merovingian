@@ -105,8 +105,15 @@ struct PostgresqlConnectionOpenResult final
 // open fails rather than silently falling back to the login role -- a fallback
 // would quietly restore exactly the privilege level this separation exists to
 // remove.
+// `profile` controls which tables load_persistent_rows hydrates into memory
+// (ADR-0062 part 2, finding N1); default TableLoadProfile::full preserves
+// today's behaviour for every caller except the federation worker path in
+// homeserver::bootstrap_local_database. See persistent_store.hpp,
+// table_load_profile_includes.
 [[nodiscard]] auto open_postgresql_persistent_store(std::string_view conninfo, std::string_view runtime_role = {},
-                                                    std::string_view migration_role = {}) -> PersistentStoreOpenResult;
+                                                    std::string_view migration_role = {},
+                                                    TableLoadProfile profile = TableLoadProfile::full)
+    -> PersistentStoreOpenResult;
 
 // Switch the session role on `connection` to `role_name`. Returns false if
 // the connection is not open or `SET ROLE` fails (e.g. the current login
