@@ -166,6 +166,7 @@ shell = find_program('sh')
       'unit/test_key_api.cpp',
       'unit/test_log_severity_routing.cpp',
       'unit/test_local_database_scope.cpp',
+      'unit/test_media_decoder_hardening.cpp',
       'unit/test_media_repository.cpp',
       'unit/test_media_security.cpp',
       'unit/test_media_thumbnailer.cpp',
