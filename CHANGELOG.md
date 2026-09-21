@@ -3,6 +3,41 @@
 Fixes every Critical and High finding from the September 2026 full-project bug
 audit.
 
+- **State resolution v2 could diverge from conformant servers by ignoring the
+  auth difference (HIGH, consensus-critical).** `resolve_state_v2` only ever
+  considered power events literally present in the two conflicted state
+  groups it was handed, never the spec's *full conflicted set* (conflicted
+  state set + auth difference, rooms/v10.md — Definitions). A power-level
+  change reachable only through a conflicted event's `auth_events` chain —
+  for example a promotion that authorised a later ban — was invisible to the
+  resolver, so its effect was silently dropped and resolved state could
+  differ from another server that correctly walked the chain. Room v12
+  (state-res v2.1, rooms/v12.md) additionally needed the conflicted state
+  subgraph and an empty starting map for the iterative auth checks; neither
+  was implemented, so v12 rooms used the wrong algorithm entirely
+  (`StateResolutionAlgorithm` gained `v2_1`, distinct from `v2`).
+  `StateResolutionRequest` now carries an `event_lookup` callback
+  (`include/merovingian/events/state_resolution.hpp`) so the resolver can
+  walk `auth_events` chains beyond the submitted state groups; production
+  wires this to the persistent store in
+  `src/homeserver/local_http_router.cpp`'s `state_conflict_resolver`. The
+  walk is bounded (`events::max_auth_chain_walk_events`,
+  `include/merovingian/events/limits.hpp`, 20 000 events) and **fails
+  closed**: a missing/unreachable event or an over-budget walk resolves to
+  `rejected_state_conflict` rather than resolving on a partial chain (see
+  ADR-0063). The iterative auth checks' own `auth_events` fallback (used when
+  a required key is absent from the running state — spec: "Iterative auth
+  checks") was also missing entirely and is now implemented in
+  `build_auth_event_map_from_state`; without it, v12's empty starting map
+  left almost every candidate event unable to find its own auth context.
+  Tests: `tests/unit/test_state_resolution_auth_diff.cpp`
+  (`[state_res_v2]` — auth difference, fail-closed missing/cycle/cap,
+  determinism, v12 empty-start, v12 conflicted state subgraph) and four new
+  scenarios in `tests/conformance/test_state_resolution_conformance.cpp`
+  (ban vs. concurrent power-level demotion, a kick surviving an unrelated
+  topic conflict, join-rule evasion, and the same-power/same-timestamp
+  event_id tie-break).
+
 - **Thumbnail decoder worker hardening is now fail-closed.** `harden()` in
   `src/media/thumbnail_worker_main.cpp` discarded the result of every
   hardening call (`setrlimit` x5, `prctl(PR_SET_DUMPABLE)`,

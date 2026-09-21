@@ -1254,6 +1254,69 @@ namespace
 
         runtime.federation.state_conflict_resolver =
             [rt](federation::PduStateConflictContext const& context) -> federation::PduIngestionResult {
+            // Store-backed event lookup for the state-res v2 auth-chain walk
+            // (auth difference / v12 conflicted state subgraph): the two state
+            // groups in `context` are flat state snapshots, not the room's full
+            // event graph, so the resolver needs this to reach ancestor events
+            // that neither snapshot lists directly. Spec: rooms/v10.md —
+            // Definitions, "Auth chain" / "Auth difference".
+            auto event_lookup = [rt](std::string_view event_id) -> std::optional<events::StateEventReference> {
+                for (auto const& evt : rt->database.persistent_store.events)
+                {
+                    if (evt.event_id != event_id)
+                    {
+                        continue;
+                    }
+                    auto const parsed = canonicaljson::parse_lossless(evt.json);
+                    if (parsed.error != canonicaljson::ParseError::none)
+                    {
+                        return std::nullopt;
+                    }
+                    auto const* obj = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+                    if (obj == nullptr)
+                    {
+                        return std::nullopt;
+                    }
+                    auto const find_string = [&](std::string_view key) -> std::string const* {
+                        for (auto const& member : *obj)
+                        {
+                            if (member.key == key)
+                            {
+                                return std::get_if<std::string>(&member.value->storage());
+                            }
+                        }
+                        return nullptr;
+                    };
+                    auto const* type = find_string("type");
+                    auto const* state_key = find_string("state_key");
+                    if (type == nullptr || state_key == nullptr)
+                    {
+                        return std::nullopt; // not a state event; not a valid auth_events target
+                    }
+                    auto const* sender = find_string("sender");
+                    auto ref = events::StateEventReference{};
+                    ref.key = events::StateKey{*type, *state_key};
+                    ref.event_id = evt.event_id;
+                    ref.sender = sender != nullptr ? *sender : std::string{};
+                    ref.origin_server_ts = 0;
+                    for (auto const& member : *obj)
+                    {
+                        if (member.key == "origin_server_ts")
+                        {
+                            if (auto const* ts = std::get_if<std::int64_t>(&member.value->storage()); ts != nullptr)
+                            {
+                                ref.origin_server_ts = *ts;
+                            }
+                            break;
+                        }
+                    }
+                    ref.depth = evt.depth;
+                    ref.event_json = parsed.value;
+                    return ref;
+                }
+                return std::nullopt;
+            };
+
             return federation::apply_state_resolution_v2(
                 context,
                 [rt, room_id = context.incoming_pdu.room_id](
@@ -1267,7 +1330,8 @@ namespace
                         }
                     }
                     return true;
-                });
+                },
+                event_lookup);
         };
 
         runtime.federation.membership_template_provider = [rt](federation::FederationEndpoint endpoint,

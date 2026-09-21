@@ -1310,7 +1310,14 @@ SCENARIO("State resolution v2: a kick survives alongside an unrelated conflictin
 
         auto const create = make_create_event("@alice:example.org", "$create:example.org", 100);
         auto const power_levels = make_power_levels_event("@alice:example.org", "$pl:example.org", 200, 1);
-        auto const join_rules = make_public_join_rules_event("@alice:example.org", "$join_rules:example.org", 300, 0);
+        // Invite-only, not public: a public join_rule would let @bob's
+        // original join re-admit him unconditionally when it is re-checked
+        // in step 4 (mainline ordering) against the already-kicked state,
+        // which is correct behaviour, not something this scenario should
+        // exercise — it would make ANY kick alongside a public room
+        // unwinnable, regardless of algorithm correctness.
+        auto const join_rules =
+            make_join_rules_event("invite", "@alice:example.org", "$join_rules:example.org", 300, 0);
         auto const alice_join = make_member_event("@alice:example.org", "$alice_join:example.org", 400, 2);
         auto const bob_join = make_member_event("@bob:example.org", "$bob_join:example.org", 500, 2);
 
@@ -1325,9 +1332,13 @@ SCENARIO("State resolution v2: a kick survives alongside an unrelated conflictin
         auto const topic_b = make_event_with_auth("m.room.topic", "", "$topic_b:example.org", "@alice:example.org", 700,
                                                   {"$create:example.org", "$pl:example.org"}, R"({"topic":"b"})");
 
+        // @bob's (m.room.member, "@bob:example.org") key is the conflict:
+        // fork A's current value is the kick, fork B's is the original join.
+        // A group's flat state must carry exactly one event per key, so
+        // $bob_join and $kick cannot both appear in group_a.
         auto group_a = merovingian::events::StateGroup{};
         group_a.group_id = "branch-a";
-        group_a.state = {create, power_levels, join_rules, alice_join, bob_join, kick, topic_a};
+        group_a.state = {create, power_levels, join_rules, alice_join, kick, topic_a};
 
         auto group_b = merovingian::events::StateGroup{};
         group_b.group_id = "branch-b";

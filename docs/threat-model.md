@@ -1380,6 +1380,20 @@ threats they represent, and the mitigations now in place:
 - **Restricted-room state diverged across federation.** V2 state resolution
   omitted `authorising_user_member`, so valid restricted joins failed auth.
   Mitigation: the auth-event map is populated from resolved state.
+- **State resolution could diverge from conformant servers by ignoring the
+  auth difference.** `resolve_state_v2` only ever considered power events
+  literally present in the two conflicted state groups, never the spec's full
+  conflicted set (conflicted state set + auth difference), so a power-level
+  change reachable only through a conflicted event's `auth_events` chain (e.g.
+  authorising a later ban) was invisible and its effect silently dropped.
+  Room v12 additionally needed the conflicted state subgraph and an empty
+  starting map for the iterative auth checks — support for those was missing
+  entirely. Mitigation (0.12.13): `resolve_state_v2` computes the auth
+  difference (and, for v12, the conflicted state subgraph) via a bounded,
+  fail-closed auth-chain walk (`StateResolutionRequest::event_lookup`,
+  `events::max_auth_chain_walk_events`); a missing or unreachable ancestor, or
+  an over-budget walk, resolves to `rejected_state_conflict` rather than a
+  partial result. See `docs/event-engine.md` and ADR-0063.
 - **State resolution could be ordered by the wrong power level.** The resolver
   read power levels integer-only while the auth path parsed room-v1-9 string
   values, letting a lower-power sender's event win. Mitigation: the resolver

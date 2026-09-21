@@ -316,8 +316,8 @@ auto parse_inbound_edu_envelope(std::string_view edu_type, std::string_view orig
     return out;
 }
 
-auto apply_state_resolution_v2(PduStateConflictContext const& context, ResolvedStateApplier const& apply_resolved)
-    -> PduIngestionResult
+auto apply_state_resolution_v2(PduStateConflictContext const& context, ResolvedStateApplier const& apply_resolved,
+                               events::EventLookupFn const& event_lookup) -> PduIngestionResult
 {
     if (context.room_version.empty())
     {
@@ -332,7 +332,7 @@ auto apply_state_resolution_v2(PduStateConflictContext const& context, ResolvedS
     {
         return {PduIngestionStatus::rejected_state_conflict, "state-res v2: no state groups", {}};
     }
-    auto request = events::StateResolutionRequest{context.room_version, context.state_groups};
+    auto request = events::StateResolutionRequest{context.room_version, context.state_groups, event_lookup};
     auto const resolution = events::resolve_state_v2(request, *policy);
     if (!resolution.resolved)
     {

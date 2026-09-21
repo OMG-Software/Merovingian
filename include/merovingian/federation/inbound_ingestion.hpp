@@ -101,8 +101,17 @@ using StateConflictResolver = std::function<PduIngestionResult(PduStateConflictC
 // `rejected_state_conflict` otherwise.
 using ResolvedStateApplier = std::function<bool(std::vector<events::StateEventReference> const&)>;
 
+// Optional event_lookup, forwarded verbatim to events::StateResolutionRequest
+// so the state-res v2 auth-chain walk can fetch events beyond the two state
+// groups in `context` (e.g. from the persistent store). Defaulted to empty
+// so existing callers that only ever hit the two-group unconflicted/
+// conflicted path (no auth-chain-only divergence) are unaffected; when the
+// resolver's auth-difference computation needs an event this lookup cannot
+// supply, it fails closed (rejected_state_conflict), never resolves with a
+// partial chain.
 [[nodiscard]] auto apply_state_resolution_v2(PduStateConflictContext const& context,
-                                             ResolvedStateApplier const& apply_resolved) -> PduIngestionResult;
+                                             ResolvedStateApplier const& apply_resolved,
+                                             events::EventLookupFn const& event_lookup = {}) -> PduIngestionResult;
 
 enum class EduType : std::uint8_t
 {

@@ -250,9 +250,60 @@ Runtime events store their immediate `prev_events`, current-state-derived
 Auth-event maps are built from current room state for authorization checking.
 The v2 state resolution algorithm resolves conflicting state using reverse
 topological power ordering for power events and the mainline ordering (based
-on the partially resolved power levels) for the remaining events.
+on the partially resolved power levels) for the remaining events. Room v12
+uses state-res v2.1: the same algorithm with three modifications (below).
 
-Two properties of that ordering are easy to get subtly wrong and are worth
+### Auth difference, full conflicted set, and the v12 conflicted state subgraph
+
+Until 0.12.13, `resolve_state_v2` only ever considered power events that
+appeared literally as one of the two conflicted state groups' entries. The
+spec's Algorithm step 1 is broader: *"Select the set X of all power events
+that appear in the **full conflicted set**"*, where the full conflicted set is
+the conflicted state set **plus the auth difference** — events reachable only
+through the `auth_events` chains of the conflicted events, not present as a
+literal value in either fork's state. A power-level change hidden this way
+(e.g. authorising a later ban) was silently invisible to the old resolver,
+letting the ban it authorised be dropped even though the promoting event was
+never actually in dispute — two conformant servers could resolve the same
+input differently. `StateResolutionRequest::event_lookup` gives the resolver a
+way to fetch those ancestor events (the persistent store, in production; see
+`src/homeserver/local_http_router.cpp`'s `state_conflict_resolver`), and
+`resolve_state_v2` now computes ∪Ci − ∩Ci (the auth difference across the
+submitted state groups' full auth chains) before selecting X.
+
+Room v12 (state-res v2.1, `rooms::StateResolutionAlgorithm::v2_1`) makes three
+further changes (rooms/v12.md — "State resolution"):
+
+1. The iterative auth checks (Algorithm steps 2 and 4) start from an **empty**
+   state map instead of the unconflicted state map.
+2. A new **conflicted state subgraph** — the union of every path along
+   `auth_events` edges between any pair of events in the conflicted state set,
+   endpoints included — is computed.
+3. The full conflicted set additionally includes that subgraph.
+
+Modification 1 means almost nothing is present in the running state on the
+first pass for a v12 room, so the iterative auth checks' own fallback matters
+far more there: per the spec's "Iterative auth checks" definition, *"If a
+(event_type, state_key) key that is required for checking the authorisation
+rules is not present in the state, then the appropriate state event from the
+event's `auth_events` is used if the auth event is not rejected."*
+`build_auth_event_map_from_state` now implements this fallback for every
+slot (create, power_levels, join_rules, sender/target member,
+third_party_invite, authorising_user_member) — it did not before, which made
+v12 support incomplete regardless of the algorithm-selection fix, since the
+empty starting map meant almost every event's own auth context needed it.
+
+The auth-chain walk is bounded (`events::max_auth_chain_walk_events`,
+`include/merovingian/events/limits.hpp`) and **fails closed**: a missing or
+unreachable event, an over-budget walk, or an exhausted lookup returns an
+unresolved result (mapped to `rejected_state_conflict` by
+`federation::apply_state_resolution_v2`) rather than resolving on a partial
+chain. This does not apply to the iterative auth checks' own `auth_events`
+fallback above, which is intentionally soft — an ancestor it cannot reach
+only fails that one candidate event's own auth check (as it already did
+before the fallback existed), not the whole resolution.
+
+Two properties of the ordering are easy to get subtly wrong and are worth
 stating explicitly, because both were defects until 0.12.9:
 
 - **Sender power is read through the room version's rules, not an integer-only
