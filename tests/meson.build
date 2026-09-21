@@ -192,6 +192,7 @@ shell = find_program('sh')
       'unit/test_secret_buffer.cpp',
       'unit/test_shutdown_signal.cpp',
       'unit/test_state_resolution.cpp',
+      'unit/test_state_resolution_auth_diff.cpp',
       'unit/test_stream_token.cpp',
       'unit/test_sliding_sync.cpp',
       'unit/test_sliding_sync_room_builder.cpp',

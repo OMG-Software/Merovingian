@@ -1184,3 +1184,248 @@ SCENARIO("Reverse topological power ordering reads string power levels only wher
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Spec: Matrix v1.19 — Room v2 state resolution, Definitions ("Reverse
+// topological power ordering", rule 3) and Algorithm.
+// URL: ../../docs/matrix-v1.19-spec/rooms/v10.md
+//
+// "the senders have the same power level and the events have the same
+// origin_server_ts, but x's event_id is less than y's event_id" — the final
+// tie-break, distinct from the origin_server_ts tie-break already covered
+// above.
+// ---------------------------------------------------------------------------
+SCENARIO("Reverse topological power ordering ties on equal power and equal origin_server_ts are broken by event_id",
+         "[conformance][state-resolution][v2][sort][state_res_v2]")
+{
+    GIVEN("two conflicted power events from the same sender at the identical origin_server_ts")
+    {
+        auto const unconflicted = merovingian::events::StateMap{};
+        auto const* policy = merovingian::rooms::find_room_version_policy("10");
+        REQUIRE(policy != nullptr);
+
+        // Same sender, same power (self-content lookup), same origin_server_ts —
+        // only the event_id differs.
+        auto const zzz = make_power_levels_event("@alice:example.org", "$zzz:example.org", 500, 1);
+        auto const aaa = make_power_levels_event("@alice:example.org", "$aaa:example.org", 500, 1);
+
+        auto const conflicted = std::vector<StateEventReference>{zzz, aaa};
+
+        WHEN("the events are sorted by reverse topological power ordering")
+        {
+            auto const sorted = merovingian::events::reverse_topological_power_sort(conflicted, unconflicted, *policy);
+
+            THEN("the lexicographically smaller event_id sorts first")
+            {
+                REQUIRE(sorted.size() == 2U);
+                // Spec MUST: rule 3 — equal power, equal ts -> smaller event_id first.
+                REQUIRE(sorted[0].event_id == "$aaa:example.org");
+                REQUIRE(sorted[1].event_id == "$zzz:example.org");
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Spec: Matrix v1.19 — Room v2 state resolution, Algorithm step 1-2.
+// URL: ../../docs/matrix-v1.19-spec/rooms/v10.md
+//
+// A power-level self-demotion and a ban are both power events and are
+// auth-checked in the SAME reverse-topological-power pass. When the
+// demotion is ordered before the ban, the banner no longer has enough power
+// by the time the ban is auth-checked against the partially resolved state,
+// and the ban is correctly dropped — this is the "ban vs. concurrent
+// power-level demotion" case.
+// ---------------------------------------------------------------------------
+SCENARIO("State resolution v2: a concurrent self-demotion can outrun a ban authored with the same prior power",
+         "[conformance][state-resolution][v2][state_res_v2]")
+{
+    GIVEN("a fork where @alice demotes her own power while, concurrently, she also bans @bob")
+    {
+        auto const* policy = merovingian::rooms::find_room_version_policy("10");
+        REQUIRE(policy != nullptr);
+
+        auto const create = make_create_event("@alice:example.org", "$create:example.org", 100);
+        auto const join_rules = make_public_join_rules_event("@alice:example.org", "$join_rules:example.org", 200, 0);
+        auto const alice_join = make_member_event("@alice:example.org", "$alice_join:example.org", 300, 1);
+
+        // Fork A: @alice bans @bob (a power event: sender != state_key, ban).
+        auto const ban =
+            make_event_with_auth("m.room.member", "@bob:example.org", "$ban:example.org", "@alice:example.org", 5000,
+                                 {"$create:example.org"}, R"({"membership":"ban"})");
+
+        // Fork B: @alice demotes her own power to 0, earlier than the ban's
+        // origin_server_ts, so when both candidates are auth-checked in the
+        // same reverse-topological-power pass, the demotion applies first.
+        auto const demote = make_event_with_auth("m.room.power_levels", "", "$demote:example.org", "@alice:example.org",
+                                                 1000, {"$create:example.org"},
+                                                 R"({"ban":50,"events_default":0,"invite":0,"kick":50,)"
+                                                 R"("redact":50,"state_default":50,"users":{},)"
+                                                 R"("users_default":0})");
+
+        auto group_a = merovingian::events::StateGroup{};
+        group_a.group_id = "branch-a";
+        group_a.state = {create, join_rules, alice_join, ban};
+
+        auto group_b = merovingian::events::StateGroup{};
+        group_b.group_id = "branch-b";
+        group_b.state = {create, join_rules, alice_join, demote};
+
+        auto request = merovingian::events::StateResolutionRequest{};
+        request.room_version = "10";
+        request.state_groups = {group_a, group_b};
+
+        WHEN("resolve_state_v2 is called")
+        {
+            auto const result = merovingian::events::resolve_state_v2(request, *policy);
+
+            THEN("the ban does not survive — @alice had already demoted herself when it was auth-checked")
+            {
+                REQUIRE(result.resolved);
+                // @bob's key has exactly one candidate ($ban) across both forks
+                // (fork B never mentions @bob), so a rejected ban leaves no
+                // winner for that key at all.
+                REQUIRE(result_event_for(result, "m.room.member", "@bob:example.org") == nullptr);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Spec: Matrix v1.19 — Room v2 state resolution, Algorithm steps 1-4.
+// URL: ../../docs/matrix-v1.19-spec/rooms/v10.md
+//
+// A kick (power event, step 1-2) and a conflicting topic change (non-power,
+// step 3-4) are independent conflicts in the same resolution. The kick must
+// resolve correctly regardless of the unrelated topic conflict being
+// resolved alongside it.
+// ---------------------------------------------------------------------------
+SCENARIO("State resolution v2: a kick survives alongside an unrelated conflicting topic change",
+         "[conformance][state-resolution][v2][state_res_v2]")
+{
+    GIVEN("a fork that both kicks a member and changes the room topic")
+    {
+        auto const* policy = merovingian::rooms::find_room_version_policy("10");
+        REQUIRE(policy != nullptr);
+
+        auto const create = make_create_event("@alice:example.org", "$create:example.org", 100);
+        auto const power_levels = make_power_levels_event("@alice:example.org", "$pl:example.org", 200, 1);
+        auto const join_rules = make_public_join_rules_event("@alice:example.org", "$join_rules:example.org", 300, 0);
+        auto const alice_join = make_member_event("@alice:example.org", "$alice_join:example.org", 400, 2);
+        auto const bob_join = make_member_event("@bob:example.org", "$bob_join:example.org", 500, 2);
+
+        // Fork A: @alice kicks @bob, and sets the topic to "a".
+        auto const kick =
+            make_event_with_auth("m.room.member", "@bob:example.org", "$kick:example.org", "@alice:example.org", 5000,
+                                 {"$create:example.org", "$pl:example.org"}, R"({"membership":"leave"})");
+        auto const topic_a = make_event_with_auth("m.room.topic", "", "$topic_a:example.org", "@alice:example.org", 600,
+                                                  {"$create:example.org", "$pl:example.org"}, R"({"topic":"a"})");
+
+        // Fork B: @bob stays joined, and the topic is set to "b".
+        auto const topic_b = make_event_with_auth("m.room.topic", "", "$topic_b:example.org", "@alice:example.org", 700,
+                                                  {"$create:example.org", "$pl:example.org"}, R"({"topic":"b"})");
+
+        auto group_a = merovingian::events::StateGroup{};
+        group_a.group_id = "branch-a";
+        group_a.state = {create, power_levels, join_rules, alice_join, bob_join, kick, topic_a};
+
+        auto group_b = merovingian::events::StateGroup{};
+        group_b.group_id = "branch-b";
+        group_b.state = {create, power_levels, join_rules, alice_join, bob_join, topic_b};
+
+        auto request = merovingian::events::StateResolutionRequest{};
+        request.room_version = "10";
+        request.state_groups = {group_a, group_b};
+
+        WHEN("resolve_state_v2 is called")
+        {
+            auto const result = merovingian::events::resolve_state_v2(request, *policy);
+
+            THEN("both the kick and the topic conflict resolve, independently of each other")
+            {
+                REQUIRE(result.resolved);
+                auto const* member = result_event_for(result, "m.room.member", "@bob:example.org");
+                REQUIRE(member != nullptr);
+                // Spec MUST: @alice (power 100) kicking @bob (power 0) is
+                // authorised, and the kick must survive alongside the
+                // unrelated topic conflict, not be silently dropped by it.
+                REQUIRE(member->event_id == "$kick:example.org");
+
+                auto const* topic = result_event_for(result, "m.room.topic", "");
+                REQUIRE(topic != nullptr);
+                auto const& topic_winner = topic->event_id;
+                REQUIRE((topic_winner == "$topic_a:example.org" || topic_winner == "$topic_b:example.org"));
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Spec: Matrix v1.19 — Room v2 state resolution, Algorithm steps 1-4.
+// URL: ../../docs/matrix-v1.19-spec/rooms/v10.md
+//
+// Join-rule evasion: a join is a non-power event (step 3-4), processed
+// AFTER the conflicting join_rules change (a power event, step 1-2) has
+// already been resolved. A user cannot "evade" a concurrent tightening of
+// the join rule by joining on the fork that still has the old, looser rule —
+// their join is authorised against the room's ALREADY-RESOLVED join_rules,
+// not the value on their own fork.
+// ---------------------------------------------------------------------------
+SCENARIO("State resolution v2: a join cannot evade a concurrently tightened join rule",
+         "[conformance][state-resolution][v2][state_res_v2]")
+{
+    GIVEN("a fork where the join rule is tightened to invite-only while, concurrently, a user tries to self-join")
+    {
+        auto const* policy = merovingian::rooms::find_room_version_policy("10");
+        REQUIRE(policy != nullptr);
+
+        auto const create = make_create_event("@alice:example.org", "$create:example.org", 100);
+        auto const power_levels = make_power_levels_event("@alice:example.org", "$pl:example.org", 200, 1);
+        auto const alice_join = make_member_event("@alice:example.org", "$alice_join:example.org", 300, 2);
+
+        // Fork A: join_rule stays public, and @bob joins under it.
+        auto const join_rules_public =
+            make_join_rules_event("public", "@alice:example.org", "$join_rules_public:example.org", 400, 3);
+        auto const bob_join = make_member_event("@bob:example.org", "$bob_join:example.org", 500, 4);
+
+        // Fork B: the join rule is tightened to invite-only, at a LATER
+        // origin_server_ts than the public rule, so it wins the reverse
+        // topological power ordering (both candidates share the same sender
+        // and power) and becomes the resolved join_rules before @bob's join
+        // is ever auth-checked.
+        auto const join_rules_invite =
+            make_join_rules_event("invite", "@alice:example.org", "$join_rules_invite:example.org", 600, 3);
+
+        auto group_a = merovingian::events::StateGroup{};
+        group_a.group_id = "branch-a";
+        group_a.state = {create, power_levels, alice_join, join_rules_public, bob_join};
+
+        auto group_b = merovingian::events::StateGroup{};
+        group_b.group_id = "branch-b";
+        group_b.state = {create, power_levels, alice_join, join_rules_invite};
+
+        auto request = merovingian::events::StateResolutionRequest{};
+        request.room_version = "10";
+        request.state_groups = {group_a, group_b};
+
+        WHEN("resolve_state_v2 is called")
+        {
+            auto const result = merovingian::events::resolve_state_v2(request, *policy);
+
+            THEN("the tightened join rule wins, and @bob's join does not survive")
+            {
+                REQUIRE(result.resolved);
+                auto const* join_rules_winner = result_event_for(result, "m.room.join_rules", "");
+                REQUIRE(join_rules_winner != nullptr);
+                REQUIRE(join_rules_winner->event_id == "$join_rules_invite:example.org");
+
+                // Spec MUST: @bob's join is auth-checked against the
+                // resolved (invite-only) join_rules, not the public rule on
+                // his own fork — @bob was never invited, so the join is
+                // denied and @bob's key has no winner at all (his was the
+                // only candidate for that key).
+                REQUIRE(result_event_for(result, "m.room.member", "@bob:example.org") == nullptr);
+            }
+        }
+    }
+}
