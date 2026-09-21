@@ -309,7 +309,14 @@ separate process on the same host:
   read-execute OS-integration paths (CA trust store candidates, resolver
   configuration, NSS/dynamic-linker library directories, timezone data).
   The master key file, both database URI files, and TLS private keys are
-  never in the rule set. When the running kernel has no Landlock support
+  never in the rule set, and the worker refuses to start if any rule covers
+  one of them — a rule on a directory grants everything beneath it, so a
+  secret kept beside the SQLite database would otherwise be exposed. The CA
+  grants cover only the certificate stores, never all of `/etc/ssl` or
+  `/etc/pki`, which hold the conventional private-key directories. Because a
+  seccomp filter survives `execve`, the worker inherits the main server's
+  filter, which therefore allows the three Landlock syscalls. When the
+  running kernel has no Landlock support
   (older than Linux 5.13, or disabled at boot), the worker refuses to start
   unless `federation.worker.allow_without_landlock=true` is set, which logs
   CRITICAL on every start — mirroring the fail-closed seccomp policy below;

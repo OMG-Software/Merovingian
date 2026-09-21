@@ -142,7 +142,23 @@ audit.
   read-execute OS-integration paths (CA trust store candidates, resolver
   configuration, NSS/dynamic-linker library directories, timezone data), then
   calls `landlock_restrict_self`. The master key file, both database URI
-  files, and the TLS private key paths are never in the rule set. When the
+  files, and the TLS private key paths are never in the rule set, and the
+  worker refuses to start if any rule equals or is an ancestor directory of
+  one of them (`platform::find_landlock_rule_covering_secret`, compared by
+  path component after `weakly_canonical`) — a rule on a directory grants
+  everything beneath it, so a master key kept beside the SQLite database
+  would otherwise be exposed read-write. The CA grants cover only the
+  certificate stores, never all of `/etc/ssl` or `/etc/pki`, which hold the
+  conventional private-key directories. Three kernel-contract bugs found in
+  review were fixed before this shipped: file rules requested
+  directory-only rights (`EINVAL` on `/etc/resolv.conf`);
+  `landlock_restrict_self` ran before `PR_SET_NO_NEW_PRIVS` was set
+  (`EPERM`; now set immediately before it, failure fatal); and the worker,
+  which inherits the main server's seccomp filter across `execve`, was
+  killed by it because main's allowlist lacked the Landlock syscalls (now
+  allowed there — Landlock can only narrow access). The forked real-kernel
+  test now skips only when the kernel reports no Landlock ABI; it had been
+  reporting the `EPERM` as a skip. When the
   running kernel has no Landlock support (older than Linux 5.13, or Landlock
   disabled at boot), the worker refuses to start unless the new
   `federation.worker.allow_without_landlock=true` opt-out is set, in which

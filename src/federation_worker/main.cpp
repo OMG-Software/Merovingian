@@ -167,6 +167,19 @@ auto main(int argc, char const* const* argv) -> int
     // startup step and never again.
     {
         auto const landlock_rules = merovingian::platform::build_worker_landlock_rules(parse_result.config);
+        // Fail closed if any rule would grant access to a configured secret
+        // (e.g. a master key placed beside the SQLite database, whose
+        // directory is granted read-write). Refused even with
+        // allow_without_landlock: this is a secret-placement error.
+        if (auto const exposure = merovingian::platform::find_landlock_rule_covering_secret(
+                landlock_rules, merovingian::platform::worker_landlock_secret_paths(parse_result.config));
+            exposure.has_value())
+        {
+            LOG_CRITICAL("Federation worker: Landlock rule for '" + exposure->rule_path +
+                         "' would grant the worker access to the secret '" + exposure->secret_path +
+                         "'; move the secret out of that directory. Refusing to start.");
+            return 1;
+        }
         auto const landlock = merovingian::platform::apply_worker_landlock(
             landlock_rules, parse_result.config.federation_worker().allow_without_landlock);
         if (!landlock.accepted)

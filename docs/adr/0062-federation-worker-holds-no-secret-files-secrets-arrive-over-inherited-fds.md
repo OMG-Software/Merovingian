@@ -424,6 +424,40 @@ Two orderings were available:
   guarantees the ruleset either applies successfully or the worker never
   reaches the code that would need those syscalls again.
 
+**The worker also inherits the main server's filter.** A seccomp filter
+survives `execve`, so when the main server runs with its own seccomp filter
+(the production configuration), the worker starts already bound by *main's*
+allowlist, before it installs its own. The three Landlock syscalls are
+therefore on main's allowlist too (`k_seccomp_filter`,
+`src/platform/seccomp_hardening.cpp`); without them the worker's first
+`landlock_create_ruleset` killed it under `SECCOMP_RET_KILL_PROCESS`, which
+only the full-hardening startup test (`test_server_startup_hardening_flow.cpp`)
+caught — the federation-worker integration tests spawn the worker from an
+unfiltered test process. Allowing them in main grants nothing: Landlock can
+only ever narrow the caller's filesystem access.
+
+### Kernel contract
+
+Two kernel rules the injected-ops unit tests cannot model, each of which
+stopped the worker starting until fixed (0.12.13):
+
+* **A rule on a non-directory may carry only file-level rights**
+  (`EXECUTE`, `WRITE_FILE`, `READ_FILE`, `TRUNCATE`); requesting `READ_DIR`
+  on `/etc/resolv.conf` is `EINVAL`. `real_add_rule` `fstat`s the same
+  `O_PATH` fd it passes to the kernel and trims the rights with
+  `platform::landlock_access_for_inode`, so there is no gap between checking
+  the inode type and adding the rule.
+* **`landlock_restrict_self` requires `no_new_privs`** (or
+  `CAP_SYS_ADMIN`), otherwise `EPERM`. The worker's seccomp step sets it,
+  but later and only when `apply_hardening` is on, so
+  `apply_worker_landlock` sets `PR_SET_NO_NEW_PRIVS` immediately before
+  `landlock_restrict_self`; a failure there is fatal regardless of the
+  opt-out. The worker never execs, so this costs nothing.
+
+The forked real-kernel test skips only when the kernel reports no Landlock
+ABI; any other refusal is a failure (it previously skipped on every refusal,
+which hid the `EPERM`).
+
 ### Allowlist derivation
 
 `platform::build_worker_landlock_rules()` builds two kinds of rules from the
@@ -445,9 +479,14 @@ worker's own config copy — see `platform::LandlockPathRule::required`:
   file paths and four candidate CA-bundle directory paths across the
   distributions this project ships on — reading the source directly (rather
   than re-deriving the list independently) is what the rule set's
-  `/etc/ssl`, `/etc/pki`, `/usr/share/ca-certificates`, and related entries
-  are taken from, plus the directories Debian/Ubuntu's per-certificate
-  symlinks under `/etc/ssl/certs` commonly resolve into. Name resolution
+  certificate-store entries (`/etc/ssl/certs`, `/etc/ssl/cert.pem`,
+  `/etc/pki/tls/certs`, `/etc/pki/ca-trust`, `/usr/share/ca-certificates`,
+  and related entries, plus the OpenSSL config files) are taken from, plus
+  the directories Debian/Ubuntu's per-certificate symlinks under
+  `/etc/ssl/certs` commonly resolve into. **Not** the whole of `/etc/ssl` or
+  `/etc/pki`: those trees hold the conventional TLS private-key directories
+  (`/etc/ssl/private`, `/etc/pki/tls/private`), and a read grant on the
+  parent would have exposed any key an operator kept there. Name resolution
   (`getaddrinfo`, used to reach federation peers) reads glibc NSS
   configuration — `/etc/resolv.conf`, `/etc/hosts`, `/etc/nsswitch.conf`,
   `/etc/gai.conf`, `/etc/host.conf` — and lazily `dlopen()`s
@@ -574,3 +613,20 @@ worker's own config copy — see `platform::LandlockPathRule::required`:
 * `packaging/postgresql/provision-federation-worker-role.sql` (part 2)
 * `tests/unit/test_worker_landlock.cpp`, tag `[worker_landlock]` (part 3)
 * `CHANGELOG.md`, 0.12.13 (part 3)
+
+### Secret-exposure guard
+
+A rule on a directory grants everything beneath it, so "no secret path is
+in the rule set" is not enough: the required read-write grant on the SQLite
+database's *directory* would silently expose a master key an operator placed
+beside the database. At startup, before applying the ruleset, the worker
+checks every rule against `platform::worker_landlock_secret_paths()` (the
+master key, both TLS private keys, both database URI files, and the
+registration token file) with `platform::find_landlock_rule_covering_secret`,
+and refuses to start if any rule equals or is an ancestor of one. Paths are
+compared by component after `std::filesystem::weakly_canonical`, matching
+how the kernel resolves the rule's path, so a symlink cannot hide an overlap
+and `/etc/merov` never covers `/etc/merovingian`. The refusal applies even
+with `allow_without_landlock`: it is a secret-placement error, not a kernel
+capability question. The shipped layout (secrets in `/etc/merovingian`, the
+database in `/var/lib/merovingian`) passes it.

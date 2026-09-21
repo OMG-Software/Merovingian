@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -157,6 +158,29 @@ inline constexpr int k_landlock_max_known_abi = 3;
 // part 3, "Allowlist derivation" for the strace evidence this list was
 // derived from.
 [[nodiscard]] auto build_worker_landlock_rules(config::Config const& config) -> std::vector<LandlockPathRule>;
+
+// A Landlock rule that would grant the worker access to a configured secret.
+struct LandlockSecretExposure final
+{
+    std::string rule_path;
+    std::string secret_path;
+};
+
+// Every non-empty secret file path in `config` the worker must never be able
+// to open: the master key, both TLS private keys, main's database URI file,
+// the worker's own database URI file (delivered over an fd, never opened),
+// and the registration token file.
+[[nodiscard]] auto worker_landlock_secret_paths(config::Config const& config) -> std::vector<std::string>;
+
+// Returns the first rule whose path is, or is an ancestor directory of, one
+// of `secret_paths`, or std::nullopt when none is. A rule on a directory
+// grants everything beneath it, so an exact-path comparison is not enough.
+// Paths are compared by component after std::filesystem::weakly_canonical,
+// so a symlink cannot hide an overlap and /etc/merov never covers
+// /etc/merovingian.
+[[nodiscard]] auto find_landlock_rule_covering_secret(std::vector<LandlockPathRule> const& rules,
+                                                      std::vector<std::string> const& secret_paths)
+    -> std::optional<LandlockSecretExposure>;
 
 // Applies the Landlock filesystem restriction described by `rules`, or
 // determines Landlock is unavailable and defers to `allow_without_landlock`:

@@ -807,3 +807,112 @@ SCENARIO("A failure to set no_new_privs is fatal even with the Landlock opt-out"
         }
     }
 }
+
+// ============================================================================
+// Secret-exposure guard: no Landlock rule may cover a configured secret.
+// A rule on a directory grants everything beneath it, so an exact-path check
+// is not enough — e.g. the SQLite read-write grant on the database directory
+// would silently expose a master key an operator placed beside the database.
+// ============================================================================
+
+SCENARIO("A Landlock rule on a directory holding a configured secret is detected",
+         "[platform][security][worker_landlock]")
+{
+    GIVEN("an operator who put the master key next to the SQLite database")
+    {
+        auto config = merovingian::config::Config{};
+        config.database().backend = merovingian::config::DatabaseBackend::sqlite;
+        config.database().sqlite_path = "/srv/merovingian/merovingian.sqlite3";
+        config.security().secrets.master_key_file = "/srv/merovingian/master.key";
+
+        WHEN("the worker's rules are checked against its secret paths")
+        {
+            auto const rules = merovingian::platform::build_worker_landlock_rules(config);
+            auto const exposure = merovingian::platform::find_landlock_rule_covering_secret(
+                rules, merovingian::platform::worker_landlock_secret_paths(config));
+
+            THEN("the exposure is reported, naming the rule and the secret")
+            {
+                REQUIRE(exposure.has_value());
+                REQUIRE(exposure->rule_path == "/srv/merovingian");
+                REQUIRE(exposure->secret_path == "/srv/merovingian/master.key");
+            }
+        }
+    }
+}
+
+SCENARIO("The shipped secret layout is not covered by any worker Landlock rule",
+         "[platform][security][worker_landlock]")
+{
+    GIVEN("secrets under /etc/merovingian and the database under /var/lib/merovingian")
+    {
+        auto config = merovingian::config::Config{};
+        config.database().backend = merovingian::config::DatabaseBackend::sqlite;
+        config.database().sqlite_path = "/var/lib/merovingian/merovingian.sqlite3";
+        config.database().uri_file = "/etc/merovingian/db-uri";
+        config.security().secrets.master_key_file = "/etc/merovingian/master-key";
+        config.security().registration.token_file = "/etc/merovingian/registration-token";
+        config.listeners().client.tls_private_key_file = "/etc/merovingian/client.key";
+        config.listeners().federation.tls_private_key_file = "/etc/merovingian/federation.key";
+        config.federation_worker().database_uri_file = "/etc/merovingian/fed-worker-db-uri";
+
+        WHEN("the worker's rules are checked against its secret paths")
+        {
+            auto const rules = merovingian::platform::build_worker_landlock_rules(config);
+            auto const secrets = merovingian::platform::worker_landlock_secret_paths(config);
+
+            THEN("every configured secret is listed and none is covered")
+            {
+                REQUIRE(secrets.size() == 6U);
+                REQUIRE_FALSE(merovingian::platform::find_landlock_rule_covering_secret(rules, secrets).has_value());
+            }
+        }
+    }
+}
+
+SCENARIO("CA trust grants never cover the conventional private-key directories",
+         "[platform][security][worker_landlock]")
+{
+    GIVEN("TLS private keys kept where Debian and RHEL conventionally put them")
+    {
+        auto const rules = merovingian::platform::build_worker_landlock_rules(merovingian::config::Config{});
+        auto const keys = std::vector<std::string>{"/etc/ssl/private/server.key", "/etc/pki/tls/private/server.key"};
+
+        WHEN("the worker's rules are checked against those key paths")
+        {
+            auto const exposure = merovingian::platform::find_landlock_rule_covering_secret(rules, keys);
+
+            THEN("no rule covers them")
+            {
+                INFO("covering rule: " << (exposure ? exposure->rule_path : std::string{"none"}));
+                REQUIRE_FALSE(exposure.has_value());
+            }
+        }
+    }
+}
+
+SCENARIO("Rule coverage is decided by path component, not string prefix", "[platform][security][worker_landlock]")
+{
+    GIVEN("a rule on /etc/merov and a secret under /etc/merovingian")
+    {
+        auto const rules = std::vector<LandlockPathRule>{
+            {.path = "/etc/merov", .access = LandlockAccess::read_only, .required = false}
+        };
+
+        WHEN("coverage is checked")
+        {
+            THEN("a sibling directory sharing a name prefix is not covered")
+            {
+                REQUIRE_FALSE(merovingian::platform::find_landlock_rule_covering_secret(
+                                  rules, {"/etc/merovingian/master-key"})
+                                  .has_value());
+            }
+            AND_THEN("the directory itself and anything beneath it are covered")
+            {
+                REQUIRE(merovingian::platform::find_landlock_rule_covering_secret(rules, {"/etc/merov"}).has_value());
+                REQUIRE(merovingian::platform::find_landlock_rule_covering_secret(rules, {"/etc/merov/a/b.key"})
+                            .has_value());
+            }
+        }
+    }
+}

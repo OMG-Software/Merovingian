@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <system_error>
 #include <tuple>
 #include <utility>
 
@@ -328,10 +329,19 @@ auto build_worker_landlock_rules(config::Config const& config) -> std::vector<La
     // directories Debian/Ubuntu's per-certificate symlinks under
     // /etc/ssl/certs commonly resolve into. See ADR-0062 part 3, "Allowlist
     // derivation" for the strace evidence.
-    for (auto const* dir : {"/etc/ssl", "/etc/pki", "/usr/share/ca-certificates", "/usr/local/share/certs",
-                            "/etc/openssl", "/usr/pkg/etc/openssl"})
+    //
+    // Deliberately NOT the whole of /etc/ssl or /etc/pki: those trees hold the
+    // conventional TLS private-key directories (/etc/ssl/private,
+    // /etc/pki/tls/private). Only the certificate stores themselves, the
+    // OpenSSL config files, and the directories Debian's /etc/ssl/certs
+    // symlinks resolve into are granted.
+    for (auto const* path :
+         {"/etc/ssl/certs", "/etc/ssl/cert.pem", "/etc/ssl/ca-bundle.pem", "/etc/ssl/openssl.cnf", "/etc/pki/tls/certs",
+          "/etc/pki/ca-trust", "/etc/pki/tls/openssl.cnf", "/usr/share/ca-certificates",
+          "/usr/local/share/ca-certificates", "/usr/local/share/certs", "/etc/openssl/certs", "/etc/openssl/cert.pem",
+          "/usr/pkg/etc/openssl/certs", "/usr/pkg/etc/openssl/cert.pem"})
     {
-        rules.push_back({.path = dir, .access = LandlockAccess::read_only, .required = false});
+        rules.push_back({.path = path, .access = LandlockAccess::read_only, .required = false});
     }
 
     // ---- Name resolution (glibc NSS: getaddrinfo for outbound federation) --
@@ -356,6 +366,78 @@ auto build_worker_landlock_rules(config::Config const& config) -> std::vector<La
     rules.push_back({.path = "/etc/localtime", .access = LandlockAccess::read_only, .required = false});
 
     return rules;
+}
+
+auto worker_landlock_secret_paths(config::Config const& config) -> std::vector<std::string>
+{
+    auto paths = std::vector<std::string>{};
+    for (auto const* path :
+         {&config.security().secrets.master_key_file, &config.listeners().client.tls_private_key_file,
+          &config.listeners().federation.tls_private_key_file, &config.database().uri_file,
+          &config.federation_worker().database_uri_file, &config.security().registration.token_file})
+    {
+        if (!path->empty())
+        {
+            paths.push_back(*path);
+        }
+    }
+    return paths;
+}
+
+namespace
+{
+    // Resolves symlinks for the portion of `path` that exists, so that a
+    // symlinked rule or secret cannot hide an overlap; falls back to a
+    // lexical normalisation if resolution fails.
+    [[nodiscard]] auto canonical_for_coverage(std::string const& path) -> std::filesystem::path
+    {
+        auto error = std::error_code{};
+        auto resolved = std::filesystem::weakly_canonical(std::filesystem::path{path}, error);
+        if (error)
+        {
+            resolved = std::filesystem::path{path}.lexically_normal();
+        }
+        return resolved;
+    }
+
+    // True when `ancestor` equals `path` or is a directory above it, compared
+    // component by component (so /etc/merov does not cover /etc/merovingian).
+    [[nodiscard]] auto path_covers(std::filesystem::path const& ancestor, std::filesystem::path const& path) -> bool
+    {
+        auto ancestor_it = ancestor.begin();
+        auto path_it = path.begin();
+        for (; ancestor_it != ancestor.end(); ++ancestor_it, ++path_it)
+        {
+            // A trailing empty component comes from a trailing separator.
+            if (ancestor_it->empty())
+            {
+                continue;
+            }
+            if (path_it == path.end() || *ancestor_it != *path_it)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+} // namespace
+
+auto find_landlock_rule_covering_secret(std::vector<LandlockPathRule> const& rules,
+                                        std::vector<std::string> const& secret_paths)
+    -> std::optional<LandlockSecretExposure>
+{
+    for (auto const& secret : secret_paths)
+    {
+        auto const secret_path = canonical_for_coverage(secret);
+        for (auto const& rule : rules)
+        {
+            if (path_covers(canonical_for_coverage(rule.path), secret_path))
+            {
+                return LandlockSecretExposure{.rule_path = rule.path, .secret_path = secret};
+            }
+        }
+    }
+    return std::nullopt;
 }
 
 auto apply_worker_landlock(std::vector<LandlockPathRule> const& rules, bool allow_without_landlock,
