@@ -21,6 +21,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <fstream>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -738,6 +739,45 @@ auto handle_event_query_ingest_request(HomeserverRuntime& runtime, std::string_v
     return serialize_event_query_ingest_result(response_body);
 }
 
+namespace
+{
+
+    // Reads federation.worker.database_uri_file, ADR-0062 part 2's separate,
+    // least-privilege PostgreSQL connection URI for the worker. Mirrors
+    // runtime.cpp's read_database_uri_file (first line of the file, trimmed
+    // of its trailing newline by std::getline), but returns the bytes in a
+    // core::SecretBuffer and wipes the transient std::string copy, since
+    // unlike main's own database.uri_file this value is about to cross a
+    // process boundary. Returns nullopt on an empty path, a file that cannot
+    // be opened, or an empty first line -- the caller treats all three as
+    // "no URI available" and decides what that means from the surrounding
+    // config (required vs. an explicit shared-credentials opt-out).
+    [[nodiscard]] auto read_worker_database_uri_file(std::string const& path) -> std::optional<core::SecretBuffer>
+    {
+        if (path.empty())
+        {
+            return std::nullopt;
+        }
+        auto input = std::ifstream{path};
+        if (!input.is_open())
+        {
+            return std::nullopt;
+        }
+        auto value = std::string{};
+        std::getline(input, value);
+        if (value.empty())
+        {
+            return std::nullopt;
+        }
+        auto secret = core::SecretBuffer{
+            std::span<std::uint8_t const>{reinterpret_cast<std::uint8_t const*>(value.data()), value.size()}
+        };
+        core::secure_zero(std::as_writable_bytes(std::span{value}));
+        return secret;
+    }
+
+} // namespace
+
 WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRuntime& runtime, std::string worker_path,
                        std::string config_path)
     : cfg_{cfg}
@@ -772,6 +812,40 @@ WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRunt
         throw std::runtime_error{"ipc: failed to derive worker IPC auth key from master key file"};
     }
 
+    // ADR-0062 part 2 (finding N1): derive the worker's separate database
+    // connection URI ONCE, here, the same way the auth key above is derived
+    // once rather than per-supervisor. SQLite offers no role to separate --
+    // the worker keeps opening the same file there, so this section is
+    // skipped entirely and every supervisor below gets an empty
+    // worker_database_uri_material (no --db-uri-fd is ever passed).
+    auto worker_database_uri = std::optional<core::SecretBuffer>{};
+    if (runtime_.config.database().backend == config::DatabaseBackend::postgresql)
+    {
+        worker_database_uri = read_worker_database_uri_file(cfg_.database_uri_file);
+        if (worker_database_uri.has_value())
+        {
+            LOG_INFO("Federation worker: using a separate least-privilege database login "
+                     "(federation.worker.database_uri_file configured)");
+        }
+        else if (cfg_.allow_shared_database_credentials)
+        {
+            LOG_CRITICAL("Federation worker: federation.worker.database_uri_file is not set or unreadable; the worker "
+                         "will share main's PostgreSQL login credentials, including read access to "
+                         "server_signing_keys.secret_key (federation.worker.allow_shared_database_credentials=true). "
+                         "See ADR-0062 part 2.");
+        }
+        else
+        {
+            // config::validate() already rejects this combination before the
+            // server can start; this is the fail-closed backstop for any
+            // caller that constructs a WorkerPool without going through that
+            // validation path (e.g. an embedder or a future admin API).
+            throw std::runtime_error{
+                "federation.worker.database_uri_file is required when database.backend=postgresql and "
+                "security.federation.enabled=true, unless federation.worker.allow_shared_database_credentials=true"};
+        }
+    }
+
     auto const count = cfg_.shards > 0U ? cfg_.shards : 1U;
     workers_.reserve(count);
     for (auto i = std::uint32_t{0U}; i < count; ++i)
@@ -783,8 +857,11 @@ WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRunt
         auto key_material = core::SecretBuffer{
             std::span<std::uint8_t const>{derived_auth_key->bytes.data(), derived_auth_key->bytes.size()}
         };
-        auto supervisor = std::make_unique<WorkerSupervisor>(worker_path_, config_path_, cfg_.request_timeout_seconds,
-                                                             i, std::move(key_material), max_frame_bytes);
+        auto db_uri_material =
+            worker_database_uri.has_value() ? core::SecretBuffer{worker_database_uri->bytes()} : core::SecretBuffer{};
+        auto supervisor =
+            std::make_unique<WorkerSupervisor>(worker_path_, config_path_, cfg_.request_timeout_seconds, i,
+                                               std::move(key_material), max_frame_bytes, std::move(db_uri_material));
 
         // Per-worker request handler: the IPC dispatch thread only classifies
         // the frame and enqueues the real work on handler_pool_. Each task
