@@ -113,6 +113,11 @@ struct LandlockHardeningOps final
     std::function<LandlockAddRuleOutcome(int ruleset_fd, std::string const& path, std::uint64_t allowed_access)>
         add_rule;
 
+    // prctl(PR_SET_NO_NEW_PRIVS, 1). landlock_restrict_self() fails with
+    // EPERM unless no_new_privs is set (or the caller has CAP_SYS_ADMIN), so
+    // this runs immediately before restrict_self; a failure is fatal.
+    std::function<bool()> set_no_new_privs;
+
     // landlock_restrict_self(ruleset_fd, 0).
     std::function<bool(int ruleset_fd)> restrict_self;
 
@@ -135,6 +140,13 @@ inline constexpr int k_landlock_max_known_abi = 3;
 [[nodiscard]] auto landlock_read_only_access(int abi) noexcept -> std::uint64_t;
 [[nodiscard]] auto landlock_read_execute_access(int abi) noexcept -> std::uint64_t;
 [[nodiscard]] auto landlock_read_write_access(int abi) noexcept -> std::uint64_t;
+
+// Returns `requested` restricted to what a path-beneath rule may grant on this
+// inode. The kernel rejects (EINVAL) a rule on a non-directory whose access
+// includes any directory-only right (READ_DIR, REMOVE_*, MAKE_*, REFER), so
+// for a regular file only the file-level rights (EXECUTE, WRITE_FILE,
+// READ_FILE, TRUNCATE) are kept. Directories keep `requested` unchanged.
+[[nodiscard]] auto landlock_access_for_inode(std::uint64_t requested, bool is_directory) noexcept -> std::uint64_t;
 
 // Builds the federation worker's path allowlist from its own config copy.
 // Paths the config carries (the SQLite database directory) are read from

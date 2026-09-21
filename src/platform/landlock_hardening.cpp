@@ -15,6 +15,10 @@
 #include <cerrno>
 
 #include <fcntl.h>
+#include <sys/stat.h>
+#if defined(__linux__)
+#include <sys/prctl.h>
+#endif
 #include <sys/syscall.h>
 #include <unistd.h>
 
@@ -99,6 +103,17 @@ auto landlock_read_write_access(int abi) noexcept -> std::uint64_t
         mask |= k_access_fs_truncate;
     }
     return mask;
+}
+
+auto landlock_access_for_inode(std::uint64_t requested, bool is_directory) noexcept -> std::uint64_t
+{
+    if (is_directory)
+    {
+        return requested;
+    }
+    constexpr auto file_level_access =
+        k_access_fs_execute | k_access_fs_write_file | k_access_fs_read_file | k_access_fs_truncate;
+    return requested & file_level_access;
 }
 
 namespace
@@ -222,7 +237,16 @@ namespace
             return LandlockAddRuleOutcome::path_unavailable;
         }
 
-        auto const attr = PathBeneathAttr{.allowed_access = allowed_access, .parent_fd = path_fd.get()};
+        // fstat works on an O_PATH fd. A rule on a non-directory may only
+        // carry file-level rights; asking for READ_DIR on /etc/resolv.conf is
+        // EINVAL, which failed every allowlisted regular file.
+        struct stat path_stat{};
+        if (::fstat(path_fd.get(), &path_stat) != 0)
+        {
+            return LandlockAddRuleOutcome::path_unavailable;
+        }
+        auto const access = landlock_access_for_inode(allowed_access, S_ISDIR(path_stat.st_mode));
+        auto const attr = PathBeneathAttr{.allowed_access = access, .parent_fd = path_fd.get()};
         auto const rc = ::syscall(__NR_landlock_add_rule, ruleset_fd, static_cast<int>(k_rule_path_beneath), &attr, 0U);
         return rc == 0 ? LandlockAddRuleOutcome::success : LandlockAddRuleOutcome::failed;
     }
@@ -236,6 +260,15 @@ namespace
     }
 
 #endif // __NR_landlock_add_rule
+
+    [[nodiscard]] auto real_set_no_new_privs() -> bool
+    {
+#if defined(__linux__)
+        return ::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) == 0; // NOLINT(*-vararg)
+#else
+        return false;
+#endif
+    }
 
 #ifdef __NR_landlock_restrict_self
 
@@ -261,6 +294,7 @@ LandlockHardeningOps::LandlockHardeningOps()
     : query_abi_version{real_query_abi_version}
     , create_ruleset{real_create_ruleset}
     , add_rule{real_add_rule}
+    , set_no_new_privs{real_set_no_new_privs}
     , restrict_self{real_restrict_self}
 #endif
 {
@@ -383,6 +417,20 @@ auto apply_worker_landlock(std::vector<LandlockPathRule> const& rules, bool allo
                 .critical_warning = false,
                 .reason = "failed to add Landlock rule for path '" + rule.path +
                           "' -- this is always fatal, independent of federation.worker.allow_without_landlock"};
+    }
+
+    // The kernel refuses landlock_restrict_self() with EPERM unless
+    // no_new_privs is set or the caller has CAP_SYS_ADMIN. The worker's own
+    // seccomp step sets it too, but later and only when apply_hardening is
+    // on, so set it here, immediately before it is needed. The worker never
+    // execs (seccomp denies execve), so this costs it nothing.
+    if (!ops.set_no_new_privs())
+    {
+        return {.accepted = false,
+                .applied = false,
+                .critical_warning = false,
+                .reason = "prctl(PR_SET_NO_NEW_PRIVS) failed before landlock_restrict_self() -- this is always "
+                          "fatal, independent of federation.worker.allow_without_landlock"};
     }
 
     if (!ops.restrict_self(ruleset_fd.get()))

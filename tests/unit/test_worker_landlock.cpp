@@ -12,6 +12,7 @@
 #include "merovingian/config/config_parser.hpp"
 #include "merovingian/config/reload_plan.hpp"
 #include "merovingian/config/reload_policy.hpp"
+#include "merovingian/core/file_descriptor.hpp"
 #include "merovingian/platform/landlock_hardening.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -58,6 +59,9 @@ using merovingian::platform::LandlockPathRule;
     ops.add_rule = [](int, std::string const&, std::uint64_t) -> LandlockAddRuleOutcome {
         return LandlockAddRuleOutcome::failed;
     };
+    ops.set_no_new_privs = []() -> bool {
+        return false;
+    };
     ops.restrict_self = [](int) -> bool {
         return false;
     };
@@ -72,12 +76,16 @@ struct RecordingOps final
     int abi{k_recorded_default_abi};
     bool create_ruleset_fails{false};
     bool restrict_self_fails{false};
+    bool set_no_new_privs_fails{false};
     // Path -> outcome overrides for add_rule; anything absent succeeds.
     std::vector<std::pair<std::string, LandlockAddRuleOutcome>> add_rule_overrides{};
 
     std::uint64_t handled_access_fs_requested{0U};
     std::vector<std::tuple<std::string, std::uint64_t>> add_rule_calls{};
     bool restrict_self_called{false};
+    // Order of the no_new_privs / restrict_self calls, to assert that
+    // no_new_privs is always set first (the kernel requires it).
+    std::vector<std::string> privilege_calls{};
 
     static constexpr int k_recorded_default_abi = 3;
 
@@ -102,8 +110,13 @@ struct RecordingOps final
             }
             return LandlockAddRuleOutcome::success;
         };
+        ops.set_no_new_privs = [this]() -> bool {
+            privilege_calls.emplace_back("set_no_new_privs");
+            return !set_no_new_privs_fails;
+        };
         ops.restrict_self = [this](int) -> bool {
             restrict_self_called = true;
+            privilege_calls.emplace_back("restrict_self");
             return !restrict_self_fails;
         };
         return ops;
@@ -589,10 +602,14 @@ SCENARIO("A real Landlock ruleset denies access outside its allowlist and permit
 
                 if (!result.accepted)
                 {
-                    // Landlock is unavailable on this kernel -- report SKIP so
-                    // the parent can mark the scenario skipped rather than
-                    // failed.
-                    auto const msg = std::string{"SKIP:"} + result.reason;
+                    // Skip ONLY when the kernel genuinely has no Landlock ABI.
+                    // Any other refusal (e.g. restrict_self EPERM) is a real
+                    // failure: treating every refusal as "unavailable" is what
+                    // let the missing no_new_privs step pass as a skip.
+                    auto const abi = merovingian::platform::LandlockHardeningOps{}.query_abi_version();
+                    auto const msg = abi < 1 ? std::string{"SKIP:"} + result.reason
+                                             : std::string{"FAIL:refused on a Landlock-capable kernel: "} +
+                                                   result.reason;
                     std::ignore = ::write(pipe_fds[1], msg.data(), msg.size());
                     ::close(pipe_fds[1]);
                     ::_exit(0);
@@ -657,3 +674,136 @@ SCENARIO("A real Landlock ruleset denies access outside its allowlist and permit
     }
 }
 #endif // __linux__
+
+// Regression (0.12.13 integration failure): read-only access is
+// READ_FILE | READ_DIR, but the kernel rejects a path-beneath rule on a
+// non-directory with EINVAL unless its access is a subset of the file-level
+// rights. Every allowlisted regular file (e.g. /etc/resolv.conf) therefore
+// failed, and the worker — correctly failing closed — refused to start.
+SCENARIO("Landlock rights are trimmed to file-level access for non-directories",
+         "[platform][security][worker_landlock]")
+{
+    GIVEN("the read-only and read-write access masks for the current ABI")
+    {
+        auto constexpr abi = 3;
+        auto const read_only = merovingian::platform::landlock_read_only_access(abi);
+        auto const read_write = merovingian::platform::landlock_read_write_access(abi);
+
+        WHEN("the rule targets a directory")
+        {
+            THEN("the requested access is kept unchanged")
+            {
+                REQUIRE(merovingian::platform::landlock_access_for_inode(read_only, true) == read_only);
+                REQUIRE(merovingian::platform::landlock_access_for_inode(read_write, true) == read_write);
+            }
+        }
+
+        WHEN("the rule targets a regular file")
+        {
+            auto const file_read_only = merovingian::platform::landlock_access_for_inode(read_only, false);
+            auto const file_read_write = merovingian::platform::landlock_access_for_inode(read_write, false);
+
+            THEN("directory-only rights are removed and file rights remain")
+            {
+                REQUIRE(file_read_only != 0U);
+                REQUIRE((file_read_only & ~read_only) == 0U);
+                REQUIRE(file_read_only != read_only);
+                REQUIRE((file_read_write & ~read_write) == 0U);
+                REQUIRE(file_read_write != read_write);
+            }
+
+            THEN("trimming is idempotent, so a file rule can never grant directory rights")
+            {
+                REQUIRE(merovingian::platform::landlock_access_for_inode(file_read_only, false) == file_read_only);
+            }
+        }
+    }
+}
+
+#if defined(__linux__)
+SCENARIO("A Landlock rule for a regular file is accepted by the running kernel",
+         "[platform][security][worker_landlock]")
+{
+    GIVEN("a real Landlock ruleset (creating and filling one does not sandbox this process)")
+    {
+        auto const ops = merovingian::platform::LandlockHardeningOps{};
+        auto const abi = ops.query_abi_version();
+        if (abi < 1)
+        {
+            SKIP("kernel has no Landlock support (ABI " << abi << ")");
+        }
+        auto const ruleset_fd = merovingian::core::FileDescriptor{
+            ops.create_ruleset(merovingian::platform::landlock_handled_access_fs(abi))};
+        REQUIRE(ruleset_fd.valid());
+
+        auto const dir = merovingian::tests::temporary_directory() /
+                         ("merovingian-landlock-file-rule-" + std::to_string(::getpid()));
+        std::filesystem::create_directories(dir);
+        auto const file_path = (dir / "regular-file").string();
+        std::ofstream{file_path} << "x";
+
+        WHEN("read-only access is requested for a regular file and for its directory")
+        {
+            auto const read_only = merovingian::platform::landlock_read_only_access(abi);
+            auto const file_outcome = ops.add_rule(ruleset_fd.get(), file_path, read_only);
+            auto const dir_outcome = ops.add_rule(ruleset_fd.get(), dir.string(), read_only);
+            std::ignore = std::filesystem::remove_all(dir);
+
+            THEN("both rules are added")
+            {
+                REQUIRE(file_outcome == LandlockAddRuleOutcome::success);
+                REQUIRE(dir_outcome == LandlockAddRuleOutcome::success);
+            }
+        }
+    }
+}
+#endif // __linux__
+
+// Regression (0.12.13 integration failure): landlock_restrict_self() returns
+// EPERM unless the caller has no_new_privs set or CAP_SYS_ADMIN. The worker
+// applied Landlock before its seccomp step set PR_SET_NO_NEW_PRIVS, so an
+// unprivileged worker could never restrict itself and refused to start.
+SCENARIO("no_new_privs is set before Landlock restricts the worker", "[platform][security][worker_landlock]")
+{
+    GIVEN("Landlock is available")
+    {
+        auto recording = RecordingOps{};
+        auto const ops = recording.build();
+
+        WHEN("the worker applies its ruleset")
+        {
+            auto const result = merovingian::platform::apply_worker_landlock({}, /*allow_without_landlock=*/false, ops);
+
+            THEN("no_new_privs is set, then the ruleset is enforced")
+            {
+                REQUIRE(result.accepted);
+                REQUIRE(result.applied);
+                REQUIRE(recording.privilege_calls == std::vector<std::string>{"set_no_new_privs", "restrict_self"});
+            }
+        }
+    }
+}
+
+SCENARIO("A failure to set no_new_privs is fatal even with the Landlock opt-out",
+         "[platform][security][worker_landlock]")
+{
+    GIVEN("Landlock is available but PR_SET_NO_NEW_PRIVS fails")
+    {
+        auto recording = RecordingOps{};
+        recording.set_no_new_privs_fails = true;
+        auto const ops = recording.build();
+
+        WHEN("the worker applies its ruleset with allow_without_landlock=true")
+        {
+            auto const result = merovingian::platform::apply_worker_landlock({}, /*allow_without_landlock=*/true, ops);
+
+            THEN("the worker is refused and the ruleset is never enforced")
+            {
+                REQUIRE_FALSE(result.accepted);
+                REQUIRE_FALSE(result.applied);
+                REQUIRE_FALSE(recording.restrict_self_called);
+                REQUIRE(result.reason.find("NO_NEW_PRIVS") != std::string::npos);
+            }
+        }
+    }
+}

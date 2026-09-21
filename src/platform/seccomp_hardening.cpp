@@ -57,6 +57,18 @@ namespace
     static constexpr auto k_seccomp_ret_kill_process = std::uint32_t{SECCOMP_RET_KILL_PROCESS};
 #endif
 
+    // Landlock syscall numbers are unified across x86_64 and aarch64; older
+    // libc headers may not define them (same fallback as landlock_hardening.cpp).
+#ifndef __NR_landlock_create_ruleset
+#define __NR_landlock_create_ruleset 444
+#endif
+#ifndef __NR_landlock_add_rule
+#define __NR_landlock_add_rule 445
+#endif
+#ifndef __NR_landlock_restrict_self
+#define __NR_landlock_restrict_self 446
+#endif
+
     // Unconditionally allow the syscall with the given number.
     // Expands to two sock_filter entries: a JEQ test (falls through to ALLOW on
     // match, jumps past it on mismatch) and a SECCOMP_RET_ALLOW.
@@ -328,6 +340,14 @@ namespace
         ALLOW_SYSCALL(__NR_prctl),
         ALLOW_SYSCALL(__NR_arch_prctl),
         ALLOW_SYSCALL(__NR_seccomp),
+        // A seccomp filter survives execve, so the federation worker spawned by
+        // this process inherits this filter and must be able to restrict itself
+        // with Landlock (ADR-0062 part 3). Landlock can only ever narrow the
+        // caller's filesystem access, never widen it, so allowing it grants
+        // nothing an attacker could use.
+        ALLOW_SYSCALL(__NR_landlock_create_ruleset),
+        ALLOW_SYSCALL(__NR_landlock_add_rule),
+        ALLOW_SYSCALL(__NR_landlock_restrict_self),
         ALLOW_SYSCALL(__NR_getrandom),
         ALLOW_SYSCALL(__NR_capget),
         ALLOW_SYSCALL(__NR_capset),
