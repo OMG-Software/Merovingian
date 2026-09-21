@@ -8,6 +8,7 @@
 #include "merovingian/homeserver/worker_env.hpp"
 #include "merovingian/observability/logger.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cerrno>
 #include <chrono>
@@ -45,13 +46,15 @@ namespace
 
 WorkerSupervisor::WorkerSupervisor(std::string worker_path, std::string config_path,
                                    std::uint32_t request_timeout_seconds, std::uint32_t shard_index,
-                                   core::SecretBuffer ipc_auth_key_material, std::uint32_t max_frame_bytes)
+                                   core::SecretBuffer ipc_auth_key_material, std::uint32_t max_frame_bytes,
+                                   core::SecretBuffer worker_database_uri_material)
     : worker_path_{std::move(worker_path)}
     , config_path_{std::move(config_path)}
     , request_timeout_seconds_{request_timeout_seconds}
     , shard_index_{shard_index}
     , ipc_auth_key_material_{std::move(ipc_auth_key_material)}
     , max_frame_bytes_{max_frame_bytes}
+    , worker_database_uri_material_{std::move(worker_database_uri_material)}
 {
 }
 
@@ -60,60 +63,83 @@ WorkerSupervisor::~WorkerSupervisor()
     stop();
 }
 
-auto make_worker_key_pipe(std::span<std::uint8_t const> key) -> core::FileDescriptor
+auto make_worker_secret_pipe(std::span<std::uint8_t const> secret, std::span<int const> reserved_fds)
+    -> core::FileDescriptor
 {
-    if (key.empty())
+    if (secret.empty())
     {
-        throw std::runtime_error{"ipc: refusing to hand the worker empty IPC auth key material"};
+        throw std::runtime_error{"ipc: refusing to hand the worker empty secret material"};
     }
 
     // Both ends start O_CLOEXEC and the read end stays that way in this
     // process: main is multithreaded, so clearing FD_CLOEXEC here would let
     // any concurrent spawn (another shard's restart, the thumbnail decoder)
-    // inherit the pipe carrying the key. The child receives it only through
-    // the adddup2 file action onto kWorkerIpcKeyFd.
-    auto key_fds = std::array<int, 2>{-1, -1};
-    if (::pipe2(key_fds.data(), O_CLOEXEC) != 0)
+    // inherit the pipe carrying the secret. The child receives it only
+    // through the caller's own adddup2 file action onto its fixed fd number.
+    auto secret_fds = std::array<int, 2>{-1, -1};
+    if (::pipe2(secret_fds.data(), O_CLOEXEC) != 0)
     {
-        throw std::runtime_error{"ipc: failed to create worker key pipe: " + std::string{::strerror(errno)}};
+        throw std::runtime_error{"ipc: failed to create worker secret pipe: " + std::string{::strerror(errno)}};
     }
-    auto read_end = core::FileDescriptor{key_fds[0]};
-    auto write_end = core::FileDescriptor{key_fds[1]};
+    auto read_end = core::FileDescriptor{secret_fds[0]};
+    auto write_end = core::FileDescriptor{secret_fds[1]};
 
-    // Keep the read end off the fixed child fd numbers. On kWorkerIpcFd the
-    // ipc socket's dup2 would overwrite it before its own dup2 runs; on
-    // kWorkerIpcKeyFd the dup2 would be same-fd, which some libcs treat as a
-    // no-op that leaves FD_CLOEXEC set, so the worker would lose the key.
-    if (read_end.get() == kWorkerIpcFd || read_end.get() == kWorkerIpcKeyFd)
+    // Keep the read end off every reserved (fixed child) fd number. Landing
+    // on one that a later adddup2 targets would either be clobbered before
+    // its own dup2 runs, or — if it happens to already be the same fd the
+    // caller's own adddup2 targets — become a same-fd dup2, which some libcs
+    // treat as a no-op that leaves FD_CLOEXEC set, so the worker would lose
+    // the secret. Relocating unconditionally past the highest reserved fd
+    // places it strictly above every one of them, since fd allocation is
+    // contiguous from the lowest available number.
+    auto const needs_relocation = std::ranges::any_of(reserved_fds, [&read_end](int reserved) {
+        return read_end.get() == reserved;
+    });
+    if (needs_relocation)
     {
-        auto const relocated = ::fcntl(read_end.get(), F_DUPFD_CLOEXEC, kWorkerIpcKeyFd + 1);
+        auto const highest_reserved = *std::ranges::max_element(reserved_fds);
+        auto const relocated = ::fcntl(read_end.get(), F_DUPFD_CLOEXEC, highest_reserved + 1);
         if (relocated < 0)
         {
-            throw std::runtime_error{"ipc: failed to relocate worker key pipe fd: " + std::string{::strerror(errno)}};
+            throw std::runtime_error{"ipc: failed to relocate worker secret pipe fd: " +
+                                     std::string{::strerror(errno)}};
         }
         read_end.reset(relocated);
     }
 
-    // The key is far below PIPE_BUF, so this write never blocks on an unread
-    // pipe; the loop only covers EINTR and short writes.
+    // Auth keys and connection URIs are both far below PIPE_BUF, so this
+    // write never blocks on an unread pipe; the loop only covers EINTR and
+    // short writes.
     auto written = std::size_t{0U};
-    while (written < key.size())
+    while (written < secret.size())
     {
-        auto const write_rc = ::write(write_end.get(), key.data() + written, key.size() - written);
+        auto const write_rc = ::write(write_end.get(), secret.data() + written, secret.size() - written);
         if (write_rc < 0)
         {
             if (errno == EINTR)
             {
                 continue;
             }
-            throw std::runtime_error{"ipc: failed to write worker IPC auth key: " + std::string{::strerror(errno)}};
+            throw std::runtime_error{"ipc: failed to write worker secret: " + std::string{::strerror(errno)}};
         }
         written += static_cast<std::size_t>(write_rc);
     }
     // Closing the only write end lets the worker's read observe EOF right
-    // after the key bytes.
+    // after the secret bytes.
     write_end.reset();
     return read_end;
+}
+
+auto make_worker_key_pipe(std::span<std::uint8_t const> key) -> core::FileDescriptor
+{
+    auto const reserved = std::array<int, 2>{kWorkerIpcFd, kWorkerIpcKeyFd};
+    return make_worker_secret_pipe(key, reserved);
+}
+
+auto make_worker_db_uri_pipe(std::span<std::uint8_t const> uri) -> core::FileDescriptor
+{
+    auto const reserved = std::array<int, 3>{kWorkerIpcFd, kWorkerIpcKeyFd, kWorkerDbUriFd};
+    return make_worker_secret_pipe(uri, reserved);
 }
 
 auto WorkerSupervisor::set_request_handler(ipc::IpcChannel::RequestHandler handler) -> void
@@ -321,14 +347,32 @@ auto WorkerSupervisor::spawn_and_connect() -> void
     auto key_read_fd = make_worker_key_pipe(ipc_auth_key_material_.bytes());
     auto const ipc_key_fd_str = std::to_string(kWorkerIpcKeyFd);
 
+    // ADR-0062 part 2: hand the worker a separate, least-privilege database
+    // connection URI the same way, over a third inherited pipe — but only
+    // when the caller (WorkerPool) actually derived one. Empty
+    // worker_database_uri_material_ means database.backend=sqlite (no role
+    // to separate) or federation.worker.allow_shared_database_credentials=true
+    // (the worker shares main's credentials instead); in either case no
+    // --db-uri-fd is passed and the worker keeps its own copy of
+    // database.uri_file/runtime_role/migration_role untouched.
+    auto const has_db_uri = !worker_database_uri_material_.bytes().empty();
+    auto db_uri_read_fd =
+        has_db_uri ? make_worker_db_uri_pipe(worker_database_uri_material_.bytes()) : core::FileDescriptor{};
+    auto const db_uri_fd_str = std::to_string(kWorkerDbUriFd);
+
     auto const ipc_fd_str = std::to_string(kWorkerIpcFd);
     auto const shard_index_str = std::to_string(shard_index_);
-    auto const* worker_argv0 = worker_path_.c_str();
-    // NOLINTNEXTLINE(*-avoid-c-arrays) — posix_spawn requires char* const[]
-    char const* argv[] = {
-        worker_argv0,           "--config", config_path_.c_str(),    "--ipc-fd", ipc_fd_str.c_str(), "--ipc-key-fd",
-        ipc_key_fd_str.c_str(), "--shard",  shard_index_str.c_str(), nullptr,
+
+    auto argv = std::vector<char const*>{
+        worker_path_.c_str(),   "--config", config_path_.c_str(),    "--ipc-fd", ipc_fd_str.c_str(), "--ipc-key-fd",
+        ipc_key_fd_str.c_str(), "--shard",  shard_index_str.c_str(),
     };
+    if (has_db_uri)
+    {
+        argv.push_back("--db-uri-fd");
+        argv.push_back(db_uri_fd_str.c_str());
+    }
+    argv.push_back(nullptr);
 
     posix_spawn_file_actions_t file_actions{};
     ::posix_spawn_file_actions_init(&file_actions);
@@ -342,6 +386,13 @@ auto WorkerSupervisor::spawn_and_connect() -> void
     // child's copy only; make_worker_key_pipe guarantees the source is neither
     // fixed fd, so this cannot be a same-fd dup2 or be clobbered by the one above.
     ::posix_spawn_file_actions_adddup2(&file_actions, key_read_fd.get(), kWorkerIpcKeyFd);
+    if (has_db_uri)
+    {
+        // Same guarantee as above, extended to the third fixed fd:
+        // make_worker_db_uri_pipe keeps its source off all three reserved
+        // numbers, so this dup2 cannot collide with either of the other two.
+        ::posix_spawn_file_actions_adddup2(&file_actions, db_uri_read_fd.get(), kWorkerDbUriFd);
+    }
 
     // Minimal allowlist environment: PATH only (issue #330). The strings and
     // pointer array live for the duration of the posix_spawn call below.
@@ -349,8 +400,9 @@ auto WorkerSupervisor::spawn_and_connect() -> void
 
     pid_t pid{-1};
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast) — posix_spawn argv/envp are char* const*
-    auto const rc = ::posix_spawn(&pid, worker_path_.c_str(), &file_actions, nullptr, const_cast<char* const*>(argv),
-                                  const_cast<char* const*>(worker_env.argv.data()));
+    auto const rc =
+        ::posix_spawn(&pid, worker_path_.c_str(), &file_actions, nullptr, const_cast<char* const*>(argv.data()),
+                      const_cast<char* const*>(worker_env.argv.data()));
     ::posix_spawn_file_actions_destroy(&file_actions);
 
     if (rc != 0)
@@ -359,7 +411,8 @@ auto WorkerSupervisor::spawn_and_connect() -> void
     }
 
     client_fd.reset();
-    key_read_fd.reset(); // the child inherited its own copy; this one is no longer needed
+    key_read_fd.reset();    // the child inherited its own copy; this one is no longer needed
+    db_uri_read_fd.reset(); // ditto, when a db-uri pipe was created
     worker_pid_.store(pid);
 
     auto new_channel = std::make_shared<ipc::IpcChannel>(std::move(server_fd), ipc::IpcChannel::Role::server, *auth_key,

@@ -70,6 +70,31 @@ auto parse_worker_args(int argc, char const* const* argv) -> ParsedWorkerArgs
             }
             parsed.ipc_key_fd = fd;
         }
+        else if (arg == "--db-uri-fd" && i + 1 < argc)
+        {
+            auto const val = std::string_view{argv[++i]};
+            auto fd = 0;
+            auto overflow = false;
+            for (auto const ch : val)
+            {
+                if (ch < '0' || ch > '9')
+                {
+                    parsed.error = "--db-uri-fd requires a non-negative integer";
+                    return parsed;
+                }
+                fd = fd * 10 + (ch - '0');
+                if (fd > 65535)
+                {
+                    overflow = true;
+                }
+            }
+            if (overflow)
+            {
+                parsed.error = "--db-uri-fd value out of range";
+                return parsed;
+            }
+            parsed.db_uri_fd = fd;
+        }
         else if (arg == "--shard" && i + 1 < argc)
         {
             auto const val = std::string_view{argv[++i]};
@@ -116,6 +141,21 @@ auto parse_worker_args(int argc, char const* const* argv) -> ParsedWorkerArgs
     else if (*parsed.ipc_key_fd == *parsed.ipc_fd)
     {
         parsed.error = "--ipc-key-fd must be distinct from --ipc-fd";
+    }
+    else if (parsed.db_uri_fd.has_value())
+    {
+        if (*parsed.db_uri_fd == 0 || *parsed.db_uri_fd == 1 || *parsed.db_uri_fd == 2)
+        {
+            parsed.error = "--db-uri-fd must not be stdin/stdout/stderr";
+        }
+        else if (*parsed.db_uri_fd == *parsed.ipc_fd)
+        {
+            parsed.error = "--db-uri-fd must be distinct from --ipc-fd";
+        }
+        else if (*parsed.db_uri_fd == *parsed.ipc_key_fd)
+        {
+            parsed.error = "--db-uri-fd must be distinct from --ipc-key-fd";
+        }
     }
     return parsed;
 }

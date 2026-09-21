@@ -50,9 +50,17 @@ public:
     // ipc::kIpcMaxFrameBytes". The worker computes the same value from its own
     // copy of the config, so both sides of the channel must agree — see
     // ipc::frame_bytes_for_response_cap.
+    // worker_database_uri_material: ADR-0062 part 2. When non-empty, the
+    // already-read bytes of a PostgreSQL connection URI for a separate,
+    // least-privilege worker login (see homeserver::WorkerPool::WorkerPool),
+    // handed to the worker the same way as ipc_auth_key_material — a second
+    // pipe inherited at spawn, never a file the worker opens. Empty means no
+    // separate URI is delivered: either database.backend=sqlite (no role to
+    // separate) or federation.worker.allow_shared_database_credentials=true
+    // (the worker shares main's credentials, today's pre-part-2 behaviour).
     WorkerSupervisor(std::string worker_path, std::string config_path, std::uint32_t request_timeout_seconds,
                      std::uint32_t shard_index = 0U, core::SecretBuffer ipc_auth_key_material = {},
-                     std::uint32_t max_frame_bytes = 0U);
+                     std::uint32_t max_frame_bytes = 0U, core::SecretBuffer worker_database_uri_material = {});
     ~WorkerSupervisor();
 
     WorkerSupervisor(WorkerSupervisor const&) = delete;
@@ -104,6 +112,7 @@ private:
     std::uint32_t shard_index_{};
     core::SecretBuffer ipc_auth_key_material_{};
     std::uint32_t max_frame_bytes_{};
+    core::SecretBuffer worker_database_uri_material_{};
     ipc::IpcChannel::RequestHandler request_handler_{};
 
     // channel_ and channel_mu_ guard the IpcChannel pointer against concurrent
@@ -127,12 +136,32 @@ inline constexpr int kWorkerIpcFd{3};
 // posix_spawn_file_actions_adddup2, which clears FD_CLOEXEC in the child only.
 inline constexpr int kWorkerIpcKeyFd{4};
 
-// Creates the pipe that hands the worker its IPC auth key: writes `key`,
-// closes the write end, and returns the read end. The read end stays
-// FD_CLOEXEC in this (multithreaded) process, so no concurrent spawn can
-// inherit it, and never occupies kWorkerIpcFd or kWorkerIpcKeyFd, so the
-// child's dup2 file actions cannot clobber it or degenerate into a same-fd
-// dup2. Throws std::runtime_error on failure.
+// Fixed fd number the worker's separate database-URI pipe occupies in the
+// child process, when one is delivered (ADR-0062 part 2). Placed the same
+// way as kWorkerIpcFd and kWorkerIpcKeyFd.
+inline constexpr int kWorkerDbUriFd{5};
+
+// Generalized form of the pipe-based secret handoff both make_worker_key_pipe
+// and make_worker_db_uri_pipe use: writes `secret`, closes the write end, and
+// returns the read end. The read end stays FD_CLOEXEC in this (multithreaded)
+// process, so no concurrent spawn can inherit it — clearing it here would let
+// another shard's restart or the thumbnail decoder inherit a live secret
+// pipe. It also never lands on any fd number in `reserved_fds` (relocated via
+// F_DUPFD_CLOEXEC past the highest one), so a posix_spawn_file_actions_adddup2
+// placing another secret onto one of those fixed numbers can neither clobber
+// this fd nor degenerate into a same-fd dup2 (which some libcs treat as a
+// no-op that leaves FD_CLOEXEC set). Throws std::runtime_error on failure,
+// including on empty `secret`.
+[[nodiscard]] auto make_worker_secret_pipe(std::span<std::uint8_t const> secret, std::span<int const> reserved_fds)
+    -> core::FileDescriptor;
+
+// Creates the pipe that hands the worker its IPC auth key — see
+// make_worker_secret_pipe. Reserves kWorkerIpcFd and kWorkerIpcKeyFd.
 [[nodiscard]] auto make_worker_key_pipe(std::span<std::uint8_t const> key) -> core::FileDescriptor;
+
+// Creates the pipe that hands the worker its separate database connection
+// URI (ADR-0062 part 2) — see make_worker_secret_pipe. Reserves kWorkerIpcFd,
+// kWorkerIpcKeyFd, and kWorkerDbUriFd.
+[[nodiscard]] auto make_worker_db_uri_pipe(std::span<std::uint8_t const> uri) -> core::FileDescriptor;
 
 } // namespace merovingian::homeserver
