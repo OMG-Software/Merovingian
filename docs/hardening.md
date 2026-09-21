@@ -229,21 +229,45 @@ and `src/media/thumbnail_worker_main.cpp`):
 When `federation.worker.enabled=true`, `merovingian-server` spawns
 `merovingian-fed-worker` and communicates through an `AF_UNIX SOCK_STREAM`
 socket pair created with `SOCK_CLOEXEC` before the child is spawned via
-`posix_spawn`. The worker inherits the client fd at file descriptor 3 only;
-every other inherited fd is closed by the `posix_spawn` file actions.
+`posix_spawn`. The worker inherits the client fd at file descriptor 3
+(`--ipc-fd`) and, separately, the read end of a one-shot pipe carrying the
+IPC auth key (`--ipc-key-fd`, at whatever fd number `pipe2()` returned — see
+below); every other inherited fd is closed by the `posix_spawn` file actions.
 
 The channel is hardened against a local attacker who gains access to a
 separate process on the same host:
 
-* **Authenticated ephemeral encryption** (#318): every session uses a fresh
-  `crypto_kx_keypair` pair and `crypto_secretstream_xchacha20poly1305` AEAD, and
-  the key exchange itself is authenticated — both processes derive the same
-  32-byte IPC auth key from the operator master-key file (domain-separated label
-  `merovingian:ipc-channel-auth:1`) and MAC each other's ephemeral public keys
-  (and role) with `crypto_auth` before deriving session keys. A local process
-  that reaches the inherited fd without the master key cannot complete the
-  handshake or inject AEAD frames. The session keys are never stored or logged;
-  a captured IPC stream is useless after the session ends.
+* **Authenticated ephemeral encryption** (#318, key handoff redesigned
+  0.12.13 finding N1 / [ADR-0062](adr/0062-federation-worker-holds-no-secret-files-secrets-arrive-over-inherited-fds.md)):
+  every session uses a fresh `crypto_kx_keypair` pair and
+  `crypto_secretstream_xchacha20poly1305` AEAD, and the key exchange itself is
+  authenticated — both processes MAC each other's ephemeral public keys (and
+  role) with `crypto_auth`, keyed by the same 32-byte IPC auth key, before
+  deriving session keys. Through 0.12.12 both processes independently derived
+  that key from the operator master-key file (domain-separated label
+  `merovingian:ipc-channel-auth:1`), which meant the worker opened the master
+  key file itself. As of 0.12.13 **only main ever opens that file**: `WorkerPool`
+  derives the auth key once (`crypto::derive_ipc_auth_key`) and
+  `WorkerSupervisor::spawn_and_connect` writes exactly those 32 bytes into a
+  `pipe2(O_CLOEXEC)` pipe, closes its own write end, clears `FD_CLOEXEC` on
+  only the read end, and passes that fd's number as `--ipc-key-fd`. The worker
+  (`federation_worker::read_ipc_auth_key`) reads exactly that many bytes,
+  requires EOF immediately after (rejecting a short or long write as
+  fail-closed rather than silently truncating or padding), and closes the fd.
+  A local process that reaches the inherited ipc-fd without a valid key on the
+  key-fd cannot complete the handshake or inject AEAD frames. The session keys
+  are never stored or logged; a captured IPC stream is useless after the
+  session ends.
+* **The worker's own config copy cannot reopen the master key file either**:
+  immediately after the key-fd read succeeds, `WorkerEventLoop::run()` calls
+  `federation_worker::clear_master_key_file()`, which empties
+  `security.secrets.master_key_file` on the worker's in-memory `config::Config`
+  before `homeserver::start_runtime()` is ever called — so no runtime code
+  path reachable inside the worker, today or added later, has a path string to
+  pass to `crypto::load_master_key_material`. See docs/threat-model.md,
+  "Operator master key reachable from the federation worker", for the residual
+  gap (same DB credentials as main; no Landlock yet) parts 2 and 3 of this
+  change close.
 * **No peer credentials in transit** (#323): the main process verifies the
   inbound X-Matrix signature itself and forwards only the verified peer identity
   (`origin`/`key_id`/`sig_verified`); the raw peer `access_token` and

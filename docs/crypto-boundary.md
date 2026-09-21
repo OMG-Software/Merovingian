@@ -29,15 +29,26 @@ implementing custom cryptographic primitives.
 - Sign-back IPC channel for the out-of-process federation worker: the worker
   delegates Ed25519 signing to the main process over the encrypted IPC channel
   via `IpcEd25519Provider`; the private key never enters the worker address space.
-- Master-key-authenticated IPC key exchange (#318): both the main process and the
-  worker derive the same 32-byte IPC auth key from the operator master-key file
-  (the same material used for at-rest signing-secret encryption and v4
-  access-token keys) via a domain-separated label `merovingian:ipc-channel-auth:1`
-  (distinct from the v3/v4 access-token HMAC labels). Each side MACs the other's
-  ephemeral `crypto_kx` public key (and its role) with `crypto_auth` before
-  deriving session keys, so a local process that reaches the inherited `AF_UNIX`
-  fd without the master key cannot complete the handshake or inject AEAD frames.
-  The auth key is wiped with `sodium_memzero` after the handshake.
+- Master-key-authenticated IPC key exchange (#318, key handoff redesigned 0.12.13
+  finding N1 / [ADR-0062](adr/0062-federation-worker-holds-no-secret-files-secrets-arrive-over-inherited-fds.md)):
+  a 32-byte IPC auth key (the same material used for at-rest signing-secret
+  encryption and v4 access-token keys) authenticates the `crypto_kx` handshake
+  via a domain-separated label `merovingian:ipc-channel-auth:1` (distinct from
+  the v3/v4 access-token HMAC labels). Each side MACs the other's ephemeral
+  `crypto_kx` public key (and its role) with `crypto_auth` before deriving
+  session keys, so a local process that reaches the inherited `AF_UNIX` fd
+  without a valid auth key cannot complete the handshake or inject AEAD
+  frames. Through 0.12.12 both processes independently derived this key from
+  the operator master-key file, so the worker opened that file itself. As of
+  0.12.13 only the main process ever opens it: `WorkerPool` derives the key
+  once (`crypto::derive_ipc_auth_key`) and `WorkerSupervisor::spawn_and_connect`
+  hands the worker only those derived bytes over a second inherited pipe fd
+  (`--ipc-key-fd`); the worker (`federation_worker::read_ipc_auth_key`) never
+  calls `crypto::load_master_key_material` or sees the master key material
+  itself. The auth key is wiped with `sodium_memzero` after the handshake on
+  both ends (`crypto::IpcAuthKey`'s own destructor), and the worker additionally
+  clears `security.secrets.master_key_file` from its in-memory config copy
+  (`federation_worker::clear_master_key_file`) before starting its runtime.
 - Verified-identity IPC forwarding (#323): the main process verifies the inbound
   peer X-Matrix signature and forwards only the verified identity
   (`origin`/`key_id`/`sig_verified`) to the worker; the raw peer `access_token`

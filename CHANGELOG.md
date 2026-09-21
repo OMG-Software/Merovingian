@@ -22,6 +22,29 @@ audit.
   that exits before producing output into a normal failed-thumbnail
   response (502), so no parent-side change was needed.
 
+- **Federation worker no longer opens the operator master-key file (finding
+  N1, part 1 of 3).** The worker derived its own copy of the IPC channel's
+  auth key from the master-key file at every startup and restart, even though
+  no worker-reachable code path ever needed the other keys derivable from
+  that file (the signing-secret box key, the access-token HMAC keys) — a
+  compromised worker could still read the file and derive them anyway. Main
+  now derives the IPC auth key once (`WorkerPool`'s constructor) and hands it
+  to the worker over a second inherited pipe fd (`--ipc-key-fd`) at spawn
+  time; `WorkerSupervisor::spawn_and_connect` writes the key, closes its
+  write end, and makes only the read end inheritable. The worker
+  (`federation_worker::read_ipc_auth_key`, `src/federation_worker/ipc_key_fd.cpp`)
+  reads exactly the expected number of bytes, requires EOF immediately after,
+  and fails closed (`LOG_CRITICAL`, non-zero exit) on a short, long, or
+  missing key; `federation_worker::clear_master_key_file` then empties
+  `security.secrets.master_key_file` on the worker's own config copy before
+  `homeserver::start_runtime()` runs, so no worker code path can open that
+  file even by accident. `args.cpp` requires the new `--ipc-key-fd` and
+  validates it is distinct from `--ipc-fd` and not 0/1/2. See
+  [ADR-0062](docs/adr/0062-federation-worker-holds-no-secret-files-secrets-arrive-over-inherited-fds.md)
+  for the full three-part design; parts 2 (a separate, least-privilege
+  worker database login) and 3 (Linux Landlock filesystem restriction) are
+  tracked follow-ups, not yet shipped.
+
 ## 0.12.12
 
 Documentation only — no code changes beyond the version bump. A full audit

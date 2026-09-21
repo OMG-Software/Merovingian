@@ -375,6 +375,44 @@ threat it closes; the controls above are the standing defences these reinforce.
   the worker. The private key exists only in the main process's locked
   `SecretBuffer`; worker compromise now leaks no long-lived signing material.
 
+- **Operator master key reachable from the federation worker (0.12.13 audit,
+  finding N1; part 1 of 3, this entry updated as later parts land):** the
+  worker never held the Matrix signing secret directly (see the entry above),
+  but it opened the same operator master-key file main does — to derive the
+  IPC channel's own auth key — and kept that path in its config for the rest
+  of its lifetime. A compromised worker could therefore read the master key
+  file itself and re-derive every key the master key protects: the
+  signing-secret secret-box key (`crypto::signing_secret_box_key`, which
+  decrypts `server_signing_keys.secret_key` at rest) and the access-token HMAC
+  keys (`crypto::derive_token_hmac_key[_v3]`), even though no worker code path
+  actually reaches the client-server or `GET /_matrix/key/v2/server` handlers
+  that use them today (`FederationProxy::handle` always serves
+  `/_matrix/key/v2/server` and `/_matrix/federation/v1/openid/userinfo` on
+  main, and the worker always installs a non-null `signing_override`, so
+  `ensure_runtime_server_signing_key` is never called there) — the exposure
+  was the *ability* to derive these keys from a file the worker had open, not
+  a reachable code path that used it. Part 1 (this entry) removes the file
+  access at the code level: `homeserver::WorkerSupervisor::spawn_and_connect`
+  derives the IPC auth key once (in `WorkerPool`'s constructor) and hands the
+  worker only those 32 derived bytes over a second inherited pipe fd
+  (`--ipc-key-fd`); `federation_worker::read_ipc_auth_key` reads exactly that
+  many bytes, requires EOF, and `federation_worker::clear_master_key_file`
+  empties `security.secrets.master_key_file` in the worker's own in-memory
+  config copy before `homeserver::start_runtime()` runs, so no code path in
+  the worker — today's or a future one — can open the file even by accident.
+  See [ADR-0062](adr/0062-federation-worker-holds-no-secret-files-secrets-arrive-over-inherited-fds.md).
+  **Residual gap until parts 2/3 land:** the worker still connects to the
+  *same* PostgreSQL/SQLite database with the *same* credentials as main (no
+  role separation yet — part 2), so a compromised worker can still read the
+  encrypted `secret_key` ciphertext via SQL (it just cannot derive the key
+  that decrypts it, from part 1 onward, via any code path this project
+  built); and the worker process still has ordinary OS-level filesystem
+  access (no Landlock yet — part 3), so a worker compromised through a
+  memory-safety bug — as opposed to one abusing a code path that intentionally
+  reads a file — could still open the master key file directly off disk. Parts
+  2 and 3 close those two remaining avenues; this entry is the running record
+  of which is closed as of any given version.
+
 - **Single worker as a chokepoint (v0.10.3, mitigated in v0.10.4):**
   Phase 1 used one federation worker for every room. A CPU-heavy room could
   still delay federation traffic for all other rooms because that single process

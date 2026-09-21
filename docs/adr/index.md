@@ -65,6 +65,7 @@
 * [0059 - Serialise migrations per backend, not per abstraction](0059-serialise-migrations-per-backend-not-per-abstraction.md)
 * [0060 - Show an uploaded key signature only to the audience its uploader has](0060-show-an-uploaded-key-signature-only-to-its-owner-audience.md)
 * [0061 - Proxy remote cross-signing keys rather than caching them](0061-proxy-remote-cross-signing-keys-rather-than-caching-them.md)
+* [0062 - Federation worker holds no secret files; secrets arrive over inherited fds](0062-federation-worker-holds-no-secret-files-secrets-arrive-over-inherited-fds.md)
 
 ## Rejected Records
 
