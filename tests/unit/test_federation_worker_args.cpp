@@ -19,7 +19,7 @@ auto parse(std::vector<char const*> const& args) -> merovingian::federation_work
 
 } // namespace
 
-SCENARIO("parse_worker_args requires --config and --ipc-fd", "[federation-worker][args]")
+SCENARIO("parse_worker_args requires --config, --ipc-fd, and --ipc-key-fd", "[federation-worker][args][worker_key_fd]")
 {
     GIVEN("no arguments")
     {
@@ -59,11 +59,8 @@ SCENARIO("parse_worker_args requires --config and --ipc-fd", "[federation-worker
             }
         }
     }
-}
 
-SCENARIO("parse_worker_args captures required arguments", "[federation-worker][args]")
-{
-    GIVEN("valid --config and --ipc-fd arguments")
+    GIVEN("--config and --ipc-fd but no --ipc-key-fd")
     {
         WHEN("they are parsed")
         {
@@ -75,11 +72,36 @@ SCENARIO("parse_worker_args captures required arguments", "[federation-worker][a
                 "7",
             });
 
+            THEN("an error is returned because --ipc-key-fd is missing")
+            {
+                REQUIRE(result.error.has_value());
+            }
+        }
+    }
+}
+
+SCENARIO("parse_worker_args captures required arguments", "[federation-worker][args][worker_key_fd]")
+{
+    GIVEN("valid --config, --ipc-fd, and --ipc-key-fd arguments")
+    {
+        WHEN("they are parsed")
+        {
+            auto const result = parse({
+                "merovingian-fed-worker",
+                "--config",
+                "/etc/merovingian.toml",
+                "--ipc-fd",
+                "7",
+                "--ipc-key-fd",
+                "8",
+            });
+
             THEN("no error is reported and the values are captured")
             {
                 REQUIRE_FALSE(result.error.has_value());
                 REQUIRE(result.config_path == "/etc/merovingian.toml");
                 REQUIRE(result.ipc_fd == 7);
+                REQUIRE(result.ipc_key_fd == 8);
             }
         }
     }
@@ -97,6 +119,8 @@ SCENARIO("parse_worker_args defaults shard index to 0", "[federation-worker][arg
                 "/etc/merovingian.toml",
                 "--ipc-fd",
                 "7",
+                "--ipc-key-fd",
+                "8",
             });
 
             THEN("shard index defaults to 0")
@@ -119,6 +143,8 @@ SCENARIO("parse_worker_args accepts an explicit shard index", "[federation-worke
                 "/etc/merovingian.toml",
                 "--ipc-fd",
                 "8",
+                "--ipc-key-fd",
+                "9",
                 "--shard",
                 "3",
             });
@@ -181,8 +207,174 @@ SCENARIO("parse_worker_args rejects invalid or incomplete values", "[federation-
                 "/etc/merovingian.toml",
                 "--ipc-fd",
                 "9",
+                "--ipc-key-fd",
+                "10",
                 "--shard",
                 "abc",
+            });
+
+            THEN("an error is reported")
+            {
+                REQUIRE(result.error.has_value());
+            }
+        }
+    }
+}
+
+SCENARIO("parse_worker_args validates --ipc-key-fd", "[federation-worker][args][worker_key_fd]")
+{
+    GIVEN("--ipc-key-fd without a value")
+    {
+        WHEN("it is parsed")
+        {
+            auto const result = parse({
+                "merovingian-fed-worker",
+                "--config",
+                "/etc/merovingian.toml",
+                "--ipc-fd",
+                "7",
+                "--ipc-key-fd",
+            });
+
+            THEN("an error is reported")
+            {
+                REQUIRE(result.error.has_value());
+            }
+        }
+    }
+
+    GIVEN("a non-numeric --ipc-key-fd")
+    {
+        WHEN("it is parsed")
+        {
+            auto const result = parse({
+                "merovingian-fed-worker",
+                "--config",
+                "/etc/merovingian.toml",
+                "--ipc-fd",
+                "7",
+                "--ipc-key-fd",
+                "not-a-fd",
+            });
+
+            THEN("an error is reported")
+            {
+                REQUIRE(result.error.has_value());
+            }
+        }
+    }
+
+    GIVEN("a negative --ipc-key-fd")
+    {
+        WHEN("it is parsed")
+        {
+            auto const result = parse({
+                "merovingian-fed-worker",
+                "--config",
+                "/etc/merovingian.toml",
+                "--ipc-fd",
+                "7",
+                "--ipc-key-fd",
+                "-1",
+            });
+
+            THEN("an error is reported because the leading '-' is not a digit")
+            {
+                REQUIRE(result.error.has_value());
+            }
+        }
+    }
+
+    GIVEN("an out-of-range --ipc-key-fd")
+    {
+        WHEN("it is parsed")
+        {
+            auto const result = parse({
+                "merovingian-fed-worker",
+                "--config",
+                "/etc/merovingian.toml",
+                "--ipc-fd",
+                "7",
+                "--ipc-key-fd",
+                "99999999",
+            });
+
+            THEN("an error is reported")
+            {
+                REQUIRE(result.error.has_value());
+            }
+        }
+    }
+
+    GIVEN("an --ipc-key-fd equal to --ipc-fd")
+    {
+        WHEN("it is parsed")
+        {
+            auto const result = parse({
+                "merovingian-fed-worker",
+                "--config",
+                "/etc/merovingian.toml",
+                "--ipc-fd",
+                "7",
+                "--ipc-key-fd",
+                "7",
+            });
+
+            THEN("an error is reported because the two fds must be distinct")
+            {
+                REQUIRE(result.error.has_value());
+            }
+        }
+    }
+
+    GIVEN("an --ipc-key-fd of 0, 1, or 2")
+    {
+        WHEN("stdin (0) is given")
+        {
+            auto const result = parse({
+                "merovingian-fed-worker",
+                "--config",
+                "/etc/merovingian.toml",
+                "--ipc-fd",
+                "7",
+                "--ipc-key-fd",
+                "0",
+            });
+
+            THEN("an error is reported")
+            {
+                REQUIRE(result.error.has_value());
+            }
+        }
+
+        WHEN("stdout (1) is given")
+        {
+            auto const result = parse({
+                "merovingian-fed-worker",
+                "--config",
+                "/etc/merovingian.toml",
+                "--ipc-fd",
+                "7",
+                "--ipc-key-fd",
+                "1",
+            });
+
+            THEN("an error is reported")
+            {
+                REQUIRE(result.error.has_value());
+            }
+        }
+
+        WHEN("stderr (2) is given")
+        {
+            auto const result = parse({
+                "merovingian-fed-worker",
+                "--config",
+                "/etc/merovingian.toml",
+                "--ipc-fd",
+                "7",
+                "--ipc-key-fd",
+                "2",
             });
 
             THEN("an error is reported")

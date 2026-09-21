@@ -12,7 +12,9 @@
 #include "../support/temp_directory.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/core/file_descriptor.hpp"
+#include "merovingian/core/secret_buffer.hpp"
 #include "merovingian/crypto/ipc_auth_key.hpp"
+#include "merovingian/crypto/master_key.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/federation/transactions.hpp"
@@ -79,6 +81,25 @@ using merovingian::http::OutboundRequest;
 [[nodiscard]] auto worker_binary_path() -> std::string_view
 {
     return MEROVINGIAN_TEST_FEDERATION_WORKER;
+}
+
+// Derives the worker IPC auth key material a test hands directly to a
+// WorkerSupervisor it constructs itself (bypassing WorkerPool, which would
+// otherwise do this derivation once for every shard — see
+// WorkerPool::WorkerPool in src/homeserver/worker_pool.cpp). Mirrors that
+// same derivation from the same master key file so the standalone
+// WorkerSupervisor scenarios below authenticate against a real worker
+// exactly as WorkerPool-driven scenarios do.
+[[nodiscard]] auto derive_worker_ipc_auth_key_material(std::string const& master_key_path)
+    -> merovingian::core::SecretBuffer
+{
+    auto material = merovingian::crypto::load_master_key_material(master_key_path);
+    REQUIRE(material.has_value());
+    auto const key = merovingian::crypto::derive_ipc_auth_key(material->bytes());
+    REQUIRE(key.has_value());
+    return merovingian::core::SecretBuffer{
+        std::span<std::uint8_t const>{key->bytes.data(), key->bytes.size()}
+    };
 }
 
 [[nodiscard]] auto unique_temp_dir(std::string_view prefix) -> std::filesystem::path
@@ -2034,9 +2055,9 @@ SCENARIO("WorkerSupervisor::stop() returns promptly when the worker is healthy",
         auto started = start_runtime(config);
         REQUIRE(started.started);
 
-        auto supervisor = WorkerSupervisor{std::string{worker_binary_path()}, config_path.string(),
-                                           config.federation_worker().request_timeout_seconds, 0U,
-                                           config.security().secrets.master_key_file};
+        auto supervisor = WorkerSupervisor{
+            std::string{worker_binary_path()}, config_path.string(), config.federation_worker().request_timeout_seconds,
+            0U, derive_worker_ipc_auth_key_material(config.security().secrets.master_key_file)};
         supervisor.start();
 
         auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds{15};
@@ -2087,9 +2108,9 @@ SCENARIO("WorkerSupervisor restarts an unexpectedly exited worker with exponenti
         auto started = start_runtime(config);
         REQUIRE(started.started);
 
-        auto supervisor = WorkerSupervisor{std::string{worker_binary_path()}, config_path.string(),
-                                           config.federation_worker().request_timeout_seconds, 0U,
-                                           config.security().secrets.master_key_file};
+        auto supervisor = WorkerSupervisor{
+            std::string{worker_binary_path()}, config_path.string(), config.federation_worker().request_timeout_seconds,
+            0U, derive_worker_ipc_auth_key_material(config.security().secrets.master_key_file)};
         supervisor.start();
 
         auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds{15};
@@ -2150,9 +2171,9 @@ SCENARIO("WorkerSupervisor::stop() escalates to SIGKILL when the worker ignores 
         auto started = start_runtime(config);
         REQUIRE(started.started);
 
-        auto supervisor = WorkerSupervisor{std::string{worker_binary_path()}, config_path.string(),
-                                           config.federation_worker().request_timeout_seconds, 0U,
-                                           config.security().secrets.master_key_file};
+        auto supervisor = WorkerSupervisor{
+            std::string{worker_binary_path()}, config_path.string(), config.federation_worker().request_timeout_seconds,
+            0U, derive_worker_ipc_auth_key_material(config.security().secrets.master_key_file)};
         supervisor.start();
 
         auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds{15};

@@ -15,8 +15,12 @@ namespace merovingian::federation_worker
 class WorkerEventLoop final
 {
 public:
-    WorkerEventLoop(core::FileDescriptor ipc_fd, config::Config config, std::uint32_t threads,
-                    std::uint32_t shard_index = 0U);
+    // ipc_key_fd: the read end of the pipe main writes the IPC auth key into
+    // at spawn time (see homeserver::WorkerSupervisor::spawn_and_connect and
+    // federation_worker::read_ipc_auth_key). run() reads exactly the key from
+    // it and never opens the operator master-key file itself — see ADR-0062.
+    WorkerEventLoop(core::FileDescriptor ipc_fd, core::FileDescriptor ipc_key_fd, config::Config config,
+                    std::uint32_t threads, std::uint32_t shard_index = 0U);
     ~WorkerEventLoop() = default;
 
     WorkerEventLoop(WorkerEventLoop const&) = delete;
@@ -32,6 +36,7 @@ public:
 
 private:
     core::FileDescriptor ipc_fd_;
+    core::FileDescriptor ipc_key_fd_;
     config::Config config_;
     std::uint32_t threads_{};
     std::uint32_t shard_index_{};

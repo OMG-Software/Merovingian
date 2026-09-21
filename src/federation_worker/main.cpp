@@ -89,6 +89,17 @@ auto main(int argc, char const* const* argv) -> int
         return 1;
     }
 
+    // Validate that the IPC auth key fd is open. It is consumed later, inside
+    // WorkerEventLoop::run() (federation_worker::read_ipc_auth_key), after the
+    // hardening sequence below is applied.
+    auto const raw_key_fd = *args.ipc_key_fd;
+    if (::fcntl(raw_key_fd, F_GETFD) < 0)
+    {
+        std::cerr << "merovingian-fed-worker: ipc key fd " << raw_key_fd << " is not open: " << ::strerror(errno)
+                  << '\n';
+        return 1;
+    }
+
     auto const contents = read_file(*args.config_path);
     if (!contents.has_value())
     {
@@ -107,7 +118,7 @@ auto main(int argc, char const* const* argv) -> int
     }
 
     LOG_INFO("Federation worker starting: shard=" + std::to_string(args.shard_index) + " config=" + *args.config_path +
-             " ipc_fd=" + std::to_string(raw_fd));
+             " ipc_fd=" + std::to_string(raw_fd) + " ipc_key_fd=" + std::to_string(raw_key_fd));
 
 #ifdef __linux__
     // Ask the kernel to terminate this child automatically if the parent thread
@@ -120,17 +131,19 @@ auto main(int argc, char const* const* argv) -> int
 #endif
 
     auto ipc_fd = merovingian::core::FileDescriptor{raw_fd};
+    auto ipc_key_fd = merovingian::core::FileDescriptor{raw_key_fd};
     auto const threads = parse_result.config.federation_worker().threads;
 
     // Apply the worker-specific runtime hardening sequence (issue #319): core
     // dump policy, PR_SET_NO_NEW_PRIVS, capability-bounding drop, then the
     // worker seccomp-bpf filter (which denies execve/execveat — the worker never
-    // spawns). Done after config + master-key file are read and the IPC fd is
-    // validated, but before the event loop opens the DB and starts threads. The
-    // worker filter still allows open()/socket()/clone() etc, so startup is not
-    // blocked. Fail-closed: a failed control aborts the worker. The
-    // apply_hardening config flag lets tests run the worker unfiltered while the
-    // allowlist itself is validated in unit tests.
+    // spawns). Done after config is read and both fds are validated as open, but
+    // before the event loop reads the IPC auth key, opens the DB, or starts
+    // threads. The worker filter still allows read()/close()/open()/socket()/
+    // clone() etc, so neither startup nor the key-fd read below is blocked.
+    // Fail-closed: a failed control aborts the worker. The apply_hardening
+    // config flag lets tests run the worker unfiltered while the allowlist
+    // itself is validated in unit tests.
     if (parse_result.config.federation_worker().apply_hardening)
     {
         auto const hardening = merovingian::platform::apply_worker_hardening();
@@ -147,8 +160,8 @@ auto main(int argc, char const* const* argv) -> int
                     "(federation.worker.apply_hardening=false)");
     }
 
-    auto loop = merovingian::federation_worker::WorkerEventLoop{std::move(ipc_fd), parse_result.config, threads,
-                                                                args.shard_index};
+    auto loop = merovingian::federation_worker::WorkerEventLoop{std::move(ipc_fd), std::move(ipc_key_fd),
+                                                                parse_result.config, threads, args.shard_index};
     loop.run();
 
     return 0;

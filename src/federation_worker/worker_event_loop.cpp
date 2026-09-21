@@ -6,12 +6,12 @@
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/crypto/ipc_auth_key.hpp"
-#include "merovingian/crypto/master_key.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/events/event.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/federation/membership_endpoints.hpp"
 #include "merovingian/federation/transactions.hpp"
+#include "merovingian/federation_worker/ipc_key_fd.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/http/outbound_client.hpp"
@@ -499,9 +499,10 @@ namespace
 
 } // namespace
 
-WorkerEventLoop::WorkerEventLoop(core::FileDescriptor ipc_fd, config::Config config, std::uint32_t threads,
-                                 std::uint32_t shard_index)
+WorkerEventLoop::WorkerEventLoop(core::FileDescriptor ipc_fd, core::FileDescriptor ipc_key_fd, config::Config config,
+                                 std::uint32_t threads, std::uint32_t shard_index)
     : ipc_fd_{std::move(ipc_fd)}
+    , ipc_key_fd_{std::move(ipc_key_fd)}
     , config_{std::move(config)}
     , threads_{threads}
     , shard_index_{shard_index}
@@ -515,25 +516,30 @@ auto WorkerEventLoop::shard_index() const noexcept -> std::uint32_t
 
 auto WorkerEventLoop::run() -> void
 {
-    // Derive the IPC auth key from the operator master-key file so the worker
-    // can authenticate the crypto_kx handshake. The main process derives the
-    // same key from the same file; the key never crosses the IPC boundary.
-    // The worker seccomp filter (issue #319) is installed in main() before
-    // run(), but it allows open(), so reading the master-key file here works
-    // under the filter. Fail closed if the master key is unavailable.
-    auto const master_material = crypto::load_master_key_material(config_.security().secrets.master_key_file);
-    if (!master_material.has_value())
-    {
-        LOG_CRITICAL("Federation worker: master key file '" + config_.security().secrets.master_key_file +
-                     "' is unavailable; cannot authenticate IPC channel");
-        return;
-    }
-    auto const auth_key = crypto::derive_ipc_auth_key(master_material->bytes());
+    // Read the IPC auth key main already derived from the operator master-key
+    // file and wrote into our inherited key-fd at spawn time (see
+    // homeserver::WorkerSupervisor::spawn_and_connect). This worker never
+    // opens the master key file itself — see ADR-0062, "Federation worker
+    // holds no secret files; secrets arrive over inherited fds" (0.12.13
+    // audit, finding N1). Fail closed if the key is missing, short, long, or
+    // otherwise unusable: an unauthenticated handshake would let any peer
+    // inject AEAD frames.
+    auto const auth_key = federation_worker::read_ipc_auth_key(std::move(ipc_key_fd_));
     if (!auth_key.has_value())
     {
-        LOG_CRITICAL("Federation worker: failed to derive IPC auth key from master key file");
+        LOG_CRITICAL("Federation worker: failed to read a usable IPC auth key from the inherited key-fd");
         return;
     }
+
+    // Clear the master-key-file path in this worker's own config copy before
+    // starting the runtime, so no later code path — reached today or added in
+    // the future — can open the file this process must never touch. Every
+    // consumer of security.secrets.master_key_file that is actually reachable
+    // from start_runtime() in a worker either is skipped outright (signing
+    // override bypasses key generation/decryption) or degrades safely to "no
+    // master key configured" on an empty path; see docs/threat-model.md,
+    // "Worker trust boundary".
+    federation_worker::clear_master_key_file(config_);
 
     // Create the IPC channel first; the blocking key exchange completes here
     // before any runtime signing operation can be requested. The worker is the

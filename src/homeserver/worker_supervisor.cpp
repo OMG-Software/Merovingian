@@ -5,7 +5,6 @@
 
 #include "merovingian/core/file_descriptor.hpp"
 #include "merovingian/crypto/ipc_auth_key.hpp"
-#include "merovingian/crypto/master_key.hpp"
 #include "merovingian/homeserver/worker_env.hpp"
 #include "merovingian/observability/logger.hpp"
 
@@ -20,6 +19,7 @@
 #include <utility>
 #include <vector>
 
+#include <fcntl.h>
 #include <spawn.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
@@ -45,12 +45,12 @@ namespace
 
 WorkerSupervisor::WorkerSupervisor(std::string worker_path, std::string config_path,
                                    std::uint32_t request_timeout_seconds, std::uint32_t shard_index,
-                                   std::string master_key_file, std::uint32_t max_frame_bytes)
+                                   core::SecretBuffer ipc_auth_key_material, std::uint32_t max_frame_bytes)
     : worker_path_{std::move(worker_path)}
     , config_path_{std::move(config_path)}
     , request_timeout_seconds_{request_timeout_seconds}
     , shard_index_{shard_index}
-    , master_key_file_{std::move(master_key_file)}
+    , ipc_auth_key_material_{std::move(ipc_auth_key_material)}
     , max_frame_bytes_{max_frame_bytes}
 {
 }
@@ -241,15 +241,93 @@ auto WorkerSupervisor::worker_pid() const noexcept -> pid_t
 
 auto WorkerSupervisor::spawn_and_connect() -> void
 {
+    // Build the IpcAuthKey value for this process's side of the channel from
+    // the material the caller (WorkerPool) already derived from the operator
+    // master-key file once — this supervisor never opens that file itself,
+    // on the initial spawn or any restart. Fail closed before spawning
+    // anything: an unauthenticated handshake would let any peer inject AEAD
+    // frames, and a worker started without usable key material would only
+    // fail right back on its own key-fd read anyway. See ADR-0062.
+    auto const auth_key = crypto::ipc_auth_key_from_bytes(ipc_auth_key_material_.bytes());
+    if (!auth_key.has_value())
+    {
+        throw std::runtime_error{
+            "ipc: worker IPC auth key material is missing or the wrong size; cannot authenticate worker IPC channel"};
+    }
+
     auto [server_fd, client_fd] = make_ipc_socketpair();
+
+    // Hand the already-derived auth key to the worker over a second inherited
+    // fd (finding N1): the worker must never open the master key file itself,
+    // so it receives only these 32 derived bytes, never the root secret they
+    // came from. Both pipe ends start O_CLOEXEC so a concurrent fork/exec
+    // elsewhere in this multithreaded process can never leak either one.
+    auto key_fds = std::array<int, 2>{-1, -1};
+    if (::pipe2(key_fds.data(), O_CLOEXEC) != 0)
+    {
+        throw std::runtime_error{"ipc: failed to create worker key pipe: " + std::string{::strerror(errno)}};
+    }
+    auto key_read_fd = core::FileDescriptor{key_fds[0]};
+    auto key_write_fd = core::FileDescriptor{key_fds[1]};
+
+    // pipe2() could in principle hand back kWorkerIpcFd for the read end
+    // (e.g. once a prior worker's fds have been closed, freeing low
+    // numbers). If it does, relocate it before anything below depends on its
+    // number: the dup2-to-kWorkerIpcFd file action for the ipc socket further
+    // down would otherwise silently replace this fd in the child's table
+    // before exec, the same hazard the addclose(server_fd) below defends
+    // against for the ipc socket's own fd.
+    if (key_read_fd.get() == kWorkerIpcFd)
+    {
+        auto const relocated = ::fcntl(key_read_fd.get(), F_DUPFD_CLOEXEC, kWorkerIpcFd + 1);
+        if (relocated < 0)
+        {
+            throw std::runtime_error{"ipc: failed to relocate worker key pipe fd: " + std::string{::strerror(errno)}};
+        }
+        key_read_fd.reset(relocated);
+    }
+
+    {
+        auto const key_bytes = ipc_auth_key_material_.bytes();
+        auto written = std::size_t{0U};
+        while (written < key_bytes.size())
+        {
+            auto const write_rc = ::write(key_write_fd.get(), key_bytes.data() + written, key_bytes.size() - written);
+            if (write_rc < 0)
+            {
+                if (errno == EINTR)
+                {
+                    continue;
+                }
+                throw std::runtime_error{"ipc: failed to write worker IPC auth key: " + std::string{::strerror(errno)}};
+            }
+            written += static_cast<std::size_t>(write_rc);
+        }
+    }
+    // Close the write end in the parent: the worker only ever reads from this
+    // pipe, and closing our only write reference lets the worker's own read
+    // observe EOF immediately after the key bytes once its inherited copy of
+    // the write end (O_CLOEXEC, so it never survives the worker's own exec)
+    // is gone too.
+    key_write_fd.reset();
+
+    // Make only the read end inheritable across the upcoming exec, at
+    // whatever fd number it already has; every other fd in this process —
+    // including the write end just closed above — stays non-inheritable.
+    auto const key_read_flags = ::fcntl(key_read_fd.get(), F_GETFD);
+    if (key_read_flags < 0 || ::fcntl(key_read_fd.get(), F_SETFD, key_read_flags & ~FD_CLOEXEC) != 0)
+    {
+        throw std::runtime_error{"ipc: failed to make worker key pipe inheritable: " + std::string{::strerror(errno)}};
+    }
+    auto const ipc_key_fd_str = std::to_string(key_read_fd.get());
 
     auto const ipc_fd_str = std::to_string(kWorkerIpcFd);
     auto const shard_index_str = std::to_string(shard_index_);
     auto const* worker_argv0 = worker_path_.c_str();
     // NOLINTNEXTLINE(*-avoid-c-arrays) — posix_spawn requires char* const[]
     char const* argv[] = {
-        worker_argv0,       "--config", config_path_.c_str(),    "--ipc-fd",
-        ipc_fd_str.c_str(), "--shard",  shard_index_str.c_str(), nullptr,
+        worker_argv0,           "--config", config_path_.c_str(),    "--ipc-fd", ipc_fd_str.c_str(), "--ipc-key-fd",
+        ipc_key_fd_str.c_str(), "--shard",  shard_index_str.c_str(), nullptr,
     };
 
     posix_spawn_file_actions_t file_actions{};
@@ -277,24 +355,8 @@ auto WorkerSupervisor::spawn_and_connect() -> void
     }
 
     client_fd.reset();
+    key_read_fd.reset(); // the child inherited its own copy; this one is no longer needed
     worker_pid_.store(pid);
-
-    // Derive the IPC auth key from the operator master-key file. Both this
-    // process and the worker read the same file and derive the same key, so
-    // the worker can authenticate the handshake without the key ever crossing
-    // the IPC boundary. Fail closed if the master key is unavailable: an
-    // unauthenticated handshake would let any peer inject AEAD frames.
-    auto const master_material = crypto::load_master_key_material(master_key_file_);
-    if (!master_material.has_value())
-    {
-        throw std::runtime_error{"ipc: master key file '" + master_key_file_ +
-                                 "' is unavailable; cannot authenticate worker IPC channel"};
-    }
-    auto const auth_key = crypto::derive_ipc_auth_key(master_material->bytes());
-    if (!auth_key.has_value())
-    {
-        throw std::runtime_error{"ipc: failed to derive worker IPC auth key from master key file"};
-    }
 
     auto new_channel = std::make_shared<ipc::IpcChannel>(std::move(server_fd), ipc::IpcChannel::Role::server, *auth_key,
                                                          max_frame_bytes_);

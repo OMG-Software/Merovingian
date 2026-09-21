@@ -5,7 +5,10 @@
 
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/core/secret_buffer.hpp"
 #include "merovingian/crypto/ed25519.hpp"
+#include "merovingian/crypto/ipc_auth_key.hpp"
+#include "merovingian/crypto/master_key.hpp"
 #include "merovingian/events/event_signer.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/federation/membership_endpoints.hpp"
@@ -21,6 +24,8 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -749,13 +754,37 @@ WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRunt
     auto const max_frame_bytes =
         ipc::frame_bytes_for_response_cap(join_response_max_size.valid ? join_response_max_size.bytes : 0U);
 
+    // Derive the worker IPC auth key ONCE, here, from the operator master-key
+    // file — instead of letting each WorkerSupervisor independently open that
+    // file on every spawn and every restart. Neither the worker nor any
+    // restart of it ever reads the master key file itself (0.12.13 audit,
+    // finding N1): each supervisor below receives only these already-derived
+    // bytes, over a pipe inherited at spawn time. See ADR-0062.
+    auto const master_material = crypto::load_master_key_material(runtime_.config.security().secrets.master_key_file);
+    if (!master_material.has_value())
+    {
+        throw std::runtime_error{"ipc: master key file '" + runtime_.config.security().secrets.master_key_file +
+                                 "' is unavailable; cannot authenticate worker IPC channel"};
+    }
+    auto const derived_auth_key = crypto::derive_ipc_auth_key(master_material->bytes());
+    if (!derived_auth_key.has_value())
+    {
+        throw std::runtime_error{"ipc: failed to derive worker IPC auth key from master key file"};
+    }
+
     auto const count = cfg_.shards > 0U ? cfg_.shards : 1U;
     workers_.reserve(count);
     for (auto i = std::uint32_t{0U}; i < count; ++i)
     {
-        auto supervisor =
-            std::make_unique<WorkerSupervisor>(worker_path_, config_path_, cfg_.request_timeout_seconds, i,
-                                               runtime_.config.security().secrets.master_key_file, max_frame_bytes);
+        // Each supervisor gets its own SecretBuffer copy of the same derived
+        // bytes: core::SecretBuffer is move-only and mlocks its own page, so
+        // one instance cannot be shared by reference across N supervisors
+        // that each outlive this constructor.
+        auto key_material = core::SecretBuffer{
+            std::span<std::uint8_t const>{derived_auth_key->bytes.data(), derived_auth_key->bytes.size()}
+        };
+        auto supervisor = std::make_unique<WorkerSupervisor>(worker_path_, config_path_, cfg_.request_timeout_seconds,
+                                                             i, std::move(key_material), max_frame_bytes);
 
         // Per-worker request handler: the IPC dispatch thread only classifies
         // the frame and enqueues the real work on handler_pool_. Each task

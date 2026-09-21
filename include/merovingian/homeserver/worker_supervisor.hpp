@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/core/secret_buffer.hpp"
 #include "merovingian/ipc/channel.hpp"
 
 #include <atomic>
@@ -34,16 +35,21 @@ public:
     // request_timeout: per-request IPC timeout forwarded to channel usage.
     // shard_index: index of this worker (0..shards-1); passed to the worker
     // as --shard so it can include the index in log output.
-    // master_key_file: path to the operator master-key file, read by both this
-    // process and the worker to independently derive the IPC channel auth key.
-    // If empty or unreadable the supervisor refuses to spawn (fail-closed),
-    // because an unauthenticated IPC handshake would let any peer inject frames.
+    // ipc_auth_key_material: the IPC channel auth key, already derived from the
+    // operator master-key file by the caller (WorkerPool, once, for every
+    // shard) — see crypto::derive_ipc_auth_key. The worker never opens the
+    // master key file itself: each spawn (and every restart) writes exactly
+    // these bytes into a pipe inherited by the child, which reads them back
+    // and rebuilds the same key via crypto::ipc_auth_key_from_bytes (see
+    // federation_worker::read_ipc_auth_key). If empty or the wrong size the
+    // supervisor refuses to spawn (fail-closed), because an unauthenticated
+    // IPC handshake would let any peer inject frames. See ADR-0062.
     // max_frame_bytes: IpcChannel frame cap for this channel; 0 means "use
     // ipc::kIpcMaxFrameBytes". The worker computes the same value from its own
     // copy of the config, so both sides of the channel must agree — see
     // ipc::frame_bytes_for_response_cap.
     WorkerSupervisor(std::string worker_path, std::string config_path, std::uint32_t request_timeout_seconds,
-                     std::uint32_t shard_index = 0U, std::string master_key_file = {},
+                     std::uint32_t shard_index = 0U, core::SecretBuffer ipc_auth_key_material = {},
                      std::uint32_t max_frame_bytes = 0U);
     ~WorkerSupervisor();
 
@@ -94,7 +100,7 @@ private:
     std::string config_path_;
     std::uint32_t request_timeout_seconds_{};
     std::uint32_t shard_index_{};
-    std::string master_key_file_;
+    core::SecretBuffer ipc_auth_key_material_{};
     std::uint32_t max_frame_bytes_{};
     ipc::IpcChannel::RequestHandler request_handler_{};
 
