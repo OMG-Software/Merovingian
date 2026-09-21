@@ -481,12 +481,13 @@ SCENARIO("PostgreSQL role separation: runtime role cannot execute DDL", "[databa
     }
 }
 
-SCENARIO("PostgreSQL federation worker role: the load profile is what makes a role lacking "
-         "SELECT on server_signing_keys able to start",
+SCENARIO("PostgreSQL federation worker role: the worker profile never selects secret_key even though "
+         "the role has column-restricted read access to server_signing_keys",
          "[database][postgresql][integration][roles][worker_db_uri]")
 {
-    GIVEN("a live PostgreSQL URI, migration role, and a federation-worker role granted no SELECT "
-          "on server_signing_keys (packaging/postgresql/provision-federation-worker-role.sql)")
+    GIVEN("a live PostgreSQL URI, migration role, and a federation-worker role granted SELECT on "
+          "server_signing_keys' server_name/key_id/public_key/valid_until_ts columns but not secret_key "
+          "(packaging/postgresql/provision-federation-worker-role.sql)")
     {
         auto const uri = postgresql_uri_from_environment();
         auto const migration_role = migration_role_from_environment();
@@ -512,10 +513,19 @@ SCENARIO("PostgreSQL federation worker role: the load profile is what makes a ro
             auto const opened = merovingian::database::open_postgresql_persistent_store(
                 uri, worker_role, {}, merovingian::database::TableLoadProfile::federation_worker);
 
-            THEN("it succeeds, and server_signing_keys was never hydrated into memory")
+            THEN("it succeeds, and no row's secret_key was ever hydrated into memory")
             {
                 REQUIRE(opened.ok);
-                REQUIRE(opened.store.server_signing_keys.empty());
+                // server_signing_keys itself is allowlisted (the worker's
+                // remote-key cache legitimately reads other servers' rows),
+                // but the worker-profile query never selects the secret_key
+                // column at all -- every row loaded under this role and
+                // profile must therefore carry an empty secret_key,
+                // regardless of what the row actually holds in the database.
+                for (auto const& key : opened.store.server_signing_keys)
+                {
+                    REQUIRE(key.secret_key.empty());
+                }
             }
         }
 
@@ -524,7 +534,8 @@ SCENARIO("PostgreSQL federation worker role: the load profile is what makes a ro
             auto const opened = merovingian::database::open_postgresql_persistent_store(
                 uri, worker_role, {}, merovingian::database::TableLoadProfile::full);
 
-            THEN("the open fails, because the unrestricted profile SELECTs a table this role cannot read")
+            THEN("the open fails, because the unrestricted profile SELECTs columns and tables this "
+                 "least-privilege role was never granted (secret_key among them)")
             {
                 REQUIRE_FALSE(opened.ok);
             }

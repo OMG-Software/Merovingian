@@ -79,27 +79,42 @@ audit.
     `database.uri_file`/`runtime_role`/`migration_role`, so the restricted
     login connects directly and never attempts a `SET ROLE` onto roles it
     was never granted. `packaging/postgresql/
-    provision-federation-worker-role.sql` provisions the role: `SELECT`
-    only (never `INSERT`/`UPDATE`/`DELETE` — the worker's own store is a
-    read-only snapshot; every write is relayed to main over IPC), granted
-    on every table except the seven listed below.
+    provision-federation-worker-role.sql` provisions the role as an
+    explicit per-table **allowlist**: `SELECT` (never `INSERT`/`UPDATE`/
+    `DELETE` — the worker's own store is a read-only snapshot; every write
+    is relayed to main over IPC) granted table by table on exactly the nine
+    tables `database::federation_worker_table_allowlist` names, with no
+    `ALTER DEFAULT PRIVILEGES` and no `GRANT ... ON ALL TABLES` — a table a
+    future migration adds is unreadable by this role until someone grants
+    it deliberately.
   - **A load profile**, independent of which credential the worker holds.
-    `database::TableLoadProfile` and the pure `table_load_profile_includes`
-    predicate (`include/merovingian/database/persistent_store.hpp`) decide
-    which tables `open_postgresql_persistent_store`'s row loader hydrates.
-    `TableLoadProfile::federation_worker` excludes `server_signing_keys`,
-    `users`, `access_tokens`, `refresh_tokens`, `login_tokens`,
-    `openid_tokens`, and `account_threepids`; every other table stays
-    loaded, since the worker's own (non-relayed) federation routes read
-    only room-scoped tables and everything else is relayed to main over
-    IPC. `RuntimeStartOptions::database_load_profile` is set to
+    `database::TableLoadProfile` and `database::federation_worker_table_allowlist`
+    (`include/merovingian/database/persistent_store.hpp`) decide which
+    tables `open_postgresql_persistent_store`'s row loader hydrates.
+    `TableLoadProfile::federation_worker` is likewise an allowlist of nine
+    tables — `rooms`, `membership`, `current_state`, `events`,
+    `event_edges`, `event_auth`, `event_signatures`, `room_aliases`, and
+    (column-restricted, never `secret_key`) `server_signing_keys` — derived
+    by tracing every `FederationRuntimeState` callback the worker does not
+    override to the table it reads; a table absent from the array is never
+    hydrated. `RuntimeStartOptions::database_load_profile` is set to
     `federation_worker` unconditionally by `WorkerEventLoop::run()`, so
     even a worker running in the `allow_shared_database_credentials=true`
-    degraded mode never pulls that material into its own process memory.
-    SQLite is unaffected by either mechanism — a single shared file offers
-    no role to separate; part 1's file-access removal remains that
-    backend's protection for the master key specifically, and the load
-    profile is a defense-in-depth reduction there, not a boundary.
+    degraded mode never pulls an unlisted table into its own process
+    memory. `server_signing_keys` needed a column-level answer: the
+    worker's remote-key cache legitimately reads/writes *other* servers'
+    rows in this table, so `load_persistent_rows` uses a worker-specific
+    4-column query that never selects `secret_key`, and the SQL grant is
+    itself column-restricted to match. A unit test
+    (`tests/unit/test_worker_db_uri.cpp`, tag `[worker_db_uri]`) parses
+    both the SQL grant list and the C++ allowlist from the source tree and
+    asserts they name the same table set, and separately asserts every
+    table `migrations/*.sql` creates is classified as allowlisted,
+    never-read, or (for `schema_migrations`, needed to open any store)
+    ungated. SQLite is unaffected by either mechanism — a single shared
+    file offers no role to separate; part 1's file-access removal remains
+    that backend's protection for the master key specifically, and the
+    load profile is a defense-in-depth reduction there, not a boundary.
   See [ADR-0062](docs/adr/0062-federation-worker-holds-no-secret-files-secrets-arrive-over-inherited-fds.md)
   and `docs/database-persistence.md`, "Federation worker least-privilege
   role", for the full design and the GRANT/REVOKE SQL. Part 3 (Linux

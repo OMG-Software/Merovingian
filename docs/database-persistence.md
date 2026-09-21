@@ -630,53 +630,135 @@ Two independent mechanisms close this, together:
    directly with its own grants, never attempting a `SET ROLE` against roles
    it was never made a member of. `packaging/postgresql/
    provision-federation-worker-role.sql` provisions the role; see that
-   file's header comment for the full GRANT/REVOKE SQL and the reasoning
-   behind each statement. It grants `SELECT` only — never `INSERT`/`UPDATE`/
+   file's header comment for the full GRANT SQL and the reasoning behind
+   each statement. It grants `SELECT` only — never `INSERT`/`UPDATE`/
    `DELETE` — since the worker's own `PersistentStore` is a read-only
    snapshot for room-scoped federation reads and every write it needs is
-   relayed to main over IPC (`src/federation_worker/AGENTS.md` rule 2; no
-   code path in the worker writes to its own database connection directly).
+   relayed to main over IPC (`src/federation_worker/AGENTS.md` rule 3; the
+   one exception found during review is `state_conflict_resolver`, covered
+   below).
 
-2. **A load profile, so the worker never pulls that data into its own
+2. **A load profile, so the worker never pulls unlisted data into its own
    memory regardless of which credential it holds.**
    `database::TableLoadProfile` and `database::table_load_profile_includes`
    (`include/merovingian/database/persistent_store.hpp`) decide which tables
    `open_postgresql_persistent_store`'s row loader hydrates.
-   `TableLoadProfile::federation_worker` excludes:
+   `TableLoadProfile::federation_worker` is an **allowlist**
+   (`database::federation_worker_table_allowlist`), not a denylist: a table
+   absent from it is excluded by default, so a future migration's new table
+   — secret-bearing or not — is unreadable by the worker until someone adds
+   it to the allowlist deliberately. The full allowlist, derived by tracing
+   every `FederationRuntimeState` callback the worker does NOT override to
+   the `PersistentStore` field it reads (see the array's own doc comment in
+   `persistent_store.hpp` for the file:line citation behind each row):
 
-   | Table | Why excluded |
+   | Table | Why the worker needs it |
    |---|---|
-   | `server_signing_keys` | `secret_key` — the encrypted Matrix signing secret (the finding's primary target) |
-   | `users` | `password_hash` |
-   | `access_tokens` | `token_hash` — bearer credential |
-   | `refresh_tokens` | `token_hash` — bearer credential |
-   | `login_tokens` | `token_hash` — single-use SSO login credential |
-   | `openid_tokens` | `token_hash` — federation userinfo credential |
-   | `account_threepids` | `client_secret` — IS-delegated unbind credential |
+   | `rooms` | `make_join`/`make_leave`/`make_knock` templates, `query/directory`, space hierarchy |
+   | `membership` | `query/directory` (servers joined to an aliased room), space hierarchy member counts |
+   | `current_state` | membership-template auth_events, `room_version_resolver`, `room_server_acl_provider`, space hierarchy join-rule/space checks |
+   | `events` | membership-template forward extremities, `backfill`, `state`, `state_ids`, `get_missing_events` |
+   | `event_edges` | `reconstruct_event_relations` populates `PersistentEvent::prev_event_ids` from this table — without it, every event's prev_events read back empty for the routes above |
+   | `event_auth` | same `reconstruct_event_relations` dependency, for `auth_event_ids` (auth-chain walks in `state`/`state_ids`) |
+   | `event_signatures` | same `reconstruct_event_relations` dependency, for `PersistentEvent::signatures` |
+   | `room_aliases` | `query/directory` (`find_room_alias`) |
+   | `server_signing_keys` | remote-key caching (`remote_key_cache_probe`/`remote_key_resolver`) — **column-restricted**, see below |
+   | `schema_migrations` | needed for ANY store to open (schema-version check via `load_schema_state`), not gated by `TableLoadProfile` at all |
 
-   Every other table stays loaded: the worker's own local (non-relayed)
-   federation routes — `make_join`/`make_leave`/`make_knock` template
-   generation, backfill, `query`/`directory`, `state`, `state_ids`,
-   `get_missing_events`, and space hierarchy — read only room-scoped tables
-   (`rooms`, `membership`, `invites`, `events`, `event_edges`, `event_auth`,
-   `event_signatures`, `current_state`, `state_transitions`,
-   `federation_destinations`, `federation_transactions`). Everything else a
-   worker request might need (signing, one-time-key claims, device/profile
-   queries, PDU/EDU/membership/invite acceptance) is relayed to main over
-   IPC instead of read from this process's own store — see
-   `src/federation_worker/worker_event_loop.cpp` and
-   `src/federation_worker/AGENTS.md` rule 2. `RuntimeStartOptions::
-   database_load_profile` is set to `TableLoadProfile::federation_worker`
-   unconditionally in `WorkerEventLoop::run()`, independent of whether a
-   separate URI applies — even a worker running in the
-   `allow_shared_database_credentials=true` degraded mode never pulls this
-   material into its own process memory.
+   `server_signing_keys` needs a genuine caveat: the worker's remote-key
+   cache legitimately reads and writes this table (caching *other* servers'
+   public keys — `federation::find_cached_remote_key` /
+   `store_server_signing_key`, `src/homeserver/local_http_router.cpp:1857-
+   1871`), so excluding the whole table would break that. What must never be
+   exposed is this server's *own* `secret_key` column. The fix is
+   column-level, in two independent places: `load_persistent_rows`
+   (`src/database/postgresql_store.cpp`) uses a worker-specific 4-column
+   `SELECT` that never names `secret_key` at all, leaving
+   `PersistentServerSigningKey::secret_key` empty for every worker-loaded
+   row; and `provision-federation-worker-role.sql` grants
+   `SELECT (server_name, key_id, public_key, valid_until_ts)` — a
+   PostgreSQL column-level grant — so even a bug that widened the C++ query
+   back to five columns would be refused at the database. The worker's
+   *write* attempt (caching a freshly-fetched key) is expected to fail under
+   this SELECT-only grant; the caller already discards that result
+   (`std::ignore = cache_remote_server_keys(...)`,
+   `src/federation/remote_key_cache.cpp`) and simply re-fetches on the next
+   request, so the failure degrades performance, not correctness.
 
-   `table_load_profile_includes` and `provision-federation-worker-role.sql`'s
-   `REVOKE` list are the two authoritative places for "which tables the
-   worker cannot touch" and must be kept in sync: a new secret-bearing table
-   needs both a new exclusion in the C++ predicate and a new `REVOKE` line in
-   the SQL script.
+   Every table PersistentStore can hold that is **not** in the allowlist is
+   read by NO worker-local code path — verified table by table during
+   review (not merely "probably relayed"), listed in full under "Every
+   table classified" below, since `TableLoadProfile` only gates the
+   PostgreSQL loader and SQLite's own loader is never exercised by a test
+   that could catch a wrong exclusion.
+
+   **One dormant write path found during review:** `state_conflict_resolver`
+   (`local_http_router.cpp:1255`, wired unconditionally by
+   `wire_federation_callbacks`, never overridden by the worker) calls
+   `database::store_state` — a write to `current_state` — when a PDU's
+   ingestion result carries a populated `state_conflict`. In the worker,
+   `pdu_sink` is *always* the IPC-relay override
+   (`federation_worker::deserialize_pdu_ingest_result`), which never
+   populates `PduIngestionResult::state_conflict`, so this resolver is
+   registered but never actually invoked from inside the worker today. It
+   is not relayed and not removed: `current_state` is already in the
+   allowlist for reads, the write path is currently unreachable, and — were
+   a future change to make it reachable — the SELECT-only grant would
+   refuse the `INSERT`/`UPDATE` rather than silently succeed, so the
+   failure mode stays fail-closed even if this invariant is ever broken by
+   accident.
+
+   `federation_worker_table_allowlist` (C++) and
+   `provision-federation-worker-role.sql`'s per-table `GRANT SELECT` list
+   are the two authoritative places for "which tables the worker can read"
+   and must name the exact same set — `tests/unit/test_worker_db_uri.cpp`
+   parses both from the source tree and asserts they match, so the two
+   cannot drift silently.
+
+### Every table classified
+
+`tests/unit/test_worker_db_uri.cpp` also asserts every table
+`migrations/*.sql` creates falls into exactly one of three buckets, so a new
+migration's table cannot go unclassified:
+
+- **Worker allowlist** (9 tables, profile-gated reads —
+  `database::federation_worker_table_allowlist`): `rooms`, `membership`,
+  `current_state`, `events`, `event_edges`, `event_auth`,
+  `event_signatures`, `room_aliases`, `server_signing_keys`
+  (column-restricted, see above).
+- **Worker never reads** (44 tables): `users`, `devices`, `access_tokens`,
+  `refresh_tokens`, `federation_destinations`, `federation_transactions`,
+  `invites`, `state_transitions`, `sync_stream_watermark`,
+  `event_stream_watermark`, `device_keys`, `one_time_keys`, `fallback_keys`,
+  `cross_signing_keys`, `key_signatures`, `key_backup_versions`,
+  `key_backup_sessions`, `media`, `media_blobs`, `remote_media`,
+  `audit_log`, `admin_actions`, `policy_rules`, `account_data`,
+  `room_account_data`, `to_device_messages`, `device_list_changes`,
+  `presence_state`, `filters`, `profiles`, `account_threepids`,
+  `client_txn_ids`, `pushers`, `notifications`, `openid_tokens`,
+  `login_tokens`, `appservice_txn_cursor`, plus seven tables `schema.cpp`
+  declares but that no runtime code path (main's or the worker's) ever
+  populates or queries — `event_json`, `key_backups`, `push_rules`,
+  `rate_limits`, `room_versions`, `state_group_edges`, `state_groups` —
+  vestigial from earlier schema iterations, confirmed by grep to appear
+  nowhere outside `schema.cpp`'s own DDL declarations.
+  `federation_destinations`/`federation_transactions` specifically are read
+  only by `federation::DispatchWorker`, which never starts in the worker
+  process: its construction (`local_http_router.cpp`, guarded inside the
+  same lazily-wired callback block) requires
+  `runtime.database.signing_secret_key` to hold a real 32-byte secret, and
+  the worker's runtime never loads one (`crypto_provider_overridden = true`,
+  per ADR-0015/ADR-0062 part 1) — the construction check fails and returns
+  before the worker ever touches either table, main or not. `profiles`,
+  `device_keys`/`one_time_keys`/`fallback_keys`/`cross_signing_keys`/
+  `key_signatures`, and `devices` are read only by
+  `profile_query_provider`/`device_keys_query_provider`/
+  `one_time_keys_claim_provider`/`user_devices_provider` — all four
+  overridden by the worker to relay to main over IPC instead
+  (`src/federation_worker/AGENTS.md` rule 3), so their default,
+  table-reading implementations are wired but never invoked inside the
+  worker.
+- **Read by every process, not profile-gated** (1 table): `schema_migrations`.
 
 **Explicit, logged opt-out:** `federation.worker.
 allow_shared_database_credentials=true` lets the worker share main's login

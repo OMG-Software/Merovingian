@@ -15,10 +15,17 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <array>
+#include <cctype>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
+#include <set>
+#include <sstream>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -60,6 +67,214 @@ auto write_all(int fd, std::string const& text) -> void
 auto parse(std::vector<char const*> const& args) -> merovingian::federation_worker::ParsedWorkerArgs
 {
     return parse_worker_args(static_cast<int>(args.size()), args.data());
+}
+
+// ---- source-tree consistency helpers ----------------------------------
+//
+// These read two static, checked-in text files -- not runtime data -- to
+// prove two invariants that no purely in-process test can see: that
+// packaging/postgresql/provision-federation-worker-role.sql's GRANT SELECT
+// list names exactly database::federation_worker_table_allowlist's tables,
+// and that every table migrations/*.sql creates is classified somewhere.
+// MEROVINGIAN_TEST_SOURCE_ROOT is a test-only compile definition (see
+// tests/meson.build) naming the project source root, the same
+// -DMEROVINGIAN_TEST_* pattern used elsewhere in this suite to locate
+// sibling build artifacts.
+
+[[nodiscard]] auto source_root() -> std::filesystem::path
+{
+#ifdef MEROVINGIAN_TEST_SOURCE_ROOT
+    return std::filesystem::path{MEROVINGIAN_TEST_SOURCE_ROOT};
+#else
+    return std::filesystem::current_path();
+#endif
+}
+
+[[nodiscard]] auto read_whole_file(std::filesystem::path const& path) -> std::string
+{
+    auto input = std::ifstream{path, std::ios::binary};
+    REQUIRE(input.is_open());
+    auto buffer = std::ostringstream{};
+    buffer << input.rdbuf();
+    return buffer.str();
+}
+
+[[nodiscard]] auto trimmed(std::string_view text) -> std::string_view
+{
+    auto const first = text.find_first_not_of(" \t\r\n");
+    if (first == std::string_view::npos)
+    {
+        return {};
+    }
+    auto const last = text.find_last_not_of(" \t\r\n");
+    return text.substr(first, last - first + 1U);
+}
+
+// Extracts the identifier starting at `pos` (letters, digits, underscore),
+// skipping any leading whitespace.
+[[nodiscard]] auto next_identifier(std::string_view text, std::size_t pos) -> std::string
+{
+    while (pos < text.size() && std::isspace(static_cast<unsigned char>(text[pos])) != 0)
+    {
+        ++pos;
+    }
+    auto const start = pos;
+    while (pos < text.size() && (std::isalnum(static_cast<unsigned char>(text[pos])) != 0 || text[pos] == '_'))
+    {
+        ++pos;
+    }
+    return std::string{text.substr(start, pos - start)};
+}
+
+// Parses every table name granted `GRANT SELECT ... ON <table> TO ...`
+// (with or without a column list) out of a provision-*.sql file.
+[[nodiscard]] auto parse_granted_tables(std::string const& sql) -> std::set<std::string>
+{
+    auto granted = std::set<std::string>{};
+    auto stream = std::istringstream{sql};
+    auto line = std::string{};
+    while (std::getline(stream, line))
+    {
+        auto const trimmed_line = trimmed(line);
+        if (!trimmed_line.starts_with("GRANT SELECT"))
+        {
+            continue;
+        }
+        auto const on_pos = trimmed_line.find(" ON ");
+        if (on_pos == std::string_view::npos)
+        {
+            continue;
+        }
+        granted.insert(next_identifier(trimmed_line, on_pos + 4U));
+    }
+    return granted;
+}
+
+// Parses every `CREATE TABLE [IF NOT EXISTS] <name>` out of a migration
+// file's SQL statements.
+[[nodiscard]] auto parse_created_tables(std::string const& sql) -> std::set<std::string>
+{
+    auto created = std::set<std::string>{};
+    auto pos = std::size_t{0U};
+    auto const needle = std::string_view{"CREATE TABLE"};
+    while ((pos = sql.find(needle, pos)) != std::string::npos)
+    {
+        auto cursor = pos + needle.size();
+        auto const if_not_exists = std::string_view{" IF NOT EXISTS "};
+        if (sql.compare(cursor, if_not_exists.size(), if_not_exists) == 0)
+        {
+            cursor += if_not_exists.size();
+        }
+        auto name = next_identifier(sql, cursor);
+        std::ranges::transform(name, name.begin(), [](unsigned char c) {
+            return static_cast<char>(std::tolower(c));
+        });
+        if (!name.empty())
+        {
+            created.insert(name);
+        }
+        pos = cursor;
+    }
+    return created;
+}
+
+[[nodiscard]] auto all_migration_created_tables() -> std::set<std::string>
+{
+    auto created = std::set<std::string>{};
+    auto const migrations_dir = source_root() / "migrations";
+    REQUIRE(std::filesystem::exists(migrations_dir));
+    for (auto const& entry : std::filesystem::directory_iterator{migrations_dir})
+    {
+        if (entry.path().extension() != ".sql")
+        {
+            continue;
+        }
+        auto const tables = parse_created_tables(read_whole_file(entry.path()));
+        created.insert(tables.begin(), tables.end());
+    }
+    return created;
+}
+
+[[nodiscard]] auto cpp_allowlist_as_set() -> std::set<std::string>
+{
+    auto allowlist = std::set<std::string>{};
+    for (auto const& table : merovingian::database::federation_worker_table_allowlist)
+    {
+        allowlist.emplace(table);
+    }
+    return allowlist;
+}
+
+// Every table PersistentStore can hold that is NOT in the worker allowlist,
+// confirmed by tracing every worker-reachable code path during the N1 part 2
+// review (see docs/database-persistence.md, "Federation worker
+// least-privilege role", and persistent_store.hpp's
+// federation_worker_table_allowlist doc comment for the file:line citations
+// behind each classification) rather than merely "probably relayed". A table
+// created by a migration but absent from BOTH this list and the C++
+// allowlist fails the classification scenario below, so a new table cannot
+// go unclassified.
+[[nodiscard]] auto worker_never_reads_tables() -> std::set<std::string>
+{
+    return {
+        "users",
+        "devices",
+        "access_tokens",
+        "refresh_tokens",
+        "federation_destinations",
+        "federation_transactions",
+        "invites",
+        "state_transitions",
+        "sync_stream_watermark",
+        "event_stream_watermark",
+        "device_keys",
+        "one_time_keys",
+        "fallback_keys",
+        "cross_signing_keys",
+        "key_signatures",
+        "key_backup_versions",
+        "key_backup_sessions",
+        "media",
+        "media_blobs",
+        "remote_media",
+        "audit_log",
+        "admin_actions",
+        "policy_rules",
+        "account_data",
+        "room_account_data",
+        "to_device_messages",
+        "device_list_changes",
+        "presence_state",
+        "filters",
+        "profiles",
+        "account_threepids",
+        "client_txn_ids",
+        "pushers",
+        "notifications",
+        "openid_tokens",
+        "login_tokens",
+        "appservice_txn_cursor",
+        // Vestigial: declared in src/database/schema.cpp's DDL but never
+        // populated or queried by any runtime code path, main's or the
+        // worker's (confirmed by grep finding no reference outside
+        // schema.cpp).
+        "event_json",
+        "key_backups",
+        "push_rules",
+        "rate_limits",
+        "room_versions",
+        "state_group_edges",
+        "state_groups",
+    };
+}
+
+// Tables read by every process (main and worker alike), not gated by
+// TableLoadProfile at all: schema_migrations is read via
+// database::load_schema_state before any profile-specific row hydration
+// begins, for any store to open.
+[[nodiscard]] auto ungated_infrastructure_tables() -> std::set<std::string>
+{
+    return {"schema_migrations"};
 }
 
 // A postgresql config that otherwise validates cleanly: everything is left
@@ -556,17 +771,13 @@ SCENARIO("The full load profile includes every table, including secret-bearing o
     }
 }
 
-SCENARIO("The federation_worker load profile excludes every secret-bearing table", "[database][worker_db_uri]")
+SCENARIO("The federation_worker load profile excludes every table outside the allowlist", "[database][worker_db_uri]")
 {
     GIVEN("the federation_worker load profile")
     {
         constexpr auto profile = merovingian::database::TableLoadProfile::federation_worker;
 
-        THEN("server_signing_keys.secret_key is never pulled into worker memory")
-        {
-            REQUIRE_FALSE(merovingian::database::table_load_profile_includes("server_signing_keys", profile));
-        }
-        AND_THEN("neither are the other credential-bearing tables the worker never needs")
+        THEN("credential-bearing tables the worker never needs are excluded")
         {
             REQUIRE_FALSE(merovingian::database::table_load_profile_includes("users", profile));
             REQUIRE_FALSE(merovingian::database::table_load_profile_includes("access_tokens", profile));
@@ -574,6 +785,26 @@ SCENARIO("The federation_worker load profile excludes every secret-bearing table
             REQUIRE_FALSE(merovingian::database::table_load_profile_includes("login_tokens", profile));
             REQUIRE_FALSE(merovingian::database::table_load_profile_includes("openid_tokens", profile));
             REQUIRE_FALSE(merovingian::database::table_load_profile_includes("account_threepids", profile));
+        }
+        AND_THEN("an arbitrary non-allowlisted table is excluded, proving this is a fail-closed allowlist "
+                 "rather than a denylist")
+        {
+            REQUIRE_FALSE(merovingian::database::table_load_profile_includes("some_future_migration_table", profile));
+        }
+    }
+}
+
+SCENARIO("server_signing_keys is allowlisted at the table level for the federation worker load profile "
+         "(the secret_key column restriction is enforced separately, at the SQL query and GRANT level)",
+         "[database][worker_db_uri]")
+{
+    GIVEN("the federation_worker load profile")
+    {
+        constexpr auto profile = merovingian::database::TableLoadProfile::federation_worker;
+
+        THEN("server_signing_keys itself is included, for the worker's remote-key cache reads")
+        {
+            REQUIRE(merovingian::database::table_load_profile_includes("server_signing_keys", profile));
         }
     }
 }
@@ -661,6 +892,139 @@ SCENARIO("The fixed worker fd numbers are three, mutually distinct, and past the
             REQUIRE(merovingian::homeserver::kWorkerDbUriFd > 2);
             REQUIRE(merovingian::homeserver::kWorkerDbUriFd != merovingian::homeserver::kWorkerIpcFd);
             REQUIRE(merovingian::homeserver::kWorkerDbUriFd != merovingian::homeserver::kWorkerIpcKeyFd);
+        }
+    }
+}
+
+// ---- source-tree consistency: SQL grants vs. the C++ allowlist ---------
+
+SCENARIO("provision-federation-worker-role.sql grants SELECT on exactly the C++ worker table allowlist, "
+         "plus the ungated schema_migrations bookkeeping table",
+         "[database][worker_db_uri]")
+{
+    GIVEN("the checked-in GRANT script and the C++ allowlist array")
+    {
+        auto const sql_path = source_root() / "packaging" / "postgresql" / "provision-federation-worker-role.sql";
+        auto const granted = parse_granted_tables(read_whole_file(sql_path));
+        auto const allowlisted = cpp_allowlist_as_set();
+        // schema_migrations is granted in SQL (any role needs it to open the
+        // store at all) but is deliberately NOT part of
+        // federation_worker_table_allowlist -- that array is specifically
+        // TableLoadProfile's per-request table set, and schema_migrations is
+        // read via load_schema_state before any profile applies. It is the
+        // one legitimate name allowed in `granted` without also being in
+        // `allowlisted`.
+        auto expected = allowlisted;
+        for (auto const& table : ungated_infrastructure_tables())
+        {
+            expected.insert(table);
+        }
+
+        WHEN("the two sets are compared")
+        {
+            THEN("every table the C++ allowlist (plus ungated infrastructure) names is granted in the SQL script")
+            {
+                for (auto const& table : expected)
+                {
+                    INFO("missing GRANT SELECT for table: " << table);
+                    REQUIRE(granted.contains(table));
+                }
+            }
+            AND_THEN("the SQL script grants nothing beyond the C++ allowlist and ungated infrastructure")
+            {
+                for (auto const& table : granted)
+                {
+                    INFO("SQL grants a table absent from the C++ allowlist and ungated set: " << table);
+                    REQUIRE(expected.contains(table));
+                }
+            }
+            AND_THEN("neither set is empty, so this comparison cannot pass by both being vacuous")
+            {
+                REQUIRE_FALSE(granted.empty());
+                REQUIRE_FALSE(allowlisted.empty());
+            }
+        }
+    }
+}
+
+SCENARIO("provision-federation-worker-role.sql never grants the server_signing_keys secret_key column",
+         "[database][worker_db_uri]")
+{
+    GIVEN("the checked-in GRANT script")
+    {
+        auto const sql_path = source_root() / "packaging" / "postgresql" / "provision-federation-worker-role.sql";
+        auto const sql = read_whole_file(sql_path);
+
+        THEN("the script contains no GRANT naming secret_key")
+        {
+            auto const lowered = [&sql] {
+                auto copy = sql;
+                std::ranges::transform(copy, copy.begin(), [](unsigned char c) {
+                    return static_cast<char>(std::tolower(c));
+                });
+                return copy;
+            }();
+            auto pos = std::size_t{0U};
+            while ((pos = lowered.find("grant select", pos)) != std::string::npos)
+            {
+                auto const line_end = lowered.find('\n', pos);
+                auto const line =
+                    lowered.substr(pos, line_end == std::string::npos ? std::string::npos : line_end - pos);
+                REQUIRE(line.find("secret_key") == std::string::npos);
+                pos = (line_end == std::string::npos) ? lowered.size() : line_end + 1U;
+            }
+        }
+    }
+}
+
+// ---- source-tree consistency: every migration table is classified ------
+
+SCENARIO("Every table migrations/*.sql creates is classified as worker-allowlisted, "
+         "never-read-by-the-worker, or ungated infrastructure",
+         "[database][worker_db_uri]")
+{
+    GIVEN("every CREATE TABLE statement in migrations/*.sql, and the three classification sets")
+    {
+        auto const created = all_migration_created_tables();
+        auto const allowlisted = cpp_allowlist_as_set();
+        auto const never_read = worker_never_reads_tables();
+        auto const ungated = ungated_infrastructure_tables();
+
+        WHEN("every created table is looked up across the three sets")
+        {
+            THEN("each table belongs to exactly one of the three classifications")
+            {
+                REQUIRE_FALSE(created.empty());
+                for (auto const& table : created)
+                {
+                    auto const in_allowlist = allowlisted.contains(table);
+                    auto const in_never_read = never_read.contains(table);
+                    auto const in_ungated = ungated.contains(table);
+                    auto const classifications =
+                        static_cast<int>(in_allowlist) + static_cast<int>(in_never_read) + static_cast<int>(in_ungated);
+                    INFO("table: " << table << " allowlist=" << in_allowlist << " never_read=" << in_never_read
+                                   << " ungated=" << in_ungated);
+                    REQUIRE(classifications == 1);
+                }
+            }
+            AND_THEN("no classified table name is stale (renamed or dropped) relative to the schema")
+            {
+                for (auto const& table : allowlisted)
+                {
+                    INFO("allowlisted table no longer created by any migration: " << table);
+                    REQUIRE(created.contains(table));
+                }
+                for (auto const& table : never_read)
+                {
+                    INFO("never-read table no longer created by any migration: " << table);
+                    REQUIRE(created.contains(table));
+                }
+                for (auto const& table : ungated)
+                {
+                    INFO("ungated table no longer created by any migration: " << table);
+                    REQUIRE(created.contains(table));
+                }
+            }
         }
     }
 }

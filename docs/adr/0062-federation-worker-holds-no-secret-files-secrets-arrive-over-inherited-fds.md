@@ -209,16 +209,36 @@ was never made a member of.
 Independently, `database::TableLoadProfile::federation_worker`
 (`RuntimeStartOptions::database_load_profile`, set unconditionally by
 `WorkerEventLoop::run()`) makes `open_postgresql_persistent_store`'s row
-loader skip `server_signing_keys`, `users`, `access_tokens`,
-`refresh_tokens`, `login_tokens`, `openid_tokens`, and `account_threepids` —
-see `database::table_load_profile_includes`,
-`include/merovingian/database/persistent_store.hpp`. This is deliberately a
-*second, independent* mechanism from the separate login: it means the worker
-never pulls that material into its own process memory even in the
-`allow_shared_database_credentials=true` degraded mode, and it is what makes
-the separate role's restricted grants actually *usable* — without it, the
-row loader's unconditional `SELECT * FROM server_signing_keys` would make
-the worker fail to start under a role that cannot read that table.
+loader an **allowlist**: `database::federation_worker_table_allowlist`
+(`include/merovingian/database/persistent_store.hpp`) names exactly nine
+tables — `rooms`, `membership`, `current_state`, `events`, `event_edges`,
+`event_auth`, `event_signatures`, `room_aliases`, and (column-restricted)
+`server_signing_keys` — derived by tracing every non-relayed
+`FederationRuntimeState` callback to the `PersistentStore` field it actually
+reads; every table absent from the array is excluded, so a future
+migration's new table is unreadable by the worker until someone adds it
+deliberately. See `docs/database-persistence.md`, "Federation worker
+least-privilege role", for the full per-table citation and the complete
+classification of all 54 tables `migrations/*.sql` creates. This is
+deliberately a *second, independent* mechanism from the separate login: it
+means the worker never pulls unlisted material into its own process memory
+even in the `allow_shared_database_credentials=true` degraded mode, and it
+is what makes the separate role's restricted grants actually *usable* —
+without it, the row loader's unconditional `SELECT` statements for every
+other table would make the worker fail to start under a role that cannot
+read them.
+
+`server_signing_keys` needed a column-level answer, not a table-level one:
+the worker's remote-key cache genuinely reads and writes *other* servers'
+rows in this table (`federation::remote_key_cache_probe`/
+`remote_key_resolver`), so excluding the table entirely would have broken
+that feature, but the table also holds this server's own `secret_key`
+column — the exact thing this part exists to protect. `load_persistent_rows`
+uses a worker-specific 4-column query that never names `secret_key`, and
+`provision-federation-worker-role.sql` grants
+`SELECT (server_name, key_id, public_key, valid_until_ts)` — PostgreSQL
+column-level privileges — so the database itself, not just the C++ query,
+refuses `secret_key` to this role.
 
 ### Options considered and rejected, for part 2
 
@@ -228,60 +248,66 @@ the worker fail to start under a role that cannot read that table.
   restricted role can also `RESET ROLE` back to the login role that granted
   it, so a compromised worker holding the *original* login credential gains
   nothing from a restricted role it can trivially undo.
+* **A denylist excluding only the obviously secret-bearing tables, with the
+  SQL script granting `SELECT` on `ALL TABLES` (plus `ALTER DEFAULT
+  PRIVILEGES` for future tables) and then `REVOKE`ing those few.** This was
+  the part-2 design as first implemented, and was rejected on review: both
+  halves are fail-*open*. A future migration's new table is automatically
+  readable by the worker role (default privileges) and automatically
+  hydrated into worker memory (the C++ predicate returns `true` for anything
+  not explicitly denied) unless someone remembers to add it to the deny
+  side — exactly backwards from a least-privilege boundary, where an
+  unrecognised table should be inaccessible until someone deliberately
+  grants it. Replaced with the allowlist described above: `GRANT SELECT` is
+  per table, no `ALTER DEFAULT PRIVILEGES` and no `GRANT ... ON ALL TABLES`
+  appear in the script at all, and the C++ predicate returns `false` for
+  anything not in `federation_worker_table_allowlist`.
 * **Grant the worker role broad SELECT and rely only on the load profile to
   protect `server_signing_keys`.** Rejected: the load profile is enforced
   entirely in this project's own C++ code, not by PostgreSQL. A future bug
   that constructs `RuntimeStartOptions` without setting
   `database_load_profile` (a new worker code path, a test harness, an
-  embedder) would silently fall back to `TableLoadProfile::full` and load the
-  secret anyway — the database-level `REVOKE` in
-  `provision-federation-worker-role.sql` is what makes that failure mode
-  impossible rather than merely unlikely. The two mechanisms are
-  deliberately redundant, not substitutes for each other.
-* **A single positive allowlist of tables the worker may read, enumerated by
-  name in the GRANT script, instead of GRANT-ALL-then-REVOKE.** Rejected as
-  the SQL-authoring approach: `provision-federation-worker-role.sql` grants
-  `SELECT` on `ALL TABLES IN SCHEMA public` (plus `ALTER DEFAULT PRIVILEGES`
-  for future tables) and then `REVOKE`s the seven excluded ones, the same
-  shape `provision-roles.sql` already uses for `:runtime_role`. An allowlist
-  would need updating for every future non-secret table a migration adds;
-  the chosen shape needs updating only when a *new secret-bearing* table is
-  added, which is also exactly when `table_load_profile_includes` needs a
-  matching change — one trigger for both required edits, not two dissimilar
-  ones.
-* **Narrow the C++ load profile to the exact minimum set of tables each
-  worker federation route reads, instead of excluding only the seven
-  clearly-secret tables.** Considered, not chosen for this part: a precise
-  per-route allowlist would be strictly smaller, but deriving it correctly
-  requires tracing every non-relayed federation route
-  (`make_join`/`make_leave`/`make_knock`, backfill, `query`/`directory`,
-  `state`, `state_ids`, `get_missing_events`, hierarchy) against every table
-  it might touch, with a wrong exclusion silently breaking worker
-  functionality rather than failing loudly. Excluding only the tables that
-  are unambiguously secret-bearing (and that no worker code path reads,
-  since every actual read of that data is relayed to main over IPC — see
-  `src/federation_worker/AGENTS.md` rule 3) is conservative but correct by
-  construction, and closes the specific finding (recovering the signing
-  secret and other credentials) without the risk of a functional regression.
-  Narrowing further remains available as a future hardening step.
-* **Grant `INSERT`/`UPDATE`/`DELETE` on the included tables, matching
+  embedder) would silently fall back to `TableLoadProfile::full` and load
+  every table anyway — the database-level column grant on
+  `server_signing_keys`, and the plain absence of a `GRANT` for every other
+  table, is what makes that failure mode impossible rather than merely
+  unlikely. The two mechanisms are deliberately redundant, not substitutes
+  for each other, and `tests/unit/test_worker_db_uri.cpp` asserts they name
+  the same table set so they cannot drift apart silently.
+* **Grant `INSERT`/`UPDATE`/`DELETE` on the allowlisted tables, matching
   `:runtime_role`'s own DML grants.** Rejected: the worker's own
   `PersistentStore` is a read-only snapshot for room-scoped federation
   reads, never the system of record (`src/federation_worker/AGENTS.md` rule
   3) — every write the worker's federation routes need is relayed to main
   over IPC. `provision-federation-worker-role.sql` grants `SELECT` only,
-  strictly less than `:runtime_role`.
+  strictly less than `:runtime_role`. One dormant exception was found on
+  review: `state_conflict_resolver` (wired, never overridden by the worker)
+  writes `current_state` if a relayed `pdu_sink` response ever carried a
+  populated `state_conflict` — which the IPC deserializer never populates
+  today, so the path is unreachable in practice. It was deliberately left
+  as is rather than "fixed": `current_state` is already allowlisted for
+  reads, and a SELECT-only grant makes any future write attempt through
+  this path fail closed (a permission error) instead of silently
+  succeeding, so the invariant holds even if the unreachability is ever
+  broken by accident. See `docs/database-persistence.md`, "Federation
+  worker least-privilege role".
 
 ### Positive Consequences, part 2
 
 * A PostgreSQL-backed worker compromised through anything short of arbitrary
   filesystem access (part 3's remaining gap) cannot read
-  `server_signing_keys.secret_key`, `access_tokens.token_hash`, or the other
-  five excluded tables via SQL at all — the database itself refuses the
-  query, independent of what this project's own code does or fails to do.
+  `server_signing_keys.secret_key`, `access_tokens.token_hash`, or any of
+  the 44 other non-allowlisted tables via SQL at all — the database itself
+  refuses the query, independent of what this project's own code does or
+  fails to do.
+* The allowlist shape means the security posture of a future migration's
+  new table is "worker cannot read it" by default, requiring a deliberate
+  two-file change (`federation_worker_table_allowlist` and a `GRANT SELECT`
+  line) to widen access — the opposite failure mode from the denylist this
+  replaced, where a new table was readable by default.
 * The load profile is backend-agnostic and applies even in the
   `allow_shared_database_credentials=true` degraded mode: a worker sharing
-  main's login still never pulls the excluded tables into its own process
+  main's login still never pulls unlisted tables into its own process
   memory, narrowing what a memory-disclosure bug in the worker can expose
   even without a separate role provisioned.
 * The generalised `make_worker_secret_pipe` means part 3, if it ever needs to
@@ -295,10 +321,18 @@ the worker fail to start under a role that cannot read that table.
   manage per worker spawn, conditionally present depending on config —
   slightly more branching in `spawn_and_connect` than a fd that is always
   passed.
-* `table_load_profile_includes` (C++) and `provision-federation-worker-role
-  .sql`'s `REVOKE` list are two separate places that must be kept in sync by
-  hand; nothing enforces this today beyond the cross-references each leaves
-  in its own comments and in `docs/database-persistence.md`.
+* `load_persistent_rows` now wraps every one of its ~40 per-table `SELECT`
+  blocks in a `table_load_profile_includes` check, including the ones that
+  are always true for `TableLoadProfile::full` — more boilerplate per block
+  than the denylist's seven guarded exceptions, in exchange for the
+  fail-closed property above.
+* `federation_worker_table_allowlist` (C++) and
+  `provision-federation-worker-role.sql`'s per-table `GRANT SELECT` list are
+  two separate files that must name the same table set; a unit test
+  (`tests/unit/test_worker_db_uri.cpp`, tag `[worker_db_uri]`) parses both
+  from the source tree and fails the build if they diverge, so this is
+  enforced by CI rather than resting on the cross-references each leaves in
+  its own comments.
 * SQLite deployments get no role-level improvement from this part — a single
   shared file offers no boundary to separate — and the load profile there
   reduces (but does not eliminate: the file itself remains fully readable by
