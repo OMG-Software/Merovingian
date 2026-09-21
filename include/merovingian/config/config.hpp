@@ -511,12 +511,13 @@ struct FederationWorkerConfig final
     // filter allowlist is validated separately in unit tests.
     bool apply_hardening{true};
     // ADR-0062 part 2: secret file holding a PostgreSQL connection URI for a
-    // SEPARATE, least-privilege login role for the federation worker (no
-    // SELECT on server_signing_keys or the other tables
-    // database::table_load_profile_includes excludes for
-    // TableLoadProfile::federation_worker — see
+    // SEPARATE, least-privilege login role for the federation worker,
+    // granted SELECT (never INSERT/UPDATE/DELETE) on exactly
+    // database::federation_worker_table_allowlist's tables — never this
+    // server's own server_signing_keys.secret_key column, nor any table
+    // outside that allowlist (fail closed on a new/unlisted table) — see
     // docs/database-persistence.md, "Federation worker least-privilege
-    // role"). Read and validated by main exactly like database.uri_file,
+    // role". Read and validated by main exactly like database.uri_file,
     // then handed to each worker over a second inherited pipe fd
     // (homeserver::kWorkerDbUriFd) — the worker never opens this file
     // itself. Required when database.backend=postgresql and

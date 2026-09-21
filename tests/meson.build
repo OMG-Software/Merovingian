@@ -231,6 +231,12 @@ shell = find_program('sh')
       'unit/test_openid_token_store.cpp',
     ),
     include_directories: inc,
+    # Test-only: lets test_worker_db_uri.cpp locate
+    # packaging/postgresql/provision-federation-worker-role.sql and
+    # migrations/*.sql in the source tree to cross-check them against the
+    # C++ allowlist, the same -DMEROVINGIAN_TEST_* pattern used below for
+    # locating sibling test binaries. Never defined for a production target.
+    cpp_args: ['-DMEROVINGIAN_TEST_SOURCE_ROOT="' + meson.project_source_root() + '"'],
     dependencies: [catch2_dep, thread_dep, libsodium_dep, openssl_dep, libpq_dep, sqlite_dep, libcurl_dep, resolv_dep],
     link_with: [appservice_lib, auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, events_lib, federation_lib, federation_worker_lib, homeserver_lib, http_lib, identity_lib, ipc_lib, media_lib, net_lib, observability_lib, platform_lib, push_lib, rooms_lib, sync_lib, trust_safety_lib],
   )

@@ -6,6 +6,7 @@
 #include "merovingian/database/statement.hpp"
 #include "merovingian/events/event.hpp"
 
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -29,34 +30,95 @@ enum class PersistentStoreBackend
 
 // ADR-0062 part 2 (0.12.13 audit, finding N1): which tables a store open
 // hydrates into memory. `full` is every process except the federation
-// worker. `federation_worker` skips the tables table_load_profile_includes
-// excludes below, so a worker connecting with a least-privilege PostgreSQL
-// role (granted no SELECT on those tables) can still start, and so a worker
-// connecting with ANY role never holds that material resident regardless of
-// backend. Only open_postgresql_persistent_store honours this today — see
-// docs/database-persistence.md, "Federation worker least-privilege role",
-// for why the SQLite loader was left unchanged.
+// worker. `federation_worker` hydrates ONLY the tables
+// federation_worker_table_allowlist names below — a fail-closed allowlist,
+// not a denylist, so a worker connecting with a least-privilege PostgreSQL
+// role (granted SELECT on exactly those tables) can still start, and a
+// worker connecting with ANY role never holds unlisted material resident
+// regardless of backend. Only open_postgresql_persistent_store honours this
+// today — see docs/database-persistence.md, "Federation worker
+// least-privilege role", for why the SQLite loader was left unchanged.
 enum class TableLoadProfile
 {
     full,
     federation_worker,
 };
 
-// True if `profile` should hydrate `table_name`'s rows into memory.
-// `federation_worker` excludes every table carrying credential or
-// signing-secret material the worker's own (non-relayed) federation routes
-// never read: make_join/leave/knock templates, backfill, query/directory,
-// state, state_ids, get_missing_events, and hierarchy all read only
-// room-scoped tables (rooms, membership, invites, events, event_edges,
-// event_auth, event_signatures, current_state, state_transitions,
-// federation_destinations, federation_transactions). Everything else the
-// worker might otherwise need (signing, one-time-key claims, device/profile
-// queries, PDU/EDU/membership/invite acceptance) is relayed to main over IPC
-// instead of read from this process's own store — see
-// src/federation_worker/worker_event_loop.cpp and
-// src/federation_worker/AGENTS.md, rule 2.
+// The exact, minimal set of tables TableLoadProfile::federation_worker
+// allows a store open to hydrate. This is an ALLOWLIST, not a denylist: a
+// table absent from this array is excluded by default, so a future
+// migration's new table is unreadable by the worker until someone adds it
+// here deliberately (fail closed on the unknown, per the 0.12.13 audit N1
+// part-2 review).
 //
-// Pure and header-testable: exercised directly by
+// Each entry was derived by tracing every FederationRuntimeState callback
+// NOT overridden by WorkerEventLoop::run() (see
+// src/federation_worker/worker_event_loop.cpp and
+// src/federation_worker/AGENTS.md rule 3 for the overridden/relayed set —
+// pdu_sink, membership_acceptor, invite_handler, edu_sink,
+// one_time_keys_claim_provider, user_devices_provider,
+// device_keys_query_provider, profile_query_provider, event_query_provider —
+// whose DEFAULT local implementations are therefore never reached inside the
+// worker process) to the PersistentStore fields it actually reads:
+//
+//   rooms               membership_template_provider (make_join/leave/knock),
+//                       directory_query_provider, space_hierarchy_provider —
+//                       local_http_router.cpp:1278, :1749, space_hierarchy.cpp
+//   membership          directory_query_provider (joined servers for a room
+//                       alias), space_hierarchy.cpp's joined_member_count —
+//                       local_http_router.cpp:1749
+//   current_state       membership_template_provider (auth_events),
+//                       room_version_resolver, room_server_acl_provider,
+//                       space_hierarchy.cpp (join_rule/is_space/space_children)
+//                       — local_http_router.cpp:1335, :1830, :1838
+//   events              membership_template_provider (forward extremities),
+//                       build_backfill_pdus, build_state_response,
+//                       build_state_ids_response,
+//                       build_get_missing_events_response —
+//                       local_http_router.cpp:1354, federation/event_query.cpp
+//   event_edges         reconstruct_event_relations populates
+//                       PersistentEvent::prev_event_ids from this table;
+//                       without it every event's prev_events reads back
+//                       empty for the make_join/backfill/missing_events
+//                       routes above — database/persistent_store.cpp
+//                       reconstruct_event_relations
+//   event_auth          same reconstruct_event_relations dependency, for
+//                       PersistentEvent::auth_event_ids (auth-chain walks in
+//                       build_state_response/build_state_ids_response)
+//   event_signatures    same reconstruct_event_relations dependency, for
+//                       PersistentEvent::signatures
+//   room_aliases        directory_query_provider (find_room_alias) —
+//                       local_http_router.cpp:1736
+//   server_signing_keys remote_key_cache_probe / remote_key_resolver cache
+//                       OTHER servers' keys here (find_cached_remote_key /
+//                       store_server_signing_key) — local_http_router.cpp:
+//                       1857-1871, federation/remote_key_cache.cpp. Column-
+//                       restricted: the worker load path (see
+//                       postgresql_store.cpp load_persistent_rows) never
+//                       selects the secret_key column, and
+//                       provision-federation-worker-role.sql grants SELECT
+//                       on exactly the other four columns — so this entry
+//                       never exposes this server's own signing secret even
+//                       though the table name is shared with it.
+//
+// Every other table PersistentStore can hold — including the operator's own
+// server_signing_keys.secret_key column, users/access_tokens/refresh_tokens/
+// login_tokens/openid_tokens/account_threepids and every other credential or
+// per-user table — is either relayed to main over IPC when the worker
+// genuinely needs it, or never read by the worker at all. See
+// docs/database-persistence.md, "Federation worker least-privilege role",
+// for the full classification of every table migrations/*.sql creates
+// (cross-checked against this array by
+// tests/unit/test_worker_db_uri.cpp).
+inline constexpr std::array<std::string_view, 9> federation_worker_table_allowlist{
+    "rooms",        "membership",          "current_state", "events", "event_edges", "event_auth", "event_signatures",
+    "room_aliases", "server_signing_keys",
+};
+
+// True if `profile` should hydrate `table_name`'s rows into memory.
+// `federation_worker` allows only federation_worker_table_allowlist; a
+// table absent from it is never hydrated by the worker regardless of
+// backend. Pure and header-testable: exercised directly by
 // tests/unit/test_worker_db_uri.cpp without a database connection.
 [[nodiscard]] constexpr auto table_load_profile_includes(std::string_view table_name, TableLoadProfile profile) noexcept
     -> bool
@@ -65,9 +127,14 @@ enum class TableLoadProfile
     {
         return true;
     }
-    return table_name != "server_signing_keys" && table_name != "users" && table_name != "access_tokens" &&
-           table_name != "refresh_tokens" && table_name != "login_tokens" && table_name != "openid_tokens" &&
-           table_name != "account_threepids";
+    for (auto const& allowed : federation_worker_table_allowlist)
+    {
+        if (allowed == table_name)
+        {
+            return true;
+        }
+    }
+    return false;
 }
 
 struct PersistentUser final

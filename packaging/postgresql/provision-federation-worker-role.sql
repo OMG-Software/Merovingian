@@ -10,18 +10,24 @@
 -- compromised worker could SELECT server_signing_keys.secret_key (still
 -- ciphertext, but the ciphertext is exactly what an attacker holding the
 -- operator master key -- e.g. from a *different*, unrelated bug -- needs to
--- decrypt) and every other credential-bearing table, even though no worker
--- code path ever reads them (see database::table_load_profile_includes,
--- include/merovingian/database/persistent_store.hpp).
+-- decrypt) and every other table in the schema, even though no worker code
+-- path ever reads almost all of them.
 --
 -- This script creates a distinct LOGIN role for the worker with SELECT only
 -- (never INSERT/UPDATE/DELETE -- the worker's own PersistentStore is a
 -- read-only snapshot; every write it needs is relayed to main over IPC, see
--- src/federation_worker/AGENTS.md rule 2) on every table except the ones
--- database::table_load_profile_includes excludes for
--- TableLoadProfile::federation_worker:
---   server_signing_keys, users, access_tokens, refresh_tokens,
---   login_tokens, openid_tokens, account_threepids
+-- src/federation_worker/AGENTS.md rule 3), granted table by table, on
+-- EXACTLY the tables database::federation_worker_table_allowlist
+-- (include/merovingian/database/persistent_store.hpp) names -- no more.
+--
+-- This is a fail-closed ALLOWLIST, not a "grant everything, then revoke the
+-- secrets" denylist: it uses no `ALTER DEFAULT PRIVILEGES` and no
+-- `GRANT ... ON ALL TABLES`, so a future migration's new table -- secret or
+-- not -- is UNREADABLE by this role until an operator adds a GRANT line here
+-- deliberately, in the same change that adds it to
+-- federation_worker_table_allowlist. tests/unit/test_worker_db_uri.cpp
+-- parses both this file and that array from the source tree and asserts
+-- they name the exact same set of tables, so the two cannot drift silently.
 --
 -- A SEPARATE LOGIN, not SET ROLE onto a restricted role from the same login
 -- used elsewhere, is the point: ADR-0062 rejected SET ROLE-based separation
@@ -36,24 +42,17 @@
 --
 -- Run this script AFTER provision-roles.sql, against the same database, as a
 -- PostgreSQL superuser (or a role with CREATEROLE + ownership of the target
--- database). Replace the placeholders below -- :login_role and
--- :migration_role must be the exact same values passed to provision-roles.sql,
--- since the default-privilege grants below are keyed on those two roles as
--- creators of the tables migrations add. Unlike provision-roles.sql's
+-- database). Replace the placeholders below. Unlike provision-roles.sql's
 -- :migration_role/:runtime_role, :fed_worker_role is NOT granted to
 -- :login_role -- it is an entirely separate credential with its own
 -- password, referenced only from the secret file
 -- federation.worker.database_uri_file names (never from database.uri_file,
 -- which main alone reads):
 --   :db_name          -- the Merovingian database, e.g. merovingian
---   :login_role       -- same value passed to provision-roles.sql
---   :migration_role   -- same value passed to provision-roles.sql
 --   :fed_worker_role  -- e.g. merovingian_fed_worker
 --
 -- Example (psql):
---   psql -v db_name=merovingian -v login_role=merovingian \
---        -v migration_role=merovingian_migration \
---        -v fed_worker_role=merovingian_fed_worker \
+--   psql -v db_name=merovingian -v fed_worker_role=merovingian_fed_worker \
 --        -f packaging/postgresql/provision-federation-worker-role.sql
 --   -- then, separately, as the database superuser or fed_worker_role's owner:
 --   ALTER ROLE merovingian_fed_worker WITH LOGIN PASSWORD '...';
@@ -76,34 +75,43 @@ CREATE ROLE :fed_worker_role NOLOGIN;
 
 GRANT USAGE ON SCHEMA public TO :fed_worker_role;
 
--- Present and future tables: ALTER DEFAULT PRIVILEGES covers every table a
--- later migration creates under either role that can currently create
--- schema objects, the same two-grantor pattern provision-roles.sql uses for
--- :runtime_role and for the same reason -- naming only one silently leaves
--- the other's tables unreadable by :fed_worker_role.
-ALTER DEFAULT PRIVILEGES FOR ROLE :migration_role IN SCHEMA public
-  GRANT SELECT ON TABLES TO :fed_worker_role;
-ALTER DEFAULT PRIVILEGES FOR ROLE :login_role IN SCHEMA public
-  GRANT SELECT ON TABLES TO :fed_worker_role;
+-- Room-scoped tables the worker's local (non-relayed) federation routes
+-- read directly: make_join/make_leave/make_knock template generation,
+-- backfill, query/directory, state, state_ids, get_missing_events, and
+-- space hierarchy. See federation_worker_table_allowlist's own comment in
+-- persistent_store.hpp for the file:line trace behind each one.
+GRANT SELECT ON rooms TO :fed_worker_role;
+GRANT SELECT ON membership TO :fed_worker_role;
+GRANT SELECT ON current_state TO :fed_worker_role;
+GRANT SELECT ON events TO :fed_worker_role;
+GRANT SELECT ON event_edges TO :fed_worker_role;
+GRANT SELECT ON event_auth TO :fed_worker_role;
+GRANT SELECT ON event_signatures TO :fed_worker_role;
+GRANT SELECT ON room_aliases TO :fed_worker_role;
 
-GRANT SELECT ON ALL TABLES IN SCHEMA public TO :fed_worker_role;
+-- server_signing_keys is column-restricted, not table-restricted: the
+-- worker's remote-key-cache read/write path (federation::
+-- remote_key_cache_probe / remote_key_resolver) legitimately needs this
+-- table to cache OTHER servers' public keys, but must never be able to
+-- select this server's OWN encrypted signing secret. The worker's loader
+-- (src/database/postgresql_store.cpp load_persistent_rows) never includes
+-- secret_key in its SELECT list for this profile; this GRANT is the
+-- database-level backstop that makes that true even if a future bug widened
+-- the C++ query -- PostgreSQL itself refuses a query naming a column this
+-- role was never granted.
+GRANT SELECT (server_name, key_id, public_key, valid_until_ts) ON server_signing_keys TO :fed_worker_role;
 
--- Remove SELECT on the credential-bearing tables the worker never reads --
--- see database::table_load_profile_includes, the C++ predicate this list
--- must stay in sync with. A REVOKE after the blanket GRANT above (rather
--- than hand-listing every included table) means a future migration's new,
--- non-secret table is automatically readable by :fed_worker_role without
--- touching this script; only a new SECRET table requires adding a REVOKE
--- line here AND excluding it in table_load_profile_includes.
-REVOKE SELECT ON server_signing_keys FROM :fed_worker_role;
-REVOKE SELECT ON users FROM :fed_worker_role;
-REVOKE SELECT ON access_tokens FROM :fed_worker_role;
-REVOKE SELECT ON refresh_tokens FROM :fed_worker_role;
-REVOKE SELECT ON login_tokens FROM :fed_worker_role;
-REVOKE SELECT ON openid_tokens FROM :fed_worker_role;
-REVOKE SELECT ON account_threepids FROM :fed_worker_role;
+-- Schema bookkeeping: needed for ANY store to open (schema-version check),
+-- not gated by TableLoadProfile at all -- see
+-- database::open_postgresql_persistent_store's load_schema_state call,
+-- which runs before role-specific row hydration.
+GRANT SELECT ON schema_migrations TO :fed_worker_role;
 
--- The worker never opens a LOGIN session under this role name directly in
--- this script -- set the password and LOGIN attribute as a separate,
--- deliberate step (see the example above) so the generated connection
--- string is produced and stored exactly once, by whoever runs that step.
+-- Deliberately NOT granted, and NOT covered by any ALTER DEFAULT PRIVILEGES
+-- or GRANT ... ON ALL TABLES: every other table in the schema, including
+-- secret_key on server_signing_keys, users/access_tokens/refresh_tokens/
+-- login_tokens/openid_tokens/account_threepids and the rest of
+-- migrations/*.sql. A future migration's new table is unreadable by this
+-- role by default -- extending access requires adding both a GRANT line
+-- here and an entry in federation_worker_table_allowlist, in the same
+-- change, which tests/unit/test_worker_db_uri.cpp enforces stay in sync.

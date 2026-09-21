@@ -490,17 +490,21 @@ namespace
             }
         }
 
-        auto devices = query_rows(connection, "postgresql_load_devices",
-                                  "SELECT user_id, device_id, display_name FROM devices ORDER BY user_id, device_id");
-        if (!devices.ok)
+        if (table_load_profile_includes("devices", profile))
         {
-            return false;
-        }
-        for (auto const& row : devices.rows)
-        {
-            if (row.size() >= 3U)
+            auto devices =
+                query_rows(connection, "postgresql_load_devices",
+                           "SELECT user_id, device_id, display_name FROM devices ORDER BY user_id, device_id");
+            if (!devices.ok)
             {
-                store.devices.push_back({row[0], row[1], row[2]});
+                return false;
+            }
+            for (auto const& row : devices.rows)
+            {
+                if (row.size() >= 3U)
+                {
+                    store.devices.push_back({row[0], row[1], row[2]});
+                }
             }
         }
 
@@ -542,7 +546,21 @@ namespace
             }
         }
 
-        if (table_load_profile_includes("server_signing_keys", profile))
+        // server_signing_keys is the one allowlisted table with a column
+        // restriction: the federation worker profile omits `secret_key`
+        // entirely from the SELECT list (never just filters it client-side),
+        // so a worker connecting with the least-privilege role in
+        // packaging/postgresql/provision-federation-worker-role.sql — which
+        // grants SELECT on exactly server_name/key_id/public_key/
+        // valid_until_ts, never secret_key — can still read this table for
+        // its own legitimate purpose (caching OTHER servers' public keys via
+        // federation::remote_key_cache_probe/remote_key_resolver;
+        // src/homeserver/local_http_router.cpp:1857-1871) without ever being
+        // able to select this server's own signing secret, even under a bug
+        // that widened `full`-style access elsewhere. See
+        // docs/database-persistence.md, "Federation worker least-privilege
+        // role".
+        if (profile == TableLoadProfile::full)
         {
             auto server_signing_keys =
                 query_rows(connection, "postgresql_load_server_signing_keys",
@@ -560,523 +578,638 @@ namespace
                 }
             }
         }
-
-        auto federation_destinations =
-            query_rows(connection, "postgresql_load_federation_destinations",
-                       "SELECT server_name, state, retry_after_ts, last_success_ts, consecutive_failures FROM "
-                       "federation_destinations ORDER BY server_name");
-        if (!federation_destinations.ok)
+        else if (table_load_profile_includes("server_signing_keys", profile))
         {
-            return false;
-        }
-        for (auto const& row : federation_destinations.rows)
-        {
-            if (row.size() >= 5U)
+            auto server_signing_keys = query_rows(connection, "postgresql_load_server_signing_keys_no_secret",
+                                                  "SELECT server_name, key_id, public_key, valid_until_ts FROM "
+                                                  "server_signing_keys ORDER BY server_name, key_id");
+            if (!server_signing_keys.ok)
             {
-                store.federation_destinations.push_back({row[0], row[1], parse_u64(row[2]), parse_u64(row[3]),
-                                                         static_cast<std::uint32_t>(parse_u64(row[4]))});
+                return false;
+            }
+            for (auto const& row : server_signing_keys.rows)
+            {
+                if (row.size() >= 4U)
+                {
+                    store.server_signing_keys.push_back({row[0], row[1], row[2], parse_u64(row[3]), {}});
+                }
             }
         }
 
-        auto federation_transactions =
-            query_rows(connection, "postgresql_load_federation_transactions",
-                       "SELECT transaction_id, server_name, method, target, origin, origin_server_ts, body, "
-                       "retry_count, next_retry_ts FROM federation_transactions ORDER BY transaction_id");
-        if (!federation_transactions.ok)
+        if (table_load_profile_includes("federation_destinations", profile))
         {
-            return false;
-        }
-        for (auto const& row : federation_transactions.rows)
-        {
-            if (row.size() >= 9U)
+            auto federation_destinations =
+                query_rows(connection, "postgresql_load_federation_destinations",
+                           "SELECT server_name, state, retry_after_ts, last_success_ts, consecutive_failures FROM "
+                           "federation_destinations ORDER BY server_name");
+            if (!federation_destinations.ok)
             {
-                store.federation_transactions.push_back({row[0], row[1], row[2], row[3], row[4], row[5], row[6],
-                                                         static_cast<std::uint32_t>(parse_u64(row[7])),
-                                                         parse_u64(row[8])});
+                return false;
+            }
+            for (auto const& row : federation_destinations.rows)
+            {
+                if (row.size() >= 5U)
+                {
+                    store.federation_destinations.push_back({row[0], row[1], parse_u64(row[2]), parse_u64(row[3]),
+                                                             static_cast<std::uint32_t>(parse_u64(row[4]))});
+                }
             }
         }
 
-        auto rooms = query_rows(connection, "postgresql_load_rooms",
-                                "SELECT room_id, creator_user_id FROM rooms ORDER BY room_id");
-        if (!rooms.ok)
+        if (table_load_profile_includes("federation_transactions", profile))
         {
-            return false;
-        }
-        for (auto const& row : rooms.rows)
-        {
-            if (row.size() >= 2U)
+            auto federation_transactions =
+                query_rows(connection, "postgresql_load_federation_transactions",
+                           "SELECT transaction_id, server_name, method, target, origin, origin_server_ts, body, "
+                           "retry_count, next_retry_ts FROM federation_transactions ORDER BY transaction_id");
+            if (!federation_transactions.ok)
             {
-                store.rooms.push_back({row[0], row[1]});
+                return false;
+            }
+            for (auto const& row : federation_transactions.rows)
+            {
+                if (row.size() >= 9U)
+                {
+                    store.federation_transactions.push_back({row[0], row[1], row[2], row[3], row[4], row[5], row[6],
+                                                             static_cast<std::uint32_t>(parse_u64(row[7])),
+                                                             parse_u64(row[8])});
+                }
             }
         }
 
-        auto memberships = query_rows(
-            connection, "postgresql_load_membership",
-            "SELECT room_id, user_id, membership, stream_ordering FROM membership ORDER BY room_id, user_id");
-        if (!memberships.ok)
+        if (table_load_profile_includes("rooms", profile))
         {
-            return false;
-        }
-        for (auto const& row : memberships.rows)
-        {
-            if (row.size() >= 4U)
+            auto rooms = query_rows(connection, "postgresql_load_rooms",
+                                    "SELECT room_id, creator_user_id FROM rooms ORDER BY room_id");
+            if (!rooms.ok)
             {
-                store.memberships.push_back({row[0], row[1], row[2], parse_u64(row[3])});
+                return false;
+            }
+            for (auto const& row : rooms.rows)
+            {
+                if (row.size() >= 2U)
+                {
+                    store.rooms.push_back({row[0], row[1]});
+                }
             }
         }
 
-        auto invites =
-            query_rows(connection, "postgresql_load_invites",
-                       "SELECT room_id, user_id, sender_user_id, event_id, signed_event_json, invite_state_json, "
-                       "stream_ordering FROM invites ORDER BY room_id, user_id");
-        if (!invites.ok)
+        if (table_load_profile_includes("membership", profile))
         {
-            return false;
-        }
-        for (auto const& row : invites.rows)
-        {
-            if (row.size() >= 7U)
+            auto memberships = query_rows(
+                connection, "postgresql_load_membership",
+                "SELECT room_id, user_id, membership, stream_ordering FROM membership ORDER BY room_id, user_id");
+            if (!memberships.ok)
             {
-                store.invites.push_back({row[0], row[1], row[2], row[3], row[4], parse_invite_state_events_json(row[5]),
-                                         parse_u64(row[6])});
+                return false;
+            }
+            for (auto const& row : memberships.rows)
+            {
+                if (row.size() >= 4U)
+                {
+                    store.memberships.push_back({row[0], row[1], row[2], parse_u64(row[3])});
+                }
             }
         }
 
-        auto events = query_rows(
-            connection, "postgresql_load_events",
-            "SELECT event_id, room_id, sender_user_id, json, depth, stream_ordering FROM events ORDER BY event_id");
-        if (!events.ok)
+        if (table_load_profile_includes("invites", profile))
         {
-            return false;
-        }
-        for (auto const& row : events.rows)
-        {
-            if (row.size() >= 6U)
+            auto invites =
+                query_rows(connection, "postgresql_load_invites",
+                           "SELECT room_id, user_id, sender_user_id, event_id, signed_event_json, invite_state_json, "
+                           "stream_ordering FROM invites ORDER BY room_id, user_id");
+            if (!invites.ok)
             {
-                store.events.push_back({row[0], row[1], row[2], row[3], parse_u64(row[4]), parse_u64(row[5])});
+                return false;
+            }
+            for (auto const& row : invites.rows)
+            {
+                if (row.size() >= 7U)
+                {
+                    store.invites.push_back({row[0], row[1], row[2], row[3], row[4],
+                                             parse_invite_state_events_json(row[5]), parse_u64(row[6])});
+                }
             }
         }
 
-        auto event_edges = query_rows(connection, "postgresql_load_event_edges",
-                                      "SELECT event_id, prev_event_id FROM event_edges ORDER BY event_id");
-        if (!event_edges.ok)
+        if (table_load_profile_includes("events", profile))
         {
-            return false;
-        }
-        for (auto const& row : event_edges.rows)
-        {
-            if (row.size() >= 2U)
+            auto events = query_rows(connection, "postgresql_load_events",
+                                     "SELECT event_id, room_id, sender_user_id, json, depth, stream_ordering FROM "
+                                     "events ORDER BY event_id");
+            if (!events.ok)
             {
-                store.event_edges.push_back({row[0], row[1]});
+                return false;
+            }
+            for (auto const& row : events.rows)
+            {
+                if (row.size() >= 6U)
+                {
+                    store.events.push_back({row[0], row[1], row[2], row[3], parse_u64(row[4]), parse_u64(row[5])});
+                }
             }
         }
 
-        auto event_auth = query_rows(connection, "postgresql_load_event_auth",
-                                     "SELECT event_id, auth_event_id FROM event_auth ORDER BY event_id");
-        if (!event_auth.ok)
+        if (table_load_profile_includes("event_edges", profile))
         {
-            return false;
-        }
-        for (auto const& row : event_auth.rows)
-        {
-            if (row.size() >= 2U)
+            auto event_edges = query_rows(connection, "postgresql_load_event_edges",
+                                          "SELECT event_id, prev_event_id FROM event_edges ORDER BY event_id");
+            if (!event_edges.ok)
             {
-                store.event_auth.push_back({row[0], row[1]});
+                return false;
+            }
+            for (auto const& row : event_edges.rows)
+            {
+                if (row.size() >= 2U)
+                {
+                    store.event_edges.push_back({row[0], row[1]});
+                }
             }
         }
 
-        auto event_signatures = query_rows(
-            connection, "postgresql_load_event_signatures",
-            "SELECT event_id, server_name, key_id, signature FROM event_signatures ORDER BY event_id, server_name");
-        if (!event_signatures.ok)
+        if (table_load_profile_includes("event_auth", profile))
         {
-            return false;
-        }
-        for (auto const& row : event_signatures.rows)
-        {
-            if (row.size() >= 4U)
+            auto event_auth = query_rows(connection, "postgresql_load_event_auth",
+                                         "SELECT event_id, auth_event_id FROM event_auth ORDER BY event_id");
+            if (!event_auth.ok)
             {
-                store.event_signatures.push_back({row[0], row[1], row[2], row[3]});
+                return false;
+            }
+            for (auto const& row : event_auth.rows)
+            {
+                if (row.size() >= 2U)
+                {
+                    store.event_auth.push_back({row[0], row[1]});
+                }
             }
         }
 
-        auto state = query_rows(connection, "postgresql_load_current_state",
-                                "SELECT room_id, event_type, state_key, event_id FROM current_state ORDER BY room_id, "
-                                "event_type, state_key");
-        if (!state.ok)
+        if (table_load_profile_includes("event_signatures", profile))
         {
-            return false;
-        }
-        for (auto const& row : state.rows)
-        {
-            if (row.size() >= 4U)
+            auto event_signatures = query_rows(connection, "postgresql_load_event_signatures",
+                                               "SELECT event_id, server_name, key_id, signature FROM "
+                                               "event_signatures ORDER BY event_id, server_name");
+            if (!event_signatures.ok)
             {
-                store.state.push_back({row[0], row[1], row[2], row[3]});
+                return false;
+            }
+            for (auto const& row : event_signatures.rows)
+            {
+                if (row.size() >= 4U)
+                {
+                    store.event_signatures.push_back({row[0], row[1], row[2], row[3]});
+                }
             }
         }
 
-        auto transitions = query_rows(connection, "postgresql_load_state_transitions",
-                                      "SELECT room_id, event_type, state_key, event_id, previous_event_id FROM "
-                                      "state_transitions ORDER BY room_id, event_type, state_key, event_id");
-        if (!transitions.ok)
+        if (table_load_profile_includes("current_state", profile))
         {
-            return false;
-        }
-        for (auto const& row : transitions.rows)
-        {
-            if (row.size() >= 5U)
+            auto state = query_rows(connection, "postgresql_load_current_state",
+                                    "SELECT room_id, event_type, state_key, event_id FROM current_state ORDER BY "
+                                    "room_id, event_type, state_key");
+            if (!state.ok)
             {
-                store.state_transitions.push_back({row[0], row[1], row[2], row[3], row[4]});
+                return false;
+            }
+            for (auto const& row : state.rows)
+            {
+                if (row.size() >= 4U)
+                {
+                    store.state.push_back({row[0], row[1], row[2], row[3]});
+                }
             }
         }
 
-        auto device_keys = query_rows(connection, "postgresql_load_device_keys",
-                                      "SELECT user_id, device_id, json FROM device_keys ORDER BY user_id, device_id");
-        if (!device_keys.ok)
+        if (table_load_profile_includes("state_transitions", profile))
         {
-            return false;
-        }
-        for (auto const& row : device_keys.rows)
-        {
-            if (row.size() >= 3U)
+            auto transitions = query_rows(connection, "postgresql_load_state_transitions",
+                                          "SELECT room_id, event_type, state_key, event_id, previous_event_id FROM "
+                                          "state_transitions ORDER BY room_id, event_type, state_key, event_id");
+            if (!transitions.ok)
             {
-                store.device_keys.push_back({row[0], row[1], row[2]});
+                return false;
+            }
+            for (auto const& row : transitions.rows)
+            {
+                if (row.size() >= 5U)
+                {
+                    store.state_transitions.push_back({row[0], row[1], row[2], row[3], row[4]});
+                }
             }
         }
 
-        auto one_time_keys = query_rows(
-            connection, "postgresql_load_one_time_keys",
-            "SELECT user_id, device_id, key_id, json FROM one_time_keys ORDER BY user_id, device_id, key_id");
-        if (!one_time_keys.ok)
+        if (table_load_profile_includes("device_keys", profile))
         {
-            return false;
-        }
-        for (auto const& row : one_time_keys.rows)
-        {
-            if (row.size() >= 4U)
+            auto device_keys =
+                query_rows(connection, "postgresql_load_device_keys",
+                           "SELECT user_id, device_id, json FROM device_keys ORDER BY user_id, device_id");
+            if (!device_keys.ok)
             {
-                store.one_time_keys.push_back({row[0], row[1], row[2], row[3]});
+                return false;
+            }
+            for (auto const& row : device_keys.rows)
+            {
+                if (row.size() >= 3U)
+                {
+                    store.device_keys.push_back({row[0], row[1], row[2]});
+                }
             }
         }
 
-        auto fallback_keys = query_rows(
-            connection, "postgresql_load_fallback_keys",
-            "SELECT user_id, device_id, key_id, json FROM fallback_keys ORDER BY user_id, device_id, key_id");
-        if (!fallback_keys.ok)
+        if (table_load_profile_includes("one_time_keys", profile))
         {
-            return false;
-        }
-        for (auto const& row : fallback_keys.rows)
-        {
-            if (row.size() >= 4U)
+            auto one_time_keys = query_rows(
+                connection, "postgresql_load_one_time_keys",
+                "SELECT user_id, device_id, key_id, json FROM one_time_keys ORDER BY user_id, device_id, key_id");
+            if (!one_time_keys.ok)
             {
-                store.fallback_keys.push_back({row[0], row[1], row[2], row[3]});
+                return false;
+            }
+            for (auto const& row : one_time_keys.rows)
+            {
+                if (row.size() >= 4U)
+                {
+                    store.one_time_keys.push_back({row[0], row[1], row[2], row[3]});
+                }
             }
         }
 
-        auto cross_signing_keys =
-            query_rows(connection, "postgresql_load_cross_signing_keys",
-                       "SELECT user_id, key_type, json FROM cross_signing_keys ORDER BY user_id, key_type");
-        if (!cross_signing_keys.ok)
+        if (table_load_profile_includes("fallback_keys", profile))
         {
-            return false;
-        }
-        for (auto const& row : cross_signing_keys.rows)
-        {
-            if (row.size() >= 3U)
+            auto fallback_keys = query_rows(
+                connection, "postgresql_load_fallback_keys",
+                "SELECT user_id, device_id, key_id, json FROM fallback_keys ORDER BY user_id, device_id, key_id");
+            if (!fallback_keys.ok)
             {
-                store.cross_signing_keys.push_back({row[0], row[1], row[2]});
+                return false;
+            }
+            for (auto const& row : fallback_keys.rows)
+            {
+                if (row.size() >= 4U)
+                {
+                    store.fallback_keys.push_back({row[0], row[1], row[2], row[3]});
+                }
             }
         }
 
-        auto key_signatures =
-            query_rows(connection, "postgresql_load_key_signatures",
-                       "SELECT signer_user_id, target_user_id, target_device_id, json FROM key_signatures ORDER BY "
-                       "signer_user_id, target_user_id, target_device_id");
-        if (!key_signatures.ok)
+        if (table_load_profile_includes("cross_signing_keys", profile))
         {
-            return false;
-        }
-        for (auto const& row : key_signatures.rows)
-        {
-            if (row.size() >= 4U)
+            auto cross_signing_keys =
+                query_rows(connection, "postgresql_load_cross_signing_keys",
+                           "SELECT user_id, key_type, json FROM cross_signing_keys ORDER BY user_id, key_type");
+            if (!cross_signing_keys.ok)
             {
-                store.key_signatures.push_back({row[0], row[1], row[2], row[3]});
+                return false;
+            }
+            for (auto const& row : cross_signing_keys.rows)
+            {
+                if (row.size() >= 3U)
+                {
+                    store.cross_signing_keys.push_back({row[0], row[1], row[2]});
+                }
             }
         }
 
-        auto key_backup_versions =
-            query_rows(connection, "postgresql_load_key_backup_versions",
-                       "SELECT user_id, version, json FROM key_backup_versions ORDER BY user_id, version");
-        if (!key_backup_versions.ok)
+        if (table_load_profile_includes("key_signatures", profile))
         {
-            return false;
-        }
-        for (auto const& row : key_backup_versions.rows)
-        {
-            if (row.size() >= 3U)
+            auto key_signatures =
+                query_rows(connection, "postgresql_load_key_signatures",
+                           "SELECT signer_user_id, target_user_id, target_device_id, json FROM key_signatures "
+                           "ORDER BY signer_user_id, target_user_id, target_device_id");
+            if (!key_signatures.ok)
             {
-                store.key_backup_versions.push_back({row[0], row[1], row[2]});
+                return false;
+            }
+            for (auto const& row : key_signatures.rows)
+            {
+                if (row.size() >= 4U)
+                {
+                    store.key_signatures.push_back({row[0], row[1], row[2], row[3]});
+                }
             }
         }
 
-        auto key_backup_sessions = query_rows(
-            connection, "postgresql_load_key_backup_sessions",
-            "SELECT user_id, version, room_id, session_id, json FROM key_backup_sessions ORDER BY user_id, version, "
-            "room_id, session_id");
-        if (!key_backup_sessions.ok)
+        if (table_load_profile_includes("key_backup_versions", profile))
         {
-            return false;
-        }
-        for (auto const& row : key_backup_sessions.rows)
-        {
-            if (row.size() >= 5U)
+            auto key_backup_versions =
+                query_rows(connection, "postgresql_load_key_backup_versions",
+                           "SELECT user_id, version, json FROM key_backup_versions ORDER BY user_id, version");
+            if (!key_backup_versions.ok)
             {
-                store.key_backup_sessions.push_back({row[0], row[1], row[2], row[3], row[4]});
+                return false;
+            }
+            for (auto const& row : key_backup_versions.rows)
+            {
+                if (row.size() >= 3U)
+                {
+                    store.key_backup_versions.push_back({row[0], row[1], row[2]});
+                }
             }
         }
 
-        auto media = query_rows(connection, "postgresql_load_media",
-                                "SELECT media_id, owner_user_id, content_type, size_bytes, hash_algorithm, digest, "
-                                "quarantined, removed FROM media ORDER BY media_id");
-        if (!media.ok)
+        if (table_load_profile_includes("key_backup_sessions", profile))
         {
-            return false;
-        }
-        for (auto const& row : media.rows)
-        {
-            if (row.size() >= 8U)
+            auto key_backup_sessions =
+                query_rows(connection, "postgresql_load_key_backup_sessions",
+                           "SELECT user_id, version, room_id, session_id, json FROM key_backup_sessions ORDER BY "
+                           "user_id, version, room_id, session_id");
+            if (!key_backup_sessions.ok)
             {
-                store.local_media.push_back({row[0], row[1], row[2], parse_u64(row[3]), row[4], row[5],
-                                             text_is_true(row[6]), text_is_true(row[7])});
+                return false;
+            }
+            for (auto const& row : key_backup_sessions.rows)
+            {
+                if (row.size() >= 5U)
+                {
+                    store.key_backup_sessions.push_back({row[0], row[1], row[2], row[3], row[4]});
+                }
             }
         }
 
-        auto media_blobs =
-            query_rows(connection, "postgresql_load_media_blobs",
-                       "SELECT storage_id, hash_algorithm, digest, size_bytes, bytes, ref_count FROM media_blobs "
-                       "ORDER BY storage_id");
-        if (!media_blobs.ok)
+        if (table_load_profile_includes("media", profile))
         {
-            return false;
-        }
-        for (auto const& row : media_blobs.rows)
-        {
-            if (row.size() >= 6U)
+            auto media = query_rows(connection, "postgresql_load_media",
+                                    "SELECT media_id, owner_user_id, content_type, size_bytes, hash_algorithm, "
+                                    "digest, quarantined, removed FROM media ORDER BY media_id");
+            if (!media.ok)
             {
-                // M-09: `bytes` was written through the binary parameter path
-                // (execute_prepared_statement's encode_postgresql_bytea_hex),
-                // and comes back as PostgreSQL's `\x`-hex bytea text
-                // representation — decode it to recover the original bytes.
-                store.media_blobs.push_back({row[0], row[1], row[2], parse_u64(row[3]),
-                                             decode_postgresql_bytea_hex(row[4]), parse_u64(row[5])});
+                return false;
+            }
+            for (auto const& row : media.rows)
+            {
+                if (row.size() >= 8U)
+                {
+                    store.local_media.push_back({row[0], row[1], row[2], parse_u64(row[3]), row[4], row[5],
+                                                 text_is_true(row[6]), text_is_true(row[7])});
+                }
             }
         }
 
-        auto remote_media = query_rows(connection, "postgresql_load_remote_media",
-                                       "SELECT server_name, media_id, content_type, size_bytes, quarantined FROM "
-                                       "remote_media ORDER BY server_name, media_id");
-        if (!remote_media.ok)
+        if (table_load_profile_includes("media_blobs", profile))
         {
-            return false;
-        }
-        for (auto const& row : remote_media.rows)
-        {
-            if (row.size() >= 5U)
+            auto media_blobs =
+                query_rows(connection, "postgresql_load_media_blobs",
+                           "SELECT storage_id, hash_algorithm, digest, size_bytes, bytes, ref_count FROM media_blobs "
+                           "ORDER BY storage_id");
+            if (!media_blobs.ok)
             {
-                store.remote_media.push_back({row[0], row[1], row[2], parse_u64(row[3]), text_is_true(row[4])});
+                return false;
+            }
+            for (auto const& row : media_blobs.rows)
+            {
+                if (row.size() >= 6U)
+                {
+                    // M-09: `bytes` was written through the binary parameter path
+                    // (execute_prepared_statement's encode_postgresql_bytea_hex),
+                    // and comes back as PostgreSQL's `\x`-hex bytea text
+                    // representation — decode it to recover the original bytes.
+                    store.media_blobs.push_back({row[0], row[1], row[2], parse_u64(row[3]),
+                                                 decode_postgresql_bytea_hex(row[4]), parse_u64(row[5])});
+                }
             }
         }
 
-        auto audit_log =
-            query_rows(connection, "postgresql_load_audit_log",
-                       "SELECT category, event_type, actor, target, reason FROM audit_log ORDER BY event_type, actor");
-        if (!audit_log.ok)
+        if (table_load_profile_includes("remote_media", profile))
         {
-            return false;
-        }
-        for (auto const& row : audit_log.rows)
-        {
-            if (row.size() >= 5U)
+            auto remote_media = query_rows(connection, "postgresql_load_remote_media",
+                                           "SELECT server_name, media_id, content_type, size_bytes, quarantined FROM "
+                                           "remote_media ORDER BY server_name, media_id");
+            if (!remote_media.ok)
             {
-                store.audit_log.push_back({row[0], row[1], row[2], row[3], row[4]});
+                return false;
+            }
+            for (auto const& row : remote_media.rows)
+            {
+                if (row.size() >= 5U)
+                {
+                    store.remote_media.push_back({row[0], row[1], row[2], parse_u64(row[3]), text_is_true(row[4])});
+                }
             }
         }
 
-        auto admin_actions =
-            query_rows(connection, "postgresql_load_admin_actions",
-                       "SELECT admin_user_id, action, target FROM admin_actions ORDER BY admin_user_id, action");
-        if (!admin_actions.ok)
+        if (table_load_profile_includes("audit_log", profile))
         {
-            return false;
-        }
-        for (auto const& row : admin_actions.rows)
-        {
-            if (row.size() >= 3U)
+            auto audit_log = query_rows(connection, "postgresql_load_audit_log",
+                                        "SELECT category, event_type, actor, target, reason FROM audit_log ORDER "
+                                        "BY event_type, actor");
+            if (!audit_log.ok)
             {
-                store.admin_actions.push_back({row[0], row[1], row[2]});
+                return false;
+            }
+            for (auto const& row : audit_log.rows)
+            {
+                if (row.size() >= 5U)
+                {
+                    store.audit_log.push_back({row[0], row[1], row[2], row[3], row[4]});
+                }
             }
         }
 
-        auto policy_rules = query_rows(connection, "postgresql_load_policy_rules",
-                                       "SELECT rule_id, scope, entity, action, reason FROM policy_rules ORDER BY "
-                                       "rule_id");
-        if (!policy_rules.ok)
+        if (table_load_profile_includes("admin_actions", profile))
         {
-            return false;
-        }
-        for (auto const& row : policy_rules.rows)
-        {
-            if (row.size() >= 5U)
+            auto admin_actions =
+                query_rows(connection, "postgresql_load_admin_actions",
+                           "SELECT admin_user_id, action, target FROM admin_actions ORDER BY admin_user_id, action");
+            if (!admin_actions.ok)
             {
-                store.policy_rules.push_back({row[0], row[1], row[2], row[3], row[4]});
+                return false;
+            }
+            for (auto const& row : admin_actions.rows)
+            {
+                if (row.size() >= 3U)
+                {
+                    store.admin_actions.push_back({row[0], row[1], row[2]});
+                }
             }
         }
 
-        auto account_data = query_rows(connection, "postgresql_load_account_data",
-                                       "SELECT user_id, event_type, json, stream_id FROM account_data ORDER "
-                                       "BY stream_id");
-        if (!account_data.ok)
+        if (table_load_profile_includes("policy_rules", profile))
         {
-            return false;
-        }
-        for (auto const& row : account_data.rows)
-        {
-            if (row.size() >= 4U)
+            auto policy_rules = query_rows(connection, "postgresql_load_policy_rules",
+                                           "SELECT rule_id, scope, entity, action, reason FROM policy_rules ORDER "
+                                           "BY rule_id");
+            if (!policy_rules.ok)
             {
-                auto entry = PersistentAccountData{};
-                entry.user_id = row[0];
-                entry.event_type = row[1];
-                entry.content_json = row[2];
-                entry.stream_id = parse_u64(row[3]);
-                store.account_data.push_back(std::move(entry));
+                return false;
+            }
+            for (auto const& row : policy_rules.rows)
+            {
+                if (row.size() >= 5U)
+                {
+                    store.policy_rules.push_back({row[0], row[1], row[2], row[3], row[4]});
+                }
             }
         }
 
-        auto room_account_data = query_rows(connection, "postgresql_load_room_account_data",
-                                            "SELECT user_id, room_id, event_type, stream_id, json FROM "
-                                            "room_account_data ORDER BY stream_id");
-        if (!room_account_data.ok)
+        if (table_load_profile_includes("account_data", profile))
         {
-            return false;
-        }
-        for (auto const& row : room_account_data.rows)
-        {
-            if (row.size() >= 5U)
+            auto account_data = query_rows(connection, "postgresql_load_account_data",
+                                           "SELECT user_id, event_type, json, stream_id FROM account_data ORDER "
+                                           "BY stream_id");
+            if (!account_data.ok)
             {
-                auto entry = PersistentAccountData{};
-                entry.user_id = row[0];
-                entry.room_id = row[1];
-                entry.event_type = row[2];
-                entry.stream_id = parse_u64(row[3]);
-                entry.content_json = row[4];
-                store.account_data.push_back(std::move(entry));
+                return false;
+            }
+            for (auto const& row : account_data.rows)
+            {
+                if (row.size() >= 4U)
+                {
+                    auto entry = PersistentAccountData{};
+                    entry.user_id = row[0];
+                    entry.event_type = row[1];
+                    entry.content_json = row[2];
+                    entry.stream_id = parse_u64(row[3]);
+                    store.account_data.push_back(std::move(entry));
+                }
             }
         }
 
-        auto to_device = query_rows(connection, "postgresql_load_to_device_messages",
-                                    "SELECT stream_id, sender_user_id, target_user_id, target_device_id, "
-                                    "message_type, content FROM to_device_messages ORDER BY stream_id");
-        if (!to_device.ok)
+        if (table_load_profile_includes("room_account_data", profile))
         {
-            return false;
-        }
-        for (auto const& row : to_device.rows)
-        {
-            if (row.size() >= 6U)
+            auto room_account_data = query_rows(connection, "postgresql_load_room_account_data",
+                                                "SELECT user_id, room_id, event_type, stream_id, json FROM "
+                                                "room_account_data ORDER BY stream_id");
+            if (!room_account_data.ok)
             {
-                auto entry = PersistentToDeviceMessage{};
-                entry.stream_id = parse_u64(row[0]);
-                entry.sender_user_id = row[1];
-                entry.target_user_id = row[2];
-                entry.target_device_id = row[3];
-                entry.message_type = row[4];
-                entry.content_json = row[5];
-                store.to_device_messages.push_back(std::move(entry));
+                return false;
+            }
+            for (auto const& row : room_account_data.rows)
+            {
+                if (row.size() >= 5U)
+                {
+                    auto entry = PersistentAccountData{};
+                    entry.user_id = row[0];
+                    entry.room_id = row[1];
+                    entry.event_type = row[2];
+                    entry.stream_id = parse_u64(row[3]);
+                    entry.content_json = row[4];
+                    store.account_data.push_back(std::move(entry));
+                }
             }
         }
 
-        auto device_list_changes = query_rows(connection, "postgresql_load_device_list_changes",
-                                              "SELECT stream_id, observer_user_id, subject_user_id, change_type FROM "
-                                              "device_list_changes ORDER BY stream_id");
-        if (!device_list_changes.ok)
+        if (table_load_profile_includes("to_device_messages", profile))
         {
-            return false;
-        }
-        for (auto const& row : device_list_changes.rows)
-        {
-            if (row.size() >= 4U)
+            auto to_device = query_rows(connection, "postgresql_load_to_device_messages",
+                                        "SELECT stream_id, sender_user_id, target_user_id, target_device_id, "
+                                        "message_type, content FROM to_device_messages ORDER BY stream_id");
+            if (!to_device.ok)
             {
-                auto entry = PersistentDeviceListChange{};
-                entry.stream_id = parse_u64(row[0]);
-                entry.observer_user_id = row[1];
-                entry.subject_user_id = row[2];
-                entry.change_type = row[3];
-                store.device_list_changes.push_back(std::move(entry));
+                return false;
+            }
+            for (auto const& row : to_device.rows)
+            {
+                if (row.size() >= 6U)
+                {
+                    auto entry = PersistentToDeviceMessage{};
+                    entry.stream_id = parse_u64(row[0]);
+                    entry.sender_user_id = row[1];
+                    entry.target_user_id = row[2];
+                    entry.target_device_id = row[3];
+                    entry.message_type = row[4];
+                    entry.content_json = row[5];
+                    store.to_device_messages.push_back(std::move(entry));
+                }
             }
         }
 
-        auto presence = query_rows(connection, "postgresql_load_presence_state",
-                                   "SELECT user_id, stream_id, presence, status_msg, last_active_ago, "
-                                   "currently_active FROM presence_state ORDER BY stream_id");
-        if (!presence.ok)
+        if (table_load_profile_includes("device_list_changes", profile))
         {
-            return false;
-        }
-        for (auto const& row : presence.rows)
-        {
-            if (row.size() >= 6U)
+            auto device_list_changes =
+                query_rows(connection, "postgresql_load_device_list_changes",
+                           "SELECT stream_id, observer_user_id, subject_user_id, change_type FROM "
+                           "device_list_changes ORDER BY stream_id");
+            if (!device_list_changes.ok)
             {
-                auto entry = PersistentPresence{};
-                entry.user_id = row[0];
-                entry.stream_id = parse_u64(row[1]);
-                entry.presence = row[2];
-                entry.status_msg = row[3];
-                entry.last_active_ago = static_cast<std::int64_t>(parse_u64(row[4]));
-                entry.currently_active = text_is_true(row[5]);
-                store.presence_states.push_back(std::move(entry));
+                return false;
+            }
+            for (auto const& row : device_list_changes.rows)
+            {
+                if (row.size() >= 4U)
+                {
+                    auto entry = PersistentDeviceListChange{};
+                    entry.stream_id = parse_u64(row[0]);
+                    entry.observer_user_id = row[1];
+                    entry.subject_user_id = row[2];
+                    entry.change_type = row[3];
+                    store.device_list_changes.push_back(std::move(entry));
+                }
             }
         }
 
-        auto filters = query_rows(connection, "postgresql_load_filters",
-                                  "SELECT user_id, filter_id, json FROM filters ORDER BY user_id, filter_id");
-        if (!filters.ok)
+        if (table_load_profile_includes("presence_state", profile))
         {
-            return false;
-        }
-        for (auto const& row : filters.rows)
-        {
-            if (row.size() >= 3U)
+            auto presence = query_rows(connection, "postgresql_load_presence_state",
+                                       "SELECT user_id, stream_id, presence, status_msg, last_active_ago, "
+                                       "currently_active FROM presence_state ORDER BY stream_id");
+            if (!presence.ok)
             {
-                store.filters.push_back({row[0], row[1], row[2]});
+                return false;
+            }
+            for (auto const& row : presence.rows)
+            {
+                if (row.size() >= 6U)
+                {
+                    auto entry = PersistentPresence{};
+                    entry.user_id = row[0];
+                    entry.stream_id = parse_u64(row[1]);
+                    entry.presence = row[2];
+                    entry.status_msg = row[3];
+                    entry.last_active_ago = static_cast<std::int64_t>(parse_u64(row[4]));
+                    entry.currently_active = text_is_true(row[5]);
+                    store.presence_states.push_back(std::move(entry));
+                }
             }
         }
 
-        auto room_aliases = query_rows(connection, "postgresql_load_room_aliases",
-                                       "SELECT room_alias, room_id FROM room_aliases ORDER BY room_alias");
-        if (!room_aliases.ok)
+        if (table_load_profile_includes("filters", profile))
         {
-            return false;
-        }
-        for (auto const& row : room_aliases.rows)
-        {
-            if (row.size() >= 2U)
+            auto filters = query_rows(connection, "postgresql_load_filters",
+                                      "SELECT user_id, filter_id, json FROM filters ORDER BY user_id, filter_id");
+            if (!filters.ok)
             {
-                store.room_aliases.push_back({row[0], row[1]});
+                return false;
+            }
+            for (auto const& row : filters.rows)
+            {
+                if (row.size() >= 3U)
+                {
+                    store.filters.push_back({row[0], row[1], row[2]});
+                }
             }
         }
 
-        auto client_txns = query_rows(connection, "postgresql_load_client_txn_ids",
-                                      "SELECT user_id, room_id, event_type, txn_id, event_id FROM client_txn_ids");
-        if (!client_txns.ok)
+        if (table_load_profile_includes("room_aliases", profile))
         {
-            return false;
-        }
-        for (auto const& row : client_txns.rows)
-        {
-            if (row.size() >= 5U)
+            auto room_aliases = query_rows(connection, "postgresql_load_room_aliases",
+                                           "SELECT room_alias, room_id FROM room_aliases ORDER BY room_alias");
+            if (!room_aliases.ok)
             {
-                store.client_txn_ids.push_back({row[0], row[1], row[2], row[3], row[4]});
+                return false;
+            }
+            for (auto const& row : room_aliases.rows)
+            {
+                if (row.size() >= 2U)
+                {
+                    store.room_aliases.push_back({row[0], row[1]});
+                }
+            }
+        }
+
+        if (table_load_profile_includes("client_txn_ids", profile))
+        {
+            auto client_txns = query_rows(connection, "postgresql_load_client_txn_ids",
+                                          "SELECT user_id, room_id, event_type, txn_id, event_id FROM client_txn_ids");
+            if (!client_txns.ok)
+            {
+                return false;
+            }
+            for (auto const& row : client_txns.rows)
+            {
+                if (row.size() >= 5U)
+                {
+                    store.client_txn_ids.push_back({row[0], row[1], row[2], row[3], row[4]});
+                }
             }
         }
 
@@ -1113,59 +1246,65 @@ namespace
             }
         }
 
-        auto pushers = query_rows(connection, "postgresql_load_pushers",
-                                  "SELECT user_id, app_id, pushkey, kind, app_display_name, device_display_name, "
-                                  "profile_tag, lang, data_url, data_format, data_extra_json FROM pushers "
-                                  "ORDER BY user_id, app_id, pushkey");
-        if (!pushers.ok)
+        if (table_load_profile_includes("pushers", profile))
         {
-            return false;
-        }
-        for (auto const& row : pushers.rows)
-        {
-            if (row.size() >= 10U)
+            auto pushers = query_rows(connection, "postgresql_load_pushers",
+                                      "SELECT user_id, app_id, pushkey, kind, app_display_name, device_display_name, "
+                                      "profile_tag, lang, data_url, data_format, data_extra_json FROM pushers "
+                                      "ORDER BY user_id, app_id, pushkey");
+            if (!pushers.ok)
             {
-                PersistentPusher entry{};
-                entry.user_id = row[0];
-                entry.app_id = row[1];
-                entry.pushkey = row[2];
-                entry.kind = row[3];
-                entry.app_display_name = row[4];
-                entry.device_display_name = row[5];
-                entry.profile_tag = row[6];
-                entry.lang = row[7];
-                entry.data_url = row[8];
-                entry.data_format = row[9];
-                if (row.size() >= 11U)
+                return false;
+            }
+            for (auto const& row : pushers.rows)
+            {
+                if (row.size() >= 10U)
                 {
-                    entry.data_extra_json = row[10];
+                    PersistentPusher entry{};
+                    entry.user_id = row[0];
+                    entry.app_id = row[1];
+                    entry.pushkey = row[2];
+                    entry.kind = row[3];
+                    entry.app_display_name = row[4];
+                    entry.device_display_name = row[5];
+                    entry.profile_tag = row[6];
+                    entry.lang = row[7];
+                    entry.data_url = row[8];
+                    entry.data_format = row[9];
+                    if (row.size() >= 11U)
+                    {
+                        entry.data_extra_json = row[10];
+                    }
+                    store.pushers.push_back(std::move(entry));
                 }
-                store.pushers.push_back(std::move(entry));
             }
         }
 
-        auto notifications_result = query_rows(connection, "postgresql_load_notifications",
-                                               "SELECT user_id, room_id, event_id, stream_ordering, ts, actions, "
-                                               "profile_tag, highlight FROM notifications "
-                                               "ORDER BY user_id, stream_ordering");
-        if (!notifications_result.ok)
+        if (table_load_profile_includes("notifications", profile))
         {
-            return false;
-        }
-        for (auto const& row : notifications_result.rows)
-        {
-            if (row.size() >= 8U)
+            auto notifications_result = query_rows(connection, "postgresql_load_notifications",
+                                                   "SELECT user_id, room_id, event_id, stream_ordering, ts, actions, "
+                                                   "profile_tag, highlight FROM notifications "
+                                                   "ORDER BY user_id, stream_ordering");
+            if (!notifications_result.ok)
             {
-                PersistentNotification entry{};
-                entry.user_id = row[0];
-                entry.room_id = row[1];
-                entry.event_id = row[2];
-                entry.stream_ordering = parse_u64(row[3]);
-                entry.ts = parse_u64(row[4]);
-                entry.actions = row[5];
-                entry.profile_tag = row[6];
-                entry.highlight = text_is_true(row[7]);
-                store.notifications.push_back(std::move(entry));
+                return false;
+            }
+            for (auto const& row : notifications_result.rows)
+            {
+                if (row.size() >= 8U)
+                {
+                    PersistentNotification entry{};
+                    entry.user_id = row[0];
+                    entry.room_id = row[1];
+                    entry.event_id = row[2];
+                    entry.stream_ordering = parse_u64(row[3]);
+                    entry.ts = parse_u64(row[4]);
+                    entry.actions = row[5];
+                    entry.profile_tag = row[6];
+                    entry.highlight = text_is_true(row[7]);
+                    store.notifications.push_back(std::move(entry));
+                }
             }
         }
 
@@ -1216,53 +1355,62 @@ namespace
             }
         }
 
-        auto appservice_txn_cursor_result =
-            query_rows(connection, "postgresql_load_appservice_txn_cursor",
-                       "SELECT appservice_id, next_txn_id, delivered_stream_ordering, pending_txn_id, "
-                       "pending_stream_ordering FROM appservice_txn_cursor ORDER BY appservice_id");
-        if (!appservice_txn_cursor_result.ok)
+        if (table_load_profile_includes("appservice_txn_cursor", profile))
         {
-            return false;
-        }
-        for (auto const& row : appservice_txn_cursor_result.rows)
-        {
-            if (row.size() >= 5U)
+            auto appservice_txn_cursor_result =
+                query_rows(connection, "postgresql_load_appservice_txn_cursor",
+                           "SELECT appservice_id, next_txn_id, delivered_stream_ordering, pending_txn_id, "
+                           "pending_stream_ordering FROM appservice_txn_cursor ORDER BY appservice_id");
+            if (!appservice_txn_cursor_result.ok)
             {
-                PersistentAppserviceTxnCursor entry{};
-                entry.appservice_id = row[0];
-                entry.next_txn_id = parse_u64(row[1]);
-                entry.delivered_stream_ordering = parse_u64(row[2]);
-                entry.pending_txn_id = parse_u64(row[3]);
-                entry.pending_stream_ordering = parse_u64(row[4]);
-                store.appservice_txn_cursors.push_back(std::move(entry));
+                return false;
+            }
+            for (auto const& row : appservice_txn_cursor_result.rows)
+            {
+                if (row.size() >= 5U)
+                {
+                    PersistentAppserviceTxnCursor entry{};
+                    entry.appservice_id = row[0];
+                    entry.next_txn_id = parse_u64(row[1]);
+                    entry.delivered_stream_ordering = parse_u64(row[2]);
+                    entry.pending_txn_id = parse_u64(row[3]);
+                    entry.pending_stream_ordering = parse_u64(row[4]);
+                    store.appservice_txn_cursors.push_back(std::move(entry));
+                }
             }
         }
 
-        auto const watermark = query_rows(connection, "postgresql_load_sync_stream_watermark",
-                                          "SELECT watermark FROM sync_stream_watermark");
-        if (!watermark.ok)
+        if (table_load_profile_includes("sync_stream_watermark", profile))
         {
-            return false;
-        }
-        for (auto const& row : watermark.rows)
-        {
-            if (!row.empty())
+            auto const watermark = query_rows(connection, "postgresql_load_sync_stream_watermark",
+                                              "SELECT watermark FROM sync_stream_watermark");
+            if (!watermark.ok)
             {
-                store.next_sync_stream_id = parse_u64(row[0]);
+                return false;
+            }
+            for (auto const& row : watermark.rows)
+            {
+                if (!row.empty())
+                {
+                    store.next_sync_stream_id = parse_u64(row[0]);
+                }
             }
         }
 
-        auto const event_watermark = query_rows(connection, "postgresql_load_event_stream_watermark",
-                                                "SELECT watermark FROM event_stream_watermark");
-        if (!event_watermark.ok)
+        if (table_load_profile_includes("event_stream_watermark", profile))
         {
-            return false;
-        }
-        for (auto const& row : event_watermark.rows)
-        {
-            if (!row.empty())
+            auto const event_watermark = query_rows(connection, "postgresql_load_event_stream_watermark",
+                                                    "SELECT watermark FROM event_stream_watermark");
+            if (!event_watermark.ok)
             {
-                store.event_stream_watermark = parse_u64(row[0]);
+                return false;
+            }
+            for (auto const& row : event_watermark.rows)
+            {
+                if (!row.empty())
+                {
+                    store.event_stream_watermark = parse_u64(row[0]);
+                }
             }
         }
         return true;
