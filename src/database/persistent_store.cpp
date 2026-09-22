@@ -1644,9 +1644,7 @@ auto rebuild_state_transition_index(PersistentStore& store) -> void
                current.state_key == state.state_key;
     });
     // State resolution and repair paths can re-apply a state event that is
-    // already current. Treat that as an idempotent no-op rather than inserting
-    // a duplicate state_transitions row (the primary key is
-    // (room_id, event_type, state_key, event_id)).
+    // already current. Treat that as an idempotent no-op.
     if (existing != store.state.end() && existing->event_id == state.event_id)
     {
         return true;
@@ -1676,15 +1674,26 @@ auto rebuild_state_transition_index(PersistentStore& store) -> void
                 {state.event_id,   false}
         }));
     }
-    statements.push_back(record_statement("insert_state_transition",
-                                          "INSERT INTO state_transitions (room_id, event_type, state_key, event_id, "
-                                          "previous_event_id) VALUES ($1, $2, $3, $4, $5)",
-                                          {
-                                              {state.room_id,     false},
-                                              {state.event_type,  false},
-                                              {state.state_key,   false},
-                                              {state.event_id,    false},
-                                              {previous_event_id, false}
+    // ADR-0064 phase B1: state resolution over forward extremities can make
+    // an event current again after it was previously superseded (spec
+    // requires a resolution that reverts a key to an older event be
+    // delivered like any other state change). state_transitions' primary key
+    // is (room_id, event_type, state_key, event_id) — the same event_id
+    // becoming current a second time is a fresh transition to record, not a
+    // duplicate row, so this is an upsert keyed on that same tuple rather
+    // than a bare INSERT (which would violate the primary key and silently
+    // fail the whole commit the second time any event_id is reactivated).
+    statements.push_back(
+        record_statement("upsert_state_transition",
+                         "INSERT INTO state_transitions (room_id, event_type, state_key, event_id, previous_event_id) "
+                         "VALUES ($1, $2, $3, $4, $5) ON CONFLICT (room_id, event_type, state_key, event_id) "
+                         "DO UPDATE SET previous_event_id = excluded.previous_event_id",
+                         {
+                             {state.room_id,     false},
+                             {state.event_type,  false},
+                             {state.state_key,   false},
+                             {state.event_id,    false},
+                             {previous_event_id, false}
     }));
     if (!commit_persistent_transaction(store, statements))
     {
@@ -1698,11 +1707,24 @@ auto rebuild_state_transition_index(PersistentStore& store) -> void
     {
         store.state.push_back(state);
     }
-    store.state_transitions.push_back(
-        {state.room_id, state.event_type, state.state_key, state.event_id, previous_event_id});
-    store.state_transition_index.emplace(
-        state_transition_index_key(state.room_id, state.event_type, state.state_key, state.event_id),
-        store.state_transitions.size() - 1U);
+    // Mirror the same upsert semantics into the in-memory index: update the
+    // existing row in place when this (room, type, key, event_id) tuple was
+    // already indexed (a reactivation), rather than pushing a second entry
+    // that state_transition_index::emplace would silently ignore, leaving
+    // the index pointing at the stale previous_event_id.
+    auto const transition_key =
+        state_transition_index_key(state.room_id, state.event_type, state.state_key, state.event_id);
+    if (auto const index_it = store.state_transition_index.find(transition_key);
+        index_it != store.state_transition_index.end() && index_it->second < store.state_transitions.size())
+    {
+        store.state_transitions[index_it->second].previous_event_id = previous_event_id;
+    }
+    else
+    {
+        store.state_transitions.push_back(
+            {state.room_id, state.event_type, state.state_key, state.event_id, previous_event_id});
+        store.state_transition_index.emplace(transition_key, store.state_transitions.size() - 1U);
+    }
     return true;
 }
 
