@@ -169,6 +169,16 @@ SCENARIO("A new state group is written as a full snapshot once the delta chain w
 
         for (auto depth = std::size_t{1U}; depth <= merovingian::events::max_state_group_delta_depth; ++depth)
         {
+            // Replace (not append) the counter entry each iteration: two rows
+            // sharing one (event_type, state_key) key would not be a valid
+            // state map, and create_or_reuse_state_group would see the same
+            // resulting map on every iteration (the first, stale entry always
+            // wins the key) and keep reusing the parent instead of growing
+            // the chain.
+            if (state.size() > 1U)
+            {
+                state.pop_back();
+            }
             state.push_back(entry("m.custom.counter", "", "$counter-" + std::to_string(depth)));
             auto const id =
                 create_or_reuse_state_group(store, "!room:example.org", "g" + std::to_string(depth), current_id, state);
@@ -181,6 +191,7 @@ SCENARIO("A new state group is written as a full snapshot once the delta chain w
 
         WHEN("one more state change would push the chain past the cap")
         {
+            state.pop_back();
             state.push_back(entry("m.custom.counter", "", "$counter-over"));
             auto const new_id =
                 create_or_reuse_state_group(store, "!room:example.org", "g-overflow", current_id, state);
