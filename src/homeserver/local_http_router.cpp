@@ -251,6 +251,12 @@ namespace
                                                  std::string_view third_party_invite_token)
         -> std::vector<std::pair<std::string, std::string>>
     {
+        // create is unconditionally permitted below regardless of room
+        // version (see the comment there), so `policy` is currently unused;
+        // kept as a parameter since every other permitted-set / auth-map
+        // builder in this file takes the room policy and a future
+        // version-conditional rule here is likely.
+        std::ignore = policy;
         auto permitted = std::vector<std::pair<std::string, std::string>>{};
         // "The auth_events for the m.room.create event in a room is empty."
         if (event_type == "m.room.create")
