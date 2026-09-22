@@ -1105,6 +1105,12 @@ auto reconstruct_event_relations(PersistentStore& store) -> void;
                                                std::vector<PersistentStateGroupStateEntry> const& full_state)
     -> std::optional<std::string>;
 
+// Returns `state_group_id`'s own row (its room, parent, and delta depth —
+// not its resulting state; see read_state_group_full_state for that), or
+// nullopt if no such group exists.
+[[nodiscard]] auto find_state_group(PersistentStore const& store, std::string_view state_group_id)
+    -> std::optional<PersistentStateGroup>;
+
 // Reads `state_group_id`'s full resulting state by walking parent links back
 // to the nearest snapshot and applying every delta on the chain, newest
 // first (a key already supplied by a newer group is never overwritten by an

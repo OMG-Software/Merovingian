@@ -1611,15 +1611,17 @@ auto rebuild_state_transition_index(PersistentStore& store) -> void
         return false;
     }
     auto statements = std::vector<PreparedStatement>{
-        record_statement("insert_event", "INSERT INTO events VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        record_statement("insert_event",
+                         "INSERT INTO events (event_id, room_id, sender_user_id, json, depth, stream_ordering, status) "
+                         "VALUES ($1, $2, $3, $4, $5, $6, $7)",
                          {{event.event_id, false},
-                                                                                                    {event.room_id, false},
-                                                                                                    {event.sender_user_id, false},
-                                                                                                    {event.json, true},
-                                                                                                    {std::to_string(event.depth), false},
-                                                                                                    {std::to_string(event.stream_ordering), false},
-                                                                                                    {event.status, false}}
-                          )
+                           {event.room_id, false},
+                           {event.sender_user_id, false},
+                           {event.json, true},
+                           {std::to_string(event.depth), false},
+                           {std::to_string(event.stream_ordering), false},
+                           {event.status, false}}
+                         )
     };
     append_event_graph_statements(statements, event);
     if (!commit_persistent_transaction(store, statements))
@@ -1724,7 +1726,8 @@ auto rebuild_state_transition_index(PersistentStore& store) -> void
     update.event = std::move(event);
     update.state = std::move(state);
     update.statements.push_back(record_statement("insert_event",
-                                                 "INSERT INTO events VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                                                 "INSERT INTO events (event_id, room_id, sender_user_id, json, depth, "
+                                                 "stream_ordering, status) VALUES ($1, $2, $3, $4, $5, $6, $7)",
                                                  {
                                                      {update.event.event_id,                        false},
                                                      {update.event.room_id,                         false},
@@ -1902,6 +1905,13 @@ namespace
 
 } // namespace
 
+[[nodiscard]] auto find_state_group(PersistentStore const& store, std::string_view state_group_id)
+    -> std::optional<PersistentStateGroup>
+{
+    auto const* group = find_persistent_state_group(store, state_group_id);
+    return group == nullptr ? std::nullopt : std::optional<PersistentStateGroup>{*group};
+}
+
 [[nodiscard]] auto read_state_group_full_state(PersistentStore const& store, std::string_view state_group_id)
     -> std::optional<std::vector<PersistentStateGroupStateEntry>>
 {
@@ -2018,7 +2028,9 @@ namespace
 
     auto statements = std::vector<PreparedStatement>{};
     statements.push_back(
-        record_statement("insert_state_group", "INSERT INTO state_groups VALUES ($1, $2, $3, $4)",
+        record_statement("insert_state_group",
+                         "INSERT INTO state_groups (state_group_id, room_id, parent_state_group_id, delta_depth) "
+                         "VALUES ($1, $2, $3, $4)",
                          {public_value(new_state_group_id), public_value(room_id), public_value(parent_column_value),
                           public_value(std::to_string(new_depth))}));
     for (auto const& row : rows_to_persist)
