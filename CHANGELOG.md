@@ -292,6 +292,48 @@ audit.
   `docs/database-persistence.md`, `tests/unit/test_state_groups.cpp`
   (`[state_groups]`), and `tests/integration/test_state_groups_flow.cpp`.
 
+- **Phase B1 of spec-conformant PDU ingestion: state resolution wired into
+  `ingest_pdu_event` (ADR-0064, HIGH — this is the delivery-order divergence
+  ADR-0064 exists to fix).** Phase A above added the storage; nothing called
+  it. `ingest_pdu_event` still authorised each inbound PDU against current
+  state only, then wrote it straight into `current_state` — two concurrent,
+  individually valid state events resolved as whichever committed last, not
+  by spec resolution, so resolved state could diverge across the federation
+  depending on delivery order. New module
+  `merovingian::homeserver::state_bookkeeping`
+  (`include/merovingian/homeserver/state_bookkeeping.hpp`,
+  `src/homeserver/state_bookkeeping.cpp`): `compute_state_before` (the state
+  before an event — a single `prev_event`'s own after-state directly,
+  several resolved via `resolve_state_v2`, failing closed to a new
+  `PduIngestionStatus::missing_prev_state` — not a rejection; the
+  transaction still returns 200 per spec — when a `prev_event` has no
+  recorded state group), `compute_state_after` (state-before plus the event
+  itself when it is a state event), `record_event_state` (the after-state
+  group and forward-extremity bookkeeping for every accepted event), and
+  `recompute_current_state` (current state as the resolution over the
+  room's forward extremities, diffed against the cache and written only
+  where changed through the existing `database::store_state`, so
+  `state_transitions`/`unsigned.replaces_state` and the sync wake-up path
+  need no new plumbing). Threaded `missing_prev_state` through the
+  federation-worker IPC status mapping
+  (`src/homeserver/worker_pool.cpp`/`src/federation_worker/worker_event_loop.cpp`)
+  and the `/send` transaction per-PDU switch
+  (`src/federation/inbound_request.cpp`) so a worker-relayed PDU reports it
+  correctly and a transaction containing it still succeeds. **Not yet
+  covered** (follow-up phase): local event-creation paths in
+  `room_service.cpp` still choose `prev_events` the old way, not from the
+  forward extremities; the federated-join flow does not yet seed a state
+  group from the `send_join` response, so a newly joined room's first
+  inbound PDU hits `missing_prev_state` until that lands; the receipt-order
+  auth checks themselves (state-before/soft-failure) are unchanged — that
+  is phase B2. Tests: `tests/unit/test_state_bookkeeping.cpp` and
+  `tests/unit/test_pdu_ingestion_state_groups.cpp` (`[pdu_ingestion]
+  [state_groups]`) — delivery-order independence (the core regression), a
+  merge event's state-before as the resolution of both fork tips,
+  per-event state-group correctness, forward-extremity fork/merge, and the
+  missing-state fail-closed path, both directly against the module and
+  end-to-end through `ingest_pdu_event`.
+
 ## 0.12.12
 
 Documentation only — no code changes beyond the version bump. A full audit

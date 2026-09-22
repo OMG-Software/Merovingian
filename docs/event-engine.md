@@ -353,6 +353,46 @@ stating explicitly, because all three were defects (the first two until
 Event depth is persisted alongside the event row so ordering metadata survives
 a server restart.
 
+### Phase B1: state resolution wired into ingestion (ADR-0064)
+
+Until 0.12.13's phase B1, `resolve_state_v2` was correct in isolation (see
+above) but never ran on the production inbound-PDU path: `ingest_pdu_event`
+(`src/homeserver/local_http_router.cpp`) authorised each PDU against current
+state only and wrote its state straight into `current_state` — two
+concurrent, individually valid state events resolved as whichever arrived
+last, so resolved state could diverge from every other conformant server on
+the same DAG depending on delivery order.
+
+Phase B1 (`merovingian::homeserver::state_bookkeeping`,
+`include/merovingian/homeserver/state_bookkeeping.hpp`) makes state
+bookkeeping — not yet the receipt-order auth checks themselves, still B2 —
+spec-conformant for every event stored through `ingest_pdu_event`:
+
+- **State before an event** is the state resolution of the after-states of
+  its `prev_events`: a single `prev_event` needs no resolution, several do.
+  A `prev_event` with no recorded state group fails the PDU closed
+  (`federation::PduIngestionStatus::missing_prev_state`) rather than
+  guessing — the event is not stored, but per spec ("Transactions") a
+  transaction containing it must still return 200, since a delayed but
+  legitimate PDU looks identical to one whose history has not been fetched
+  yet.
+- **State after an event** is its state-before plus itself, if it is a
+  state event.
+- Every accepted event gets a delta state group for its after-state
+  (`database::create_or_reuse_state_group`, ADR-0064 phase A) and updates
+  the room's forward extremities.
+- **Current state** is a cache of the resolution over the forward
+  extremities, recomputed after each accepted event and diffed against the
+  previous cache so only changed `(event_type, state_key)` entries are
+  rewritten — through the same `database::store_state` every other state
+  write already used, so `state_transitions` and the existing sync
+  wake-up path need no separate "state changed" plumbing.
+
+See `docs/database-persistence.md`, "Phase B1 of spec-conformant PDU
+ingestion", for the exact functions and what is deliberately *not* yet
+wired (local event-creation `prev_events` selection, federated-join state
+seeding) — those still use pre-phase-B1 behavior and are follow-up work.
+
 ### State at a requested event
 
 The inbound federation `GET /state/{roomId}` and `/state_ids/{roomId}` endpoints

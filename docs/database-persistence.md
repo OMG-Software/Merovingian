@@ -488,6 +488,65 @@ remaining work before PostgreSQL-backed production operation.
   scenario (skips without `MEROVINGIAN_TEST_POSTGRESQL_URI`, like every
   other live-database scenario in this suite) checks the new tables exist
   after bootstrap.
+- **Phase B1 of spec-conformant PDU ingestion (0.12.13, ADR-0064): the phase
+  A tables are now written and read on the live ingest path**, not just
+  seeded for pre-existing rooms. New module
+  [`merovingian::homeserver::state_bookkeeping`](../include/merovingian/homeserver/state_bookkeeping.hpp)
+  (`src/homeserver/state_bookkeeping.cpp`):
+  - `compute_state_before(store, room_id, policy, prev_event_ids)` — the
+    state immediately before an event: a single `prev_event`'s own
+    after-state directly (`find_event_state_group` +
+    `read_state_group_full_state`, no resolution needed); several
+    `prev_events` resolved via `events::resolve_state_v2` over their
+    after-states. Fails closed (`StateBeforeResult::ok = false`) if any
+    `prev_event` has no recorded state group, or resolution itself does
+    (ADR-0063's walk cap) — never silently substitutes current state.
+  - `compute_state_after(state_before, event_id, event_type, state_key)` —
+    `state_before` plus the event itself when it is a state event.
+  - `record_event_state(store, room_id, event_id, prev_event_ids,
+    state_after)` — creates or reuses the after-state group (chained off
+    `prev_event_ids.front()`'s own group as the delta parent, so unchanged
+    state reuses it per `create_or_reuse_state_group`'s own dedup), maps
+    `event_id` to it, and updates forward extremities.
+  - `recompute_current_state(store, room_id, policy)` — current state as
+    the resolution over the room's forward extremities (one extremity: its
+    after-state directly; several: `resolve_state_v2`), diffed against the
+    cached `current_state` and written only where changed, through
+    `database::store_state` — the same call every other state write already
+    used, so `state_transitions` (`unsigned.replaces_state`) and the
+    existing sync wake-up path (`SyncNotifier::publish`, called by the
+    ingest caller on an accepted result) stay correct with no separate
+    "state diff" plumbing. `current_state` is a cache of this result, never
+    an independent write target, from this path onward.
+
+  Wired into `ingest_pdu_event` (`src/homeserver/local_http_router.cpp`):
+  state-before is computed before the event is persisted (a missing
+  prev-state fails the PDU closed with the new
+  `federation::PduIngestionStatus::missing_prev_state` — not a rejection;
+  the transaction it arrived in still returns 200 per spec, since a
+  delayed-but-legitimate PDU is indistinguishable from one whose history we
+  have not fetched yet); the after-state group, forward-extremity update,
+  and current-state recomputation happen after the event is durably stored,
+  logged-but-non-fatal on failure (the same trade-off the pre-existing
+  membership-persistence step in the same function already makes for the
+  same reason: the raw event is already committed, so failing the PDU here
+  would only cause pointless retries).
+
+  **Not yet wired in phase B1** (tracked for a follow-up phase): local
+  event-creation paths in `room_service.cpp` still take `prev_events` from
+  wherever they did before, not from the room's forward extremities, and so
+  do not call `record_event_state`; the federated-join flow does not yet
+  seed a state group/forward extremity from the `send_join` response state
+  (a newly joined room's first inbound PDU will therefore hit
+  `missing_prev_state` until that lands). `PduStateConflictContext` /
+  `state_conflict_resolver` (the older, never-production-reached
+  conflict-resolution plumbing this phase was meant to replace) are left in
+  place unchanged and unused by the new path — phase B2 removes them.
+
+  Tests: `tests/unit/test_state_bookkeeping.cpp` (`[pdu_ingestion]
+  [state_groups]`) exercises the module directly against an in-memory
+  store; `tests/unit/test_pdu_ingestion_state_groups.cpp` (same tags) proves
+  the same behavior through `ingest_pdu_event` itself.
 - `/sync` calls `database::ensure_sync_stream_id_ahead_of()` when the client's
   `since` token is ahead of the server's counter. This recovers live deployments
   whose counter rolled back below a stored token (for example, when the watermark

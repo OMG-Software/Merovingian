@@ -1434,6 +1434,34 @@ threats they represent, and the mitigations now in place:
   guessable shared UIAA session ids; device IDs containing the key-ID separator;
   and transport-layer errors reaching browsers as opaque CORS failures.
 
+### PDU ingestion resolved state diverging by delivery order (v0.12.13, ADR-0064 phase B1)
+
+- **Room state could diverge from the rest of the federation depending on
+  the order PDUs happened to arrive in, and a peer that controls delivery
+  order could choose the outcome.** `ingest_pdu_event` authorised each
+  inbound PDU against current state only and wrote its state straight into
+  `current_state`; `resolve_state_v2` (see above) was correct but never ran
+  on this path, so two concurrent, individually valid state events resolved
+  as whichever committed last — a same-room-stripe race, not a spec
+  resolution. Mitigation (phase B1): `current_state` is now a cache of
+  `resolve_state_v2` run over the room's forward extremities, recomputed
+  after every accepted event (`merovingian::homeserver::state_bookkeeping`,
+  see `docs/event-engine.md` and `docs/database-persistence.md`). A
+  `prev_event` whose state we do not have recorded fails the PDU closed
+  (`missing_prev_state`) rather than guessing from current state, which
+  would have reintroduced the same order-dependence through a different
+  door.
+- **Residual scope, unchanged by phase B1:** the receipt-order checks
+  themselves (auth against the state *before* the event vs. against current
+  state, soft-failure) are unaffected — `ingest_pdu_event` still authorises
+  only against current state, exactly as before; that is phase B2. Local
+  event-creation paths do not yet take `prev_events` from the forward
+  extremities, and the federated-join flow does not yet seed a state group
+  from the `send_join` response, so state bookkeeping for those paths is
+  unchanged pending a follow-up phase — see `docs/database-persistence.md`,
+  "Phase B1 of spec-conformant PDU ingestion", for exactly what is and is
+  not covered.
+
 ## Security principles
 
 - Fail closed.
