@@ -74,4 +74,14 @@ inline constexpr std::size_t max_auth_chain_walk_events = 20'000U;
 // snapshot's storage cost across many deltas for ordinary rooms.
 inline constexpr std::size_t max_state_group_delta_depth = 100U;
 
+// ---- Event graph limits ----
+
+// Maximum number of prev_events a single event may declare. Spec (every
+// room version's event format, rooms/v1.md through rooms/v12.md):
+// "Must contain less than or equal to 20 events." Locally created events
+// take their prev_events from the room's current forward extremities
+// (ADR-0064 phase B1); when there are more than this many, the highest-
+// depth ones are kept.
+inline constexpr std::size_t max_prev_events_per_event = 20U;
+
 } // namespace merovingian::events

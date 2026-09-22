@@ -4,11 +4,14 @@
 
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/events/limits.hpp"
 
 #include <algorithm>
+#include <functional>
 #include <memory>
 #include <tuple>
 #include <unordered_map>
+#include <utility>
 
 namespace merovingian::homeserver
 {
@@ -218,6 +221,31 @@ auto compute_state_after(std::vector<database::PersistentStateGroupStateEntry> c
     return after;
 }
 
+auto record_event_state_with_parent(database::PersistentStore& store, std::string_view room_id,
+                                    std::string_view event_id,
+                                    std::vector<std::string> const& prev_event_ids_for_extremities,
+                                    std::optional<std::string> const& parent_group_id,
+                                    std::vector<database::PersistentStateGroupStateEntry> const& state_after)
+    -> std::optional<std::string>
+{
+    auto const new_group_id = "sg:" + std::string{event_id};
+    auto const group_id =
+        database::create_or_reuse_state_group(store, room_id, new_group_id, parent_group_id, state_after);
+    if (!group_id.has_value())
+    {
+        return std::nullopt;
+    }
+    if (!database::set_event_state_group(store, event_id, *group_id))
+    {
+        return std::nullopt;
+    }
+    if (!database::update_forward_extremities(store, room_id, event_id, prev_event_ids_for_extremities, true))
+    {
+        return std::nullopt;
+    }
+    return group_id;
+}
+
 auto record_event_state(database::PersistentStore& store, std::string_view room_id, std::string_view event_id,
                         std::vector<std::string> const& prev_event_ids,
                         std::vector<database::PersistentStateGroupStateEntry> const& state_after)
@@ -229,22 +257,7 @@ auto record_event_state(database::PersistentStore& store, std::string_view room_
     // chain parent, not re-validating.
     auto const parent = prev_event_ids.empty() ? std::optional<std::string>{}
                                                : database::find_event_state_group(store, prev_event_ids.front());
-
-    auto const new_group_id = "sg:" + std::string{event_id};
-    auto const group_id = database::create_or_reuse_state_group(store, room_id, new_group_id, parent, state_after);
-    if (!group_id.has_value())
-    {
-        return std::nullopt;
-    }
-    if (!database::set_event_state_group(store, event_id, *group_id))
-    {
-        return std::nullopt;
-    }
-    if (!database::update_forward_extremities(store, room_id, event_id, prev_event_ids, true))
-    {
-        return std::nullopt;
-    }
-    return group_id;
+    return record_event_state_with_parent(store, room_id, event_id, prev_event_ids, parent, state_after);
 }
 
 auto recompute_current_state(database::PersistentStore& store, std::string_view room_id,
@@ -325,6 +338,77 @@ auto recompute_current_state(database::PersistentStore& store, std::string_view 
         }
     }
     return true;
+}
+
+auto forward_extremities_for_new_event(database::PersistentStore const& store, std::string_view room_id)
+    -> std::vector<std::string>
+{
+    auto extremities = database::find_forward_extremities(store, room_id);
+    if (extremities.size() <= events::max_prev_events_per_event)
+    {
+        return extremities;
+    }
+    // Cap at the spec limit, keeping the highest-depth extremities (the
+    // most recent tips). PersistentForwardExtremity does not itself carry
+    // depth, so look each one up in store.events.
+    auto with_depth = std::vector<std::pair<std::uint64_t, std::string>>{};
+    with_depth.reserve(extremities.size());
+    for (auto& id : extremities)
+    {
+        auto const it = std::ranges::find_if(store.events, [&](database::PersistentEvent const& event) {
+            return event.event_id == id;
+        });
+        auto const depth = it != store.events.end() ? it->depth : 0U;
+        with_depth.emplace_back(depth, std::move(id));
+    }
+    std::ranges::sort(with_depth, std::greater{}, [](auto const& pair) {
+        return pair.first;
+    });
+    with_depth.resize(events::max_prev_events_per_event);
+    auto result = std::vector<std::string>{};
+    result.reserve(with_depth.size());
+    for (auto& [depth, id] : with_depth)
+    {
+        std::ignore = depth;
+        result.push_back(std::move(id));
+    }
+    return result;
+}
+
+auto store_local_event(database::PersistentStore& store, rooms::RoomVersionPolicy const& policy,
+                       database::PersistentEvent event, std::optional<database::PersistentStateEvent> state) -> bool
+{
+    auto const room_id = event.room_id;
+    auto const event_id = event.event_id;
+    auto const prev_event_ids = event.prev_event_ids;
+
+    auto const state_before = compute_state_before(store, room_id, policy, prev_event_ids);
+    if (!state_before.ok)
+    {
+        // A local event's own prev_events were just chosen from this same
+        // room's recorded forward extremities (forward_extremities_for_new_event),
+        // so this should always resolve; a failure here is real corruption,
+        // not a legitimate gap — fail the whole request rather than store an
+        // event with no usable state.
+        return false;
+    }
+
+    auto const event_type = state.has_value() ? state->event_type : std::string{};
+    auto const state_key =
+        state.has_value() ? std::optional<std::string>{state->state_key} : std::optional<std::string>{};
+
+    if (!database::store_event_with_state(store, event, state))
+    {
+        return false;
+    }
+
+    auto const state_after = compute_state_after(state_before.state, event_id, event_type, state_key);
+    auto const group = record_event_state(store, room_id, event_id, prev_event_ids, state_after);
+    if (!group.has_value())
+    {
+        return false;
+    }
+    return recompute_current_state(store, room_id, policy);
 }
 
 } // namespace merovingian::homeserver

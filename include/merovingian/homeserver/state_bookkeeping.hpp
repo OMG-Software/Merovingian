@@ -68,6 +68,21 @@ struct StateBeforeResult final
                                        std::optional<std::string> const& state_key)
     -> std::vector<database::PersistentStateGroupStateEntry>;
 
+// Lower-level primitive behind record_event_state: creates or reuses a
+// state group for `state_after` chained off an EXPLICIT `parent_group_id`
+// (rather than one derived from a prev_event's own recorded group), maps
+// `event_id` to it, and updates the room's forward extremities from
+// `prev_event_ids_for_extremities` (those ids drop out, `event_id` becomes
+// the new tip). Used directly by the federated-join seeding path
+// (room_service.cpp), where the join event's "before" state is a synthetic
+// snapshot built from the send_join response rather than any single
+// prev_event's own recorded group. Returns the state group id, or nullopt
+// on a backend failure.
+[[nodiscard]] auto record_event_state_with_parent(
+    database::PersistentStore& store, std::string_view room_id, std::string_view event_id,
+    std::vector<std::string> const& prev_event_ids_for_extremities, std::optional<std::string> const& parent_group_id,
+    std::vector<database::PersistentStateGroupStateEntry> const& state_after) -> std::optional<std::string>;
+
 // Records an accepted event's post-state: creates or reuses a state group
 // for `state_after` — chained off `prev_event_ids.front()`'s own state
 // group as the delta parent when `prev_event_ids` is non-empty, so unchanged
@@ -98,5 +113,47 @@ struct StateBeforeResult final
 // runtime path.
 [[nodiscard]] auto recompute_current_state(database::PersistentStore& store, std::string_view room_id,
                                            rooms::RoomVersionPolicy const& policy) -> bool;
+
+// ---- Local event-creation choke point (ADR-0064 phase B1, continued) ----
+//
+// Every locally created event MUST go through forward_extremities_for_new_event
+// (to choose prev_events) and then store_local_event (to persist it) —
+// never database::store_event_with_state directly. A source-tree guard
+// test (tests/unit/test_store_event_choke_point.cpp) fails the build if a
+// src/ file other than this module and src/database/ calls it, so a future
+// local path cannot silently bypass bookkeeping the way send_event and
+// persist_composed_event previously did.
+
+// Returns the prev_events a NEW local event should declare: the room's
+// current forward extremities, capped at events::max_prev_events_per_event
+// (spec: "Must contain less than or equal to 20 events") by keeping the
+// highest-depth extremities when there are more. Call this before composing
+// and signing a new event, since prev_events is itself a signed field.
+[[nodiscard]] auto forward_extremities_for_new_event(database::PersistentStore const& store, std::string_view room_id)
+    -> std::vector<std::string>;
+
+// Stores a locally created, already-composed-and-signed `event` (and its
+// `state` row, if it is a state event) and performs the same bookkeeping
+// homeserver::ingest_pdu_event runs for inbound PDUs: computes the state
+// before the event (from event.prev_event_ids, which the caller must
+// already have set from forward_extremities_for_new_event), stores the
+// event via database::store_event_with_state, records its after-state
+// group and forward-extremity update, and recomputes current_state.
+//
+// Unlike ingest_pdu_event, every failure here is a HARD failure (returns
+// false): a local event has not yet been told "success" to any client or
+// peer by the time this runs, so it is safe — and preferable — to fail the
+// whole request rather than leave the store with an event whose
+// bookkeeping is broken. `event.prev_event_ids` must already resolve (a
+// state group must exist for each), since the caller chose them from the
+// room's own recorded extremities; a failure here indicates real
+// corruption, not a legitimate gap to await backfill for.
+//
+// Local events are authorised by the caller's own checks
+// (events::authorize_event_against_auth_events, already run during
+// composition); this function does not re-authorise.
+[[nodiscard]] auto store_local_event(database::PersistentStore& store, rooms::RoomVersionPolicy const& policy,
+                                     database::PersistentEvent event,
+                                     std::optional<database::PersistentStateEvent> state) -> bool;
 
 } // namespace merovingian::homeserver
