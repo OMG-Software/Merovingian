@@ -15,6 +15,7 @@ homeserver_sources = files(
   'runtime_mutex.cpp',
   'runtime_signing_key_store.cpp',
   'space_hierarchy.cpp',
+  'state_bookkeeping.cpp',
   'tls.cpp',
   'worker_env.cpp',
   'worker_pool.cpp',

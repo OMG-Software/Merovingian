@@ -42,6 +42,16 @@ enum class PduIngestionStatus : std::uint8_t
     rejected_state_conflict,
     rejected_invalid,
     internal_error,
+    // ADR-0064 phase B1: a prev_event this PDU depends on has no recorded
+    // state group (an older, pre-Phase-A event, or a genuine gap in our
+    // history of the room). The event is NOT stored — applying it would mean
+    // either guessing its state-before or silently substituting current
+    // state, both of which reintroduce delivery-order dependence. The spec
+    // treats a delayed-but-legitimate PDU the same as one we simply have not
+    // backfilled yet, so this is not a rejection: the transaction still
+    // returns 200 and a later phase is expected to fetch the gap
+    // (/get_missing_events, /state_ids) and retry.
+    missing_prev_state,
 };
 
 // Context surfaced by the sink when an incoming PDU forks the room's

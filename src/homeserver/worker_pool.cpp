@@ -282,6 +282,9 @@ namespace
         case federation::PduIngestionStatus::internal_error:
             status_str = "internal_error";
             break;
+        case federation::PduIngestionStatus::missing_prev_state:
+            status_str = "missing_prev_state";
+            break;
         }
         auto body = std::string{R"({"type":"pdu_ingest_result","status":)"};
         body += json_str(status_str);

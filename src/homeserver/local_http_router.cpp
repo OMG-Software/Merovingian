@@ -28,6 +28,7 @@
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/homeserver/runtime_signing_key_store.hpp"
 #include "merovingian/homeserver/space_hierarchy.hpp"
+#include "merovingian/homeserver/state_bookkeeping.hpp"
 #include "merovingian/media/repository.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
@@ -2093,6 +2094,21 @@ auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope
         return {federation::PduIngestionStatus::rejected_invalid, "bad content hash"};
     }
 
+    // ADR-0064 phase B1: the state immediately before this PDU is the
+    // resolution of its prev_events' own after-states. A prev_event with no
+    // recorded state group means we cannot determine that state without
+    // guessing (which would reintroduce delivery-order dependence) or a gap
+    // a later phase must backfill — either way this PDU is not stored, but
+    // the transaction it arrived in must still succeed (see
+    // PduIngestionStatus::missing_prev_state).
+    auto const state_before =
+        compute_state_before(runtime.database.persistent_store, room_id, *room_policy, envelope.prev_event_ids);
+    if (!state_before.ok)
+    {
+        return {federation::PduIngestionStatus::missing_prev_state,
+                "no recorded state group for a prev_event; awaiting backfill"};
+    }
+
     auto state = std::optional<database::PersistentStateEvent>{};
     if (envelope.state_key.has_value())
     {
@@ -2133,6 +2149,30 @@ auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope
     }
 
     database::apply_store_event_with_state(runtime.database.persistent_store, *prepared);
+
+    // ADR-0064 phase B1: record this event's after-state group and update
+    // forward extremities, then recompute current_state as the resolution
+    // over the (now possibly changed) extremity set. The raw event is
+    // already durably stored above; a failure here is logged but does not
+    // turn an accepted PDU into a rejection — the same trade-off the
+    // membership-persistence step below already makes; a later phase can
+    // repair state-group bookkeeping without re-fetching the event.
+    {
+        auto const state_after =
+            compute_state_after(state_before.state, envelope.event_id, envelope.event_type, envelope.state_key);
+        auto const state_group = record_event_state(runtime.database.persistent_store, room_id, envelope.event_id,
+                                                    envelope.prev_event_ids, state_after);
+        if (!state_group.has_value())
+        {
+            LOG_WARNING("State-group bookkeeping failed after PDU was accepted; event_id=" + envelope.event_id +
+                        " room_id=" + room_id);
+        }
+        else if (!recompute_current_state(runtime.database.persistent_store, room_id, *room_policy))
+        {
+            LOG_WARNING("Current-state recomputation failed after PDU was accepted; event_id=" + envelope.event_id +
+                        " room_id=" + room_id);
+        }
+    }
 
     auto result = federation::PduIngestionResult{};
     result.status = federation::PduIngestionStatus::accepted;

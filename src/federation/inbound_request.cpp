@@ -323,7 +323,7 @@ namespace
     // resolution must not be charged to a budget whose whole purpose is bounding
     // outbound work. Absent probe => charge, which is the safe default.
     [[nodiscard]] auto key_resolution_is_cache_served(FederationRuntimeState const& runtime, std::string_view origin,
-                                                     std::string_view key_id) -> bool
+                                                      std::string_view key_id) -> bool
     {
         return runtime.remote_key_cache_probe && runtime.remote_key_cache_probe(origin, key_id);
     }
@@ -2211,12 +2211,10 @@ namespace
             // second published key, and a FederationRemoteRuntime holds only one.
             // If the cache already has that key the resolver does no network work,
             // so charging it here would reject a wholly legitimate peer.
-            auto const refresh_cache_served =
-                key_resolution_is_cache_served(runtime, request.origin, request.key_id);
-            auto const refresh_admission =
-                refresh_cache_served
-                    ? KeyResolutionAdmission{true, {}}
-                    : admit_key_resolution(runtime, request.remote_addr, request.origin, request.key_id);
+            auto const refresh_cache_served = key_resolution_is_cache_served(runtime, request.origin, request.key_id);
+            auto const refresh_admission = refresh_cache_served ? KeyResolutionAdmission{true, {}}
+                                                                : admit_key_resolution(runtime, request.remote_addr,
+                                                                                       request.origin, request.key_id);
             if (!refresh_admission.allowed)
             {
                 log_diagnostic("key_resolution.throttled",
@@ -2608,6 +2606,7 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
     auto pdus_appended = std::size_t{0U};
     auto pdus_state_conflict = std::size_t{0U};
     auto pdus_state_resolved = std::size_t{0U};
+    auto pdus_missing_prev_state = std::size_t{0U};
     // Per-spec (Matrix federation /send): individual PDU failures must be
     // reported in the response body as {"pdus": {"$id": {"error": "..."}}}
     // rather than as a non-200 HTTP status. Returning 4xx/5xx causes the
@@ -2897,6 +2896,17 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
             audit_federation(runtime, "federation.pdu_internal_error", request.origin, request.target,
                              ingestion.reason);
             break;
+        case PduIngestionStatus::missing_prev_state:
+            // ADR-0064 phase B1: not stored, not a rejection. Spec: a
+            // delayed-but-legitimate PDU is indistinguishable from one whose
+            // history we simply have not fetched yet, so the transaction
+            // still returns 200 (handled below, unconditionally) and this PDU
+            // is counted separately so it can be revisited once a later
+            // phase backfills the gap.
+            ++pdus_missing_prev_state;
+            audit_federation(runtime, "federation.pdu_missing_prev_state", request.origin, request.target,
+                             ingestion.reason);
+            break;
         }
     }
 
@@ -2980,6 +2990,7 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
                                                {"pdu_appended",        std::to_string(pdus_appended),           false},
                                                {"pdu_state_conflicts", std::to_string(pdus_state_conflict),     false},
                                                {"pdu_state_resolved",  std::to_string(pdus_state_resolved),     false},
+                                               {"pdu_missing_prev",    std::to_string(pdus_missing_prev_state), false},
                                                {"edu_count",           std::to_string(transaction.edus.size()), false},
                                                {"edu_dispatched",      std::to_string(edus_dispatched),         false},
                                                {"edu_dropped",         std::to_string(edus_dropped),            false}

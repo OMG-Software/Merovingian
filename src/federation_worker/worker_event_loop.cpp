@@ -182,6 +182,10 @@ namespace
         {
             result.status = federation::PduIngestionStatus::rejected_invalid;
         }
+        else if (status_str == "missing_prev_state")
+        {
+            result.status = federation::PduIngestionStatus::missing_prev_state;
+        }
         else
         {
             result.status = federation::PduIngestionStatus::internal_error;
