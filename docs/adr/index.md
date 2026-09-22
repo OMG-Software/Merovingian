@@ -67,6 +67,7 @@
 * [0061 - Proxy remote cross-signing keys rather than caching them](0061-proxy-remote-cross-signing-keys-rather-than-caching-them.md)
 * [0062 - Federation worker holds no secret files; secrets arrive over inherited fds](0062-federation-worker-holds-no-secret-files-secrets-arrive-over-inherited-fds.md)
 * [0063 - Fail closed when the state-res v2/v2.1 auth-chain walk cannot reach an event](0063-fail-closed-on-unreachable-state-res-auth-chain-events.md)
+* [0064 - Spec-conformant PDU ingestion with delta state groups](0064-spec-conformant-pdu-ingestion-with-delta-state-groups.md)
 
 ## Rejected Records
 

@@ -1,0 +1,157 @@
+# Spec-conformant PDU ingestion with delta state groups
+
+* Status: accepted
+* Deciders: James Chapman
+* Date: 2026-09-22
+
+Technical Story: 0.12.13 security audit. State resolution v2 was fixed
+(ADR-0063) but never ran in production: nothing set
+`PduIngestionResult::state_conflict`, so `state_conflict_resolver` was
+unreachable.
+
+## Context and Problem Statement
+
+`ingest_pdu_event` (`src/homeserver/local_http_router.cpp`) authorised each
+inbound PDU against the room's *current* state only, then wrote state events
+straight into `current_state`. Two concurrent, individually valid state events
+therefore resolved as "whichever arrived last". Every spec-conformant server
+resolves them deterministically, so our room state could diverge from the rest
+of the federation, and a peer that controls delivery order could choose which
+one we kept.
+
+The spec requires six checks on receipt, in order (server-server-api.md,
+"Checks performed on receipt of a PDU"): event format, signatures, hashes
+(mismatch: **redact**, not reject), auth against the event's own
+`auth_events` (reject), auth against the state *before* the event (reject), and
+auth against the current state (soft-fail). The store had none of the
+machinery this needs: no per-event state, no forward-extremity tracking, and no
+record of which events were rejected or soft-failed. A seventh check, Policy
+Server validation (v1.18), is out of scope here and tracked separately.
+
+How do we make inbound PDUs follow the spec without trusting a remote server's
+word about room state?
+
+## Decision Drivers
+
+* The spec is the authority. Resolved state must be identical to every other
+  conformant server's for the same DAG, or the room partitions.
+* Everything on this path is driven by untrusted remote input, so every walk,
+  fetch, and resolution must be bounded and must fail closed.
+* A remote server's claim about historical state (`/state_ids`) must never be
+  used without verifying each event it names.
+* Storage must stay proportionate for large public rooms (tens of thousands
+  of members, frequent membership changes).
+
+## Considered Options
+
+### State before an event when prev_events are missing
+
+1. **Fetch, then request state (chosen).** `/get_missing_events` (bounded),
+   and if a gap remains, `/state_ids` + `/event_auth` from the sending server,
+   verifying every returned event before use.
+2. Fetch only, otherwise hold the PDU as an unresolved outlier until the gap
+   fills.
+3. Fetch only, otherwise reject the PDU.
+
+### Per-event state storage
+
+1. **Delta state groups (chosen).** Each group stores only its changes from a
+   parent group, with a full snapshot every `max_state_group_delta_depth`
+   levels to bound lookup cost.
+2. Full snapshot per state change.
+
+### Current state
+
+1. **Resolution over forward extremities (chosen).**
+2. Last writer wins (the status quo).
+
+## Decision Outcome
+
+Chosen: fetch-then-request-state, delta state groups, and current state as the
+state resolution over the forward extremities. Option 1 is the only one that
+keeps us in consensus when history is delayed or unreachable. Options 2 and 3
+stall or partition us from rooms whose history we cannot reach, and the status
+quo is the defect itself.
+
+### How it works
+
+* **Receipt order.** Checks run in spec order. A hash mismatch redacts the
+  event (spec step 3) and processing continues with the redacted form. A
+  failure at step 4 or 5 marks the event `rejected`: it is stored so later
+  events that reference it can still be authorised, but it never updates
+  state, never becomes a forward extremity, and is never sent to clients. A
+  failure only at step 6 marks it `soft_failed`: it is stored and takes part
+  in state resolution, but is excluded from forward extremities and client
+  timelines. A soft-failed *state* event that state resolution admits into the
+  current state is shown to clients in the usual way, as the spec says.
+* **State before an event** is the state resolution of the states after each
+  of its `prev_events`. With a single prev_event it is that event's state
+  after, with no resolution needed. The state after an event is the state
+  before it plus the event itself, if it is an accepted state event.
+* **Missing prev_events.** `/get_missing_events` up to a bound on events and
+  depth. If a gap remains, the server fetches `/state_ids` and `/event_auth`
+  at the event from the server that sent the PDU, fetches any events it lacks,
+  and runs signature, hash, and auth checks on every one (each against its own
+  auth_events) before the set is used as state. An event that fails is
+  dropped from the claimed state. If the claimed state cannot be verified, the
+  PDU is rejected, never applied on unverified data. All outbound fetches per
+  PDU and per transaction are capped.
+* **State groups.** An event that does not change state shares its parent's
+  group. A delta chain longer than the snapshot depth starts a new full
+  snapshot. Group creation is part of the same transaction as the event.
+* **Current state** is recomputed after each accepted event from the forward
+  extremities (accepted, non-soft-failed events with no accepted children),
+  and `current_state` becomes a cache of that result, never an independent
+  write target.
+* **Local events** take their `prev_events` from the forward extremities.
+* **Existing rooms** are seeded by a migration: each room's current
+  `current_state` becomes a snapshot group attached to its current extremity
+  events. Older events have no recorded state and are treated as outliers for
+  any later resolution that reaches them.
+
+### Positive Consequences
+
+* Our resolved state matches every conformant server's for the same DAG.
+* Ban evasion through old parts of the DAG is soft-failed, not accepted into
+  client timelines.
+* Delivery order no longer decides room state.
+
+### Negative Consequences
+
+* The ingest path makes outbound federation requests (missing events, state).
+  They are bounded, but ingestion latency for a PDU with a gap now includes
+  round trips to its origin.
+* `/state_ids` state claimed by the origin is trusted once every event in it
+  passes its own checks. A malicious origin can still omit events it is
+  entitled to omit. State resolution against other forks limits the damage,
+  which is the same residual risk every conformant server accepts.
+* The schema grows (state groups, extremities, event status), and a one-time
+  seeding migration runs on upgrade.
+
+## Pros and Cons of the Options
+
+### Hold as outlier until the gap fills
+
+* Good, because no remote claim about state is ever used.
+* Bad, because a room whose history we cannot reach stalls indefinitely, and
+  other servers carry on without us.
+
+### Reject when unresolvable
+
+* Good, because it is the simplest.
+* Bad, because it drops legitimate delayed events and partitions us from the
+  room: the spec is explicit that delayed events are indistinguishable from
+  malicious ones and must be accepted.
+
+### Full snapshot per state change
+
+* Good, because reads are one lookup and the code is simple.
+* Bad, because storage grows with state size × number of state changes, which
+  is quadratic-ish for large public rooms with membership churn.
+
+## Links
+
+* [ADR-0063](0063-fail-closed-on-unreachable-state-res-auth-chain-events.md)
+  (fail closed on unreachable auth-chain events; the walk cap)
+* server-server-api.md: "Checks performed on receipt of a PDU", "Rejection",
+  "Soft failure", "Backfilling and retrieving missing events"
