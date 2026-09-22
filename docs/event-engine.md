@@ -303,8 +303,9 @@ fallback above, which is intentionally soft — an ancestor it cannot reach
 only fails that one candidate event's own auth check (as it already did
 before the fallback existed), not the whole resolution.
 
-Two properties of the ordering are easy to get subtly wrong and are worth
-stating explicitly, because both were defects until 0.12.9:
+Three properties of the ordering are easy to get subtly wrong and are worth
+stating explicitly, because all three were defects (the first two until
+0.12.9, the third until 0.12.13):
 
 - **Sender power is read through the room version's rules, not an integer-only
   accessor.** Room versions 1-9 permit power levels encoded as JSON strings and
@@ -320,6 +321,34 @@ stating explicitly, because both were defects until 0.12.9:
   `content.join_authorised_via_users_server` to validate the join. Omitting it
   made every valid restricted join in the conflicted set fail auth, which
   diverges room state across federation rather than merely rejecting one event.
+- **Sender power for the ordering comes from the candidate's OWN
+  `auth_events`, never from the candidate's own new content and never from a
+  shared state map.** Spec (rooms/v10.md — Reverse topological power
+  ordering, rule 1): power is read "looking at their respective
+  auth_events". Until 0.12.13, `power_level_from_event` read an
+  `m.room.power_levels` candidate's sender power from **that same event's
+  own new content** — a self-elevating power_levels event (one that grants
+  its own sender a level it does not actually hold) would rank itself by
+  the level it claims, not the level its own `auth_events` ancestor
+  actually grants it. Every other candidate's power was read from a shared
+  "unconflicted" state map, which is simply the wrong source: a candidate's
+  `auth_events` can name a different `m.room.power_levels` event than
+  whatever happens to be unconflicted at resolution time. Both cases are
+  fixed by `find_auth_ancestor_context` walking the candidate's own
+  `auth_events` (via the same fail-closed `AuthChainEventSource` used for
+  the auth difference) and feeding the result to
+  `events::effective_sender_power` (moved out of `authorization.cpp`'s
+  anonymous namespace and exposed publicly, so the ordering and the auth
+  rules read power identically, including MSC4289 creator-infinite power
+  for room v12). `reverse_topological_power_sort` correspondingly takes
+  `EventJsonIndex` + `EventLookupFn` instead of a `StateMap unconflicted`,
+  and returns `optional<vector<StateEventReference>>` — `nullopt` when an
+  `auth_events` entry needed to answer the question cannot be resolved
+  (fail closed, ADR-0063), never a default value guessed from a partial
+  chain. `mainline_order` was checked against the same defect class and
+  found not to have it: it already reads each event's own `auth_events`
+  power-levels ancestor (it never computes a power *level* at all, only a
+  mainline *position*), never a shared map.
 
 Event depth is persisted alongside the event row so ordering metadata survives
 a server restart.

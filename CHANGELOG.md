@@ -38,6 +38,43 @@ audit.
   topic conflict, join-rule evasion, and the same-power/same-timestamp
   event_id tie-break).
 
+- **Reverse topological power ordering read a candidate's sender power from
+  the wrong source (HIGH, consensus-critical — found in review of the fix
+  above).** `power_level_from_event` read an `m.room.power_levels`
+  candidate's sender power from that SAME event's own new content — a
+  self-elevating power_levels event (one that grants its own sender a level
+  it does not actually hold) ranked itself by the level it claims, not the
+  level its own `auth_events` ancestor actually grants it — and read every
+  other candidate's power from a shared "unconflicted" state map, which is
+  simply the wrong source per spec (rooms/v10.md — Reverse topological power
+  ordering, rule 1: power is read "looking at their respective
+  auth_events"). Fix: `find_auth_ancestor_context` walks the candidate's own
+  `auth_events` for its `m.room.power_levels` (and, for v12,
+  `m.room.create`) ancestor via the same fail-closed `AuthChainEventSource`
+  used for the auth difference, and feeds the result to
+  `events::effective_sender_power` — moved out of `authorization.cpp`'s
+  anonymous namespace and declared in `authorization.hpp` so the ordering
+  and the auth rules read power identically, including MSC4289
+  creator-infinite power for room v12.
+  `reverse_topological_power_sort`'s signature changed:
+  `EventJsonIndex` + `EventLookupFn` instead of `StateMap unconflicted`, and
+  returns `optional<vector<StateEventReference>>` — `nullopt` fails the sort
+  closed (ADR-0063) when an `auth_events` entry needed to answer the
+  question cannot be resolved, rather than guessing a default from a
+  partial chain. `mainline_order` was audited against the same defect class
+  and found not to have it — it already reads each event's own `auth_events`
+  power-levels ancestor and never computes a power level at all, only a
+  mainline position. Tests (`[state_res_v2]`, tag `[power-ordering]`, in
+  `tests/unit/test_state_resolution_auth_diff.cpp` and
+  `tests/conformance/test_state_resolution_conformance.cpp`): a
+  self-elevating power_levels candidate loses to a genuinely higher-powered
+  sender; a non-power candidate reads its own `auth_events` ancestor instead
+  of a shared unconflicted power_levels event; a v12 room creator outranks
+  any finite power_levels level; an unresolvable `auth_events` ancestor
+  fails the sort closed; string-vs-integer power-level encoding (v1-9 vs
+  v10+) is now exercised on the `auth_events` ancestor rather than a
+  candidate's own content.
+
 - **Thumbnail decoder worker hardening is now fail-closed.** `harden()` in
   `src/media/thumbnail_worker_main.cpp` discarded the result of every
   hardening call (`setrlimit` x5, `prctl(PR_SET_DUMPABLE)`,

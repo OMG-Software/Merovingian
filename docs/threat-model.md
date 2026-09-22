@@ -1394,6 +1394,21 @@ threats they represent, and the mitigations now in place:
   `events::max_auth_chain_walk_events`); a missing or unreachable ancestor, or
   an over-budget walk, resolves to `rejected_state_conflict` rather than a
   partial result. See `docs/event-engine.md` and ADR-0063.
+- **Reverse topological power ordering could be manipulated by an event's own
+  content.** `power_level_from_event` read an `m.room.power_levels`
+  candidate's sender power from that SAME event's own new content — a
+  self-elevating power_levels event (granting its own sender a level it does
+  not actually hold) ranked itself by the claimed level, not its real one —
+  and read every other candidate's power from a shared "unconflicted" state
+  map that need not match the candidate's own `auth_events` ancestor.
+  Mitigation (0.12.13): power is now read from the `m.room.power_levels` (and,
+  for v12, `m.room.create`) event in the CANDIDATE'S OWN `auth_events`
+  (`find_auth_ancestor_context`, reusing `events::effective_sender_power` so
+  the ordering agrees with the auth rules on every default), fetched through
+  the same fail-closed `AuthChainEventSource` and cap as the auth difference;
+  an unresolvable `auth_events` entry fails the sort closed (ADR-0063) rather
+  than guessing a default. `mainline_order` was audited against the same
+  defect class and found not to have it. See `docs/event-engine.md`.
 - **State resolution could be ordered by the wrong power level.** The resolver
   read power levels integer-only while the auth path parsed room-v1-9 string
   values, letting a lower-power sender's event win. Mitigation: the resolver

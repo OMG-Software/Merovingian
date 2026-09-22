@@ -54,10 +54,17 @@ result at all.
 
 Chosen option: fail closed. `resolve_state_v2` returns an unresolved result
 whenever the auth-difference computation, the v12 conflicted-state-subgraph
-computation, or the "enlarge X" auth-chain walk in Algorithm step 1
-encounters a missing/unreachable event or exceeds
-`events::max_auth_chain_walk_events`. The caller maps this to
+computation, the "enlarge X" auth-chain walk in Algorithm step 1, or (added
+after this ADR's initial acceptance, same session) the reverse topological
+power ordering's search for each candidate's own `auth_events`
+power_levels/create ancestor encounters a missing/unreachable event or
+exceeds `events::max_auth_chain_walk_events`. The caller maps this to
 `rejected_state_conflict`, the same outcome as any other state-res failure.
+The power-ordering case matters for the same reason as the others: every
+`auth_events` entry must be resolved to determine whether it is *the*
+power_levels ancestor, because event ids do not self-describe their type —
+an entry that cannot be fetched could have been the deciding one, so it is
+never simply skipped.
 
 This applies specifically to the three walks above — the ones that determine
 *membership* of the full conflicted set. It deliberately does **not** apply
