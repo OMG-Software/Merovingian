@@ -248,6 +248,40 @@ audit.
   allowed path still opens, skipping cleanly on a kernel without Landlock.
   See [ADR-0062](docs/adr/0062-federation-worker-holds-no-secret-files-secrets-arrive-over-inherited-fds.md),
   part 3, for the full allowlist derivation and its `strace` evidence.
+- **Phase A of spec-conformant PDU ingestion: delta state group storage
+  (ADR-0064).** State resolution v2 was fixed in this same release, but
+  nothing in the ingest path actually populated `PduIngestionResult::
+  state_conflict`, so it never ran — `ingest_pdu_event` authorised each
+  inbound PDU against current state only and wrote state events straight
+  into `current_state`, letting two concurrent valid state events resolve
+  as "whichever arrived last" instead of deterministically. This is the
+  storage layer the later ingestion phases need to fix that; it does not
+  itself change ingestion behaviour, local `prev_events` selection, or what
+  clients see. Migration `015_event_graph_state.sql` adds `events.status`
+  (`'accepted' | 'soft_failed' | 'rejected' | 'outlier'`, existing rows
+  default to `'accepted'`); extends the pre-existing but vestigial
+  `state_groups` table with `parent_state_group_id`/`delta_depth` so it can
+  anchor a delta chain (a group is a full snapshot when the parent is
+  empty, or a delta from its parent otherwise, capped at
+  `events::max_state_group_delta_depth` = 100 hops before a fresh snapshot
+  is forced); and adds `state_group_state`, `event_state_groups`, and
+  `forward_extremities`. Every pre-existing room is seeded with one
+  snapshot state group built from its `current_state`, attached to its
+  current forward extremities. New store API in
+  `include/merovingian/database/persistent_store.hpp`:
+  `create_or_reuse_state_group`, `read_state_group_full_state` (bounded,
+  cycle-detected, fails closed rather than ever returning partial state),
+  `find_state_group`, `update_forward_extremities`/
+  `find_forward_extremities`, and `set_event_status`/`find_event_status`;
+  implemented for SQLite, PostgreSQL, and the in-memory store, and added to
+  the federation worker's least-privilege PostgreSQL role and table
+  allowlist (`packaging/postgresql/provision-federation-worker-role.sql`,
+  `database::federation_worker_table_allowlist`) since the worker already
+  serves federation `/state`/`/state_ids` locally and a later phase moves
+  that onto state groups. `state_group_edges` remains vestigial and
+  untouched. See [ADR-0064](docs/adr/0064-spec-conformant-pdu-ingestion-with-delta-state-groups.md),
+  `docs/database-persistence.md`, `tests/unit/test_state_groups.cpp`
+  (`[state_groups]`), and `tests/integration/test_state_groups_flow.cpp`.
 
 ## 0.12.12
 

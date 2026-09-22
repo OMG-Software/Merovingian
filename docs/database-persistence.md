@@ -391,6 +391,87 @@ remaining work before PostgreSQL-backed production operation.
   (user_id, password_hash, locked, suspended, admin, deactivated) VALUES
   (...)`), so a future schema change to `users` fails loudly (wrong
   parameter count) rather than silently binding a value to the wrong column.
+- **Phase A of spec-conformant PDU ingestion (schema version `15`, migration
+  `migrations/015_event_graph_state.sql`, ADR-0064): delta state groups,
+  forward extremities, and event status.** This is storage plumbing only —
+  it does not change how PDUs are ingested, how local events pick
+  `prev_events`, or what clients see; that is later phases. Adds:
+  - `events.status` — `TEXT NOT NULL DEFAULT 'accepted'`, one of
+    `'accepted' | 'soft_failed' | 'rejected' | 'outlier'` (spec: "Checks
+    performed on receipt of a PDU"). `set_event_status`/`find_event_status`
+    get/set it, validating the value and mirroring the change into the
+    in-memory `PersistentEvent::status` field (appended as that struct's
+    last member, defaulting to `"accepted"`, so no existing brace-init call
+    site needed to change).
+  - The pre-existing `state_groups` table (created at v1 but never
+    populated or read by any code path before this — confirmed vestigial by
+    grep) gains `parent_state_group_id` (`TEXT NOT NULL DEFAULT ''`) and
+    `delta_depth` (`TEXT NOT NULL DEFAULT '0'`), turning it into the root of
+    a delta chain. Like every other nullable-in-spirit column in this
+    schema (e.g. `state_transitions.previous_event_id`), the empty string is
+    the "no parent, this is a snapshot" sentinel rather than a SQL `NULL` —
+    `PreparedStatement`/`BoundValue` has no NULL parameter representation,
+    and this keeps the convention consistent with the rest of the schema.
+    In C++, `PersistentStateGroup::parent_state_group_id` is
+    `std::optional<std::string>` (`nullopt` ⇔ the empty-string sentinel).
+    `state_group_edges` (also created at v1, also vestigial) is
+    deliberately left alone — see "Federation worker least-privilege role"
+    below for whether it should eventually be dropped.
+  - `state_group_state (state_group_id, event_type, state_key, event_id)` —
+    one group's own rows: the full state for a snapshot group
+    (`parent_state_group_id` empty), or just the changed entries for a
+    delta group.
+  - `event_state_groups (event_id PRIMARY KEY, state_group_id)` — maps an
+    event to the group holding the room's state immediately after it.
+  - `forward_extremities (room_id, event_id)` — a room's current DAG
+    leaves.
+
+  Store API ([persistent_store.hpp](../include/merovingian/database/persistent_store.hpp)):
+  `create_or_reuse_state_group(store, room_id, new_state_group_id,
+  parent_state_group_id, full_state)` builds the group that will hold
+  `full_state` — reusing `parent_state_group_id` unchanged when `full_state`
+  is exactly the parent's own state (read via `read_state_group_full_state`,
+  never re-derived by re-diffing the raw rows a second way), writing a full
+  snapshot when there is no parent, the parent's `delta_depth + 1` would
+  exceed `events::max_state_group_delta_depth` (100), or `full_state` is
+  missing a key the parent has (deltas never encode deletions — state
+  resolution never drops a key present in any fork, so this should not
+  happen, but a missing parent key is handled safely rather than assumed
+  impossible), and otherwise writing only the changed entries as a delta.
+  Fails closed (returns `nullopt`) if the named parent does not resolve.
+  `read_state_group_full_state(store, state_group_id)` walks parent links
+  back to the snapshot and applies every delta on the chain, newest first;
+  bounded to `max_state_group_delta_depth + 1` hops and cycle-detected — a
+  missing group, a cycle, or an over-long chain returns `nullopt`, never a
+  partial map. `find_state_group` returns a group's own row (not its
+  resulting state). `update_forward_extremities(store, room_id, event_id,
+  prev_event_ids, accepted)` removes `prev_event_ids` from and adds
+  `event_id` to the room's extremity set when `accepted` is true, and is a
+  no-op when false (soft-failed/rejected events never become extremities
+  and never remove one); `find_forward_extremities` reads the current set.
+  All four are implemented for SQLite, PostgreSQL, and the in-memory store's
+  write-through path (the `PersistentStoreBackend::memory` backend commits
+  trivially, so unit tests exercise the in-memory bookkeeping directly —
+  see `tests/unit/test_state_groups.cpp`).
+
+  The migration seeds every pre-existing room in portable SQL (`INSERT ...
+  SELECT ... WHERE NOT EXISTS (...)`, idempotency-guarded so re-running the
+  migration chain is a no-op): one snapshot state group per room
+  (deterministic id `'seed:' || room_id`) built from its `current_state`,
+  attached via `event_state_groups` to the room's current forward
+  extremities (the events `event_edges` names as nobody's `prev_event_id`,
+  seeded into `forward_extremities`). Events older than a room's
+  extremities get no state group at seed time — a later phase treats them
+  as outliers if it ever reaches them. Integration coverage
+  (`tests/integration/test_state_groups_flow.cpp`) brings a real SQLite
+  database to v14 by replaying the compiled migration catalog by hand
+  (every v1–v14 statement happens to be parameter-free, so plain
+  `sqlite3_exec` suffices), seeds a room at that shape, then opens the
+  store through the public API so migration 015 runs for real and asserts
+  the seeded snapshot/extremities/mappings/statuses; a PostgreSQL-gated
+  scenario (skips without `MEROVINGIAN_TEST_POSTGRESQL_URI`, like every
+  other live-database scenario in this suite) checks the new tables exist
+  after bootstrap.
 - `/sync` calls `database::ensure_sync_stream_id_ahead_of()` when the client's
   `since` token is ahead of the server's counter. This recovers live deployments
   whose counter rolled back below a stored token (for example, when the watermark
@@ -663,6 +744,10 @@ Two independent mechanisms close this, together:
    | `event_signatures` | same `reconstruct_event_relations` dependency, for `PersistentEvent::signatures` |
    | `room_aliases` | `query/directory` (`find_room_alias`) |
    | `server_signing_keys` | remote-key caching (`remote_key_cache_probe`/`remote_key_resolver`) — **column-restricted**, see below |
+   | `state_groups` | ADR-0064 phase A (0.12.13): the worker serves federation `/state` and `/state_ids` locally today from `current_state`/event relations; a later phase moves that to state groups, granted now so that phase needs no further role change |
+   | `state_group_state` | same ADR-0064 phase-A reasoning, for a group's own delta/snapshot rows |
+   | `event_state_groups` | same ADR-0064 phase-A reasoning, for the event → state group mapping |
+   | `forward_extremities` | same ADR-0064 phase-A reasoning: the worker's membership-template forward-extremity read (currently derived from `events`) becomes sourced from here in a later phase |
    | `schema_migrations` | needed for ANY store to open (schema-version check via `load_schema_state`), not gated by `TableLoadProfile` at all |
 
    `server_signing_keys` needs a genuine caveat: the worker's remote-key
@@ -721,12 +806,15 @@ Two independent mechanisms close this, together:
 `migrations/*.sql` creates falls into exactly one of three buckets, so a new
 migration's table cannot go unclassified:
 
-- **Worker allowlist** (9 tables, profile-gated reads —
+- **Worker allowlist** (13 tables, profile-gated reads —
   `database::federation_worker_table_allowlist`): `rooms`, `membership`,
   `current_state`, `events`, `event_edges`, `event_auth`,
   `event_signatures`, `room_aliases`, `server_signing_keys`
-  (column-restricted, see above).
-- **Worker never reads** (44 tables): `users`, `devices`, `access_tokens`,
+  (column-restricted, see above), `state_groups`, `state_group_state`,
+  `event_state_groups`, `forward_extremities` (the last four added in
+  0.12.13 by ADR-0064 phase A — `state_groups` was vestigial before this and
+  is now moved out of the never-reads list below).
+- **Worker never reads** (43 tables): `users`, `devices`, `access_tokens`,
   `refresh_tokens`, `federation_destinations`, `federation_transactions`,
   `invites`, `state_transitions`, `sync_stream_watermark`,
   `event_stream_watermark`, `device_keys`, `one_time_keys`, `fallback_keys`,
@@ -736,12 +824,16 @@ migration's table cannot go unclassified:
   `room_account_data`, `to_device_messages`, `device_list_changes`,
   `presence_state`, `filters`, `profiles`, `account_threepids`,
   `client_txn_ids`, `pushers`, `notifications`, `openid_tokens`,
-  `login_tokens`, `appservice_txn_cursor`, plus seven tables `schema.cpp`
+  `login_tokens`, `appservice_txn_cursor`, plus six tables `schema.cpp`
   declares but that no runtime code path (main's or the worker's) ever
   populates or queries — `event_json`, `key_backups`, `push_rules`,
-  `rate_limits`, `room_versions`, `state_group_edges`, `state_groups` —
-  vestigial from earlier schema iterations, confirmed by grep to appear
-  nowhere outside `schema.cpp`'s own DDL declarations.
+  `rate_limits`, `room_versions`, `state_group_edges` — vestigial from
+  earlier schema iterations, confirmed by grep to appear nowhere outside
+  `schema.cpp`'s own DDL declarations. `state_group_edges` remains
+  vestigial after ADR-0064 phase A: the design uses parent links on
+  `state_groups` itself for the delta chain, not a separate edges table, so
+  phase A deliberately left it alone. Whether to drop it is an open
+  question for a later phase, not decided here.
   `federation_destinations`/`federation_transactions` specifically are read
   only by `federation::DispatchWorker`, which never starts in the worker
   process: its construction (`local_http_router.cpp`, guarded inside the
