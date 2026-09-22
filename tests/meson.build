@@ -133,6 +133,7 @@ shell = find_program('sh')
       'unit/test_state_groups.cpp',
       'unit/test_state_bookkeeping.cpp',
       'unit/test_local_event_state_bookkeeping.cpp',
+      'unit/test_store_event_choke_point.cpp',
       'unit/test_dispatch_worker.cpp',
       'unit/test_event.cpp',
       'unit/test_federation_event_query.cpp',
