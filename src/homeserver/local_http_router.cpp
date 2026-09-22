@@ -1496,6 +1496,11 @@ namespace
             // enforced at all, because send_join reaches the same store.
             //
             // Spec: docs/matrix-v1.19-spec/server-server-api.md#authorization-rules
+            //
+            // room_policy is hoisted out of this block (rather than scoped
+            // to it, as originally written) because the ADR-0064 state-
+            // before computation below also needs it.
+            rooms::RoomVersionPolicy const* room_policy = nullptr;
             {
                 auto const pdu_parsed = canonicaljson::parse_lossless(envelope.json);
                 if (pdu_parsed.error != canonicaljson::ParseError::none)
@@ -1514,7 +1519,7 @@ namespace
                 {
                     room_version = "12";
                 }
-                auto const* const room_policy = rooms::find_room_version_policy(room_version);
+                room_policy = rooms::find_room_version_policy(room_version);
                 if (room_policy == nullptr)
                 {
                     return {false, 400U, "unknown room version", {}, {}};
@@ -1545,6 +1550,16 @@ namespace
                     return {false, 403U, std::string{"event auth denied: "} + auth_decision.reason, {}, {}};
                 }
             }
+            // ADR-0064 phase B1: this is an inbound PDU (a remote server's
+            // user joining/leaving/knocking on a room WE are resident in) —
+            // the same trust boundary as ingest_pdu_event, so it gets the
+            // same state-before treatment: fail closed rather than guess
+            // when a prev_event has no recorded state group.
+            auto const state_before = compute_state_before(store, room_id, *room_policy, envelope.prev_event_ids);
+            if (!state_before.ok)
+            {
+                return {false, 400U, "no recorded state group for a prev_event; awaiting backfill", {}, {}};
+            }
             auto event = database::PersistentEvent{};
             event.event_id = envelope.event_id;
             event.room_id = envelope.room_id;
@@ -1552,6 +1567,7 @@ namespace
             event.json = envelope.json;
             event.depth = envelope.depth;
             event.stream_ordering = allocate_stream_ordering(rt->database);
+            event.prev_event_ids = envelope.prev_event_ids;
             event.auth_event_ids = envelope.auth_event_ids;
             auto const event_stream_ordering = event.stream_ordering;
             auto state = std::optional<database::PersistentStateEvent>{};
@@ -1579,9 +1595,36 @@ namespace
                     }
                 }
             }
+            auto const accepted_event_id = event.event_id;
+            auto const accepted_prev_event_ids = event.prev_event_ids;
             if (!database::store_event_with_state(store, std::move(event), state))
             {
                 return {false, 500U, "event persistence failed", {}, {}};
+            }
+            // ADR-0064 phase B1: record this event's after-state group and
+            // forward-extremity update, then recompute current_state — same
+            // sequence ingest_pdu_event runs, and the same non-fatal
+            // treatment: the raw event is already durably stored, so a
+            // bookkeeping failure here is logged, not turned into a
+            // rejection (which would only cause pointless retries).
+            {
+                auto const event_type = state.has_value() ? state->event_type : std::string{};
+                auto const state_key =
+                    state.has_value() ? std::optional<std::string>{state->state_key} : std::optional<std::string>{};
+                auto const state_after =
+                    compute_state_after(state_before.state, accepted_event_id, event_type, state_key);
+                auto const state_group =
+                    record_event_state(store, room_id, accepted_event_id, accepted_prev_event_ids, state_after);
+                if (!state_group.has_value())
+                {
+                    LOG_WARNING("State-group bookkeeping failed after membership PDU was accepted; event_id=" +
+                                accepted_event_id + " room_id=" + std::string{room_id});
+                }
+                else if (!recompute_current_state(store, room_id, *room_policy))
+                {
+                    LOG_WARNING("Current-state recomputation failed after membership PDU was accepted; event_id=" +
+                                accepted_event_id + " room_id=" + std::string{room_id});
+                }
             }
             auto membership_changed = false;
             if (envelope.event_type == "m.room.member" && envelope.state_key.has_value())
@@ -1779,6 +1822,12 @@ namespace
                 invite_pdu.sender_user_id = *sender;
                 invite_pdu.json = *signed_event;
                 invite_pdu.stream_ordering = stream_ordering;
+                // ADR-0064 phase B1: this event carries no prev_events (it is
+                // stored purely so a future send_join's auth-chain walk can
+                // find it, per the comment above) and is never part of this
+                // server's own timeline for the room — outlier, like
+                // ingest_send_join_state's state/auth-chain events.
+                invite_pdu.status = "outlier";
                 auto invite_state = std::optional<database::PersistentStateEvent>{
                     database::PersistentStateEvent{invite.room_id, "m.room.member", *target_user, invite.event_id}
                 };
