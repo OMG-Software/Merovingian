@@ -178,6 +178,15 @@ struct SqliteStatementDeleter final
 
 using SqliteStatementHandle = std::unique_ptr<sqlite3_stmt, SqliteStatementDeleter>;
 
+// SQLITE_TRANSIENT expands to an old-style C cast ((sqlite3_destructor_type)-1),
+// which trips -Wold-style-cast -Werror if used directly; sqlite_store.cpp's own
+// sqlite_transient_destructor() works around the same thing the same way.
+[[nodiscard]] auto sqlite_transient_destructor() noexcept -> sqlite3_destructor_type
+{
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+    return reinterpret_cast<sqlite3_destructor_type>(-1);
+}
+
 [[nodiscard]] auto open_sqlite_connection_raii(std::string const& path) -> SqliteConnectionHandle
 {
     auto* raw_connection = static_cast<sqlite3*>(nullptr);
@@ -204,7 +213,7 @@ using SqliteStatementHandle = std::unique_ptr<sqlite3_stmt, SqliteStatementDelet
             SQLITE_OK);
     auto statement = SqliteStatementHandle{raw_statement};
     REQUIRE(statement != nullptr);
-    REQUIRE(sqlite3_bind_text(statement.get(), 1, "$example-event", -1, SQLITE_TRANSIENT) == SQLITE_OK);
+    REQUIRE(sqlite3_bind_text(statement.get(), 1, "$example-event", -1, sqlite_transient_destructor()) == SQLITE_OK);
 
     auto detail = std::string{};
     while (sqlite3_step(statement.get()) == SQLITE_ROW)
