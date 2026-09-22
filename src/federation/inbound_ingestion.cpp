@@ -316,35 +316,4 @@ auto parse_inbound_edu_envelope(std::string_view edu_type, std::string_view orig
     return out;
 }
 
-auto apply_state_resolution_v2(PduStateConflictContext const& context, ResolvedStateApplier const& apply_resolved,
-                               events::EventLookupFn const& event_lookup) -> PduIngestionResult
-{
-    if (context.room_version.empty())
-    {
-        return {PduIngestionStatus::rejected_state_conflict, "state-res v2: room version missing", {}};
-    }
-    auto const* policy = rooms::find_room_version_policy(context.room_version);
-    if (policy == nullptr)
-    {
-        return {PduIngestionStatus::rejected_state_conflict, "state-res v2: unknown room version", {}};
-    }
-    if (context.state_groups.empty())
-    {
-        return {PduIngestionStatus::rejected_state_conflict, "state-res v2: no state groups", {}};
-    }
-    auto request = events::StateResolutionRequest{context.room_version, context.state_groups, event_lookup};
-    auto const resolution = events::resolve_state_v2(request, *policy);
-    if (!resolution.resolved)
-    {
-        return {PduIngestionStatus::rejected_state_conflict, "state-res v2 failed: " + resolution.reason, {}};
-    }
-    if (apply_resolved && !apply_resolved(resolution.resolved_state))
-    {
-        return {PduIngestionStatus::rejected_state_conflict, "state-res v2: applier rejected merged state", {}};
-    }
-    return {PduIngestionStatus::accepted,
-            "state-res v2: merged " + std::to_string(resolution.resolved_state.size()) + " state events",
-            {}};
-}
-
 } // namespace merovingian::federation

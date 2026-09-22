@@ -2604,8 +2604,8 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
                       })};
     }
     auto pdus_appended = std::size_t{0U};
-    auto pdus_state_conflict = std::size_t{0U};
-    auto pdus_state_resolved = std::size_t{0U};
+    auto pdus_rejected = std::size_t{0U};
+    auto pdus_soft_failed = std::size_t{0U};
     auto pdus_missing_prev_state = std::size_t{0U};
     // Per-spec (Matrix federation /send): individual PDU failures must be
     // reported in the response body as {"pdus": {"$id": {"error": "..."}}}
@@ -2816,35 +2816,22 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
         {
             continue;
         }
-        // Spec: Matrix Server-Server API v1.19 — Calculating the Content Hash for an Event
-        // URL: ../../docs/matrix-v1.19-spec/server-server-api.md#calculating-the-content-hash-for-an-event
-        // Servers MUST verify the content hash of the event before processing it.
-        {
-            auto const parsed_for_hash = canonicaljson::parse_lossless(encoded_pdu);
-            if (parsed_for_hash.error != canonicaljson::ParseError::none ||
-                !events::verify_pdu_content_hash(parsed_for_hash.value))
-            {
-                // A content-hash mismatch is tampering evidence, not policy, so
-                // it counts against the peer's trust record (audit H-04).
-                ++remote.trust.consecutive_failures;
-                ++pdu_trust_failures;
-                pdu_errors.push_back(canonicaljson::make_member(
-                    pdu.event_id,
-                    canonicaljson::Value{canonicaljson::Object{canonicaljson::make_member(
-                        "error", canonicaljson::Value{std::string{"PDU content hash verification failed"}})}}));
-                audit_federation(runtime, "federation.pdu_hash_rejected", request.origin, request.target,
-                                 "content-hash-mismatch");
-                continue;
-            }
-        }
-        // PDU passed signature, auth, and content-hash checks; hand it to the
-        // ingestion sink for persistence. State-resolution conflicts are no longer
-        // silently logged: when the sink surfaces a state_conflict context
-        // and a `state_conflict_resolver` is wired, we run state-res v2 to
-        // merge the forks. Successful merges are audited as
-        // `federation.pdu_state_resolved` and counted as accepted.
-        // Pass the already-resolved room version so the envelope uses the
-        // correct redaction rules for event-ID re-computation.
+        // Spec: Matrix Server-Server API v1.19 — "Checks performed on receipt
+        // of a PDU", step 3 (hash). A content-hash mismatch is no longer
+        // dropped here: the spec requires the event be REDACTED and
+        // processing continued with the redacted form, not rejected. That
+        // redact-or-continue decision needs the room version and the room's
+        // recorded state, neither of which this loop has cheaply, so it is
+        // made once, in order, alongside the rest of the receipt checks
+        // inside the sink itself (homeserver::ingest_pdu_event). See
+        // docs/adr/0064-spec-conformant-pdu-ingestion-with-delta-state-groups.md.
+        //
+        // PDU passed signature and format checks; hand it to the ingestion
+        // sink for the remaining receipt-order checks (hash, auth against
+        // auth_events, auth against state-before, auth against current
+        // state) and persistence. Pass the already-resolved room version so
+        // the envelope uses the correct redaction rules for event-ID
+        // re-computation.
         auto envelope = parse_inbound_pdu_envelope(encoded_pdu, pdu.room_version);
         if (!envelope.has_value())
         {
@@ -2858,39 +2845,26 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
         case PduIngestionStatus::accepted:
             ++pdus_appended;
             break;
-        case PduIngestionStatus::rejected_state_conflict: {
-            auto merged = false;
-            if (runtime.state_conflict_resolver && ingestion.state_conflict.has_value())
-            {
-                auto const resolution = runtime.state_conflict_resolver(*ingestion.state_conflict);
-                if (resolution.status == PduIngestionStatus::accepted)
-                {
-                    merged = true;
-                    ++pdus_appended;
-                    ++pdus_state_resolved;
-                    audit_federation(runtime, "federation.pdu_state_resolved", request.origin, request.target,
-                                     resolution.reason);
-                }
-                else if (!resolution.reason.empty())
-                {
-                    audit_federation(runtime, "federation.pdu_state_conflict", request.origin, request.target,
-                                     resolution.reason);
-                }
-            }
-            if (!merged)
-            {
-                ++pdus_state_conflict;
-                audit_federation(runtime, "federation.pdu_state_conflict", request.origin, request.target,
-                                 ingestion.reason);
-            }
+        case PduIngestionStatus::soft_failed:
+            // Spec: "Soft failure" — stored, takes part in state resolution,
+            // but never a forward extremity and never relayed to clients.
+            // Not a rejection and not a trust-affecting event.
+            ++pdus_soft_failed;
+            audit_federation(runtime, "federation.pdu_soft_failed", request.origin, request.target, ingestion.reason);
             break;
-        }
+        case PduIngestionStatus::rejected_state_conflict:
+            // Legacy status; no production sink produces this any more
+            // (ADR-0064 phase B2 removed the state-conflict-resolver
+            // plumbing it existed for). Handled defensively as a rejection.
         case PduIngestionStatus::rejected_auth:
-            audit_federation(runtime, "federation.pdu_rejected_auth", request.origin, request.target, ingestion.reason);
-            break;
         case PduIngestionStatus::rejected_invalid:
-            audit_federation(runtime, "federation.pdu_rejected_invalid", request.origin, request.target,
-                             ingestion.reason);
+            // Spec: "Rejection" — stored so later events can still be
+            // authorised against it, but never updates state, never becomes
+            // a forward extremity, never relayed to clients. Not a
+            // transaction-level error (spec: a rejected PDU in a
+            // transaction must not cause an error response).
+            ++pdus_rejected;
+            audit_federation(runtime, "federation.pdu_rejected", request.origin, request.target, ingestion.reason);
             break;
         case PduIngestionStatus::internal_error:
             audit_federation(runtime, "federation.pdu_internal_error", request.origin, request.target,
@@ -2984,16 +2958,16 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
             {request.origin, transaction.transaction_id, transaction.pdus.size(), transaction.edus.size()});
     }
     log_diagnostic("transaction.accepted", {
-                                               {"origin",              request.origin,                          false},
-                                               {"transaction_id",      transaction.transaction_id,              false},
-                                               {"pdu_count",           std::to_string(transaction.pdus.size()), false},
-                                               {"pdu_appended",        std::to_string(pdus_appended),           false},
-                                               {"pdu_state_conflicts", std::to_string(pdus_state_conflict),     false},
-                                               {"pdu_state_resolved",  std::to_string(pdus_state_resolved),     false},
-                                               {"pdu_missing_prev",    std::to_string(pdus_missing_prev_state), false},
-                                               {"edu_count",           std::to_string(transaction.edus.size()), false},
-                                               {"edu_dispatched",      std::to_string(edus_dispatched),         false},
-                                               {"edu_dropped",         std::to_string(edus_dropped),            false}
+                                               {"origin",           request.origin,                          false},
+                                               {"transaction_id",   transaction.transaction_id,              false},
+                                               {"pdu_count",        std::to_string(transaction.pdus.size()), false},
+                                               {"pdu_appended",     std::to_string(pdus_appended),           false},
+                                               {"pdu_rejected",     std::to_string(pdus_rejected),           false},
+                                               {"pdu_soft_failed",  std::to_string(pdus_soft_failed),        false},
+                                               {"pdu_missing_prev", std::to_string(pdus_missing_prev_state), false},
+                                               {"edu_count",        std::to_string(transaction.edus.size()), false},
+                                               {"edu_dispatched",   std::to_string(edus_dispatched),         false},
+                                               {"edu_dropped",      std::to_string(edus_dropped),            false}
     });
     audit_federation(runtime, "federation.accepted", request.origin, request.target,
                      federation_route_audit_event(route_match.route, request.origin));

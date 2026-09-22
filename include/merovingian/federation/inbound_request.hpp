@@ -294,15 +294,6 @@ struct FederationRuntimeState final
     // hooks are invoked from handle_inbound_federation_request.
     PduSink pdu_sink{};
     EduSink edu_sink{};
-    // Optional state-resolution hook invoked when pdu_sink returns
-    // rejected_state_conflict with populated state_conflict context. The
-    // resolver is expected to run state-resolution v2 (via
-    // `apply_state_resolution_v2`) and commit the merged state to the
-    // persistent store. If the resolver merges successfully the PDU is
-    // counted as accepted and audited as `federation.pdu_state_resolved`;
-    // otherwise the original `federation.pdu_state_conflict` audit fires
-    // and the PDU is dropped.
-    StateConflictResolver state_conflict_resolver{};
     // Federation membership and history endpoints. Optional: when unset
     // the handler returns 501 Not Implemented for the corresponding route
     // so callers know to fall back to the legacy "log and accept" stub

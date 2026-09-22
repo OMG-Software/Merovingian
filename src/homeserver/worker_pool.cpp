@@ -285,6 +285,9 @@ namespace
         case federation::PduIngestionStatus::missing_prev_state:
             status_str = "missing_prev_state";
             break;
+        case federation::PduIngestionStatus::soft_failed:
+            status_str = "soft_failed";
+            break;
         }
         auto body = std::string{R"({"type":"pdu_ingest_result","status":)"};
         body += json_str(status_str);

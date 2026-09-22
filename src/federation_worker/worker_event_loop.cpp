@@ -186,6 +186,10 @@ namespace
         {
             result.status = federation::PduIngestionStatus::missing_prev_state;
         }
+        else if (status_str == "soft_failed")
+        {
+            result.status = federation::PduIngestionStatus::soft_failed;
+        }
         else
         {
             result.status = federation::PduIngestionStatus::internal_error;

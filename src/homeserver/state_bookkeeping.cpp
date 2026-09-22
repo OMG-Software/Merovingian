@@ -225,8 +225,8 @@ auto record_event_state_with_parent(database::PersistentStore& store, std::strin
                                     std::string_view event_id,
                                     std::vector<std::string> const& prev_event_ids_for_extremities,
                                     std::optional<std::string> const& parent_group_id,
-                                    std::vector<database::PersistentStateGroupStateEntry> const& state_after)
-    -> std::optional<std::string>
+                                    std::vector<database::PersistentStateGroupStateEntry> const& state_after,
+                                    bool accepted) -> std::optional<std::string>
 {
     auto const new_group_id = "sg:" + std::string{event_id};
     auto const group_id =
@@ -239,7 +239,7 @@ auto record_event_state_with_parent(database::PersistentStore& store, std::strin
     {
         return std::nullopt;
     }
-    if (!database::update_forward_extremities(store, room_id, event_id, prev_event_ids_for_extremities, true))
+    if (!database::update_forward_extremities(store, room_id, event_id, prev_event_ids_for_extremities, accepted))
     {
         return std::nullopt;
     }
@@ -248,7 +248,7 @@ auto record_event_state_with_parent(database::PersistentStore& store, std::strin
 
 auto record_event_state(database::PersistentStore& store, std::string_view room_id, std::string_view event_id,
                         std::vector<std::string> const& prev_event_ids,
-                        std::vector<database::PersistentStateGroupStateEntry> const& state_after)
+                        std::vector<database::PersistentStateGroupStateEntry> const& state_after, bool accepted)
     -> std::optional<std::string>
 {
     // By the time this is called, compute_state_before has already
@@ -257,7 +257,7 @@ auto record_event_state(database::PersistentStore& store, std::string_view room_
     // chain parent, not re-validating.
     auto const parent = prev_event_ids.empty() ? std::optional<std::string>{}
                                                : database::find_event_state_group(store, prev_event_ids.front());
-    return record_event_state_with_parent(store, room_id, event_id, prev_event_ids, parent, state_after);
+    return record_event_state_with_parent(store, room_id, event_id, prev_event_ids, parent, state_after, accepted);
 }
 
 auto recompute_current_state(database::PersistentStore& store, std::string_view room_id,

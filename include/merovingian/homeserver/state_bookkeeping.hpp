@@ -73,27 +73,46 @@ struct StateBeforeResult final
 // (rather than one derived from a prev_event's own recorded group), maps
 // `event_id` to it, and updates the room's forward extremities from
 // `prev_event_ids_for_extremities` (those ids drop out, `event_id` becomes
-// the new tip). Used directly by the federated-join seeding path
-// (room_service.cpp), where the join event's "before" state is a synthetic
-// snapshot built from the send_join response rather than any single
-// prev_event's own recorded group. Returns the state group id, or nullopt
-// on a backend failure.
+// the new tip) — but only when `accepted` is true. Used directly by the
+// federated-join seeding path (room_service.cpp), where the join event's
+// "before" state is a synthetic snapshot built from the send_join response
+// rather than any single prev_event's own recorded group.
+//
+// ADR-0064 phase B2: `accepted` distinguishes a normally-accepted event
+// (the default, `true`) from a rejected or soft-failed one (`false`).
+// database::update_forward_extremities is a no-op when `accepted` is false
+// — per spec "Rejection"/"Soft failure", a rejected or soft-failed event is
+// never added to the room's forward extremities, and its prev_events stay
+// extremities in its place. The state group itself is still created/reused
+// and the event is still mapped to it, since rejected and soft-failed
+// events are both stored and (for soft-failed events) still take part in
+// state resolution when a later event references them.
+//
+// Returns the state group id, or nullopt on a backend failure.
 [[nodiscard]] auto record_event_state_with_parent(
     database::PersistentStore& store, std::string_view room_id, std::string_view event_id,
     std::vector<std::string> const& prev_event_ids_for_extremities, std::optional<std::string> const& parent_group_id,
-    std::vector<database::PersistentStateGroupStateEntry> const& state_after) -> std::optional<std::string>;
+    std::vector<database::PersistentStateGroupStateEntry> const& state_after, bool accepted = true)
+    -> std::optional<std::string>;
 
-// Records an accepted event's post-state: creates or reuses a state group
-// for `state_after` — chained off `prev_event_ids.front()`'s own state
-// group as the delta parent when `prev_event_ids` is non-empty, so unchanged
-// state reuses that group (see database::create_or_reuse_state_group) —
-// maps `event_id` to the resulting group, and updates the room's forward
-// extremities (`prev_event_ids` drop out, `event_id` becomes the new tip).
+// Records an event's post-state: creates or reuses a state group for
+// `state_after` — chained off `prev_event_ids.front()`'s own state group as
+// the delta parent when `prev_event_ids` is non-empty, so unchanged state
+// reuses that group (see database::create_or_reuse_state_group) — maps
+// `event_id` to the resulting group, and — when `accepted` is true (the
+// default) — updates the room's forward extremities (`prev_event_ids` drop
+// out, `event_id` becomes the new tip). See record_event_state_with_parent
+// for what `accepted = false` means (ADR-0064 phase B2: a rejected or
+// soft-failed event). Callers pass `state_before` (unchanged) as
+// `state_after` for a rejected event (spec: "state...calculated as normal,
+// except not updating with the rejected event"), and the normally-computed
+// `compute_state_after` result for a soft-failed one (spec: soft-failed
+// events "participate in state resolution as normal").
 // Returns the state group id, or nullopt on a backend failure.
 [[nodiscard]] auto record_event_state(database::PersistentStore& store, std::string_view room_id,
                                       std::string_view event_id, std::vector<std::string> const& prev_event_ids,
-                                      std::vector<database::PersistentStateGroupStateEntry> const& state_after)
-    -> std::optional<std::string>;
+                                      std::vector<database::PersistentStateGroupStateEntry> const& state_after,
+                                      bool accepted = true) -> std::optional<std::string>;
 
 // Recomputes the room's current state as the state resolution over its
 // forward extremities' after-states (one extremity: that state directly, no

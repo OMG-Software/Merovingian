@@ -90,14 +90,26 @@ namespace
         };
     }
 
-    // Builds the auth-event map for an inbound federated PDU from the room's
-    // currently resolved state. Mirrors the same logic used in room_service.cpp
-    // for locally-created events so both paths apply identical auth rules.
+    // Forward declarations: both are defined later in this anonymous
+    // namespace (string_member alongside content_membership;
+    // object_member_as_object alongside the local-router query helpers) but
+    // are needed by the auth_events-selection machinery below.
+    [[nodiscard]] auto string_member(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> std::string const*;
+    [[nodiscard]] auto object_member_as_object(canonicaljson::Object const& object, std::string_view key)
+        -> canonicaljson::Object const*;
+
+    // Builds the auth-event map for an inbound federated PDU from an
+    // arbitrary flat state snapshot (current state, the state before an
+    // event, or the set of events an event itself names as auth_events —
+    // ADR-0064 phase B2 needs all three). Mirrors the same logic used in
+    // room_service.cpp for locally-created events so all paths apply
+    // identical auth rules.
     // Spec: SS API §authorization-rules — receivers MUST check auth before persisting.
-    [[nodiscard]] auto build_pdu_auth_event_map(database::PersistentStore const& store, std::string_view room_id,
-                                                std::string_view sender, std::string_view target_state_key,
-                                                std::string_view event_type,
-                                                std::string_view third_party_invite_token = {}) -> events::AuthEventMap
+    [[nodiscard]] auto build_auth_event_map_from_entries(
+        database::PersistentStore const& store, std::vector<database::PersistentStateGroupStateEntry> const& entries,
+        std::string_view sender, std::string_view target_state_key, std::string_view event_type,
+        std::string_view third_party_invite_token = {}) -> events::AuthEventMap
     {
         auto load = [&](std::string_view event_id) -> canonicaljson::Value {
             for (auto const& evt : store.events)
@@ -115,40 +127,223 @@ namespace
         };
 
         auto result = events::AuthEventMap{};
-        for (auto const& state : store.state)
+        for (auto const& entry : entries)
         {
-            if (state.room_id != room_id)
+            if (entry.event_type == "m.room.create" && entry.state_key.empty())
             {
-                continue;
+                result.create = load(entry.event_id);
             }
-            if (state.event_type == "m.room.create" && state.state_key.empty())
+            else if (entry.event_type == "m.room.power_levels" && entry.state_key.empty())
             {
-                result.create = load(state.event_id);
+                result.power_levels = load(entry.event_id);
             }
-            else if (state.event_type == "m.room.power_levels" && state.state_key.empty())
+            else if (entry.event_type == "m.room.join_rules" && entry.state_key.empty())
             {
-                result.power_levels = load(state.event_id);
+                result.join_rules = load(entry.event_id);
             }
-            else if (state.event_type == "m.room.join_rules" && state.state_key.empty())
+            else if (entry.event_type == "m.room.member" && entry.state_key == sender)
             {
-                result.join_rules = load(state.event_id);
+                result.sender_member = load(entry.event_id);
             }
-            else if (state.event_type == "m.room.member" && state.state_key == sender)
+            else if (entry.event_type == "m.room.member" && event_type == "m.room.member" &&
+                     entry.state_key == target_state_key)
             {
-                result.sender_member = load(state.event_id);
+                result.target_member = load(entry.event_id);
             }
-            else if (state.event_type == "m.room.member" && event_type == "m.room.member" &&
-                     state.state_key == target_state_key)
+            else if (entry.event_type == "m.room.third_party_invite" && !third_party_invite_token.empty() &&
+                     entry.state_key == third_party_invite_token)
             {
-                result.target_member = load(state.event_id);
-            }
-            else if (state.event_type == "m.room.third_party_invite" && !third_party_invite_token.empty() &&
-                     state.state_key == third_party_invite_token)
-            {
-                result.third_party_invite = load(state.event_id);
+                result.third_party_invite = load(entry.event_id);
             }
         }
         return result;
+    }
+
+    // Every (room_id-scoped) row of store.state as flat state-group-style
+    // entries, so the current-state auth map (ADR-0064 phase B2 step 6) can
+    // share build_auth_event_map_from_entries with the state-before (step 5)
+    // and auth_events (step 4) maps below.
+    [[nodiscard]] auto state_entries_for_room(database::PersistentStore const& store, std::string_view room_id)
+        -> std::vector<database::PersistentStateGroupStateEntry>
+    {
+        auto entries = std::vector<database::PersistentStateGroupStateEntry>{};
+        for (auto const& state : store.state)
+        {
+            if (state.room_id == room_id)
+            {
+                entries.push_back({{}, state.event_type, state.state_key, state.event_id});
+            }
+        }
+        return entries;
+    }
+
+    // Builds the auth-event map for an inbound federated PDU from the room's
+    // currently resolved state (ADR-0064 phase B2 step 6, the soft-fail
+    // check).
+    [[nodiscard]] auto build_pdu_auth_event_map(database::PersistentStore const& store, std::string_view room_id,
+                                                std::string_view sender, std::string_view target_state_key,
+                                                std::string_view event_type,
+                                                std::string_view third_party_invite_token = {}) -> events::AuthEventMap
+    {
+        return build_auth_event_map_from_entries(store, state_entries_for_room(store, room_id), sender,
+                                                 target_state_key, event_type, third_party_invite_token);
+    }
+
+    // Resolves the events a PDU names in `auth_event_ids` to flat state
+    // entries (type/state_key/event_id), skipping any id this store has no
+    // event for — the caller (validate_auth_events_selection) treats an
+    // unresolvable id as its own failure mode before this is used to build
+    // an auth map, so silently dropping it here is safe: the map is only
+    // ever built after selection has already succeeded.
+    [[nodiscard]] auto state_entries_from_named_events(database::PersistentStore const& store,
+                                                       std::vector<std::string> const& auth_event_ids)
+        -> std::vector<database::PersistentStateGroupStateEntry>
+    {
+        auto entries = std::vector<database::PersistentStateGroupStateEntry>{};
+        entries.reserve(auth_event_ids.size());
+        for (auto const& id : auth_event_ids)
+        {
+            auto const it = std::ranges::find_if(store.events, [&](database::PersistentEvent const& evt) {
+                return evt.event_id == id;
+            });
+            if (it == store.events.end())
+            {
+                continue;
+            }
+            auto const parsed = canonicaljson::parse_lossless(it->json);
+            auto const* obj = parsed.error == canonicaljson::ParseError::none
+                                  ? std::get_if<canonicaljson::Object>(&parsed.value.storage())
+                                  : nullptr;
+            auto const* type = obj != nullptr ? string_member(*obj, "type") : nullptr;
+            if (type == nullptr)
+            {
+                continue;
+            }
+            auto const* state_key = string_member(*obj, "state_key");
+            entries.push_back({{}, *type, state_key != nullptr ? *state_key : std::string{}, id});
+        }
+        return entries;
+    }
+
+    // Result of validate_auth_events_selection (ADR-0064 phase B2, spec
+    // "Auth events selection").
+    enum class AuthEventsSelectionCheck : std::uint8_t
+    {
+        ok,
+        // An auth_event_id names no event this store has — cannot be
+        // verified yet. Per this project's B2 scope, treated the same as a
+        // missing prev_event: not a rejection, the transaction still
+        // succeeds, and a later phase is expected to fetch the gap.
+        unresolvable,
+        // A named auth_event_id resolves to an actual event, but it is not
+        // one of the spec-permitted (type, state_key) selections for this
+        // PDU, or it duplicates an earlier entry's (type, state_key), or it
+        // belongs to a different room. Any of these is a rejection.
+        disallowed,
+    };
+
+    // The (type, state_key) pairs a PDU's auth_events MAY name, per spec
+    // "Auth events selection" (server-server-api.md, ~line 1792).
+    [[nodiscard]] auto permitted_auth_event_keys(canonicaljson::Value const& pdu,
+                                                 rooms::RoomVersionPolicy const& policy, std::string_view event_type,
+                                                 std::string_view sender, std::optional<std::string> const& state_key,
+                                                 std::string_view third_party_invite_token)
+        -> std::vector<std::pair<std::string, std::string>>
+    {
+        auto permitted = std::vector<std::pair<std::string, std::string>>{};
+        // "The auth_events for the m.room.create event in a room is empty."
+        if (event_type == "m.room.create")
+        {
+            return permitted;
+        }
+        // v12 (MSC4291): the create event is implicit in the room ID and
+        // MUST NOT be listed.
+        if (!policy.create_event_is_room_id)
+        {
+            permitted.emplace_back("m.room.create", std::string{});
+        }
+        // "The current m.room.power_levels event, if any" — unconditional.
+        permitted.emplace_back("m.room.power_levels", std::string{});
+        // "The sender's current m.room.member event, if any" — unconditional.
+        permitted.emplace_back("m.room.member", std::string{sender});
+
+        if (event_type == "m.room.member" && state_key.has_value())
+        {
+            // "The target's current m.room.member event, if any."
+            permitted.emplace_back("m.room.member", *state_key);
+            auto const membership = events::extract_content_membership(pdu);
+            if (membership == "join" || membership == "invite" || membership == "knock")
+            {
+                permitted.emplace_back("m.room.join_rules", std::string{});
+            }
+            if (membership == "invite" && !third_party_invite_token.empty())
+            {
+                permitted.emplace_back("m.room.third_party_invite", std::string{third_party_invite_token});
+            }
+            if (membership == "join")
+            {
+                auto const* obj = std::get_if<canonicaljson::Object>(&pdu.storage());
+                auto const* content = obj != nullptr ? object_member_as_object(*obj, "content") : nullptr;
+                auto const* authorised =
+                    content != nullptr ? string_member(*content, "join_authorised_via_users_server") : nullptr;
+                if (authorised != nullptr && !authorised->empty())
+                {
+                    permitted.emplace_back("m.room.member", *authorised);
+                }
+            }
+        }
+        return permitted;
+    }
+
+    // Spec: server-server-api.md — "Auth events selection". Validates that
+    // every event `auth_event_ids` names is a permitted selection for this
+    // PDU: the correct (type, state_key), no duplicates, and from the same
+    // room. ADR-0064 phase B2 step 4.
+    [[nodiscard]] auto validate_auth_events_selection(
+        database::PersistentStore const& store, std::string_view room_id, canonicaljson::Value const& pdu,
+        rooms::RoomVersionPolicy const& policy, std::string_view event_type, std::string_view sender,
+        std::optional<std::string> const& state_key, std::string_view third_party_invite_token,
+        std::vector<std::string> const& auth_event_ids) -> AuthEventsSelectionCheck
+    {
+        auto const permitted =
+            permitted_auth_event_keys(pdu, policy, event_type, sender, state_key, third_party_invite_token);
+        auto seen = std::vector<std::pair<std::string, std::string>>{};
+        seen.reserve(auth_event_ids.size());
+        for (auto const& id : auth_event_ids)
+        {
+            auto const it = std::ranges::find_if(store.events, [&](database::PersistentEvent const& evt) {
+                return evt.event_id == id;
+            });
+            if (it == store.events.end())
+            {
+                return AuthEventsSelectionCheck::unresolvable;
+            }
+            if (it->room_id != room_id)
+            {
+                return AuthEventsSelectionCheck::disallowed; // auth event from another room
+            }
+            auto const parsed = canonicaljson::parse_lossless(it->json);
+            auto const* obj = parsed.error == canonicaljson::ParseError::none
+                                  ? std::get_if<canonicaljson::Object>(&parsed.value.storage())
+                                  : nullptr;
+            auto const* type = obj != nullptr ? string_member(*obj, "type") : nullptr;
+            if (type == nullptr)
+            {
+                return AuthEventsSelectionCheck::disallowed;
+            }
+            auto const* named_state_key = obj != nullptr ? string_member(*obj, "state_key") : nullptr;
+            auto const key = std::make_pair(*type, named_state_key != nullptr ? *named_state_key : std::string{});
+            if (std::ranges::find(seen, key) != seen.end())
+            {
+                return AuthEventsSelectionCheck::disallowed; // duplicate (type, state_key)
+            }
+            seen.push_back(key);
+            if (std::ranges::find(permitted, key) == permitted.end())
+            {
+                return AuthEventsSelectionCheck::disallowed; // not a permitted selection
+            }
+        }
+        return AuthEventsSelectionCheck::ok;
     }
 
     [[nodiscard]] auto response(std::uint16_t status, std::string body,
@@ -1253,88 +1448,6 @@ namespace
             }
         };
 
-        runtime.federation.state_conflict_resolver =
-            [rt](federation::PduStateConflictContext const& context) -> federation::PduIngestionResult {
-            // Store-backed event lookup for the state-res v2 auth-chain walk
-            // (auth difference / v12 conflicted state subgraph): the two state
-            // groups in `context` are flat state snapshots, not the room's full
-            // event graph, so the resolver needs this to reach ancestor events
-            // that neither snapshot lists directly. Spec: rooms/v10.md —
-            // Definitions, "Auth chain" / "Auth difference".
-            auto event_lookup = [rt](std::string_view event_id) -> std::optional<events::StateEventReference> {
-                for (auto const& evt : rt->database.persistent_store.events)
-                {
-                    if (evt.event_id != event_id)
-                    {
-                        continue;
-                    }
-                    auto const parsed = canonicaljson::parse_lossless(evt.json);
-                    if (parsed.error != canonicaljson::ParseError::none)
-                    {
-                        return std::nullopt;
-                    }
-                    auto const* obj = std::get_if<canonicaljson::Object>(&parsed.value.storage());
-                    if (obj == nullptr)
-                    {
-                        return std::nullopt;
-                    }
-                    auto const find_string = [&](std::string_view key) -> std::string const* {
-                        for (auto const& member : *obj)
-                        {
-                            if (member.key == key)
-                            {
-                                return std::get_if<std::string>(&member.value->storage());
-                            }
-                        }
-                        return nullptr;
-                    };
-                    auto const* type = find_string("type");
-                    auto const* state_key = find_string("state_key");
-                    if (type == nullptr || state_key == nullptr)
-                    {
-                        return std::nullopt; // not a state event; not a valid auth_events target
-                    }
-                    auto const* sender = find_string("sender");
-                    auto ref = events::StateEventReference{};
-                    ref.key = events::StateKey{*type, *state_key};
-                    ref.event_id = evt.event_id;
-                    ref.sender = sender != nullptr ? *sender : std::string{};
-                    ref.origin_server_ts = 0;
-                    for (auto const& member : *obj)
-                    {
-                        if (member.key == "origin_server_ts")
-                        {
-                            if (auto const* ts = std::get_if<std::int64_t>(&member.value->storage()); ts != nullptr)
-                            {
-                                ref.origin_server_ts = *ts;
-                            }
-                            break;
-                        }
-                    }
-                    ref.depth = evt.depth;
-                    ref.event_json = parsed.value;
-                    return ref;
-                }
-                return std::nullopt;
-            };
-
-            return federation::apply_state_resolution_v2(
-                context,
-                [rt, room_id = context.incoming_pdu.room_id](
-                    std::vector<events::StateEventReference> const& resolved) -> bool {
-                    for (auto const& ref : resolved)
-                    {
-                        if (!database::store_state(rt->database.persistent_store,
-                                                   {room_id, ref.key.event_type, ref.key.state_key, ref.event_id}))
-                        {
-                            return false;
-                        }
-                    }
-                    return true;
-                },
-                event_lookup);
-        };
-
         runtime.federation.membership_template_provider = [rt](federation::FederationEndpoint endpoint,
                                                                std::string_view room_id, std::string_view user_id,
                                                                std::vector<std::string> const& supported_versions)
@@ -2096,6 +2209,31 @@ auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope
         return {federation::PduIngestionStatus::rejected_invalid, "invalid PDU JSON"};
     }
 
+    // Spec: server-server-api.md — "Checks performed on receipt of a PDU",
+    // step 3 (hash). A content-hash mismatch does NOT reject the event: it
+    // is redacted per the room version's redaction algorithm and processing
+    // continues with the redacted form, which is what gets stored. event_id,
+    // sender, and every key the redaction algorithm preserves survive; only
+    // `content` (and a few other non-essential keys) are stripped.
+    auto effective_pdu = pdu_parsed.value;
+    auto stored_json = envelope.json;
+    if (!events::verify_pdu_content_hash(effective_pdu))
+    {
+        auto redaction = events::redact_event(effective_pdu, *room_policy);
+        if (!redaction.error.empty())
+        {
+            return {federation::PduIngestionStatus::rejected_invalid,
+                    "content hash mismatch and event could not be redacted: " + redaction.error};
+        }
+        effective_pdu = std::move(redaction.event);
+        auto const serialized = canonicaljson::serialize_canonical(effective_pdu);
+        if (serialized.error != canonicaljson::CanonicalJsonError::none)
+        {
+            return {federation::PduIngestionStatus::rejected_invalid, "failed to serialize redacted event"};
+        }
+        stored_json = serialized.output;
+    }
+
     // Reserve the global stream-ordering and sync-surface IDs up front under
     // the global mutex. Allocating sync_stream_id writes to the backend, so it
     // must not happen while a room stripe is also held — that would pin the
@@ -2119,7 +2257,7 @@ auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope
     auto global_guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
 
     auto const third_party_invite_token = [&]() -> std::string {
-        auto const* pdu_obj = std::get_if<canonicaljson::Object>(&pdu_parsed.value.storage());
+        auto const* pdu_obj = std::get_if<canonicaljson::Object>(&effective_pdu.storage());
         auto const* content = pdu_obj == nullptr ? nullptr : object_member_as_object(*pdu_obj, "content");
         auto const* third_party_invite =
             content == nullptr ? nullptr : object_member_as_object(*content, "third_party_invite");
@@ -2128,19 +2266,56 @@ auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope
         auto const* token = signed_obj == nullptr ? nullptr : string_member(*signed_obj, "token");
         return token == nullptr ? std::string{} : *token;
     }();
-    auto const auth_map = build_pdu_auth_event_map(runtime.database.persistent_store, room_id, envelope.sender,
-                                                   envelope.state_key.value_or(std::string{}), envelope.event_type,
-                                                   third_party_invite_token);
-    auto const auth_decision = events::authorize_event_against_auth_events(pdu_parsed.value, *room_policy, auth_map);
-    if (!auth_decision.allowed)
+
+    // ADR-0064 phase B2: three-way receipt outcome, decided in spec order
+    // (steps 4, 5, 6) and carried through to storage below. A rejection is
+    // NOT an early return — spec "Rejection" requires the event still be
+    // stored (so later events that reference it can still be authorised),
+    // just never applied to state and never a forward extremity. Soft
+    // failure (step 6) likewise stores the event and lets it take part in
+    // state resolution; only steps 4 and 5 (auth against auth_events and
+    // against the state before the event) reject.
+    enum class ReceiptOutcome : std::uint8_t
     {
-        return {federation::PduIngestionStatus::rejected_auth,
-                std::string{"event auth denied: "} + auth_decision.reason};
+        accepted,
+        rejected,
+        soft_failed,
+    };
+    auto outcome = ReceiptOutcome::accepted;
+    auto outcome_reason = std::string{};
+
+    // Step 4: "Auth events selection" (which auth_events a PDU may legally
+    // name) followed by the auth-rule algorithm against the map those named
+    // events build. An auth_event_id this store cannot resolve at all is not
+    // a decided rejection — it is the same "awaiting backfill" gap as a
+    // missing prev_event, so it takes priority over everything else below.
+    auto const selection_check = validate_auth_events_selection(
+        runtime.database.persistent_store, room_id, effective_pdu, *room_policy, envelope.event_type, envelope.sender,
+        envelope.state_key, third_party_invite_token, envelope.auth_event_ids);
+    if (selection_check == AuthEventsSelectionCheck::unresolvable)
+    {
+        return {federation::PduIngestionStatus::missing_prev_state,
+                "an auth_event this PDU names has no recorded event; awaiting backfill"};
+    }
+    if (selection_check == AuthEventsSelectionCheck::disallowed)
+    {
+        outcome = ReceiptOutcome::rejected;
+        outcome_reason = "auth_events selection is not permitted for this event";
     }
 
-    if (!events::verify_pdu_content_hash(pdu_parsed.value))
+    if (outcome == ReceiptOutcome::accepted)
     {
-        return {federation::PduIngestionStatus::rejected_invalid, "bad content hash"};
+        auto const auth_events_map = build_auth_event_map_from_entries(
+            runtime.database.persistent_store,
+            state_entries_from_named_events(runtime.database.persistent_store, envelope.auth_event_ids),
+            envelope.sender, envelope.state_key.value_or(std::string{}), envelope.event_type, third_party_invite_token);
+        auto const auth_events_decision =
+            events::authorize_event_against_auth_events(effective_pdu, *room_policy, auth_events_map);
+        if (!auth_events_decision.allowed)
+        {
+            outcome = ReceiptOutcome::rejected;
+            outcome_reason = "event auth denied against its own auth_events: " + auth_events_decision.reason;
+        }
     }
 
     // ADR-0064 phase B1: the state immediately before this PDU is the
@@ -2149,7 +2324,9 @@ auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope
     // guessing (which would reintroduce delivery-order dependence) or a gap
     // a later phase must backfill — either way this PDU is not stored, but
     // the transaction it arrived in must still succeed (see
-    // PduIngestionStatus::missing_prev_state).
+    // PduIngestionStatus::missing_prev_state). This applies regardless of
+    // `outcome` above: a rejected event's after-state is still defined as
+    // "the state before it", so that state must still be resolvable.
     auto const state_before =
         compute_state_before(runtime.database.persistent_store, room_id, *room_policy, envelope.prev_event_ids);
     if (!state_before.ok)
@@ -2158,8 +2335,45 @@ auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope
                 "no recorded state group for a prev_event; awaiting backfill"};
     }
 
+    // Step 5: auth against the state immediately before the event.
+    if (outcome == ReceiptOutcome::accepted)
+    {
+        auto const state_before_map = build_auth_event_map_from_entries(
+            runtime.database.persistent_store, state_before.state, envelope.sender,
+            envelope.state_key.value_or(std::string{}), envelope.event_type, third_party_invite_token);
+        auto const state_before_decision =
+            events::authorize_event_against_auth_events(effective_pdu, *room_policy, state_before_map);
+        if (!state_before_decision.allowed)
+        {
+            outcome = ReceiptOutcome::rejected;
+            outcome_reason = "event auth denied against state before the event: " + state_before_decision.reason;
+        }
+    }
+
+    // Step 6: auth against the room's current (resolved) state. Spec: "Soft
+    // failure" — a failure here does not reject the event.
+    if (outcome == ReceiptOutcome::accepted)
+    {
+        auto const current_state_map = build_pdu_auth_event_map(
+            runtime.database.persistent_store, room_id, envelope.sender, envelope.state_key.value_or(std::string{}),
+            envelope.event_type, third_party_invite_token);
+        auto const current_state_decision =
+            events::authorize_event_against_auth_events(effective_pdu, *room_policy, current_state_map);
+        if (!current_state_decision.allowed)
+        {
+            outcome = ReceiptOutcome::soft_failed;
+            outcome_reason = "event auth denied against current state (soft failure): " + current_state_decision.reason;
+        }
+    }
+
+    // The naive immediate current_state write (see recompute_current_state's
+    // doc comment on why this is safe: it is always reconciled against the
+    // forward-extremity resolution right below) only ever applies to an
+    // accepted event. A rejected event must never update state at all; a
+    // soft-failed one only enters current_state if resolution later admits
+    // it via recompute_current_state, never through this shortcut.
     auto state = std::optional<database::PersistentStateEvent>{};
-    if (envelope.state_key.has_value())
+    if (envelope.state_key.has_value() && outcome == ReceiptOutcome::accepted)
     {
         state = database::PersistentStateEvent{room_id, envelope.event_type, *envelope.state_key, envelope.event_id};
     }
@@ -2168,12 +2382,15 @@ auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope
     event.event_id = envelope.event_id;
     event.room_id = room_id;
     event.sender_user_id = envelope.sender;
-    event.json = envelope.json;
+    event.json = stored_json;
     event.depth = envelope.depth;
     event.stream_ordering = stream_ordering;
     event.prev_event_ids = envelope.prev_event_ids;
     event.auth_event_ids = envelope.auth_event_ids;
     event.signatures = envelope.signatures;
+    event.status = outcome == ReceiptOutcome::rejected      ? "rejected"
+                   : outcome == ReceiptOutcome::soft_failed ? "soft_failed"
+                                                            : "accepted";
 
     auto prepared =
         database::prepare_store_event_with_state(runtime.database.persistent_store, std::move(event), state);
@@ -2199,38 +2416,59 @@ auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope
 
     database::apply_store_event_with_state(runtime.database.persistent_store, *prepared);
 
-    // ADR-0064 phase B1: record this event's after-state group and update
-    // forward extremities, then recompute current_state as the resolution
+    // ADR-0064 phase B1/B2: record this event's after-state group and
+    // update forward extremities (only for an accepted event — a rejected
+    // or soft-failed one is stored and mapped to a state group but never
+    // becomes an extremity), then recompute current_state as the resolution
     // over the (now possibly changed) extremity set. The raw event is
     // already durably stored above; a failure here is logged but does not
-    // turn an accepted PDU into a rejection — the same trade-off the
-    // membership-persistence step below already makes; a later phase can
-    // repair state-group bookkeeping without re-fetching the event.
+    // change `outcome` — the same trade-off the membership-persistence step
+    // below already makes; a later phase can repair state-group bookkeeping
+    // without re-fetching the event.
+    //
+    // Spec "Rejection": a rejected event's state is "calculated as normal,
+    // except not updating with the rejected event" — so its after-state is
+    // state_before, unchanged, even if it is itself a state event. Spec
+    // "Soft failure": a soft-failed event "participate[s] in state
+    // resolution as normal", so its after-state is the normally-computed
+    // compute_state_after result, same as an accepted event.
     {
         auto const state_after =
-            compute_state_after(state_before.state, envelope.event_id, envelope.event_type, envelope.state_key);
-        auto const state_group = record_event_state(runtime.database.persistent_store, room_id, envelope.event_id,
-                                                    envelope.prev_event_ids, state_after);
+            outcome == ReceiptOutcome::rejected
+                ? state_before.state
+                : compute_state_after(state_before.state, envelope.event_id, envelope.event_type, envelope.state_key);
+        auto const state_group =
+            record_event_state(runtime.database.persistent_store, room_id, envelope.event_id, envelope.prev_event_ids,
+                               state_after, outcome == ReceiptOutcome::accepted);
         if (!state_group.has_value())
         {
-            LOG_WARNING("State-group bookkeeping failed after PDU was accepted; event_id=" + envelope.event_id +
+            LOG_WARNING("State-group bookkeeping failed after PDU was processed; event_id=" + envelope.event_id +
                         " room_id=" + room_id);
         }
         else if (!recompute_current_state(runtime.database.persistent_store, room_id, *room_policy))
         {
-            LOG_WARNING("Current-state recomputation failed after PDU was accepted; event_id=" + envelope.event_id +
+            LOG_WARNING("Current-state recomputation failed after PDU was processed; event_id=" + envelope.event_id +
                         " room_id=" + room_id);
         }
     }
 
     auto result = federation::PduIngestionResult{};
-    result.status = federation::PduIngestionStatus::accepted;
+    result.status = outcome == ReceiptOutcome::rejected      ? federation::PduIngestionStatus::rejected_auth
+                    : outcome == ReceiptOutcome::soft_failed ? federation::PduIngestionStatus::soft_failed
+                                                             : federation::PduIngestionStatus::accepted;
+    result.reason = outcome_reason;
     result.accepted_stream_ordering = stream_ordering;
     result.accepted_sync_stream_id = sync_stream_id;
 
-    if (envelope.event_type == "m.room.member" && envelope.state_key.has_value())
+    // Membership bookkeeping (the runtime's live-member cache and
+    // store.memberships) mirrors current_state, so it only runs for an
+    // event that was actually accepted: a soft-failed or rejected
+    // membership change must not flip the live cache directly. A
+    // soft-failed one only takes effect through recompute_current_state
+    // above, if resolution later admits it.
+    if (outcome == ReceiptOutcome::accepted && envelope.event_type == "m.room.member" && envelope.state_key.has_value())
     {
-        auto const* mem_obj = std::get_if<canonicaljson::Object>(&pdu_parsed.value.storage());
+        auto const* mem_obj = std::get_if<canonicaljson::Object>(&effective_pdu.storage());
         auto const* membership_str = mem_obj != nullptr ? content_membership(*mem_obj) : nullptr;
         if (membership_str != nullptr)
         {
