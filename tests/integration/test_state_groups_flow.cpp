@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -154,6 +155,73 @@ struct SeededRoom final
     return room;
 }
 
+// RAII wrappers for the raw SQLite handles this file drives directly (no
+// owning raw pointers, per coding-rules.md), mirroring the
+// SqliteConnection/SqliteStatement pattern in src/database/sqlite_store.cpp.
+struct SqliteConnectionDeleter final
+{
+    auto operator()(sqlite3* connection) const noexcept -> void
+    {
+        sqlite3_close(connection);
+    }
+};
+
+using SqliteConnectionHandle = std::unique_ptr<sqlite3, SqliteConnectionDeleter>;
+
+struct SqliteStatementDeleter final
+{
+    auto operator()(sqlite3_stmt* statement) const noexcept -> void
+    {
+        sqlite3_finalize(statement);
+    }
+};
+
+using SqliteStatementHandle = std::unique_ptr<sqlite3_stmt, SqliteStatementDeleter>;
+
+[[nodiscard]] auto open_sqlite_connection_raii(std::string const& path) -> SqliteConnectionHandle
+{
+    auto* raw_connection = static_cast<sqlite3*>(nullptr);
+    auto const rc = sqlite3_open(path.c_str(), &raw_connection);
+    auto connection = SqliteConnectionHandle{raw_connection};
+    if (rc != SQLITE_OK)
+    {
+        return nullptr;
+    }
+    return connection;
+}
+
+// Runs `EXPLAIN QUERY PLAN SELECT 1 FROM event_edges WHERE prev_event_id =
+// ?1` and concatenates every returned row's "detail" column (the plan text
+// SQLite reports for each step, e.g. "SEARCH event_edges USING INDEX ..." or
+// "SCAN event_edges") -- the migration-015 index scenario asserts on this
+// text to prove the seeding query (and, later, phase B's children-of-event
+// lookup) can use an index rather than a full table scan.
+[[nodiscard]] auto event_edges_prev_event_id_query_plan(sqlite3& connection) -> std::string
+{
+    auto const sql = std::string{"EXPLAIN QUERY PLAN SELECT 1 FROM event_edges WHERE prev_event_id = ?1"};
+    auto* raw_statement = static_cast<sqlite3_stmt*>(nullptr);
+    REQUIRE(sqlite3_prepare_v2(&connection, sql.c_str(), static_cast<int>(sql.size()), &raw_statement, nullptr) ==
+            SQLITE_OK);
+    auto statement = SqliteStatementHandle{raw_statement};
+    REQUIRE(statement != nullptr);
+    REQUIRE(sqlite3_bind_text(statement.get(), 1, "$example-event", -1, SQLITE_TRANSIENT) == SQLITE_OK);
+
+    auto detail = std::string{};
+    while (sqlite3_step(statement.get()) == SQLITE_ROW)
+    {
+        auto const* text = reinterpret_cast<char const*>(sqlite3_column_text(statement.get(), 3));
+        if (text != nullptr)
+        {
+            if (!detail.empty())
+            {
+                detail += " | ";
+            }
+            detail += text;
+        }
+    }
+    return detail;
+}
+
 } // namespace
 
 SCENARIO("Migration 015 seeds a snapshot state group for a room that already existed at v14",
@@ -162,12 +230,11 @@ SCENARIO("Migration 015 seeds a snapshot state group for a room that already exi
     GIVEN("a SQLite database bootstrapped to schema v14 with one pre-existing room")
     {
         auto const path = unique_sqlite_path();
-        auto* raw_connection = static_cast<sqlite3*>(nullptr);
-        REQUIRE(sqlite3_open(path.string().c_str(), &raw_connection) == SQLITE_OK);
-        REQUIRE(raw_connection != nullptr);
-        REQUIRE(bootstrap_sqlite_to_version(*raw_connection, 14U));
-        auto const room = seed_pre_v15_room(*raw_connection, "a");
-        sqlite3_close(raw_connection);
+        auto connection = open_sqlite_connection_raii(path.string());
+        REQUIRE(connection != nullptr);
+        REQUIRE(bootstrap_sqlite_to_version(*connection, 14U));
+        auto const room = seed_pre_v15_room(*connection, "a");
+        connection.reset();
 
         WHEN("the persistent store is opened, applying migration 015 for real")
         {
@@ -246,6 +313,36 @@ SCENARIO("Migration 015 seeds a snapshot state group for a room that already exi
                 REQUIRE(second_open.store.state_groups.size() == state_group_count_after_first_open);
                 REQUIRE(second_open.store.state_group_state.size() == state_group_state_count_after_first_open);
                 REQUIRE(second_open.store.forward_extremities.size() == forward_extremity_count_after_first_open);
+            }
+        }
+
+        std::filesystem::remove(path);
+    }
+}
+
+SCENARIO("event_edges has a usable index for prev_event_id lookups after migration 015",
+         "[state_groups][database][integration][migration]")
+{
+    GIVEN("a SQLite database migrated to the current schema version")
+    {
+        auto const path = unique_sqlite_path();
+        auto opened = open_sqlite_persistent_store(path.string());
+        REQUIRE(opened.ok);
+
+        WHEN("the query planner is asked how it would look up an event's children (migration 015's own seeding "
+             "query, and phase B's future ingest-time lookup, both need this)")
+        {
+            auto connection = open_sqlite_connection_raii(path.string());
+            REQUIRE(connection != nullptr);
+            auto const plan = event_edges_prev_event_id_query_plan(*connection);
+
+            THEN("it uses an index rather than a full table scan")
+            {
+                INFO("query plan: " << plan);
+                REQUIRE((plan.find("USING INDEX") != std::string::npos ||
+                         plan.find("USING COVERING INDEX") != std::string::npos));
+                REQUIRE(plan.find("SCAN event_edges") == std::string::npos);
+                REQUIRE(plan.find("SCAN g") == std::string::npos);
             }
         }
 
