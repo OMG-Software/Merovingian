@@ -1468,3 +1468,102 @@ SCENARIO("State resolution v2: a join cannot evade a concurrently tightened join
         }
     }
 }
+
+// Spec: Matrix room version 12 (MSC4291)
+// Endpoint / Section: Room version 12 — Rooms, rule 2
+// URL: ../../docs/matrix-v1.19-spec/rooms/v12.md
+//
+// Rule 2: "If the event's room_id is not an event ID for an accepted (not
+// rejected) m.room.create event, with the sigil `!` instead of `$`, reject."
+// The room ID IS the create event's own reference hash under the `!` sigil
+// instead of `$`. State resolution v2.1's iterative auth checks need the
+// create event's content to authorise anything (authorization.cpp Step 2:
+// "room has no create event" denies every candidate otherwise) — since a
+// v12 event's own `auth_events` never names create (rule 3.2), resolve_state_v2
+// must derive it from room_id per rule 2, not rely on a submitted state
+// group happening to carry it (ADR-0064 phase B2 follow-up).
+SCENARIO("Room v12: state resolution derives the create event from room_id, not from what a submitted state "
+         "group happens to carry",
+         "[conformance][state-res][room-v12]")
+{
+    GIVEN("a fork whose two state groups never list m.room.create, only reachable via room_id derivation")
+    {
+        auto const* policy = merovingian::rooms::find_room_version_policy("12");
+        REQUIRE(policy != nullptr);
+        REQUIRE(policy->state_resolution == merovingian::rooms::StateResolutionAlgorithm::v2_1);
+
+        // rooms/v12.md rule 2: room_id "!createconf:example.org" implies
+        // the create event id "$createconf:example.org".
+        auto const create_json =
+            std::string{"{\"type\":\"m.room.create\",\"state_key\":\"\",\"sender\":\"@alice:example.org\","
+                        "\"event_id\":\"$createconf:example.org\",\"origin_server_ts\":1,\"content\":{\"creator\":"
+                        "\"@alice:example.org\",\"room_version\":\"12\"}}"};
+        auto const create =
+            make_event_ref("m.room.create", "", "$createconf:example.org", "@alice:example.org", 1, 0, create_json);
+
+        auto const power_levels = make_power_levels_event("@alice:example.org", "$power_levels:example.org", 2, 1);
+        auto const topic_a_json =
+            std::string{"{\"type\":\"m.room.topic\",\"state_key\":\"\",\"sender\":\"@alice:example.org\","
+                        "\"event_id\":\"$topic_a:example.org\",\"origin_server_ts\":100,\"content\":{\"topic\":"
+                        "\"a\"}}"};
+        auto const topic_a =
+            make_event_ref("m.room.topic", "", "$topic_a:example.org", "@alice:example.org", 100, 2, topic_a_json);
+        auto const topic_b_json =
+            std::string{"{\"type\":\"m.room.topic\",\"state_key\":\"\",\"sender\":\"@alice:example.org\","
+                        "\"event_id\":\"$topic_b:example.org\",\"origin_server_ts\":200,\"content\":{\"topic\":"
+                        "\"b\"}}"};
+        auto const topic_b =
+            make_event_ref("m.room.topic", "", "$topic_b:example.org", "@alice:example.org", 200, 2, topic_b_json);
+
+        // Neither state group lists the create event at all.
+        auto group_a = merovingian::events::StateGroup{};
+        group_a.group_id = "branch-a";
+        group_a.state = {power_levels, topic_a};
+
+        auto group_b = merovingian::events::StateGroup{};
+        group_b.group_id = "branch-b";
+        group_b.state = {power_levels, topic_b};
+
+        auto request = merovingian::events::StateResolutionRequest{};
+        request.room_version = "12";
+        request.state_groups = {group_a, group_b};
+        // The create event is reachable only through event_lookup — never a
+        // literal entry in either submitted state group.
+        request.event_lookup = [create](std::string_view event_id) -> std::optional<StateEventReference> {
+            if (event_id == create.event_id)
+            {
+                return create;
+            }
+            return std::nullopt;
+        };
+
+        WHEN("resolve_state_v2 is called with the room_id that implies the create event")
+        {
+            request.room_id = "!createconf:example.org";
+            auto const result = merovingian::events::resolve_state_v2(request, *policy);
+
+            THEN("resolution succeeds and a topic candidate is authorised")
+            {
+                // Spec MUST (rule 2): the create event is derivable from
+                // room_id alone, so resolution does not depend on any
+                // submitted state group listing it.
+                REQUIRE(result.resolved);
+                REQUIRE(result_event_for(result, "m.room.topic", "") != nullptr);
+            }
+        }
+
+        WHEN("resolve_state_v2 is called with a room_id whose implied create event does not exist")
+        {
+            request.room_id = "!doesnotexist:example.org";
+            auto const result = merovingian::events::resolve_state_v2(request, *policy);
+
+            THEN("resolution fails closed rather than proceeding without a create event")
+            {
+                // Spec (Required design / ADR-0063): a create event needed
+                // to authorise anything that cannot be fetched must not let
+                // resolution proceed on a partial view of the room.
+                REQUIRE_FALSE(result.resolved);
+            }
+        }
+    }
+}

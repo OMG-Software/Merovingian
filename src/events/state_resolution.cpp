@@ -1346,16 +1346,49 @@ auto resolve_state_v2(StateResolutionRequest const& request, rooms::RoomVersionP
         // `auth_events.create` empty and deny every event with "room has no
         // create event" (authorization.cpp Step 2), regardless of the
         // candidate's actual validity — state resolution could never
-        // recompute any v12 room's state at all. Modification 1's "start
-        // from an empty map, not the unconflicted map" targets state that
-        // can genuinely be in dispute (membership, power levels, ...); a
-        // room's create event cannot be, since there is exactly one per
-        // room and every state group in `groups` already agrees on it (that
-        // is precisely why it is in `unconflicted`, not `conflicted`) — so
-        // seeding just this one invariant entry does not reintroduce
-        // anything the empty-start rule exists to prevent.
-        if (auto const it = unconflicted.find(StateKey{"m.room.create", ""}); it != unconflicted.end())
+        // recompute any v12 room's state at all.
+        //
+        // Spec (rooms/v12.md rule 2): "If the event's room_id is not an
+        // event ID for an accepted... m.room.create event, with the sigil
+        // `!` instead of `$`, reject" — the room ID literally IS the create
+        // event's own reference hash under a different sigil. That is the
+        // primary source of truth used below: swap the sigil, fetch that
+        // exact event id through the same fail-closed AuthChainEventSource
+        // every other auth-chain lookup in this function uses, and seed
+        // `resolved` with it. If `room_id` is present but the derived event
+        // cannot be fetched, this fails closed rather than falling back to
+        // `unconflicted` — the whole point of deriving from room_id is that
+        // a submitted state group's agreement is exactly what a hostile or
+        // partial state set (a later phase's remote-supplied `/state_ids`
+        // claim) can omit or forge, so tolerating its absence here would
+        // silently reintroduce the failure this fix exists to close. The
+        // `unconflicted` fallback below is kept ONLY for a request with no
+        // `room_id` at all — see the comment on it.
+        if (request.room_id.size() >= 2U && request.room_id.front() == '!')
         {
+            auto const create_event_id = "$" + request.room_id.substr(1U);
+            auto create_ref = materialize_ref(create_event_id, source);
+            if (!create_ref.has_value() || source.missing() || create_ref->key.event_type != "m.room.create" ||
+                !create_ref->key.state_key.empty())
+            {
+                log_diagnostic("resolve_state_v2.rejected",
+                               {
+                                   {"room_version", request.room_version,                                       false},
+                                   {"reason",       "room v12 create event (derived from room_id) unreachable", false}
+                });
+                return {false, {}, "state-res v2: room v12 create event (derived from room_id) could not be fetched"};
+            }
+            resolved[create_ref->key] = *create_ref;
+        }
+        else if (auto const it = unconflicted.find(StateKey{"m.room.create", ""}); it != unconflicted.end())
+        {
+            // Fallback ONLY when `room_id` is absent. Every real caller
+            // (compute_state_before, recompute_current_state) always
+            // supplies it, so this path is unreachable from untrusted
+            // federation input; it exists so a caller using synthetic
+            // event ids that do not follow the MSC4291 room_id convention
+            // (this module's own unit tests) does not need every fixture
+            // migrated just to keep resolving.
             resolved[it->first] = it->second;
         }
     }

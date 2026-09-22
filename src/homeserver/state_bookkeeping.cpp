@@ -138,7 +138,6 @@ auto compute_state_before(database::PersistentStore const& store, std::string_vi
                           rooms::RoomVersionPolicy const& policy, std::vector<std::string> const& prev_event_ids)
     -> StateBeforeResult
 {
-    std::ignore = room_id;
     if (prev_event_ids.empty())
     {
         return {true, {}};
@@ -186,6 +185,7 @@ auto compute_state_before(database::PersistentStore const& store, std::string_vi
     request.room_version = std::string{policy.id};
     request.state_groups = std::move(groups);
     request.event_lookup = lookup;
+    request.room_id = std::string{room_id};
 
     auto const result = events::resolve_state_v2(request, policy);
     if (!result.resolved)
@@ -311,6 +311,7 @@ auto recompute_current_state(database::PersistentStore& store, std::string_view 
         request.room_version = std::string{policy.id};
         request.state_groups = std::move(groups);
         request.event_lookup = lookup;
+        request.room_id = std::string{room_id};
 
         auto const result = events::resolve_state_v2(request, policy);
         if (!result.resolved)

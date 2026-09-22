@@ -69,6 +69,24 @@ struct StateResolutionRequest final
     std::string room_version{};
     std::vector<StateGroup> state_groups{};
     EventLookupFn event_lookup{};
+    // Required for room v12 (MSC4291, StateResolutionAlgorithm::v2_1)
+    // resolutions: the m.room.create event is implicit in the room ID
+    // (rooms/v12.md rule 2 — "!" + the create event's own reference hash),
+    // and resolve_state_v2 derives the create event's id from this field
+    // and fetches it through `event_lookup` (or a submitted state group)
+    // to seed the iterative auth checks' otherwise-empty starting map —
+    // see resolve_state_v2's implementation comment. Left empty for a
+    // non-v12 resolution, which does not need it. A v12 resolution whose
+    // derived create event cannot be fetched fails closed (ADR-0063)
+    // rather than falling back to the state groups' own (spoofable)
+    // unconflicted agreement — but a v12 resolution given no `room_id` at
+    // all still falls back to that unconflicted agreement, for callers
+    // (this module's own unit tests) using synthetic event ids that do not
+    // follow the MSC4291 room_id convention. Every real production caller
+    // (compute_state_before, recompute_current_state) always supplies
+    // `room_id`, so that fallback is never reachable from untrusted
+    // federation input.
+    std::string room_id{};
 };
 
 struct StateResolutionResult final

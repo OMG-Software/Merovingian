@@ -838,3 +838,120 @@ SCENARIO("Reverse topological power ordering fails closed when a candidate's aut
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// ADR-0064 phase B2 follow-up: rooms/v12.md rule 2 — "If the event's room_id
+// is not an event ID for an accepted... m.room.create event, with the sigil
+// `!` instead of `$`, reject" — the room ID literally IS the create event's
+// reference hash under the `!` sigil instead of `$`. resolve_state_v2 derives
+// the create event id from StateResolutionRequest::room_id this way and
+// fetches it through the same fail-closed AuthChainEventSource as every other
+// auth-chain lookup, rather than requiring a submitted state group to
+// happen to carry it (see docs/event-engine.md, "0.12.13 fix: the
+// create-event deadlock").
+// ---------------------------------------------------------------------------
+SCENARIO("Room v12: a fork resolves when the create event is reachable only by room_id, absent from every "
+         "submitted state group",
+         "[state_res_v2][v12][room-id-create]")
+{
+    GIVEN("a create event known only to event_lookup — never listed in either fork's own state — and a room_id "
+          "that derives its id")
+    {
+        auto const* v2_1_policy = merovingian::rooms::find_room_version_policy("12");
+        REQUIRE(v2_1_policy != nullptr);
+        REQUIRE(v2_1_policy->state_resolution == merovingian::rooms::StateResolutionAlgorithm::v2_1);
+
+        auto dag = EventDag{};
+        // room_id "!roomcreate:example.org" derives create event id
+        // "$roomcreate:example.org" (rooms/v12.md rule 2's sigil swap).
+        auto const create = dag.add(make_ref("m.room.create", "", "$roomcreate:example.org", "@alice:example.org", 1,
+                                             {}, R"({"creator":"@alice:example.org","room_version":"12"})"));
+        auto const pl0 = dag.add(make_ref("m.room.power_levels", "", "$pl0", "@alice:example.org", 10,
+                                          {
+        },
+                                          pl_content({{"@alice:example.org", 100}}, 0)));
+        auto const alice_join = dag.add(make_ref("m.room.member", "@alice:example.org", "$alice_join",
+                                                 "@alice:example.org", 30, {}, R"({"membership":"join"})"));
+        auto const topic_a =
+            dag.add(make_ref("m.room.topic", "", "$topic_a", "@alice:example.org", 100, {}, R"({"topic":"a"})"));
+        auto const topic_b =
+            dag.add(make_ref("m.room.topic", "", "$topic_b", "@alice:example.org", 200, {}, R"({"topic":"b"})"));
+        std::ignore = create; // reachable only via dag.lookup(), never added to a StateGroup below
+
+        // Neither fork's own state lists the create event at all — only
+        // pl0/alice_join/topic, exactly the "absent from every submitted
+        // state group" case rule 2's derivation exists for.
+        auto group_a = StateGroup{
+            "branch-a", {pl0, alice_join, topic_a}
+        };
+        auto group_b = StateGroup{
+            "branch-b", {pl0, alice_join, topic_b}
+        };
+
+        auto request = StateResolutionRequest{};
+        request.room_version = "12";
+        request.state_groups = {group_a, group_b};
+        request.event_lookup = dag.lookup();
+        request.room_id = "!roomcreate:example.org";
+
+        WHEN("resolved under v12 (v2.1)")
+        {
+            auto const result = merovingian::events::resolve_state_v2(request, *v2_1_policy);
+
+            THEN("resolution succeeds — the create event was found via room_id, not the state groups")
+            {
+                REQUIRE(result.resolved);
+            }
+
+            THEN("a topic candidate is authorised, proving the iterative auth checks actually ran (they need "
+                 "auth_events.create to get past Step 2 of the auth-rule algorithm)")
+            {
+                REQUIRE(result_event_for(result, "m.room.topic", "") != nullptr);
+            }
+        }
+    }
+}
+
+SCENARIO("Room v12: resolution fails closed when the room_id-derived create event cannot be fetched at all",
+         "[state_res_v2][v12][room-id-create][fail-closed]")
+{
+    GIVEN("a room_id whose implied create event id is unknown to both the state groups and event_lookup")
+    {
+        auto const* v2_1_policy = merovingian::rooms::find_room_version_policy("12");
+        REQUIRE(v2_1_policy != nullptr);
+
+        auto dag = EventDag{};
+        // Deliberately do NOT add "$nosuchcreate:example.org" to the dag.
+        auto const pl0 = dag.add(make_ref("m.room.power_levels", "", "$pl0", "@alice:example.org", 10,
+                                          {
+        },
+                                          pl_content({{"@alice:example.org", 100}}, 0)));
+        auto const topic_a =
+            dag.add(make_ref("m.room.topic", "", "$topic_a", "@alice:example.org", 100, {}, R"({"topic":"a"})"));
+        auto const topic_b =
+            dag.add(make_ref("m.room.topic", "", "$topic_b", "@alice:example.org", 200, {}, R"({"topic":"b"})"));
+
+        auto group_a = StateGroup{
+            "branch-a", {pl0, topic_a}
+        };
+        auto group_b = StateGroup{
+            "branch-b", {pl0, topic_b}
+        };
+
+        auto request = StateResolutionRequest{};
+        request.room_version = "12";
+        request.state_groups = {group_a, group_b};
+        request.event_lookup = dag.lookup();
+        request.room_id = "!nosuchcreate:example.org";
+
+        WHEN("resolved under v12 (v2.1)")
+        {
+            auto const result = merovingian::events::resolve_state_v2(request, *v2_1_policy);
+
+            THEN("resolution fails closed (ADR-0063) rather than proceeding without a create event")
+            {
+                REQUIRE_FALSE(result.resolved);
+            }
+        }
+    }
+}
