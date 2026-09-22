@@ -448,6 +448,66 @@ auto downgrade_initial_schema_migration() -> MigrationStep
     return {14U, "user_deactivation", std::move(statements), MigrationDirection::upgrade};
 }
 
+// v15: Phase A of spec-conformant PDU ingestion with delta state groups
+// (ADR-0064, docs/adr/0064-spec-conformant-pdu-ingestion-with-delta-state-
+// groups.md). Adds `events.status` ('accepted'/'soft_failed'/'rejected'/
+// 'outlier', existing rows default to 'accepted'); extends the pre-existing
+// but vestigial `state_groups` table (created at v1, never populated by any
+// code path before this) with `parent_state_group_id` and `delta_depth` so
+// it can anchor a delta chain; and adds three brand-new tables:
+// `state_group_state` (a group's own delta/snapshot rows),
+// `event_state_groups` (which group holds the state after a given event),
+// and `forward_extremities` (a room's current DAG leaves). The base
+// `state_groups`/`events` tables are created at v1; this step ALTERs the
+// new columns onto them exactly like v14 ALTERs `users`, so those migrations
+// stay historically intact. Every existing room is seeded with one snapshot
+// state group (deterministic id `'seed:' || room_id`) built from its
+// `current_state`, attached to the room's current forward extremities
+// (event_edges' childless events); older events get no state group and are
+// treated as outliers by a later phase. This step is data plumbing only —
+// it does not change how PDUs are ingested or what clients see.
+[[nodiscard]] auto upgrade_event_graph_state_migration() -> MigrationStep
+{
+    auto statements = std::vector<PreparedStatement>{};
+    statements.push_back(PreparedStatement{
+        "events_add_status_column", "ALTER TABLE events ADD COLUMN status TEXT NOT NULL DEFAULT 'accepted'", {}});
+    statements.push_back(PreparedStatement{"state_groups_add_parent_column",
+                                           "ALTER TABLE state_groups ADD COLUMN parent_state_group_id TEXT NOT NULL "
+                                           "DEFAULT ''",
+                                           {}});
+    statements.push_back(PreparedStatement{"state_groups_add_delta_depth_column",
+                                           "ALTER TABLE state_groups ADD COLUMN delta_depth TEXT NOT NULL DEFAULT '0'",
+                                           {}});
+    statements.push_back(make_create_table_statement(schema_table_definition("state_group_state").value()).value());
+    statements.push_back(make_create_table_statement(schema_table_definition("event_state_groups").value()).value());
+    statements.push_back(make_create_table_statement(schema_table_definition("forward_extremities").value()).value());
+    statements.push_back(PreparedStatement{
+        "seed_state_group_snapshots",
+        "INSERT INTO state_groups (state_group_id, room_id, parent_state_group_id, delta_depth) SELECT 'seed:' || "
+        "r.room_id, r.room_id, '', '0' FROM rooms r WHERE NOT EXISTS (SELECT 1 FROM state_groups g WHERE "
+        "g.state_group_id = 'seed:' || r.room_id)",
+        {}});
+    statements.push_back(PreparedStatement{
+        "seed_state_group_state",
+        "INSERT INTO state_group_state (state_group_id, event_type, state_key, event_id) SELECT 'seed:' || "
+        "c.room_id, c.event_type, c.state_key, c.event_id FROM current_state c WHERE NOT EXISTS (SELECT 1 FROM "
+        "state_group_state s WHERE s.state_group_id = 'seed:' || c.room_id AND s.event_type = c.event_type AND "
+        "s.state_key = c.state_key)",
+        {}});
+    statements.push_back(PreparedStatement{
+        "seed_forward_extremities",
+        "INSERT INTO forward_extremities (room_id, event_id) SELECT e.room_id, e.event_id FROM events e WHERE NOT "
+        "EXISTS (SELECT 1 FROM event_edges g WHERE g.prev_event_id = e.event_id) AND NOT EXISTS (SELECT 1 FROM "
+        "forward_extremities f WHERE f.room_id = e.room_id AND f.event_id = e.event_id)",
+        {}});
+    statements.push_back(PreparedStatement{
+        "seed_event_state_groups",
+        "INSERT INTO event_state_groups (event_id, state_group_id) SELECT f.event_id, 'seed:' || f.room_id FROM "
+        "forward_extremities f WHERE NOT EXISTS (SELECT 1 FROM event_state_groups m WHERE m.event_id = f.event_id)",
+        {}});
+    return {15U, "event_graph_state", std::move(statements), MigrationDirection::upgrade};
+}
+
 auto upgrade_migration_catalog() -> std::vector<MigrationStep>
 {
     return {initial_schema_migration(),
@@ -463,7 +523,25 @@ auto upgrade_migration_catalog() -> std::vector<MigrationStep>
             upgrade_pushers_data_extra_migration(),
             upgrade_login_tokens_migration(),
             upgrade_appservice_txn_cursor_migration(),
-            upgrade_user_deactivation_migration()};
+            upgrade_user_deactivation_migration(),
+            upgrade_event_graph_state_migration()};
+}
+
+// v15 -> v14: drop the three v15 tables and the columns ALTERed onto
+// `events`/`state_groups`. The seeded rows live only in the dropped tables,
+// so no separate data-undo step is needed.
+[[nodiscard]] auto downgrade_event_graph_state_migration() -> MigrationStep
+{
+    auto statements = std::vector<PreparedStatement>{};
+    statements.push_back(make_drop_table_statement("forward_extremities").value());
+    statements.push_back(make_drop_table_statement("event_state_groups").value());
+    statements.push_back(make_drop_table_statement("state_group_state").value());
+    statements.push_back(
+        PreparedStatement{"drop_delta_depth_column", "ALTER TABLE state_groups DROP COLUMN delta_depth", {}});
+    statements.push_back(PreparedStatement{
+        "drop_parent_state_group_id_column", "ALTER TABLE state_groups DROP COLUMN parent_state_group_id", {}});
+    statements.push_back(PreparedStatement{"drop_status_column", "ALTER TABLE events DROP COLUMN status", {}});
+    return {14U, "drop_event_graph_state", std::move(statements), MigrationDirection::downgrade};
 }
 
 [[nodiscard]] auto downgrade_backfill_state_transitions_migration() -> MigrationStep
@@ -568,14 +646,14 @@ auto upgrade_migration_catalog() -> std::vector<MigrationStep>
 [[nodiscard]] auto downgrade_user_deactivation_migration() -> MigrationStep
 {
     auto statements = std::vector<PreparedStatement>{};
-    statements.push_back(
-        PreparedStatement{"drop_deactivated_column", "ALTER TABLE users DROP COLUMN deactivated", {}});
+    statements.push_back(PreparedStatement{"drop_deactivated_column", "ALTER TABLE users DROP COLUMN deactivated", {}});
     return {13U, "drop_user_deactivation", std::move(statements), MigrationDirection::downgrade};
 }
 
 auto downgrade_migration_catalog() -> std::vector<MigrationStep>
 {
-    return {downgrade_user_deactivation_migration(),
+    return {downgrade_event_graph_state_migration(),
+            downgrade_user_deactivation_migration(),
             downgrade_appservice_txn_cursor_migration(),
             downgrade_login_tokens_migration(),
             downgrade_pushers_data_extra_migration(),

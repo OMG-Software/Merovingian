@@ -62,4 +62,16 @@ inline constexpr std::size_t max_mainline_auth_chain_depth = 10'000U;
 // Definitions ("Conflicted state subgraph").
 inline constexpr std::size_t max_auth_chain_walk_events = 20'000U;
 
+// ---- Delta state group limits (ADR-0064) ----
+
+// Maximum number of parent hops a state group's delta chain may have before a
+// new group must be written as a full snapshot instead of a further delta.
+// Bounds the cost of database::read_state_group_full_state, which walks the
+// chain back to its snapshot and applies every delta on the way; without a
+// cap a room with a very long, unbroken run of single-key state changes
+// (e.g. sustained membership churn) would make every state read walk an
+// ever-growing chain. 100 keeps that walk cheap while still amortising the
+// snapshot's storage cost across many deltas for ordinary rooms.
+inline constexpr std::size_t max_state_group_delta_depth = 100U;
+
 } // namespace merovingian::events

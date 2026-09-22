@@ -7,6 +7,7 @@
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/core/secret_buffer.hpp"
 #include "merovingian/crypto/constant_time.hpp"
+#include "merovingian/events/limits.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 
@@ -1610,13 +1611,14 @@ auto rebuild_state_transition_index(PersistentStore& store) -> void
         return false;
     }
     auto statements = std::vector<PreparedStatement>{
-        record_statement("insert_event", "INSERT INTO events VALUES ($1, $2, $3, $4, $5, $6)",
+        record_statement("insert_event", "INSERT INTO events VALUES ($1, $2, $3, $4, $5, $6, $7)",
                          {{event.event_id, false},
-                                                                                                {event.room_id, false},
-                                                                                                {event.sender_user_id, false},
-                                                                                                {event.json, true},
-                                                                                                {std::to_string(event.depth), false},
-                                                                                                {std::to_string(event.stream_ordering), false}}
+                                                                                                    {event.room_id, false},
+                                                                                                    {event.sender_user_id, false},
+                                                                                                    {event.json, true},
+                                                                                                    {std::to_string(event.depth), false},
+                                                                                                    {std::to_string(event.stream_ordering), false},
+                                                                                                    {event.status, false}}
                           )
     };
     append_event_graph_statements(statements, event);
@@ -1721,14 +1723,16 @@ auto rebuild_state_transition_index(PersistentStore& store) -> void
     auto update = PreparedStateUpdate{};
     update.event = std::move(event);
     update.state = std::move(state);
-    update.statements.push_back(record_statement("insert_event", "INSERT INTO events VALUES ($1, $2, $3, $4, $5, $6)",
+    update.statements.push_back(record_statement("insert_event",
+                                                 "INSERT INTO events VALUES ($1, $2, $3, $4, $5, $6, $7)",
                                                  {
                                                      {update.event.event_id,                        false},
                                                      {update.event.room_id,                         false},
                                                      {update.event.sender_user_id,                  false},
                                                      {update.event.json,                            true },
                                                      {std::to_string(update.event.depth),           false},
-                                                     {std::to_string(update.event.stream_ordering), false}
+                                                     {std::to_string(update.event.stream_ordering), false},
+                                                     {update.event.status,                          false}
     }));
     append_event_graph_statements(update.statements, update.event);
 
@@ -1850,6 +1854,326 @@ auto apply_store_event_with_state(PersistentStore& store, PreparedStateUpdate co
     }
     apply_store_event_with_state(store, *prepared);
     return true;
+}
+
+namespace
+{
+
+    // Composite key for (event_type, state_key), used to compare and merge
+    // state group rows. Same NUL-separator convention as
+    // state_transition_index_key above -- Matrix event type/state key never
+    // contain embedded NUL.
+    [[nodiscard]] auto state_group_entry_key(std::string_view event_type, std::string_view state_key) -> std::string
+    {
+        auto key = std::string{};
+        key.reserve(event_type.size() + state_key.size() + 1U);
+        key.append(event_type);
+        key.push_back('\0');
+        key.append(state_key);
+        return key;
+    }
+
+    [[nodiscard]] auto to_state_group_map(std::vector<PersistentStateGroupStateEntry> const& entries)
+        -> std::unordered_map<std::string, std::string>
+    {
+        auto map = std::unordered_map<std::string, std::string>{};
+        map.reserve(entries.size());
+        for (auto const& entry : entries)
+        {
+            map.emplace(state_group_entry_key(entry.event_type, entry.state_key), entry.event_id);
+        }
+        return map;
+    }
+
+    [[nodiscard]] auto find_persistent_state_group(PersistentStore const& store, std::string_view state_group_id)
+        -> PersistentStateGroup const*
+    {
+        auto const iterator =
+            std::ranges::find_if(store.state_groups, [state_group_id](PersistentStateGroup const& group) {
+                return group.state_group_id == state_group_id;
+            });
+        return iterator == store.state_groups.end() ? nullptr : &*iterator;
+    }
+
+    [[nodiscard]] auto event_status_is_valid(std::string_view status) noexcept -> bool
+    {
+        return status == "accepted" || status == "soft_failed" || status == "rejected" || status == "outlier";
+    }
+
+} // namespace
+
+[[nodiscard]] auto read_state_group_full_state(PersistentStore const& store, std::string_view state_group_id)
+    -> std::optional<std::vector<PersistentStateGroupStateEntry>>
+{
+    // Walk parent links back to the snapshot, collecting the chain newest
+    // (state_group_id itself) first. Bounded to max_state_group_delta_depth + 1
+    // groups and cycle-detected; a missing group, a cycle, or an over-long
+    // chain fails closed rather than returning partial state.
+    auto chain = std::vector<PersistentStateGroup const*>{};
+    auto visited = std::unordered_set<std::string>{};
+    auto current = std::string{state_group_id};
+    for (;;)
+    {
+        if (!visited.insert(current).second)
+        {
+            return std::nullopt; // cycle
+        }
+        auto const* group = find_persistent_state_group(store, current);
+        if (group == nullptr)
+        {
+            return std::nullopt; // missing group
+        }
+        chain.push_back(group);
+        if (!group->parent_state_group_id.has_value())
+        {
+            break; // reached the snapshot
+        }
+        if (chain.size() > events::max_state_group_delta_depth)
+        {
+            return std::nullopt; // over-long chain
+        }
+        current = *group->parent_state_group_id;
+    }
+
+    auto seen = std::unordered_set<std::string>{};
+    auto result = std::vector<PersistentStateGroupStateEntry>{};
+    for (auto const* group : chain) // newest (target) first, snapshot last
+    {
+        for (auto const& entry : store.state_group_state)
+        {
+            if (entry.state_group_id != group->state_group_id)
+            {
+                continue;
+            }
+            if (seen.insert(state_group_entry_key(entry.event_type, entry.state_key)).second)
+            {
+                result.push_back(entry);
+            }
+        }
+    }
+    return result;
+}
+
+[[nodiscard]] auto create_or_reuse_state_group(PersistentStore& store, std::string_view room_id,
+                                               std::string_view new_state_group_id,
+                                               std::optional<std::string> const& parent_state_group_id,
+                                               std::vector<PersistentStateGroupStateEntry> const& full_state)
+    -> std::optional<std::string>
+{
+    auto const requested_map = to_state_group_map(full_state);
+
+    auto parent_depth = std::uint32_t{0U};
+    auto parent_map = std::unordered_map<std::string, std::string>{};
+    if (parent_state_group_id.has_value())
+    {
+        auto const* parent_group = find_persistent_state_group(store, *parent_state_group_id);
+        auto const parent_full = read_state_group_full_state(store, *parent_state_group_id);
+        if (parent_group == nullptr || !parent_full.has_value())
+        {
+            return std::nullopt; // fail closed: cannot verify the parent
+        }
+        parent_depth = parent_group->delta_depth;
+        parent_map = to_state_group_map(*parent_full);
+        if (requested_map == parent_map)
+        {
+            return std::string{*parent_state_group_id}; // unchanged: reuse the parent group
+        }
+    }
+
+    auto write_snapshot =
+        !parent_state_group_id.has_value() || (parent_depth + 1U) > events::max_state_group_delta_depth;
+    if (!write_snapshot)
+    {
+        for (auto const& [key, unused_event_id] : parent_map)
+        {
+            std::ignore = unused_event_id;
+            if (!requested_map.contains(key))
+            {
+                write_snapshot = true; // deltas never encode deletions
+                break;
+            }
+        }
+    }
+
+    auto rows_to_persist = std::vector<PersistentStateGroupStateEntry>{};
+    if (write_snapshot)
+    {
+        rows_to_persist = full_state;
+    }
+    else
+    {
+        for (auto const& entry : full_state)
+        {
+            auto const key = state_group_entry_key(entry.event_type, entry.state_key);
+            auto const parent_it = parent_map.find(key);
+            if (parent_it == parent_map.end() || parent_it->second != entry.event_id)
+            {
+                rows_to_persist.push_back(entry);
+            }
+        }
+    }
+
+    auto const new_depth = write_snapshot ? std::uint32_t{0U} : parent_depth + 1U;
+    auto const parent_column_value = write_snapshot ? std::string{} : *parent_state_group_id;
+
+    auto statements = std::vector<PreparedStatement>{};
+    statements.push_back(
+        record_statement("insert_state_group", "INSERT INTO state_groups VALUES ($1, $2, $3, $4)",
+                         {public_value(new_state_group_id), public_value(room_id), public_value(parent_column_value),
+                          public_value(std::to_string(new_depth))}));
+    for (auto const& row : rows_to_persist)
+    {
+        statements.push_back(record_statement("insert_state_group_state",
+                                              "INSERT INTO state_group_state VALUES ($1, $2, $3, $4)",
+                                              {public_value(new_state_group_id), public_value(row.event_type),
+                                               public_value(row.state_key), public_value(row.event_id)}));
+    }
+    if (!commit_persistent_transaction(store, statements))
+    {
+        return std::nullopt;
+    }
+
+    store.state_groups.push_back({std::string{new_state_group_id}, std::string{room_id},
+                                  write_snapshot ? std::nullopt : parent_state_group_id, new_depth});
+    for (auto row : rows_to_persist)
+    {
+        row.state_group_id = std::string{new_state_group_id};
+        store.state_group_state.push_back(std::move(row));
+    }
+    return std::string{new_state_group_id};
+}
+
+[[nodiscard]] auto set_event_state_group(PersistentStore& store, std::string_view event_id,
+                                         std::string_view state_group_id) -> bool
+{
+    if (event_id.empty() || state_group_id.empty())
+    {
+        return false;
+    }
+    if (!record_and_persist(store, record_statement("upsert_event_state_group",
+                                                    "INSERT INTO event_state_groups VALUES ($1, $2) ON CONFLICT "
+                                                    "(event_id) DO UPDATE SET state_group_id = $2",
+                                                    {public_value(event_id), public_value(state_group_id)})))
+    {
+        return false;
+    }
+    auto const existing =
+        std::ranges::find_if(store.event_state_groups, [event_id](PersistentEventStateGroup const& mapping) {
+            return mapping.event_id == event_id;
+        });
+    if (existing != store.event_state_groups.end())
+    {
+        existing->state_group_id = std::string{state_group_id};
+    }
+    else
+    {
+        store.event_state_groups.push_back({std::string{event_id}, std::string{state_group_id}});
+    }
+    return true;
+}
+
+[[nodiscard]] auto find_event_state_group(PersistentStore const& store, std::string_view event_id)
+    -> std::optional<std::string>
+{
+    auto const existing =
+        std::ranges::find_if(store.event_state_groups, [event_id](PersistentEventStateGroup const& mapping) {
+            return mapping.event_id == event_id;
+        });
+    return existing == store.event_state_groups.end() ? std::nullopt
+                                                      : std::optional<std::string>{existing->state_group_id};
+}
+
+[[nodiscard]] auto update_forward_extremities(PersistentStore& store, std::string_view room_id,
+                                              std::string_view event_id, std::vector<std::string> const& prev_event_ids,
+                                              bool accepted) -> bool
+{
+    if (!accepted)
+    {
+        return true; // soft-failed/rejected events never touch extremities
+    }
+    if (room_id.empty() || event_id.empty())
+    {
+        return false;
+    }
+
+    auto statements = std::vector<PreparedStatement>{};
+    for (auto const& prev_event_id : prev_event_ids)
+    {
+        statements.push_back(record_statement("delete_forward_extremity",
+                                              "DELETE FROM forward_extremities WHERE room_id = $1 AND event_id = $2",
+                                              {public_value(room_id), public_value(prev_event_id)}));
+    }
+    statements.push_back(
+        record_statement("insert_forward_extremity",
+                         "INSERT INTO forward_extremities VALUES ($1, $2) ON CONFLICT (room_id, event_id) DO NOTHING",
+                         {public_value(room_id), public_value(event_id)}));
+
+    if (!commit_persistent_transaction(store, statements))
+    {
+        return false;
+    }
+
+    for (auto const& prev_event_id : prev_event_ids)
+    {
+        std::erase_if(store.forward_extremities,
+                      [room_id, &prev_event_id](PersistentForwardExtremity const& extremity) {
+                          return extremity.room_id == room_id && extremity.event_id == prev_event_id;
+                      });
+    }
+    if (!std::ranges::any_of(store.forward_extremities,
+                             [room_id, event_id](PersistentForwardExtremity const& extremity) {
+                                 return extremity.room_id == room_id && extremity.event_id == event_id;
+                             }))
+    {
+        store.forward_extremities.push_back({std::string{room_id}, std::string{event_id}});
+    }
+    return true;
+}
+
+[[nodiscard]] auto find_forward_extremities(PersistentStore const& store, std::string_view room_id)
+    -> std::vector<std::string>
+{
+    auto result = std::vector<std::string>{};
+    for (auto const& extremity : store.forward_extremities)
+    {
+        if (extremity.room_id == room_id)
+        {
+            result.push_back(extremity.event_id);
+        }
+    }
+    return result;
+}
+
+[[nodiscard]] auto set_event_status(PersistentStore& store, std::string_view event_id, std::string_view status) -> bool
+{
+    if (!event_status_is_valid(status))
+    {
+        return false;
+    }
+    auto const existing = std::ranges::find_if(store.events, [event_id](PersistentEvent const& event) {
+        return event.event_id == event_id;
+    });
+    if (existing == store.events.end())
+    {
+        return false;
+    }
+    if (!record_and_persist(store,
+                            record_statement("update_event_status", "UPDATE events SET status = $2 WHERE event_id = $1",
+                                             {public_value(event_id), public_value(status)})))
+    {
+        return false;
+    }
+    existing->status = std::string{status};
+    return true;
+}
+
+[[nodiscard]] auto find_event_status(PersistentStore const& store, std::string_view event_id)
+    -> std::optional<std::string>
+{
+    auto const existing = std::ranges::find_if(store.events, [event_id](PersistentEvent const& event) {
+        return event.event_id == event_id;
+    });
+    return existing == store.events.end() ? std::nullopt : std::optional<std::string>{existing->status};
 }
 
 [[nodiscard]] auto store_device_key(PersistentStore& store, PersistentDeviceKey key) -> bool
