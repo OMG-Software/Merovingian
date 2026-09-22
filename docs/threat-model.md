@@ -1451,16 +1451,26 @@ threats they represent, and the mitigations now in place:
   (`missing_prev_state`) rather than guessing from current state, which
   would have reintroduced the same order-dependence through a different
   door.
+- **Phase B1 completion (same branch, follow-up commits): every local and
+  inbound-accepted event path, not just `ingest_pdu_event`.** A locally
+  created event previously got no after-state group or forward-extremity
+  update at all — a real federation regression versus pre-ADR-0064
+  behavior: the next inbound PDU naming it as a `prev_event` failed closed
+  with `missing_prev_state` and was dropped, and every inbound event in a
+  room joined after upgrading was lost the same way, because the join event
+  itself had no state group. Mitigation: `homeserver::store_local_event`
+  (the choke point `persist_composed_event`/`send_event` now goes through,
+  guarded by a source-tree test —
+  `tests/unit/test_store_event_choke_point.cpp` — that fails the build if a
+  new call site bypasses it), the same treatment for
+  `local_http_router.cpp`'s `membership_acceptor` (inbound
+  send_join/send_leave/send_knock acceptance), and federated-join snapshot
+  seeding in `join_room`. See `docs/database-persistence.md`, "Phase B1 of
+  spec-conformant PDU ingestion", for the full call-site list.
 - **Residual scope, unchanged by phase B1:** the receipt-order checks
   themselves (auth against the state *before* the event vs. against current
   state, soft-failure) are unaffected — `ingest_pdu_event` still authorises
-  only against current state, exactly as before; that is phase B2. Local
-  event-creation paths do not yet take `prev_events` from the forward
-  extremities, and the federated-join flow does not yet seed a state group
-  from the `send_join` response, so state bookkeeping for those paths is
-  unchanged pending a follow-up phase — see `docs/database-persistence.md`,
-  "Phase B1 of spec-conformant PDU ingestion", for exactly what is and is
-  not covered.
+  only against current state, exactly as before; that is phase B2.
 
 ## Security principles
 

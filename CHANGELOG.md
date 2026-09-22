@@ -319,20 +319,117 @@ audit.
   (`src/homeserver/worker_pool.cpp`/`src/federation_worker/worker_event_loop.cpp`)
   and the `/send` transaction per-PDU switch
   (`src/federation/inbound_request.cpp`) so a worker-relayed PDU reports it
-  correctly and a transaction containing it still succeeds. **Not yet
-  covered** (follow-up phase): local event-creation paths in
-  `room_service.cpp` still choose `prev_events` the old way, not from the
-  forward extremities; the federated-join flow does not yet seed a state
-  group from the `send_join` response, so a newly joined room's first
-  inbound PDU hits `missing_prev_state` until that lands; the receipt-order
-  auth checks themselves (state-before/soft-failure) are unchanged — that
-  is phase B2. Tests: `tests/unit/test_state_bookkeeping.cpp` and
+  correctly and a transaction containing it still succeeds. Tests:
+  `tests/unit/test_state_bookkeeping.cpp` and
   `tests/unit/test_pdu_ingestion_state_groups.cpp` (`[pdu_ingestion]
   [state_groups]`) — delivery-order independence (the core regression), a
   merge event's state-before as the resolution of both fork tips,
   per-event state-group correctness, forward-extremity fork/merge, and the
   missing-state fail-closed path, both directly against the module and
-  end-to-end through `ingest_pdu_event`.
+  end-to-end through `ingest_pdu_event`. At this point local event-creation
+  paths still chose `prev_events` the old way and the join flow seeded no
+  state group — closed by the next entry, same release.
+
+- **Phase B1 completion: every local and inbound event path now
+  participates in state bookkeeping (ADR-0064, HIGH — the phase B1 entry
+  above closed the regression only for federation's `/send` transaction
+  path; every OTHER path that stores an event was still the pre-ADR-0064
+  code, which is itself a regression against main: a locally sent message
+  got no after-state group or forward-extremity update, so the very next
+  inbound PDU naming it as a `prev_event` failed closed with
+  `missing_prev_state` and was dropped, and a room joined after upgrading
+  lost every inbound event the same way, because the join event had no
+  state group either).**
+  - New choke point `homeserver::store_local_event`
+    (`state_bookkeeping.hpp`/`.cpp`): computes state-before from
+    `event.prev_event_ids`, stores the event, records its after-state group
+    and forward-extremity update, and recomputes `current_state` — the
+    same sequence `ingest_pdu_event` runs, except every failure here is a
+    HARD failure (the whole request fails) rather than logged-and-ignored,
+    since a local event has not yet been told "success" to anyone. New
+    `homeserver::forward_extremities_for_new_event` replaces
+    `previous_events_for_room`'s old body ("the last event pushed into
+    `store.events` for this room" — no relationship to the DAG once
+    federation can fork a room's tip) with the room's real forward
+    extremities, capped at the spec's 20-`prev_events` limit
+    (`events::max_prev_events_per_event`) by highest depth. New
+    `homeserver::record_event_state_with_parent` is `record_event_state`
+    generalised to an explicit parent group, for the join-seeding path
+    below.
+  - `persist_composed_event` (used by `create_room`'s initial-state chain,
+    invite/join composition, and every ordinary send/state-send/redaction
+    via `send_event`, which previously duplicated the raw store call
+    instead of reusing this function) now calls `store_local_event` instead
+    of `database::store_event_with_state` directly. `ComposedEvent` gained
+    a `room_version` field so the choke point does not need to re-derive it
+    (impossible for a room's own create event: `store.state` has no create
+    row yet while composing it).
+  - `local_http_router.cpp`'s `membership_acceptor` (a remote user's
+    `send_join`/`send_leave`/`send_knock` acceptance into a room WE are
+    resident in — the same untrusted-input trust boundary as
+    `ingest_pdu_event`, just a different endpoint) gets the identical
+    state-before check, after-state recording, and `current_state`
+    recompute. Fixed a separate latent bug found while wiring this: the
+    callback never set `event.prev_event_ids` from the envelope at all, so
+    every accepted membership PDU was stored as if it had no prev_events.
+    `invite_handler`'s invite-event store (kept only for a future
+    `send_join`'s auth-chain walk, never part of this server's own
+    timeline) now gets explicit `status = "outlier"` instead of silently
+    defaulting to `"accepted"`.
+  - Federated-join seeding (`join_room`/`perform_federated_join`,
+    `room_service.cpp`): `ingest_send_join_state` now stores the
+    response's critical state events with `status = "outlier"` and returns
+    the full state map alongside the joined-members list
+    (`SendJoinStateIngestResult`); the auth-chain persist loop gets the same
+    outlier status. After the join event is stored, a snapshot state group
+    is built from the returned state (`database::create_or_reuse_state_group`,
+    no parent — a full snapshot, since we have no prior state-group history
+    for this room), the join event gets an after-state group chained off
+    that snapshot via `record_event_state_with_parent`, and
+    `recompute_current_state` runs — so the join event becomes the room's
+    sole forward extremity with a correct after-state, and the first
+    inbound PDU after the join resolves normally instead of hitting
+    `missing_prev_state`.
+  - **Source-tree guard test**
+    (`tests/unit/test_store_event_choke_point.cpp`): scans every `.cpp`
+    under `src/` (excluding `src/database/`, the store abstraction itself)
+    and fails if `database::store_event_with_state(` appears anywhere
+    outside a reviewed, counted allowlist — the choke point itself, and the
+    handful of deliberate outlier/bespoke-bookkeeping exceptions listed
+    above. A future path bypassing bookkeeping the way `send_event` and
+    `membership_acceptor` did cannot land unnoticed again.
+  - **Bug found by the new tests and fixed**:
+    `database::store_state`'s `INSERT INTO state_transitions` had no
+    `ON CONFLICT` handling, but the table's primary key is `(room_id,
+    event_type, state_key, event_id)` — not `previous_event_id`. State
+    resolution making an event current again after it was already
+    superseded once (exactly the "reverts to an older event" case the spec
+    requires be delivered like any other state change) re-inserts that
+    same primary key, which both SQLite and PostgreSQL reject as a
+    duplicate row — `commit_persistent_transaction` silently failed and
+    `recompute_current_state`'s resolved winner was never written,
+    `current_state` staying on whichever value the old direct-write path
+    left there. Caught by delivery-order-independence tests where the two
+    orderings diverged. Fixed: the write is now an upsert
+    (`ON CONFLICT (room_id, event_type, state_key, event_id) DO UPDATE SET
+    previous_event_id = excluded.previous_event_id`), matching the idiom
+    already used elsewhere in the file, with the in-memory
+    `state_transition_index` mirror updated to match (update in place on a
+    reactivation rather than leaving the index pointing at a stale entry).
+  - Tests: `tests/unit/test_local_event_state_bookkeeping.cpp` (the
+    regression: a local send then a remote PDU referencing it must be
+    accepted, not `missing_prev_state`; a local send after an inbound fork
+    lists both tips as `prev_events` with a correctly resolved state-before;
+    every room-creation initial event has a correct after-state group and
+    the room's sole extremity is the last one),
+    `tests/integration/test_join_room_flow.cpp` (a federated join's join
+    event gets the returned state plus itself as its after-state, becomes
+    the sole forward extremity, and a subsequent inbound PDU referencing it
+    is accepted), and `tests/unit/test_sync_handler.cpp` (a fork whose
+    resolution reactivates an already-superseded event is delivered to an
+    incremental `/sync` as an ordinary state change — the scenario the
+    `state_transitions` upsert fix exists for). All tags
+    `[pdu_ingestion][state_groups]` (plus `[sync][handler]` for the last).
 
 ## 0.12.12
 

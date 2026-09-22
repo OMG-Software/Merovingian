@@ -389,9 +389,15 @@ spec-conformant for every event stored through `ingest_pdu_event`:
   wake-up path need no separate "state changed" plumbing.
 
 See `docs/database-persistence.md`, "Phase B1 of spec-conformant PDU
-ingestion", for the exact functions and what is deliberately *not* yet
-wired (local event-creation `prev_events` selection, federated-join state
-seeding) — those still use pre-phase-B1 behavior and are follow-up work.
+ingestion", for the exact functions. Phase B1 completion (same 0.12.13
+branch) extended this same bookkeeping to every local event-creation path
+(`homeserver::store_local_event`, the choke point `persist_composed_event`
+now calls) and to federated-join state seeding
+(`homeserver::record_event_state_with_parent`) — see that doc section for
+the full list of call sites. `PduStateConflictContext`/`state_conflict_resolver`
+remain unused dead plumbing; phase B2 removes them and adds the
+receipt-order auth checks (state-before/soft-failure) this phase does not
+touch.
 
 ### State at a requested event
 

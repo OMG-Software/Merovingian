@@ -532,21 +532,64 @@ remaining work before PostgreSQL-backed production operation.
   same reason: the raw event is already committed, so failing the PDU here
   would only cause pointless retries).
 
-  **Not yet wired in phase B1** (tracked for a follow-up phase): local
-  event-creation paths in `room_service.cpp` still take `prev_events` from
-  wherever they did before, not from the room's forward extremities, and so
-  do not call `record_event_state`; the federated-join flow does not yet
-  seed a state group/forward extremity from the `send_join` response state
-  (a newly joined room's first inbound PDU will therefore hit
-  `missing_prev_state` until that lands). `PduStateConflictContext` /
-  `state_conflict_resolver` (the older, never-production-reached
-  conflict-resolution plumbing this phase was meant to replace) are left in
-  place unchanged and unused by the new path — phase B2 removes them.
+  **Phase B1 completion (same 0.12.13 branch, follow-up commits):** every
+  local and inbound-accepted event path now goes through this bookkeeping,
+  not just `ingest_pdu_event`.
+  - `homeserver::store_local_event` (`state_bookkeeping.hpp`/`.cpp`) is the
+    choke point every locally created event must go through — runs the same
+    compute-state-before / store / record-after-state / recompute sequence
+    as `ingest_pdu_event`, but every failure is a hard failure (the request
+    fails), since a local event has not yet been told "success" to anyone.
+    `homeserver::forward_extremities_for_new_event` gives local events their
+    `prev_events` from the room's real forward extremities (capped at the
+    spec's 20 per event, `events::max_prev_events_per_event`, highest depth
+    kept) instead of the previous, DAG-unaware "last event pushed into
+    `store.events`" heuristic. `persist_composed_event` (`room_service.cpp`
+    — used by `create_room`'s initial-state chain, invite/join composition,
+    and every ordinary send/state-send/redaction) calls it instead of
+    `database::store_event_with_state` directly.
+  - `local_http_router.cpp`'s `membership_acceptor` (a remote user's
+    `send_join`/`send_leave`/`send_knock` into a room we are resident in —
+    the same trust boundary as `ingest_pdu_event`) gets the identical
+    state-before check and after-state/current-state bookkeeping.
+    `invite_handler`'s invite-event store gets explicit `status =
+    "outlier"` (it is never part of this server's own timeline).
+  - The federated-join flow (`join_room`/`perform_federated_join`,
+    `room_service.cpp`) now seeds a snapshot state group from the
+    `send_join` response's state (stored as `status = "outlier"` events by
+    `ingest_send_join_state`, which returns the full state map alongside
+    the joined-members list), gives the join event an after-state group
+    chained off that snapshot (`homeserver::record_event_state_with_parent`,
+    `record_event_state` generalised to an explicit parent group), and
+    makes it the room's sole forward extremity — so the first inbound PDU
+    after a join no longer hits `missing_prev_state`.
+  - A source-tree guard test (`tests/unit/test_store_event_choke_point.cpp`)
+    fails the build if `database::store_event_with_state(` appears anywhere
+    in `src/` outside a reviewed, counted allowlist.
+  - `PduStateConflictContext` / `state_conflict_resolver` (the older,
+    never-production-reached conflict-resolution plumbing this phase was
+    meant to replace) are still left in place unchanged and unused —
+    phase B2 removes them.
 
-  Tests: `tests/unit/test_state_bookkeeping.cpp` (`[pdu_ingestion]
-  [state_groups]`) exercises the module directly against an in-memory
-  store; `tests/unit/test_pdu_ingestion_state_groups.cpp` (same tags) proves
-  the same behavior through `ingest_pdu_event` itself.
+  A real bug was found and fixed along the way: `database::store_state`'s
+  `state_transitions` insert had no `ON CONFLICT` handling, but its primary
+  key is `(room_id, event_type, state_key, event_id)` — state resolution
+  making an event current again after it was already superseded once (the
+  spec's "reverts to an older event" case) re-inserts that same key, which
+  both backends reject as a duplicate row; the write is now an upsert
+  (`ON CONFLICT (...) DO UPDATE SET previous_event_id = excluded.previous_event_id`),
+  with the in-memory `state_transition_index` mirror updated to match.
+
+  Tests: `tests/unit/test_state_bookkeeping.cpp`,
+  `tests/unit/test_pdu_ingestion_state_groups.cpp`,
+  `tests/unit/test_local_event_state_bookkeeping.cpp`, and
+  `tests/unit/test_store_event_choke_point.cpp` (all
+  `[pdu_ingestion][state_groups]`) cover the module directly, end-to-end
+  through `ingest_pdu_event`, end-to-end through local send/create paths,
+  and the source-tree guard, respectively;
+  `tests/integration/test_join_room_flow.cpp` covers the federated-join
+  seeding end to end; `tests/unit/test_sync_handler.cpp` covers a
+  resolution-driven reactivation reaching an incremental `/sync` client.
 - `/sync` calls `database::ensure_sync_stream_id_ahead_of()` when the client's
   `since` token is ahead of the server's counter. This recovers live deployments
   whose counter rolled back below a stored token (for example, when the watermark
