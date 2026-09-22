@@ -20,8 +20,8 @@
 // |  dispatch_push_deliveries).                                             |
 // +-------------------------------------------------------------------------+
 
-#include "../support/master_key.hpp"
 #include "../support/json_test_support.hpp"
+#include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "../support/tls_mock_server.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
@@ -427,11 +427,43 @@ auto seed_remote_member(merovingian::homeserver::ClientServerRuntime& runtime, s
 // directly, standing in for a real inbound /_matrix/federation/v1/send/{txn}
 // transaction (which would additionally need X-Matrix request auth and a
 // verifiable Ed25519 event signature — orthogonal to what this file tests).
-[[nodiscard]] auto make_federation_message_envelope(std::string const& room_id, std::string const& sender,
-                                                    std::string const& body, std::string const& event_id)
+// ADR-0064 phase B2: ingest_pdu_event now authorises against the PDU's own
+// named auth_events (spec step 4) and against the state before the event
+// (step 5), so this fixture needs the room's real, state-group-backed
+// power_levels event and a real prev_event — `runtime` supplies both,
+// and `remote_member_event_id` is seed_remote_member's seeded (but
+// state-group-less) member event, a legal auth_events selection entry even
+// though it cannot anchor prev_events itself. m.room.create is deliberately
+// NOT named: this room is v12 (MSC4291, create_room's default), where the
+// create event is implicit in the room ID and naming it is itself a
+// selection violation; ingest_pdu_event resolves it separately for v12.
+[[nodiscard]] auto make_federation_message_envelope(merovingian::homeserver::ClientServerRuntime const& runtime,
+                                                    std::string const& room_id, std::string const& sender,
+                                                    std::string const& remote_member_event_id, std::string const& body,
+                                                    std::string const& event_id)
     -> merovingian::federation::InboundPduEnvelope
 {
     namespace canonicaljson = merovingian::canonicaljson;
+    auto const& store = runtime.homeserver.database.persistent_store;
+
+    auto const tip = [&]() -> std::string {
+        auto const extremities = merovingian::database::find_forward_extremities(store, room_id);
+        REQUIRE(extremities.size() == 1U);
+        return extremities.front();
+    }();
+    auto const pl_event_id = [&]() -> std::string {
+        for (auto const& s : store.state)
+        {
+            if (s.room_id == room_id && s.event_type == "m.room.power_levels" && s.state_key.empty())
+            {
+                return s.event_id;
+            }
+        }
+        return {};
+    }();
+    REQUIRE_FALSE(pl_event_id.empty());
+    auto const auth_event_ids = std::vector<std::string>{pl_event_id, remote_member_event_id};
+
     auto content = canonicaljson::Object{};
     content.push_back(canonicaljson::make_member("body", canonicaljson::Value{body}));
     content.push_back(canonicaljson::make_member("msgtype", canonicaljson::Value{std::string{"m.text"}}));
@@ -444,8 +476,15 @@ auto seed_remote_member(merovingian::homeserver::ClientServerRuntime& runtime, s
     event_obj.push_back(
         canonicaljson::make_member("origin_server_ts", canonicaljson::Value{static_cast<std::int64_t>(1000)}));
     event_obj.push_back(canonicaljson::make_member("depth", canonicaljson::Value{static_cast<std::int64_t>(3)}));
-    event_obj.push_back(canonicaljson::make_member("prev_events", canonicaljson::Value{canonicaljson::Array{}}));
-    event_obj.push_back(canonicaljson::make_member("auth_events", canonicaljson::Value{canonicaljson::Array{}}));
+    auto prev_arr = canonicaljson::Array{};
+    prev_arr.push_back(canonicaljson::Value{tip});
+    event_obj.push_back(canonicaljson::make_member("prev_events", canonicaljson::Value{std::move(prev_arr)}));
+    auto auth_arr = canonicaljson::Array{};
+    for (auto const& id : auth_event_ids)
+    {
+        auth_arr.push_back(canonicaljson::Value{id});
+    }
+    event_obj.push_back(canonicaljson::make_member("auth_events", canonicaljson::Value{std::move(auth_arr)}));
 
     auto const hash = merovingian::events::make_content_hash(canonicaljson::Value{event_obj});
     REQUIRE(hash.error.empty());
@@ -464,6 +503,8 @@ auto seed_remote_member(merovingian::homeserver::ClientServerRuntime& runtime, s
     env.event_type = "m.room.message";
     env.origin_server_ts = 1000;
     env.depth = 3U;
+    env.prev_event_ids = {tip};
+    env.auth_event_ids = auth_event_ids;
     env.json = serialized.output;
     return env;
 }
@@ -1274,8 +1315,9 @@ SCENARIO("an event accepted via federation from a remote sender delivers a push 
         REQUIRE(started.runtime.homeserver.federation.pdu_sink != nullptr);
 
         auto const event_id = room_id + ":federation-msg-1";
-        auto const envelope =
-            make_federation_message_envelope(room_id, remote_sender, "hello from federation", event_id);
+        auto const remote_member_event_id = room_id + ":seeded-remote-member:" + remote_sender;
+        auto const envelope = make_federation_message_envelope(
+            started.runtime, room_id, remote_sender, remote_member_event_id, "hello from federation", event_id);
 
         auto captured_request = std::string{};
         auto const notify_response = merovingian::tests::tls_mock::json_http_response("200 OK", R"({"rejected":[]})");

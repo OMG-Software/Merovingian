@@ -431,6 +431,120 @@ audit.
     `state_transitions` upsert fix exists for). All tags
     `[pdu_ingestion][state_groups]` (plus `[sync][handler]` for the last).
 
+- **Phase B2 of spec-conformant PDU ingestion: the receipt-order checks
+  themselves (ADR-0064, HIGH).** Phase B1 made the state model correct;
+  `ingest_pdu_event` still authorised every inbound PDU against *current*
+  state only, treated any auth failure as a hard rejection, and rejected
+  (instead of redacting) a content-hash mismatch. `ingest_pdu_event`
+  (`src/homeserver/local_http_router.cpp`) now runs the spec's checks in
+  order (server-server-api.md, "Checks performed on receipt of a PDU"):
+  - **Step 3 (hash).** A mismatch no longer rejects the event —
+    `events::redact_event` is applied and processing continues with the
+    redacted form, which is what gets stored (`content` and the room
+    version's other non-essential keys are stripped; `event_id`, `sender`,
+    and the redaction survivor set are unaffected).
+  - **Step 4 (auth against the PDU's own `auth_events`).** New
+    `validate_auth_events_selection` enforces the spec's "Auth events
+    selection" list (create unless v12-implicit, current power_levels,
+    sender's own member event, and — for `m.room.member` — the target
+    member, join_rules, third_party_invite, and restricted-join authorising
+    member, each conditioned correctly on the requested membership): a named
+    `auth_events` entry of a disallowed type, a duplicate `(type,
+    state_key)`, or one from a different room is a rejection; one this store
+    cannot resolve at all is `missing_prev_state` (awaiting backfill), not a
+    rejection. `build_pdu_auth_event_map` is generalised to
+    `build_auth_event_map_from_entries` (an arbitrary flat state snapshot,
+    not just `store.state`) so the same code builds the auth map from the
+    named `auth_events`, the state before the event, and current state.
+  - **Step 5 (auth against the state before the event)**, using phase B1's
+    `compute_state_before`.
+  - **Step 6 (auth against current state)** — failure here is a soft
+    failure, not a rejection, per spec.
+  - **Rejection and soft failure both now store the event** (previously a
+    step-4/5 failure was a hard rejection that never persisted it at all,
+    breaking the spec requirement that later events referencing a rejected
+    event can still be authorised). `record_event_state`/
+    `record_event_state_with_parent` (`state_bookkeeping.hpp`/`.cpp`) gained
+    an `accepted` flag (default `true`): `false` still creates/reuses the
+    event's after-state group and maps the event to it, but skips the
+    forward-extremity update (spec: neither a rejected nor a soft-failed
+    event is ever a forward extremity). A rejected event's after-state is
+    `state_before` unchanged (spec: "not updating with the rejected event");
+    a soft-failed event's after-state is the normally-computed
+    `compute_state_after` result (spec: "participate in state resolution as
+    normal"), so a later accepted event chaining off a soft-failed state
+    event's group correctly admits it into `current_state` — and, once
+    admitted, it is served to clients through the ordinary `state` section,
+    same as any other current-state entry. `PersistentEvent::status` (the
+    `"accepted"|"rejected"|"soft_failed"|"outlier"` column phase A added but
+    nothing ever set to the first two — see the security audit finding in
+    the 0.12.12 entries below) is now set accordingly at ingest time; naive
+    immediate `store.state`/membership-cache writes only ever happen for an
+    accepted event.
+  - **New `PduIngestionStatus::soft_failed`**, threaded through the worker
+    IPC status mapping (`src/homeserver/worker_pool.cpp`,
+    `src/federation_worker/worker_event_loop.cpp`) and the `/send`
+    transaction per-PDU switch (`src/federation/inbound_request.cpp`): a
+    transaction containing a mix of accepted, rejected, and soft-failed PDUs
+    still returns 200 with per-PDU accounting (spec: a rejected event in a
+    transaction "should not cause the transaction request to be responded
+    to with an error response").
+  - **Client-delivery filtering.** Every path that serves room timeline
+    events now excludes `rejected`/`soft_failed` events, while state
+    delivery (driven by `current_state`, untouched by this filter) still
+    shows a soft-failed state event resolution has admitted:
+    `/sync` timeline (`client_server.cpp`), MSC4186 sliding sync timeline
+    (`sync/sliding_sync_room_builder.cpp`), `GET .../messages`
+    (`messages_json`), `GET .../context/{eventId}` (`room_context_json` and
+    its caller's target-event 404 gate), `GET .../event/{eventId}` (same
+    404 gate), and search (`search_room_events_json`'s candidate scan and
+    `build_search_event_context`). Federation-facing reads
+    (`/event/<id>`, `/backfill`, `/get_missing_events`,
+    `src/federation/event_query.cpp`) are intentionally unchanged: the spec
+    allows `/event/<id>` to return a soft-failed event and only excludes
+    soft-failed events from `/backfill`/`/get_missing_events` when the
+    request does not itself reference them, which those endpoints' existing
+    depth/reference-driven scans already satisfy. Push notification
+    delivery was already correctly gated (only an `accepted`
+    `PduIngestionResult` reaches `deliver_federation_push_notifications`).
+  - **Deleted the dead state-conflict-resolver plumbing** ADR-0064
+    identified as unreachable (nothing ever set
+    `PduIngestionResult::state_conflict`, so `state_conflict_resolver` was
+    never called): `PduStateConflictContext`,
+    `PduIngestionResult::state_conflict`, `StateConflictResolver`,
+    `ResolvedStateApplier`, `runtime.federation.state_conflict_resolver`,
+    the resolver lambda in `local_http_router.cpp`, the branch in
+    `inbound_request.cpp`'s per-PDU switch that invoked it, and
+    `federation::apply_state_resolution_v2` (its one production caller was
+    that same dead lambda). `PduIngestionStatus::rejected_state_conflict`
+    is kept as a legacy enumerator (no production sink produces it any
+    more) purely so the worker IPC wire format stays a stable, exhaustive
+    set; `resolve_state_v2` itself is untouched — phase B1's
+    `compute_state_before`/`recompute_current_state` are its only callers
+    now. The one test that exercised the deleted resolver
+    (`tests/unit/test_federation_membership_endpoints.cpp`, "State-resolution
+    v2 helper merges forked state when groups disagree") is removed with
+    it.
+  - Tests: `tests/unit/test_pdu_ingestion_auth_checks.cpp`
+    (`[pdu_ingestion][auth]`) — a bad-hash PDU redacted and accepted; a PDU
+    passing current-state auth but failing its own `auth_events`, rejected;
+    one passing `auth_events` but failing state-before, rejected; the
+    ban-evasion case (prev_events preceding the ban pass both `auth_events`
+    and state-before but fail current state) soft-failed rather than
+    hard-rejected; a rejected event's after-state equal to its state-before
+    with a later event still able to reference it; a soft-failed state
+    event admitted into `current_state` by resolution; the three
+    `auth_events`-selection violations; and a mixed-outcome transaction. See
+    [ADR-0064](docs/adr/0064-spec-conformant-pdu-ingestion-with-delta-state-groups.md).
+  - **Not done in this phase**: the membership-acceptor path
+    (`send_join`/`send_leave`/`send_knock` acceptance,
+    `src/federation/inbound_request.cpp`'s membership handler) still hard-
+    rejects a content-hash mismatch (403) rather than redacting, and does
+    not run the auth_events/state-before/current-state three-way check —
+    it predates ADR-0064 and is a materially different trust boundary (a
+    single trusted join response, not a transaction of arbitrary PDUs).
+    Tracked as a follow-up, not silently left inconsistent.
+
 ## 0.12.12
 
 Documentation only — no code changes beyond the version bump. A full audit

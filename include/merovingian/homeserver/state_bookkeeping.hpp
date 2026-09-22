@@ -27,10 +27,10 @@ namespace merovingian::homeserver
 // callers that need many lookups (a single resolution) should build one
 // instance and reuse it rather than calling this per lookup.
 //
-// This is a separate lookup from the one wired into the dead
-// `state_conflict_resolver` plumbing in local_http_router.cpp (left
-// unchanged in phase B1, see the comment there) — every new state-group-
-// aware code path uses this one instead.
+// This is the one lookup every state-group-aware code path uses; the
+// separate lookup that used to live in local_http_router.cpp's
+// `state_conflict_resolver` was deleted in ADR-0064 phase B2 along with the
+// rest of that dead plumbing.
 [[nodiscard]] auto make_store_event_lookup(database::PersistentStore const& store) -> events::EventLookupFn;
 
 // Result of resolving the state immediately before an event from its

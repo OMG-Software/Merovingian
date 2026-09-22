@@ -425,6 +425,26 @@ SCENARIO("Inbound PDU sink assigns stream ordering and notifies sync", "[homeser
                                                               .state_key = bob_sender,
                                                               .event_id = "$inbound_bob_member"});
 
+        // ADR-0064 phase B2: ingest_pdu_event now also authorises against the
+        // PDU's own auth_events (spec step 4) and the state before it (step
+        // 5, via compute_state_before), so this fixture needs a real state
+        // group for $inbound_bob_member — not just the naive store.state
+        // rows above — matching what seed_room_with_genesis_state_group does
+        // in tests/unit/test_pdu_ingestion_state_groups.cpp.
+        {
+            auto& store = homeserver.database.persistent_store;
+            auto const genesis_state = std::vector<merovingian::database::PersistentStateGroupStateEntry>{
+                {"", "m.room.create", "",         "$inbound_create"    },
+                {"", "m.room.member", bob_sender, "$inbound_bob_member"},
+            };
+            auto const group_id = merovingian::database::create_or_reuse_state_group(
+                store, room_id_str, room_id_str + ":genesis-group", std::nullopt, genesis_state);
+            REQUIRE(group_id.has_value());
+            REQUIRE(merovingian::database::set_event_state_group(store, "$inbound_bob_member", *group_id));
+            REQUIRE(
+                merovingian::database::update_forward_extremities(store, room_id_str, "$inbound_bob_member", {}, true));
+        }
+
         WHEN("an inbound PDU is ingested through the pdu_sink")
         {
             auto envelope = merovingian::federation::InboundPduEnvelope{};
@@ -434,6 +454,8 @@ SCENARIO("Inbound PDU sink assigns stream ordering and notifies sync", "[homeser
             envelope.event_type = "m.room.message";
             envelope.depth = 2U;
             envelope.origin_server_ts = static_cast<std::int64_t>(1000);
+            envelope.prev_event_ids = {"$inbound_bob_member"};
+            envelope.auth_event_ids = {"$inbound_create", "$inbound_bob_member"};
             // The auth check parses this JSON to read the event's sender/type,
             // so it must carry the same fields the envelope advertises, and the
             // ingest path now verifies the content hash.

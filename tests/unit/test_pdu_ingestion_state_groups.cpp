@@ -146,6 +146,17 @@ auto seed_room_with_genesis_state_group(HomeserverRuntime& runtime, std::string 
     auto content = canonicaljson::Object{};
     content.push_back(canonicaljson::make_member("topic", canonicaljson::Value{std::string{"t-" + event_id}}));
 
+    // ADR-0064 phase B2: ingest_pdu_event now authorises against the PDU's
+    // own named auth_events (spec step 4), so a real create/power_levels/
+    // sender-member trio is required here — matching
+    // seed_room_with_genesis_state_group's naming convention — for this
+    // fixture to still be accepted, exactly as a real federating server's
+    // auth_events selection would look for a room-admin-sent state event.
+    auto const create_id = room_id + ":create";
+    auto const pl_id = room_id + ":pl";
+    auto const member_id = room_id + ":member";
+    auto auth_event_ids = std::vector<std::string>{create_id, pl_id, member_id};
+
     auto obj = canonicaljson::Object{};
     obj.push_back(canonicaljson::make_member("type", canonicaljson::Value{std::string{"m.room.topic"}}));
     obj.push_back(canonicaljson::make_member("state_key", canonicaljson::Value{std::string{}}));
@@ -157,7 +168,12 @@ auto seed_room_with_genesis_state_group(HomeserverRuntime& runtime, std::string 
     auto prev_events = canonicaljson::Array{};
     prev_events.push_back(canonicaljson::Value{prev_event_id});
     obj.push_back(canonicaljson::make_member("prev_events", canonicaljson::Value{std::move(prev_events)}));
-    obj.push_back(canonicaljson::make_member("auth_events", canonicaljson::Value{canonicaljson::Array{}}));
+    auto auth_events_array = canonicaljson::Array{};
+    for (auto const& id : auth_event_ids)
+    {
+        auth_events_array.push_back(canonicaljson::Value{id});
+    }
+    obj.push_back(canonicaljson::make_member("auth_events", canonicaljson::Value{std::move(auth_events_array)}));
 
     auto const hash = events::make_content_hash(canonicaljson::Value{obj});
     REQUIRE(hash.error.empty());
@@ -178,6 +194,7 @@ auto seed_room_with_genesis_state_group(HomeserverRuntime& runtime, std::string 
     env.origin_server_ts = ts;
     env.depth = 3U;
     env.prev_event_ids = {prev_event_id};
+    env.auth_event_ids = std::move(auth_event_ids);
     env.json = serialized.output;
     return env;
 }

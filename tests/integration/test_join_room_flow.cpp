@@ -857,8 +857,33 @@ SCENARIO("A federated join seeds the join event's after-state group and forward 
                     prev_arr.push_back(merovingian::canonicaljson::Value{join_event_id});
                     obj.push_back(merovingian::canonicaljson::make_member(
                         "prev_events", merovingian::canonicaljson::Value{std::move(prev_arr)}));
+                    // ADR-0064 phase B2: ingest_pdu_event now authorises
+                    // against the PDU's own named auth_events (spec step
+                    // 4), so this fixture needs the room's real
+                    // create/power_levels events and alice's own (just
+                    // established) join — read from `full`, the join
+                    // event's own after-state, computed above.
+                    auto const create_entry = std::ranges::find_if(*full, [](auto const& e) {
+                        return e.event_type == "m.room.create";
+                    });
+                    auto const pl_entry = std::ranges::find_if(*full, [](auto const& e) {
+                        return e.event_type == "m.room.power_levels";
+                    });
+                    REQUIRE(create_entry != full->end());
+                    REQUIRE(pl_entry != full->end());
+                    // This fixture pins room_version "10" below (not v12),
+                    // so create is a required, permitted auth_events entry
+                    // — unlike the v12 case elsewhere, where it must be
+                    // omitted.
+                    auto auth_event_ids =
+                        std::vector<std::string>{create_entry->event_id, pl_entry->event_id, join_event_id};
+                    auto auth_arr = merovingian::canonicaljson::Array{};
+                    for (auto const& id : auth_event_ids)
+                    {
+                        auth_arr.push_back(merovingian::canonicaljson::Value{id});
+                    }
                     obj.push_back(merovingian::canonicaljson::make_member(
-                        "auth_events", merovingian::canonicaljson::Value{merovingian::canonicaljson::Array{}}));
+                        "auth_events", merovingian::canonicaljson::Value{std::move(auth_arr)}));
                     auto const hash = merovingian::events::make_content_hash(merovingian::canonicaljson::Value{obj});
                     REQUIRE(hash.error.empty());
                     auto hashes = merovingian::canonicaljson::Object{};
@@ -879,6 +904,7 @@ SCENARIO("A federated join seeds the join event's after-state group and forward 
                     envelope.origin_server_ts = 2000;
                     envelope.depth = 4U;
                     envelope.prev_event_ids = {join_event_id};
+                    envelope.auth_event_ids = std::move(auth_event_ids);
                     envelope.json = serialized.output;
 
                     auto const ingest_result = merovingian::homeserver::ingest_pdu_event(runtime, envelope);

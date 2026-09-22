@@ -13,6 +13,7 @@
 #include "merovingian/events/authorization.hpp"
 #include "merovingian/events/event_id.hpp"
 #include "merovingian/events/event_signer.hpp"
+#include "merovingian/events/redaction.hpp"
 #include "merovingian/federation/event_query.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/federation/key_query.hpp"
@@ -2305,10 +2306,41 @@ auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope
 
     if (outcome == ReceiptOutcome::accepted)
     {
-        auto const auth_events_map = build_auth_event_map_from_entries(
+        auto auth_events_map = build_auth_event_map_from_entries(
             runtime.database.persistent_store,
             state_entries_from_named_events(runtime.database.persistent_store, envelope.auth_event_ids),
             envelope.sender, envelope.state_key.value_or(std::string{}), envelope.event_type, third_party_invite_token);
+        // v12 (MSC4291): the create event is implicit in the room ID and
+        // MUST NOT be listed in auth_events (validate_auth_events_selection
+        // rejects a PDU that names it), so it can never come from the named
+        // set above. The auth-rule algorithm still needs its content (e.g.
+        // the m.federate check), so look it up from the room's own recorded
+        // state the same way build_pdu_auth_event_map does for the
+        // current-state check below — there is exactly one create event per
+        // room, so this cannot be confused with a "selected" entry.
+        if (room_policy->create_event_is_room_id &&
+            std::holds_alternative<std::nullptr_t>(auth_events_map.create.storage()))
+        {
+            for (auto const& state : runtime.database.persistent_store.state)
+            {
+                if (state.room_id == room_id && state.event_type == "m.room.create" && state.state_key.empty())
+                {
+                    for (auto const& evt : runtime.database.persistent_store.events)
+                    {
+                        if (evt.event_id == state.event_id)
+                        {
+                            auto const parsed = canonicaljson::parse_lossless(evt.json);
+                            if (parsed.error == canonicaljson::ParseError::none)
+                            {
+                                auth_events_map.create = parsed.value;
+                            }
+                            break;
+                        }
+                    }
+                    break;
+                }
+            }
+        }
         auto const auth_events_decision =
             events::authorize_event_against_auth_events(effective_pdu, *room_policy, auth_events_map);
         if (!auth_events_decision.allowed)

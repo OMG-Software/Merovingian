@@ -676,17 +676,29 @@ SCENARIO("A soft-failed state event that resolution later admits into current st
         auto const topic_result = merovingian::homeserver::ingest_pdu_event(started.runtime, topic_envelope);
         REQUIRE(topic_result.status == PduIngestionStatus::soft_failed);
 
-        WHEN("a later accepted event (from admin) references the soft-failed topic event")
+        WHEN("a later accepted event (from admin) references BOTH current forward extremities — the ban and the "
+             "soft-failed topic event — forcing a genuine state resolution between them")
         {
+            // The soft-failed topic event never became a forward extremity
+            // (spec: never a forward extremity), so the room's only real
+            // extremity right now is still the ban. Naming both here is
+            // exactly what a real admin server aware of both tips would do,
+            // and is what makes this a genuine two-way state-res v2
+            // resolution rather than a single-parent delta-chain
+            // inheritance: resolution must independently re-derive that
+            // bob's ban (admin, power 100) outranks bob's own unconflicted
+            // pre-ban join for (m.room.member, bob), while still carrying
+            // forward the unconflicted m.room.topic entry that only the
+            // soft-failed fork has.
             auto name_content = merovingian::canonicaljson::Object{};
             name_content.push_back(merovingian::canonicaljson::make_member(
                 "name", merovingian::canonicaljson::Value{std::string{"room"}}));
             auto const name_json = build_event_json(room_id, "m.room.name", std::string{}, "@admin:local.example.org",
-                                                    std::move(name_content), {"$bobtopic:local.example.org"},
+                                                    std::move(name_content), {"$bobtopic:local.example.org", ban_id},
                                                     {genesis.create_id, genesis.pl_id, genesis.admin_member_id}, 5, 6);
             auto const name_envelope =
                 make_envelope(room_id, "$name:local.example.org", "m.room.name", std::string{},
-                              "@admin:local.example.org", {"$bobtopic:local.example.org"},
+                              "@admin:local.example.org", {"$bobtopic:local.example.org", ban_id},
                               {genesis.create_id, genesis.pl_id, genesis.admin_member_id}, 5, name_json);
             auto const name_result = merovingian::homeserver::ingest_pdu_event(started.runtime, name_envelope);
 

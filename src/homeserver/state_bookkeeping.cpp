@@ -33,9 +33,7 @@ namespace
     }
 
     // Parses `json` and builds the events::StateEventReference the state-res v2
-    // auth-chain walk expects. Mirrors the parsing the (unchanged,
-    // still-unwired) state_conflict_resolver lookup in local_http_router.cpp
-    // does, kept separate per that function's own comment.
+    // auth-chain walk expects.
     [[nodiscard]] auto parse_state_event_reference(std::string_view event_id, std::string_view json,
                                                    std::uint64_t depth) -> std::optional<events::StateEventReference>
     {

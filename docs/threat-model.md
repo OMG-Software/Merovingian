@@ -1472,6 +1472,42 @@ threats they represent, and the mitigations now in place:
   state, soft-failure) are unaffected — `ingest_pdu_event` still authorises
   only against current state, exactly as before; that is phase B2.
 
+### PDU ban-evasion accepted into client timelines (v0.12.13, ADR-0064 phase B2)
+
+- **A banned (or otherwise power-restricted) user could keep messages
+  reaching client timelines by having their server send events referencing
+  DAG history from before the ban, and there was no way to tell this from a
+  legitimately delayed event.** Before phase B2, `ingest_pdu_event`
+  authorised every inbound PDU against current state only; a PDU whose
+  `prev_events` pointed at a pre-ban tip passed that single check exactly
+  the same as a normal event and was accepted outright — same effect as if
+  the ban had never happened, for any message the banned user's server
+  chose to backdate this way. The spec is explicit that such an event
+  cannot simply be rejected (indistinguishable from a legitimately delayed
+  one) but also must not reach clients. Mitigation: `ingest_pdu_event` now
+  runs three checks in order — auth against the PDU's own `auth_events`,
+  auth against the state before the event, auth against current state — and
+  only the last is a soft failure rather than a rejection. A ban-evading PDU
+  passes the first two (the state it references genuinely predates the ban)
+  but fails the third (the room's actual resolved state has the sender
+  banned), so it is stored — participating in state resolution, so a later
+  event cannot use it to escape detection a second time — but never becomes
+  a forward extremity and is excluded from every client-facing timeline
+  (`/sync`, sliding sync, `/messages`, `/context`, `/event/{eventId}`,
+  search — see `docs/event-engine.md`, "Phase B2"). See
+  `tests/unit/test_pdu_ingestion_auth_checks.cpp`, "Ban evasion" scenario.
+- **Residual risk, unchanged by phase B2:** a soft-failed *state* event can
+  still be admitted into `current_state` if state resolution later favors it
+  — this is spec-mandated (resolution, not delivery-order tricks, decides
+  state), and is exactly what state-res v2's power/mainline ordering exists
+  to make deterministic and unexploitable; see "PDU ingestion resolved
+  state diverging by delivery order" above.
+- **Not covered by this phase:** the membership-acceptor path
+  (`send_join`/`send_leave`/`send_knock` acceptance,
+  `src/federation/inbound_request.cpp`) does not run this three-way check
+  and still hard-rejects a content-hash mismatch instead of redacting — see
+  `src/federation/AGENTS.md`.
+
 ## Security principles
 
 - Fail closed.

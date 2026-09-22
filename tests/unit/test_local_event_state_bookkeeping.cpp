@@ -157,8 +157,28 @@ SCENARIO("THE REGRESSION: a remote PDU referencing a locally sent message is acc
 
         WHEN("a remote PDU listing the local message as its prev_event is ingested")
         {
+            // ADR-0064 phase B2: ingest_pdu_event now authorises against the
+            // PDU's own named auth_events (spec step 4), so this fixture
+            // needs the room's real create/power_levels events, matching
+            // what a real federating server would send.
+            auto const auth_event_ids = [&]() -> std::vector<std::string> {
+                auto ids = std::vector<std::string>{};
+                for (auto const& s : runtime.database.persistent_store.state)
+                {
+                    if (s.room_id != ctx.room_id)
+                    {
+                        continue;
+                    }
+                    if ((s.event_type == "m.room.create" || s.event_type == "m.room.power_levels") &&
+                        s.state_key.empty())
+                    {
+                        ids.push_back(s.event_id);
+                    }
+                }
+                return ids;
+            }();
             auto const envelope = make_inbound_pdu(ctx.room_id, "$remote_reply:remote.example.org", "m.room.message",
-                                                   std::nullopt, {local_message_event_id}, 5000);
+                                                   std::nullopt, {local_message_event_id}, 5000, {}, auth_event_ids);
             auto const result = merovingian::homeserver::ingest_pdu_event(runtime, envelope);
 
             THEN("it is accepted, not missing_prev_state — the local message must have its own state group")

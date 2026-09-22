@@ -3820,6 +3820,16 @@ namespace
                 {
                     continue;
                 }
+                // ADR-0064 phase B2: a rejected or soft-failed event is
+                // never relayed to clients (spec "Rejection", "Soft
+                // failure"). current_state delivery (the sync response's
+                // `state` section, built separately from store.state) is
+                // untouched — a soft-failed *state* event that resolution
+                // later admits into current state is still delivered there.
+                if (event.status == "rejected" || event.status == "soft_failed")
+                {
+                    continue;
+                }
                 if (since_ordering > 0U && event.stream_ordering <= since_ordering)
                 {
                     continue;
@@ -6526,6 +6536,12 @@ namespace
             {
                 continue;
             }
+            // ADR-0064 phase B2: /messages paginates the timeline, so a
+            // rejected or soft-failed event is excluded the same as sync's.
+            if (event.status == "rejected" || event.status == "soft_failed")
+            {
+                continue;
+            }
             if (trust_safety::is_delivery_suppressed(ignored_senders, event.sender_user_id,
                                                      trust_safety::event_json_is_state_event(event.json)))
             {
@@ -6674,10 +6690,20 @@ namespace
         auto entries = std::vector<database::PersistentEvent const*>{};
         for (auto const& event : store.events)
         {
-            if (event.room_id == room_id)
+            if (event.room_id != room_id)
             {
-                entries.push_back(&event);
+                continue;
             }
+            // ADR-0064 phase B2: events_before/events_after page through the
+            // timeline, so a rejected or soft-failed event is excluded the
+            // same as sync's and /messages'. `target` itself is handled by
+            // the caller (a rejected/soft-failed target_event_id 404s before
+            // this function is even called), so it is always present here.
+            if (event.status == "rejected" || event.status == "soft_failed")
+            {
+                continue;
+            }
+            entries.push_back(&event);
         }
         std::ranges::sort(entries, [](auto const* lhs, auto const* rhs) noexcept {
             return lhs->stream_ordering < rhs->stream_ordering;
@@ -7003,10 +7029,20 @@ namespace
         auto entries = std::vector<database::PersistentEvent const*>{};
         for (auto const& event : store.events)
         {
-            if (event.room_id == target.room_id)
+            if (event.room_id != target.room_id)
             {
-                entries.push_back(&event);
+                continue;
             }
+            // ADR-0064 phase B2: search result context pages through the
+            // timeline the same as GET /context, so a rejected or
+            // soft-failed event is excluded. `target` itself is a search
+            // match, and the match-scan loop already excludes those
+            // statuses, so it is always present here.
+            if (event.status == "rejected" || event.status == "soft_failed")
+            {
+                continue;
+            }
+            entries.push_back(&event);
         }
         std::ranges::sort(entries, [](auto const* lhs, auto const* rhs) noexcept {
             return lhs->stream_ordering < rhs->stream_ordering;
@@ -7139,6 +7175,13 @@ namespace
             // and a server-wide event disclosure, since unlike /messages the
             // scan is not otherwise bounded to one room by the request path.
             if (!joined_rooms.contains(event.room_id))
+            {
+                continue;
+            }
+            // ADR-0064 phase B2: search results are a timeline view, so a
+            // rejected or soft-failed event is excluded the same as
+            // sync/messages/context.
+            if (event.status == "rejected" || event.status == "soft_failed")
             {
                 continue;
             }
@@ -12244,7 +12287,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 auto const event = std::ranges::find_if(store.events, [&](database::PersistentEvent const& current) {
                     return current.room_id == path->room_id && current.event_id == path->event_id;
                 });
-                if (event == store.events.end())
+                // ADR-0064 phase B2: a rejected or soft-failed event is
+                // never relayed to clients (spec "Rejection", "Soft
+                // failure") — treated the same as not found, so a member
+                // cannot distinguish "never existed" from "was filtered".
+                if (event == store.events.end() || event->status == "rejected" || event->status == "soft_failed")
                 {
                     return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "event not found");
                 }
@@ -12280,7 +12327,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 auto const event = std::ranges::find_if(store.events, [&](database::PersistentEvent const& current) {
                     return current.room_id == path->room_id && current.event_id == path->event_id;
                 });
-                if (event == store.events.end())
+                // ADR-0064 phase B2: same fail-closed 404 as GET .../event/{eventId}
+                // above for a rejected or soft-failed target event.
+                if (event == store.events.end() || event->status == "rejected" || event->status == "soft_failed")
                 {
                     return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "event not found");
                 }

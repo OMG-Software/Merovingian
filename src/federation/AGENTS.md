@@ -19,9 +19,15 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
 
 4. **Run authorization rules** (`events/authorization.hpp`) before persisting any inbound PDU.
 
-5. **Reject soft-failed events** — do not forward or act on events that fail auth but are kept for
-   state resolution purposes. **Not implemented yet:** there is no soft-fail check (auth against
-   the room's current state) anywhere in `src/`; see `docs/todos/capability-gaps.md`.
+5. **Never relay or act on a rejected or soft-failed event as if it were normal** — a rejected
+   event (fails auth against its own `auth_events` or the state before it) or a soft-failed one
+   (fails auth against current state) is stored and takes part in state resolution, but must never
+   reach a client timeline, become a forward extremity, or drive membership/push side effects.
+   Implemented in `homeserver::ingest_pdu_event` (`src/homeserver/local_http_router.cpp`, ADR-0064
+   phase B2) for the `/send` transaction path; see `docs/event-engine.md`, "Phase B2". **Not yet
+   implemented** for the membership-acceptor path (`send_join`/`send_leave`/`send_knock`
+   acceptance below) — it does not run the auth_events/state-before/current-state three-way check
+   and still hard-rejects a content-hash mismatch instead of redacting it.
 
 6. **Never relay a remote server's answer about users unfiltered.** Keep only the users that
    server was asked about, and only records that describe the user they are filed under. For
