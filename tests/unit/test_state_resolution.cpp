@@ -345,13 +345,21 @@ SCENARIO("Partition separates conflicted from unconflicted state keys", "[events
     }
 }
 
-SCENARIO("Reverse topological power sort orders by sender power then timestamp", "[events][state][resolution][sort]")
+SCENARIO("Reverse topological power sort falls back to the origin_server_ts tie-break when neither event has a "
+         "power_levels ancestor",
+         "[events][state][resolution][sort]")
 {
     GIVEN("conflicted events from senders with different power levels")
     {
         auto const power_key = merovingian::events::StateKey{"m.room.power_levels", ""};
-        auto const unconflicted = merovingian::events::StateMap{};
-
+        // Neither event's own auth_events name a power_levels ancestor (the
+        // helper below leaves auth_events empty), so both fall to the spec
+        // default of 0 for a non-creator sender with no power_levels event
+        // to consult — the ordering below is then decided by the
+        // origin_server_ts tie-break, not either event's own self-claimed
+        // content (rooms/v10.md — Reverse topological power ordering, rule 1
+        // reads power "looking at their respective auth_events", never an
+        // event's own new content).
         auto high_power_event = merovingian::events::StateEventReference{
             power_key, "$high", "@alice:example.org", 10, 100, make_power_levels_value("@alice:example.org", 100)};
         auto low_power_event = merovingian::events::StateEventReference{
@@ -364,13 +372,15 @@ SCENARIO("Reverse topological power sort orders by sender power then timestamp",
         {
             auto const* policy = merovingian::rooms::find_room_version_policy("10");
             REQUIRE(policy != nullptr);
-            auto const sorted = merovingian::events::reverse_topological_power_sort(conflicted, unconflicted, *policy);
+            auto const sorted = merovingian::events::reverse_topological_power_sort(
+                conflicted, merovingian::events::EventJsonIndex{}, merovingian::events::EventLookupFn{}, *policy);
 
-            THEN("the high-power event comes first")
+            THEN("the earlier-timestamped event comes first (both tie at the default power level)")
             {
-                REQUIRE(sorted.size() == 2U);
-                REQUIRE(sorted[0].event_id == "$high");
-                REQUIRE(sorted[1].event_id == "$low");
+                REQUIRE(sorted.has_value());
+                REQUIRE(sorted->size() == 2U);
+                REQUIRE((*sorted)[0].event_id == "$high");
+                REQUIRE((*sorted)[1].event_id == "$low");
             }
         }
     }

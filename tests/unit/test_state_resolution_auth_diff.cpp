@@ -603,3 +603,209 @@ SCENARIO("Room v12: an event on the conflicted state subgraph's path is included
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Reverse topological power ordering must read a candidate's sender power
+// from the m.room.power_levels (and, for v12, m.room.create) event in that
+// SAME candidate's own auth_events -- never from the candidate's own new
+// content, and never from a shared unconflicted/resolved state map.
+// Spec: ../../docs/matrix-v1.19-spec/rooms/v10.md -- Definitions, "Reverse
+// topological power ordering", rule 1 ("x's sender has greater power level
+// than y's sender, when looking at their respective auth_events").
+// ---------------------------------------------------------------------------
+
+namespace
+{
+
+[[nodiscard]] auto index_of(std::vector<StateEventReference> const& events) -> merovingian::events::EventJsonIndex
+{
+    auto group = StateGroup{"index", events};
+    return merovingian::events::build_event_json_index({group});
+}
+
+} // namespace
+
+SCENARIO("Reverse topological power ordering reads a power_levels candidate's sender power from its auth_events "
+         "ancestor, not its own new content",
+         "[state_res_v2][power-ordering]")
+{
+    GIVEN("a power_levels event that grants its own sender a higher level than the previous power_levels event did")
+    {
+        auto const* policy = merovingian::rooms::find_room_version_policy("10");
+        REQUIRE(policy != nullptr);
+
+        // Prior power_levels: alice genuinely holds 100, mallory only 10.
+        auto const pl_prev = make_ref("m.room.power_levels", "", "$pl_prev", "@alice:example.org", 1,
+                                      {
+        },
+                                      pl_content({{"@alice:example.org", 100}, {"@mallory:example.org", 10}}));
+
+        // mallory's own candidate grants HERSELF 100 in its own new
+        // content -- a self-elevation claim that must not be believed for
+        // ordering purposes (it would still be rejected on its own merits by
+        // the auth rules, but the ordering must not be fooled by it either).
+        auto const candidate_mallory = make_ref("m.room.power_levels", "", "$mallory", "@mallory:example.org", 100,
+                                                {
+                                                    "$pl_prev"
+        },
+                                                pl_content({{"@mallory:example.org", 100}}));
+        // alice's candidate merely restates her own real level.
+        auto const candidate_alice = make_ref("m.room.power_levels", "", "$alice", "@alice:example.org", 200,
+                                              {
+                                                  "$pl_prev"
+        },
+                                              pl_content({{"@alice:example.org", 100}}));
+
+        auto const known_index = index_of({pl_prev});
+        auto const conflicted = std::vector<StateEventReference>{candidate_mallory, candidate_alice};
+
+        WHEN("the candidates are sorted by reverse topological power ordering")
+        {
+            auto const sorted =
+                merovingian::events::reverse_topological_power_sort(conflicted, known_index, {}, *policy);
+
+            THEN("alice's real, higher power (from the auth_events ancestor) sorts her event first")
+            {
+                REQUIRE(sorted.has_value());
+                REQUIRE(sorted->size() == 2U);
+                // Spec MUST: mallory's self-elevation claim (100, in her own
+                // new content) must not outrank alice's real power (100 vs
+                // mallory's real 10) read from the auth_events ancestor. Do
+                // NOT weaken this assertion -- it is exactly the bug.
+                REQUIRE((*sorted)[0].event_id == "$alice");
+                REQUIRE((*sorted)[1].event_id == "$mallory");
+            }
+        }
+    }
+}
+
+SCENARIO("Reverse topological power ordering reads a non-power candidate's sender power from its own auth_events, "
+         "not a shared unconflicted power_levels event",
+         "[state_res_v2][power-ordering]")
+{
+    GIVEN("two non-power candidates whose OWN auth_events name power_levels events with different real levels")
+    {
+        auto const* policy = merovingian::rooms::find_room_version_policy("10");
+        REQUIRE(policy != nullptr);
+
+        auto const pl_mallory_high = make_ref("m.room.power_levels", "", "$pl_mallory_high", "@alice:example.org", 1,
+                                              {
+        },
+                                              pl_content({{"@mallory:example.org", 100}}));
+        auto const pl_bob_low = make_ref("m.room.power_levels", "", "$pl_bob_low", "@alice:example.org", 1,
+                                         {
+        },
+                                         pl_content({{"@bob:example.org", 5}}));
+
+        // Both are member-ban events (non-power_levels type), each citing a
+        // DIFFERENT power_levels ancestor with a very different real level
+        // for its own sender.
+        auto const ban_mallory = make_ref("m.room.member", "@victim:example.org", "$ban_mallory",
+                                          "@mallory:example.org", 100, {"$pl_mallory_high"}, R"({"membership":"ban"})");
+        auto const ban_bob = make_ref("m.room.member", "@victim:example.org", "$ban_bob", "@bob:example.org", 1,
+                                      {"$pl_bob_low"}, R"({"membership":"ban"})");
+
+        auto const known_index = index_of({pl_mallory_high, pl_bob_low});
+        auto const conflicted = std::vector<StateEventReference>{ban_bob, ban_mallory};
+
+        WHEN("the candidates are sorted by reverse topological power ordering")
+        {
+            auto const sorted =
+                merovingian::events::reverse_topological_power_sort(conflicted, known_index, {}, *policy);
+
+            THEN("mallory's genuinely higher power (100 vs bob's 5) sorts her event first")
+            {
+                REQUIRE(sorted.has_value());
+                REQUIRE(sorted->size() == 2U);
+                // Spec MUST: each candidate's power comes from ITS OWN
+                // auth_events, not a single shared map -- bob's ban must not
+                // tie with or outrank mallory's despite both being
+                // "unconflicted" from some other event's point of view.
+                REQUIRE((*sorted)[0].event_id == "$ban_mallory");
+                REQUIRE((*sorted)[1].event_id == "$ban_bob");
+            }
+        }
+    }
+}
+
+SCENARIO("Room v12: a room creator's event sorts ahead of any non-creator's, however high the non-creator's level",
+         "[state_res_v2][power-ordering][v12]")
+{
+    GIVEN("a creator candidate and a non-creator candidate with an extremely high power_levels-granted level")
+    {
+        auto const* policy = merovingian::rooms::find_room_version_policy("12");
+        REQUIRE(policy != nullptr);
+        REQUIRE(policy->privilege_room_creators);
+
+        auto const create = make_ref("m.room.create", "", "$create", "@alice:example.org", 1, {},
+                                     R"({"creator":"@alice:example.org","room_version":"12"})");
+        auto const pl_huge = make_ref("m.room.power_levels", "", "$pl_huge", "@alice:example.org", 1,
+                                      {
+                                          "$create"
+        },
+                                      pl_content({{"@mallory:example.org", 1000000}}));
+
+        // mallory: an ordinary (non-creator) candidate with a huge but
+        // finite power_levels-granted level.
+        auto const candidate_mallory =
+            make_ref("m.room.member", "@victim:example.org", "$mallory", "@mallory:example.org", 1,
+                     {"$create", "$pl_huge"}, R"({"membership":"ban"})");
+        // alice: the room's creator (per the create event's sender).
+        auto const candidate_alice = make_ref("m.room.member", "@victim2:example.org", "$alice", "@alice:example.org",
+                                              1, {"$create", "$pl_huge"}, R"({"membership":"ban"})");
+
+        auto const known_index = index_of({create, pl_huge});
+        auto const conflicted = std::vector<StateEventReference>{candidate_mallory, candidate_alice};
+
+        WHEN("the candidates are sorted by reverse topological power ordering")
+        {
+            auto const sorted =
+                merovingian::events::reverse_topological_power_sort(conflicted, known_index, {}, *policy);
+
+            THEN("the creator sorts first regardless of the non-creator's power_levels level")
+            {
+                REQUIRE(sorted.has_value());
+                REQUIRE(sorted->size() == 2U);
+                // Spec MUST (rooms/v12.md, MSC4289): a room creator's power is
+                // effectively infinite, decided from the create event in the
+                // candidate's own auth_events (sender, or
+                // content.additional_creators).
+                REQUIRE((*sorted)[0].event_id == "$alice");
+                REQUIRE((*sorted)[1].event_id == "$mallory");
+            }
+        }
+    }
+}
+
+SCENARIO("Reverse topological power ordering fails closed when a candidate's auth_events power_levels ancestor "
+         "cannot be fetched",
+         "[state_res_v2][power-ordering][fail-closed]")
+{
+    GIVEN("a candidate whose auth_events cite an event the lookup does not have")
+    {
+        auto const* policy = merovingian::rooms::find_room_version_policy("10");
+        REQUIRE(policy != nullptr);
+
+        auto const candidate =
+            make_ref("m.room.power_levels", "", "$pl", "@alice:example.org", 1, {"$missing"}, pl_content_full);
+        auto const known_index = merovingian::events::EventJsonIndex{};
+        auto const conflicted = std::vector<StateEventReference>{candidate};
+
+        WHEN("the candidates are sorted by reverse topological power ordering")
+        {
+            // No event_lookup supplied either, so "$missing" cannot be
+            // resolved by any means.
+            auto const sorted =
+                merovingian::events::reverse_topological_power_sort(conflicted, known_index, {}, *policy);
+
+            THEN("the sort fails closed instead of guessing a default power level")
+            {
+                // Spec (Required design / ADR-0063): an auth-chain event
+                // needed to answer "what is this sender's power" that cannot
+                // be fetched must not let resolution proceed on a partial
+                // chain.
+                REQUIRE_FALSE(sorted.has_value());
+            }
+        }
+    }
+}

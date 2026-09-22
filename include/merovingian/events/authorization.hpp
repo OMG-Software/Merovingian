@@ -122,9 +122,17 @@ auto append_auth_chain_event(AuthChain& chain, std::string_view event_id) -> voi
 // behaviour rather than the more permissive one.
 [[nodiscard]] auto extract_user_power_level(canonicaljson::Value const& power_levels_event, std::string_view user_id,
                                             bool allow_string_values = false) noexcept -> std::int64_t;
+// A sender's effective power level for auth-rule purposes: MSC4289 room
+// creators (per `policy.privilege_room_creators`) get an effectively
+// infinite level regardless of `power_levels`; otherwise the level comes
+// from `power_levels` when present, or the pre-v12 default (the room's
+// `content.creator` gets 100, everyone else 0) when it is absent.
+[[nodiscard]] auto effective_sender_power(canonicaljson::Value const& power_levels, std::string_view sender,
+                                          canonicaljson::Value const& create_event,
+                                          rooms::RoomVersionPolicy const& policy) noexcept -> std::int64_t;
 [[nodiscard]] auto extract_power_level_key(canonicaljson::Value const& power_levels_event, std::string_view key,
-                                           std::int64_t default_value,
-                                           bool allow_string_values = false) noexcept -> std::int64_t;
+                                           std::int64_t default_value, bool allow_string_values = false) noexcept
+    -> std::int64_t;
 [[nodiscard]] auto domain_of(std::string_view matrix_id) noexcept -> std::string_view;
 [[nodiscard]] auto extract_content_membership(canonicaljson::Value const& event) noexcept -> std::string;
 

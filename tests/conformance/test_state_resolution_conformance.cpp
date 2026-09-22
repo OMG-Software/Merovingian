@@ -1144,42 +1144,57 @@ SCENARIO("Reverse topological power ordering reads string power levels only wher
         REQUIRE_FALSE(v9->power_levels_require_integers);
         REQUIRE(v10->power_levels_require_integers);
 
-        auto const unconflicted = merovingian::events::StateMap{};
-
-        // @bob grants himself an integer 0; @alice grants herself the string "100".
-        auto const low =
-            make_power_levels_with_users(R"({"@bob:example.org":0})", "@bob:example.org", "$low:example.org", 10, 1);
-        auto const high = make_power_levels_with_users(R"({"@alice:example.org":"100"})", "@alice:example.org",
-                                                       "$high:example.org", 50, 1);
+        // The power level is read from each candidate's own auth_events
+        // power_levels ancestor (rooms/v10.md — Reverse topological power
+        // ordering, rule 1), never from the candidate's own new content — so
+        // the string-vs-integer distinction is exercised on the ANCESTOR
+        // ($pl_prev): @bob holds an integer 0, @alice holds the string
+        // "100". Both candidates merely cite $pl_prev; their own content is
+        // irrelevant to the ordering.
+        auto const pl_prev =
+            make_event_with_auth("m.room.power_levels", "", "$pl_prev:example.org", "@alice:example.org", 1, {},
+                                 R"({"ban":50,"events_default":0,"invite":0,"kick":50,"redact":50,"state_default":50,)"
+                                 R"("users_default":0,"users":{"@bob:example.org":0,"@alice:example.org":"100"}})");
+        auto const low = make_event_with_auth("m.room.power_levels", "", "$low:example.org", "@bob:example.org", 10,
+                                              {"$pl_prev:example.org"}, power_levels_content);
+        auto const high = make_event_with_auth("m.room.power_levels", "", "$high:example.org", "@alice:example.org", 50,
+                                               {"$pl_prev:example.org"}, power_levels_content);
         auto const conflicted = std::vector<StateEventReference>{low, high};
+        auto const known_index = merovingian::events::build_event_json_index({
+            merovingian::events::StateGroup{"g", {pl_prev}}
+        });
 
         WHEN("the events are sorted under a room version 9 policy")
         {
-            auto const sorted = merovingian::events::reverse_topological_power_sort(conflicted, unconflicted, *v9);
+            auto const sorted = merovingian::events::reverse_topological_power_sort(
+                conflicted, known_index, merovingian::events::EventLookupFn{}, *v9);
 
             THEN("the string-encoded level is honoured and its sender sorts first")
             {
-                REQUIRE(sorted.size() == 2U);
+                REQUIRE(sorted.has_value());
+                REQUIRE(sorted->size() == 2U);
                 // Spec MUST: v9 accepts "100" as the power level 100, which outranks 0.
                 // Do NOT weaken - reading it as absent lets a lower-power sender's event
                 // win state resolution in every pre-v10 room.
-                REQUIRE(sorted[0].event_id == "$high:example.org");
-                REQUIRE(sorted[1].event_id == "$low:example.org");
+                REQUIRE((*sorted)[0].event_id == "$high:example.org");
+                REQUIRE((*sorted)[1].event_id == "$low:example.org");
             }
         }
 
         WHEN("the same events are sorted under a room version 10 policy")
         {
-            auto const sorted = merovingian::events::reverse_topological_power_sort(conflicted, unconflicted, *v10);
+            auto const sorted = merovingian::events::reverse_topological_power_sort(
+                conflicted, known_index, merovingian::events::EventLookupFn{}, *v10);
 
             THEN("the string-encoded level is ignored and the ordering falls back to origin_server_ts")
             {
-                REQUIRE(sorted.size() == 2U);
+                REQUIRE(sorted.has_value());
+                REQUIRE(sorted->size() == 2U);
                 // Spec MUST: v10 rejects string power levels, so @alice falls back to
                 // users_default (0). Both senders are then 0 and rule 2 orders by the
                 // earlier origin_server_ts.
-                REQUIRE(sorted[0].event_id == "$low:example.org");
-                REQUIRE(sorted[1].event_id == "$high:example.org");
+                REQUIRE((*sorted)[0].event_id == "$low:example.org");
+                REQUIRE((*sorted)[1].event_id == "$high:example.org");
             }
         }
     }
@@ -1200,12 +1215,13 @@ SCENARIO("Reverse topological power ordering ties on equal power and equal origi
 {
     GIVEN("two conflicted power events from the same sender at the identical origin_server_ts")
     {
-        auto const unconflicted = merovingian::events::StateMap{};
         auto const* policy = merovingian::rooms::find_room_version_policy("10");
         REQUIRE(policy != nullptr);
 
-        // Same sender, same power (self-content lookup), same origin_server_ts —
-        // only the event_id differs.
+        // Neither event's own auth_events name a power_levels ancestor, so
+        // both fall to the spec default of 0 (same as the mainline-sort
+        // tie-break test above) — same origin_server_ts too, so only the
+        // final event_id tie-break can distinguish them.
         auto const zzz = make_power_levels_event("@alice:example.org", "$zzz:example.org", 500, 1);
         auto const aaa = make_power_levels_event("@alice:example.org", "$aaa:example.org", 500, 1);
 
@@ -1213,14 +1229,16 @@ SCENARIO("Reverse topological power ordering ties on equal power and equal origi
 
         WHEN("the events are sorted by reverse topological power ordering")
         {
-            auto const sorted = merovingian::events::reverse_topological_power_sort(conflicted, unconflicted, *policy);
+            auto const sorted = merovingian::events::reverse_topological_power_sort(
+                conflicted, merovingian::events::EventJsonIndex{}, merovingian::events::EventLookupFn{}, *policy);
 
             THEN("the lexicographically smaller event_id sorts first")
             {
-                REQUIRE(sorted.size() == 2U);
+                REQUIRE(sorted.has_value());
+                REQUIRE(sorted->size() == 2U);
                 // Spec MUST: rule 3 — equal power, equal ts -> smaller event_id first.
-                REQUIRE(sorted[0].event_id == "$aaa:example.org");
-                REQUIRE(sorted[1].event_id == "$zzz:example.org");
+                REQUIRE((*sorted)[0].event_id == "$aaa:example.org");
+                REQUIRE((*sorted)[1].event_id == "$zzz:example.org");
             }
         }
     }

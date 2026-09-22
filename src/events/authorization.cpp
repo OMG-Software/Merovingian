@@ -240,28 +240,6 @@ namespace
     // representable value rather than a literal number from the power_levels event.
     constexpr auto creator_power = std::numeric_limits<std::int64_t>::max();
 
-    [[nodiscard]] auto effective_sender_power(canonicaljson::Value const& power_levels, std::string_view sender,
-                                              canonicaljson::Value const& create_event,
-                                              rooms::RoomVersionPolicy const& policy) noexcept -> std::int64_t
-    {
-        // MSC4289: room creators hold an effectively infinite power level that is
-        // independent of (and overrides) any entry in the power_levels event.
-        if (user_is_room_creator(create_event, sender, policy))
-        {
-            return creator_power;
-        }
-        if (value_has_content(power_levels))
-        {
-            return extract_user_power_level(power_levels, sender, !policy.power_levels_require_integers);
-        }
-        auto const* creator = event_content_string(create_event, "creator");
-        if (creator != nullptr && sender == *creator)
-        {
-            return 100;
-        }
-        return 0;
-    }
-
     // Every candidate public key a third-party invite's "signed" blob may be
     // checked against: content.public_key (legacy single-key form) plus each
     // entry of content.public_keys[].public_key.
@@ -765,6 +743,35 @@ namespace
     }
 
 } // namespace
+
+// MSC4289: room creators hold an effectively infinite power level that is
+// independent of (and overrides) any entry in the power_levels event.
+// Exposed publicly (moved out of the anonymous namespace) so state
+// resolution's reverse topological power ordering can compute a sender's
+// power the same way the auth rules do, instead of re-implementing (and
+// getting wrong) the same default-level logic.
+// Spec: rooms/v10.md — Definitions, "Reverse topological power ordering",
+// rule 1 ("x's sender has greater power level than y's sender, when
+// looking at their respective auth_events").
+auto effective_sender_power(canonicaljson::Value const& power_levels, std::string_view sender,
+                            canonicaljson::Value const& create_event, rooms::RoomVersionPolicy const& policy) noexcept
+    -> std::int64_t
+{
+    if (user_is_room_creator(create_event, sender, policy))
+    {
+        return creator_power;
+    }
+    if (value_has_content(power_levels))
+    {
+        return extract_user_power_level(power_levels, sender, !policy.power_levels_require_integers);
+    }
+    auto const* creator = event_content_string(create_event, "creator");
+    if (creator != nullptr && sender == *creator)
+    {
+        return 100;
+    }
+    return 0;
+}
 
 auto auth_rule_hook_name(rooms::RoomVersionPolicy const& policy) -> std::string
 {

@@ -47,12 +47,6 @@ struct StateEventReference final
     canonicaljson::Value event_json{};
 };
 
-struct EventPowerData final
-{
-    std::int64_t sender_power{0};
-    std::int64_t origin_server_ts{0};
-};
-
 struct StateGroup final
 {
     std::string group_id{};
@@ -101,15 +95,26 @@ using EventJsonIndex = std::unordered_map<std::string, std::reference_wrapper<ca
 [[nodiscard]] auto state_resolution_summary(StateResolutionResult const& result) -> std::string;
 
 [[nodiscard]] auto partition_conflicted_state(std::vector<StateGroup> const& groups) -> std::pair<StateMap, StateMap>;
-// `policy` decides how a sender's power level is read: room versions 1-9 accept
-// a power level encoded as a JSON string, v10+ require a real integer. The
-// ordering ranks events by sender power, so reading a v9 string level as absent
-// would demote the sender to users_default and let a lower-power event win.
-// Spec: ../../docs/matrix-v1.19-spec/rooms/v10.md — "Values in
-// m.room.power_levels events must be integers".
+// Each candidate's sender power is read from the m.room.power_levels (and,
+// for v12, m.room.create) event in THAT CANDIDATE'S OWN auth_events — never
+// from the candidate's own new content, and never from a shared
+// unconflicted/resolved state map. `known_events` supplies auth_events
+// ancestors already present in the submitted state groups; `event_lookup`
+// (may be empty) supplies anything else. `policy` additionally decides how a
+// sender's power level is read once the power_levels event is found: room
+// versions 1-9 accept a power level encoded as a JSON string, v10+ require a
+// real integer, and v12 gives room creators (found via the create event in
+// the same auth_events) an effectively infinite level (MSC4289). Returns
+// nullopt when an auth_events entry needed to answer the question could not
+// be resolved — fail closed (ADR-0063), never order by a partially-known
+// chain.
+// Spec: ../../docs/matrix-v1.19-spec/rooms/v10.md — Definitions, "Reverse
+// topological power ordering", rule 1 ("looking at their respective
+// auth_events"); "Values in m.room.power_levels events must be integers".
 [[nodiscard]] auto reverse_topological_power_sort(std::vector<StateEventReference> const& conflicted,
-                                                  StateMap const& unconflicted, rooms::RoomVersionPolicy const& policy)
-    -> std::vector<StateEventReference>;
+                                                  EventJsonIndex const& known_events, EventLookupFn const& event_lookup,
+                                                  rooms::RoomVersionPolicy const& policy)
+    -> std::optional<std::vector<StateEventReference>>;
 
 // Spec (rooms/v10 — Definitions, Power events): a power event is an
 // m.room.power_levels or m.room.join_rules state event, or an m.room.member

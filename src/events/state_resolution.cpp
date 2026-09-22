@@ -11,7 +11,6 @@
 #include "merovingian/rooms/room_version_policy.hpp"
 
 #include <algorithm>
-#include <charconv>
 #include <cstdint>
 #include <deque>
 #include <limits>
@@ -152,119 +151,6 @@ namespace
         }
         return candidate.event_id < existing.event_id ? candidate : existing;
     }
-
-    // A power level in a form the room version accepts, or nullopt when the value
-    // is absent or not a power level for this room version.
-    // Spec: ../../docs/matrix-v1.19-spec/rooms/v10.md — "Values in
-    // m.room.power_levels events must be integers", and v9's "m.room.power_levels
-    // events accept values as strings" for versions 1-9. This mirrors
-    // authorization.cpp's power_level_value; the two must agree, or state
-    // resolution would order events by a power level the auth rules do not see.
-    [[nodiscard]] auto power_level_value(canonicaljson::Value const* value, bool allow_string_values) noexcept
-        -> std::optional<std::int64_t>
-    {
-        if (value == nullptr)
-        {
-            return std::nullopt;
-        }
-        if (auto const* integer = std::get_if<std::int64_t>(&value->storage()); integer != nullptr)
-        {
-            return *integer;
-        }
-        if (!allow_string_values)
-        {
-            return std::nullopt;
-        }
-        auto const* text = std::get_if<std::string>(&value->storage());
-        if (text == nullptr || text->empty())
-        {
-            return std::nullopt;
-        }
-        // Only a plain, optionally-signed decimal integer counts. from_chars
-        // rejects leading whitespace, "+", "0x" and trailing junk, and the
-        // end-pointer check rejects anything it stopped short on, so "10abc" and
-        // "1.5" are not power levels.
-        auto parsed = std::int64_t{0};
-        auto const* first = text->data();
-        auto const* last = first + text->size();
-        auto const result = std::from_chars(first, last, parsed);
-        if (result.ec != std::errc{} || result.ptr != last)
-        {
-            return std::nullopt;
-        }
-        return parsed;
-    }
-
-    [[nodiscard]] auto extract_user_power(canonicaljson::Value const& power_levels_event, std::string_view user_id,
-                                          rooms::RoomVersionPolicy const& policy) noexcept -> std::int64_t
-    {
-        auto const* obj = value_is_object(power_levels_event);
-        if (obj == nullptr)
-        {
-            return 0;
-        }
-        auto const* content = object_member_as_object(*obj, "content");
-        if (content == nullptr)
-        {
-            return 0;
-        }
-        auto const allow_string_values = !policy.power_levels_require_integers;
-        auto const default_level =
-            power_level_value(object_member(*content, "users_default"), allow_string_values).value_or(0);
-        auto const* users = object_member_as_object(*content, "users");
-        if (users == nullptr)
-        {
-            return default_level;
-        }
-        return power_level_value(object_member(*users, user_id), allow_string_values).value_or(default_level);
-    }
-
-    [[nodiscard]] auto power_level_from_event(StateEventReference const& event, StateMap const& unconflicted,
-                                              rooms::RoomVersionPolicy const& policy) noexcept -> std::int64_t
-    {
-        if (event.key.event_type == "m.room.power_levels" && event.key.state_key.empty())
-        {
-            auto const sender_power = extract_user_power(event.event_json, event.sender, policy);
-            return sender_power;
-        }
-        auto const pl_key = StateKey{"m.room.power_levels", ""};
-        auto const it = unconflicted.find(pl_key);
-        if (it != unconflicted.end() && value_has_content(it->second.event_json))
-        {
-            return extract_user_power(it->second.event_json, event.sender, policy);
-        }
-        return 0;
-    }
-
-    [[nodiscard]] auto event_power_data(StateEventReference const& event, StateMap const& unconflicted,
-                                        rooms::RoomVersionPolicy const& policy) noexcept -> EventPowerData
-    {
-        return {power_level_from_event(event, unconflicted, policy), event.origin_server_ts};
-    }
-
-    struct ReverseTopoCompare final
-    {
-        StateMap const& unconflicted;
-        rooms::RoomVersionPolicy const& policy;
-
-        [[nodiscard]] auto operator()(StateEventReference const& a, StateEventReference const& b) const noexcept -> bool
-        {
-            auto const pa = event_power_data(a, unconflicted, policy);
-            auto const pb = event_power_data(b, unconflicted, policy);
-
-            if (pa.sender_power != pb.sender_power)
-            {
-                return pa.sender_power > pb.sender_power;
-            }
-            if (pa.origin_server_ts != pb.origin_server_ts)
-            {
-                return pa.origin_server_ts < pb.origin_server_ts;
-            }
-            // Spec (rooms/v10 — Reverse topological power ordering, rule 3):
-            // final tie-break is the lexicographically smaller event_id.
-            return a.event_id < b.event_id;
-        }
-    };
 
     // Build the mainline [P0, P1, …, Pn] of the resolved power_levels event:
     // P(i+1) is the m.room.power_levels event in Pi's auth_events, walked
@@ -647,6 +533,105 @@ namespace
         return ref;
     }
 
+    // The m.room.power_levels and m.room.create events found among
+    // `event_json`'s own auth_events (not the running resolved state, and not
+    // a shared "unconflicted" snapshot — see power_level_from_event below for
+    // why that distinction matters). Either field is left null when no event
+    // of that type appears in `event_json`'s auth_events at all — a normal
+    // outcome (the spec's default power-level rules then apply), distinct
+    // from an auth_events entry that exists but could not be fetched, which
+    // is a fail-closed condition (nullopt).
+    struct AuthAncestorContext final
+    {
+        canonicaljson::Value power_levels{};
+        canonicaljson::Value create{};
+    };
+
+    // Every valid auth_events entry is itself a state event, so determining
+    // whether a given entry is "the" power_levels (or create) ancestor
+    // requires fetching it to read its type — there is no way to rule an
+    // entry out without resolving it. An entry that cannot be resolved is
+    // therefore always fail-closed here (find_required), never skipped:
+    // skipping it could silently treat a real, unfetched power-levels
+    // ancestor as absent, defaulting the sender's power in a way the actual
+    // room state would not support.
+    [[nodiscard]] auto find_auth_ancestor_context(canonicaljson::Value const& event_json, AuthChainEventSource& source)
+        -> std::optional<AuthAncestorContext>
+    {
+        auto result = AuthAncestorContext{};
+        auto const* obj = value_is_object(event_json);
+        if (obj == nullptr)
+        {
+            return result;
+        }
+        auto const* auth = array_member(*obj, "auth_events");
+        if (auth == nullptr)
+        {
+            return result;
+        }
+        for (auto const& entry : *auth)
+        {
+            auto const* id = auth_entry_event_id(entry);
+            if (id == nullptr)
+            {
+                continue;
+            }
+            auto const* fetched = source.find_required(*id);
+            if (fetched == nullptr)
+            {
+                return std::nullopt;
+            }
+            auto const* fetched_obj = value_is_object(*fetched);
+            if (fetched_obj == nullptr)
+            {
+                continue;
+            }
+            auto const* type = string_member(*fetched_obj, "type");
+            if (type == nullptr)
+            {
+                continue;
+            }
+            if (*type == "m.room.power_levels" && !value_has_content(result.power_levels))
+            {
+                result.power_levels = *fetched;
+            }
+            else if (*type == "m.room.create" && !value_has_content(result.create))
+            {
+                result.create = *fetched;
+            }
+        }
+        return result;
+    }
+
+    // A conflicted event's sender power for the reverse topological power
+    // ordering. Spec (rooms/v10.md — Definitions, "Reverse topological power
+    // ordering", rule 1): "x's sender has greater power level than y's
+    // sender, when looking at their respective auth_events" — the power MUST
+    // come from the power_levels (and, for v12, create) event in the
+    // candidate's OWN auth_events, never from the candidate's own new
+    // content (a self-elevating m.room.power_levels event would otherwise
+    // rank itself by the level it grants itself, not the level it actually
+    // holds) and never from a shared "unconflicted" or "resolved" map (an
+    // event's auth_events may reference a different power_levels event than
+    // whatever happens to be unconflicted at resolution time). Reuses
+    // events::effective_sender_power (authorization.cpp) so this ordering
+    // and the auth rules agree on every default: MSC4289 creator-infinite
+    // power (decided from the create event in the SAME auth_events, per
+    // MSC4289 — sender plus content.additional_creators), the pre-v12
+    // content.creator default of 100, and 0 otherwise.
+    // Returns nullopt (fail closed, per ADR-0063) when an auth_events entry
+    // needed to answer the question could not be fetched.
+    [[nodiscard]] auto power_level_from_event(StateEventReference const& event, AuthChainEventSource& source,
+                                              rooms::RoomVersionPolicy const& policy) -> std::optional<std::int64_t>
+    {
+        auto const context = find_auth_ancestor_context(event.event_json, source);
+        if (!context.has_value())
+        {
+            return std::nullopt;
+        }
+        return effective_sender_power(context->power_levels, event.sender, context->create, policy);
+    }
+
     // Finds the state event of type/state_key `wanted` among `event_obj`'s own
     // auth_events entries. Used by the iterative auth checks' fallback: "If a
     // (event_type, state_key) key that is required for checking the
@@ -972,11 +957,46 @@ auto partition_conflicted_state(std::vector<StateGroup> const& groups) -> std::p
     return {unconflicted, conflicted};
 }
 
-auto reverse_topological_power_sort(std::vector<StateEventReference> const& conflicted, StateMap const& unconflicted,
-                                    rooms::RoomVersionPolicy const& policy) -> std::vector<StateEventReference>
+auto reverse_topological_power_sort(std::vector<StateEventReference> const& conflicted,
+                                    EventJsonIndex const& known_events, EventLookupFn const& event_lookup,
+                                    rooms::RoomVersionPolicy const& policy)
+    -> std::optional<std::vector<StateEventReference>>
 {
+    // Powers are computed once up front, rather than inside the sort
+    // comparator, for two reasons: a strict weak ordering comparator has no
+    // clean way to report a fail-closed condition (a missing auth_events
+    // ancestor — see power_level_from_event), and recomputing per comparison
+    // would re-walk the same auth_events on every comparator call.
+    auto source = AuthChainEventSource{known_events, event_lookup, max_auth_chain_walk_events};
+    auto power_by_id = std::unordered_map<std::string, std::int64_t>{};
+    power_by_id.reserve(conflicted.size());
+    for (auto const& event : conflicted)
+    {
+        auto const power = power_level_from_event(event, source, policy);
+        if (!power.has_value())
+        {
+            return std::nullopt;
+        }
+        power_by_id.emplace(event.event_id, *power);
+    }
+
     auto sorted = conflicted;
-    std::stable_sort(sorted.begin(), sorted.end(), ReverseTopoCompare{unconflicted, policy});
+    std::stable_sort(sorted.begin(), sorted.end(),
+                     [&power_by_id](StateEventReference const& a, StateEventReference const& b) noexcept -> bool {
+                         auto const pa = power_by_id.at(a.event_id);
+                         auto const pb = power_by_id.at(b.event_id);
+                         if (pa != pb)
+                         {
+                             return pa > pb;
+                         }
+                         if (a.origin_server_ts != b.origin_server_ts)
+                         {
+                             return a.origin_server_ts < b.origin_server_ts;
+                         }
+                         // Spec (rooms/v10 — Reverse topological power ordering, rule 3):
+                         // final tie-break is the lexicographically smaller event_id.
+                         return a.event_id < b.event_id;
+                     });
     return sorted;
 }
 
@@ -1024,6 +1044,17 @@ auto build_event_json_index(std::vector<StateGroup> const& groups) -> EventJsonI
     return index;
 }
 
+// Verified against the same defect class as power_level_from_event (self-
+// content or a shared state map, instead of the event's own auth_events)
+// while fixing the reverse topological power ordering: this function does
+// NOT have that mistake. It never computes a power LEVEL at all — the
+// mainline position comparison only ever needs the event's own
+// power_levels-ancestor auth_events chain (walked below via
+// power_levels_auth_ancestor(*current, events_by_id), starting from
+// `event.event_json`'s own "auth_events" array), never `resolved` or any
+// other event's data. `resolved` is used only to locate the mainline's own
+// head (P0, the already-resolved power_levels event) — not to read any
+// individual candidate's power.
 auto mainline_order(std::vector<StateEventReference>& events, StateMap const& resolved,
                     EventJsonIndex const& events_by_id) -> void
 {
@@ -1377,10 +1408,20 @@ auto resolve_state_v2(StateResolutionRequest const& request, rooms::RoomVersionP
         }
     }
 
-    // The reverse topological power ordering sort uses the true unconflicted
-    // state map regardless of algorithm variant — only the iterative auth
+    // The reverse topological power ordering sort reads each candidate's own
+    // auth_events, regardless of algorithm variant — only the iterative auth
     // checks' starting map changes for v12 (modification 1 above).
-    auto const sorted_power = reverse_topological_power_sort(power_events, unconflicted, policy);
+    auto sorted_power_result = reverse_topological_power_sort(power_events, known_index, request.event_lookup, policy);
+    if (!sorted_power_result.has_value())
+    {
+        auto const sort_failure_fields = std::vector<observability::StructuredLogField>{
+            {"room_version", request.room_version,                           false},
+            {"reason",       "reverse topological power sort failed closed", false},
+        };
+        log_diagnostic("resolve_state_v2.rejected", sort_failure_fields);
+        return {false, {}, "state-res v2: reverse topological power sort failed closed"};
+    }
+    auto const& sorted_power = *sorted_power_result;
 
     // Algorithm step 2: auth-check the power events first to obtain the
     // partially resolved state.
