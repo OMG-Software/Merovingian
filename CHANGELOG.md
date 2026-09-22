@@ -267,7 +267,16 @@ audit.
   is forced); and adds `state_group_state`, `event_state_groups`, and
   `forward_extremities`. Every pre-existing room is seeded with one
   snapshot state group built from its `current_state`, attached to its
-  current forward extremities. New store API in
+  current forward extremities — a seeding step that, along with phase B's
+  future per-event children lookup, filters `event_edges` by
+  `prev_event_id` alone, outside the leading column of its
+  `(event_id, prev_event_id)` primary key; migration 015 therefore also
+  creates `event_edges_prev_event_id ON event_edges (prev_event_id)` (the
+  project's first index, positioned before the seed statements so seeding
+  itself uses it), fixing what was previously a full table scan per probe
+  during seeding. `state_groups` gets no matching `room_id` index: no store
+  function queries it by `room_id`, only by its `state_group_id` primary
+  key. New store API in
   `include/merovingian/database/persistent_store.hpp`:
   `create_or_reuse_state_group`, `read_state_group_full_state` (bounded,
   cycle-detected, fails closed rather than ever returning partial state),

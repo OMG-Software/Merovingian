@@ -11,6 +11,8 @@ CREATE TABLE state_group_state (state_group_id TEXT NOT NULL, event_type TEXT NO
 CREATE TABLE event_state_groups (event_id TEXT PRIMARY KEY, state_group_id TEXT NOT NULL)
 -- statement create_forward_extremities
 CREATE TABLE forward_extremities (room_id TEXT NOT NULL, event_id TEXT NOT NULL, PRIMARY KEY (room_id, event_id))
+-- statement create_event_edges_prev_event_id_index
+CREATE INDEX event_edges_prev_event_id ON event_edges (prev_event_id)
 -- statement seed_state_group_snapshots
 INSERT INTO state_groups (state_group_id, room_id, parent_state_group_id, delta_depth) SELECT 'seed:' || r.room_id, r.room_id, '', '0' FROM rooms r WHERE NOT EXISTS (SELECT 1 FROM state_groups g WHERE g.state_group_id = 'seed:' || r.room_id)
 -- statement seed_state_group_state

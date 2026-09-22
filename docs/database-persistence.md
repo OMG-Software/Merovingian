@@ -425,6 +425,22 @@ remaining work before PostgreSQL-backed production operation.
     event to the group holding the room's state immediately after it.
   - `forward_extremities (room_id, event_id)` — a room's current DAG
     leaves.
+  - **Index:** `event_edges_prev_event_id ON event_edges (prev_event_id)` —
+    the project's first index. `event_edges`' primary key is `(event_id,
+    prev_event_id)`, which cannot serve a lookup keyed on `prev_event_id`
+    alone; the migration's own `seed_forward_extremities` step probes
+    exactly that (is this event anybody's `prev_event_id`?) once per event,
+    and phase B's future ingest-time "children of this event" lookup needs
+    the same shape. Without the index both are a full table scan per probe
+    — O(events × edges) for the seed step alone. The index is created
+    before the seed statements run, so seeding itself uses it; confirmed
+    by `EXPLAIN QUERY PLAN` in
+    `tests/integration/test_state_groups_flow.cpp`'s "event_edges has a
+    usable index for prev_event_id lookups" scenario. `state_groups` gets
+    no matching `room_id` index: every store function that reads it
+    (`find_state_group`, `read_state_group_full_state`,
+    `create_or_reuse_state_group`'s parent lookup) looks up by
+    `state_group_id`, its primary key — nothing queries it by `room_id`.
 
   Store API ([persistent_store.hpp](../include/merovingian/database/persistent_store.hpp)):
   `create_or_reuse_state_group(store, room_id, new_state_group_id,

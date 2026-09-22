@@ -1985,8 +1985,10 @@ SCENARIO("Checked-in migrations cover the v1 bootstrap and the v2/v3 stream wate
                 // 3 ALTER (events.status, state_groups.parent_state_group_id,
                 // state_groups.delta_depth) + 3 CREATE TABLE
                 // (state_group_state, event_state_groups,
-                // forward_extremities) + 4 seed INSERT...SELECT statements.
-                REQUIRE(loaded.steps[14].statements.size() == 10U);
+                // forward_extremities) + 1 CREATE INDEX
+                // (event_edges_prev_event_id, the project's first index) + 4
+                // seed INSERT...SELECT statements.
+                REQUIRE(loaded.steps[14].statements.size() == 11U);
 
                 for (auto const& statement : loaded.steps[0].statements)
                 {

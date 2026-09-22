@@ -150,6 +150,15 @@ namespace
         {
             return true;
         }
+        // Indexes are not part of the table set SchemaState tracks (they are
+        // neither created nor dropped from `state.tables`), so a CREATE
+        // INDEX/DROP INDEX statement -- like an ALTER TABLE -- is a no-op
+        // schema-state transition. First introduced by migration 015
+        // (event_edges_prev_event_id, ADR-0064).
+        if (statement.sql.starts_with("CREATE INDEX ") || statement.sql.starts_with("DROP INDEX "))
+        {
+            return true;
+        }
         // Data-only migrations (backfills, corrective updates) do not change the
         // table set. They have already passed SQL-shape validation, so accept
         // them as no-op schema-state transitions.
@@ -481,6 +490,15 @@ auto downgrade_initial_schema_migration() -> MigrationStep
     statements.push_back(make_create_table_statement(schema_table_definition("state_group_state").value()).value());
     statements.push_back(make_create_table_statement(schema_table_definition("event_state_groups").value()).value());
     statements.push_back(make_create_table_statement(schema_table_definition("forward_extremities").value()).value());
+    // event_edges' primary key is (event_id, prev_event_id), which cannot
+    // serve a lookup keyed on prev_event_id alone -- without this index,
+    // seed_forward_extremities below (and phase B's future children-of-event
+    // lookup on the ingest path) is a full table scan per probe. The
+    // project's first index; placed before the seed statements so seeding
+    // itself benefits.
+    statements.push_back(PreparedStatement{"create_event_edges_prev_event_id_index",
+                                           "CREATE INDEX event_edges_prev_event_id ON event_edges (prev_event_id)",
+                                           {}});
     statements.push_back(PreparedStatement{
         "seed_state_group_snapshots",
         "INSERT INTO state_groups (state_group_id, room_id, parent_state_group_id, delta_depth) SELECT 'seed:' || "
@@ -527,15 +545,18 @@ auto upgrade_migration_catalog() -> std::vector<MigrationStep>
             upgrade_event_graph_state_migration()};
 }
 
-// v15 -> v14: drop the three v15 tables and the columns ALTERed onto
-// `events`/`state_groups`. The seeded rows live only in the dropped tables,
-// so no separate data-undo step is needed.
+// v15 -> v14: drop the three v15 tables, the event_edges_prev_event_id
+// index, and the columns ALTERed onto `events`/`state_groups`. The seeded
+// rows live only in the dropped tables, so no separate data-undo step is
+// needed.
 [[nodiscard]] auto downgrade_event_graph_state_migration() -> MigrationStep
 {
     auto statements = std::vector<PreparedStatement>{};
     statements.push_back(make_drop_table_statement("forward_extremities").value());
     statements.push_back(make_drop_table_statement("event_state_groups").value());
     statements.push_back(make_drop_table_statement("state_group_state").value());
+    statements.push_back(
+        PreparedStatement{"drop_event_edges_prev_event_id_index", "DROP INDEX event_edges_prev_event_id", {}});
     statements.push_back(
         PreparedStatement{"drop_delta_depth_column", "ALTER TABLE state_groups DROP COLUMN delta_depth", {}});
     statements.push_back(PreparedStatement{

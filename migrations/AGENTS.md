@@ -112,9 +112,18 @@ one snapshot state group (deterministic id `'seed:' || room_id`) built from
 its `current_state`, attaches it to the room's current forward extremities
 (the events `event_edges` names as nobody's `prev_event_id`), and leaves
 older events with no state group — a later phase treats those as outliers.
-Every `INSERT`/`ALTER` is idempotency-guarded (`WHERE NOT EXISTS` /
-`ADD COLUMN` is itself only run once by the migration runner's version
-tracking), so re-running the migration chain is a no-op. See
+That seeding step, and phase B's future per-event children lookup, filter
+`event_edges` by `prev_event_id` alone — outside the leading column of its
+`(event_id, prev_event_id)` primary key, so unindexed this was a full table
+scan per probe (O(events × edges) for the seed step alone on an upgrading
+database). `015_event_graph_state.sql` therefore also creates
+`event_edges_prev_event_id ON event_edges (prev_event_id)`, the project's
+first index, positioned before the seed statements so seeding itself uses
+it; `state_groups` gets no equivalent room_id index because no store
+function queries it by `room_id` (every lookup is by `state_group_id`, its
+primary key). Every `INSERT`/`ALTER` is idempotency-guarded (`WHERE NOT
+EXISTS` / `ADD COLUMN` is itself only run once by the migration runner's
+version tracking), so re-running the migration chain is a no-op. See
 `docs/adr/0064-spec-conformant-pdu-ingestion-with-delta-state-groups.md` and
 `docs/database-persistence.md`.
 
