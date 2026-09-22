@@ -78,7 +78,8 @@ struct AliceRoom final
 [[nodiscard]] auto make_inbound_pdu(std::string const& room_id, std::string const& event_id,
                                     std::string const& event_type, std::optional<std::string> const& state_key,
                                     std::vector<std::string> const& prev_event_ids, std::int64_t ts,
-                                    merovingian::canonicaljson::Object content = {})
+                                    merovingian::canonicaljson::Object content = {},
+                                    std::vector<std::string> const& auth_event_ids = {})
     -> merovingian::federation::InboundPduEnvelope
 {
     using namespace merovingian;
@@ -96,7 +97,12 @@ struct AliceRoom final
         prev_arr.push_back(canonicaljson::Value{id});
     }
     obj.push_back(canonicaljson::make_member("prev_events", canonicaljson::Value{std::move(prev_arr)}));
-    obj.push_back(canonicaljson::make_member("auth_events", canonicaljson::Value{canonicaljson::Array{}}));
+    auto auth_arr = canonicaljson::Array{};
+    for (auto const& id : auth_event_ids)
+    {
+        auth_arr.push_back(canonicaljson::Value{id});
+    }
+    obj.push_back(canonicaljson::make_member("auth_events", canonicaljson::Value{std::move(auth_arr)}));
     if (state_key.has_value())
     {
         obj.push_back(canonicaljson::make_member("state_key", canonicaljson::Value{*state_key}));
@@ -114,13 +120,18 @@ struct AliceRoom final
     auto env = federation::InboundPduEnvelope{};
     env.event_id = event_id;
     env.room_id = room_id;
-    env.room_version = "10";
+    // create_room defaults new rooms to version 12 (compose_signed_event's
+    // m.room.create default) when no explicit room_version is requested;
+    // match that so the inbound PDU's auth checks use the same rule set as
+    // the room it targets.
+    env.room_version = "12";
     env.sender = "@alice:example.org";
     env.event_type = event_type;
     env.state_key = state_key;
     env.origin_server_ts = ts;
     env.depth = 10U;
     env.prev_event_ids = prev_event_ids;
+    env.auth_event_ids = auth_event_ids;
     env.json = serialized.output;
     return env;
 }
@@ -177,11 +188,33 @@ SCENARIO("A local send after an inbound fork lists both fork tips as prev_events
             return extremities.front();
         }();
 
+        // Room v12 (this room's default) runs state-res v2.1: the iterative
+        // auth checks start from an EMPTY map, so a conflicted candidate
+        // whose own auth_events cannot supply power_levels/create is denied
+        // and silently dropped from the resolved state, not treated as
+        // "unresolvable". Give both topic events real auth_events so the
+        // resolver can find the room's actual power level for alice.
+        auto const auth_event_ids = [&]() -> std::vector<std::string> {
+            auto ids = std::vector<std::string>{};
+            for (auto const& s : runtime.database.persistent_store.state)
+            {
+                if (s.room_id != ctx.room_id)
+                {
+                    continue;
+                }
+                if ((s.event_type == "m.room.create" || s.event_type == "m.room.power_levels") && s.state_key.empty())
+                {
+                    ids.push_back(s.event_id);
+                }
+            }
+            return ids;
+        }();
+
         auto topic_a_content = merovingian::canonicaljson::Object{};
         topic_a_content.push_back(merovingian::canonicaljson::make_member(
             "topic", merovingian::canonicaljson::Value{std::string{"topic-a"}}));
         auto const topic_a = make_inbound_pdu(ctx.room_id, "$topic_a:remote.example.org", "m.room.topic", std::string{},
-                                              {tip}, 6000, std::move(topic_a_content));
+                                              {tip}, 6000, std::move(topic_a_content), auth_event_ids);
         auto const result_a = merovingian::homeserver::ingest_pdu_event(runtime, topic_a);
         REQUIRE(result_a.status == merovingian::federation::PduIngestionStatus::accepted);
 
@@ -189,7 +222,7 @@ SCENARIO("A local send after an inbound fork lists both fork tips as prev_events
         topic_b_content.push_back(merovingian::canonicaljson::make_member(
             "topic", merovingian::canonicaljson::Value{std::string{"topic-b"}}));
         auto const topic_b = make_inbound_pdu(ctx.room_id, "$topic_b:remote.example.org", "m.room.topic", std::string{},
-                                              {tip}, 7000, std::move(topic_b_content));
+                                              {tip}, 7000, std::move(topic_b_content), auth_event_ids);
         auto const result_b = merovingian::homeserver::ingest_pdu_event(runtime, topic_b);
         REQUIRE(result_b.status == merovingian::federation::PduIngestionStatus::accepted);
 

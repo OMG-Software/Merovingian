@@ -3005,9 +3005,10 @@ auto cap_join_candidates(std::vector<std::string> candidates, std::uint32_t max_
 // are correctly persisted. Do NOT change the state-key check without updating the
 // corresponding test in tests/unit/test_federation_invite_join.cpp.
 [[nodiscard]] auto ingest_send_join_state(HomeserverRuntime& runtime, canonicaljson::Array const& state_arr,
-                                          rooms::RoomVersionPolicy const& policy) -> std::vector<std::string>
+                                          rooms::RoomVersionPolicy const& policy) -> SendJoinStateIngestResult
 {
-    auto joined_members = std::vector<std::string>{};
+    auto result = SendJoinStateIngestResult{};
+    auto& joined_members = result.joined_members;
     for (auto const& state_entry : state_arr)
     {
         auto const serialized = canonicaljson::serialize_canonical(state_entry);
@@ -3095,7 +3096,23 @@ auto cap_join_candidates(std::vector<std::string> candidates, std::uint32_t max_
                 pe.prev_event_ids = std::move(prev_ids);
                 pe.auth_event_ids = std::move(auth_ids);
                 pe.signatures = parsed.event.signatures;
-                std::ignore = database::store_event_with_state(runtime.database.persistent_store, std::move(pe), state);
+                // ADR-0064 phase B1: this event reaches us as part of the
+                // send_join response's state snapshot, not our own timeline
+                // — it is not (yet) reachable by walking prev_events from
+                // anything we hold, so it is stored as an outlier: kept for
+                // auth-chain lookups, but never given a state group of its
+                // own and never a forward extremity. join_room builds ONE
+                // snapshot state group from the full state array below,
+                // used as the join event's state-before.
+                pe.status = "outlier";
+                if (!database::store_event_with_state(runtime.database.persistent_store, std::move(pe), state))
+                {
+                    continue;
+                }
+                if (state.has_value())
+                {
+                    result.state_entries.push_back({{}, state->event_type, state->state_key, state->event_id});
+                }
                 // Track joined members for the in-memory LocalRoom population step.
                 // state_key is non-empty for membership events (it holds the user ID).
                 if (parsed.event.event_type == "m.room.member" && !parsed.event.state_key.empty() &&
@@ -3106,7 +3123,7 @@ auto cap_join_candidates(std::vector<std::string> candidates, std::uint32_t max_
             }
         }
     }
-    return joined_members;
+    return result;
 }
 
 auto filter_verified_send_join_events(HomeserverRuntime& runtime, canonicaljson::Array const& events,
@@ -3894,8 +3911,8 @@ namespace
         // (m.room.encryption, m.room.create, m.room.power_levels, etc.) by
         // checking the raw JSON for the presence of the "state_key" field
         // rather than its emptiness.
-        auto const state_members = ingest_send_join_state(runtime, verified_critical_state, policy);
-        for (auto const& m : state_members)
+        auto send_join_state = ingest_send_join_state(runtime, verified_critical_state, policy);
+        for (auto const& m : send_join_state.joined_members)
         {
             append_unique_member(joined_members, m);
         }
@@ -3983,6 +4000,15 @@ namespace
                     pe.prev_event_ids = std::move(prev_ids);
                     pe.auth_event_ids = std::move(auth_ids);
                     pe.signatures = parsed.event.signatures;
+                    // ADR-0064 phase B1: auth-chain events are historical
+                    // ancestors kept for auth-rule resolution, not part of
+                    // our timeline — outlier, same reasoning as
+                    // ingest_send_join_state's critical-state events above,
+                    // except these do NOT contribute to the join's snapshot
+                    // (the auth chain can include state later superseded,
+                    // unlike the state array, which is the room's state as
+                    // of just before the join).
+                    pe.status = "outlier";
                     std::ignore =
                         database::store_event_with_state(runtime.database.persistent_store, std::move(pe), state);
                 }
@@ -4055,8 +4081,44 @@ namespace
             // existing one (invite → join).  Either path leaves current_state pointing
             // at the join event at membership_stream, which joined_membership_changed_since
             // then detects correctly.
-            std::ignore =
-                database::store_event_with_state(runtime.database.persistent_store, std::move(join_pe), join_state);
+            auto const join_event_id = join_pe.event_id;
+            if (database::store_event_with_state(runtime.database.persistent_store, std::move(join_pe), join_state))
+            {
+                // ADR-0064 phase B1: seed this freshly joined room's state
+                // bookkeeping so the FIRST inbound PDU after the join does
+                // not hit missing_prev_state. The send_join response's
+                // state array (already stored above as outliers by
+                // ingest_send_join_state, returned here as state_entries)
+                // is exactly the room's state immediately BEFORE the join
+                // event — build one snapshot group from it, give the join
+                // event an after-state group chained off that snapshot
+                // (snapshot + the join member event itself), and make the
+                // join event the room's sole forward extremity.
+                auto const snapshot_group_id = database::create_or_reuse_state_group(
+                    runtime.database.persistent_store, room_id, "join-snapshot:" + join_event_id, std::nullopt,
+                    send_join_state.state_entries);
+                if (snapshot_group_id.has_value())
+                {
+                    auto const state_after = compute_state_after(send_join_state.state_entries, join_event_id,
+                                                                 "m.room.member", std::string{*user_id});
+                    auto const join_group = record_event_state_with_parent(
+                        runtime.database.persistent_store, room_id, join_event_id, {}, snapshot_group_id, state_after);
+                    if (join_group.has_value())
+                    {
+                        std::ignore = recompute_current_state(runtime.database.persistent_store, room_id, policy);
+                    }
+                    else
+                    {
+                        LOG_WARNING("Join event state-group bookkeeping failed; event_id=" + join_event_id +
+                                    " room_id=" + std::string{room_id});
+                    }
+                }
+                else
+                {
+                    LOG_WARNING("Join snapshot state-group creation failed; event_id=" + join_event_id +
+                                " room_id=" + std::string{room_id});
+                }
+            }
         }
         // GCOVR_EXCL_STOP
 
@@ -4173,7 +4235,7 @@ namespace
                     auto const room_it = std::ranges::find_if(runtime.database.rooms, [&](LocalRoom const& r) {
                         return r.room_id == room_id_bg;
                     });
-                    for (auto const& member : newly_joined)
+                    for (auto const& member : newly_joined.joined_members)
                     {
                         auto const member_stream = allocate_stream_ordering(runtime.database);
                         auto const result = database::store_membership(runtime.database.persistent_store,
@@ -4197,10 +4259,10 @@ namespace
                     }
                     log_diagnostic("room.join.background_state_complete",
                                    {
-                                       {"room_id",           room_id_bg,                              false},
-                                       {"members_submitted", std::to_string(background_member_count), false},
-                                       {"members_verified",  std::to_string(newly_joined.size()),     false},
-                                       {"members_stored",    std::to_string(stored),                  false}
+                                       {"room_id",           room_id_bg,                                         false},
+                                       {"members_submitted", std::to_string(background_member_count),            false},
+                                       {"members_verified",  std::to_string(newly_joined.joined_members.size()), false},
+                                       {"members_stored",    std::to_string(stored),                             false}
                     },
                                    observability::LogEventSeverity::info);
                     if (stored > 0U)
