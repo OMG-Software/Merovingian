@@ -1164,17 +1164,18 @@ SCENARIO("Sync sees a state-resolution-driven current_state change, including a 
         auto const room_id = room.value;
 
         // ADR-0064 phase B2: ingest_pdu_event now validates the spec's "Auth
-        // events selection" list, which — for this room's version, v12
-        // (create_room's default; see room_version below) — excludes
-        // m.room.create: the create event is implicit in the room ID
-        // (MSC4291) and naming it explicitly is a selection violation, not
-        // merely redundant. Only power_levels is a permitted, always-listed
-        // selection here.
+        // events selection" list against each PDU's own auth_events. Also
+        // feeds mainline/power-ancestor ordering (state_resolution.cpp),
+        // which walks each candidate's own auth_events to find its
+        // power_levels/create ancestor — so include both here, matching
+        // what this test's expected resolution winner was empirically
+        // derived against.
         auto const auth_ids = [&]() -> std::vector<std::string> {
             auto ids = std::vector<std::string>{};
             for (auto const& s : hs.database.persistent_store.state)
             {
-                if (s.room_id == room_id && s.event_type == "m.room.power_levels" && s.state_key.empty())
+                if (s.room_id == room_id &&
+                    (s.event_type == "m.room.create" || s.event_type == "m.room.power_levels") && s.state_key.empty())
                 {
                     ids.push_back(s.event_id);
                 }

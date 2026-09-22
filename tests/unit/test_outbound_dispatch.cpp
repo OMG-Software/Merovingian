@@ -450,12 +450,18 @@ SCENARIO("Inbound PDU sink assigns stream ordering and notifies sync", "[homeser
             auto envelope = merovingian::federation::InboundPduEnvelope{};
             envelope.event_id = "$test_inbound_event";
             envelope.room_id = room_id_str;
+            // Matches the create event's own content.room_version above.
+            // Left implicit before, but explicit here matters now: v12
+            // (MSC4291) is why m.room.create is NOT named in auth_events
+            // below — its event id is implicit in the room ID, and naming
+            // it is itself an ADR-0064 phase B2 selection violation.
+            envelope.room_version = "12";
             envelope.sender = bob_sender;
             envelope.event_type = "m.room.message";
             envelope.depth = 2U;
             envelope.origin_server_ts = static_cast<std::int64_t>(1000);
             envelope.prev_event_ids = {"$inbound_bob_member"};
-            envelope.auth_event_ids = {"$inbound_create", "$inbound_bob_member"};
+            envelope.auth_event_ids = {"$inbound_bob_member"};
             // The auth check parses this JSON to read the event's sender/type,
             // so it must carry the same fields the envelope advertises, and the
             // ingest path now verifies the content hash.

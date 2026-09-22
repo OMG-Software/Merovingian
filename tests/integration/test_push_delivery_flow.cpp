@@ -32,8 +32,10 @@
 #include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/homeserver/state_bookkeeping.hpp"
 #include "merovingian/net/tcp_acceptor.hpp"
 #include "merovingian/push/push_gateway_client.hpp"
+#include "merovingian/rooms/room_version_policy.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -416,6 +418,31 @@ auto seed_remote_member(merovingian::homeserver::ClientServerRuntime& runtime, s
     auto const member_event_id = room_id + ":seeded-remote-member:" + remote_user;
     store.events.push_back({member_event_id, room_id, remote_user, serialized.output, 2U, 0U, {}, {}, {}});
     store.state.push_back({room_id, "m.room.member", remote_user, member_event_id});
+
+    // ADR-0064 phase B2: ingest_pdu_event now also authorises a later PDU
+    // from this remote member against the state immediately before it
+    // (spec step 5), which is resolved from the room's real state-group
+    // graph — not the naive store.state row above. Without this, the
+    // remote member is invisible to compute_state_before (their
+    // membership row above never reached a state group), so any PDU they
+    // send would be rejected at step 5 ("sender is not joined"). Give the
+    // seeded join a real after-state group chained off the room's current
+    // (sole) extremity, and make it the new sole extremity, exactly as
+    // homeserver::store_local_event would for a real join.
+    auto const* policy = merovingian::rooms::find_room_version_policy("12");
+    REQUIRE(policy != nullptr);
+    auto const tip = [&]() -> std::string {
+        auto const extremities = merovingian::database::find_forward_extremities(store, room_id);
+        REQUIRE(extremities.size() == 1U);
+        return extremities.front();
+    }();
+    auto const state_before = merovingian::homeserver::compute_state_before(store, room_id, *policy, {tip});
+    REQUIRE(state_before.ok);
+    auto const state_after =
+        merovingian::homeserver::compute_state_after(state_before.state, member_event_id, "m.room.member", remote_user);
+    auto const group = merovingian::homeserver::record_event_state(store, room_id, member_event_id, {tip}, state_after);
+    REQUIRE(group.has_value());
+    REQUIRE(merovingian::homeserver::recompute_current_state(store, room_id, *policy));
 }
 
 // Builds an already-signed-shaped (content-hash-correct, but not

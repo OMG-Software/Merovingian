@@ -445,10 +445,10 @@ audit.
     and the redaction survivor set are unaffected).
   - **Step 4 (auth against the PDU's own `auth_events`).** New
     `validate_auth_events_selection` enforces the spec's "Auth events
-    selection" list (create unless v12-implicit, current power_levels,
-    sender's own member event, and — for `m.room.member` — the target
-    member, join_rules, third_party_invite, and restricted-join authorising
-    member, each conditioned correctly on the requested membership): a named
+    selection" list (create, current power_levels, sender's own member
+    event, and — for `m.room.member` — the target member, join_rules,
+    third_party_invite, and restricted-join authorising member, each
+    conditioned correctly on the requested membership): a named
     `auth_events` entry of a disallowed type, a duplicate `(type,
     state_key)`, or one from a different room is a rejection; one this store
     cannot resolve at all is `missing_prev_state` (awaiting backfill), not a

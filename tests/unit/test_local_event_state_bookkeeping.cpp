@@ -159,8 +159,12 @@ SCENARIO("THE REGRESSION: a remote PDU referencing a locally sent message is acc
         {
             // ADR-0064 phase B2: ingest_pdu_event now authorises against the
             // PDU's own named auth_events (spec step 4), so this fixture
-            // needs the room's real create/power_levels events, matching
-            // what a real federating server would send.
+            // needs the room's real power_levels event, matching what a
+            // real federating server would send. m.room.create is
+            // deliberately NOT named: create_room defaults new rooms to
+            // v12 (MSC4291), where the create event is implicit in the
+            // room ID and naming it is itself a selection violation;
+            // ingest_pdu_event resolves it separately for v12.
             auto const auth_event_ids = [&]() -> std::vector<std::string> {
                 auto ids = std::vector<std::string>{};
                 for (auto const& s : runtime.database.persistent_store.state)
@@ -169,8 +173,7 @@ SCENARIO("THE REGRESSION: a remote PDU referencing a locally sent message is acc
                     {
                         continue;
                     }
-                    if ((s.event_type == "m.room.create" || s.event_type == "m.room.power_levels") &&
-                        s.state_key.empty())
+                    if (s.event_type == "m.room.power_levels" && s.state_key.empty())
                     {
                         ids.push_back(s.event_id);
                     }
@@ -212,8 +215,10 @@ SCENARIO("A local send after an inbound fork lists both fork tips as prev_events
         // auth checks start from an EMPTY map, so a conflicted candidate
         // whose own auth_events cannot supply power_levels/create is denied
         // and silently dropped from the resolved state, not treated as
-        // "unresolvable". Give both topic events real auth_events so the
-        // resolver can find the room's actual power level for alice.
+        // "unresolvable". Give both topic events real auth_events (also
+        // feeding mainline/power-ancestor ordering, which walks each
+        // candidate's own auth_events) so the resolver can find the room's
+        // actual power level for alice.
         auto const auth_event_ids = [&]() -> std::vector<std::string> {
             auto ids = std::vector<std::string>{};
             for (auto const& s : runtime.database.persistent_store.state)

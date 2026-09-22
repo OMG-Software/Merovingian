@@ -425,12 +425,17 @@ Ed25519 signatures before persisting" below):
 - **Step 4 (auth against the PDU's own `auth_events`).** Before running the
   auth-rule algorithm, `validate_auth_events_selection` enforces the spec's
   "Auth events selection" list — the permitted `(type, state_key)` pairs an
-  event's `auth_events` may name (create unless v12-implicit, current
-  power_levels, the sender's own member event, and for `m.room.member`
-  additionally the target member, join_rules, third_party_invite, and the
-  restricted-join authorising member, each conditioned on the requested
-  membership). A named entry of a disallowed type, a duplicate
-  `(type, state_key)`, or one from a different room is a rejection. An entry
+  event's `auth_events` may name (create, current power_levels, the
+  sender's own member event, and for `m.room.member` additionally the
+  target member, join_rules, third_party_invite, and the restricted-join
+  authorising member, each conditioned on the requested membership). Create
+  is permitted for every room version even though v12 (MSC4291) makes it
+  implicit in the room ID and a conformant sender need not name it: there is
+  exactly one legitimate create event per room, so tolerating a redundant
+  reference to it costs nothing and avoids being stricter on receipt than
+  the spec's own rejection rules require. A named entry of a disallowed
+  type, a duplicate `(type, state_key)`, or one from a different room is a
+  rejection. An entry
   this store has no event for at all is `missing_prev_state` (the same
   "awaiting backfill" gap as a missing `prev_event`), not a rejection —
   phase C's fetch-then-request-state is what resolves it. Once selection

@@ -257,12 +257,16 @@ namespace
         {
             return permitted;
         }
-        // v12 (MSC4291): the create event is implicit in the room ID and
-        // MUST NOT be listed.
-        if (!policy.create_event_is_room_id)
-        {
-            permitted.emplace_back("m.room.create", std::string{});
-        }
+        // v12 (MSC4291): the create event is implicit in the room ID and a
+        // spec-conformant SENDER should not name it — but this validator
+        // governs what the RECEIVER accepts, and rejecting an otherwise
+        // harmless, redundant reference to the room's own (single, always
+        // resolvable) create event would be stricter than the spec's own
+        // "Rejection"/"Auth events selection" wording requires, and no more
+        // secure (there is exactly one legitimate create event per room, so
+        // naming it explicitly cannot smuggle in a different one). Always
+        // permitted, for every room version.
+        permitted.emplace_back("m.room.create", std::string{});
         // "The current m.room.power_levels event, if any" — unconditional.
         permitted.emplace_back("m.room.power_levels", std::string{});
         // "The sender's current m.room.member event, if any" — unconditional.
