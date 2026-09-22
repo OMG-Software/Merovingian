@@ -78,7 +78,8 @@ struct AliceRoom final
 [[nodiscard]] auto make_inbound_pdu(std::string const& room_id, std::string const& event_id,
                                     std::string const& event_type, std::optional<std::string> const& state_key,
                                     std::vector<std::string> const& prev_event_ids, std::int64_t ts,
-                                    canonicaljson::Object content = {}) -> merovingian::federation::InboundPduEnvelope
+                                    merovingian::canonicaljson::Object content = {})
+    -> merovingian::federation::InboundPduEnvelope
 {
     using namespace merovingian;
 
@@ -176,15 +177,17 @@ SCENARIO("A local send after an inbound fork lists both fork tips as prev_events
             return extremities.front();
         }();
 
-        auto topic_a_content = canonicaljson::Object{};
-        topic_a_content.push_back(canonicaljson::make_member("topic", canonicaljson::Value{std::string{"topic-a"}}));
+        auto topic_a_content = merovingian::canonicaljson::Object{};
+        topic_a_content.push_back(merovingian::canonicaljson::make_member(
+            "topic", merovingian::canonicaljson::Value{std::string{"topic-a"}}));
         auto const topic_a = make_inbound_pdu(ctx.room_id, "$topic_a:remote.example.org", "m.room.topic", std::string{},
                                               {tip}, 6000, std::move(topic_a_content));
         auto const result_a = merovingian::homeserver::ingest_pdu_event(runtime, topic_a);
         REQUIRE(result_a.status == merovingian::federation::PduIngestionStatus::accepted);
 
-        auto topic_b_content = canonicaljson::Object{};
-        topic_b_content.push_back(canonicaljson::make_member("topic", canonicaljson::Value{std::string{"topic-b"}}));
+        auto topic_b_content = merovingian::canonicaljson::Object{};
+        topic_b_content.push_back(merovingian::canonicaljson::make_member(
+            "topic", merovingian::canonicaljson::Value{std::string{"topic-b"}}));
         auto const topic_b = make_inbound_pdu(ctx.room_id, "$topic_b:remote.example.org", "m.room.topic", std::string{},
                                               {tip}, 7000, std::move(topic_b_content));
         auto const result_b = merovingian::homeserver::ingest_pdu_event(runtime, topic_b);
