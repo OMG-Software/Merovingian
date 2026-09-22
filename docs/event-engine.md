@@ -299,6 +299,24 @@ third_party_invite, authorising_user_member) — it did not before, which made
 v12 support incomplete regardless of the algorithm-selection fix, since the
 empty starting map meant almost every event's own auth context needed it.
 
+**0.12.13 (ADR-0064 phase B2) fix: the create-event deadlock this fallback
+cannot break for v12.** The fallback above reads a candidate event's OWN
+`auth_events` when the running state lacks a key — but rooms/v12.md rule 3.2
+requires every v12 event's `auth_events` to omit `m.room.create` (MSC4291:
+the create event is implicit in the room ID). With modification 1's empty
+starting map and no v12 event ever naming create in its own `auth_events`,
+`build_auth_event_map_from_state`'s create slot could never be filled by
+either path — every v12 candidate's very first iterative auth check would
+fail Step 2 ("room has no create event"), and no v12 room's state could ever
+be resolved at all. Fixed by seeding `resolved`'s `m.room.create` entry from
+`unconflicted` at v2.1 initialization: a room's create event cannot
+genuinely be in dispute (there is exactly one per room, and every submitted
+state group already agrees on it — that agreement is precisely why
+`partition_conflicted_state` places it in `unconflicted`, never
+`conflicted`), so seeding just this one invariant entry does not reintroduce
+anything modification 1's empty-start rule exists to guard against (mutable,
+genuinely-contestable state like membership or power levels).
+
 The auth-chain walk is bounded (`events::max_auth_chain_walk_events`,
 `include/merovingian/events/limits.hpp`) and **fails closed**: a missing or
 unreachable event, an over-budget walk, or an exhausted lookup returns an
@@ -425,15 +443,15 @@ Ed25519 signatures before persisting" below):
 - **Step 4 (auth against the PDU's own `auth_events`).** Before running the
   auth-rule algorithm, `validate_auth_events_selection` enforces the spec's
   "Auth events selection" list — the permitted `(type, state_key)` pairs an
-  event's `auth_events` may name (create, current power_levels, the
-  sender's own member event, and for `m.room.member` additionally the
-  target member, join_rules, third_party_invite, and the restricted-join
-  authorising member, each conditioned on the requested membership). Create
-  is permitted for every room version even though v12 (MSC4291) makes it
-  implicit in the room ID and a conformant sender need not name it: there is
-  exactly one legitimate create event per room, so tolerating a redundant
-  reference to it costs nothing and avoids being stricter on receipt than
-  the spec's own rejection rules require. A named entry of a disallowed
+  event's `auth_events` may name (create unless v12-implicit, current
+  power_levels, the sender's own member event, and for `m.room.member`
+  additionally the target member, join_rules, third_party_invite, and the
+  restricted-join authorising member, each conditioned on the requested
+  membership). v12 (MSC4291, rooms/v12.md rule 3.2) is a hard **MUST NOT**:
+  the create event is implicit in the room ID, and a v12 event naming it in
+  `auth_events` is rejected, not merely warned about — this is enforced
+  exactly as written, with no leniency for a "harmless" redundant reference.
+  A named entry of a disallowed
   type, a duplicate `(type, state_key)`, or one from a different room is a
   rejection. An entry
   this store has no event for at all is `missing_prev_state` (the same

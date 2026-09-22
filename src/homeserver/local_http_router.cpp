@@ -251,28 +251,26 @@ namespace
                                                  std::string_view third_party_invite_token)
         -> std::vector<std::pair<std::string, std::string>>
     {
-        // create is unconditionally permitted below regardless of room
-        // version (see the comment there), so `policy` is currently unused;
-        // kept as a parameter since every other permitted-set / auth-map
-        // builder in this file takes the room policy and a future
-        // version-conditional rule here is likely.
-        std::ignore = policy;
         auto permitted = std::vector<std::pair<std::string, std::string>>{};
         // "The auth_events for the m.room.create event in a room is empty."
         if (event_type == "m.room.create")
         {
             return permitted;
         }
-        // v12 (MSC4291): the create event is implicit in the room ID and a
-        // spec-conformant SENDER should not name it — but this validator
-        // governs what the RECEIVER accepts, and rejecting an otherwise
-        // harmless, redundant reference to the room's own (single, always
-        // resolvable) create event would be stricter than the spec's own
-        // "Rejection"/"Auth events selection" wording requires, and no more
-        // secure (there is exactly one legitimate create event per room, so
-        // naming it explicitly cannot smuggle in a different one). Always
-        // permitted, for every room version.
-        permitted.emplace_back("m.room.create", std::string{});
+        // v12 (MSC4291): the create event is implicit in the room ID and
+        // MUST NOT be selected for auth_events.
+        // Spec: docs/matrix-v1.19-spec/rooms/v12.md — "The m.room.create
+        // event MUST NOT be selected for auth_events on events. The
+        // room_id (being the m.room.create event's ID) implies this
+        // instead." and rule 3.2: "In this room version, m.room.create
+        // MUST NOT be selected" (reject if it is). An inbound v12 event
+        // that names it is therefore a rejection, not a tolerated
+        // redundancy — do not relax this to "always permitted" again
+        // without re-reading rooms/v12.md rule 3.2 first.
+        if (!policy.create_event_is_room_id)
+        {
+            permitted.emplace_back("m.room.create", std::string{});
+        }
         // "The current m.room.power_levels event, if any" — unconditional.
         permitted.emplace_back("m.room.power_levels", std::string{});
         // "The sender's current m.room.member event, if any" — unconditional.

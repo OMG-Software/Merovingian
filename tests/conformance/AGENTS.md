@@ -41,6 +41,7 @@ Every test in this directory directly encodes a **MUST** or **SHOULD** from the 
 | `test_notifications_conformance.cpp` | [CS API § Push Notifications](../../docs/matrix-v1.19-spec/client-server-api.md#push-notifications) |
 | `test_outbound_delivery_conformance.cpp` | [SS API § Transactions](../../docs/matrix-v1.19-spec/server-server-api.md#transactions) · [§ EDUs](../../docs/matrix-v1.19-spec/server-server-api.md#edus) |
 | `test_pdu_format_conformance.cpp` | [SS API § PDUs](../../docs/matrix-v1.19-spec/server-server-api.md#pdus) |
+| `test_pdu_ingestion_conformance.cpp` | [SS API § Checks performed on receipt of a PDU](../../docs/matrix-v1.19-spec/server-server-api.md#checks-performed-on-receipt-of-a-pdu) · [Room v12 § State resolution](../../docs/matrix-v1.19-spec/rooms/v12.md) (auth_events selection: m.room.create MUST NOT be selected) |
 | `test_presence_conformance.cpp` | [CS API § Presence](../../docs/matrix-v1.19-spec/client-server-api.md#presence) |
 | `test_push_notifications_conformance.cpp` | [CS API § Push Notifications](../../docs/matrix-v1.19-spec/client-server-api.md#push-notifications) |
 | `test_read_markers_conformance.cpp` | [CS API § Read and unread markers](../../docs/matrix-v1.19-spec/client-server-api.md#read-and-unread-markers) |

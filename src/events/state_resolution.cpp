@@ -1335,6 +1335,30 @@ auto resolve_state_v2(StateResolutionRequest const& request, rooms::RoomVersionP
     // the unconflicted state map" for room v12; versions 2-11 still start
     // from the unconflicted state map.
     auto resolved = is_v2_1 ? StateMap{} : unconflicted;
+    if (is_v2_1)
+    {
+        // v12 (MSC4291) events never name m.room.create in their own
+        // auth_events (rooms/v12.md rule 3.2: "MUST NOT be selected" — the
+        // room_id implies it instead), so build_auth_event_map_from_state's
+        // per-candidate auth_events fallback can never find it while
+        // `resolved` has no create entry of its own. Left unseeded, the
+        // very first iterative auth check for ANY v12 candidate would see
+        // `auth_events.create` empty and deny every event with "room has no
+        // create event" (authorization.cpp Step 2), regardless of the
+        // candidate's actual validity — state resolution could never
+        // recompute any v12 room's state at all. Modification 1's "start
+        // from an empty map, not the unconflicted map" targets state that
+        // can genuinely be in dispute (membership, power levels, ...); a
+        // room's create event cannot be, since there is exactly one per
+        // room and every state group in `groups` already agrees on it (that
+        // is precisely why it is in `unconflicted`, not `conflicted`) — so
+        // seeding just this one invariant entry does not reintroduce
+        // anything the empty-start rule exists to prevent.
+        if (auto const it = unconflicted.find(StateKey{"m.room.create", ""}); it != unconflicted.end())
+        {
+            resolved[it->first] = it->second;
+        }
+    }
     auto apply_iterative_auth_checks = [&resolved, &policy,
                                         &source](std::vector<StateEventReference> const& sorted) -> void {
         for (auto const& event : sorted)

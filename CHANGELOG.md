@@ -525,6 +525,25 @@ audit.
     (`tests/unit/test_federation_membership_endpoints.cpp`, "State-resolution
     v2 helper merges forked state when groups disagree") is removed with
     it.
+  - **v12 (MSC4291) state resolution fix found while testing this phase:**
+    `resolve_state_v2`'s v2.1 iterative auth checks start from an empty
+    running state (rooms/v12.md, "State resolution", modification 1) and no
+    v12 event's own `auth_events` may name `m.room.create` (rule 3.2 — see
+    the conformance test below). Together these meant `build_auth_event_map_
+    from_state`'s create slot could never be filled for a v12 candidate by
+    either its running-state lookup or its own-`auth_events` fallback: every
+    v12 candidate's iterative auth check failed Step 2 ("room has no create
+    event"), so **no v12 room's state could ever be resolved at all** once a
+    real fork required iterative resolution — masked in existing tests only
+    because their hand-built fixtures happened to name create in
+    `auth_events` (itself a separate, now-fixed rule-3.2 violation). Fixed
+    by seeding `resolved`'s `m.room.create` entry from `unconflicted` at
+    v2.1 initialization: a room's create event cannot genuinely be in
+    dispute (exactly one per room, agreed by every submitted state group —
+    that agreement is why it is in `unconflicted`, never `conflicted`), so
+    this does not reintroduce anything modification 1 exists to guard
+    against. See `docs/event-engine.md`, "Phase B1: state resolution wired
+    into ingestion" (auth difference section).
   - Tests: `tests/unit/test_pdu_ingestion_auth_checks.cpp`
     (`[pdu_ingestion][auth]`) — a bad-hash PDU redacted and accepted; a PDU
     passing current-state auth but failing its own `auth_events`, rejected;
@@ -532,9 +551,19 @@ audit.
     ban-evasion case (prev_events preceding the ban pass both `auth_events`
     and state-before but fail current state) soft-failed rather than
     hard-rejected; a rejected event's after-state equal to its state-before
-    with a later event still able to reference it; a soft-failed state
-    event admitted into `current_state` by resolution; the three
-    `auth_events`-selection violations; and a mixed-outcome transaction. See
+    with a later event still able to reference it; a soft-failed event's
+    after-state includes itself (distinguishing it from a rejected event's,
+    which does not — whether any particular fork resolves in a soft-failed
+    candidate's favour is a state-res v2 question covered by
+    `test_state_resolution_auth_diff.cpp`/`test_state_resolution_conformance.cpp`,
+    and a banned sender's soft-failed event correctly does NOT win a real
+    resolution either, per spec "Soft failure"'s own anti-injection
+    guarantee); the three `auth_events`-selection violations; and a
+    mixed-outcome transaction. Plus new
+    `tests/conformance/test_pdu_ingestion_conformance.cpp`
+    (`[conformance][federation][auth][room-v12]`): a v12 PDU naming
+    `m.room.create` in `auth_events` is rejected (rooms/v12.md rule 3.2),
+    and the same PDU with create correctly omitted is accepted. See
     [ADR-0064](docs/adr/0064-spec-conformant-pdu-ingestion-with-delta-state-groups.md).
   - **Not done in this phase**: the membership-acceptor path
     (`send_join`/`send_leave`/`send_knock` acceptance,

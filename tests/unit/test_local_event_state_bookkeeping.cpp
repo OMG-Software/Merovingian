@@ -213,12 +213,14 @@ SCENARIO("A local send after an inbound fork lists both fork tips as prev_events
 
         // Room v12 (this room's default) runs state-res v2.1: the iterative
         // auth checks start from an EMPTY map, so a conflicted candidate
-        // whose own auth_events cannot supply power_levels/create is denied
-        // and silently dropped from the resolved state, not treated as
-        // "unresolvable". Give both topic events real auth_events (also
-        // feeding mainline/power-ancestor ordering, which walks each
-        // candidate's own auth_events) so the resolver can find the room's
-        // actual power level for alice.
+        // whose own auth_events cannot supply power_levels is denied and
+        // silently dropped from the resolved state, not treated as
+        // "unresolvable". Give both topic events real auth_events so the
+        // resolver can find the room's actual power level for alice.
+        // m.room.create is deliberately NOT named: rooms/v12.md rule 3.2
+        // MUST-rejects an event whose auth_events names it (implicit in the
+        // room ID instead) — see ADR-0064 phase B2's
+        // validate_auth_events_selection.
         auto const auth_event_ids = [&]() -> std::vector<std::string> {
             auto ids = std::vector<std::string>{};
             for (auto const& s : runtime.database.persistent_store.state)
@@ -227,7 +229,7 @@ SCENARIO("A local send after an inbound fork lists both fork tips as prev_events
                 {
                     continue;
                 }
-                if ((s.event_type == "m.room.create" || s.event_type == "m.room.power_levels") && s.state_key.empty())
+                if (s.event_type == "m.room.power_levels" && s.state_key.empty())
                 {
                     ids.push_back(s.event_id);
                 }
