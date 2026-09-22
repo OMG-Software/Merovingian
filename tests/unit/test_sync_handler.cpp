@@ -24,12 +24,16 @@
 #include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/database/persistent_store.hpp"
+#include "merovingian/events/event_id.hpp"
+#include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/homeserver/dispatch_result.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
+#include "merovingian/homeserver/room_service.hpp"
 #include "merovingian/homeserver/worker_pool.hpp"
 #include "merovingian/sync/stream_token.hpp"
 
@@ -1052,6 +1056,280 @@ SCENARIO("Federation-joined room state events are visible to incremental sync",
                 auto const* events = as_array(*json_member(*timeline, "events"));
                 REQUIRE(events != nullptr);
                 REQUIRE(events->size() >= 1U);
+            }
+        }
+    }
+}
+
+namespace
+{
+
+[[nodiscard]] auto make_topic_fork_pdu(std::string const& room_id, std::string const& event_id,
+                                       std::string const& sender, std::string const& topic,
+                                       std::vector<std::string> const& prev_event_ids,
+                                       std::vector<std::string> const& auth_event_ids, std::int64_t ts)
+    -> merovingian::federation::InboundPduEnvelope
+{
+    using namespace merovingian;
+
+    auto content = canonicaljson::Object{};
+    content.push_back(canonicaljson::make_member("topic", canonicaljson::Value{topic}));
+
+    auto obj = canonicaljson::Object{};
+    obj.push_back(canonicaljson::make_member("type", canonicaljson::Value{std::string{"m.room.topic"}}));
+    obj.push_back(canonicaljson::make_member("state_key", canonicaljson::Value{std::string{}}));
+    obj.push_back(canonicaljson::make_member("room_id", canonicaljson::Value{room_id}));
+    obj.push_back(canonicaljson::make_member("sender", canonicaljson::Value{sender}));
+    obj.push_back(canonicaljson::make_member("content", canonicaljson::Value{std::move(content)}));
+    obj.push_back(canonicaljson::make_member("origin_server_ts", canonicaljson::Value{ts}));
+    obj.push_back(canonicaljson::make_member("depth", canonicaljson::Value{std::int64_t{10}}));
+    auto prev_arr = canonicaljson::Array{};
+    for (auto const& id : prev_event_ids)
+    {
+        prev_arr.push_back(canonicaljson::Value{id});
+    }
+    obj.push_back(canonicaljson::make_member("prev_events", canonicaljson::Value{std::move(prev_arr)}));
+    auto auth_arr = canonicaljson::Array{};
+    for (auto const& id : auth_event_ids)
+    {
+        auth_arr.push_back(canonicaljson::Value{id});
+    }
+    obj.push_back(canonicaljson::make_member("auth_events", canonicaljson::Value{std::move(auth_arr)}));
+
+    auto const hash = events::make_content_hash(canonicaljson::Value{obj});
+    REQUIRE(hash.error.empty());
+    auto hashes = canonicaljson::Object{};
+    hashes.push_back(canonicaljson::make_member("sha256", canonicaljson::Value{hash.sha256}));
+    obj.push_back(canonicaljson::make_member("hashes", canonicaljson::Value{std::move(hashes)}));
+
+    auto const serialized = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(obj)});
+    REQUIRE(serialized.error == canonicaljson::CanonicalJsonError::none);
+
+    auto env = federation::InboundPduEnvelope{};
+    env.event_id = event_id;
+    env.room_id = room_id;
+    env.room_version = "12";
+    env.sender = sender;
+    env.event_type = "m.room.topic";
+    env.state_key = std::string{};
+    env.origin_server_ts = ts;
+    env.depth = 10U;
+    env.prev_event_ids = prev_event_ids;
+    env.auth_event_ids = auth_event_ids;
+    env.json = serialized.output;
+    return env;
+}
+
+} // namespace
+
+// ADR-0064 phase B1, test (e) from the completion brief: a resolution that
+// REVERTS a key to an OLDER event must be delivered to sync as an ordinary
+// state change, through the same state_transitions/current_state path every
+// other state write uses (homeserver::recompute_current_state ->
+// database::store_state). This exercises the exact scenario
+// database::store_state's state_transitions upsert fix (this branch) makes
+// possible: state_transitions' primary key is (room_id, event_type,
+// state_key, event_id), so an event_id becoming current a SECOND time
+// (after already being superseded once) is not a duplicate row to reject,
+// it is a fresh transition to record — without that fix this whole
+// scenario fails closed (the commit fails, current_state is left on the
+// stale value, sync sees nothing).
+//
+// Sequence: event A sets the topic. A single-prev PDU B supersedes it
+// (current_state moves A -> B, an ordinary linear change). Then two PDUs
+// fork from B's tip: one reasserts A's OWN event_id as the winning
+// candidate for the (m.room.topic, "") key (built with A's exact
+// signed JSON, so the resolver is choosing between the SAME two
+// candidates — A and B — a second time, not a new value) and one sets a
+// third value. Whichever the resolver picks, sync must see it — and if it
+// picks A, that is A becoming current a second time, the literal
+// repeat-activation case. This test asserts on whatever resolve_state_v2
+// deterministically picks (its own correctness is covered by
+// tests/unit/test_state_resolution_auth_diff.cpp and
+// tests/conformance/test_state_resolution_conformance.cpp); its job is
+// only to prove sync sees the outcome.
+SCENARIO("Sync sees a state-resolution-driven current_state change, including a repeat activation",
+         "[sync][handler][pdu_ingestion][state_groups]")
+{
+    GIVEN("a room with a topic set, then superseded, then forked between the old and a new value")
+    {
+        auto started = merovingian::homeserver::start_client_server(sync_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const [alice_id, token] = register_and_login(rt);
+        auto& hs = rt.homeserver;
+
+        auto const room = merovingian::homeserver::create_room(hs, token);
+        REQUIRE(room.ok);
+        auto const room_id = room.value;
+
+        auto const auth_ids = [&]() -> std::vector<std::string> {
+            auto ids = std::vector<std::string>{};
+            for (auto const& s : hs.database.persistent_store.state)
+            {
+                if (s.room_id == room_id &&
+                    (s.event_type == "m.room.create" || s.event_type == "m.room.power_levels") && s.state_key.empty())
+                {
+                    ids.push_back(s.event_id);
+                }
+            }
+            return ids;
+        }();
+
+        auto const tip0 = [&]() -> std::string {
+            auto const extremities =
+                merovingian::database::find_forward_extremities(hs.database.persistent_store, room_id);
+            REQUIRE(extremities.size() == 1U);
+            return extremities.front();
+        }();
+
+        // Event A: sets the topic. origin_server_ts is deliberately high
+        // (9000, later than fork_c's 3500 below) — confirmed empirically to
+        // be state-res v2's tie-break for two non-power conflicted
+        // candidates with the same mainline position (their shared
+        // power_levels ancestor). The DAG structure, not the timestamp
+        // value, is what makes the eventual outcome a genuine reactivation:
+        // A is created and superseded by B FIRST, before C exists, and
+        // still wins the later fork against C — an older-in-the-DAG event
+        // becoming current for a second time.
+        auto const event_a =
+            make_topic_fork_pdu(room_id, "$topic_a:example.org", alice_id, "topic-A", {tip0}, auth_ids, 9000);
+        REQUIRE(merovingian::homeserver::ingest_pdu_event(hs, event_a).status ==
+                merovingian::federation::PduIngestionStatus::accepted);
+
+        // Event B: a plain linear successor, supersedes A.
+        auto const event_b = make_topic_fork_pdu(room_id, "$topic_b:example.org", alice_id, "topic-B",
+                                                 {"$topic_a:example.org"}, auth_ids, 2000);
+        REQUIRE(merovingian::homeserver::ingest_pdu_event(hs, event_b).status ==
+                merovingian::federation::PduIngestionStatus::accepted);
+        REQUIRE(std::ranges::any_of(hs.database.persistent_store.state, [&](auto const& s) {
+            return s.room_id == room_id && s.event_type == "m.room.topic" && s.event_id == "$topic_b:example.org";
+        }));
+
+        // Baseline sync: alice has now seen topic-B as current.
+        auto const initial =
+            merovingian::homeserver::handle_client_server_request(rt, {"GET", "/_matrix/client/v3/sync", token, {}});
+        REQUIRE(initial.response.status == 200U);
+        auto const init_body = parse_body(initial.response.body);
+        auto const* init_root = as_object(init_body);
+        REQUIRE(init_root != nullptr);
+        auto const next_batch = std::get<std::string>(json_member(*init_root, "next_batch")->storage());
+
+        WHEN("a witness event descending from A (not B) forks against a new value C from B's tip")
+        {
+            // witness_w does NOT touch topic, and its prev_event is A, NOT
+            // B — A still has a recorded state group (it is simply no
+            // longer a forward extremity; compute_state_before does not
+            // require that), so witness_w's own state-after carries A's
+            // topic value forward UNCHANGED. This reaches A's exact
+            // event_id as a live candidate again without re-ingesting a
+            // duplicate event (which store_event_with_state's own
+            // duplicate-event guard would reject).
+            auto name_content = merovingian::canonicaljson::Object{};
+            name_content.push_back(merovingian::canonicaljson::make_member(
+                "name", merovingian::canonicaljson::Value{std::string{"witness"}}));
+            auto witness_obj = merovingian::canonicaljson::Object{};
+            witness_obj.push_back(merovingian::canonicaljson::make_member(
+                "type", merovingian::canonicaljson::Value{std::string{"m.room.name"}}));
+            witness_obj.push_back(
+                merovingian::canonicaljson::make_member("state_key", merovingian::canonicaljson::Value{std::string{}}));
+            witness_obj.push_back(
+                merovingian::canonicaljson::make_member("room_id", merovingian::canonicaljson::Value{room_id}));
+            witness_obj.push_back(
+                merovingian::canonicaljson::make_member("sender", merovingian::canonicaljson::Value{alice_id}));
+            witness_obj.push_back(
+                merovingian::canonicaljson::make_member("content", merovingian::canonicaljson::Value{name_content}));
+            witness_obj.push_back(merovingian::canonicaljson::make_member(
+                "origin_server_ts", merovingian::canonicaljson::Value{std::int64_t{2500}}));
+            witness_obj.push_back(
+                merovingian::canonicaljson::make_member("depth", merovingian::canonicaljson::Value{std::int64_t{10}}));
+            auto witness_prev = merovingian::canonicaljson::Array{};
+            witness_prev.push_back(merovingian::canonicaljson::Value{std::string{"$topic_a:example.org"}});
+            witness_obj.push_back(merovingian::canonicaljson::make_member(
+                "prev_events", merovingian::canonicaljson::Value{std::move(witness_prev)}));
+            auto witness_auth = merovingian::canonicaljson::Array{};
+            for (auto const& id : auth_ids)
+            {
+                witness_auth.push_back(merovingian::canonicaljson::Value{id});
+            }
+            witness_obj.push_back(merovingian::canonicaljson::make_member(
+                "auth_events", merovingian::canonicaljson::Value{std::move(witness_auth)}));
+            auto const witness_hash =
+                merovingian::events::make_content_hash(merovingian::canonicaljson::Value{witness_obj});
+            REQUIRE(witness_hash.error.empty());
+            auto witness_hashes = merovingian::canonicaljson::Object{};
+            witness_hashes.push_back(merovingian::canonicaljson::make_member(
+                "sha256", merovingian::canonicaljson::Value{witness_hash.sha256}));
+            witness_obj.push_back(merovingian::canonicaljson::make_member(
+                "hashes", merovingian::canonicaljson::Value{std::move(witness_hashes)}));
+            auto const witness_serialized = merovingian::canonicaljson::serialize_canonical(
+                merovingian::canonicaljson::Value{std::move(witness_obj)});
+            REQUIRE(witness_serialized.error == merovingian::canonicaljson::CanonicalJsonError::none);
+
+            auto witness_w = merovingian::federation::InboundPduEnvelope{};
+            witness_w.event_id = "$witness_w:example.org";
+            witness_w.room_id = room_id;
+            witness_w.room_version = "12";
+            witness_w.sender = alice_id;
+            witness_w.event_type = "m.room.name";
+            witness_w.state_key = std::string{};
+            witness_w.origin_server_ts = 2500;
+            witness_w.depth = 10U;
+            witness_w.prev_event_ids = {"$topic_a:example.org"};
+            witness_w.auth_event_ids = auth_ids;
+            witness_w.json = witness_serialized.output;
+
+            auto const fork_c = make_topic_fork_pdu(room_id, "$topic_c:example.org", alice_id, "topic-C",
+                                                    {"$topic_b:example.org"}, auth_ids, 3500);
+
+            REQUIRE(merovingian::homeserver::ingest_pdu_event(hs, witness_w).status ==
+                    merovingian::federation::PduIngestionStatus::accepted);
+            REQUIRE(merovingian::homeserver::ingest_pdu_event(hs, fork_c).status ==
+                    merovingian::federation::PduIngestionStatus::accepted);
+
+            auto const resolved_topic_event_id = [&]() -> std::string {
+                for (auto const& s : hs.database.persistent_store.state)
+                {
+                    if (s.room_id == room_id && s.event_type == "m.room.topic")
+                    {
+                        return s.event_id;
+                    }
+                }
+                return {};
+            }();
+            REQUIRE_FALSE(resolved_topic_event_id.empty());
+            CAPTURE(resolved_topic_event_id);
+            // Lock in the reactivation: A (already superseded once by B)
+            // wins the later fork against the brand-new candidate C. This
+            // is the literal case database::store_state's state_transitions
+            // upsert fix exists for — without it this REQUIRE still holds
+            // (resolve_state_v2's own choice is unaffected), but
+            // recompute_current_state's write of the choice back into
+            // current_state fails closed, and the assertions below
+            // (current_state actually holding A, and sync reporting it)
+            // catch that.
+            REQUIRE(resolved_topic_event_id == "$topic_a:example.org");
+
+            auto const sync = merovingian::homeserver::handle_client_server_request(
+                rt, {"GET", std::string{"/_matrix/client/v3/sync?since="} + next_batch, token, {}});
+
+            THEN("the incremental sync reflects the resolved topic as a room state change")
+            {
+                REQUIRE(sync.response.status == 200U);
+                auto const body = parse_body(sync.response.body);
+                auto const* root = as_object(body);
+                REQUIRE(root != nullptr);
+                auto const* rooms = as_object(*json_member(*root, "rooms"));
+                REQUIRE(rooms != nullptr);
+                auto const* join = as_object(*json_member(*rooms, "join"));
+                REQUIRE(join != nullptr);
+                auto const* room_obj = as_object(*json_member(*join, room_id));
+                REQUIRE(room_obj != nullptr);
+
+                // The resolved topic event_id must appear somewhere in this
+                // incremental sync response (timeline or state block) — the
+                // client must be told about it, not left holding topic-B.
+                REQUIRE(sync.response.body.find(resolved_topic_event_id) != std::string::npos);
             }
         }
     }
