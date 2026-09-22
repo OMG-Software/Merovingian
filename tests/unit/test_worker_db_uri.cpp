@@ -257,14 +257,18 @@ auto parse(std::vector<char const*> const& args) -> merovingian::federation_work
         // Vestigial: declared in src/database/schema.cpp's DDL but never
         // populated or queried by any runtime code path, main's or the
         // worker's (confirmed by grep finding no reference outside
-        // schema.cpp).
+        // schema.cpp). state_groups was vestigial too until 0.12.13's
+        // ADR-0064 phase A (migration 015) gave it real readers and
+        // extended it with parent_state_group_id/delta_depth -- it now
+        // belongs to the worker allowlist above, not here.
+        // state_group_edges remains vestigial; ADR-0064 phase A deliberately
+        // left it alone (see docs/database-persistence.md).
         "event_json",
         "key_backups",
         "push_rules",
         "rate_limits",
         "room_versions",
         "state_group_edges",
-        "state_groups",
     };
 }
 

@@ -89,6 +89,15 @@ GRANT SELECT ON event_auth TO :fed_worker_role;
 GRANT SELECT ON event_signatures TO :fed_worker_role;
 GRANT SELECT ON room_aliases TO :fed_worker_role;
 
+-- ADR-0064 phase A (0.12.13): delta state groups. The worker serves
+-- federation /state and /state_ids locally today from current_state/event
+-- relations; a later phase moves that to these tables, so they are granted
+-- now rather than requiring a further role change alongside that phase.
+GRANT SELECT ON state_groups TO :fed_worker_role;
+GRANT SELECT ON state_group_state TO :fed_worker_role;
+GRANT SELECT ON event_state_groups TO :fed_worker_role;
+GRANT SELECT ON forward_extremities TO :fed_worker_role;
+
 -- server_signing_keys is column-restricted, not table-restricted: the
 -- worker's remote-key-cache read/write path (federation::
 -- remote_key_cache_probe / remote_key_resolver) legitimately needs this

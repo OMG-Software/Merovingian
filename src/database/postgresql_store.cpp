@@ -695,17 +695,98 @@ namespace
         if (table_load_profile_includes("events", profile))
         {
             auto events = query_rows(connection, "postgresql_load_events",
-                                     "SELECT event_id, room_id, sender_user_id, json, depth, stream_ordering FROM "
-                                     "events ORDER BY event_id");
+                                     "SELECT event_id, room_id, sender_user_id, json, depth, stream_ordering, status "
+                                     "FROM events ORDER BY event_id");
             if (!events.ok)
             {
                 return false;
             }
             for (auto const& row : events.rows)
             {
-                if (row.size() >= 6U)
+                if (row.size() >= 7U)
                 {
-                    store.events.push_back({row[0], row[1], row[2], row[3], parse_u64(row[4]), parse_u64(row[5])});
+                    auto event = PersistentEvent{row[0], row[1], row[2], row[3], parse_u64(row[4]), parse_u64(row[5])};
+                    event.status = row[6];
+                    store.events.push_back(std::move(event));
+                }
+            }
+        }
+
+        if (table_load_profile_includes("state_groups", profile))
+        {
+            auto state_groups =
+                query_rows(connection, "postgresql_load_state_groups",
+                           "SELECT state_group_id, room_id, parent_state_group_id, delta_depth FROM state_groups "
+                           "ORDER BY state_group_id");
+            if (!state_groups.ok)
+            {
+                return false;
+            }
+            for (auto const& row : state_groups.rows)
+            {
+                if (row.size() >= 4U)
+                {
+                    auto entry = PersistentStateGroup{};
+                    entry.state_group_id = row[0];
+                    entry.room_id = row[1];
+                    entry.parent_state_group_id = row[2].empty() ? std::nullopt : std::optional<std::string>{row[2]};
+                    entry.delta_depth = static_cast<std::uint32_t>(parse_u64(row[3]));
+                    store.state_groups.push_back(std::move(entry));
+                }
+            }
+        }
+
+        if (table_load_profile_includes("state_group_state", profile))
+        {
+            auto state_group_state =
+                query_rows(connection, "postgresql_load_state_group_state",
+                           "SELECT state_group_id, event_type, state_key, event_id FROM state_group_state ORDER BY "
+                           "state_group_id, event_type, state_key");
+            if (!state_group_state.ok)
+            {
+                return false;
+            }
+            for (auto const& row : state_group_state.rows)
+            {
+                if (row.size() >= 4U)
+                {
+                    store.state_group_state.push_back({row[0], row[1], row[2], row[3]});
+                }
+            }
+        }
+
+        if (table_load_profile_includes("event_state_groups", profile))
+        {
+            auto event_state_groups =
+                query_rows(connection, "postgresql_load_event_state_groups",
+                           "SELECT event_id, state_group_id FROM event_state_groups ORDER BY event_id");
+            if (!event_state_groups.ok)
+            {
+                return false;
+            }
+            for (auto const& row : event_state_groups.rows)
+            {
+                if (row.size() >= 2U)
+                {
+                    store.event_state_groups.push_back({row[0], row[1]});
+                }
+            }
+        }
+
+        if (table_load_profile_includes("forward_extremities", profile))
+        {
+            auto forward_extremities =
+                query_rows(connection, "postgresql_load_forward_extremities",
+                           "SELECT room_id, event_id FROM forward_extremities ORDER BY room_id, event_id");
+            if (!forward_extremities.ok)
+            {
+                return false;
+            }
+            for (auto const& row : forward_extremities.rows)
+            {
+                if (row.size() >= 2U)
+                {
+                    store.forward_extremities.push_back({row[0], row[1]});
                 }
             }
         }
@@ -2004,7 +2085,8 @@ namespace
 
         auto events = connection.execute(
             {"postgresql_reload_events",
-             "SELECT event_id, room_id, sender_user_id, json, depth, stream_ordering FROM events WHERE room_id = $1",
+             "SELECT event_id, room_id, sender_user_id, json, depth, stream_ordering, status FROM events WHERE "
+             "room_id = $1",
              {{room_id_str, false}}});
         if (!events.ok)
         {
@@ -2012,9 +2094,11 @@ namespace
         }
         for (auto const& row : events.rows)
         {
-            if (row.size() >= 6U)
+            if (row.size() >= 7U)
             {
-                snapshot.events.push_back({row[0], row[1], row[2], row[3], parse_u64(row[4]), parse_u64(row[5])});
+                auto event = PersistentEvent{row[0], row[1], row[2], row[3], parse_u64(row[4]), parse_u64(row[5])};
+                event.status = row[6];
+                snapshot.events.push_back(std::move(event));
             }
         }
 
