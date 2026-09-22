@@ -1160,9 +1160,19 @@ SCENARIO("Reverse topological power ordering reads string power levels only wher
         auto const high = make_event_with_auth("m.room.power_levels", "", "$high:example.org", "@alice:example.org", 50,
                                                {"$pl_prev:example.org"}, power_levels_content);
         auto const conflicted = std::vector<StateEventReference>{low, high};
-        auto const known_index = merovingian::events::build_event_json_index({
+        // EventJsonIndex is a view into the state group's event_json members
+        // (see state_resolution.hpp), so the backing vector must be a named
+        // local that outlives every use of known_index below. It also must
+        // be the actual std::vector<StateGroup> passed BY REFERENCE to
+        // build_event_json_index, not a braced `{known_group}` argument --
+        // that form builds its own temporary vector containing a COPY of
+        // known_group, so the index would reference that temporary's
+        // elements and dangle at the end of this statement regardless of
+        // known_group itself staying alive.
+        auto const known_groups = std::vector<merovingian::events::StateGroup>{
             merovingian::events::StateGroup{"g", {pl_prev}}
-        });
+        };
+        auto const known_index = merovingian::events::build_event_json_index(known_groups);
 
         WHEN("the events are sorted under a room version 9 policy")
         {

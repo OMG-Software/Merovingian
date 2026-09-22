@@ -617,10 +617,39 @@ SCENARIO("Room v12: an event on the conflicted state subgraph's path is included
 namespace
 {
 
-[[nodiscard]] auto index_of(std::vector<StateEventReference> const& events) -> merovingian::events::EventJsonIndex
+// EventJsonIndex is a view (reference_wrapper) into the event_json members
+// of a StateGroup's state vector, so the backing group must outlive the
+// index (see state_resolution.hpp's own comment on EventJsonIndex).
+// Bundling the groups vector and the index together, rather than returning
+// the index alone, keeps that storage alive for as long as the caller keeps
+// this struct -- returning just the index from a function-local StateGroup
+// would leave it referencing an already-destroyed vector the moment the
+// function returns.
+//
+// `groups` MUST be a `std::vector<StateGroup>` here, not a single
+// `StateGroup` passed to build_event_json_index as `{group}` -- that braced
+// form constructs its own temporary vector containing a COPY of `group`
+// (StateGroup has no reference semantics), so the index would end up
+// pointing at that temporary's copied elements instead of `group`'s, and
+// dangle the moment the call expression ends. Passing the actual owned
+// vector by reference avoids the copy entirely.
+//
+// This struct is safe to return by value: std::vector/std::unordered_map's
+// move operations only transfer their internal buffer pointer, never
+// relocate individual elements, so the addresses reference_wrapper points
+// at do not change across the move.
+struct OwnedIndex final
 {
-    auto group = StateGroup{"index", events};
-    return merovingian::events::build_event_json_index({group});
+    std::vector<StateGroup> groups{};
+    merovingian::events::EventJsonIndex index{};
+};
+
+[[nodiscard]] auto index_of(std::vector<StateEventReference> events) -> OwnedIndex
+{
+    auto owned = OwnedIndex{};
+    owned.groups.push_back(StateGroup{"index", std::move(events)});
+    owned.index = merovingian::events::build_event_json_index(owned.groups);
+    return owned;
 }
 
 } // namespace
@@ -656,13 +685,13 @@ SCENARIO("Reverse topological power ordering reads a power_levels candidate's se
         },
                                               pl_content({{"@alice:example.org", 100}}));
 
-        auto const known_index = index_of({pl_prev});
+        auto const owned_index = index_of({pl_prev});
         auto const conflicted = std::vector<StateEventReference>{candidate_mallory, candidate_alice};
 
         WHEN("the candidates are sorted by reverse topological power ordering")
         {
             auto const sorted =
-                merovingian::events::reverse_topological_power_sort(conflicted, known_index, {}, *policy);
+                merovingian::events::reverse_topological_power_sort(conflicted, owned_index.index, {}, *policy);
 
             THEN("alice's real, higher power (from the auth_events ancestor) sorts her event first")
             {
@@ -705,13 +734,13 @@ SCENARIO("Reverse topological power ordering reads a non-power candidate's sende
         auto const ban_bob = make_ref("m.room.member", "@victim:example.org", "$ban_bob", "@bob:example.org", 1,
                                       {"$pl_bob_low"}, R"({"membership":"ban"})");
 
-        auto const known_index = index_of({pl_mallory_high, pl_bob_low});
+        auto const owned_index = index_of({pl_mallory_high, pl_bob_low});
         auto const conflicted = std::vector<StateEventReference>{ban_bob, ban_mallory};
 
         WHEN("the candidates are sorted by reverse topological power ordering")
         {
             auto const sorted =
-                merovingian::events::reverse_topological_power_sort(conflicted, known_index, {}, *policy);
+                merovingian::events::reverse_topological_power_sort(conflicted, owned_index.index, {}, *policy);
 
             THEN("mallory's genuinely higher power (100 vs bob's 5) sorts her event first")
             {
@@ -754,13 +783,13 @@ SCENARIO("Room v12: a room creator's event sorts ahead of any non-creator's, how
         auto const candidate_alice = make_ref("m.room.member", "@victim2:example.org", "$alice", "@alice:example.org",
                                               1, {"$create", "$pl_huge"}, R"({"membership":"ban"})");
 
-        auto const known_index = index_of({create, pl_huge});
+        auto const owned_index = index_of({create, pl_huge});
         auto const conflicted = std::vector<StateEventReference>{candidate_mallory, candidate_alice};
 
         WHEN("the candidates are sorted by reverse topological power ordering")
         {
             auto const sorted =
-                merovingian::events::reverse_topological_power_sort(conflicted, known_index, {}, *policy);
+                merovingian::events::reverse_topological_power_sort(conflicted, owned_index.index, {}, *policy);
 
             THEN("the creator sorts first regardless of the non-creator's power_levels level")
             {
