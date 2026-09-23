@@ -168,6 +168,7 @@ struct Genesis final
     std::string create_id{};
     std::string pl_id{};
     std::string admin_member_id{};
+    std::string join_rules_id{};
 };
 
 [[nodiscard]] auto seed_room_genesis(HomeserverRuntime& runtime, std::string const& room_id, std::string const& admin)
@@ -216,7 +217,7 @@ struct Genesis final
     seed_accepted_event(runtime, room_id, join_rules_id, "m.room.join_rules", std::string{}, admin, join_rules_json,
                         {member_id}, 3U);
 
-    return {create_id, pl_id, member_id};
+    return {create_id, pl_id, member_id, join_rules_id};
 }
 
 } // namespace
@@ -245,10 +246,10 @@ SCENARIO("send_join: a joining event with a mismatched content hash is redacted 
         auto const bad_json =
             build_event_json(room_id, "m.room.member", std::string{"@bob:remote.example.org"},
                              "@bob:remote.example.org", std::move(content), {genesis.admin_member_id},
-                             {genesis.create_id, genesis.pl_id}, 4, 5, std::string{"this-does-not-match"});
+                             {genesis.create_id, genesis.pl_id, genesis.join_rules_id}, 4, 5, std::string{"this-does-not-match"});
         auto const envelope = make_envelope(room_id, "$sjbadhash:remote.example.org", "m.room.member",
                                             std::string{"@bob:remote.example.org"}, "@bob:remote.example.org",
-                                            {genesis.admin_member_id}, {genesis.create_id, genesis.pl_id}, 4, bad_json);
+                                            {genesis.admin_member_id}, {genesis.create_id, genesis.pl_id, genesis.join_rules_id}, 4, bad_json);
 
         WHEN("the send_join is accepted")
         {
@@ -333,14 +334,14 @@ SCENARIO("send_join: a joining event that fails its own auth_events is rejected"
             "membership", merovingian::canonicaljson::Value{std::string{"join"}}));
         auto const json = build_event_json(room_id, "m.room.member", std::string{"@bob:remote.example.org"},
                                            "@bob:remote.example.org", std::move(content), {genesis.admin_member_id},
-                                           {genesis.create_id, genesis.pl_id}, 4, 5);
+                                           {genesis.create_id, genesis.pl_id, genesis.join_rules_id}, 4, 5);
         // No join_rules named in auth_events at all -> Step 5 of the member
         // auth rules ("cannot join without an invite unless join_rules is
         // public, and public join_rules must be provable via auth_events")
         // denies it.
         auto const envelope = make_envelope(room_id, "$sjbadauth:remote.example.org", "m.room.member",
                                             std::string{"@bob:remote.example.org"}, "@bob:remote.example.org",
-                                            {genesis.admin_member_id}, {genesis.create_id, genesis.pl_id}, 4, json);
+                                            {genesis.admin_member_id}, {genesis.create_id, genesis.pl_id, genesis.join_rules_id}, 4, json);
 
         WHEN("the send_join is processed")
         {
@@ -413,10 +414,10 @@ SCENARIO("A membership event passing its auth_events and state-before but failin
             "membership", merovingian::canonicaljson::Value{std::string{"join"}}));
         auto const json = build_event_json(room_id, "m.room.member", std::string{"@bob:remote.example.org"},
                                            "@bob:remote.example.org", std::move(content), {genesis.admin_member_id},
-                                           {genesis.create_id, genesis.pl_id}, 4, 5);
+                                           {genesis.create_id, genesis.pl_id, genesis.join_rules_id}, 4, 5);
         auto const envelope = make_envelope(room_id, "$sjsoftfail:remote.example.org", "m.room.member",
                                             std::string{"@bob:remote.example.org"}, "@bob:remote.example.org",
-                                            {genesis.admin_member_id}, {genesis.create_id, genesis.pl_id}, 4, json);
+                                            {genesis.admin_member_id}, {genesis.create_id, genesis.pl_id, genesis.join_rules_id}, 4, json);
 
         WHEN("the send_join is processed")
         {

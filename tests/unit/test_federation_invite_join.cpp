@@ -29,6 +29,7 @@
 // +-------------------------------------------------------------------------+
 
 #include "../support/master_key.hpp"
+#include "../support/membership_fixture_support.hpp"
 #include "../support/registration_token.hpp"
 #include "federation_signing_test_support.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
@@ -154,24 +155,37 @@ auto constexpr remote_key_seed = "invite-join-test-seed";
 // authorize_federation_pdu can verify the Ed25519 signature against the
 // remote's signing_key. The content hash is computed and attached by
 // sign_event_for_server, so verify_pdu_content_hash also passes.
-[[nodiscard]] auto make_signed_join_body(std::string const& room_id, std::string const& sender,
-                                         std::vector<std::string> const& auth_events = {}) -> std::string
+[[nodiscard]] auto json_id_array(std::vector<std::string> const& ids) -> std::string
 {
-    auto auth_json = std::string{"["};
-    for (std::size_t i = 0U; i < auth_events.size(); ++i)
+    auto out = std::string{"["};
+    for (std::size_t i = 0U; i < ids.size(); ++i)
     {
         if (i != 0U)
         {
-            auth_json += ',';
+            out += ',';
         }
-        auth_json += "\"" + auth_events[i] + "\"";
+        out += "\"" + ids[i] + "\"";
     }
-    auth_json += "]";
+    out += "]";
+    return out;
+}
+
+// prev_events and auth_events default to empty only for the few scenarios
+// that deliberately send a malformed event; every realistic join passes the
+// room's forward extremities and the selected auth events (ADR-0064 phase
+// B2 authorises an inbound membership against both).
+[[nodiscard]] auto make_signed_join_body(std::string const& room_id, std::string const& sender,
+                                         std::vector<std::string> const& auth_events = {},
+                                         std::vector<std::string> const& prev_events = {}) -> std::string
+{
+    auto const auth_json = json_id_array(auth_events);
+    auto const prev_json = json_id_array(prev_events);
 
     auto const unsigned_json = std::string{"{\"type\":\"m.room.member\",\"room_id\":\""} + room_id +
                                "\",\"sender\":\"" + sender + "\",\"state_key\":\"" + sender +
                                "\",\"content\":{\"membership\":\"join\"},\"depth\":6," +
-                               "\"origin_server_ts\":2000,\"prev_events\":[],\"auth_events\":" + auth_json + "}";
+                               "\"origin_server_ts\":2000,\"prev_events\":" + prev_json +
+                               ",\"auth_events\":" + auth_json + "}";
 
     return merovingian::federation::test::make_signed_event_json(unsigned_json, remote_origin, remote_key_id,
                                                                  remote_key_seed, "12");
@@ -386,7 +400,12 @@ SCENARIO("send_join auth_chain includes the invite event when the join PDU refer
         // Join PDU with auth_events referencing the invite event.
         // This simulates what a conformant remote server (e.g. Synapse) sends
         // after receiving a make_join template with the correct auth_events.
-        auto const join_body = make_signed_join_body(room_id, remote_user, {invite_event_id});
+        auto const& fixture_store = runtime.database.persistent_store;
+        auto join_auth_ids = merovingian::tests::fixture_auth_event_ids(fixture_store, room_id, remote_user, true);
+        join_auth_ids.push_back(invite_event_id);
+        auto const join_body = make_signed_join_body(
+            room_id, remote_user, join_auth_ids,
+            merovingian::tests::fixture_prev_event_ids(fixture_store, room_id));
 
         WHEN("the remote server calls send_join with the join PDU")
         {
@@ -681,7 +700,12 @@ SCENARIO("send_join response body includes the required members_omitted field",
         merovingian::federation::upsert_remote(runtime.federation, remote_for_test());
 
         auto const join_event_id = std::string{"$join_eve:remote.example.org"};
-        auto const join_body = make_signed_join_body(room_id, remote_user, {invite_event_id});
+        auto const& fixture_store = runtime.database.persistent_store;
+        auto join_auth_ids = merovingian::tests::fixture_auth_event_ids(fixture_store, room_id, remote_user, true);
+        join_auth_ids.push_back(invite_event_id);
+        auto const join_body = make_signed_join_body(
+            room_id, remote_user, join_auth_ids,
+            merovingian::tests::fixture_prev_event_ids(fixture_store, room_id));
 
         WHEN("the remote server calls send_join with omit_members=true")
         {
@@ -1108,7 +1132,12 @@ SCENARIO("send_join response includes origin, non-empty state, and non-empty aut
         merovingian::federation::upsert_remote(runtime.federation, remote_for_test());
 
         auto const join_event_id = std::string{"$join_kate:remote.example.org"};
-        auto const join_body = make_signed_join_body(room_id, remote_user, {invite_event_id});
+        auto const& fixture_store = runtime.database.persistent_store;
+        auto join_auth_ids = merovingian::tests::fixture_auth_event_ids(fixture_store, room_id, remote_user, true);
+        join_auth_ids.push_back(invite_event_id);
+        auto const join_body = make_signed_join_body(
+            room_id, remote_user, join_auth_ids,
+            merovingian::tests::fixture_prev_event_ids(fixture_store, room_id));
 
         WHEN("the remote server calls send_join")
         {
@@ -1189,7 +1218,12 @@ SCENARIO("send_join state array reflects pre-join room state with membership inv
         merovingian::federation::upsert_remote(runtime.federation, remote_for_test());
 
         auto const join_event_id = std::string{"$join_liam:remote.example.org"};
-        auto const join_body = make_signed_join_body(room_id, remote_user, {invite_event_id});
+        auto const& fixture_store = runtime.database.persistent_store;
+        auto join_auth_ids = merovingian::tests::fixture_auth_event_ids(fixture_store, room_id, remote_user, true);
+        join_auth_ids.push_back(invite_event_id);
+        auto const join_body = make_signed_join_body(
+            room_id, remote_user, join_auth_ids,
+            merovingian::tests::fixture_prev_event_ids(fixture_store, room_id));
 
         WHEN("the remote server calls send_join")
         {

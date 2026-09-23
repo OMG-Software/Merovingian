@@ -308,6 +308,51 @@ namespace
     // every event `auth_event_ids` names is a permitted selection for this
     // PDU: the correct (type, state_key), no duplicates, and from the same
     // room. ADR-0064 phase B2 step 4.
+    // Returns the parsed m.room.create event recorded in a room's state, or a
+    // null value when the room has none. Room v12 (MSC4291) makes the create
+    // event implicit in the room ID and forbids naming it in auth_events, so
+    // both receipt paths must fill the auth map's create slot from the room's
+    // own state rather than from the event's named auth_events.
+    [[nodiscard]] auto create_event_json_for_room(database::PersistentStore const& store, std::string_view room_id)
+        -> canonicaljson::Value
+    {
+        for (auto const& state : store.state)
+        {
+            if (state.room_id != room_id || state.event_type != "m.room.create" || !state.state_key.empty())
+            {
+                continue;
+            }
+            for (auto const& evt : store.events)
+            {
+                if (evt.event_id != state.event_id)
+                {
+                    continue;
+                }
+                auto const parsed = canonicaljson::parse_lossless(evt.json);
+                return parsed.error == canonicaljson::ParseError::none ? parsed.value : canonicaljson::Value{};
+            }
+            break;
+        }
+        return {};
+    }
+
+    // Fills an auth map's create slot from the room's recorded create event
+    // when it is missing. Only for maps built from ROOM STATE (the state
+    // before an event, and the current state): the create event is part of a
+    // room's state by construction, so its absence there is a gap in our own
+    // bookkeeping, never a claim by the sender. The map built from an event's
+    // NAMED auth_events must not be filled this way for pre-v12 rooms, where
+    // the spec requires the sender to name the create event and rejects an
+    // event that does not (v12 forbids naming it, and is filled explicitly).
+    auto fill_create_from_room_state(events::AuthEventMap& map, database::PersistentStore const& store,
+                                     std::string_view room_id) -> void
+    {
+        if (std::holds_alternative<std::nullptr_t>(map.create.storage()))
+        {
+            map.create = create_event_json_for_room(store, room_id);
+        }
+    }
+
     [[nodiscard]] auto validate_auth_events_selection(
         database::PersistentStore const& store, std::string_view room_id, canonicaljson::Value const& pdu,
         rooms::RoomVersionPolicy const& policy, std::string_view event_type, std::string_view sender,
@@ -1623,6 +1668,27 @@ namespace
             // to it, as originally written) because the ADR-0064 state-
             // before computation below also needs it.
             rooms::RoomVersionPolicy const* room_policy = nullptr;
+            // ADR-0064 phase B2: the receipt outcome for this membership PDU,
+            // decided in the spec's order exactly as ingest_pdu_event does.
+            // A rejection is not an early return: spec "Rejection" requires a
+            // rejected event still be stored (so later events referencing it
+            // can be authorised), just never applied to state and never a
+            // forward extremity. The send_join/leave/knock RESPONSE is still
+            // an error for a rejected event — the peer asked us to accept it.
+            enum class MembershipReceiptOutcome : std::uint8_t
+            {
+                accepted,
+                rejected,
+                soft_failed,
+            };
+            auto outcome = MembershipReceiptOutcome::accepted;
+            auto outcome_reason = std::string{};
+            auto stored_json = envelope.json;
+            // The redacted-or-original PDU and the third-party-invite token,
+            // carried out of the block below for the state-before and
+            // current-state checks that follow it.
+            auto membership_effective_pdu = canonicaljson::Value{};
+            auto membership_third_party_token = std::string{};
             {
                 auto const pdu_parsed = canonicaljson::parse_lossless(envelope.json);
                 if (pdu_parsed.error != canonicaljson::ParseError::none)
@@ -1662,15 +1728,67 @@ namespace
                     auto const* const token = signed_obj == nullptr ? nullptr : string_member(*signed_obj, "token");
                     return token == nullptr ? std::string{} : *token;
                 }();
-                auto const auth_map = build_pdu_auth_event_map(store, room_id, envelope.sender,
-                                                               envelope.state_key.value_or(std::string{}),
-                                                               envelope.event_type, third_party_invite_token);
-                auto const auth_decision =
-                    events::authorize_event_against_auth_events(pdu_parsed.value, *room_policy, auth_map);
-                if (!auth_decision.allowed)
+                // Step 3 (hash): a content-hash mismatch REDACTS the event and
+                // processing continues with the redacted form, which is what
+                // gets stored. It is never a rejection. Mirrors
+                // ingest_pdu_event; see spec "Checks performed on receipt of a
+                // PDU". The signature check already ran in inbound_request.cpp.
+                auto effective_pdu = pdu_parsed.value;
+                if (!events::verify_pdu_content_hash(effective_pdu))
                 {
-                    return {false, 403U, std::string{"event auth denied: "} + auth_decision.reason, {}, {}};
+                    auto redaction = events::redact_event(effective_pdu, *room_policy);
+                    if (!redaction.error.empty())
+                    {
+                        return {false, 400U, "content hash mismatch and event could not be redacted", {}, {}};
+                    }
+                    effective_pdu = std::move(redaction.event);
+                    auto const serialized = canonicaljson::serialize_canonical(effective_pdu);
+                    if (serialized.error != canonicaljson::CanonicalJsonError::none)
+                    {
+                        return {false, 400U, "failed to serialize redacted event", {}, {}};
+                    }
+                    stored_json = serialized.output;
                 }
+
+                // Step 4: auth_events selection, then the auth rules against
+                // the map those named events build.
+                auto const selection_check = validate_auth_events_selection(
+                    store, room_id, effective_pdu, *room_policy, envelope.event_type, envelope.sender,
+                    envelope.state_key, third_party_invite_token, envelope.auth_event_ids);
+                if (selection_check == AuthEventsSelectionCheck::unresolvable)
+                {
+                    return {
+                        false, 400U, "an auth_event this PDU names has no recorded event; awaiting backfill", {}, {}};
+                }
+                if (selection_check == AuthEventsSelectionCheck::disallowed)
+                {
+                    outcome = MembershipReceiptOutcome::rejected;
+                    outcome_reason = "auth_events selection is not permitted for this event";
+                }
+                if (outcome == MembershipReceiptOutcome::accepted)
+                {
+                    auto auth_events_map = build_auth_event_map_from_entries(
+                        store, state_entries_from_named_events(store, envelope.auth_event_ids), envelope.sender,
+                        envelope.state_key.value_or(std::string{}), envelope.event_type, third_party_invite_token);
+                    // v12 (MSC4291): the create event is implicit in the room
+                    // ID and MUST NOT be named in auth_events, so fill it from
+                    // the room's recorded state — same as ingest_pdu_event.
+                    if (room_policy->create_event_is_room_id &&
+                        std::holds_alternative<std::nullptr_t>(auth_events_map.create.storage()))
+                    {
+                        auth_events_map.create = create_event_json_for_room(store, room_id);
+                    }
+                    auto const auth_events_decision =
+                        events::authorize_event_against_auth_events(effective_pdu, *room_policy, auth_events_map);
+                    if (!auth_events_decision.allowed)
+                    {
+                        outcome = MembershipReceiptOutcome::rejected;
+                        outcome_reason =
+                            "event auth denied against its own auth_events: " + auth_events_decision.reason;
+                    }
+                }
+                membership_effective_pdu = std::move(effective_pdu);
+                membership_third_party_token = third_party_invite_token;
             }
             // ADR-0064 phase B1: this is an inbound PDU (a remote server's
             // user joining/leaving/knocking on a room WE are resident in) —
@@ -1682,18 +1800,61 @@ namespace
             {
                 return {false, 400U, "no recorded state group for a prev_event; awaiting backfill", {}, {}};
             }
+
+            // Step 5: auth against the state immediately before the event.
+            if (outcome == MembershipReceiptOutcome::accepted)
+            {
+                auto state_before_map = build_auth_event_map_from_entries(
+                    store, state_before.state, envelope.sender, envelope.state_key.value_or(std::string{}),
+                    envelope.event_type, membership_third_party_token);
+                fill_create_from_room_state(state_before_map, store, room_id);
+                auto const state_before_decision = events::authorize_event_against_auth_events(
+                    membership_effective_pdu, *room_policy, state_before_map);
+                if (!state_before_decision.allowed)
+                {
+                    outcome = MembershipReceiptOutcome::rejected;
+                    outcome_reason =
+                        "event auth denied against state before the event: " + state_before_decision.reason;
+                }
+            }
+
+            // Step 6: auth against the room's current (resolved) state. Spec
+            // "Soft failure": a failure here does NOT reject the event. It is
+            // stored and takes part in state resolution, but never updates
+            // state, never becomes a forward extremity, and never flips the
+            // membership cache — which is what stops a membership that
+            // references pre-ban history from evading the ban.
+            if (outcome == MembershipReceiptOutcome::accepted)
+            {
+                auto current_state_map = build_pdu_auth_event_map(
+                    store, room_id, envelope.sender, envelope.state_key.value_or(std::string{}), envelope.event_type,
+                    membership_third_party_token);
+                fill_create_from_room_state(current_state_map, store, room_id);
+                auto const current_state_decision = events::authorize_event_against_auth_events(
+                    membership_effective_pdu, *room_policy, current_state_map);
+                if (!current_state_decision.allowed)
+                {
+                    outcome = MembershipReceiptOutcome::soft_failed;
+                    outcome_reason =
+                        "event auth denied against current state (soft failure): " + current_state_decision.reason;
+                }
+            }
+
             auto event = database::PersistentEvent{};
             event.event_id = envelope.event_id;
             event.room_id = envelope.room_id;
             event.sender_user_id = envelope.sender;
-            event.json = envelope.json;
+            event.json = stored_json;
             event.depth = envelope.depth;
             event.stream_ordering = allocate_stream_ordering(rt->database);
             event.prev_event_ids = envelope.prev_event_ids;
             event.auth_event_ids = envelope.auth_event_ids;
+            event.status = outcome == MembershipReceiptOutcome::rejected      ? "rejected"
+                           : outcome == MembershipReceiptOutcome::soft_failed ? "soft_failed"
+                                                                              : "accepted";
             auto const event_stream_ordering = event.stream_ordering;
             auto state = std::optional<database::PersistentStateEvent>{};
-            if (envelope.state_key.has_value())
+            if (envelope.state_key.has_value() && outcome == MembershipReceiptOutcome::accepted)
             {
                 // Use envelope.event_id (the computed reference hash) rather
                 // than the URL path event_id parameter. Both should be equal for
@@ -1735,8 +1896,8 @@ namespace
                     state.has_value() ? std::optional<std::string>{state->state_key} : std::optional<std::string>{};
                 auto const state_after =
                     compute_state_after(state_before.state, accepted_event_id, event_type, state_key);
-                auto const state_group =
-                    record_event_state(store, room_id, accepted_event_id, accepted_prev_event_ids, state_after);
+                auto const state_group = record_event_state(store, room_id, accepted_event_id, accepted_prev_event_ids,
+                                                            state_after, outcome == MembershipReceiptOutcome::accepted);
                 if (!state_group.has_value())
                 {
                     LOG_WARNING("State-group bookkeeping failed after membership PDU was accepted; event_id=" +
@@ -1749,7 +1910,11 @@ namespace
                 }
             }
             auto membership_changed = false;
-            if (envelope.event_type == "m.room.member" && envelope.state_key.has_value())
+            // A rejected or soft-failed membership never flips the live
+            // membership view: that is precisely what stops a join that
+            // references pre-ban history from re-admitting a banned user.
+            if (envelope.event_type == "m.room.member" && envelope.state_key.has_value() &&
+                outcome == MembershipReceiptOutcome::accepted)
             {
                 auto const membership = membership_for_endpoint(endpoint);
                 if (!membership.empty())
@@ -1780,6 +1945,17 @@ namespace
             {
                 rt->sync_notifier->publish(rt->database.next_stream_ordering - 1U, sync_stream_id);
             }
+            // The event is now durably stored with its receipt status, so a
+            // rejection can be reported to the peer without losing it: spec
+            // "Rejection" keeps rejected events available for later events
+            // that reference them, while the peer's request still fails.
+            if (outcome == MembershipReceiptOutcome::rejected)
+            {
+                LOG_WARNING("Membership PDU rejected on receipt; event_id=" + accepted_event_id +
+                            " room_id=" + std::string{room_id} + " reason=" + outcome_reason);
+                return {false, 403U, std::string{"event auth denied: "} + outcome_reason, {}, {}};
+            }
+
             auto auth_chain = std::vector<std::string>{};
             auto state_events = std::vector<std::string>{};
             if (endpoint == federation::FederationEndpoint::send_join)
@@ -2329,25 +2505,7 @@ auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope
         if (room_policy->create_event_is_room_id &&
             std::holds_alternative<std::nullptr_t>(auth_events_map.create.storage()))
         {
-            for (auto const& state : runtime.database.persistent_store.state)
-            {
-                if (state.room_id == room_id && state.event_type == "m.room.create" && state.state_key.empty())
-                {
-                    for (auto const& evt : runtime.database.persistent_store.events)
-                    {
-                        if (evt.event_id == state.event_id)
-                        {
-                            auto const parsed = canonicaljson::parse_lossless(evt.json);
-                            if (parsed.error == canonicaljson::ParseError::none)
-                            {
-                                auth_events_map.create = parsed.value;
-                            }
-                            break;
-                        }
-                    }
-                    break;
-                }
-            }
+            auth_events_map.create = create_event_json_for_room(runtime.database.persistent_store, room_id);
         }
         auto const auth_events_decision =
             events::authorize_event_against_auth_events(effective_pdu, *room_policy, auth_events_map);
@@ -2378,9 +2536,10 @@ auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope
     // Step 5: auth against the state immediately before the event.
     if (outcome == ReceiptOutcome::accepted)
     {
-        auto const state_before_map = build_auth_event_map_from_entries(
+        auto state_before_map = build_auth_event_map_from_entries(
             runtime.database.persistent_store, state_before.state, envelope.sender,
             envelope.state_key.value_or(std::string{}), envelope.event_type, third_party_invite_token);
+        fill_create_from_room_state(state_before_map, runtime.database.persistent_store, room_id);
         auto const state_before_decision =
             events::authorize_event_against_auth_events(effective_pdu, *room_policy, state_before_map);
         if (!state_before_decision.allowed)
@@ -2394,9 +2553,10 @@ auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope
     // failure" — a failure here does not reject the event.
     if (outcome == ReceiptOutcome::accepted)
     {
-        auto const current_state_map = build_pdu_auth_event_map(
+        auto current_state_map = build_pdu_auth_event_map(
             runtime.database.persistent_store, room_id, envelope.sender, envelope.state_key.value_or(std::string{}),
             envelope.event_type, third_party_invite_token);
+        fill_create_from_room_state(current_state_map, runtime.database.persistent_store, room_id);
         auto const current_state_decision =
             events::authorize_event_against_auth_events(effective_pdu, *room_policy, current_state_map);
         if (!current_state_decision.allowed)

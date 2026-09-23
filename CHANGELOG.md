@@ -1,5 +1,18 @@
 ## 0.12.13
 
+- **PARKED, suite red: membership-path receipt checks (ADR-0064 phase B2).**
+  `send_join` / `send_leave` / `send_knock` now run the same receipt checks as
+  `/send`: a content-hash mismatch redacts instead of rejecting; the event is
+  authorised against its own `auth_events`, the state before it, and current
+  state, with rejection (stored, 403, never applied to state) and soft failure
+  (stored, resolved, never a forward extremity, membership never flipped)
+  handled per spec. Rejections are logged with their reason. The test suite is
+  RED because several older fixtures build join events with empty
+  `prev_events` / `auth_events` that no conformant peer sends; the checks are
+  correct and must NOT be relaxed to accommodate them. Handover, including the
+  helper `tests/support/membership_fixture_support.hpp` and the exact steps,
+  is in `docs/todos/capability-gaps.md` under "PARKED (0.12.13)".
+
 Fixes every Critical and High finding from the September 2026 full-project bug
 audit.
 

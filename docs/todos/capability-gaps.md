@@ -167,3 +167,124 @@ Wired for message events and membership transitions, gated behind
 | Exported metrics | `runtime-wired` | Stable Prometheus text exposition contract documented in `docs/observability-audit.md`; `X-Merovingian-Request-Id` and `Traceparent` correlation headers landed in 0.8.11. Remaining: operator dashboards and retention/export policy. |
 | Debug logging | `runtime-wired` | Per-module level filtering, wall-clock rate limits, and structured diagnostics with `request_id`/`trace_id`/`span_id` fields landed in 0.5.0/0.8.11. Remaining: formal log-format stability commitment. |
 | `/_merovingian/admin/accounts/{userId}`, `/_merovingian/admin/review/{targetType}/{targetId}`, `/_merovingian/admin/shutdown` | `not-started` | Declared in `observability::admin_routes()` (`src/observability/observability.cpp`) but `match_admin_route()` is never called from dispatch — `homeserver/local_http_router.cpp` handles only health, metrics, `media/metrics`, audit, and media quarantine/release/remove. These three routes are unreachable dead declarations, not live endpoints. |
+
+## PARKED (0.12.13, branch `fix/audit-critical-high-0.12.13`): membership-path receipt checks
+
+**State: the implementation is complete and committed; the suite is RED because
+older test fixtures build membership events no conformant server would send.
+Nothing here is a production defect — the work is paused, not broken.**
+
+ADR-0064 phase B2 brought the `/send` path onto the spec's receipt checks
+("Checks performed on receipt of a PDU"). The final step extends the same
+checks to the membership path (`runtime.federation.membership_acceptor` in
+`src/homeserver/local_http_router.cpp`, serving `send_join` / `send_leave` /
+`send_knock`):
+
+* a content-hash mismatch REDACTS the event and processing continues, instead
+  of rejecting it (spec step 3);
+* the event is authorised against its own `auth_events` (reject), the state
+  before it (reject), then current state (soft-fail) — steps 4, 5, 6;
+* a rejected event is still stored, marked `rejected`, so later events that
+  reference it can be authorised, but never updates state, never becomes a
+  forward extremity, and the peer receives 403;
+* a soft-failed event is stored, takes part in state resolution, and never
+  flips the membership cache — this is what stops a join that references
+  pre-ban history from re-admitting a banned user;
+* rejections are logged with their reason (`Membership PDU rejected on
+  receipt; ... reason=...`), which is the fastest way to diagnose the
+  remaining failures.
+
+### Why the suite is red
+
+The new checks are strict in a way the old single current-state check was not.
+Authorising against an event's own `auth_events` requires the SENDER to name
+the events that permit it; authorising against the state before the event
+requires real `prev_events`. Several fixtures predate those checks and build
+join events with empty `prev_events` and/or empty `auth_events`. They passed
+before because the room's current state happened to contain the join rules and
+memberships. Rejecting them is correct: a conformant peer always names its auth
+events (our own make_join template does).
+
+**Do not relax the checks to make these pass.** An earlier attempt to relax the
+room-v12 `auth_events` rule was reverted for exactly this reason — see
+`docs/adr/0062`..`0064` and the v12 conformance test citing rooms/v12.md rule
+3.2. The fixtures are what is wrong.
+
+### What to do
+
+1. Rebuild each failing fixture to send a realistic event, using the helper
+   added for this purpose: `tests/support/membership_fixture_support.hpp`
+   (`fixture_prev_event_ids` = the room's forward extremities;
+   `fixture_auth_event_ids` = create/power_levels/join_rules/sender-member per
+   the spec's "Auth events selection", with `omit_create = true` for room v12).
+   `tests/unit/test_federation_invite_join.cpp` and
+   `tests/unit/test_outbound_dispatch.cpp` are already converted and show the
+   pattern.
+2. Where a fixture seeds a room by pushing rows directly into the store, make
+   sure the seeded events have state groups (see `seed_accepted_event` in
+   `tests/unit/test_membership_acceptor_receipt_checks.cpp`), or
+   `compute_state_before` fails closed with `missing_prev_state`.
+3. A join must name the room's `m.room.join_rules` event, or the default
+   invite-only rule denies it. That single omission caused most of the
+   failures, including the "public room" scenarios.
+4. Expect to change assertions that contradict the spec, with the citation in
+   a comment. One is already done: a scenario in
+   `tests/unit/test_security_audit_m01_membership_auth.cpp` asserted that a
+   rejected join is NOT stored; the spec's "Rejection" section requires it to
+   be stored (the security property is that the membership is never applied,
+   which the scenario still asserts).
+5. Verify per `AGENTS.md` "Verifying Work": `python build.py wsl` in the
+   background, read the `Ok:` / `Fail:` / `Timeout:` counts out of
+   `build-wsl/meson-logs/testlog.txt`, then tag-filtered runs for
+   `[pdu_ingestion]`, `[pdu_ingestion][auth]`, `[state_groups]`,
+   `[state_res_v2]`, `[sync]`, conformance `[room-v12]`, and the integration
+   `[federation-worker]` and `[join]` tags.
+
+### Known-failing scenarios at the time of parking
+
+Full suite at the time of parking: **`Ok: 52`, `Fail: 2`** (the unit and
+integration targets), **17 failing assertions across 10 scenarios**, all in
+membership/`send_join` fixtures:
+
+| Failing assertions | File |
+| --- | --- |
+| 6 | `tests/unit/test_membership_acceptor_receipt_checks.cpp` |
+| 5 | `tests/unit/test_security_audit_m01_membership_auth.cpp` |
+| 4 | `tests/unit/test_federation_invite_join.cpp` |
+| 2 | `tests/integration/test_federation_worker_flow.cpp` |
+
+Scenarios:
+
+* A membership event passing its auth_events and state-before but failing
+  current state is soft-failed
+* handle_membership_ingest_request persists a worker-relayed federated
+  membership
+* send_join auth_chain includes the invite event when the join PDU references
+  it
+* send_join is accepted for a remote user who holds a pending invite
+* send_join is accepted for an uninvited remote user in a public room
+* send_join is rejected for an uninvited remote user in an invite-only room
+* send_join response body includes the required members_omitted field
+* send_join response includes origin, non-empty state, and non-empty
+  auth_chain
+* send_join state array reflects pre-join room state with membership
+* send_join: a joining event with a mismatched content hash is redacted and
+  accepted
+
+`tests/unit/test_outbound_dispatch.cpp` and
+`tests/unit/test_federation_invite_join.cpp` have already been partly
+converted to the helper and show the intended pattern (invite_join still has
+4 assertions failing; the remaining fixtures in it need the same treatment).
+
+One unrelated, pre-existing flake is NOT caused by this work:
+`tests/integration/test_http_server_listener_flow.cpp` asserts `FD_CLOEXEC` on
+an accepted socket it locates by scanning `/proc/self/fd` for a matching port;
+under parallel load it can match a different descriptor. It passes when the
+suite is run alone.
+
+### Also still outstanding from ADR-0064
+
+Phase C (fetch missing events, then verified `/state_ids`) has not started.
+Until it lands, an inbound PDU whose `prev_events` are unknown returns
+`missing_prev_state` and is not stored: correct and fail-closed, but it means
+a gap in room history is not yet repaired automatically.
