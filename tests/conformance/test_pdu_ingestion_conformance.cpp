@@ -58,8 +58,8 @@ using merovingian::homeserver::HomeserverRuntime;
                                     std::optional<std::string> const& state_key, std::string const& sender,
                                     merovingian::canonicaljson::Object content,
                                     std::vector<std::string> const& prev_event_ids,
-                                    std::vector<std::string> const& auth_event_ids, std::int64_t depth, std::int64_t ts)
-    -> std::string
+                                    std::vector<std::string> const& auth_event_ids, std::int64_t depth, std::int64_t ts,
+                                    std::optional<std::string> const& hash_override = std::nullopt) -> std::string
 {
     using namespace merovingian;
 
@@ -87,10 +87,19 @@ using merovingian::homeserver::HomeserverRuntime;
     }
     obj.push_back(canonicaljson::make_member("auth_events", canonicaljson::Value{std::move(auth_arr)}));
 
-    auto const hash = events::make_content_hash(canonicaljson::Value{obj});
-    REQUIRE(hash.error.empty());
+    auto hash_str = std::string{};
+    if (hash_override.has_value())
+    {
+        hash_str = *hash_override;
+    }
+    else
+    {
+        auto const hash = events::make_content_hash(canonicaljson::Value{obj});
+        REQUIRE(hash.error.empty());
+        hash_str = hash.sha256;
+    }
     auto hashes = canonicaljson::Object{};
-    hashes.push_back(canonicaljson::make_member("sha256", canonicaljson::Value{hash.sha256}));
+    hashes.push_back(canonicaljson::make_member("sha256", canonicaljson::Value{hash_str}));
     obj.push_back(canonicaljson::make_member("hashes", canonicaljson::Value{std::move(hashes)}));
 
     auto const serialized = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(obj)});
