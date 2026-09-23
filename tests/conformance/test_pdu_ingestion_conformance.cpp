@@ -7,6 +7,7 @@
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/events/event_id.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
+#include "merovingian/federation/membership_endpoints.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/homeserver/state_bookkeeping.hpp"
@@ -260,6 +261,79 @@ SCENARIO("A room v12 PDU naming m.room.create in auth_events is rejected, not to
             THEN("it is accepted")
             {
                 REQUIRE(result2.status == PduIngestionStatus::accepted);
+            }
+        }
+
+        std::filesystem::remove(path);
+    }
+}
+
+// Spec: Matrix Server-Server API v1.19
+// Endpoint / Section: Checks performed on receipt of a PDU, step 3 (hash);
+// Joining rooms (PUT /_matrix/federation/v2/send_join/{roomId}/{eventId})
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#checks-performed-on-receipt-of-a-pdu
+//
+// "Passes hash checks, otherwise it is redacted before being processed
+// further." This applies to every inbound PDU, including a joining event
+// submitted via send_join — ADR-0064 phase B2 wires the membership-acceptor
+// path (runtime.federation.membership_acceptor) through the same
+// run_pdu_receipt_checks the /send transaction path uses, so a send_join
+// event with a bad content hash is redacted and accepted, not hard-rejected.
+SCENARIO("send_join: a joining event with a mismatched content hash is redacted and accepted",
+         "[conformance][federation][auth][pdu_ingestion]")
+{
+    GIVEN("a room whose join_rules are public, and a send_join event whose declared hash does not match its content")
+    {
+        auto const path = unique_sqlite_path();
+        std::filesystem::remove(path);
+        auto started = merovingian::homeserver::start_runtime(config_with_sqlite(path));
+        REQUIRE(started.started);
+        merovingian::homeserver::wire_federation_callbacks(started.runtime);
+        REQUIRE(started.runtime.federation.membership_acceptor != nullptr);
+
+        auto const room_id = std::string{"!sjhashconf:local.example.org"};
+        auto const genesis = seed_room_genesis(started.runtime, room_id, "@admin:local.example.org");
+
+        auto join_rules_content = merovingian::canonicaljson::Object{};
+        join_rules_content.push_back(merovingian::canonicaljson::make_member(
+            "join_rule", merovingian::canonicaljson::Value{std::string{"public"}}));
+        auto const join_rules_id = room_id + ":join-rules";
+        auto const join_rules_json = build_event_json(
+            room_id, "m.room.join_rules", std::string{}, "@admin:local.example.org", std::move(join_rules_content),
+            {genesis.admin_member_id}, {genesis.pl_id, genesis.admin_member_id}, 3, 4);
+        seed_accepted_event(started.runtime, room_id, join_rules_id, "m.room.join_rules", std::string{},
+                            "@admin:local.example.org", join_rules_json, {genesis.admin_member_id}, 3U);
+
+        auto content = merovingian::canonicaljson::Object{};
+        content.push_back(merovingian::canonicaljson::make_member(
+            "membership", merovingian::canonicaljson::Value{std::string{"join"}}));
+        auto const bad_json =
+            build_event_json(room_id, "m.room.member", std::string{"@bob:remote.example.org"},
+                             "@bob:remote.example.org", std::move(content), {join_rules_id},
+                             {genesis.pl_id, join_rules_id}, 4, 5, std::string{"this-does-not-match-the-content"});
+        auto const envelope = make_envelope(room_id, "$sjhashconf:remote.example.org", "m.room.member",
+                                            std::string{"@bob:remote.example.org"}, "@bob:remote.example.org",
+                                            {join_rules_id}, {genesis.pl_id, join_rules_id}, 4, bad_json);
+
+        WHEN("the send_join is accepted")
+        {
+            auto const result = started.runtime.federation.membership_acceptor(
+                merovingian::federation::FederationEndpoint::send_join, room_id, envelope.event_id, envelope);
+
+            THEN("it is accepted — Spec MUST: a hash mismatch redacts, it does not reject")
+            {
+                REQUIRE(result.accepted);
+                REQUIRE(result.status == 200U);
+            }
+
+            THEN("the stored event is redacted, not the original tampered content")
+            {
+                auto const& events = started.runtime.database.persistent_store.events;
+                auto const stored = std::ranges::find_if(events, [&](merovingian::database::PersistentEvent const& e) {
+                    return e.event_id == "$sjhashconf:remote.example.org";
+                });
+                REQUIRE(stored != events.end());
+                REQUIRE(stored->status == "accepted");
             }
         }
 

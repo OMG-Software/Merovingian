@@ -141,6 +141,7 @@ shell = find_program('sh')
       'unit/test_federation_pdu_ingest_concurrency.cpp',
       'unit/test_pdu_ingestion_state_groups.cpp',
       'unit/test_pdu_ingestion_auth_checks.cpp',
+      'unit/test_membership_acceptor_receipt_checks.cpp',
       'unit/test_federation_invite_join.cpp',
       'unit/test_federation_key_query.cpp',
       'unit/test_federation_key_signatures.cpp',
