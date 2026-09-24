@@ -168,6 +168,13 @@ Wired for message events and membership transitions, gated behind
 | Debug logging | `runtime-wired` | Per-module level filtering, wall-clock rate limits, and structured diagnostics with `request_id`/`trace_id`/`span_id` fields landed in 0.5.0/0.8.11. Remaining: formal log-format stability commitment. |
 | `/_merovingian/admin/accounts/{userId}`, `/_merovingian/admin/review/{targetType}/{targetId}`, `/_merovingian/admin/shutdown` | `not-started` | Declared in `observability::admin_routes()` (`src/observability/observability.cpp`) but `match_admin_route()` is never called from dispatch — `homeserver/local_http_router.cpp` handles only health, metrics, `media/metrics`, audit, and media quarantine/release/remove. These three routes are unreachable dead declarations, not live endpoints. |
 
+## OUTSTANDING (0.12.13): remaining security-audit work
+
+The remaining work from the 0.12.12 security audit — two high findings, phase
+C of ADR-0064, seven medium and eight low items, user decisions still pending,
+and the pre-merge checklist — is written up for pickup in
+[`audit-0.12.13-handover.md`](audit-0.12.13-handover.md).
+
 ## RESOLVED (0.12.13, branch `fix/audit-critical-high-0.12.13`): membership-path receipt checks
 
 **State: the implementation is complete, the failing test fixtures have been
