@@ -8048,8 +8048,21 @@ namespace
             {
                 return resp(401U, json_serialize(cs_uia));
             }
-            if (!verify_local_user_password(rt.homeserver, req.access_token, *cs_password))
+            auto const password_verified = verify_local_user_password(rt.homeserver, req.access_token, *cs_password);
+            if (!password_verified.ok)
             {
+                if (password_verified.retry_after_ms > 0U)
+                {
+                    auto const retry_after = static_cast<std::uint32_t>(std::min<std::uint64_t>(
+                        password_verified.retry_after_ms, std::numeric_limits<std::uint32_t>::max()));
+                    auto response = LocalHttpResponse{
+                        429U,
+                        matrix_error("M_LIMIT_EXCEEDED", "Too many failed password attempts. Please try again later.",
+                                     retry_after),
+                        {{"Retry-After", std::to_string((retry_after + 999U) / 1000U)}}};
+                    apply_cors_headers(req, response, rt.cors);
+                    return response;
+                }
                 return resp(401U, json_serialize(cs_uia));
             }
             if (!store_key_api_payload(rt, route.endpoint, user, device_id, req, {}))
@@ -10325,8 +10338,16 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             return dispatch_resp(req, rt, 401U, json_serialize(uia_challenge));
         }
-        if (!verify_local_user_password(rt.homeserver, req.access_token, *current_password))
+        auto const password_verified = verify_local_user_password(rt.homeserver, req.access_token, *current_password);
+        if (!password_verified.ok)
         {
+            if (password_verified.retry_after_ms > 0U)
+            {
+                auto const retry_after = static_cast<std::uint32_t>(std::min<std::uint64_t>(
+                    password_verified.retry_after_ms, std::numeric_limits<std::uint32_t>::max()));
+                return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED",
+                                    "Too many failed password attempts. Please try again later.", retry_after);
+            }
             return dispatch_resp(req, rt, 401U, json_serialize(uia_challenge));
         }
         // Spec §5.5: logout_devices defaults to true — the server MUST revoke the
@@ -10379,8 +10400,16 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             return dispatch_resp(req, rt, 401U, json_serialize(uia_challenge));
         }
-        if (!verify_local_user_password(rt.homeserver, req.access_token, *current_password))
+        auto const password_verified = verify_local_user_password(rt.homeserver, req.access_token, *current_password);
+        if (!password_verified.ok)
         {
+            if (password_verified.retry_after_ms > 0U)
+            {
+                auto const retry_after = static_cast<std::uint32_t>(std::min<std::uint64_t>(
+                    password_verified.retry_after_ms, std::numeric_limits<std::uint32_t>::max()));
+                return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED",
+                                    "Too many failed password attempts. Please try again later.", retry_after);
+            }
             return dispatch_resp(req, rt, 401U, json_serialize(uia_challenge));
         }
         auto const result = deactivate_local_user(rt.homeserver, req.access_token);
@@ -10461,9 +10490,19 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             json_member("params", json_obj({})),
             json_member("session", json_str("account_threepid_add")),
         });
-        if (!body->password.has_value() ||
-            !verify_local_user_password(rt.homeserver, req.access_token, *body->password))
+        auto const password_verified =
+            body->password.has_value()
+                ? std::optional{verify_local_user_password(rt.homeserver, req.access_token, *body->password)}
+                : std::nullopt;
+        if (!password_verified.has_value() || !password_verified->ok)
         {
+            if (password_verified.has_value() && password_verified->retry_after_ms > 0U)
+            {
+                auto const retry_after = static_cast<std::uint32_t>(std::min<std::uint64_t>(
+                    password_verified->retry_after_ms, std::numeric_limits<std::uint32_t>::max()));
+                return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED",
+                                    "Too many failed password attempts. Please try again later.", retry_after);
+            }
             return dispatch_resp(req, rt, 401U, json_serialize(uia_challenge));
         }
         auto* session = find_registration_validation_session_by_sid(rt, "account-3pid", body->sid, body->client_secret);
@@ -11616,8 +11655,16 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             return dispatch_resp(req, rt, 401U, uia_challenge);
         }
-        if (!verify_local_user_password(rt.homeserver, req.access_token, *current_password))
+        auto const password_verified = verify_local_user_password(rt.homeserver, req.access_token, *current_password);
+        if (!password_verified.ok)
         {
+            if (password_verified.retry_after_ms > 0U)
+            {
+                auto const retry_after = static_cast<std::uint32_t>(std::min<std::uint64_t>(
+                    password_verified.retry_after_ms, std::numeric_limits<std::uint32_t>::max()));
+                return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED",
+                                    "Too many failed password attempts. Please try again later.", retry_after);
+            }
             return dispatch_resp(req, rt, 401U, uia_challenge);
         }
         auto const device_id = std::string_view{req.target}.substr(dev_prefix.size());
@@ -11667,8 +11714,16 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             return dispatch_resp(req, rt, 401U, uia_challenge);
         }
-        if (!verify_local_user_password(rt.homeserver, req.access_token, *current_password))
+        auto const password_verified = verify_local_user_password(rt.homeserver, req.access_token, *current_password);
+        if (!password_verified.ok)
         {
+            if (password_verified.retry_after_ms > 0U)
+            {
+                auto const retry_after = static_cast<std::uint32_t>(std::min<std::uint64_t>(
+                    password_verified.retry_after_ms, std::numeric_limits<std::uint32_t>::max()));
+                return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED",
+                                    "Too many failed password attempts. Please try again later.", retry_after);
+            }
             return dispatch_resp(req, rt, 401U, uia_challenge);
         }
         auto deleted_any = false;

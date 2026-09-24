@@ -1788,19 +1788,37 @@ auto change_local_user_password(HomeserverRuntime& runtime, std::string_view acc
 }
 
 auto verify_local_user_password(HomeserverRuntime& runtime, std::string_view access_token, std::string_view password)
-    -> bool
+    -> PasswordVerificationResult
 {
     auto const user_id = authenticated_user(runtime, access_token);
     if (!user_id.has_value())
     {
-        return false;
+        return {false, 0U};
     }
     auto const* user = find_user(runtime.database, *user_id);
     if (user == nullptr)
     {
-        return false;
+        return {false, 0U};
     }
-    return auth::password_matches(user->password_hash, password);
+
+    // M-02: re-authentication (UIA) password checks share the /login failed-login
+    // counter. An attacker with a stolen access token but not the password gets
+    // the same guessing budget as a direct /login attacker, not a separate,
+    // unbounded one.
+    if (auto const retry_after_ms = failed_login_lockout_remaining_ms(runtime, *user_id); retry_after_ms > 0U)
+    {
+        return {false, retry_after_ms};
+    }
+
+    auto const valid = auth::password_matches(user->password_hash, password);
+    if (!valid)
+    {
+        record_failed_login(runtime, *user_id);
+        return {false, 0U};
+    }
+
+    clear_failed_logins(runtime, *user_id);
+    return {true, 0U};
 }
 
 auto account_state_for_user(HomeserverRuntime const& runtime, std::string_view user_id)

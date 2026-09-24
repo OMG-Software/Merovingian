@@ -68,6 +68,7 @@
 * [0063 - Fail closed when the state-res v2/v2.1 auth-chain walk cannot reach an event](0063-fail-closed-on-unreachable-state-res-auth-chain-events.md)
 * [0064 - Spec-conformant PDU ingestion with delta state groups](0064-spec-conformant-pdu-ingestion-with-delta-state-groups.md)
 * [0065 - Cap in-flight IPC requests per channel](0065-cap-in-flight-ipc-requests-per-channel.md)
+* [0066 - UI-auth password checks share the /login failed-login counter](0066-uia-password-checks-share-login-failed-login-counter.md)
 
 ## Rejected Records
 

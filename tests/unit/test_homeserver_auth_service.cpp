@@ -559,8 +559,7 @@ SCENARIO("refresh_local_session issues a new access token from a valid refresh t
 // the refusal has to live in refresh_local_session itself, which authenticates
 // with a refresh token and therefore never passes the access-token moderation
 // gate in the dispatcher.
-SCENARIO("refresh_local_session refuses to mint tokens for a locked account",
-         "[homeserver][auth][refresh][moderation]")
+SCENARIO("refresh_local_session refuses to mint tokens for a locked account", "[homeserver][auth][refresh][moderation]")
 {
     GIVEN("a registered user holding a refresh token whose account is then locked")
     {
@@ -570,16 +569,16 @@ SCENARIO("refresh_local_session refuses to mint tokens for a locked account",
         auto& runtime = started.runtime;
 
         auto const reg = merovingian::homeserver::register_local_user(runtime, "lockme", "CorrectHorse7!",
-                                                                     merovingian::tests::registration_token);
+                                                                      merovingian::tests::registration_token);
         REQUIRE(reg.ok);
         std::ignore = merovingian::homeserver::login_local_user(runtime, reg.value, "CorrectHorse7!", "DEVICE1");
         auto const issued = merovingian::homeserver::issue_refresh_token_for_session(runtime, reg.value, "DEVICE1");
         REQUIRE(issued.ok);
 
-        auto const user = std::ranges::find_if(runtime.database.users,
-                                               [&reg](merovingian::homeserver::LocalUser const& candidate) {
-                                                   return candidate.user_id == reg.value;
-                                               });
+        auto const user =
+            std::ranges::find_if(runtime.database.users, [&reg](merovingian::homeserver::LocalUser const& candidate) {
+                return candidate.user_id == reg.value;
+            });
         REQUIRE(user != runtime.database.users.end());
         user->locked = true;
 
@@ -629,16 +628,16 @@ SCENARIO("refresh_local_session still serves a suspended account", "[homeserver]
         auto& runtime = started.runtime;
 
         auto const reg = merovingian::homeserver::register_local_user(runtime, "suspendme", "CorrectHorse7!",
-                                                                     merovingian::tests::registration_token);
+                                                                      merovingian::tests::registration_token);
         REQUIRE(reg.ok);
         std::ignore = merovingian::homeserver::login_local_user(runtime, reg.value, "CorrectHorse7!", "DEVICE1");
         auto const issued = merovingian::homeserver::issue_refresh_token_for_session(runtime, reg.value, "DEVICE1");
         REQUIRE(issued.ok);
 
-        auto const user = std::ranges::find_if(runtime.database.users,
-                                               [&reg](merovingian::homeserver::LocalUser const& candidate) {
-                                                   return candidate.user_id == reg.value;
-                                               });
+        auto const user =
+            std::ranges::find_if(runtime.database.users, [&reg](merovingian::homeserver::LocalUser const& candidate) {
+                return candidate.user_id == reg.value;
+            });
         REQUIRE(user != runtime.database.users.end());
         user->suspended = true;
 
@@ -670,7 +669,7 @@ SCENARIO("refresh_local_session refuses a refresh token whose device has been de
         auto& runtime = started.runtime;
 
         auto const reg = merovingian::homeserver::register_local_user(runtime, "zombie", "CorrectHorse7!",
-                                                                     merovingian::tests::registration_token);
+                                                                      merovingian::tests::registration_token);
         REQUIRE(reg.ok);
         std::ignore = merovingian::homeserver::login_local_user(runtime, reg.value, "CorrectHorse7!", "DEVICE1");
         auto const issued = merovingian::homeserver::issue_refresh_token_for_session(runtime, reg.value, "DEVICE1");
@@ -1181,6 +1180,97 @@ SCENARIO("change_local_user_password does not resurrect a previously revoked tok
 // A password change must still drop the user's other devices — the behaviour the
 // revoke-then-restore pair was written to provide. Asserting it here means the
 // M-05 fix cannot be "achieved" by simply not revoking anything.
+SCENARIO("verify_local_user_password applies the same lockout as /login",
+         "[homeserver][auth][reauth][lockout][security][m02]")
+{
+    GIVEN("a registered user with a valid access token")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const reg = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                      merovingian::tests::registration_token);
+        REQUIRE(reg.ok);
+        auto const login = merovingian::homeserver::login_local_user(runtime, reg.value, "CorrectHorse7!", "DEVICE1");
+        REQUIRE(login.ok);
+
+        WHEN("the correct password is presented")
+        {
+            auto const result =
+                merovingian::homeserver::verify_local_user_password(runtime, login.value, "CorrectHorse7!");
+
+            THEN("verification succeeds and no lockout is reported")
+            {
+                REQUIRE(result.ok);
+                REQUIRE(result.retry_after_ms == 0U);
+            }
+        }
+
+        WHEN("the wrong password is presented enough times to reach the lockout threshold")
+        {
+            for (auto i = 0U; i < 5U; ++i)
+            {
+                auto const bad = merovingian::homeserver::verify_local_user_password(runtime, login.value, "wrong");
+                REQUIRE_FALSE(bad.ok);
+                REQUIRE(bad.retry_after_ms == 0U);
+            }
+
+            THEN("the next attempt is locked out, even with the correct password")
+            {
+                auto const locked = merovingian::homeserver::verify_local_user_password(runtime, login.value, "wrong");
+                REQUIRE_FALSE(locked.ok);
+                REQUIRE(locked.retry_after_ms > 0U);
+            }
+
+            THEN("the correct password during the lockout is still refused")
+            {
+                auto const correct =
+                    merovingian::homeserver::verify_local_user_password(runtime, login.value, "CorrectHorse7!");
+                REQUIRE_FALSE(correct.ok);
+                REQUIRE(correct.retry_after_ms > 0U);
+            }
+        }
+    }
+
+    GIVEN("a locked-out account reached through /login")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const reg = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                      merovingian::tests::registration_token);
+        REQUIRE(reg.ok);
+        // Obtain a valid access token before tripping the lockout. The token
+        // survives the lockout; the point is that re-auth shares the /login
+        // failure counter.
+        auto const login = merovingian::homeserver::login_local_user(runtime, reg.value, "CorrectHorse7!", "DEVICE_OK");
+        REQUIRE(login.ok);
+
+        // Trip the lockout through /login so the re-auth path shares the counter.
+        for (auto i = 0U; i < 5U; ++i)
+        {
+            std::ignore =
+                merovingian::homeserver::login_local_user(runtime, reg.value, "wrong", "DEVICE" + std::to_string(i));
+        }
+
+        WHEN("the same account is asked to re-authenticate using the pre-lockout token")
+        {
+            auto const reauth =
+                merovingian::homeserver::verify_local_user_password(runtime, login.value, "CorrectHorse7!");
+
+            THEN("the re-auth path sees the lockout and refuses even the correct password")
+            {
+                REQUIRE_FALSE(reauth.ok);
+                REQUIRE(reauth.retry_after_ms > 0U);
+            }
+        }
+    }
+}
+
 SCENARIO("change_local_user_password still revokes other devices after the M-05 fix",
          "[homeserver][auth][password_change][security][m05]")
 {

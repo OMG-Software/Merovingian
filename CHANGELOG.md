@@ -49,6 +49,22 @@
   (`[push][push-gateway][ssrf]`). Updated `src/push/AGENTS.md` and
   `src/identity/AGENTS.md`.
 
+- **FIXED: password re-authentication for UI-auth flows bypassed the per-account
+  failed-login lockout (MEDIUM).** `verify_local_user_password` was only checking
+  the password hash, so an attacker with a stolen access token could guess the
+  password through `/account/password`, `/account/deactivate`,
+  `/account/3pid/add`, `/keys/device_signing/upload`, and the single/bulk
+  `/devices/{deviceId}/delete` paths without ever sharing the `/login` failure
+  budget. `verify_local_user_password` now returns `PasswordVerificationResult`
+  (`ok` and `retry_after_ms`) and consults the same per-user failed-login
+  counter as `/login`: it refuses to check the password while the account is
+  locked out, records each wrong attempt against the authenticated user, and
+  clears the history on a correct password. All six UIA call sites translate a
+  non-zero `retry_after_ms` into `429 M_LIMIT_EXCEEDED` with a `Retry-After`
+  header. Test: `tests/unit/test_homeserver_auth_service.cpp` (`[m02]`). See
+  [ADR-0066](docs/adr/0066-uia-password-checks-share-login-failed-login-counter.md)
+  and updated `docs/auth-identity.md`.
+
 Fixes every Critical and High finding from the September 2026 full-project bug
 audit.
 
