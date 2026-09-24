@@ -284,6 +284,7 @@ security.federation.join_response_max_size=64MiB
 federation.worker.threads=4
 federation.worker.relay_threads=32
 federation.worker.request_timeout_seconds=30
+federation.worker.ipc_max_in_flight_requests=256
 federation.worker.shards=2
 federation.worker.apply_hardening=true
 # federation.worker.binary=

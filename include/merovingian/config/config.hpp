@@ -500,6 +500,12 @@ struct FederationWorkerConfig final
     // fnv1a_32(room_id) % shards; non-room endpoints go to shard 0. shards=0
     // is rejected at config validation time.
     std::uint32_t shards{1U};
+    // ADR-0065 (0.12.13 audit, finding H2): per-channel cap on in-flight IPC
+    // requests the main process will accept from one federation worker. A
+    // request over the cap is rejected with an explicit error reply so the
+    // worker answers the remote server with a retryable 5xx. 0 disables the
+    // cap (not recommended). Restart required.
+    std::uint32_t ipc_max_in_flight_requests{256U};
     // Absolute path to the merovingian-fed-worker binary. Empty means use
     // the compile-time libexec default.
     std::string worker_binary{};

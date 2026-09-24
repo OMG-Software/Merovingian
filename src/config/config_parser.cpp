@@ -916,6 +916,13 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected unsigned integer");
             }
         }
+        else if (key == "federation.worker.ipc_max_in_flight_requests")
+        {
+            if (!parse_u32_value(value, federation_worker.ipc_max_in_flight_requests))
+            {
+                add_parse_finding(findings, std::string{key}, "expected unsigned integer");
+            }
+        }
         else if (key == "federation.worker.threads")
         {
             if (!parse_u32_value(value, federation_worker.threads))

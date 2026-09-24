@@ -492,6 +492,10 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "federation.worker.request_timeout_seconds");
     }
+    if (current.federation_worker().ipc_max_in_flight_requests != next.federation_worker().ipc_max_in_flight_requests)
+    {
+        add_change(plan, "federation.worker.ipc_max_in_flight_requests");
+    }
     if (current.federation_worker().threads != next.federation_worker().threads)
     {
         add_change(plan, "federation.worker.threads");
