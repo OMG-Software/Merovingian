@@ -635,8 +635,9 @@ secret — `security.secrets.master_key_file`, `database.uri_file`,
 `security.registration.token_file`, and each listener's
 `tls_private_key_file` — must be a regular, non-executable, owner-read-only file
 owned by the service account. `0600` was accepted until 0.12.5 despite
-`docs/hardening.md` documenting owner-read-only; upgrading servers need a
-one-time `chmod 0400` on each, or startup is rejected with
+`docs/hardening.md` documenting owner-read-only; the master key file itself
+was not validated at all until 0.12.13. Upgrading servers need a one-time
+`chmod 0400` on each secret file, or startup is rejected with
 
 ```
 Configuration rejected: <field>: secret file must be a regular owner-only

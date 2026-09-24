@@ -195,6 +195,21 @@ struct BootstrapConfigResult final
 
 [[nodiscard]] auto validate_existing_secret_files(merovingian::config::Config const& config) -> BootstrapConfigResult
 {
+    // The master key is the root secret every derived key (signing-secret box,
+    // access-token HMAC, federation-worker IPC auth) comes from. When the
+    // operator has configured one, it must pass the same owner-only,
+    // non-executable, regular-file, TOCTOU-safe metadata check as every other
+    // secret file.
+    if (!config.security().secrets.master_key_file.empty())
+    {
+        auto master_key_validation = validate_existing_secret_file_metadata(config.security().secrets.master_key_file,
+                                                                            "security.secrets.master_key_file", false);
+        if (!master_key_validation.parsed.findings.empty())
+        {
+            return master_key_validation;
+        }
+    }
+
     auto database_validation =
         validate_existing_secret_file_metadata(config.database().uri_file, "database.uri_file", true);
     if (!database_validation.parsed.findings.empty())

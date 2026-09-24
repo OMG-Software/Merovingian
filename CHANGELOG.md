@@ -16,6 +16,20 @@
 Fixes every Critical and High finding from the September 2026 full-project bug
 audit.
 
+- **Master key file now gets the same startup metadata check as every other
+  secret file (HIGH).** `security.secrets.master_key_file` — the root secret
+  from which the signing-secret box key, access-token HMAC keys, and
+  federation-worker IPC auth key are derived — was opened with a plain
+  `std::ifstream` without validating owner-only, non-executable, regular-file
+  permissions. A group/world-readable master key or a symlink swapped in at
+  startup was silently accepted. `validate_existing_secret_files` in
+  `src/main.cpp` now applies the same `lstat`-based, TOCTOU-safe check used
+  for `database.uri_file`, `security.registration.token_file`, and listener
+  TLS private keys. Operators upgrading from an earlier release may need a
+  one-time `chmod 0400` on the master key. Tests:
+  `tests/integration/test_secret_file_validation_flow.cpp`
+  (`[secret_files]`).
+
 - **State resolution v2 could diverge from conformant servers by ignoring the
   auth difference (HIGH, consensus-critical).** `resolve_state_v2` only ever
   considered power events literally present in the two conflicted state

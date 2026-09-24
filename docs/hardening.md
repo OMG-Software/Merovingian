@@ -94,6 +94,10 @@ POSIX metadata:
   `owner_write`, so `0600` was accepted despite this line; it now enforces what
   it documents, and operators upgrading from an earlier release need a one-time
   `chmod 0400` on each secret file (see `docs/user-manual.md`).
+* `security.secrets.master_key_file` was added to the startup metadata check in
+  0.12.13. Before then the file was opened with a plain `std::ifstream` without
+  an ownership, symlink, or file-kind check, so a group/world-readable or
+  swapped-in master key was silently accepted.
 
 - **Core-dump policy.** `setrlimit(RLIMIT_CORE, 0)` *and*, on Linux,
   `prctl(PR_SET_DUMPABLE, 0)` must both succeed. The prctl result was discarded
