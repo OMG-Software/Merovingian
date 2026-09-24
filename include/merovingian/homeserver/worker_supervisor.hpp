@@ -93,6 +93,13 @@ public:
         -> std::shared_ptr<ipc::IpcChannel>; // SHARED_PTR: reviewed — ref-counted snapshot prevents use-after-free when
                                              // supervisor restarts and resets channel_ concurrently
 
+    // Configures the per-channel in-flight cap enforced by main against a
+    // flooded federation worker (0.12.13 audit, finding H2). The cap applies
+    // to every request type on this channel; requests over the cap receive an
+    // explicit overload reply instead of being queued. May be called before
+    // start() and is reapplied on every worker restart.
+    auto set_max_in_flight(std::size_t cap) noexcept -> void;
+
     [[nodiscard]] auto healthy() const noexcept -> bool;
     [[nodiscard]] auto request_timeout() const noexcept -> std::uint32_t;
     [[nodiscard]] auto shard_index() const noexcept -> std::uint32_t;
@@ -112,6 +119,7 @@ private:
     std::uint32_t shard_index_{};
     core::SecretBuffer ipc_auth_key_material_{};
     std::uint32_t max_frame_bytes_{};
+    std::size_t ipc_max_in_flight_{0U};
     core::SecretBuffer worker_database_uri_material_{};
     ipc::IpcChannel::RequestHandler request_handler_{};
 

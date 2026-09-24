@@ -2871,10 +2871,13 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
                              ingestion.reason);
             break;
         case PduIngestionStatus::main_overloaded:
-            // Deliberately unhandled for now: the test-first commit adds the
-            // enum value but not the 503 mapping. The next commit implements
-            // the retryable 5xx response.
-            [[fallthrough]];
+            // ADR-0065 (0.12.13 audit H2): main has hit its per-channel IPC
+            // in-flight cap and explicitly rejected this pdu_ingest. Answer the
+            // remote with a retryable 5xx rather than a 4xx, so the sending
+            // server retries the whole transaction instead of dropping the PDU.
+            audit_federation(runtime, "federation.pdu_main_overloaded", request.origin, request.target,
+                             ingestion.reason);
+            return {503U, homeserver::matrix_error("M_UNKNOWN", ingestion.reason)};
         case PduIngestionStatus::missing_prev_state:
             // ADR-0064 phase B1: not stored, not a rejection. Spec: a
             // delayed-but-legitimate PDU is indistinguishable from one whose

@@ -316,6 +316,11 @@ auto WorkerSupervisor::shard_index() const noexcept -> std::uint32_t
     return shard_index_;
 }
 
+auto WorkerSupervisor::set_max_in_flight(std::size_t cap) noexcept -> void
+{
+    ipc_max_in_flight_ = cap;
+}
+
 auto WorkerSupervisor::worker_pid() const noexcept -> pid_t
 {
     return worker_pid_.load();
@@ -417,6 +422,7 @@ auto WorkerSupervisor::spawn_and_connect() -> void
 
     auto new_channel = std::make_shared<ipc::IpcChannel>(std::move(server_fd), ipc::IpcChannel::Role::server, *auth_key,
                                                          max_frame_bytes_);
+    new_channel->set_max_in_flight(ipc_max_in_flight_);
     if (request_handler_)
     {
         new_channel->set_request_handler(request_handler_);

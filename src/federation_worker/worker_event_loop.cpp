@@ -190,6 +190,10 @@ namespace
         {
             result.status = federation::PduIngestionStatus::soft_failed;
         }
+        else if (status_str == "main_overloaded")
+        {
+            result.status = federation::PduIngestionStatus::main_overloaded;
+        }
         else
         {
             result.status = federation::PduIngestionStatus::internal_error;
