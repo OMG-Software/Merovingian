@@ -30,7 +30,6 @@
 * [0024 - Decode untrusted images in a sandboxed child process](0024-decode-untrusted-images-in-a-sandboxed-child-process.md)
 * [0025 - Return not found rather than the original on thumbnail failure](0025-return-not-found-rather-than-the-original-on-thumbnail-failure.md)
 * [0026 - Refuse media uploads at capacity rather than evicting](0026-refuse-media-uploads-at-capacity-rather-than-evicting.md)
-* [0027 - Bound the connection queue but not the IPC queue](0027-bound-the-connection-queue-but-not-the-ipc-queue.md)
 * [0028 - Drop push deliveries at the concurrency cap](0028-drop-push-deliveries-at-the-concurrency-cap.md)
 * [0029 - Bound pusher delivery rather than registration](0029-bound-pusher-delivery-rather-than-registration.md)
 * [0030 - Key the pre-auth key resolution budget on source address](0030-key-the-pre-auth-key-resolution-budget-on-source-address.md)
@@ -68,6 +67,7 @@
 * [0062 - Federation worker holds no secret files; secrets arrive over inherited fds](0062-federation-worker-holds-no-secret-files-secrets-arrive-over-inherited-fds.md)
 * [0063 - Fail closed when the state-res v2/v2.1 auth-chain walk cannot reach an event](0063-fail-closed-on-unreachable-state-res-auth-chain-events.md)
 * [0064 - Spec-conformant PDU ingestion with delta state groups](0064-spec-conformant-pdu-ingestion-with-delta-state-groups.md)
+* [0065 - Cap in-flight IPC requests per channel](0065-cap-in-flight-ipc-requests-per-channel.md)
 
 ## Rejected Records
 
@@ -75,7 +75,7 @@
 
 ## Superseded Records
 
-* None
+* [0027 - Bound the connection queue but not the IPC queue](0027-bound-the-connection-queue-but-not-the-ipc-queue.md) — superseded by ADR-0065 for the IPC pools only; the connection-queue half remains accepted
 
 ## Deprecated Records
 

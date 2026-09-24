@@ -275,6 +275,23 @@ audit.
   allowed path still opens, skipping cleanly on a kernel without Landlock.
   See [ADR-0062](docs/adr/0062-federation-worker-holds-no-secret-files-secrets-arrive-over-inherited-fds.md),
   part 3, for the full allowlist derivation and its `strace` evidence.
+
+- **Main now caps in-flight federation-worker IPC requests per channel
+  (HIGH).** ADR-0027 left the IPC dispatch pools unbounded on the premise
+  that their producer was the trusted local supervisor. After finding N1, the
+  worker is the least-trusted process: a compromise there could flood main
+  with queued IPC handlers until the OOM reaper killed client traffic too.
+  `federation.worker.ipc_max_in_flight_requests` (default 256, restart-required)
+  configures a per-channel semaphore on each worker's IPC channel.
+  `WorkerPool` acquires a slot before queuing a handler and releases it when
+  the handler finishes; requests over the cap receive an explicit error
+  reply immediately instead of being queued. `pdu_ingest` replies with
+  `{"status":"main_overloaded"}`; `membership_ingest` and `invite_ingest`
+  reply with `{"accepted":false,"status":503}`; the worker maps these to a
+  retryable HTTP 503 toward the remote so the transaction is retried rather
+  than dropped. See [ADR-0065](docs/adr/0065-cap-in-flight-ipc-requests-per-channel.md),
+  which supersedes the IPC-pool half of ADR-0027.
+
 - **Phase A of spec-conformant PDU ingestion: delta state group storage
   (ADR-0064).** State resolution v2 was fixed in this same release, but
   nothing in the ingest path actually populated `PduIngestionResult::

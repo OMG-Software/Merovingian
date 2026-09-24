@@ -339,6 +339,7 @@ shell = find_program('sh')
       'integration/test_media_repository_security.cpp',
       'integration/test_media_thumbnail_flow.cpp',
       'integration/test_observability_flow.cpp',
+      'integration/test_pdu_ingestion_backfill_flow.cpp',
       'integration/test_persistent_homeserver_flow.cpp',
       'integration/test_postgresql_persistence_flow.cpp',
       'integration/test_push_delivery_flow.cpp',
