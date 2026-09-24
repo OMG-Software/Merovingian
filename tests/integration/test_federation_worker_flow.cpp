@@ -9,23 +9,30 @@
 // +-------------------------------------------------------------------------+
 
 #include "../support/master_key.hpp"
+#include "../support/membership_fixture_support.hpp"
 #include "../support/temp_directory.hpp"
+#include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/serializer.hpp"
+#include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/core/file_descriptor.hpp"
 #include "merovingian/core/secret_buffer.hpp"
 #include "merovingian/crypto/ipc_auth_key.hpp"
 #include "merovingian/crypto/master_key.hpp"
 #include "merovingian/database/persistent_store.hpp"
+#include "merovingian/events/event_id.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/federation/transactions.hpp"
 #include "merovingian/homeserver/federation_proxy.hpp"
 #include "merovingian/homeserver/federation_request_routing.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/homeserver/state_bookkeeping.hpp"
 #include "merovingian/homeserver/worker_pool.hpp"
 #include "merovingian/homeserver/worker_supervisor.hpp"
 #include "merovingian/http/outbound_client.hpp"
 #include "merovingian/ipc/channel.hpp"
+#include "merovingian/rooms/room_version_policy.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -324,6 +331,70 @@ struct IpcTestChannelPair final
     REQUIRE(pair.server != nullptr);
     REQUIRE(pair.client != nullptr);
     return pair;
+}
+
+// Format a vector of event IDs as a JSON string array.
+[[nodiscard]] auto json_id_array(std::vector<std::string> const& ids) -> std::string
+{
+    auto out = std::string{"["};
+    for (std::size_t i = 0U; i < ids.size(); ++i)
+    {
+        if (i != 0U)
+        {
+            out += ',';
+        }
+        out += "\"" + ids[i] + "\"";
+    }
+    out += "]";
+    return out;
+}
+
+// Build a canonical m.room.member event JSON with a valid content hash so it
+// passes the PDU receipt checks run by membership_acceptor. Signatures are
+// omitted: the worker-relay path is already past signature verification.
+[[nodiscard]] auto make_membership_event_json(std::string_view room_id, std::string_view sender,
+                                              std::string_view state_key, std::string_view membership,
+                                              std::vector<std::string> const& prev_events,
+                                              std::vector<std::string> const& auth_events, std::int64_t depth,
+                                              std::int64_t origin_server_ts) -> std::string
+{
+    using namespace merovingian;
+
+    auto content = canonicaljson::Object{};
+    content.push_back(canonicaljson::make_member("membership", canonicaljson::Value{std::string{membership}}));
+
+    auto obj = canonicaljson::Object{};
+    obj.push_back(canonicaljson::make_member("content", canonicaljson::Value{std::move(content)}));
+    obj.push_back(canonicaljson::make_member("depth", canonicaljson::Value{depth}));
+    obj.push_back(canonicaljson::make_member("origin_server_ts", canonicaljson::Value{origin_server_ts}));
+    obj.push_back(canonicaljson::make_member("room_id", canonicaljson::Value{std::string{room_id}}));
+    obj.push_back(canonicaljson::make_member("sender", canonicaljson::Value{std::string{sender}}));
+    obj.push_back(canonicaljson::make_member("state_key", canonicaljson::Value{std::string{state_key}}));
+    obj.push_back(canonicaljson::make_member("type", canonicaljson::Value{std::string{"m.room.member"}}));
+
+    auto prev_arr = canonicaljson::Array{};
+    for (auto const& id : prev_events)
+    {
+        prev_arr.push_back(canonicaljson::Value{id});
+    }
+    obj.push_back(canonicaljson::make_member("prev_events", canonicaljson::Value{std::move(prev_arr)}));
+
+    auto auth_arr = canonicaljson::Array{};
+    for (auto const& id : auth_events)
+    {
+        auth_arr.push_back(canonicaljson::Value{id});
+    }
+    obj.push_back(canonicaljson::make_member("auth_events", canonicaljson::Value{std::move(auth_arr)}));
+
+    auto const hash = events::make_content_hash(canonicaljson::Value{obj});
+    REQUIRE(hash.error.empty());
+    auto hashes = canonicaljson::Object{};
+    hashes.push_back(canonicaljson::make_member("sha256", canonicaljson::Value{hash.sha256}));
+    obj.push_back(canonicaljson::make_member("hashes", canonicaljson::Value{std::move(hashes)}));
+
+    auto const serialized = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(obj)});
+    REQUIRE(serialized.error == canonicaljson::CanonicalJsonError::none);
+    return serialized.output;
 }
 
 } // namespace
@@ -661,21 +732,41 @@ SCENARIO("handle_membership_ingest_request persists a worker-relayed federated j
             merovingian::database::store_room(runtime.database.persistent_store, {room_id, "@resident:example.com"}));
         {
             auto const creator = std::string{"@resident:example.com"};
-            auto seed_state = [&](std::string_view event_id, std::string_view type, std::string_view state_key,
-                                  std::string const& content_json, std::uint64_t ordering) {
-                auto event = merovingian::database::PersistentEvent{};
+            auto const* policy = merovingian::rooms::find_room_version_policy("10");
+            REQUIRE(policy != nullptr);
+
+            auto seed_state = [&, policy](std::string_view event_id, std::string_view type, std::string_view state_key,
+                                          std::string const& content_json, std::uint64_t ordering) {
+                using namespace merovingian;
+
+                auto& store = runtime.database.persistent_store;
+                auto const prev_events = tests::fixture_prev_event_ids(store, room_id);
+                auto const auth_events = tests::fixture_auth_event_ids(store, room_id, creator, false);
+
+                auto event = database::PersistentEvent{};
                 event.event_id = std::string{event_id};
                 event.room_id = room_id;
                 event.sender_user_id = creator;
                 event.depth = ordering;
                 event.stream_ordering = ordering;
+                event.prev_event_ids = prev_events;
+                event.auth_event_ids = auth_events;
                 event.json = std::string{R"({"room_id":")"} + room_id + R"(","sender":")" + creator +
                              R"(","origin_server_ts":1000,"type":")" + std::string{type} + R"(","state_key":")" +
-                             std::string{state_key} + R"(","content":)" + content_json + "}";
-                auto state = merovingian::database::PersistentStateEvent{room_id, std::string{type},
-                                                                         std::string{state_key}, std::string{event_id}};
-                REQUIRE(merovingian::database::store_event_with_state(runtime.database.persistent_store,
-                                                                      std::move(event), state));
+                             std::string{state_key} + R"(","content":)" + content_json + R"(,"prev_events":)" +
+                             json_id_array(prev_events) + R"(,"auth_events":)" + json_id_array(auth_events) + "}";
+                auto state = database::PersistentStateEvent{room_id, std::string{type}, std::string{state_key},
+                                                            std::string{event_id}};
+                REQUIRE(database::store_event_with_state(store, std::move(event), state));
+
+                auto const state_before = homeserver::compute_state_before(store, room_id, *policy, prev_events);
+                REQUIRE(state_before.ok);
+                auto const state_after =
+                    homeserver::compute_state_after(state_before.state, event_id, type, std::string{state_key});
+                auto const group =
+                    homeserver::record_event_state(store, room_id, event_id, prev_events, state_after, true);
+                REQUIRE(group.has_value());
+                REQUIRE(homeserver::recompute_current_state(store, room_id, *policy));
             };
             // room_version must match the "room_version":"10" the ingest request
             // below declares, or the event is judged under the wrong rule set.
@@ -693,16 +784,19 @@ SCENARIO("handle_membership_ingest_request persists a worker-relayed federated j
         WHEN("a membership_ingest request shaped like a real worker's is handled")
         {
             auto const sender = std::string{"@remote:matrix.example.org"};
-            auto const event_json = std::string{R"({"room_id":")"} + room_id + R"(","sender":")" + sender +
-                                    R"(","origin_server_ts":1234,"type":"m.room.member",)" + R"("state_key":")" +
-                                    sender + R"(","content":{"membership":"join"}})";
+            auto& store = runtime.database.persistent_store;
+            auto const join_auth_events = merovingian::tests::fixture_auth_event_ids(store, room_id, sender, false);
+            auto const join_prev_events = merovingian::tests::fixture_prev_event_ids(store, room_id);
+
+            auto const event_json = make_membership_event_json(room_id, sender, sender, "join", join_prev_events,
+                                                               join_auth_events, 5, 1234);
             auto const request_json =
                 std::string{
                     R"({"type":"membership_ingest","endpoint":"send_join","event_id":"$placeholder-event-id")"} +
                 R"(,"room_id":")" + room_id + R"(","room_version":"10","sender":")" + sender +
                 R"(","event_type":"m.room.member","state_key":")" + sender +
-                R"(","origin_server_ts":1234,"depth":0,"auth_event_ids":[],"prev_event_ids":[],"signatures":[],)" +
-                R"("json":)" +
+                R"(","origin_server_ts":1234,"depth":5,"auth_event_ids":)" + json_id_array(join_auth_events) +
+                R"(,"prev_event_ids":)" + json_id_array(join_prev_events) + R"(,"signatures":[],"json":)" +
                 [&] {
                     // Mirror ipc::ipc_json_str's escaping for the embedded event JSON.
                     auto escaped = std::string{'"'};

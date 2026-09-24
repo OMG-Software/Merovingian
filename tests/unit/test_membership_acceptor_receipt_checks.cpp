@@ -17,6 +17,7 @@
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/database/persistent_store.hpp"
+#include "merovingian/events/authorization.hpp"
 #include "merovingian/events/event_id.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/federation/membership_endpoints.hpp"
@@ -161,6 +162,32 @@ auto seed_accepted_event(HomeserverRuntime& runtime, std::string const& room_id,
     auto const group = homeserver::record_event_state(store, room_id, event_id, prev_event_ids, state_after, true);
     REQUIRE(group.has_value());
     REQUIRE(homeserver::recompute_current_state(store, room_id, *policy));
+
+    // Keep the in-memory membership cache in sync with seeded m.room.member
+    // state, mirroring what membership_acceptor does for real receipts.
+    if (type == "m.room.member" && state_key.has_value())
+    {
+        auto const parsed = canonicaljson::parse_lossless(json);
+        if (parsed.error == canonicaljson::ParseError::none)
+        {
+            auto const membership = events::extract_content_membership(parsed.value);
+            if (!membership.empty())
+            {
+                auto const existing = std::ranges::find_if(store.memberships,
+                    [&](database::PersistentMembership const& m) {
+                        return m.room_id == room_id && m.user_id == *state_key;
+                    });
+                if (existing != store.memberships.end())
+                {
+                    existing->membership = std::string{membership};
+                }
+                else
+                {
+                    store.memberships.push_back({room_id, *state_key, std::string{membership}, 0U});
+                }
+            }
+        }
+    }
 }
 
 struct Genesis final
@@ -239,17 +266,20 @@ SCENARIO("send_join: a joining event with a mismatched content hash is redacted 
 
         // find_room_version_policy("10") for a join event: auth_events are
         // create + join_rules (public join) — no target member yet (bob
-        // has never joined before).
+        // has never joined before). prev_events must point at the current
+        // forward extremity so compute_state_before resolves the public
+        // join_rules state; admin_member_id's state group predates join_rules.
         auto content = merovingian::canonicaljson::Object{};
         content.push_back(merovingian::canonicaljson::make_member(
             "membership", merovingian::canonicaljson::Value{std::string{"join"}}));
-        auto const bad_json =
-            build_event_json(room_id, "m.room.member", std::string{"@bob:remote.example.org"},
-                             "@bob:remote.example.org", std::move(content), {genesis.admin_member_id},
-                             {genesis.create_id, genesis.pl_id, genesis.join_rules_id}, 4, 5, std::string{"this-does-not-match"});
-        auto const envelope = make_envelope(room_id, "$sjbadhash:remote.example.org", "m.room.member",
-                                            std::string{"@bob:remote.example.org"}, "@bob:remote.example.org",
-                                            {genesis.admin_member_id}, {genesis.create_id, genesis.pl_id, genesis.join_rules_id}, 4, bad_json);
+        auto const bad_json = build_event_json(room_id, "m.room.member", std::string{"@bob:remote.example.org"},
+                                               "@bob:remote.example.org", std::move(content), {genesis.join_rules_id},
+                                               {genesis.create_id, genesis.pl_id, genesis.join_rules_id}, 4, 5,
+                                               std::string{"this-does-not-match"});
+        auto const envelope =
+            make_envelope(room_id, "$sjbadhash:remote.example.org", "m.room.member",
+                          std::string{"@bob:remote.example.org"}, "@bob:remote.example.org", {genesis.join_rules_id},
+                          {genesis.create_id, genesis.pl_id, genesis.join_rules_id}, 4, bad_json);
 
         WHEN("the send_join is accepted")
         {
@@ -325,23 +355,20 @@ SCENARIO("send_join: a joining event that fails its own auth_events is rejected"
         auto const room_id = std::string{"!sjauthevents:local.example.org"};
         auto const genesis = seed_room_genesis(started.runtime, room_id, "@admin:local.example.org");
 
-        // A stray, never-applied power_levels event with join_rule absent
-        // (so join_rules is not "public"), and no join_rules entry at all
-        // named — this makes step 4's own-auth_events check deny the join
-        // (no public join_rules reachable in the named map).
         auto content = merovingian::canonicaljson::Object{};
         content.push_back(merovingian::canonicaljson::make_member(
             "membership", merovingian::canonicaljson::Value{std::string{"join"}}));
         auto const json = build_event_json(room_id, "m.room.member", std::string{"@bob:remote.example.org"},
-                                           "@bob:remote.example.org", std::move(content), {genesis.admin_member_id},
-                                           {genesis.create_id, genesis.pl_id, genesis.join_rules_id}, 4, 5);
-        // No join_rules named in auth_events at all -> Step 5 of the member
+                                           "@bob:remote.example.org", std::move(content), {genesis.join_rules_id},
+                                           {genesis.create_id, genesis.pl_id}, 4, 5);
+        // No join_rules named in auth_events at all -> Step 4 of the member
         // auth rules ("cannot join without an invite unless join_rules is
         // public, and public join_rules must be provable via auth_events")
-        // denies it.
+        // denies it. prev_events still point at the current forward extremity
+        // so the state-before check would otherwise pass.
         auto const envelope = make_envelope(room_id, "$sjbadauth:remote.example.org", "m.room.member",
                                             std::string{"@bob:remote.example.org"}, "@bob:remote.example.org",
-                                            {genesis.admin_member_id}, {genesis.create_id, genesis.pl_id, genesis.join_rules_id}, 4, json);
+                                            {genesis.join_rules_id}, {genesis.create_id, genesis.pl_id}, 4, json);
 
         WHEN("the send_join is processed")
         {
@@ -396,28 +423,31 @@ SCENARIO("A membership event passing its auth_events and state-before but failin
         auto ban_content = merovingian::canonicaljson::Object{};
         ban_content.push_back(merovingian::canonicaljson::make_member(
             "membership", merovingian::canonicaljson::Value{std::string{"ban"}}));
+        // Both the ban and the subsequent join must point at the current
+        // forward extremity (join_rules) so their state-before resolves to
+        // the public room state. The join then soft-fails because the
+        // resolved current state contains the ban.
         auto const ban_json =
             build_event_json(room_id, "m.room.member", std::string{"@bob:remote.example.org"},
-                             "@admin:local.example.org", std::move(ban_content), {genesis.admin_member_id},
+                             "@admin:local.example.org", std::move(ban_content), {genesis.join_rules_id},
                              {genesis.create_id, genesis.pl_id, genesis.admin_member_id}, 4, 5);
         seed_accepted_event(started.runtime, room_id, ban_id, "m.room.member", std::string{"@bob:remote.example.org"},
-                            "@admin:local.example.org", ban_json, {genesis.admin_member_id}, 4U);
+                            "@admin:local.example.org", ban_json, {genesis.join_rules_id}, 4U);
 
-        // Bob's send_join: auth_events reference create/power_levels only
-        // (no prior member row for bob at all in the named set, nor in the
-        // state before its prev_event, which is the pre-ban admin-member
-        // tip) -> both step 4 and step 5 see bob as never-banned (defaults
-        // to "leave", not "ban") and allow the join. Only step 6 (current
-        // state, where bob IS banned) denies it.
+        // Bob's send_join: auth_events include public join_rules, and
+        // prev_events point at the same pre-ban tip as the ban so step 5
+        // authorises the join. Step 6 (current state, where bob IS banned)
+        // denies it -> soft failure.
         auto content = merovingian::canonicaljson::Object{};
         content.push_back(merovingian::canonicaljson::make_member(
             "membership", merovingian::canonicaljson::Value{std::string{"join"}}));
         auto const json = build_event_json(room_id, "m.room.member", std::string{"@bob:remote.example.org"},
-                                           "@bob:remote.example.org", std::move(content), {genesis.admin_member_id},
+                                           "@bob:remote.example.org", std::move(content), {genesis.join_rules_id},
                                            {genesis.create_id, genesis.pl_id, genesis.join_rules_id}, 4, 5);
-        auto const envelope = make_envelope(room_id, "$sjsoftfail:remote.example.org", "m.room.member",
-                                            std::string{"@bob:remote.example.org"}, "@bob:remote.example.org",
-                                            {genesis.admin_member_id}, {genesis.create_id, genesis.pl_id, genesis.join_rules_id}, 4, json);
+        auto const envelope =
+            make_envelope(room_id, "$sjsoftfail:remote.example.org", "m.room.member",
+                          std::string{"@bob:remote.example.org"}, "@bob:remote.example.org", {genesis.join_rules_id},
+                          {genesis.create_id, genesis.pl_id, genesis.join_rules_id}, 4, json);
 
         WHEN("the send_join is processed")
         {

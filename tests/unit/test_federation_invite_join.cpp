@@ -46,6 +46,7 @@
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/room_service.hpp"
 #include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/homeserver/state_bookkeeping.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -213,22 +214,43 @@ auto plant_invite_event(merovingian::homeserver::HomeserverRuntime& runtime, std
                         std::string const& sender_user_id, std::string const& invited_user_id,
                         std::string const& invite_event_id) -> void
 {
-    auto pdu = merovingian::database::PersistentEvent{};
+    using namespace merovingian;
+
+    auto& store = runtime.database.persistent_store;
+    auto const* policy = rooms::find_room_version_policy("12");
+    REQUIRE(policy != nullptr);
+
+    auto const prev_events = tests::fixture_prev_event_ids(store, room_id);
+    auto const auth_events = tests::fixture_auth_event_ids(store, room_id, sender_user_id, true);
+
+    auto pdu = database::PersistentEvent{};
     pdu.event_id = invite_event_id;
     pdu.room_id = room_id;
     pdu.sender_user_id = sender_user_id;
+    pdu.prev_event_ids = prev_events;
+    pdu.auth_event_ids = auth_events;
     pdu.json =
         std::string{"{\"type\":\"m.room.member\",\"state_key\":\""} + invited_user_id +
         "\",\"content\":{\"membership\":\"invite\"},\"room_id\":\"" + room_id + "\",\"sender\":\"" + sender_user_id +
-        "\",\"event_id\":\"" + invite_event_id +
-        "\",\"depth\":5,\"prev_events\":[],\"auth_events\":[],\"hashes\":{\"sha256\":\"x\"},\"origin_server_ts\":1000}";
+        "\",\"event_id\":\"" + invite_event_id + "\",\"depth\":5,\"prev_events\":" +
+        json_id_array(prev_events) + ",\"auth_events\":" + json_id_array(auth_events) +
+        ",\"hashes\":{\"sha256\":\"x\"},\"origin_server_ts\":1000}";
     pdu.depth = 5U;
     pdu.stream_ordering = runtime.database.next_stream_ordering++;
-    auto state = std::optional<merovingian::database::PersistentStateEvent>{
-        merovingian::database::PersistentStateEvent{room_id, "m.room.member", invited_user_id, invite_event_id}
+    auto state = std::optional<database::PersistentStateEvent>{
+        database::PersistentStateEvent{room_id, "m.room.member", invited_user_id, invite_event_id}
     };
-    REQUIRE(merovingian::database::store_event_with_state(runtime.database.persistent_store, std::move(pdu),
-                                                          std::move(state)));
+    REQUIRE(database::store_event_with_state(store, std::move(pdu), std::move(state)));
+
+    auto const state_before = homeserver::compute_state_before(store, room_id, *policy, prev_events);
+    REQUIRE(state_before.ok);
+    auto const state_after = homeserver::compute_state_after(state_before.state, invite_event_id, "m.room.member",
+                                                              invited_user_id);
+    auto const group = homeserver::record_event_state(store, room_id, invite_event_id, prev_events, state_after, true);
+    REQUIRE(group.has_value());
+    REQUIRE(homeserver::recompute_current_state(store, room_id, *policy));
+
+    store.memberships.push_back({room_id, invited_user_id, "invite", 0U});
 }
 
 } // namespace
@@ -401,8 +423,7 @@ SCENARIO("send_join auth_chain includes the invite event when the join PDU refer
         // This simulates what a conformant remote server (e.g. Synapse) sends
         // after receiving a make_join template with the correct auth_events.
         auto const& fixture_store = runtime.database.persistent_store;
-        auto join_auth_ids = merovingian::tests::fixture_auth_event_ids(fixture_store, room_id, remote_user, true);
-        join_auth_ids.push_back(invite_event_id);
+        auto const join_auth_ids = merovingian::tests::fixture_auth_event_ids(fixture_store, room_id, remote_user, true);
         auto const join_body = make_signed_join_body(
             room_id, remote_user, join_auth_ids,
             merovingian::tests::fixture_prev_event_ids(fixture_store, room_id));
@@ -701,8 +722,7 @@ SCENARIO("send_join response body includes the required members_omitted field",
 
         auto const join_event_id = std::string{"$join_eve:remote.example.org"};
         auto const& fixture_store = runtime.database.persistent_store;
-        auto join_auth_ids = merovingian::tests::fixture_auth_event_ids(fixture_store, room_id, remote_user, true);
-        join_auth_ids.push_back(invite_event_id);
+        auto const join_auth_ids = merovingian::tests::fixture_auth_event_ids(fixture_store, room_id, remote_user, true);
         auto const join_body = make_signed_join_body(
             room_id, remote_user, join_auth_ids,
             merovingian::tests::fixture_prev_event_ids(fixture_store, room_id));
@@ -1133,8 +1153,7 @@ SCENARIO("send_join response includes origin, non-empty state, and non-empty aut
 
         auto const join_event_id = std::string{"$join_kate:remote.example.org"};
         auto const& fixture_store = runtime.database.persistent_store;
-        auto join_auth_ids = merovingian::tests::fixture_auth_event_ids(fixture_store, room_id, remote_user, true);
-        join_auth_ids.push_back(invite_event_id);
+        auto const join_auth_ids = merovingian::tests::fixture_auth_event_ids(fixture_store, room_id, remote_user, true);
         auto const join_body = make_signed_join_body(
             room_id, remote_user, join_auth_ids,
             merovingian::tests::fixture_prev_event_ids(fixture_store, room_id));
@@ -1219,8 +1238,7 @@ SCENARIO("send_join state array reflects pre-join room state with membership inv
 
         auto const join_event_id = std::string{"$join_liam:remote.example.org"};
         auto const& fixture_store = runtime.database.persistent_store;
-        auto join_auth_ids = merovingian::tests::fixture_auth_event_ids(fixture_store, room_id, remote_user, true);
-        join_auth_ids.push_back(invite_event_id);
+        auto const join_auth_ids = merovingian::tests::fixture_auth_event_ids(fixture_store, room_id, remote_user, true);
         auto const join_body = make_signed_join_body(
             room_id, remote_user, join_auth_ids,
             merovingian::tests::fixture_prev_event_ids(fixture_store, room_id));
