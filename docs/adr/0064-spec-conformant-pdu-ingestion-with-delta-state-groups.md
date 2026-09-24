@@ -149,6 +149,48 @@ quo is the defect itself.
 * Bad, because storage grows with state size × number of state changes, which
   is quadratic-ish for large public rooms with membership churn.
 
+## Phase C: backfill of missing `prev_events` and `auth_events` (shipped)
+
+The decision above selected "fetch, then request state". Phase C implements the
+first half of that option for the inbound `/send` path in
+`ingest_pdu_event` (`src/homeserver/local_http_router.cpp`):
+
+* Before a PDU is accepted, `collect_missing_pdu_references` finds `auth_events`
+  that are absent from the store and `prev_events` that are absent or have no
+  recorded after-state group.
+* If any are missing and the envelope carries an `origin`, both the room
+  stripe lock and the runtime mutex are released and
+  `backfill_missing_pdu_references` fetches them from the sending server.
+* A single `POST /_matrix/federation/v1/get_missing_events/{roomId}` call is
+  tried first, asking for up to `k_max_get_missing_events_per_pdu` (20) events
+  between the PDU's `prev_events` and the missing ones. Remaining missing
+  `auth_events` and `prev_events` are then fetched individually via
+  `GET /_matrix/federation/v1/event/{eventId}`. The total number of outbound
+  calls a single PDU can trigger is capped at
+  `k_max_backfill_outbound_calls` (5); once the cap is reached the backfill
+  attempt stops and any still-missing references cause the PDU to return
+  `missing_prev_state`.
+* Every returned event is verified independently before it is used: content
+  hash (a mismatch redacts the event and processing continues with the
+  redacted form), Ed25519 signature via the remote-key resolver, the
+  `auth_events` selection check, and authorisation against its own
+  `auth_events`. Events whose `prev_events` still lack state groups are dropped,
+  because their state-before cannot be computed yet.
+* A verified event is stored with `status == "outlier"` and a recorded
+  after-state group (`accepted=false`). Outliers take part in later state
+  resolution but never become forward extremities on their own.
+* After backfill returns, `ingest_pdu_event` reacquires the locks and rechecks
+  the same PDU. If references remain unresolvable, the PDU is returned as
+  `missing_prev_state` and is not applied — fail-closed rather than accepting
+  on unverified data.
+
+This bounds the work a malicious or delayed origin can drive: an inbound PDU
+with a gap cannot trigger more than five outbound federation calls or fetch
+more than twenty events through `/get_missing_events`. The rejected
+alternatives — hold the PDU indefinitely or reject it outright — are documented
+above under "Pros and Cons of the Options"; they would partition the server
+from rooms whose history arrives late or via a different path.
+
 ## Links
 
 * [ADR-0063](0063-fail-closed-on-unreachable-state-res-auth-chain-events.md)

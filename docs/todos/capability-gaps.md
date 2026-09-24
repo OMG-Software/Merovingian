@@ -279,9 +279,19 @@ an accepted socket it locates by scanning `/proc/self/fd` for a matching port;
 under parallel load it can match a different descriptor. It passes when the
 suite is run alone.
 
-### Also still outstanding from ADR-0064
+### Also resolved: ADR-0064 phase C (backfill)
 
-Phase C (fetch missing events, then verified `/state_ids`) has not started.
-Until it lands, an inbound PDU whose `prev_events` are unknown returns
-`missing_prev_state` and is not stored: correct and fail-closed, but it means
-a gap in room history is not yet repaired automatically.
+Phase C has shipped. `ingest_pdu_event` now attempts a bounded backfill from
+an inbound PDU's origin when `prev_events` or `auth_events` are missing:
+`POST /_matrix/federation/v1/get_missing_events/{roomId}` (up to 20 events),
+then `GET /_matrix/federation/v1/event/{eventId}` for individual references,
+capped at 5 outbound calls per PDU. Each returned event is verified
+independently (content hash, signature, auth-events selection, auth against
+its own `auth_events`) and stored as an outlier with a recorded after-state
+group. If references remain missing after the capped attempt, the PDU still
+returns `missing_prev_state` and is not applied. See `docs/event-engine.md`
+"Phase C" and `docs/adr/0064-spec-conformant-pdu-ingestion-with-delta-state-groups.md`.
+
+**Residual scope:** the membership-acceptor path
+(`send_join`/`send_leave`/`send_knock`) does not yet backfill missing
+references.

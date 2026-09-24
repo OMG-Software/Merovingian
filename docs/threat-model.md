@@ -1508,6 +1508,32 @@ threats they represent, and the mitigations now in place:
   and still hard-rejects a content-hash mismatch instead of redacting — see
   `src/federation/AGENTS.md`.
 
+### Gaps in room history leaving inbound PDUs unapplied (v0.12.13, ADR-0064 phase C)
+
+- **A legitimate PDU whose `prev_events` or `auth_events` were not yet known to
+  this server was held as `missing_prev_state` indefinitely, even when the
+  sending server could have supplied the missing events.** Before phase C,
+  `ingest_pdu_event` failed closed at the first unknown reference and never
+  repaired the gap automatically. That was safe, but it partitioned the server
+  from rooms whose history arrived out of order or via a different peer.
+- **Mitigation:** the same path now attempts a bounded backfill from the PDU's
+  origin. It tries `POST /_matrix/federation/v1/get_missing_events/{roomId}`
+  (up to 20 events) and then `GET /_matrix/federation/v1/event/{eventId}` for
+  individual missing references, with a hard cap of 5 outbound calls per PDU.
+  Each returned event is verified independently — content hash, signature,
+  `auth_events` selection, and auth against its own `auth_events` — before it
+  is stored as an outlier with a recorded after-state group. Events that fail
+  any check are dropped; if the cap is reached or references remain missing,
+  the original PDU still returns `missing_prev_state` and is not applied, so
+  unverified data never authorises a PDU.
+- **Residual risk, unchanged by phase C:** the membership-acceptor path
+  (`send_join`/`send_leave`/`send_knock`) does not backfill missing
+  references yet; a membership PDU with a gap still fails closed as
+  `missing_prev_state`. The `/get_missing_events` response is trusted only after
+  every returned event passes its own checks, but a malicious origin can still
+  omit events it is entitled to omit; state resolution against other forks is
+  the same residual risk every conformant server accepts.
+
 ## Security principles
 
 - Fail closed.

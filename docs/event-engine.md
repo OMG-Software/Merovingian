@@ -541,6 +541,45 @@ content-hash mismatch instead of redacting, and does not run the
 auth_events/state-before/current-state three-way check — see
 `src/federation/AGENTS.md` and `docs/threat-model.md`.
 
+### Phase C: backfill of missing PDU references (ADR-0064)
+
+Phase C closes the gap left by phases A and B: an inbound PDU whose
+`prev_events` or `auth_events` are unknown to this server is no longer
+returned as `missing_prev_state` and forgotten. Instead, `ingest_pdu_event`
+checks for missing references and, when the PDU envelope carries an origin,
+fetches them from that origin before retrying the PDU.
+
+* `collect_missing_pdu_references` distinguishes two failure modes:
+  `auth_events` that are absent from the persistent store, and `prev_events`
+  that are absent or exist but have no recorded after-state group. A
+  `prev_event` without a state group cannot be used as a state-before anchor,
+  so it is treated as missing.
+* If any reference is missing, the room stripe lock and the runtime mutex are
+  released (via `RuntimeLockRelease` and a scoped stripe-lock reacquirer) and
+  `backfill_missing_pdu_references` performs outbound federation calls while the
+  server remains unlocked for other rooms.
+* The backfill strategy is `/_matrix/federation/v1/get_missing_events/{roomId}`
+  first, then per-event `/_matrix/federation/v1/event/{eventId}`. The
+  `/get_missing_events` call asks for up to 20 events; the whole PDU is allowed
+  at most 5 outbound calls. These caps prevent a malicious or delayed origin
+  from driving unbounded outbound work.
+* Every fetched event is verified independently: content hash (mismatch
+  redacts), Ed25519 signature, the `auth_events` selection check, and
+  authorisation against its own `auth_events`. A fetched event whose own
+  `prev_events` still lack state groups is dropped; its own state-before
+  cannot yet be computed, so it cannot safely serve as an anchor for another
+  event.
+* A verified event is stored as `status == "outlier"` with a recorded
+  after-state group (`accepted=false`). Outliers participate in later state
+  resolution and can become `prev_events` for subsequent PDUs, but they never
+  become forward extremities on their own.
+* If references remain missing after the capped attempt, the original PDU still
+  returns `missing_prev_state` and is not applied. Fail-closed is preserved;
+  backfill only turns a *resolvable* gap into accepted history.
+
+The membership-acceptor path does not yet run this backfill step — see the
+`src/federation/AGENTS.md` residual note and the threat-model entry for phase C.
+
 ### State at a requested event
 
 The inbound federation `GET /state/{roomId}` and `/state_ids/{roomId}` endpoints

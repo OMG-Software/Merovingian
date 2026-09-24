@@ -13,6 +13,21 @@
   (`Ok: 54`, `Fail: 0`, `Timeout: 0`). See the resolved handover in
   `docs/todos/capability-gaps.md` under "RESOLVED (0.12.13)".
 
+- **FIXED: inbound PDU backfill of missing `prev_events` and `auth_events`
+  (ADR-0064 phase C).** When an inbound `/send` PDU names references this
+  server has not seen, `ingest_pdu_event` now releases the runtime locks and
+  fetches them from the sending server: first a single
+  `POST /_matrix/federation/v1/get_missing_events/{roomId}` call (up to 20
+  events), then individual `GET /_matrix/federation/v1/event/{eventId}` calls
+  for any remaining missing references, with a hard cap of 5 outbound calls per
+  PDU. Every returned event is verified independently — content hash
+  (mismatch redacts), Ed25519 signature, `auth_events` selection, and auth
+  against its own `auth_events` — before being stored as an outlier with a
+  recorded after-state group. If references remain missing after the capped
+  attempt, the original PDU still returns `missing_prev_state` and is not
+  applied. Test: `tests/integration/test_pdu_ingestion_backfill_flow.cpp`
+  (`[pdu_ingestion][backfill]`).
+
 Fixes every Critical and High finding from the September 2026 full-project bug
 audit.
 
