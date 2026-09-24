@@ -142,6 +142,14 @@ Implemented now:
 - unit coverage for content hashes, reference-hash event IDs, event envelope
   parsing, signing payloads, signature attachment/verification, redaction,
   room-version fixtures, full auth rule steps, and v2 state resolution
+- **inbound federation PDU size and field-count limits enforced before
+  hashing/authorization (0.12.13, M3).** Raw PDU JSON is capped at 65 536
+  bytes, `prev_events` at 20, and `auth_events` at 10, all checked in
+  `parse_inbound_pdu_envelope` before any content hashing or signature work.
+  `sender`, `room_id`, `state_key`, and `type` are capped at 255 bytes by
+  `matrix_id_is_valid` and `parse_event_envelope`. See
+  `include/merovingian/events/limits.hpp` and
+  [ADR-0067](adr/0067-enforce-federation-pdu-size-and-field-limits-before-hashing.md).
 
 Not implemented yet:
 

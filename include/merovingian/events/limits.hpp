@@ -84,4 +84,24 @@ inline constexpr std::size_t max_state_group_delta_depth = 100U;
 // depth ones are kept.
 inline constexpr std::size_t max_prev_events_per_event = 20U;
 
+// Maximum number of auth_events a single event may declare. Spec (every
+// room version's event format): "Must contain less than or equal to 10 events."
+inline constexpr std::size_t max_auth_events_per_event = 10U;
+
+// ---- Event size and field-length limits (spec v1.19 "Size limits") ----
+
+// Maximum serialized event size in bytes. The spec requires the complete
+// event (formatted with the federation event format, including signatures,
+// encoded as Canonical JSON) to be no larger than 65 536 bytes.
+inline constexpr std::size_t max_event_size_bytes = 65'536U;
+
+// Maximum byte length for Matrix identifiers carrying a sigil and domain:
+// user IDs, room IDs, and event IDs. Spec appendices: user/room/event IDs
+// MUST NOT exceed 255 bytes.
+inline constexpr std::size_t max_id_length_bytes = 255U;
+
+// Maximum byte length for a state_key. Spec v1.19 client-server-api.md
+// "Size limits": state_key MUST NOT exceed 255 bytes.
+inline constexpr std::size_t max_state_key_length_bytes = 255U;
+
 } // namespace merovingian::events

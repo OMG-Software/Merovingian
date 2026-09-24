@@ -65,6 +65,18 @@
   [ADR-0066](docs/adr/0066-uia-password-checks-share-login-failed-login-counter.md)
   and updated `docs/auth-identity.md`.
 
+- **FIXED: no size or field-count limits on federation PDUs (MEDIUM).**
+  `parse_inbound_pdu_envelope` now rejects any inbound PDU whose raw canonical
+  JSON exceeds 65 536 bytes, whose `prev_events` array exceeds 20 entries, or
+  whose `auth_events` array exceeds 10 entries — all before hashing or
+  signature verification. `parse_event_envelope` and `matrix_id_is_valid` enforce
+  the 255-byte caps on `state_key`, `sender`, `room_id`, and `type`. The shared
+  constants live in `include/merovingian/events/limits.hpp`. Tests:
+  `tests/unit/test_inbound_ingestion.cpp` (`[m03]`) and
+  `tests/unit/test_event.cpp` (`[m03]`). See
+  [ADR-0067](docs/adr/0067-enforce-federation-pdu-size-and-field-limits-before-hashing.md)
+  and `docs/event-engine.md`.
+
 Fixes every Critical and High finding from the September 2026 full-project bug
 audit.
 
