@@ -188,13 +188,6 @@ namespace
         return *text;
     }
 
-    [[nodiscard]] auto address_set_allowed(std::vector<std::string> const& addresses) noexcept -> bool
-    {
-        return !addresses.empty() && std::ranges::none_of(addresses, [](std::string const& address) {
-            return ip_address_is_private_or_loopback(address);
-        });
-    }
-
     // M-02: `tls_host` is the name the destination's certificate must be valid
     // for. It is a separate parameter from `host_port.host` — rather than being
     // derived from it — precisely because the two differ on the SRV paths, where
@@ -594,7 +587,8 @@ auto discover_server(std::string_view server_name, ServerDiscoveryNetwork& netwo
             // Step 3b: delegated host with an explicit port resolves directly.
             if (host_is_numeric_ip(delegated_host_port->host) || delegated_host_port->port_explicit)
             {
-                result = resolve_destination(server_name, HostPort{*delegated_host_port}, delegated_host_port->host, network);
+                result = resolve_destination(server_name, HostPort{*delegated_host_port}, delegated_host_port->host,
+                                             network);
                 result.well_known_host = result.discovery_allowed ? result.resolved_host : std::string{};
                 return result;
             }
@@ -611,12 +605,13 @@ auto discover_server(std::string_view server_name, ServerDiscoveryNetwork& netwo
                                                     {"srv_port",    std::to_string(first.port), false},
                                                     {"via",         "well_known_delegated_srv", false}
                 });
-                result = resolve_destination(server_name, HostPort{first.target, first.port, true}, delegated_host_port->host,
-                                             network);
+                result = resolve_destination(server_name, HostPort{first.target, first.port, true},
+                                             delegated_host_port->host, network);
                 result.well_known_host = result.discovery_allowed ? result.resolved_host : std::string{};
                 return result;
             }
-            result = resolve_destination(server_name, HostPort{*delegated_host_port}, delegated_host_port->host, network);
+            result =
+                resolve_destination(server_name, HostPort{*delegated_host_port}, delegated_host_port->host, network);
             result.well_known_host = result.discovery_allowed ? result.resolved_host : std::string{};
             return result;
         }
@@ -640,7 +635,8 @@ auto discover_server(std::string_view server_name, ServerDiscoveryNetwork& netwo
                                             {"srv_port",    std::to_string(first.port), false},
                                             {"via",         "direct_srv",               false}
         });
-        return resolve_destination(server_name, HostPort{first.target, first.port, true}, direct_host_port->host, network);
+        return resolve_destination(server_name, HostPort{first.target, first.port, true}, direct_host_port->host,
+                                   network);
     }
 
     // Matrix spec step 5: direct A/AAAA on the server name at the default port.

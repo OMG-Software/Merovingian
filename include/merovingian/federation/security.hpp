@@ -59,6 +59,11 @@ struct RemoteTrustDecision final
 
 [[nodiscard]] auto server_name_is_valid(std::string_view server_name) noexcept -> bool;
 [[nodiscard]] auto ip_address_is_private_or_loopback(std::string_view address) noexcept -> bool;
+// True when the set is non-empty and every address is public (not private,
+// loopback, link-local, CGNAT, NAT64, multicast, or reserved). Used by the
+// SSRF-safe discovery path to reject a host whose resolution includes any
+// non-public address.
+[[nodiscard]] auto address_set_allowed(std::vector<std::string> const& addresses) noexcept -> bool;
 // Strict syntactic IPv4/IPv6 literal check (via inet_pton). Used to validate
 // operator-facing values derived from untrusted headers (e.g. X-Forwarded-For)
 // before they are trusted as an effective client address.

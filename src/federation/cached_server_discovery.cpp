@@ -3,6 +3,8 @@
 
 #include "merovingian/federation/cached_server_discovery.hpp"
 
+#include "merovingian/federation/security.hpp"
+
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -45,6 +47,20 @@ auto CachedServerDiscovery::discover(std::string_view server_name, std::uint32_t
     auto const lock = std::lock_guard<std::mutex>{mutex_};
     cache_[key] = Entry{result, now};
     return result;
+}
+
+auto CachedServerDiscovery::lookup_addresses_filtered(std::string_view host, std::uint16_t port) -> ResolvedAddressSet
+{
+    auto const resolved = upstream_.lookup_addresses(host, port);
+    if (!resolved.ok)
+    {
+        return resolved;
+    }
+    if (!address_set_allowed(resolved.addresses))
+    {
+        return ResolvedAddressSet{false, {}, "resolved address set contains disallowed addresses"};
+    }
+    return resolved;
 }
 
 auto CachedServerDiscovery::upstream() noexcept -> ServerDiscoveryNetwork&

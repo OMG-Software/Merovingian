@@ -26,9 +26,11 @@ concurrency caps are in `homeserver/room_service.cpp`.
 3. **`.m.rule.master`, when enabled, always wins.** Otherwise kinds are checked in precedence order
    override > content > room > sender > underride, and the first enabled match wins.
 4. **A gateway URL is attacker-influenced** — any client can register a pusher pointing anywhere.
-   `notify` resolves it through `federation::CachedServerDiscovery`'s SSRF-safe path (private and
-   loopback ranges rejected), never a direct DNS lookup or a client-supplied address.
-   `TestForcedPushGatewayResolution` is the only bypass and is always empty in production.
+   `notify` resolves it through `federation::CachedServerDiscovery::lookup_addresses_filtered`,
+   which rejects private, loopback, link-local, CGNAT, NAT64, multicast, and reserved addresses
+   before any outbound connection is attempted. Never perform a direct DNS lookup or accept a
+   client-supplied address. `TestForcedPushGatewayResolution` is the only bypass and is always
+   empty in production.
 5. **The URL must be HTTPS with a path of exactly `/_matrix/push/v1/notify`** —
    `parse_push_gateway_url` enforces this before any request is built.
 6. **`notify()` fails closed when `server.push.enabled` is false** (the default): no DNS, no

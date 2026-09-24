@@ -28,6 +28,27 @@
   applied. Test: `tests/integration/test_pdu_ingestion_backfill_flow.cpp`
   (`[pdu_ingestion][backfill]`).
 
+- **FIXED: push gateway and identity server clients skipped SSRF filtering on
+  address resolution (MEDIUM).** `push_gateway_client.cpp` and
+  `identity_client.cpp` were calling
+  `CachedServerDiscovery::upstream().lookup_addresses(...)` directly, which
+  bypassed the private/loopback rejection applied by
+  `discover_server`/`resolve_federation_destination`. Both clients now call
+  the new `CachedServerDiscovery::lookup_addresses_filtered`, which rejects
+  private, loopback, link-local, CGNAT, NAT64, multicast, and reserved
+  addresses before any outbound connection is attempted. The IPv4/IPv6
+  classifiers in `src/federation/security.cpp` were expanded to cover CGNAT
+  (100.64/10), multicast (224/4), reserved (240/4), NAT64 (64:ff9b::/96), and
+  IPv4-mapped variants; `address_set_allowed` is now a public helper used by
+  both federation discovery and the filtered lookup. The Application Service
+  client intentionally continues to use the raw resolver: appservice URLs are
+  operator-configured, not attacker-influenced, and the spec's own example uses
+  cleartext HTTP. Tests:
+  `tests/unit/test_federation_security.cpp` (`[federation][security][ssrf]`),
+  `tests/unit/test_push_gateway_client.cpp`
+  (`[push][push-gateway][ssrf]`). Updated `src/push/AGENTS.md` and
+  `src/identity/AGENTS.md`.
+
 Fixes every Critical and High finding from the September 2026 full-project bug
 audit.
 

@@ -13,11 +13,11 @@ endpoints, only calls them.
 ## Security rules (non-negotiable)
 
 - **No ad-hoc DNS.** Every IS host is resolved to SSRF-safe pinned addresses via
-  `federation::CachedServerDiscovery::upstream().lookup_addresses(host, port)`,
-  which applies the operator `deny_ip_ranges` (private/loopback/link-local)
-  before returning addresses. The client never resolves DNS itself and never
-  accepts a client-supplied IP. Fail closed (`ok == false`) when resolution
-  yields no usable address.
+  `federation::CachedServerDiscovery::lookup_addresses_filtered(host, port)`,
+  which rejects private, loopback, link-local, CGNAT, NAT64, multicast, and
+  reserved addresses before returning pinned addresses. The client never
+  resolves DNS itself and never accepts a client-supplied IP. Fail closed
+  (`ok == false`) when resolution yields no usable address.
 - **Test-only discovery seam.** `IdentityServerClient` accepts an optional
   `std::map<std::string, TestForcedIdentityResolution> const* forced_resolution`
   (struct defined in this header, stored on

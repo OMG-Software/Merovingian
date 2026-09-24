@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "merovingian/events/event.hpp"
+#include "merovingian/federation/cached_server_discovery.hpp"
 #include "merovingian/federation/security.hpp"
+#include "merovingian/federation/server_discovery.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -187,6 +189,134 @@ SCENARIO("Remote trust controls cover rate limit, backoff, circuit breaker, repu
                 REQUIRE(reputation_decision.reason == "remote reputation is too low");
                 REQUIRE_FALSE(quarantine_decision.accepted);
                 REQUIRE(quarantine_decision.reason == "remote server is quarantined");
+            }
+        }
+    }
+}
+
+SCENARIO("address_set_allowed rejects private, loopback, CGNAT, multicast, NAT64, and reserved ranges",
+         "[federation][security][ssrf]")
+{
+    GIVEN("address sets containing public and disallowed addresses")
+    {
+        WHEN("the set is evaluated")
+        {
+            THEN("an empty set is disallowed")
+            {
+                REQUIRE_FALSE(merovingian::federation::address_set_allowed({}));
+            }
+            THEN("a public address set is allowed")
+            {
+                REQUIRE(merovingian::federation::address_set_allowed({"203.0.113.10"}));
+                REQUIRE(merovingian::federation::address_set_allowed({"8.8.8.8", "2001:4860:4860::8888"}));
+            }
+            THEN("loopback and RFC1918 are rejected")
+            {
+                REQUIRE_FALSE(merovingian::federation::address_set_allowed({"127.0.0.1"}));
+                REQUIRE_FALSE(merovingian::federation::address_set_allowed({"10.0.0.1"}));
+                REQUIRE_FALSE(merovingian::federation::address_set_allowed({"172.16.0.1"}));
+                REQUIRE_FALSE(merovingian::federation::address_set_allowed({"192.168.1.1"}));
+            }
+            THEN("link-local and CGNAT are rejected")
+            {
+                REQUIRE_FALSE(merovingian::federation::address_set_allowed({"169.254.1.1"}));
+                REQUIRE_FALSE(merovingian::federation::address_set_allowed({"100.64.0.1"}));
+                REQUIRE_FALSE(merovingian::federation::address_set_allowed({"100.126.255.255"}));
+            }
+            THEN("multicast and reserved space are rejected")
+            {
+                REQUIRE_FALSE(merovingian::federation::address_set_allowed({"224.0.0.1"}));
+                REQUIRE_FALSE(merovingian::federation::address_set_allowed({"240.0.0.1"}));
+                REQUIRE_FALSE(merovingian::federation::address_set_allowed({"255.255.255.255"}));
+            }
+            THEN("IPv6 non-public ranges are rejected")
+            {
+                REQUIRE_FALSE(merovingian::federation::address_set_allowed({"::1"}));
+                REQUIRE_FALSE(merovingian::federation::address_set_allowed({"fc00::1"}));
+                REQUIRE_FALSE(merovingian::federation::address_set_allowed({"fe80::1"}));
+                REQUIRE_FALSE(merovingian::federation::address_set_allowed({"64:ff9b::1"}));
+                REQUIRE_FALSE(merovingian::federation::address_set_allowed({"ff02::1"}));
+            }
+            THEN("IPv4-mapped private addresses are rejected")
+            {
+                REQUIRE_FALSE(merovingian::federation::address_set_allowed({"::ffff:127.0.0.1"}));
+                REQUIRE_FALSE(merovingian::federation::address_set_allowed({"::ffff:10.0.0.1"}));
+            }
+            THEN("a single disallowed address taints the whole set")
+            {
+                REQUIRE_FALSE(merovingian::federation::address_set_allowed({"203.0.113.10", "127.0.0.1"}));
+            }
+        }
+    }
+}
+
+namespace
+{
+
+struct FilteringDiscoveryNetwork final : public merovingian::federation::ServerDiscoveryNetwork
+{
+    std::string next_address{"203.0.113.1"};
+
+    [[nodiscard]] auto fetch_well_known(std::string_view, std::uint32_t)
+        -> merovingian::federation::WellKnownServerResult override
+    {
+        return {};
+    }
+
+    [[nodiscard]] auto lookup_srv(std::string_view) -> std::vector<merovingian::federation::SrvRecord> override
+    {
+        return {};
+    }
+
+    [[nodiscard]] auto lookup_addresses(std::string_view, std::uint16_t)
+        -> merovingian::federation::ResolvedAddressSet override
+    {
+        return {true, {next_address}, {}};
+    }
+};
+
+} // namespace
+
+SCENARIO("CachedServerDiscovery::lookup_addresses_filtered rejects attacker-influenced private destinations",
+         "[federation][security][ssrf][discovery]")
+{
+    GIVEN("a cached discovery wrapping a network that returns a public address")
+    {
+        auto network = FilteringDiscoveryNetwork{};
+        auto discovery = merovingian::federation::CachedServerDiscovery{network, 60000U, []() -> std::uint64_t {
+                                                                            return 0U;
+                                                                        }};
+
+        WHEN("the filtered lookup is called")
+        {
+            auto const resolved = discovery.lookup_addresses_filtered("push.example.org", 443U);
+
+            THEN("the public address is returned")
+            {
+                REQUIRE(resolved.ok);
+                REQUIRE(resolved.addresses.size() == 1U);
+                REQUIRE(resolved.addresses[0] == "203.0.113.1");
+            }
+        }
+    }
+
+    GIVEN("a cached discovery wrapping a network that returns a private address")
+    {
+        auto network = FilteringDiscoveryNetwork{};
+        network.next_address = "127.0.0.1";
+        auto discovery = merovingian::federation::CachedServerDiscovery{network, 60000U, []() -> std::uint64_t {
+                                                                            return 0U;
+                                                                        }};
+
+        WHEN("the filtered lookup is called for an attacker-influenced URL host")
+        {
+            auto const resolved = discovery.lookup_addresses_filtered("attacker.example.org", 443U);
+
+            THEN("the result fails closed before any outbound connection is attempted")
+            {
+                REQUIRE_FALSE(resolved.ok);
+                REQUIRE(resolved.addresses.empty());
+                REQUIRE_FALSE(resolved.reason.empty());
             }
         }
     }

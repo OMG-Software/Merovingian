@@ -50,9 +50,18 @@ public:
     // (then storing the result) on a miss or stale entry.
     [[nodiscard]] auto discover(std::string_view server_name, std::uint32_t timeout_seconds) -> ServerDiscoveryResult;
 
+    // SSRF-safe address lookup. Calls the upstream resolver and then rejects
+    // the result if any returned address is private, loopback, link-local, CGNAT,
+    // NAT64, multicast, or reserved. This is the path attacker-influenced
+    // destinations (pusher gateway URLs, identity-server URLs) must use.
+    [[nodiscard]] auto lookup_addresses_filtered(std::string_view host, std::uint16_t port) -> ResolvedAddressSet;
+
     // Exposes the wrapped network so callers that need a raw
     // `ServerDiscoveryNetwork&` (e.g. `fetch_remote_server_keys`) can reach it
-    // without a separate handle.
+    // without a separate handle. Callers using this for outbound requests to
+    // attacker-influenced URLs are responsible for applying the SSRF filter
+    // themselves; the appservice client intentionally uses the raw resolver for
+    // operator-configured URLs.
     [[nodiscard]] auto upstream() noexcept -> ServerDiscoveryNetwork&;
 
 private:
