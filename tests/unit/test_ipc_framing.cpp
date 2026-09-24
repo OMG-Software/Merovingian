@@ -22,6 +22,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -705,6 +706,86 @@ SCENARIO("IpcChannel request handlers can offload slow work to a thread pool wit
                 REQUIRE(results.size() == 2U);
                 REQUIRE(results[0].first == "fast");
                 REQUIRE(results[1].first == "slow");
+            }
+        }
+
+        // Stop the pool before the channels so no in-flight worker tries to
+        // send_response after the channel has been destroyed.
+        handler_pool.request_stop();
+        pair.server->stop();
+        pair.client->stop();
+    }
+}
+
+SCENARIO("IpcChannel enforces a per-channel in-flight cap and replies with an explicit overload error",
+         "[ipc][channel][backpressure]")
+{
+    GIVEN("a connected channel pair whose server has max_in_flight=2 and offloads to a thread pool")
+    {
+        auto pair = make_channel_pair();
+        pair.server->set_max_in_flight(2U);
+
+        // Two workers are enough to run the two allowed requests concurrently.
+        auto handler_pool = merovingian::net::ThreadPool{2U};
+
+        pair.server->set_request_handler(
+            [server = pair.server.get(), &handler_pool](std::uint64_t id, std::string /*json*/) {
+                if (!server->try_acquire_in_flight())
+                {
+                    server->send_response(id, R"({"status":"main_overloaded","reason":"per-channel cap reached"})");
+                    return;
+                }
+                std::ignore = handler_pool.submit([server, id]() {
+                    std::this_thread::sleep_for(std::chrono::milliseconds{50});
+                    server->send_response(id, R"({"status":"ok"})");
+                    server->release_in_flight();
+                });
+            });
+        pair.server->start();
+        pair.client->start();
+
+        WHEN("three concurrent requests are sent")
+        {
+            auto futures = std::vector<std::future<std::optional<std::string>>>{};
+            for (auto i = 0; i < 3; ++i)
+            {
+                std::ignore = i;
+                futures.push_back(std::async(std::launch::async, [&pair]() {
+                    return pair.client->send_request(R"({"type":"probe"})", std::chrono::seconds{5});
+                }));
+            }
+            auto results = std::vector<std::optional<std::string>>{};
+            results.reserve(futures.size());
+            for (auto& future : futures)
+            {
+                results.push_back(future.get());
+            }
+
+            THEN("every caller receives a reply")
+            {
+                REQUIRE(results.size() == 3U);
+                for (auto const& result : results)
+                {
+                    REQUIRE(result.has_value());
+                }
+            }
+            AND_THEN("exactly two requests are processed and one gets the explicit overload reply")
+            {
+                auto ok_count = 0U;
+                auto overload_count = 0U;
+                for (auto const& result : results)
+                {
+                    if (result->find("\"status\":\"ok\"") != std::string::npos)
+                    {
+                        ++ok_count;
+                    }
+                    else if (result->find("main_overloaded") != std::string::npos)
+                    {
+                        ++overload_count;
+                    }
+                }
+                REQUIRE(ok_count == 2U);
+                REQUIRE(overload_count == 1U);
             }
         }
 

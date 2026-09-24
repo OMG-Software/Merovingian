@@ -65,6 +65,10 @@ enum class PduIngestionStatus : std::uint8_t
     // soft-failed *state* event which resolution later admits into current
     // state is shown to clients in the state section as usual.
     soft_failed,
+    // ADR-0065 (0.12.13 audit, finding H2): main is at its per-channel IPC
+    // in-flight cap and explicitly rejected the pdu_ingest request. The
+    // transaction handler must answer the remote with a retryable 5xx.
+    main_overloaded,
 };
 
 struct PduIngestionResult final

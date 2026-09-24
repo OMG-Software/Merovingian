@@ -1685,3 +1685,50 @@ SCENARIO("Receipt state stays bounded when a peer floods a room it is legitimate
         }
     }
 }
+
+SCENARIO("PDU sink overload is returned to the federation peer as a retryable 5xx",
+         "[federation][callbacks][pdu_sink][backpressure]")
+{
+    GIVEN("a runtime whose pdu_sink signals main overload")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const token = std::string{"overload-token"};
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
+
+        auto sink_invoked = std::make_shared<bool>(false);
+        runtime.pdu_sink = [sink_invoked](merovingian::federation::InboundPduEnvelope const& envelope)
+            -> merovingian::federation::PduIngestionResult {
+            std::ignore = envelope;
+            *sink_invoked = true;
+            return {merovingian::federation::PduIngestionStatus::main_overloaded, "main at per-channel in-flight cap"};
+        };
+
+        auto const json_pdu = signed_json_pdu(origin, key_id, token);
+        auto request = merovingian::federation::SignedFederationRequest{};
+        request.method = "PUT";
+        request.target = "/_matrix/federation/v1/send/txn-overload-001";
+        request.origin = origin;
+        request.key_id = key_id;
+        request.destination = "local.example.org";
+        request.now_ts = 1000U;
+        request.canonical_json_verified = true;
+        request.body = transaction_body(origin, json_pdu);
+        request.signature = merovingian::federation::make_federation_signature(
+            origin, request.destination, request.method, request.target, request.body,
+            merovingian::federation::test::keypair_from_seed(token).secret_key);
+
+        WHEN("the transaction is handled")
+        {
+            auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
+
+            THEN("the pdu_sink is invoked and the peer receives a retryable 503")
+            {
+                REQUIRE(*sink_invoked);
+                REQUIRE(response.status == 503U);
+                REQUIRE(response.body.find("M_UNKNOWN") != std::string::npos);
+            }
+        }
+    }
+}

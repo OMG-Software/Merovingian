@@ -2870,6 +2870,11 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
             audit_federation(runtime, "federation.pdu_internal_error", request.origin, request.target,
                              ingestion.reason);
             break;
+        case PduIngestionStatus::main_overloaded:
+            // Deliberately unhandled for now: the test-first commit adds the
+            // enum value but not the 503 mapping. The next commit implements
+            // the retryable 5xx response.
+            [[fallthrough]];
         case PduIngestionStatus::missing_prev_state:
             // ADR-0064 phase B1: not stored, not a rejection. Spec: a
             // delayed-but-legitimate PDU is indistinguishable from one whose
