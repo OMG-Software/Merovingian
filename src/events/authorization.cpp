@@ -1005,56 +1005,54 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
         return make_denied("2", "room has no create event");
     }
 
-    // Step 3: For v6+ and v12, only reject cross-domain senders when the room
-    // explicitly disables federation via content.m.federate = false. When m.federate
-    // is absent or true the check does not apply and cross-domain senders are permitted.
+    // Step 3: Reject cross-domain senders when the room explicitly disables
+    // federation via content.m.federate = false. When m.federate is absent or
+    // true the check does not apply and cross-domain senders are permitted.
+    // This rule applies to every room version, including room version 1.
     // Spec: Matrix Server-Server API v1.19 — Authorization Rules, Step 3.
     // URL: ../../docs/matrix-v1.19-spec/server-server-api.md#authorization-rules
-    if (policy.auth_rules == rooms::AuthRules::room_v6_plus || policy.auth_rules == rooms::AuthRules::room_v12)
+    auto const* create_obj = value_is_object(auth_events.create);
+    auto is_non_federated = false;
+    if (create_obj != nullptr)
     {
-        auto const* create_obj = value_is_object(auth_events.create);
-        auto is_non_federated = false;
-        if (create_obj != nullptr)
+        auto const* content = object_member_as_object(*create_obj, "content");
+        if (content != nullptr)
         {
-            auto const* content = object_member_as_object(*create_obj, "content");
-            if (content != nullptr)
+            auto const* federate_val = object_member(*content, "m.federate");
+            if (federate_val != nullptr)
             {
-                auto const* federate_val = object_member(*content, "m.federate");
-                if (federate_val != nullptr)
-                {
-                    auto const* federate_bool = std::get_if<bool>(&federate_val->storage());
-                    is_non_federated = (federate_bool != nullptr && !*federate_bool);
-                }
+                auto const* federate_bool = std::get_if<bool>(&federate_val->storage());
+                is_non_federated = (federate_bool != nullptr && !*federate_bool);
             }
         }
+    }
 
-        if (is_non_federated)
+    if (is_non_federated)
+    {
+        auto const sender_domain = domain_of(*sender);
+        // v6–v10 rooms store the creator in content.creator; v11+ rooms (including v12)
+        // removed content.creator — use the create event's sender field as the fallback.
+        auto const* content_creator = event_content_string(auth_events.create, "creator");
+        std::string_view creator_domain_src;
+        if (content_creator != nullptr)
         {
-            auto const sender_domain = domain_of(*sender);
-            // v6–v10 rooms store the creator in content.creator; v11+ rooms (including v12)
-            // removed content.creator — use the create event's sender field as the fallback.
-            auto const* content_creator = event_content_string(auth_events.create, "creator");
-            std::string_view creator_domain_src;
-            if (content_creator != nullptr)
+            creator_domain_src = *content_creator;
+        }
+        else if (create_obj != nullptr)
+        {
+            auto const* create_sender = string_member(*create_obj, "sender");
+            if (create_sender != nullptr)
             {
-                creator_domain_src = *content_creator;
+                creator_domain_src = *create_sender;
             }
-            else if (create_obj != nullptr)
-            {
-                auto const* create_sender = string_member(*create_obj, "sender");
-                if (create_sender != nullptr)
-                {
-                    creator_domain_src = *create_sender;
-                }
-            }
-            if (creator_domain_src.empty())
-            {
-                return make_denied("3", "create event has no identifiable creator");
-            }
-            if (sender_domain != domain_of(creator_domain_src))
-            {
-                return make_denied("3", "sender domain does not match creator domain");
-            }
+        }
+        if (creator_domain_src.empty())
+        {
+            return make_denied("3", "create event has no identifiable creator");
+        }
+        if (sender_domain != domain_of(creator_domain_src))
+        {
+            return make_denied("3", "sender domain does not match creator domain");
         }
     }
 

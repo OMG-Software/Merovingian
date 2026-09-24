@@ -150,6 +150,11 @@ Implemented now:
   `matrix_id_is_valid` and `parse_event_envelope`. See
   `include/merovingian/events/limits.hpp` and
   [ADR-0067](adr/0067-enforce-federation-pdu-size-and-field-limits-before-hashing.md).
+- **`content.m.federate: false` enforced for every room version (0.12.13,
+  M4).** Authorization rule step 3 now rejects cross-domain senders in v1–v5
+  rooms that disable federation, not only in v6+ and v12. When `m.federate`
+  is absent or `true`, cross-domain senders remain permitted in all versions.
+  Test: `tests/conformance/test_event_auth_rules.cpp` (`[m04]`).
 
 Not implemented yet:
 

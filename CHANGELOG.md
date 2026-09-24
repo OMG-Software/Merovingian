@@ -77,6 +77,17 @@
   [ADR-0067](docs/adr/0067-enforce-federation-pdu-size-and-field-limits-before-hashing.md)
   and `docs/event-engine.md`.
 
+- **FIXED: `m.federate: false` was not enforced for room versions 1–5
+  (MEDIUM).** The `content.m.federate` sender-domain check in authorization rule
+  step 3 was gated on `room_v6_plus || room_v12`, so v1–v5 rooms that disabled
+  federation still accepted events from any domain. The check now applies to
+  every room version: when `m.federate` is `false`, the sender's domain must
+  match the create event's creator domain (or, for v11+/v12, the create event's
+  sender). `m.federate` absent or `true` still permits cross-domain senders in
+  all versions. Tests:
+  `tests/conformance/test_event_auth_rules.cpp` (`[m04]`). See
+  `docs/event-engine.md`.
+
 Fixes every Critical and High finding from the September 2026 full-project bug
 audit.
 
