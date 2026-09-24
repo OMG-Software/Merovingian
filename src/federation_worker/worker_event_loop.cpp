@@ -114,6 +114,8 @@ namespace
         }
         result += R"(],"json":)";
         result += ipc::ipc_json_str(env.json);
+        result += R"(,"origin":)";
+        result += ipc::ipc_json_str(env.origin);
     }
 
     // Serialize an InboundPduEnvelope for the pdu_ingest IPC call to main.

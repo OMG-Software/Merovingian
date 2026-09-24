@@ -33,6 +33,11 @@ struct InboundPduEnvelope final
     std::vector<std::string> auth_event_ids{};
     std::vector<events::EventSignature> signatures{};
     std::string json{};
+    // ADR-0064 phase C: the server that sent this PDU over federation. Used to
+    // fetch missing prev_events / auth_events and to request state from the
+    // origin when our own copy of the DAG is incomplete. Not present in the
+    // PDU JSON itself; set by the transaction handler before invoking pdu_sink.
+    std::string origin{};
 };
 
 enum class PduIngestionStatus : std::uint8_t

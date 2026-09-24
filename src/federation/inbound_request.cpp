@@ -1042,6 +1042,7 @@ namespace
                 }
             }
         }
+        envelope->origin = request.origin;
         auto const acceptance =
             runtime.membership_acceptor(route.endpoint, params->room_id, params->subject, *envelope);
         if (!acceptance.accepted)
@@ -2839,6 +2840,7 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
                              "ingestion-skip");
             continue;
         }
+        envelope->origin = request.origin;
         auto const ingestion = runtime.pdu_sink(*envelope);
         switch (ingestion.status)
         {

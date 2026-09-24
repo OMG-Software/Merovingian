@@ -222,6 +222,10 @@ namespace
         {
             env.json = *value;
         }
+        if (auto const* value = string_member(*root, "origin"); value != nullptr)
+        {
+            env.origin = *value;
+        }
         if (auto const* value = string_member(*root, "state_key"); value != nullptr)
         {
             env.state_key = *value;
