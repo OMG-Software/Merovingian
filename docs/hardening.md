@@ -366,6 +366,18 @@ separate process on the same host:
   16 MiB-equivalent minimum; raising `join_response_max_size` raises the
   frame cap in lockstep, and both processes must restart to pick up a change
   (see `docs/user-manual.md`).
+* **Per-channel in-flight IPC cap** (0.12.13 finding H2 /
+  [ADR-0065](adr/0065-cap-in-flight-ipc-requests-per-channel.md)): each
+  worker channel is independently capped by
+  `federation.worker.ipc_max_in_flight_requests` (default `256`). Main counts
+  the requests it has accepted from that channel but not yet finished
+  responding to; a request that arrives at the cap is rejected immediately
+  with an explicit `main_overloaded` reply. The worker turns that reply into a
+  retryable `503 M_UNKNOWN` for the remote server, preserving Matrix retry
+  semantics, instead of silently dropping the request or queueing it on an
+  unbounded handler pool. The cap is per channel, not global, so one slow or
+  abusive worker cannot starve others and a crashed channel's count is released
+  with the channel.
 * **Worker-specific seccomp + runtime hardening** (#319): the worker applies
   `PR_SET_NO_NEW_PRIVS`, drops capabilities, sets resource limits, and installs
   a stricter seccomp-bpf filter (on top of the inherited server filter) that
