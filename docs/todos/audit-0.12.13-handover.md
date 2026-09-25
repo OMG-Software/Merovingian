@@ -75,68 +75,69 @@ Each of these caused a real defect or a wasted cycle here.
 
 ## Remaining items, in recommended order
 
-### 1 (high, security): backfilled events skip the state-before check
+### 1 — DONE (commits `6fa211d5`, `fa6ec85c`)
 
-- **Problem.** Phase C fetches missing events and stores them as outliers
-  with a recorded after-state group. It checks each fetched event against its
-  own named `auth_events`, but never against the state immediately **before**
-  it (receipt check step 5), and then records an after-state that **includes
-  the event itself**. A malicious origin can craft an event its chosen
-  `auth_events` permit (for example an old power-levels event from when it
-  held power) but that the real prior state forbids. Sent directly, step 5
-  rejects it. Delivered as a "missing" event, it becomes part of the
-  state-before of the next PDU that references it, and can reach current state
-  through resolution.
-- **Where.** `verify_and_store_backfilled_event`,
-  `src/homeserver/local_http_router.cpp:2557`. The auth-events check ends just
-  before `compute_state_before` / `compute_state_after` (`state_after` at
-  about line 2677); the state group is recorded at about line 2726. Compare
-  `ingest_pdu_event`, which runs steps 4, 5 and 6 in order.
-- **Spec.** `server-server-api.md`, "Checks performed on receipt of a PDU"
-  step 5, and "Rejection": a rejected event is stored so later events that
-  reference it can be authorised, but "not updating with the rejected event"
-  — its after-state is the state before it.
-- **Fix.** After computing `state_before`, authorise the event against it
-  (build the map with `build_auth_event_map_from_entries` and
-  `fill_create_from_room_state`, as `ingest_pdu_event` does). On failure,
-  store it with status `rejected` and record its after-state group as
-  `state_before` (not including itself). Do not simply drop it: later events
-  may legitimately reference a rejected event.
-- **Tests (tag `[backfill]`, plus a conformance case citing step 5).** A
-  fetched event that passes its own `auth_events` but fails the state before
-  it is stored as `rejected`, its after-state excludes it, and a PDU that
-  lists it as a `prev_event` does not see its state. Record this failing
-  first. Add the positive case: a fetched event passing both checks is stored
-  as an outlier whose after-state includes it.
+Backfilled events are now checked against the state before them; failures are
+stored as `rejected` with an after-state equal to the state before them.
+Reviewed and correct. Do not change it.
 
-### 2 (high): the `/state_ids` fallback of phase C was never built
+### 2 (high, security): the `/state_ids` fallback trusts events it should not
 
-- **Problem.** The design decided in ADR-0064 is: `/get_missing_events`
-  first; if a gap remains, fetch `/state_ids` and `/event_auth` at the event
-  from the sending server, fetch any events we lack, verify **every** one
-  (signature, hash, auth against its own `auth_events`, and item 1's
-  state-before check), drop any that fail, and use the verified set as a
-  snapshot state group for the state before the event. If the claimed state
-  cannot be verified, reject the PDU. Only the first half exists, so a gap
-  that `/get_missing_events` cannot fill still leaves the PDU at
-  `missing_prev_state` and the room stalls.
-- **Where.** `backfill_missing_pdu_references`,
-  `src/homeserver/local_http_router.cpp:2741`; the existing fetchers
-  `fetch_get_missing_events` (`:2439`) and `fetch_event_by_id` (`:2514`) show
-  how to build and sign an outbound request and release locks around it. The
-  store API for a snapshot group is `create_or_reuse_state_group`.
-- **Constraints.** Everything is driven by untrusted remote input. Bound the
-  number of state IDs and auth events fetched per PDU (add constants next to
-  `k_max_backfill_outbound_calls` at `:2375`), fail closed, and never hold
-  `runtime.mutex` across a network call.
-- **Tests (tag `[backfill]`).** A gap `/get_missing_events` cannot fill falls
-  back to `/state_ids`; a claimed state naming an event that fails any check
-  has that event dropped; state that cannot be verified leads to rejection;
-  a server returning an enormous state set hits the cap and the PDU is
-  rejected, not partially applied.
-- **Docs.** ADR-0064's phase C heading currently says "(shipped)" while the
-  body says only "the first half" is implemented. Fix the heading now, and
-  record the fallback when it lands.
+The fallback was added in `faa798c0` / `38166c94` (`backfill_state_ids_snapshot`,
+`src/homeserver/local_http_router.cpp:2919`). It verifies events it has to
+fetch, but it builds the snapshot state (the loop after the comment "Build the
+verified snapshot state from pdu_ids", about line 3001) from **any** event
+already in the store whose ID the remote lists, and then authorises the target
+event against that snapshot (`forced_state_before`) and records its after-state
+from it. Fix all of the following, tests first, each recorded failing:
+
+- **2a. Events from other rooms are accepted.** The lookup matches on
+  `event_id` only. A malicious server can list an event from a different room
+  (e.g. a power-levels event from a room where it is admin) and it becomes
+  state in this room. Require `event.room_id == room_id`; any mismatch rejects
+  the whole snapshot. (The target event itself already checks its room; the
+  snapshot entries do not.)
+- **2b. Rejected events are accepted.** No status check. Since item 1, forged
+  events are stored with status `rejected`; the remote can name one in
+  `/state_ids` and pull it back into state, reopening item 1 by another path.
+  A rejected event must never be used as state (spec "Rejection"; room
+  versions' auth rule 3.3 rejects events whose auth events were rejected).
+  Any rejected event in the claimed state rejects the whole snapshot.
+  Decide and document whether `soft_failed` events may appear (they take part
+  in state resolution per the spec, so they may) — cite the spec.
+- **2c. Malformed responses are silently repaired.** A duplicate
+  `(type, state_key)` keeps whichever the remote listed first (about line
+  3041), and a non-state entry is skipped with `continue` (about line 3038).
+  Both let the remote shape the result through ordering. A valid state map
+  has unique keys and only state events: reject the whole response instead.
+- **Tests (tag `[backfill]`, plus conformance).** For each of 2a, 2b, 2c: the
+  malicious `/state_ids` response makes the PDU fail closed
+  (`missing_prev_state` or rejected, never accepted), and nothing from it
+  reaches any state group. Keep the existing positive case passing.
+
+### 2d (medium, functional): the fallback can rarely succeed on a real gap
+
+Not a security issue — it fails closed — but it means the fallback mostly
+does not do its job. Three causes; fix them after 2a–2c:
+
+- Every event the snapshot needs is fetched one at a time and counted against
+  `k_max_backfill_outbound_calls = 5` (`:2375`), so at most about three
+  unknown state events can be fetched per PDU.
+- `k_max_state_snapshot_events_per_pdu = 100` (`:2381`) refuses any room with
+  more than 100 state events — every member has one, so most real rooms.
+- Each fetched snapshot event goes through `verify_and_store_backfilled_event`,
+  which requires the state before **it**; historical state events almost never
+  have that, so verification fails.
+
+Spec-conformant servers instead verify each claimed state event's signature,
+hash, and authorisation against its own auth chain (the `auth_chain_ids` that
+`/state_ids` returns, fetched via `/event_auth`), store them as outliers
+**without** requiring a state-before, and use the verified set as the
+snapshot. That needs a separate budget for state fetches (batch them rather
+than one call per event), sized for real rooms but still bounded. Changing
+these limits and the verification model is a design decision: **present the
+options to the user before implementing**, then record the choice in an ADR
+(next number 0069).
 
 ### 3 (medium): no per-IP connection cap
 
