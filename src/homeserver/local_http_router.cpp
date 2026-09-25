@@ -2374,6 +2374,13 @@ namespace
     constexpr auto k_max_get_missing_events_per_pdu = std::size_t{20U};
     constexpr auto k_max_backfill_outbound_calls = std::size_t{5U};
 
+    // ADR-0064 phase C: /state_ids fallback caps. These bound the size of a
+    // remote-claimed snapshot and the work we will do to materialise it.
+    constexpr auto k_max_state_ids_per_pdu = std::size_t{1000U};
+    constexpr auto k_max_auth_chain_ids_per_pdu = std::size_t{1000U};
+    constexpr auto k_max_state_snapshot_events_per_pdu = std::size_t{100U};
+    constexpr auto k_max_backfill_recursion_depth = std::size_t{2U};
+
     // Returns true when the store has an event with this event_id and it has a
     // recorded after-state group (so it can serve as a prev_event for state-
     // before computation). Outliers and pre-ADR-0064 events may exist but have
@@ -2511,6 +2518,44 @@ namespace
         return result;
     }
 
+    // Spec: GET /_matrix/federation/v1/event/{eventId} returns a Transaction
+    // object whose "pdus" array contains the requested PDU. Extract and return
+    // the first PDU as canonical JSON; fall back to returning the raw body when
+    // it already looks like a single PDU.
+    [[nodiscard]] auto extract_pdu_from_event_response(std::string_view body) -> std::optional<std::string>
+    {
+        if (body.empty() || body.front() != '{')
+        {
+            return std::nullopt;
+        }
+        auto const parsed = canonicaljson::parse_json(body);
+        if (parsed.error != canonicaljson::ParseError::none)
+        {
+            return std::nullopt;
+        }
+        auto const* root = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+        if (root == nullptr)
+        {
+            return std::nullopt;
+        }
+        auto const* pdus = array_member(*root, "pdus");
+        if (pdus != nullptr && !pdus->empty())
+        {
+            auto const serialized = canonicaljson::serialize_canonical(pdus->front());
+            if (serialized.error == canonicaljson::CanonicalJsonError::none)
+            {
+                return serialized.output;
+            }
+            return std::nullopt;
+        }
+        // No Transaction wrapper: return the body verbatim if it is a JSON object.
+        if (std::holds_alternative<canonicaljson::Object>(parsed.value.storage()))
+        {
+            return std::string{body};
+        }
+        return std::nullopt;
+    }
+
     [[nodiscard]] auto fetch_event_by_id(HomeserverRuntime& runtime, std::string_view room_id, std::string_view origin,
                                          std::string_view event_id, std::size_t& outbound_calls)
         -> std::optional<std::string>
@@ -2535,7 +2580,85 @@ namespace
             return std::nullopt;
         }
         ++outbound_calls;
-        return body;
+        return extract_pdu_from_event_response(body);
+    }
+
+    // Parses a JSON object response and returns the string array under `key`,
+    // or nullopt when the key is missing or not an array of strings. Used for
+    // /state_ids and /event_auth responses.
+    [[nodiscard]] auto string_array_member(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> std::optional<std::vector<std::string>>
+    {
+        auto const* value = object_member(object, key);
+        if (value == nullptr)
+        {
+            return std::nullopt;
+        }
+        auto const* array = std::get_if<canonicaljson::Array>(&value->storage());
+        if (array == nullptr)
+        {
+            return std::nullopt;
+        }
+        auto result = std::vector<std::string>{};
+        result.reserve(array->size());
+        for (auto const& entry : *array)
+        {
+            auto const* str = std::get_if<std::string>(&entry.storage());
+            if (str == nullptr)
+            {
+                return std::nullopt;
+            }
+            result.push_back(*str);
+        }
+        return result;
+    }
+
+    // Spec: GET /_matrix/federation/v1/state_ids/{roomId}?event_id=...
+    // Returns the "pdu_ids" and "auth_chain_ids" arrays on success.
+    [[nodiscard]] auto fetch_state_ids(HomeserverRuntime& runtime, std::string_view room_id, std::string_view origin,
+                                       std::string_view event_id, std::size_t& outbound_calls)
+        -> std::optional<std::pair<std::vector<std::string>, std::vector<std::string>>>
+    {
+        if (outbound_calls >= k_max_backfill_outbound_calls)
+        {
+            return std::nullopt;
+        }
+        auto const [key_id, secret_key] = signing_material_for_backfill(runtime);
+        if (secret_key.empty())
+        {
+            return std::nullopt;
+        }
+        auto const path = std::string{"/_matrix/federation/v1/state_ids/"} +
+                          core::percent_encode_path_component(room_id) +
+                          "?event_id=" + core::percent_encode_path_component(event_id);
+        auto tx = federation::make_outbound_transaction(std::string{origin}, "GET", path,
+                                                        runtime.config.server().server_name, "");
+        auto const [ok, body] =
+            perform_sync_outbound_call(runtime, room_id, tx, key_id, secret_key, "federation.backfill.state_ids_failed",
+                                       runtime.federation.config.remote_timeout_seconds, 16U * 1024U * 1024U);
+        if (!ok)
+        {
+            return std::nullopt;
+        }
+        ++outbound_calls;
+
+        auto const parsed = canonicaljson::parse_json(body);
+        if (parsed.error != canonicaljson::ParseError::none)
+        {
+            return std::nullopt;
+        }
+        auto const* root = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+        if (root == nullptr)
+        {
+            return std::nullopt;
+        }
+        auto const pdu_ids = string_array_member(*root, "pdu_ids");
+        auto const auth_chain_ids = string_array_member(*root, "auth_chain_ids");
+        if (!pdu_ids.has_value() || !auth_chain_ids.has_value())
+        {
+            return std::nullopt;
+        }
+        return std::make_pair(std::move(*pdu_ids), std::move(*auth_chain_ids));
     }
 
     [[nodiscard]] auto sender_domain_from_user_id(std::string_view user_id) noexcept -> std::string_view
@@ -2551,12 +2674,15 @@ namespace
     }
 
     // Verifies and stores a single backfilled event as an outlier. The event's
-    // prev_events MUST already have recorded state groups; otherwise it is dropped.
+    // prev_events MUST already have recorded state groups unless a verified
+    // snapshot is supplied in `forced_state_before`; otherwise it is dropped.
     // Returns true when the event was stored (or was already present), false when
     // it failed verification.
-    [[nodiscard]] auto verify_and_store_backfilled_event(HomeserverRuntime& runtime, std::string_view room_id,
-                                                         std::string_view origin, std::string_view event_json,
-                                                         rooms::RoomVersionPolicy const& policy) -> bool
+    [[nodiscard]] auto verify_and_store_backfilled_event(
+        HomeserverRuntime& runtime, std::string_view room_id, std::string_view origin, std::string_view event_json,
+        rooms::RoomVersionPolicy const& policy,
+        std::optional<std::vector<database::PersistentStateGroupStateEntry>> const& forced_state_before = std::nullopt)
+        -> bool
     {
         std::ignore = origin;
         if (event_json.empty() || event_json.front() != '{')
@@ -2680,15 +2806,28 @@ namespace
         auto outcome = BackfillOutcome::accepted;
         auto outcome_reason = std::string{};
 
-        auto const state_before =
-            compute_state_before(runtime.database.persistent_store, room_id, policy, envelope.prev_event_ids);
-        if (!state_before.ok)
+        auto const state_before_entries =
+            [&]() -> std::optional<std::vector<database::PersistentStateGroupStateEntry>> {
+            if (forced_state_before.has_value())
+            {
+                return *forced_state_before;
+            }
+            auto const computed =
+                compute_state_before(runtime.database.persistent_store, room_id, policy, envelope.prev_event_ids);
+            if (!computed.ok)
+            {
+                return std::nullopt;
+            }
+            return computed.state;
+        }();
+        if (!state_before_entries.has_value())
         {
             return false;
         }
+        auto const& state_before = *state_before_entries;
 
         auto state_before_map = build_auth_event_map_from_entries(
-            runtime.database.persistent_store, state_before.state, envelope.sender,
+            runtime.database.persistent_store, state_before, envelope.sender,
             envelope.state_key.value_or(std::string{}), envelope.event_type, third_party_invite_token);
         fill_create_from_room_state(state_before_map, runtime.database.persistent_store, room_id);
         auto const state_before_decision =
@@ -2701,8 +2840,8 @@ namespace
 
         auto const state_after =
             outcome == BackfillOutcome::rejected
-                ? state_before.state
-                : compute_state_after(state_before.state, envelope.event_id, envelope.event_type, envelope.state_key);
+                ? state_before
+                : compute_state_after(state_before, envelope.event_id, envelope.event_type, envelope.state_key);
 
         auto const stripe = std::hash<std::string>{}(std::string{room_id}) % room_mutex_stripe_count;
         auto stripe_guard = std::unique_lock{runtime.room_stripe_mutexes[stripe]};
@@ -2756,8 +2895,12 @@ namespace
         }
         database::apply_store_event_with_state(runtime.database.persistent_store, *prepared);
 
-        auto const group = record_event_state(runtime.database.persistent_store, room_id, envelope.event_id,
-                                              envelope.prev_event_ids, state_after, false);
+        auto const group =
+            forced_state_before.has_value()
+                ? record_event_state_with_parent(runtime.database.persistent_store, room_id, envelope.event_id,
+                                                 envelope.prev_event_ids, std::nullopt, state_after, false)
+                : record_event_state(runtime.database.persistent_store, room_id, envelope.event_id,
+                                     envelope.prev_event_ids, state_after, false);
         if (!group.has_value())
         {
             LOG_WARNING("State-group bookkeeping failed for backfilled outlier; event_id=" + envelope.event_id +
@@ -2765,6 +2908,155 @@ namespace
         }
         std::ignore = sync_stream_id;
         return true;
+    }
+
+    // ADR-0064 phase C: /state_ids fallback. When /get_missing_events and
+    // per-event fetches cannot close the gap, ask the origin for the resolved
+    // state at a missing prev_event, fetch and verify the named state and auth
+    // events, then verify and store the missing event using that verified
+    // snapshot as its state-before. Returns true when the target event was
+    // stored.
+    [[nodiscard]] auto backfill_state_ids_snapshot(HomeserverRuntime& runtime, std::string_view room_id,
+                                                   std::string_view origin, std::string_view target_event_id,
+                                                   rooms::RoomVersionPolicy const& policy, std::size_t& outbound_calls,
+                                                   std::size_t recursion_depth = 0U) -> bool
+    {
+        if (outbound_calls >= k_max_backfill_outbound_calls || recursion_depth > k_max_backfill_recursion_depth)
+        {
+            return false;
+        }
+
+        auto const state_ids = fetch_state_ids(runtime, room_id, origin, target_event_id, outbound_calls);
+        if (!state_ids.has_value())
+        {
+            return false;
+        }
+        auto const& [pdu_ids, auth_chain_ids] = *state_ids;
+
+        if (pdu_ids.size() > k_max_state_ids_per_pdu || auth_chain_ids.size() > k_max_auth_chain_ids_per_pdu)
+        {
+            LOG_WARNING(
+                "backfill_state_ids_snapshot: oversized /state_ids response rejected; room_id=" + std::string{room_id} +
+                " target_event_id=" + std::string{target_event_id} + " pdu_ids=" + std::to_string(pdu_ids.size()) +
+                " auth_chain_ids=" + std::to_string(auth_chain_ids.size()));
+            return false;
+        }
+
+        auto needed_ids = std::vector<std::string>{};
+        needed_ids.reserve(pdu_ids.size() + auth_chain_ids.size());
+        {
+            auto seen = std::unordered_set<std::string>{};
+            for (auto const& id : pdu_ids)
+            {
+                if (id != target_event_id && seen.insert(id).second)
+                {
+                    needed_ids.push_back(id);
+                }
+            }
+            for (auto const& id : auth_chain_ids)
+            {
+                if (id != target_event_id && seen.insert(id).second)
+                {
+                    needed_ids.push_back(id);
+                }
+            }
+        }
+
+        if (needed_ids.size() > k_max_state_snapshot_events_per_pdu)
+        {
+            LOG_WARNING("backfill_state_ids_snapshot: snapshot too large to materialise; room_id=" +
+                        std::string{room_id} + " target_event_id=" + std::string{target_event_id} +
+                        " needed_events=" + std::to_string(needed_ids.size()));
+            return false;
+        }
+
+        for (auto const& id : needed_ids)
+        {
+            {
+                auto const stripe = std::hash<std::string>{}(std::string{room_id}) % room_mutex_stripe_count;
+                auto stripe_guard = std::unique_lock{runtime.room_stripe_mutexes[stripe]};
+                auto global_guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+                if (event_has_state_group(runtime.database.persistent_store, id))
+                {
+                    continue;
+                }
+            }
+            if (outbound_calls >= k_max_backfill_outbound_calls)
+            {
+                return false;
+            }
+            auto const json = fetch_event_by_id(runtime, room_id, origin, id, outbound_calls);
+            if (!json.has_value())
+            {
+                return false;
+            }
+            if (!verify_and_store_backfilled_event(runtime, room_id, origin, *json, policy))
+            {
+                LOG_WARNING("backfill_state_ids_snapshot: snapshot event failed verification; room_id=" +
+                            std::string{room_id} + " event_id=" + id);
+                return false;
+            }
+        }
+
+        // Build the verified snapshot state from pdu_ids. Each pdu_id names a
+        // state event in the resolved state at the target event.
+        auto snapshot_state = std::vector<database::PersistentStateGroupStateEntry>{};
+        {
+            auto const stripe = std::hash<std::string>{}(std::string{room_id}) % room_mutex_stripe_count;
+            auto stripe_guard = std::unique_lock{runtime.room_stripe_mutexes[stripe]};
+            auto global_guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+            snapshot_state.reserve(pdu_ids.size());
+            auto seen_keys = std::unordered_set<std::string>{};
+            for (auto const& id : pdu_ids)
+            {
+                if (id == target_event_id)
+                {
+                    continue;
+                }
+                auto const it = std::ranges::find_if(runtime.database.persistent_store.events,
+                                                     [&](database::PersistentEvent const& e) {
+                                                         return e.event_id == id;
+                                                     });
+                if (it == runtime.database.persistent_store.events.end())
+                {
+                    return false;
+                }
+                auto const parsed = canonicaljson::parse_lossless(it->json);
+                if (parsed.error != canonicaljson::ParseError::none)
+                {
+                    return false;
+                }
+                auto const* obj = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+                if (obj == nullptr)
+                {
+                    return false;
+                }
+                auto const* type = string_member(*obj, "type");
+                auto const* state_key = string_member(*obj, "state_key");
+                if (type == nullptr || state_key == nullptr)
+                {
+                    continue; // /state_ids should only name state events
+                }
+                auto const key = *type + '\0' + *state_key;
+                if (!seen_keys.insert(key).second)
+                {
+                    continue;
+                }
+                snapshot_state.push_back({{}, *type, *state_key, id});
+            }
+        }
+
+        if (outbound_calls >= k_max_backfill_outbound_calls)
+        {
+            return false;
+        }
+        auto const target_json = fetch_event_by_id(runtime, room_id, origin, target_event_id, outbound_calls);
+        if (!target_json.has_value())
+        {
+            return false;
+        }
+
+        return verify_and_store_backfilled_event(runtime, room_id, origin, *target_json, policy, snapshot_state);
     }
 
     // ADR-0064 phase C: fetch missing prev_events / auth_events from the sending
@@ -2831,6 +3123,22 @@ namespace
             }
             auto const json = fetch_event_by_id(runtime, room_id, envelope.origin, id, outbound_calls);
             if (json.has_value() && verify_and_store_backfilled_event(runtime, room_id, envelope.origin, *json, policy))
+            {
+                stored_any = true;
+            }
+        }
+
+        std::tie(missing_auth, missing_prev) = collect();
+
+        // ADR-0064 phase C: /state_ids fallback for prev_events that still have
+        // no recorded state group after /get_missing_events and /event/{id}.
+        for (auto const& id : missing_prev)
+        {
+            if (outbound_calls >= k_max_backfill_outbound_calls)
+            {
+                break;
+            }
+            if (backfill_state_ids_snapshot(runtime, room_id, envelope.origin, id, policy, outbound_calls))
             {
                 stored_any = true;
             }

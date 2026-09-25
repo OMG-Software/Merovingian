@@ -149,11 +149,11 @@ quo is the defect itself.
 * Bad, because storage grows with state size × number of state changes, which
   is quadratic-ish for large public rooms with membership churn.
 
-## Phase C: backfill of missing `prev_events` and `auth_events` (shipped)
+## Phase C: backfill of missing `prev_events` and `auth_events` (shipped — `/state_ids` fallback added in 0.12.13)
 
-The decision above selected "fetch, then request state". Phase C implements the
-first half of that option for the inbound `/send` path in
-`ingest_pdu_event` (`src/homeserver/local_http_router.cpp`):
+The decision above selected "fetch, then request state". Phase C implements that
+option for the inbound `/send` path in `ingest_pdu_event`
+(`src/homeserver/local_http_router.cpp`):
 
 * Before a PDU is accepted, `collect_missing_pdu_references` finds `auth_events`
   that are absent from the store and `prev_events` that are absent or have no
@@ -184,12 +184,34 @@ first half of that option for the inbound `/send` path in
   `missing_prev_state` and is not applied — fail-closed rather than accepting
   on unverified data.
 
+### Phase C2: `/state_ids` fallback for gaps `/get_missing_events` cannot fill
+
+When `/get_missing_events` returns nothing useful and a `prev_event` still lacks
+a recorded state group, `backfill_missing_pdu_references` falls back to
+`GET /_matrix/federation/v1/state_ids/{roomId}?event_id=...` on the sending
+server. The response's `pdu_ids` and `auth_chain_ids` are capped (1000 each);
+if either cap is exceeded the snapshot is rejected. Every named event that is
+not already in the store with a state group is fetched via
+`/event/{eventId}` and verified independently — content hash, signature,
+`auth_events` selection, and auth against its own `auth_events`. A snapshot event
+that fails verification causes the whole snapshot to be rejected, because a
+partial or forged snapshot must not be used as state. The verified state
+events in `pdu_ids` form the snapshot; the missing `prev_event` is then fetched
+and authorised against that snapshot as its state-before, bypassing the usual
+requirement that its own `prev_events` have recorded state groups. The target
+event is stored as an outlier with an after-state group derived from the
+snapshot. This completes the "fetch, then request state" option: the snapshot
+is accepted only after every event it names has been verified, never on the
+remote server's word alone.
+
 This bounds the work a malicious or delayed origin can drive: an inbound PDU
 with a gap cannot trigger more than five outbound federation calls or fetch
-more than twenty events through `/get_missing_events`. The rejected
-alternatives — hold the PDU indefinitely or reject it outright — are documented
-above under "Pros and Cons of the Options"; they would partition the server
-from rooms whose history arrives late or via a different path.
+more than twenty events through `/get_missing_events`. The `/state_ids`
+fallback adds caps on response size and on the number of snapshot events we
+will materialise (100). The rejected alternatives — hold the PDU indefinitely
+or reject it outright — are documented above under "Pros and Cons of the
+Options"; they would partition the server from rooms whose history arrives late
+or via a different path.
 
 ## Links
 

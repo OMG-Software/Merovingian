@@ -35,6 +35,7 @@
 #include <filesystem>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace
@@ -401,6 +402,113 @@ inline auto run_body_aware_tls_server(merovingian::net::TcpAcceptor& acceptor,
     std::ignore = connection.write(http_response);
 }
 
+// Multi-request body-aware TLS server. Dispatches each received request to the
+// first unused response whose path substring appears in the request bytes. This
+// variant reads the full request (headers + Content-Length body) so POSTs such
+// as /get_missing_events are handled correctly.
+inline auto run_body_aware_dispatch_tls_server(merovingian::net::TcpAcceptor& acceptor,
+                                               merovingian::homeserver::TlsServerContext& tls_context,
+                                               std::vector<std::pair<std::string, std::string>> const& path_responses,
+                                               std::vector<std::string>* captured_requests = nullptr) noexcept -> void
+{
+    auto served = std::vector<bool>(path_responses.size(), false);
+    for (auto iteration = std::size_t{0U}; iteration < path_responses.size(); ++iteration)
+    {
+        auto const client_fd = merovingian::tests::tls_mock::accept_loopback(acceptor, 10000);
+        if (client_fd < 0)
+        {
+            return;
+        }
+        auto tls_result = merovingian::homeserver::accept_tls_connection(tls_context, client_fd, 5000);
+        if (!tls_result.connection.has_value())
+        {
+            ::close(client_fd);
+            continue;
+        }
+        auto& connection = *tls_result.connection;
+        auto const request = read_full_http_request(connection);
+        if (captured_requests != nullptr)
+        {
+            captured_requests->push_back(request);
+        }
+        auto chosen = path_responses.size();
+        for (auto index = std::size_t{0U}; index < path_responses.size(); ++index)
+        {
+            if (!served[index] && request.find(path_responses[index].first) != std::string::npos)
+            {
+                chosen = index;
+                break;
+            }
+        }
+        if (chosen == path_responses.size())
+        {
+            for (auto index = std::size_t{0U}; index < path_responses.size(); ++index)
+            {
+                if (!served[index])
+                {
+                    chosen = index;
+                    break;
+                }
+            }
+        }
+        if (chosen == path_responses.size())
+        {
+            std::ignore = connection.write(path_responses.front().second);
+            continue;
+        }
+        served[chosen] = true;
+        std::ignore = connection.write(path_responses[chosen].second);
+    }
+}
+
+[[nodiscard]] auto make_empty_get_missing_events_response() -> std::string
+{
+    auto obj = canonicaljson::Object{};
+    obj.push_back(canonicaljson::make_member("events", canonicaljson::Value{canonicaljson::Array{}}));
+    auto const serialized = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(obj)});
+    REQUIRE(serialized.error == canonicaljson::CanonicalJsonError::none);
+    return serialized.output;
+}
+
+[[nodiscard]] auto make_state_ids_response(std::vector<std::string> const& pdu_ids,
+                                           std::vector<std::string> const& auth_chain_ids) -> std::string
+{
+    auto pdu_array = canonicaljson::Array{};
+    for (auto const& id : pdu_ids)
+    {
+        pdu_array.push_back(canonicaljson::Value{id});
+    }
+    auto auth_array = canonicaljson::Array{};
+    for (auto const& id : auth_chain_ids)
+    {
+        auth_array.push_back(canonicaljson::Value{id});
+    }
+    auto obj = canonicaljson::Object{};
+    obj.push_back(canonicaljson::make_member("auth_chain_ids", canonicaljson::Value{std::move(auth_array)}));
+    obj.push_back(canonicaljson::make_member("pdu_ids", canonicaljson::Value{std::move(pdu_array)}));
+    auto const serialized = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(obj)});
+    REQUIRE(serialized.error == canonicaljson::CanonicalJsonError::none);
+    return serialized.output;
+}
+
+[[nodiscard]] auto make_event_transaction_response(std::string const& event_json, std::string const& origin)
+    -> std::string
+{
+    auto parsed = merovingian::canonicaljson::parse_lossless(event_json);
+    REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+    auto pdus = merovingian::canonicaljson::Array{};
+    pdus.push_back(std::move(parsed.value));
+    auto obj = merovingian::canonicaljson::Object{};
+    obj.push_back(merovingian::canonicaljson::make_member("origin", merovingian::canonicaljson::Value{origin}));
+    obj.push_back(merovingian::canonicaljson::make_member("origin_server_ts",
+                                                          merovingian::canonicaljson::Value{std::int64_t{0}}));
+    obj.push_back(merovingian::canonicaljson::make_member("pdus", merovingian::canonicaljson::Value{std::move(pdus)}));
+    auto const serialized =
+        merovingian::canonicaljson::serialize_canonical(merovingian::canonicaljson::Value{std::move(obj)});
+    REQUIRE(serialized.error == merovingian::canonicaljson::CanonicalJsonError::none);
+    return serialized.output;
+}
+
 } // namespace
 
 SCENARIO("ingest_pdu_event backfills a missing prev_event from the sending server and accepts the PDU",
@@ -742,6 +850,153 @@ SCENARIO("A backfilled state event passing auth_events and state-before is store
                         });
                     REQUIRE(topic_entry != full_state->end());
                     REQUIRE(topic_entry->event_id == topic_id);
+                }
+            }
+
+            std::filesystem::remove(path);
+        }
+    }
+}
+
+// Spec: Matrix Server-Server API v1.19
+// Endpoint / Section: Backfilling and retrieving missing events
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#backfilling-and-retrieving-missing-events
+//
+// When /get_missing_events cannot fill the gap, the server falls back to
+// /state_ids to obtain the state at the missing prev_event, fetches and
+// verifies the named state events, and stores the missing event with an
+// after-state group derived from the verified snapshot.
+SCENARIO("ingest_pdu_event falls back to /state_ids when /get_missing_events cannot fill the gap",
+         "[pdu_ingestion][backfill][conformance]")
+{
+    GIVEN("a fresh runtime seeded with a room genesis state group")
+    {
+        auto const path = unique_sqlite_path();
+        std::filesystem::remove(path);
+        auto started = merovingian::homeserver::start_runtime(config_with_sqlite(path));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+
+        auto const room_id = std::string{"!backfill-state-ids:local.example.org"};
+        seed_room_with_genesis_state_group(runtime, room_id);
+
+        auto const create_id = room_id + ":create";
+        auto const pl_id = room_id + ":pl";
+        auto const member_id = room_id + ":member";
+        auto const member_bob_id = room_id + ":member:bob";
+        auto const auth_event_ids = std::vector<std::string>{create_id, pl_id, member_bob_id};
+
+        // `old` is missing and unreachable, so `mid` cannot be verified through
+        // the normal /event/{id} path. The /state_ids fallback supplies the
+        // state before `mid` directly from the verified genesis snapshot.
+        auto const old_event = make_remote_message_pdu(room_id, {member_bob_id}, auth_event_ids, 4, 10);
+        auto const old_event_id = old_event.event_id;
+        auto const mid_event = make_remote_message_pdu(room_id, {old_event_id}, auth_event_ids, 5, 11);
+        auto const mid_event_id = mid_event.event_id;
+
+        auto const pdu = make_remote_message_pdu(room_id, {mid_event_id}, auth_event_ids, 6, 20);
+
+        AND_GIVEN("a mock sending server that returns /state_ids for the missing prev_event")
+        {
+            auto certificate = merovingian::tests::tls_mock::write_test_tls_certificate("localhost");
+            auto tls_context_result = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
+                                                                                       certificate.private_key_file);
+            REQUIRE(tls_context_result.ok());
+            auto tls_context = std::move(*tls_context_result.context);
+            auto acceptor = merovingian::net::TcpAcceptor{};
+            REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+            auto const port = acceptor.bound_port();
+            REQUIRE(port > 0U);
+
+            runtime.test_forced_outbound_resolution[remote_server] =
+                merovingian::homeserver::TestOnlyForcedOutboundResolution{
+                    "localhost", port, {"127.0.0.1"}, certificate.certificate_pem};
+
+            runtime.federation.remote_key_resolver =
+                [](std::string_view server_name,
+                   std::string_view key_id) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+                if (server_name != remote_server || key_id != remote_key_id)
+                {
+                    return std::nullopt;
+                }
+                return remote_runtime();
+            };
+
+            auto const state_ids_body = make_state_ids_response(auth_event_ids, auth_event_ids);
+            auto const mid_event_body = make_event_transaction_response(mid_event.json, remote_server);
+            // The first /event/{id} fetch tries to store `mid` directly and
+            // fails because `mid`'s own prev_event has no state group. The
+            // /state_ids fallback then fetches `mid` a second time and stores
+            // it against the verified snapshot. Both fetches need a response.
+            auto const path_responses = std::vector<std::pair<std::string, std::string>>{
+                {"POST /_matrix/federation/v1/get_missing_events/",
+                 merovingian::tests::tls_mock::json_http_response("200 OK", make_empty_get_missing_events_response())},
+                {"GET /_matrix/federation/v1/state_ids/",
+                 merovingian::tests::tls_mock::json_http_response("200 OK", state_ids_body)                          },
+                {"GET /_matrix/federation/v1/event/",
+                 merovingian::tests::tls_mock::json_http_response("200 OK", mid_event_body)                          },
+                {"GET /_matrix/federation/v1/event/",
+                 merovingian::tests::tls_mock::json_http_response("200 OK", mid_event_body)                          },
+            };
+            auto captured_requests = std::vector<std::string>{};
+            auto server_thread = std::thread{[&]() {
+                run_body_aware_dispatch_tls_server(acceptor, tls_context, path_responses, &captured_requests);
+            }};
+            auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
+            std::ignore = join_server;
+
+            WHEN("the PDU is ingested")
+            {
+                auto const result = merovingian::homeserver::ingest_pdu_event(runtime, pdu);
+
+                THEN("the PDU is accepted")
+                {
+                    REQUIRE(result.status == PduIngestionStatus::accepted);
+                }
+
+                THEN("the backfilled prev_event is stored as an outlier with a state group")
+                {
+                    auto const* event = [&]() -> merovingian::database::PersistentEvent const* {
+                        for (auto const& e : runtime.database.persistent_store.events)
+                        {
+                            if (e.event_id == mid_event_id)
+                            {
+                                return &e;
+                            }
+                        }
+                        return nullptr;
+                    }();
+                    REQUIRE(event != nullptr);
+                    REQUIRE(event->status == "outlier");
+                    REQUIRE(
+                        merovingian::database::find_event_state_group(runtime.database.persistent_store, mid_event_id)
+                            .has_value());
+                }
+
+                THEN("all three fallback endpoints were called")
+                {
+                    auto has_get_missing = false;
+                    auto has_state_ids = false;
+                    auto has_event = false;
+                    for (auto const& req : captured_requests)
+                    {
+                        if (req.find("POST /_matrix/federation/v1/get_missing_events/") != std::string::npos)
+                        {
+                            has_get_missing = true;
+                        }
+                        if (req.find("GET /_matrix/federation/v1/state_ids/") != std::string::npos)
+                        {
+                            has_state_ids = true;
+                        }
+                        if (req.find("GET /_matrix/federation/v1/event/") != std::string::npos)
+                        {
+                            has_event = true;
+                        }
+                    }
+                    REQUIRE(has_get_missing);
+                    REQUIRE(has_state_ids);
+                    REQUIRE(has_event);
                 }
             }
 

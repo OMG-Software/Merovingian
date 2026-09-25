@@ -55,6 +55,21 @@
   `tests/integration/test_pdu_ingestion_backfill_flow.cpp`
   (`[pdu_ingestion][backfill][conformance]`).
 
+- **FIXED: `/state_ids` fallback for backfill gaps (HIGH).** When
+  `/get_missing_events` and per-event fetches cannot close a missing-
+  `prev_event` gap, `backfill_missing_pdu_references` now falls back to
+  `GET /_matrix/federation/v1/state_ids/{roomId}?event_id=...` to obtain the
+  resolved state at the missing event. The returned `pdu_ids` and
+  `auth_chain_ids` are capped, every named event is fetched via
+  `/event/{id}` and verified independently, and only the verified state events
+  are used as the snapshot. The missing event itself is then fetched and
+  authorised against that snapshot as its state-before, bypassing the usual
+  requirement that its own `prev_events` already have recorded state groups.
+  Oversized responses and unverifiable snapshots are rejected, keeping the
+  fail-closed behaviour. Test:
+  `tests/integration/test_pdu_ingestion_backfill_flow.cpp`
+  (`[pdu_ingestion][backfill][conformance]`).
+
 - **FIXED: push gateway and identity server clients skipped SSRF filtering on
   address resolution (MEDIUM).** `push_gateway_client.cpp` and
   `identity_client.cpp` were calling
