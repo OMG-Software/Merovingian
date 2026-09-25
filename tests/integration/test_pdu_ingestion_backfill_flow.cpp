@@ -156,13 +156,19 @@ auto seed_room_with_genesis_state_group(HomeserverRuntime& runtime, std::string 
     auto const group_id =
         database::create_or_reuse_state_group(store, room_id, room_id + ":genesis-group", std::nullopt, genesis_state);
     REQUIRE(group_id.has_value());
+    REQUIRE(database::set_event_state_group(store, create_id, *group_id));
+    REQUIRE(database::set_event_state_group(store, pl_id, *group_id));
     REQUIRE(database::set_event_state_group(store, member_id, *group_id));
+    REQUIRE(database::set_event_state_group(store, member_bob_id, *group_id));
     REQUIRE(database::update_forward_extremities(store, room_id, member_id, {}, true));
 }
 
-[[nodiscard]] auto make_remote_message_json(std::string const& room_id, std::vector<std::string> const& prev_event_ids,
-                                            std::vector<std::string> const& auth_event_ids, std::int64_t depth,
-                                            std::int64_t ts) -> std::string
+[[nodiscard]] auto make_remote_event_json(std::string const& room_id, std::string const& type,
+                                          std::optional<std::string> const& state_key, std::string const& sender,
+                                          merovingian::canonicaljson::Object content,
+                                          std::vector<std::string> const& prev_event_ids,
+                                          std::vector<std::string> const& auth_event_ids, std::int64_t depth,
+                                          std::int64_t ts) -> std::string
 {
     auto prev = canonicaljson::Array{};
     for (auto const& id : prev_event_ids)
@@ -175,14 +181,14 @@ auto seed_room_with_genesis_state_group(HomeserverRuntime& runtime, std::string 
         auth.push_back(canonicaljson::Value{id});
     }
 
-    auto content = canonicaljson::Object{};
-    content.push_back(canonicaljson::make_member("msgtype", canonicaljson::Value{std::string{"m.text"}}));
-    content.push_back(canonicaljson::make_member("body", canonicaljson::Value{std::string{"backfill test"}}));
-
     auto obj = canonicaljson::Object{};
-    obj.push_back(canonicaljson::make_member("type", canonicaljson::Value{std::string{"m.room.message"}}));
+    obj.push_back(canonicaljson::make_member("type", canonicaljson::Value{type}));
+    if (state_key.has_value())
+    {
+        obj.push_back(canonicaljson::make_member("state_key", canonicaljson::Value{*state_key}));
+    }
     obj.push_back(canonicaljson::make_member("room_id", canonicaljson::Value{room_id}));
-    obj.push_back(canonicaljson::make_member("sender", canonicaljson::Value{std::string{"@bob:remote.example.org"}}));
+    obj.push_back(canonicaljson::make_member("sender", canonicaljson::Value{sender}));
     obj.push_back(canonicaljson::make_member("content", canonicaljson::Value{std::move(content)}));
     obj.push_back(canonicaljson::make_member("origin_server_ts", canonicaljson::Value{ts}));
     obj.push_back(canonicaljson::make_member("depth", canonicaljson::Value{depth}));
@@ -196,6 +202,33 @@ auto seed_room_with_genesis_state_group(HomeserverRuntime& runtime, std::string 
                                                                  remote_key_seed, room_version);
 }
 
+[[nodiscard]] auto make_remote_message_json(std::string const& room_id, std::vector<std::string> const& prev_event_ids,
+                                            std::vector<std::string> const& auth_event_ids, std::int64_t depth,
+                                            std::int64_t ts) -> std::string
+{
+    auto content = canonicaljson::Object{};
+    content.push_back(canonicaljson::make_member("msgtype", canonicaljson::Value{std::string{"m.text"}}));
+    content.push_back(canonicaljson::make_member("body", canonicaljson::Value{std::string{"backfill test"}}));
+    return make_remote_event_json(room_id, "m.room.message", std::nullopt, "@bob:remote.example.org",
+                                  std::move(content), prev_event_ids, auth_event_ids, depth, ts);
+}
+
+[[nodiscard]] auto make_remote_event_pdu(std::string const& room_id, std::string const& type,
+                                         std::optional<std::string> const& state_key, std::string const& sender,
+                                         merovingian::canonicaljson::Object content,
+                                         std::vector<std::string> const& prev_event_ids,
+                                         std::vector<std::string> const& auth_event_ids, std::int64_t depth,
+                                         std::int64_t ts) -> InboundPduEnvelope
+{
+    auto const signed_json = make_remote_event_json(room_id, type, state_key, sender, std::move(content),
+                                                    prev_event_ids, auth_event_ids, depth, ts);
+    REQUIRE(!signed_json.empty());
+    auto envelope = merovingian::federation::parse_inbound_pdu_envelope(signed_json, room_version);
+    REQUIRE(envelope.has_value());
+    envelope->origin = remote_server;
+    return *envelope;
+}
+
 [[nodiscard]] auto make_remote_message_pdu(std::string const& room_id, std::vector<std::string> const& prev_event_ids,
                                            std::vector<std::string> const& auth_event_ids, std::int64_t depth,
                                            std::int64_t ts) -> InboundPduEnvelope
@@ -206,6 +239,57 @@ auto seed_room_with_genesis_state_group(HomeserverRuntime& runtime, std::string 
     REQUIRE(envelope.has_value());
     envelope->origin = remote_server;
     return *envelope;
+}
+
+// Seeds a restrictive power_levels event accepted into the room, making it the
+// new forward extremity and current state. Used to construct a state-before
+// that is stricter than the permissive genesis power_levels.
+auto seed_strict_power_levels(HomeserverRuntime& runtime, std::string const& room_id,
+                              std::string const& /*permissive_pl_id*/, std::string const& prev_event_id) -> std::string
+{
+    using namespace merovingian;
+
+    auto& store = runtime.database.persistent_store;
+    auto* policy = rooms::find_room_version_policy(room_version);
+    REQUIRE(policy != nullptr);
+
+    auto const strict_pl_id = room_id + ":strict-pl";
+    auto content = canonicaljson::Object{};
+    content.push_back(canonicaljson::make_member("state_default", canonicaljson::Value{std::int64_t{100}}));
+    auto users = canonicaljson::Object{};
+    users.push_back(canonicaljson::make_member("@admin:local.example.org", canonicaljson::Value{std::int64_t{100}}));
+    content.push_back(canonicaljson::make_member("users", canonicaljson::Value{std::move(users)}));
+
+    auto obj = canonicaljson::Object{};
+    obj.push_back(canonicaljson::make_member("type", canonicaljson::Value{std::string{"m.room.power_levels"}}));
+    obj.push_back(canonicaljson::make_member("state_key", canonicaljson::Value{std::string{}}));
+    obj.push_back(canonicaljson::make_member("room_id", canonicaljson::Value{room_id}));
+    obj.push_back(canonicaljson::make_member("sender", canonicaljson::Value{std::string{"@admin:local.example.org"}}));
+    obj.push_back(canonicaljson::make_member("content", canonicaljson::Value{std::move(content)}));
+    obj.push_back(canonicaljson::make_member("origin_server_ts", canonicaljson::Value{std::int64_t{5}}));
+    obj.push_back(canonicaljson::make_member("depth", canonicaljson::Value{std::int64_t{4}}));
+    auto prev = canonicaljson::Array{};
+    prev.push_back(canonicaljson::Value{prev_event_id});
+    obj.push_back(canonicaljson::make_member("prev_events", canonicaljson::Value{std::move(prev)}));
+    obj.push_back(canonicaljson::make_member("auth_events", canonicaljson::Value{canonicaljson::Array{}}));
+    auto hashes = canonicaljson::Object{};
+    hashes.push_back(canonicaljson::make_member("sha256", canonicaljson::Value{std::string{"hash"}}));
+    obj.push_back(canonicaljson::make_member("hashes", canonicaljson::Value{std::move(hashes)}));
+    auto const serialized = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(obj)});
+    REQUIRE(serialized.error == canonicaljson::CanonicalJsonError::none);
+
+    store.events.push_back(
+        {strict_pl_id, room_id, "@admin:local.example.org", serialized.output, 4U, 0U, {prev_event_id}, {}, {}});
+    store.state.push_back({room_id, "m.room.power_levels", "", strict_pl_id});
+
+    auto const state_before = homeserver::compute_state_before(store, room_id, *policy, {prev_event_id});
+    REQUIRE(state_before.ok);
+    auto const state_after = homeserver::compute_state_after(state_before.state, strict_pl_id, "m.room.power_levels",
+                                                             std::optional<std::string>{});
+    auto const group = homeserver::record_event_state(store, room_id, strict_pl_id, {prev_event_id}, state_after, true);
+    REQUIRE(group.has_value());
+    REQUIRE(homeserver::recompute_current_state(store, room_id, *policy));
+    return strict_pl_id;
 }
 
 [[nodiscard]] auto remote_runtime() -> merovingian::federation::FederationRemoteRuntime
@@ -412,6 +496,252 @@ SCENARIO("ingest_pdu_event backfills a missing prev_event from the sending serve
                 {
                     REQUIRE(captured_request.find("POST /_matrix/federation/v1/get_missing_events/") !=
                             std::string::npos);
+                }
+            }
+
+            std::filesystem::remove(path);
+        }
+    }
+}
+
+// Spec: Matrix Server-Server API v1.19
+// Endpoint / Section: Checks performed on receipt of a PDU, step 5
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#checks-performed-on-receipt-of-a-pdu
+//
+// "Passes authorisation rules based on the state before the event, otherwise
+// it is rejected." A backfilled event (fetched as a missing prev_event) must
+// run the same step-5 check as a directly received PDU. If it passes its own
+// auth_events but fails against the state before it, it must be stored as
+// rejected and its after-state must exclude the event, so later PDUs that
+// reference it do not see its state.
+SCENARIO("A backfilled event passing its auth_events but failing state-before is stored rejected",
+         "[pdu_ingestion][backfill][conformance]")
+{
+    GIVEN("a fresh runtime seeded with a permissive genesis and a strict power_levels tip")
+    {
+        auto const path = unique_sqlite_path();
+        std::filesystem::remove(path);
+        auto started = merovingian::homeserver::start_runtime(config_with_sqlite(path));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+
+        auto const room_id = std::string{"!backfill-state-before:local.example.org"};
+        seed_room_with_genesis_state_group(runtime, room_id);
+        auto const create_id = room_id + ":create";
+        auto const pl_id = room_id + ":pl";
+        auto const member_bob_id = room_id + ":member:bob";
+        auto const strict_pl_id = seed_strict_power_levels(runtime, room_id, pl_id, member_bob_id);
+
+        // Bob's topic names the old permissive power_levels in auth_events,
+        // which is a permitted selection, but its prev_event is the strict tip,
+        // so the state immediately before it requires power 100.
+        auto topic_content = canonicaljson::Object{};
+        topic_content.push_back(canonicaljson::make_member("topic", canonicaljson::Value{std::string{"forged topic"}}));
+        auto const topic_pdu =
+            make_remote_event_pdu(room_id, "m.room.topic", std::string{}, "@bob:remote.example.org",
+                                  std::move(topic_content), {strict_pl_id}, {create_id, pl_id, member_bob_id}, 5, 10);
+        auto const topic_id = topic_pdu.event_id;
+
+        auto const followup_pdu =
+            make_remote_message_pdu(room_id, {topic_id}, {create_id, strict_pl_id, member_bob_id}, 6, 20);
+
+        AND_GIVEN("a mock sending server that returns the topic event on /get_missing_events")
+        {
+            auto certificate = merovingian::tests::tls_mock::write_test_tls_certificate("localhost");
+            auto tls_context_result = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
+                                                                                       certificate.private_key_file);
+            REQUIRE(tls_context_result.ok());
+            auto tls_context = std::move(*tls_context_result.context);
+            auto acceptor = merovingian::net::TcpAcceptor{};
+            REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+            auto const port = acceptor.bound_port();
+            REQUIRE(port > 0U);
+
+            runtime.test_forced_outbound_resolution[remote_server] =
+                merovingian::homeserver::TestOnlyForcedOutboundResolution{
+                    "localhost", port, {"127.0.0.1"}, certificate.certificate_pem};
+
+            runtime.federation.remote_key_resolver =
+                [](std::string_view server_name,
+                   std::string_view key_id) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+                if (server_name != remote_server || key_id != remote_key_id)
+                {
+                    return std::nullopt;
+                }
+                return remote_runtime();
+            };
+
+            auto const response_body = get_missing_events_response(topic_pdu.json);
+            auto const http_response = merovingian::tests::tls_mock::json_http_response("200 OK", response_body);
+            auto server_thread = std::thread{[&]() {
+                run_body_aware_tls_server(acceptor, tls_context, http_response, nullptr);
+            }};
+            auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
+            std::ignore = join_server;
+
+            WHEN("the follow-up PDU referencing the missing topic is ingested")
+            {
+                auto const result = merovingian::homeserver::ingest_pdu_event(runtime, followup_pdu);
+
+                THEN("the follow-up PDU is accepted")
+                {
+                    REQUIRE(result.status == PduIngestionStatus::accepted);
+                }
+
+                THEN("the backfilled topic is stored, marked rejected")
+                {
+                    auto const* event = [&]() -> merovingian::database::PersistentEvent const* {
+                        for (auto const& e : runtime.database.persistent_store.events)
+                        {
+                            if (e.event_id == topic_id)
+                            {
+                                return &e;
+                            }
+                        }
+                        return nullptr;
+                    }();
+                    REQUIRE(event != nullptr);
+                    REQUIRE(event->status == "rejected");
+                }
+
+                THEN("the rejected topic's after-state group excludes the topic")
+                {
+                    auto const group =
+                        merovingian::database::find_event_state_group(runtime.database.persistent_store, topic_id);
+                    REQUIRE(group.has_value());
+                    auto const full_state =
+                        merovingian::database::read_state_group_full_state(runtime.database.persistent_store, *group);
+                    REQUIRE(full_state.has_value());
+                    REQUIRE(std::ranges::none_of(*full_state,
+                                                 [&](merovingian::database::PersistentStateGroupStateEntry const& e) {
+                                                     return e.event_type == "m.room.topic";
+                                                 }));
+                }
+
+                THEN("the follow-up PDU does not see the rejected topic in current state")
+                {
+                    auto const& state = runtime.database.persistent_store.state;
+                    REQUIRE(std::ranges::none_of(state, [&](merovingian::database::PersistentStateEvent const& s) {
+                        return s.room_id == room_id && s.event_type == "m.room.topic";
+                    }));
+                }
+            }
+
+            std::filesystem::remove(path);
+        }
+    }
+}
+
+// Spec: Matrix Server-Server API v1.19
+// Endpoint / Section: Checks performed on receipt of a PDU, steps 4 and 5
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#checks-performed-on-receipt-of-a-pdu
+//
+// A backfilled event that passes both its own auth_events and the state before
+// it is stored as an outlier whose after-state includes it, so it can supply
+// state to later events that reference it.
+SCENARIO("A backfilled state event passing auth_events and state-before is stored with its after-state",
+         "[pdu_ingestion][backfill]")
+{
+    GIVEN("a fresh runtime seeded with a permissive genesis")
+    {
+        auto const path = unique_sqlite_path();
+        std::filesystem::remove(path);
+        auto started = merovingian::homeserver::start_runtime(config_with_sqlite(path));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+
+        auto const room_id = std::string{"!backfill-accepted-state:local.example.org"};
+        seed_room_with_genesis_state_group(runtime, room_id);
+        auto const create_id = room_id + ":create";
+        auto const pl_id = room_id + ":pl";
+        auto const member_bob_id = room_id + ":member:bob";
+
+        auto topic_content = canonicaljson::Object{};
+        topic_content.push_back(
+            canonicaljson::make_member("topic", canonicaljson::Value{std::string{"backfilled topic"}}));
+        auto const topic_pdu =
+            make_remote_event_pdu(room_id, "m.room.topic", std::string{}, "@bob:remote.example.org",
+                                  std::move(topic_content), {pl_id}, {create_id, pl_id, member_bob_id}, 4, 10);
+        auto const topic_id = topic_pdu.event_id;
+
+        auto const followup_pdu =
+            make_remote_message_pdu(room_id, {topic_id}, {create_id, pl_id, member_bob_id}, 5, 20);
+
+        AND_GIVEN("a mock sending server that returns the topic event on /get_missing_events")
+        {
+            auto certificate = merovingian::tests::tls_mock::write_test_tls_certificate("localhost");
+            auto tls_context_result = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
+                                                                                       certificate.private_key_file);
+            REQUIRE(tls_context_result.ok());
+            auto tls_context = std::move(*tls_context_result.context);
+            auto acceptor = merovingian::net::TcpAcceptor{};
+            REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+            auto const port = acceptor.bound_port();
+            REQUIRE(port > 0U);
+
+            runtime.test_forced_outbound_resolution[remote_server] =
+                merovingian::homeserver::TestOnlyForcedOutboundResolution{
+                    "localhost", port, {"127.0.0.1"}, certificate.certificate_pem};
+
+            runtime.federation.remote_key_resolver =
+                [](std::string_view server_name,
+                   std::string_view key_id) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+                if (server_name != remote_server || key_id != remote_key_id)
+                {
+                    return std::nullopt;
+                }
+                return remote_runtime();
+            };
+
+            auto const response_body = get_missing_events_response(topic_pdu.json);
+            auto const http_response = merovingian::tests::tls_mock::json_http_response("200 OK", response_body);
+            auto server_thread = std::thread{[&]() {
+                run_body_aware_tls_server(acceptor, tls_context, http_response, nullptr);
+            }};
+            auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
+            std::ignore = join_server;
+
+            WHEN("the follow-up PDU referencing the missing topic is ingested")
+            {
+                auto const result = merovingian::homeserver::ingest_pdu_event(runtime, followup_pdu);
+
+                THEN("the follow-up PDU is accepted")
+                {
+                    REQUIRE(result.status == PduIngestionStatus::accepted);
+                }
+
+                THEN("the backfilled topic is stored as an outlier")
+                {
+                    auto const* event = [&]() -> merovingian::database::PersistentEvent const* {
+                        for (auto const& e : runtime.database.persistent_store.events)
+                        {
+                            if (e.event_id == topic_id)
+                            {
+                                return &e;
+                            }
+                        }
+                        return nullptr;
+                    }();
+                    REQUIRE(event != nullptr);
+                    REQUIRE(event->status == "outlier");
+                }
+
+                THEN("the outlier's after-state group includes the topic")
+                {
+                    auto const group =
+                        merovingian::database::find_event_state_group(runtime.database.persistent_store, topic_id);
+                    REQUIRE(group.has_value());
+                    auto const full_state =
+                        merovingian::database::read_state_group_full_state(runtime.database.persistent_store, *group);
+                    REQUIRE(full_state.has_value());
+                    auto const topic_entry = std::ranges::find_if(
+                        *full_state, [](merovingian::database::PersistentStateGroupStateEntry const& e) {
+                            return e.event_type == "m.room.topic";
+                        });
+                    REQUIRE(topic_entry != full_state->end());
+                    REQUIRE(topic_entry->event_id == topic_id);
                 }
             }
 
