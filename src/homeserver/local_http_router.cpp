@@ -3027,6 +3027,16 @@ namespace
                                 std::string{room_id} + " event_id=" + id + " event_room_id=" + it->room_id);
                     return false;
                 }
+                // Spec: server-server-api.md "Rejection" — a rejected event must
+                // never be used as state. Soft-failed events, by contrast, still
+                // take part in state resolution (spec "Soft failure"), so they
+                // are permitted in a /state_ids snapshot.
+                if (it->status == "rejected")
+                {
+                    LOG_WARNING("backfill_state_ids_snapshot: snapshot event was previously rejected; room_id=" +
+                                std::string{room_id} + " event_id=" + id);
+                    return false;
+                }
                 auto const parsed = canonicaljson::parse_lossless(it->json);
                 if (parsed.error != canonicaljson::ParseError::none)
                 {
