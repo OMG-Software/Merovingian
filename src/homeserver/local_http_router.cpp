@@ -2668,14 +2668,41 @@ namespace
             return false;
         }
 
+        // ADR-0064 phase C: mirror the spec's step-5 check from ingest_pdu_event.
+        // A backfilled event that passes its own auth_events can still be forged
+        // against the state before it; it must then be stored as rejected with
+        // after-state equal to state_before so it cannot influence later state.
+        enum class BackfillOutcome : std::uint8_t
+        {
+            accepted,
+            rejected,
+        };
+        auto outcome = BackfillOutcome::accepted;
+        auto outcome_reason = std::string{};
+
         auto const state_before =
             compute_state_before(runtime.database.persistent_store, room_id, policy, envelope.prev_event_ids);
         if (!state_before.ok)
         {
             return false;
         }
+
+        auto state_before_map = build_auth_event_map_from_entries(
+            runtime.database.persistent_store, state_before.state, envelope.sender,
+            envelope.state_key.value_or(std::string{}), envelope.event_type, third_party_invite_token);
+        fill_create_from_room_state(state_before_map, runtime.database.persistent_store, room_id);
+        auto const state_before_decision =
+            events::authorize_event_against_auth_events(effective_pdu, policy, state_before_map);
+        if (!state_before_decision.allowed)
+        {
+            outcome = BackfillOutcome::rejected;
+            outcome_reason = "event auth denied against state before the event: " + state_before_decision.reason;
+        }
+
         auto const state_after =
-            compute_state_after(state_before.state, envelope.event_id, envelope.event_type, envelope.state_key);
+            outcome == BackfillOutcome::rejected
+                ? state_before.state
+                : compute_state_after(state_before.state, envelope.event_id, envelope.event_type, envelope.state_key);
 
         auto const stripe = std::hash<std::string>{}(std::string{room_id}) % room_mutex_stripe_count;
         auto stripe_guard = std::unique_lock{runtime.room_stripe_mutexes[stripe]};
@@ -2704,7 +2731,13 @@ namespace
         event.prev_event_ids = envelope.prev_event_ids;
         event.auth_event_ids = envelope.auth_event_ids;
         event.signatures = envelope.signatures;
-        event.status = "outlier";
+        event.status = outcome == BackfillOutcome::rejected ? "rejected" : "outlier";
+
+        if (outcome == BackfillOutcome::rejected)
+        {
+            LOG_WARNING("Backfilled event rejected at state-before check; event_id=" + envelope.event_id +
+                        " room_id=" + std::string{room_id} + " reason=" + outcome_reason);
+        }
 
         auto prepared = database::prepare_store_event_with_state(runtime.database.persistent_store, std::move(event),
                                                                  std::optional<database::PersistentStateEvent>{});

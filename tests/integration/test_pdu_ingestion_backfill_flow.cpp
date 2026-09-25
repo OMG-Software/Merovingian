@@ -285,7 +285,7 @@ auto seed_strict_power_levels(HomeserverRuntime& runtime, std::string const& roo
     auto const state_before = homeserver::compute_state_before(store, room_id, *policy, {prev_event_id});
     REQUIRE(state_before.ok);
     auto const state_after = homeserver::compute_state_after(state_before.state, strict_pl_id, "m.room.power_levels",
-                                                             std::optional<std::string>{});
+                                                             std::optional<std::string>{std::string{}});
     auto const group = homeserver::record_event_state(store, room_id, strict_pl_id, {prev_event_id}, state_after, true);
     REQUIRE(group.has_value());
     REQUIRE(homeserver::recompute_current_state(store, room_id, *policy));

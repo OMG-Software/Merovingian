@@ -41,8 +41,19 @@
   against its own `auth_events` — before being stored as an outlier with a
   recorded after-state group. If references remain missing after the capped
   attempt, the original PDU still returns `missing_prev_state` and is not
-  applied. Test: `tests/integration/test_pdu_ingestion_backfill_flow.cpp`
+  applied. Tests: `tests/integration/test_pdu_ingestion_backfill_flow.cpp`
   (`[pdu_ingestion][backfill]`).
+
+- **FIXED: backfilled missing events now run the step-5 state-before check
+  (HIGH).** `verify_and_store_backfilled_event` previously verified a fetched
+  event only against its own named `auth_events` (step 4) and stored it as an
+  outlier whose after-state included the event. It now also authorises the
+  event against the state before it, matching `ingest_pdu_event`. Events that
+  pass step 4 but fail step 5 are stored with status `rejected`; their
+  after-state group is the state before the event, so later events that
+  reference the rejected event cannot inherit its state. Test:
+  `tests/integration/test_pdu_ingestion_backfill_flow.cpp`
+  (`[pdu_ingestion][backfill][conformance]`).
 
 - **FIXED: push gateway and identity server clients skipped SSRF filtering on
   address resolution (MEDIUM).** `push_gateway_client.cpp` and
