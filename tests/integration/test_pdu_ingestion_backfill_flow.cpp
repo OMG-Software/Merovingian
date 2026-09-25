@@ -1238,3 +1238,113 @@ SCENARIO("ingest_pdu_event rejects a /state_ids snapshot containing a forged eve
         }
     }
 }
+
+// Spec: Matrix Server-Server API v1.19
+// Endpoint / Section: Backfilling and retrieving missing events
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#backfilling-and-retrieving-missing-events
+//
+// A /state_ids snapshot must only contain events that actually belong to the
+// room being backfilled. A malicious origin can list an event from a different
+// room where it holds power; if the snapshot accepted it, that foreign state
+// would become local state. The whole snapshot must be rejected instead.
+SCENARIO("ingest_pdu_event rejects a /state_ids snapshot containing an event from a different room",
+         "[pdu_ingestion][backfill][conformance]")
+{
+    GIVEN("a fresh runtime seeded with two rooms")
+    {
+        auto const path = unique_sqlite_path();
+        std::filesystem::remove(path);
+        auto started = merovingian::homeserver::start_runtime(config_with_sqlite(path));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+
+        auto const room_a_id = std::string{"!backfill-state-ids-wrong-room-a:local.example.org"};
+        auto const room_b_id = std::string{"!backfill-state-ids-wrong-room-b:local.example.org"};
+        seed_room_with_genesis_state_group(runtime, room_a_id);
+        seed_room_with_genesis_state_group(runtime, room_b_id);
+
+        auto const create_a_id = room_a_id + ":create";
+        auto const pl_a_id = room_a_id + ":pl";
+        auto const member_bob_a_id = room_a_id + ":member:bob";
+        auto const pl_b_id = room_b_id + ":pl";
+
+        auto const auth_event_ids = std::vector<std::string>{create_a_id, pl_a_id, member_bob_a_id};
+
+        auto const old_event = make_remote_message_pdu(room_a_id, {member_bob_a_id}, auth_event_ids, 4, 10);
+        auto const old_event_id = old_event.event_id;
+        auto const mid_event = make_remote_message_pdu(room_a_id, {old_event_id}, auth_event_ids, 5, 11);
+        auto const mid_event_id = mid_event.event_id;
+
+        auto const pdu = make_remote_message_pdu(room_a_id, {mid_event_id}, auth_event_ids, 6, 20);
+
+        AND_GIVEN("a mock sending server that returns a /state_ids snapshot with a foreign-room power_levels event")
+        {
+            auto certificate = merovingian::tests::tls_mock::write_test_tls_certificate("localhost");
+            auto tls_context_result = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
+                                                                                       certificate.private_key_file);
+            REQUIRE(tls_context_result.ok());
+            auto tls_context = std::move(*tls_context_result.context);
+            auto acceptor = merovingian::net::TcpAcceptor{};
+            REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+            auto const port = acceptor.bound_port();
+            REQUIRE(port > 0U);
+
+            runtime.test_forced_outbound_resolution[remote_server] =
+                merovingian::homeserver::TestOnlyForcedOutboundResolution{
+                    "localhost", port, {"127.0.0.1"}, certificate.certificate_pem};
+
+            runtime.federation.remote_key_resolver =
+                [](std::string_view server_name,
+                   std::string_view key_id) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+                if (server_name != remote_server || key_id != remote_key_id)
+                {
+                    return std::nullopt;
+                }
+                return remote_runtime();
+            };
+
+            // pdu_ids names the foreign room's power_levels event instead of the
+            // target room's. All three events are already in the store, so the
+            // fallback will not try to fetch them.
+            auto const snapshot_pdu_ids = std::vector<std::string>{create_a_id, member_bob_a_id, pl_b_id};
+            auto const state_ids_body = make_state_ids_response(snapshot_pdu_ids, auth_event_ids);
+            auto const mid_event_body = make_event_transaction_response(mid_event.json, remote_server);
+            auto const path_responses = std::vector<std::pair<std::string, std::string>>{
+                {"POST /_matrix/federation/v1/get_missing_events/",
+                 merovingian::tests::tls_mock::json_http_response("200 OK", make_empty_get_missing_events_response())},
+                {"GET /_matrix/federation/v1/event/",
+                 merovingian::tests::tls_mock::json_http_response("200 OK", mid_event_body)                          },
+                {"GET /_matrix/federation/v1/state_ids/",
+                 merovingian::tests::tls_mock::json_http_response("200 OK", state_ids_body)                          },
+                {"GET /_matrix/federation/v1/event/",
+                 merovingian::tests::tls_mock::json_http_response("200 OK", mid_event_body)                          },
+            };
+            auto captured_requests = std::vector<std::string>{};
+            auto server_thread = std::thread{[&]() {
+                run_body_aware_dispatch_tls_server(acceptor, tls_context, path_responses, &captured_requests);
+            }};
+            auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
+            std::ignore = join_server;
+
+            WHEN("the PDU is ingested")
+            {
+                auto const result = merovingian::homeserver::ingest_pdu_event(runtime, pdu);
+
+                THEN("the PDU is rejected with missing_prev_state because the snapshot is malformed")
+                {
+                    REQUIRE(result.status == PduIngestionStatus::missing_prev_state);
+                }
+
+                THEN("the foreign-room event was not used as state in room A")
+                {
+                    auto const group =
+                        merovingian::database::find_event_state_group(runtime.database.persistent_store, mid_event_id);
+                    REQUIRE(!group.has_value());
+                }
+            }
+
+            std::filesystem::remove(path);
+        }
+    }
+}
