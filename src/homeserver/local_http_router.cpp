@@ -3021,6 +3021,12 @@ namespace
                 {
                     return false;
                 }
+                if (it->room_id != room_id)
+                {
+                    LOG_WARNING("backfill_state_ids_snapshot: snapshot event belongs to a different room; room_id=" +
+                                std::string{room_id} + " event_id=" + id + " event_room_id=" + it->room_id);
+                    return false;
+                }
                 auto const parsed = canonicaljson::parse_lossless(it->json);
                 if (parsed.error != canonicaljson::ParseError::none)
                 {
