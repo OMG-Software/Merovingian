@@ -169,7 +169,7 @@ auto seed_room_with_genesis_state_group(HomeserverRuntime& runtime, std::string 
                                           merovingian::canonicaljson::Object content,
                                           std::vector<std::string> const& prev_event_ids,
                                           std::vector<std::string> const& auth_event_ids, std::int64_t depth,
-                                          std::int64_t ts) -> std::string
+                                          std::int64_t ts, std::string_view key_seed = remote_key_seed) -> std::string
 {
     auto prev = canonicaljson::Array{};
     for (auto const& id : prev_event_ids)
@@ -200,7 +200,7 @@ auto seed_room_with_genesis_state_group(HomeserverRuntime& runtime, std::string 
     REQUIRE(serialized.error == canonicaljson::CanonicalJsonError::none);
 
     return merovingian::federation::test::make_signed_event_json(serialized.output, remote_server, remote_key_id,
-                                                                 remote_key_seed, room_version);
+                                                                 key_seed, room_version);
 }
 
 [[nodiscard]] auto make_remote_message_json(std::string const& room_id, std::vector<std::string> const& prev_event_ids,
@@ -219,10 +219,11 @@ auto seed_room_with_genesis_state_group(HomeserverRuntime& runtime, std::string 
                                          merovingian::canonicaljson::Object content,
                                          std::vector<std::string> const& prev_event_ids,
                                          std::vector<std::string> const& auth_event_ids, std::int64_t depth,
-                                         std::int64_t ts) -> InboundPduEnvelope
+                                         std::int64_t ts, std::string_view key_seed = remote_key_seed)
+    -> InboundPduEnvelope
 {
     auto const signed_json = make_remote_event_json(room_id, type, state_key, sender, std::move(content),
-                                                    prev_event_ids, auth_event_ids, depth, ts);
+                                                    prev_event_ids, auth_event_ids, depth, ts, key_seed);
     REQUIRE(!signed_json.empty());
     auto envelope = merovingian::federation::parse_inbound_pdu_envelope(signed_json, room_version);
     REQUIRE(envelope.has_value());
@@ -997,6 +998,239 @@ SCENARIO("ingest_pdu_event falls back to /state_ids when /get_missing_events can
                     REQUIRE(has_get_missing);
                     REQUIRE(has_state_ids);
                     REQUIRE(has_event);
+                }
+            }
+
+            std::filesystem::remove(path);
+        }
+    }
+}
+
+// Spec: Matrix Server-Server API v1.19
+// Endpoint / Section: Backfilling and retrieving missing events
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#backfilling-and-retrieving-missing-events
+//
+// ADR-0064 phase C2 caps bound the size of a /state_ids response the server
+// will accept. An oversized pdu_ids list is treated as an unverifiable
+// snapshot and the fallback fails closed, leaving the PDU in
+// missing_prev_state rather than materialising a potentially malicious state.
+SCENARIO("ingest_pdu_event rejects an oversized /state_ids pdu_ids list during backfill",
+         "[pdu_ingestion][backfill][conformance]")
+{
+    GIVEN("a fresh runtime seeded with a room genesis state group")
+    {
+        auto const path = unique_sqlite_path();
+        std::filesystem::remove(path);
+        auto started = merovingian::homeserver::start_runtime(config_with_sqlite(path));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+
+        auto const room_id = std::string{"!backfill-state-ids-oversized:local.example.org"};
+        seed_room_with_genesis_state_group(runtime, room_id);
+
+        auto const create_id = room_id + ":create";
+        auto const pl_id = room_id + ":pl";
+        auto const member_bob_id = room_id + ":member:bob";
+        auto const auth_event_ids = std::vector<std::string>{create_id, pl_id, member_bob_id};
+
+        auto const old_event = make_remote_message_pdu(room_id, {member_bob_id}, auth_event_ids, 4, 10);
+        auto const old_event_id = old_event.event_id;
+        auto const mid_event = make_remote_message_pdu(room_id, {old_event_id}, auth_event_ids, 5, 11);
+        auto const mid_event_id = mid_event.event_id;
+
+        auto const pdu = make_remote_message_pdu(room_id, {mid_event_id}, auth_event_ids, 6, 20);
+
+        AND_GIVEN("a mock sending server that returns a /state_ids response exceeding the pdu_ids cap")
+        {
+            auto certificate = merovingian::tests::tls_mock::write_test_tls_certificate("localhost");
+            auto tls_context_result = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
+                                                                                       certificate.private_key_file);
+            REQUIRE(tls_context_result.ok());
+            auto tls_context = std::move(*tls_context_result.context);
+            auto acceptor = merovingian::net::TcpAcceptor{};
+            REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+            auto const port = acceptor.bound_port();
+            REQUIRE(port > 0U);
+
+            runtime.test_forced_outbound_resolution[remote_server] =
+                merovingian::homeserver::TestOnlyForcedOutboundResolution{
+                    "localhost", port, {"127.0.0.1"}, certificate.certificate_pem};
+
+            runtime.federation.remote_key_resolver =
+                [](std::string_view server_name,
+                   std::string_view key_id) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+                if (server_name != remote_server || key_id != remote_key_id)
+                {
+                    return std::nullopt;
+                }
+                return remote_runtime();
+            };
+
+            auto oversized_pdu_ids = std::vector<std::string>{};
+            oversized_pdu_ids.reserve(1001U);
+            for (std::size_t i = 0U; i < 1001U; ++i)
+            {
+                oversized_pdu_ids.push_back(room_id + ":oversized:" + std::to_string(i));
+            }
+            auto const state_ids_body = make_state_ids_response(oversized_pdu_ids, auth_event_ids);
+            auto const mid_event_body = make_event_transaction_response(mid_event.json, remote_server);
+            auto const path_responses = std::vector<std::pair<std::string, std::string>>{
+                {"POST /_matrix/federation/v1/get_missing_events/",
+                 merovingian::tests::tls_mock::json_http_response("200 OK", make_empty_get_missing_events_response())},
+                {"GET /_matrix/federation/v1/event/",
+                 merovingian::tests::tls_mock::json_http_response("200 OK", mid_event_body)                          },
+                {"GET /_matrix/federation/v1/state_ids/",
+                 merovingian::tests::tls_mock::json_http_response("200 OK", state_ids_body)                          },
+            };
+            auto captured_requests = std::vector<std::string>{};
+            auto server_thread = std::thread{[&]() {
+                run_body_aware_dispatch_tls_server(acceptor, tls_context, path_responses, &captured_requests);
+            }};
+            auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
+            std::ignore = join_server;
+
+            WHEN("the PDU is ingested")
+            {
+                auto const result = merovingian::homeserver::ingest_pdu_event(runtime, pdu);
+
+                THEN("the PDU is rejected with missing_prev_state")
+                {
+                    REQUIRE(result.status == PduIngestionStatus::missing_prev_state);
+                }
+
+                THEN("the /state_ids endpoint was still consulted")
+                {
+                    auto has_state_ids = false;
+                    for (auto const& req : captured_requests)
+                    {
+                        if (req.find("GET /_matrix/federation/v1/state_ids/") != std::string::npos)
+                        {
+                            has_state_ids = true;
+                        }
+                    }
+                    REQUIRE(has_state_ids);
+                }
+            }
+
+            std::filesystem::remove(path);
+        }
+    }
+}
+
+// Spec: Matrix Server-Server API v1.19
+// Endpoint / Section: Backfilling and retrieving missing events
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#backfilling-and-retrieving-missing-events
+//
+// A /state_ids snapshot is only usable if every named event can be fetched and
+// verified. A forged event whose signature does not validate must be dropped
+// from the snapshot, causing the fallback to fail closed.
+SCENARIO("ingest_pdu_event rejects a /state_ids snapshot containing a forged event",
+         "[pdu_ingestion][backfill][conformance]")
+{
+    GIVEN("a fresh runtime seeded with a room genesis state group")
+    {
+        auto const path = unique_sqlite_path();
+        std::filesystem::remove(path);
+        auto started = merovingian::homeserver::start_runtime(config_with_sqlite(path));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+
+        auto const room_id = std::string{"!backfill-state-ids-forged:local.example.org"};
+        seed_room_with_genesis_state_group(runtime, room_id);
+
+        auto const create_id = room_id + ":create";
+        auto const pl_id = room_id + ":pl";
+        auto const member_bob_id = room_id + ":member:bob";
+        auto const auth_event_ids = std::vector<std::string>{create_id, pl_id, member_bob_id};
+
+        auto const old_event = make_remote_message_pdu(room_id, {member_bob_id}, auth_event_ids, 4, 10);
+        auto const old_event_id = old_event.event_id;
+        auto const mid_event = make_remote_message_pdu(room_id, {old_event_id}, auth_event_ids, 5, 11);
+        auto const mid_event_id = mid_event.event_id;
+
+        auto const pdu = make_remote_message_pdu(room_id, {mid_event_id}, auth_event_ids, 6, 20);
+
+        AND_GIVEN("a mock sending server that returns a /state_ids snapshot with a forged state event")
+        {
+            auto certificate = merovingian::tests::tls_mock::write_test_tls_certificate("localhost");
+            auto tls_context_result = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
+                                                                                       certificate.private_key_file);
+            REQUIRE(tls_context_result.ok());
+            auto tls_context = std::move(*tls_context_result.context);
+            auto acceptor = merovingian::net::TcpAcceptor{};
+            REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+            auto const port = acceptor.bound_port();
+            REQUIRE(port > 0U);
+
+            runtime.test_forced_outbound_resolution[remote_server] =
+                merovingian::homeserver::TestOnlyForcedOutboundResolution{
+                    "localhost", port, {"127.0.0.1"}, certificate.certificate_pem};
+
+            runtime.federation.remote_key_resolver =
+                [](std::string_view server_name,
+                   std::string_view key_id) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+                if (server_name != remote_server || key_id != remote_key_id)
+                {
+                    return std::nullopt;
+                }
+                return remote_runtime();
+            };
+
+            auto const wrong_seed = std::string{"pdu-backfill-test-forged-wrong-seed"};
+            auto forged_pl_content = canonicaljson::Object{};
+            forged_pl_content.push_back(canonicaljson::make_member(
+                "users", canonicaljson::Value{canonicaljson::Object{canonicaljson::make_member(
+                             "@bob:remote.example.org", canonicaljson::Value{std::int64_t{100}})}}));
+            auto const forged_pl_pdu =
+                make_remote_event_pdu(room_id, "m.room.power_levels", std::string{}, "@bob:remote.example.org",
+                                      std::move(forged_pl_content), {pl_id}, auth_event_ids, 4, 10, wrong_seed);
+            auto const forged_pl_id = forged_pl_pdu.event_id;
+
+            auto const snapshot_pdu_ids = std::vector<std::string>{create_id, member_bob_id, forged_pl_id};
+            auto const state_ids_body = make_state_ids_response(snapshot_pdu_ids, auth_event_ids);
+            auto const mid_event_body = make_event_transaction_response(mid_event.json, remote_server);
+            auto const forged_pl_body = make_event_transaction_response(forged_pl_pdu.json, remote_server);
+            auto const path_responses = std::vector<std::pair<std::string, std::string>>{
+                {"POST /_matrix/federation/v1/get_missing_events/",
+                 merovingian::tests::tls_mock::json_http_response("200 OK", make_empty_get_missing_events_response())},
+                {"GET /_matrix/federation/v1/event/",
+                 merovingian::tests::tls_mock::json_http_response("200 OK", mid_event_body)                          },
+                {"GET /_matrix/federation/v1/state_ids/",
+                 merovingian::tests::tls_mock::json_http_response("200 OK", state_ids_body)                          },
+                {"GET /_matrix/federation/v1/event/",
+                 merovingian::tests::tls_mock::json_http_response("200 OK", forged_pl_body)                          },
+            };
+            auto captured_requests = std::vector<std::string>{};
+            auto server_thread = std::thread{[&]() {
+                run_body_aware_dispatch_tls_server(acceptor, tls_context, path_responses, &captured_requests);
+            }};
+            auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
+            std::ignore = join_server;
+
+            WHEN("the PDU is ingested")
+            {
+                auto const result = merovingian::homeserver::ingest_pdu_event(runtime, pdu);
+
+                THEN("the PDU is rejected with missing_prev_state")
+                {
+                    REQUIRE(result.status == PduIngestionStatus::missing_prev_state);
+                }
+
+                THEN("the forged snapshot event is not stored")
+                {
+                    auto const* event = [&]() -> merovingian::database::PersistentEvent const* {
+                        for (auto const& e : runtime.database.persistent_store.events)
+                        {
+                            if (e.event_id == forged_pl_id)
+                            {
+                                return &e;
+                            }
+                        }
+                        return nullptr;
+                    }();
+                    REQUIRE(event == nullptr);
                 }
             }
 
