@@ -71,6 +71,7 @@
 * [0066 - UI-auth password checks share the /login failed-login counter](0066-uia-password-checks-share-login-failed-login-counter.md)
 * [0067 - Enforce federation PDU size and field-count limits before hashing](0067-enforce-federation-pdu-size-and-field-limits-before-hashing.md)
 * [0068 - Random media IDs and a per-row legacy-endpoint freeze marker](0068-random-media-ids-and-legacy-endpoint-freeze.md)
+* [0069 - Spec-conformant /state_ids fallback via /event_auth](0069-spec-conformant-state-ids-fallback-via-event-auth.md)
 
 ## Rejected Records
 
