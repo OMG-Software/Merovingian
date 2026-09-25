@@ -3051,12 +3051,16 @@ namespace
                 auto const* state_key = string_member(*obj, "state_key");
                 if (type == nullptr || state_key == nullptr)
                 {
-                    continue; // /state_ids should only name state events
+                    LOG_WARNING("backfill_state_ids_snapshot: snapshot event is not a state event; room_id=" +
+                                std::string{room_id} + " event_id=" + id);
+                    return false;
                 }
                 auto const key = *type + '\0' + *state_key;
                 if (!seen_keys.insert(key).second)
                 {
-                    continue;
+                    LOG_WARNING("backfill_state_ids_snapshot: duplicate (type, state_key) in snapshot; room_id=" +
+                                std::string{room_id} + " key=" + *type + " / " + *state_key);
+                    return false;
                 }
                 snapshot_state.push_back({{}, *type, *state_key, id});
             }
