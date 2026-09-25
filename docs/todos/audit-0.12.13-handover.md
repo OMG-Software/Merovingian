@@ -1,376 +1,268 @@
-# Handover: outstanding work from the 0.12.12 security audit
+# Handover: remaining work on the 0.12.13 security branch
 
-Branch: `fix/audit-critical-high-0.12.13` (pushed to origin; 0.12.13 in
-`CHANGELOG.md`, `meson.build` still says `0.12.12` — see "Before merge").
-State at handover (2026-09-24): full suite green, `Ok: 54`, `Fail: 0`, no
-timeouts, verified by reading `build-wsl/meson-logs/testlog.txt`.
+Branch: `fix/audit-critical-high-0.12.13`. `meson.build` still says `0.12.12`
+(see "Before merge"). State at handover (2026-09-25): full suite green,
+`Ok: 54`, `Fail: 0`, no timeouts, verified by reading
+`build-wsl/meson-logs/testlog.txt`.
 
 This file is for an agent picking the work up cold. Read it in full before
-starting. Everything below was verified against the branch tip on the date
-above; re-check a location with `grep` before editing it, because line numbers
-drift.
+starting. Every location below was checked against the branch tip on the date
+above; re-check with `grep` before editing, because line numbers drift.
 
 ## Read first
 
 1. `AGENTS.md` (root) — binding project rules, especially "Verifying Work".
 2. The module `AGENTS.md` for whatever you touch (`src/<module>/AGENTS.md`).
-3. The ADRs this branch added: `docs/adr/0062` (federation worker holds no
-   secret files), `0063` (fail closed on unreachable state-res auth-chain
-   events), `0064` (spec-conformant PDU ingestion with delta state groups).
+3. ADRs added on this branch: `docs/adr/0062` to `0068` — above all `0064`
+   (spec-conformant PDU ingestion) for items 1, 2 and 12.
 4. `docs/matrix-v1.19-spec/` — the only authority. Not Synapse, not memory.
 
-## What is already done on this branch (do not redo)
+Next free numbers: ADR **0069** (add it to `docs/adr/index.md`), migration
+**017** (must be classified for the federation worker's table allowlist — a
+source-tree test fails otherwise).
 
-- Thumbnail decoder hardening is fail-closed.
-- Finding N1: the federation worker can no longer reach the server signing
-  key — IPC key over an inherited fd (ADR-0062 part 1), a separate
-  least-privilege PostgreSQL login over an fd with a table allowlist (part 2),
-  and Linux Landlock with a secret-path overlap guard (part 3). This also
-  resolves the audit's "worker has unrestricted `openat`" finding.
-- State resolution v2/v2.1: auth difference, v12 conflicted state subgraph,
-  empty-start map, power ordering read from each event's own `auth_events`,
-  v12 create event derived from the room ID.
-- ADR-0064 phases A, B1, B2: delta state groups (migration 015), state
-  resolution running in production over forward extremities, receipt checks in
-  spec order on both `/send` and the membership path (hash mismatch redacts;
-  auth against `auth_events`, state-before, then current state; rejected and
-  soft-failed statuses; client-delivery filtering).
+## Already done on this branch (do not redo)
+
+Thumbnail decoder fail-closed; N1 (the federation worker cannot reach the
+signing key: IPC key over an fd, least-privilege PostgreSQL login, Landlock);
+state resolution v2/v2.1 fixes; ADR-0064 phases A, B1, B2 and the first half
+of C (`/get_missing_events` + `/event/{id}` backfill); H1 (master key file
+permission checks); H2 (per-channel IPC in-flight cap, ADR-0065); M1 (SSRF
+filtering for push and identity clients); M2 (password re-auth shares the
+login lockout, ADR-0066); M3 (PDU size and field limits, ADR-0067); M4
+(`m.federate` for room versions 1–5); M5 (random media IDs and legacy
+endpoint freeze, ADR-0068, migration 016).
 
 ## Binding rules and lessons from this branch
 
-These are not generic advice. Each one caused a real defect or a wasted cycle
-on this branch.
+Each of these caused a real defect or a wasted cycle here.
 
 - **Tests first, and record the failure.** Commit the test, build, and quote
-  the failing assertion before implementing. Several agents skipped this and
-  delivered code whose tests never proved anything.
+  the failing assertion before implementing.
 - **Commit at every compiling step.** Agents on this branch lost all their
-  work to usage-limit interruptions three times because nothing was committed.
-- **Never relax a check to make a test pass.** An agent relaxed the room-v12
-  rule forbidding `m.room.create` in `auth_events` (rooms/v12.md rule 3.2
-  says reject) to fix hand-built fixtures; it was reverted. When a correct
-  check breaks a fixture, fix the fixture. When it breaks a production path,
-  find the real bug — here it was that no v12 room could resolve a fork.
-- **Injected-ops mocks model policy, not the kernel.** The Landlock unit tests
-  all passed while the real kernel rejected every rule (`EINVAL` for directory
-  rights on a file, `EPERM` without `no_new_privs`, `SIGSYS` because the worker
-  inherits main's seccomp filter across `execve`). Anything touching kernel,
-  filesystem, or network contracts needs a real-environment test.
-- **A test that SKIPs is not a pass.** The real-kernel Landlock test skipped
-  on every refusal, hiding a real bug. Skip only on the precondition itself.
-- **Check that code is reachable before checking it is correct.** The state
-  resolver was fixed and green for a phase before anyone noticed production
-  never called it.
-- **Never clear `FD_CLOEXEC` in the parent.** `main` is multithreaded; place
-  inherited fds with `posix_spawn_file_actions_adddup2` onto fixed child fd
-  numbers (see `make_worker_secret_pipe`, `src/homeserver/worker_supervisor.cpp`).
-- **Security properties belong in code, not comments.** The push gateway
-  client's comment claims "SSRF-safe resolution" over a raw `getaddrinfo`
-  (item M1 below).
-- Project rules: RAII, no raw owning pointers, no `new`/`delete`/`malloc`,
-  `std::ignore` not `(void)`, namespace `merovingian::<module>`, BDD
-  `SCENARIO`/`GIVEN`/`WHEN`/`THEN`, update docs and `CHANGELOG.md` (0.12.13
-  section) with every change, ADR for any decision with a rejected
-  alternative (next free number: **0065**; add it to `docs/adr/index.md`).
+  work to interruptions three times because nothing was committed.
+- **Never relax a check to make a test pass.** When a correct check breaks a
+  fixture, fix the fixture; when it breaks a production path, find the real
+  bug. If you believe a check is wrong, stop and show the spec text.
+- **Mocks model policy, not the environment.** Anything touching the kernel,
+  filesystem, or network needs a real-environment test. A SKIP is not a pass.
+- **Check code is reachable before checking it is correct.**
+- **Never hold `runtime.mutex` across a network call** (see
+  `src/homeserver/AGENTS.md`, "The runtime lock and blocking calls").
+- **Never clear `FD_CLOEXEC` in the parent**; place inherited fds with
+  `posix_spawn_file_actions_adddup2` (see `make_worker_secret_pipe`).
+- Project rules: RAII, no raw owning pointers (prefer references), no
+  `new`/`delete`/`malloc`, `std::ignore` not `(void)`, namespace
+  `merovingian::<module>`, BDD `SCENARIO`/`GIVEN`/`WHEN`/`THEN` tests, update
+  docs and the `CHANGELOG.md` 0.12.13 section with every change, ADR for any
+  decision with a rejected alternative.
 - A repo hook reformats whole C++ files on edit. That is accepted; do not work
   around it through the shell.
 
 ## Verification (every item)
 
-1. `python build.py wsl` **in the background** (it takes 9+ minutes and
-   exceeds the 10-minute foreground limit). Wait for it to finish.
+1. `python build.py wsl` **in the background** (9+ minutes; exceeds the
+   10-minute foreground limit). Wait for it to finish.
 2. Read `Ok:` / `Fail:` / `Timeout:` from the end of
    `build-wsl/meson-logs/testlog.txt`. `build.py` exits 0 even when suites
    fail. A timeout is a failure.
-3. Prove new tests ran by tag, e.g.
-   `wsl ./build-wsl/tests/merovingian-unit-tests "[your_tag]"`. Catch2 names
-   scenarios `"Scenario: x"`, so filter by tag.
-4. For faster iteration, `wsl ninja -C build-wsl tests/merovingian-unit-tests`
+3. Prove new tests ran with a tag-filtered run, e.g.
+   `wsl ./build-wsl/tests/merovingian-unit-tests "[your_tag]"`.
+4. Faster iteration: `wsl ninja -C build-wsl tests/merovingian-unit-tests`
    builds one binary; still finish with a full `build.py` run.
-5. Known pre-existing flake, not yours:
-   `tests/integration/test_http_server_listener_flow.cpp` asserts
-   `FD_CLOEXEC` on an accepted socket it finds by scanning `/proc/self/fd`;
-   under parallel load it can pick the wrong descriptor. It passes alone. Fix
-   it only if you have time (match on the socket's peer and local address,
-   not the port alone).
 
 ---
 
-## Work items, in recommended order
+## Remaining items, in recommended order
 
-### H1 (high): the master key file skips the secret-file checks
+### 1 (high, security): backfilled events skip the state-before check
 
-- **Problem.** Every other secret file (database URI files, TLS private keys,
-  registration token) is checked at start-up for owner-only, non-executable,
-  regular-file, TOCTOU-safe metadata. The master key file — the root secret
-  every derived key comes from — is opened with a plain `std::ifstream` and
-  never checked. A group- or world-readable master key, or a symlink swapped
-  in, is accepted.
-- **Where.** `validate_existing_secret_files`, `src/main.cpp:196`
-  (`master_key_file` appears nowhere in `src/main.cpp`);
-  `load_master_key_material`, `src/crypto/master_key.cpp:31`.
-- **Fix.** Add `security.secrets.master_key_file` to
-  `validate_existing_secret_files` using the existing
-  `validate_existing_secret_file_metadata` helper, required when set. Since
-  N1, only the main process reads this file; the worker receives a derived key
-  over an fd, so no worker change is needed.
-- **Tests (`[secret_files]` or the existing tag for that function).** A
-  master key file with group/other permissions is refused at start-up; a
-  symlinked one is refused; an owner-only `0400` regular file is accepted.
-- **Docs.** `docs/hardening.md` (secret file permissions list),
-  `docs/user-manual.md`, `CHANGELOG.md`. Note operators upgrading may need
-  `chmod 0400` on the master key.
+- **Problem.** Phase C fetches missing events and stores them as outliers
+  with a recorded after-state group. It checks each fetched event against its
+  own named `auth_events`, but never against the state immediately **before**
+  it (receipt check step 5), and then records an after-state that **includes
+  the event itself**. A malicious origin can craft an event its chosen
+  `auth_events` permit (for example an old power-levels event from when it
+  held power) but that the real prior state forbids. Sent directly, step 5
+  rejects it. Delivered as a "missing" event, it becomes part of the
+  state-before of the next PDU that references it, and can reach current state
+  through resolution.
+- **Where.** `verify_and_store_backfilled_event`,
+  `src/homeserver/local_http_router.cpp:2557`. The auth-events check ends just
+  before `compute_state_before` / `compute_state_after` (`state_after` at
+  about line 2677); the state group is recorded at about line 2726. Compare
+  `ingest_pdu_event`, which runs steps 4, 5 and 6 in order.
+- **Spec.** `server-server-api.md`, "Checks performed on receipt of a PDU"
+  step 5, and "Rejection": a rejected event is stored so later events that
+  reference it can be authorised, but "not updating with the rejected event"
+  — its after-state is the state before it.
+- **Fix.** After computing `state_before`, authorise the event against it
+  (build the map with `build_auth_event_map_from_entries` and
+  `fill_create_from_room_state`, as `ingest_pdu_event` does). On failure,
+  store it with status `rejected` and record its after-state group as
+  `state_before` (not including itself). Do not simply drop it: later events
+  may legitimately reference a rejected event.
+- **Tests (tag `[backfill]`, plus a conformance case citing step 5).** A
+  fetched event that passes its own `auth_events` but fails the state before
+  it is stored as `rejected`, its after-state excludes it, and a PDU that
+  lists it as a `prev_event` does not see its state. Record this failing
+  first. Add the positive case: a fetched event passing both checks is stored
+  as an outlier whose after-state includes it.
 
-### H2 (high): main's IPC handler pool has no queue cap
+### 2 (high): the `/state_ids` fallback of phase C was never built
 
-- **Problem.** Requests the federation worker sends to main (`pdu_ingest`,
-  `sign_request`, `membership_ingest`) are queued on a thread pool with no
-  depth cap. ADR-0027 left it unbounded on the premise that "their producer
-  is the local supervisor, not a remote peer". That premise is false: the
-  producer is the worker, the least-trusted process. A compromised worker can
-  flood main until it runs out of memory, taking down client traffic too.
-- **Where.** `handler_pool_{cfg_.relay_threads}`,
-  `src/homeserver/worker_pool.cpp:791`. `net::ThreadPool` takes a
-  `max_queue_depth` (0 = unbounded) — see `include/merovingian/net/thread_pool.hpp`.
-- **Decided by the user (do not re-litigate).** Supersede ADR-0027 for the
-  IPC pools with a **per-channel cap on in-flight requests**; a request over
-  the cap gets an **explicit error reply**. The worker then answers the remote
-  server with a 5xx and the remote retries the transaction, so nothing is lost
-  silently — which was ADR-0027's reason for staying unbounded.
-- **Work.** Write ADR-0065 (status accepted; mark ADR-0027 "superseded by
-  ADR-0065" for the IPC pools only — the connection-queue half of 0027 still
-  stands; never delete or renumber). Add a config key for the cap with a
-  sensible default, classified restart-required in
-  `src/config/reload_policy.cpp` / `reload_plan.cpp`. Make sure the worker
-  maps the error reply to a 5xx toward the remote, not a 4xx (a 4xx would make
-  the remote drop the PDU).
-- **Tests.** A channel at the cap rejects the next request with the explicit
-  error and does not queue it; requests below the cap are processed; the
-  worker turns the error into a retryable 5xx; a worker flooding requests
-  cannot grow main's queue past the cap (a concurrency scenario — see
-  `tests/unit/AGENTS.md` on thread-safety tests; assert on the main thread
-  only, Catch2 assertions are not thread-safe).
+- **Problem.** The design decided in ADR-0064 is: `/get_missing_events`
+  first; if a gap remains, fetch `/state_ids` and `/event_auth` at the event
+  from the sending server, fetch any events we lack, verify **every** one
+  (signature, hash, auth against its own `auth_events`, and item 1's
+  state-before check), drop any that fail, and use the verified set as a
+  snapshot state group for the state before the event. If the claimed state
+  cannot be verified, reject the PDU. Only the first half exists, so a gap
+  that `/get_missing_events` cannot fill still leaves the PDU at
+  `missing_prev_state` and the room stalls.
+- **Where.** `backfill_missing_pdu_references`,
+  `src/homeserver/local_http_router.cpp:2741`; the existing fetchers
+  `fetch_get_missing_events` (`:2439`) and `fetch_event_by_id` (`:2514`) show
+  how to build and sign an outbound request and release locks around it. The
+  store API for a snapshot group is `create_or_reuse_state_group`.
+- **Constraints.** Everything is driven by untrusted remote input. Bound the
+  number of state IDs and auth events fetched per PDU (add constants next to
+  `k_max_backfill_outbound_calls` at `:2375`), fail closed, and never hold
+  `runtime.mutex` across a network call.
+- **Tests (tag `[backfill]`).** A gap `/get_missing_events` cannot fill falls
+  back to `/state_ids`; a claimed state naming an event that fails any check
+  has that event dropped; state that cannot be verified leads to rejection;
+  a server returning an enormous state set hits the cap and the PDU is
+  rejected, not partially applied.
+- **Docs.** ADR-0064's phase C heading currently says "(shipped)" while the
+  body says only "the first half" is implemented. Fix the heading now, and
+  record the fallback when it lands.
 
-### C (high): ADR-0064 phase C — fetch missing events, then verified state
-
-- **Problem.** An inbound PDU whose `prev_events` (or named `auth_events`)
-  we don't have returns `PduIngestionStatus::missing_prev_state` and is not
-  stored. That is correct and fail-closed, but a gap in room history is never
-  repaired, so a room can stall.
-- **Decided by the user (see ADR-0064, do not re-litigate).** First
-  `/get_missing_events` from the sending server, bounded in event count and
-  depth. If a gap remains, fetch `/state_ids` and `/event_auth` at the event
-  from the server that sent the PDU, fetch any events we lack, and run
-  signature, hash, and auth checks on **every** returned event (each against
-  its own `auth_events`) before using the set as state. An event that fails is
-  dropped from the claimed state. If the claimed state cannot be verified,
-  reject the PDU — never apply it on unverified data. Cap all outbound fetches
-  per PDU and per transaction.
-- **Where to start.** Grep `missing_prev_state` (13 sites in `src/`); the
-  receipt path is `ingest_pdu_event` and the membership acceptor in
-  `src/homeserver/local_http_router.cpp`, with state bookkeeping in
-  `src/homeserver/state_bookkeeping.cpp`. We already SERVE these endpoints
-  (`src/federation/event_query.cpp`); the outbound client side needs building
-  or finding — check `src/homeserver/room_service.cpp` and the federation
-  outbound path first. Outbound calls go out through the worker/proxy path
-  like the rest of federation; read `src/federation_worker/AGENTS.md` for the
-  relay rules.
-- **Constraints.** Never hold `runtime.mutex` across a network call (see
-  `src/homeserver/AGENTS.md`, "The runtime lock and blocking calls" — this
-  has shipped as a server-wide stall three times). Everything is driven by
-  untrusted remote input: bound every loop and fetch, fail closed.
-  Fetched state must be stored as a snapshot state group (the phase A store
-  API: `create_or_reuse_state_group`) and events not on our timeline as
-  status `outlier`.
-- **Tests (`[pdu_ingestion]`, conformance with spec citations).** A PDU with
-  one missing prev_event is fetched via `/get_missing_events` and then
-  accepted; a gap that `/get_missing_events` cannot fill falls back to
-  `/state_ids`; a `/state_ids` response naming an event that fails its
-  signature, hash, or auth check has that event dropped; a response that
-  cannot be verified leads to rejection, not acceptance; the fetch caps hold
-  against a malicious server that returns endless events. Use the existing
-  mock remote servers in the federated-join integration tests.
-- **Docs.** ADR-0064 (mark phase C shipped, with implementation notes),
-  `docs/event-engine.md`, `docs/threat-model.md`, `CHANGELOG.md`, and remove
-  the "Phase C has not started" note from `docs/todos/capability-gaps.md`.
-
-### M1 (medium): push gateway and identity server clients skip SSRF filtering
-
-- **Problem.** Both clients resolve the target host with the raw resolver,
-  which never applies the private/loopback address filter, despite comments
-  claiming "SSRF-safe resolution". Any user can register a pusher whose URL
-  resolves to `127.0.0.1`, `169.254.169.254`, or RFC 1918 space. Outbound TLS
-  verification (`VERIFYPEER`/`VERIFYHOST`) is currently the only thing stopping
-  a full SSRF; it still allows blind internal port probing.
-- **Where.** `discovery_.upstream().lookup_addresses(...)` at
-  `src/push/push_gateway_client.cpp:332` and
-  `src/identity/identity_client.cpp:318`. The filter is `address_set_allowed`,
-  `src/federation/server_discovery.cpp:191`; the classifiers are
-  `ipv4_is_private_or_loopback` / `ipv6_is_private_or_loopback`,
-  `src/federation/security.cpp:50` and `:58`.
-- **Fix.** Provide a filtering resolution path and use it in both clients.
-  Better: make it hard to call the unfiltered resolver by accident (e.g. a
-  type only the filtering path can produce). The appservice client's
-  unfiltered use is intentional (operator-configured URL) — leave it, and say
-  so in a comment.
-- **Also (low, same change):** the classifiers miss CGNAT `100.64.0.0/10`,
-  the NAT64 prefix `64:ff9b::/96`, and multicast/reserved ranges. Add them
-  with tests.
-- **Tests.** A pusher whose host resolves to loopback, link-local metadata,
-  RFC 1918, or CGNAT is refused before any connection; a public address is
-  allowed. Use the existing test-forced-resolution seam in the push client.
-
-### M2 (medium): password re-authentication bypasses the login lockout
-
-- **Problem.** `/login` has a progressive lockout; the six endpoints that
-  re-check a password (cross-signing key upload, password change, account
-  deactivation, device deletion, and two more) go straight to the Argon2id
-  check with no lockout. A stolen access token without the password allows
-  about 90 guesses a minute indefinitely; a correct guess can replace the
-  cross-signing master key.
-- **Where.** `verify_local_user_password`,
-  `src/homeserver/auth_service.cpp:1790` (6 callers in `client_server.cpp`);
-  the lockout functions `failed_login_lockout_remaining_ms` /
-  `record_failed_login` in the same file.
-- **Fix.** Apply the lockout check and failure recording inside
-  `verify_local_user_password`, so every caller gets them. Decide whether
-  re-auth failures share the `/login` counter (recommended: yes — an attacker
-  should not get a separate budget) and record that in the code comment.
-- **Tests.** Repeated wrong passwords through each endpoint trip the
-  lockout; a correct password during lockout is still refused; `/login` and
-  re-auth share the counter.
-
-### M3 (medium): no size or field-length limits on federation PDUs
-
-- **Problem.** The spec caps an event at 65536 bytes and `sender`, `room_id`
-  and `state_key` at 255 bytes; `matrix_id_is_valid` checks only a minimum
-  length, and `state_key` is not validated at all. Client requests are covered
-  by the 64 KiB body cap; federation PDUs are not. `prev_events` must be at
-  most 20 and, in v12, `auth_events` at most 10 (rooms/v12.md event format).
-- **Where.** `src/events/event.cpp:137` (`matrix_id_is_valid`) and `:213`
-  (`state_key`); limits in `include/merovingian/events/limits.hpp`
-  (`max_prev_events_per_event = 20` exists but is used for local events —
-  confirm whether inbound PDUs enforce it).
-- **Fix.** Enforce all of these at parse time, before hashing or authorising,
-  on the inbound path. Spec: client-server-api.md "Size limits".
-- **Tests.** An oversized PDU, an over-long `sender`/`room_id`/`state_key`,
-  and over-long `prev_events`/`auth_events` arrays are each rejected before
-  any hashing; boundary values (exactly the limit) are accepted.
-
-### M4 (medium): `m.federate: false` is not enforced for room versions 1–5
-
-- **Where.** `src/events/authorization.cpp:1013` gates the rule on
-  `room_v6_plus || room_v12`. The rule is in rooms/v1.md too (rule 3).
-- **Fix.** Apply it for every room version. Watch the same class of bug:
-  version buckets in `room_version_policy` are coarser than the spec's
-  per-version changes.
-- **Tests (conformance).** A remote sender's event in a v1–v5 room created
-  with `m.federate: false` is rejected; a local sender's is allowed.
-
-### M5 (medium): legacy unauthenticated media, and guessable media IDs
-
-- **Problem.** `/_matrix/media/v3/download` and `/thumbnail` serve all media
-  without authentication; the spec (v1.12+) says to freeze them for media
-  uploaded after adoption of authenticated media. Media IDs are a sequential
-  counter plus a 12-hex-character prefix of the **content** digest, so anyone
-  with a candidate file can confirm whether it was uploaded here.
-- **Where.** `make_media_id`, `src/media/repository.cpp:102`; the legacy
-  routes at `src/homeserver/client_server.cpp:9791` (download) and `:9801`
-  (thumbnail).
-- **Decided by the user.** Both: freeze the legacy endpoints for media
-  uploaded after the upgrade (spec SHOULD, v1.12), **and** make media IDs
-  random. Existing media stays reachable on the legacy endpoints.
-- **Work.** Random IDs from libsodium `randombytes_buf` with enough entropy
-  (at least 128 bits), URL-safe encoding. Record a freeze marker (e.g. an
-  upload timestamp or a boolean on the media row) — that needs a migration
-  (next number: **016**) and must be classified for the federation worker's
-  table allowlist (a source-tree test fails otherwise). Consider an ADR if
-  you choose between alternatives for the freeze marker.
-- **Tests.** New media IDs are random and do not reveal the content digest;
-  media uploaded after the freeze is refused on `/media/v3/*` and served on
-  `/client/v1/media/*`; media uploaded before it is still served on both.
-
-### M6 (medium): no per-IP connection cap
+### 3 (medium): no per-IP connection cap
 
 - **Problem.** Connection admission is bounded only by a global queue depth
   and a global parked keep-alive cap. One host can open connections just below
   the slowloris thresholds, fill the global budget, and lock everyone else out;
   the per-IP rate limiter only runs after a request is parsed.
-- **Where.** `src/net/thread_pool.cpp` (global queue), the listener and
-  accept loops (`src/homeserver/http_server.cpp`, `src/net/`),
-  `effective_client_ip` at `src/homeserver/local_http_router.cpp:2741` for
-  how the client address is derived (note `X-Forwarded-For` is honoured only
-  from `trusted_proxies`, and a per-IP cap at accept time sees the proxy's
-  address — handle that deliberately).
-- **Fix.** Per-source-address connection accounting at accept time, with a
-  config key, released on close (RAII guard). Group IPv6 addresses by /64
-  (see L3).
+- **Where.** `src/net/thread_pool.cpp`, the accept loops
+  (`src/homeserver/http_server.cpp`, `src/net/`), and `effective_client_ip`,
+  `src/homeserver/local_http_router.cpp:3242`. At accept time you see the
+  peer address, which is the proxy's when a reverse proxy is in front —
+  handle that deliberately (document it, and make the cap configurable).
+- **Fix.** Per-source-address connection accounting at accept time, released
+  by an RAII guard on close, with a config key classified in
+  `src/config/reload_policy.cpp` / `reload_plan.cpp`. Group IPv6 by /64
+  (shares code with item 7).
 - **Tests.** Connections from one address beyond the cap are refused while
-  another address still connects; closing a connection frees a slot; the
-  accounting cannot leak on error paths.
+  another address still connects; closing frees a slot; error paths cannot
+  leak a slot (a concurrency scenario; assert on the main thread only —
+  Catch2 assertions are not thread-safe).
 
-### M7 (needs a user decision): main does not re-verify PDU signatures
+### 4 (needs a user decision — do not implement without asking)
 
-The audit found that main persists PDUs relayed by the worker without
-re-checking their Ed25519 signatures ("main trusts the worker's prior check",
-`src/homeserver/worker_pool.cpp` near the `pdu_ingest` handler; documented as
-an accepted risk in `docs/threat-model.md`). N1 removed the worker's route to
-the signing key, which limits the damage, but a compromised worker can still
-inject events impersonating any sender the room's state authorises. **Do not
-change this without asking the user.** Option to present: the worker passes
-the key material it verified with; main re-verifies against its own key cache
-without making network calls.
+Main persists PDUs relayed by the worker without re-checking their Ed25519
+signatures ("main trusts the worker's prior check", near the `pdu_ingest`
+handler in `src/homeserver/worker_pool.cpp`; documented as an accepted risk
+in `docs/threat-model.md`). N1 limits the damage, but a compromised worker can
+still inject events impersonating any sender the room's state authorises. The
+option to put to the user: the worker passes the key material it verified
+with, and main re-verifies against its own key cache without network calls.
 
-### Low-severity items
+### 5 (low): `knock_restricted` rejected on the direct-join path
 
-- **L1.** `knock_restricted` is not accepted on the direct-join path —
-  `src/events/authorization.cpp:1165` checks only `restricted` and
-  `restricted_v2`. Spec: rooms/v10.md rule 5.5 ("`restricted` or
-  `knock_restricted`"). Fails closed (legitimate joins refused).
-- **L2.** `m.room.aliases` redaction keeps `aliases` for v6/v7 rooms —
-  `src/events/redaction.cpp:87`. rooms/v6.md removed `m.room.aliases` from
-  the redaction algorithm. The redacted form, and so the reference hash,
-  differs from other servers'.
-- **L3.** Rate-limit buckets use the literal client address; IPv6 clients can
-  rotate through a /64 to escape the `auth_sensitive` tier. Group IPv6 by /64
-  (configurable prefix).
-- **L4.** The user directory returns deactivated users —
-  `POST /_matrix/client/v3/user_directory/search`,
-  `src/homeserver/client_server.cpp:13406`. Exclude them. (Returning all local
-  users is allowed by the spec; optionally add a setting defaulting to the
-  spec minimum of shared-room users.)
-- **L5.** No refresh-token reuse detection —
-  `refresh_local_session`, `src/homeserver/auth_service.cpp:1267`. On reuse
-  of a rotated refresh token, revoke the whole session lineage. Not a spec
-  requirement; defence in depth.
-- **L6.** Dead code: `authorize_event` (`src/events/authorization.cpp:939`)
-  and `membership_policy_allows` (`:807`) have no production callers and look
-  wrong for ban/knock. Delete them (and their tests) rather than fix them.
-- **L7.** Same-fd `dup2` hazard for the IPC socket:
-  `src/homeserver/worker_supervisor.cpp:384` does
-  `adddup2(client_fd, kWorkerIpcFd)`; if the socketpair returns
-  `client_fd == 3`, it is a same-fd dup2, which some libcs treat as a no-op
-  leaving `FD_CLOEXEC` set, so the worker starts with no IPC fd. Relocate as
-  `make_worker_secret_pipe` does. Not a security issue; a start-up reliability
-  one.
-- **L8.** `docs/hardening.md` (also on `main`) has underscores where hyphens
-  belong ("Cross_platform", "Build_time", "Position_independent"), apparently
-  from an old find-and-replace. Cosmetic.
+`src/events/authorization.cpp:1163` accepts only `restricted` and
+`restricted_v2`. Spec: rooms/v10.md rule 5.5, "If the `join_rule` is
+`restricted` or `knock_restricted`". Fails closed: legitimate joins are
+refused. Conformance test citing the rule.
+
+### 6 (low): `m.room.aliases` redaction wrong for room versions 6 and 7
+
+`src/events/redaction.cpp:87` keeps `aliases` for every version before v11.
+rooms/v6.md removed `m.room.aliases` from the redaction algorithm, so for v6
+and v7 its content must be stripped to `{}`. Otherwise our redacted form and
+reference hash differ from other servers'. The `room_v1_v7` redaction bucket
+is coarser than the spec here — fix the version predicate, and add
+conformance tests for v5 (keeps `aliases`), v6 and v7 (strip).
+
+### 7 (low): IPv6 clients can escape rate limits within one /64
+
+Rate-limit buckets use the literal client address (`effective_client_ip`,
+`src/homeserver/local_http_router.cpp:3242`). Group IPv6 addresses by /64
+(configurable prefix) for the rate-limit key. Tests: two addresses in the same
+/64 share a bucket; different /64s do not; IPv4 is unchanged.
+
+### 8 (low): user directory search returns deactivated users
+
+`POST /_matrix/client/v3/user_directory/search`,
+`src/homeserver/client_server.cpp:13461`. Exclude deactivated accounts.
+(Returning every local user is allowed by the spec; do not change that
+without asking.)
+
+### 9 (low): no refresh-token reuse detection
+
+`refresh_local_session`, `src/homeserver/auth_service.cpp:1267`. When a
+refresh token that has already been rotated is presented again, revoke the
+whole session lineage. Not a spec requirement; defence in depth. Record the
+decision in an ADR if you choose between alternatives.
+
+### 10 (low): dead authorization code
+
+`membership_policy_allows` (`src/events/authorization.cpp:807`) and
+`authorize_event` (`:939`) have no production callers and look wrong for ban
+and knock. Delete them and their tests rather than fixing them. Confirm there
+are no callers with `grep` first.
+
+### 11 (low, reliability): the worker can start without its IPC fd
+
+`src/homeserver/worker_supervisor.cpp:389` does
+`adddup2(client_fd, kWorkerIpcFd)`. If the socketpair returns
+`client_fd == 3`, that is a same-fd `dup2`, which some libcs treat as a no-op
+that leaves `FD_CLOEXEC` set, so the worker starts with no IPC socket.
+Relocate the fd off the fixed numbers first, as `make_worker_secret_pipe`
+does.
+
+### 12 (low): backfill processes fetched events in response order
+
+`backfill_missing_pdu_references` handles `/get_missing_events` results in
+the order the remote returned them. A child that arrives before its parent
+has no state-before yet and is dropped. That is safe (fail closed) but loses
+events we could use. Sort by `depth` ascending before verifying and storing.
+
+### 13 (low, project rule): raw pointer in the IPC in-flight guard
+
+`struct InFlightGuard`, `src/homeserver/worker_pool.cpp:385`, stores
+`ipc::IpcChannel*`. It is safe (the captured `shared_ptr` keeps the channel
+alive) but breaks the "no raw pointers, prefer references" rule. Make it a
+reference member.
+
+### 14 (low, cosmetic): underscores in `docs/hardening.md`
+
+Headings and text read "Cross_platform", "Build_time",
+"Position_independent" and similar (line 11 onward), from an old
+find-and-replace. Replace with hyphens. Check no link anchors depend on the
+old spelling.
+
+### Pre-existing flake (fix only if time allows)
+
+`tests/integration/test_http_server_listener_flow.cpp` asserts `FD_CLOEXEC`
+on an accepted socket it finds by scanning `/proc/self/fd` for a matching
+port; under parallel load it can match a different descriptor. It passes when
+run alone. Match on the socket's full local and peer address instead.
 
 ## Needs a user decision (ask; do not decide)
 
+- Item 4 above.
 - **`state_group_edges` table.** Unused since ADR-0064 chose single-parent
-  state groups. Dropping a table needs explicit approval under
-  `migrations/AGENTS.md`. Recommendation: drop it in a later migration.
-- **M7** above.
+  state groups. Dropping it needs explicit approval under
+  `migrations/AGENTS.md`.
 
 ## Before merge
 
 1. Bump the version to `0.12.13` everywhere `docs/versioning.md` lists
-   (`meson.build` still says `0.12.12`). Per project practice the bump
-   happens once per branch, at merge time.
-2. Make sure `CHANGELOG.md`'s 0.12.13 section describes every item you
-   finished, and remove the resolved entries from
-   `docs/todos/capability-gaps.md` and this file.
+   (`meson.build` still says `0.12.12`). The bump happens once per branch, at
+   merge time.
+2. Make sure `CHANGELOG.md`'s 0.12.13 section describes every item finished,
+   and remove resolved entries from this file and from
+   `docs/todos/capability-gaps.md`.
 3. Open the pull request with the headings `AGENTS.md` requires: Summary,
    What changed, Why it changed, CI tests (modified and new tests listed).

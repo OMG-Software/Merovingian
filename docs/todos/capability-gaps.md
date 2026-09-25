@@ -170,9 +170,10 @@ Wired for message events and membership transitions, gated behind
 
 ## OUTSTANDING (0.12.13): remaining security-audit work
 
-The remaining work from the 0.12.12 security audit — two high findings, phase
-C of ADR-0064, seven medium and eight low items, user decisions still pending,
-and the pre-merge checklist — is written up for pickup in
+The remaining work on this branch — a backfill security gap and the
+unbuilt `/state_ids` fallback of ADR-0064 phase C, the per-IP connection cap,
+a user decision on worker signature re-verification, ten low items, and the
+pre-merge checklist — is written up for pickup in
 [`audit-0.12.13-handover.md`](audit-0.12.13-handover.md).
 
 ## RESOLVED (0.12.13, branch `fix/audit-critical-high-0.12.13`): membership-path receipt checks
