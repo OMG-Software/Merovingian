@@ -1009,19 +1009,20 @@ namespace
 
         if (table_load_profile_includes("media", profile))
         {
-            auto media = query_rows(connection, "postgresql_load_media",
-                                    "SELECT media_id, owner_user_id, content_type, size_bytes, hash_algorithm, "
-                                    "digest, quarantined, removed FROM media ORDER BY media_id");
+            auto media =
+                query_rows(connection, "postgresql_load_media",
+                           "SELECT media_id, owner_user_id, content_type, size_bytes, hash_algorithm, "
+                           "digest, quarantined, removed, legacy_endpoint_visible FROM media ORDER BY media_id");
             if (!media.ok)
             {
                 return false;
             }
             for (auto const& row : media.rows)
             {
-                if (row.size() >= 8U)
+                if (row.size() >= 9U)
                 {
                     store.local_media.push_back({row[0], row[1], row[2], parse_u64(row[3]), row[4], row[5],
-                                                 text_is_true(row[6]), text_is_true(row[7])});
+                                                 text_is_true(row[6]), text_is_true(row[7]), text_is_true(row[8])});
                 }
             }
         }

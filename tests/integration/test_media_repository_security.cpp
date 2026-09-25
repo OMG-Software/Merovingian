@@ -106,19 +106,19 @@ SCENARIO("Integrated local media repository flow covers upload download dedupe q
             auto const duplicate_upload = merovingian::homeserver::handle_local_http_request(
                 runtime, {"POST", "/_matrix/media/v3/upload", token, "text/plain|text/plain|clean|hello"});
             auto const download = merovingian::homeserver::handle_local_http_request(
-                runtime, {"GET", "/_matrix/media/v3/download/example.org/" + first_media_id, {}, {}});
+                runtime, {"GET", "/_matrix/client/v1/media/download/example.org/" + first_media_id, token, {}});
             auto const quarantine = merovingian::homeserver::handle_local_http_request(
                 runtime, {"POST", "/_merovingian/admin/media/quarantine/" + first_media_id, token, "policy review"});
             auto const blocked_download = merovingian::homeserver::handle_local_http_request(
-                runtime, {"GET", "/_matrix/media/v3/download/example.org/" + first_media_id, {}, {}});
+                runtime, {"GET", "/_matrix/client/v1/media/download/example.org/" + first_media_id, token, {}});
             auto const release = merovingian::homeserver::handle_local_http_request(
                 runtime, {"POST", "/_merovingian/admin/media/release/" + first_media_id, token, {}});
             auto const released_download = merovingian::homeserver::handle_local_http_request(
-                runtime, {"GET", "/_matrix/media/v3/download/example.org/" + first_media_id, {}, {}});
+                runtime, {"GET", "/_matrix/client/v1/media/download/example.org/" + first_media_id, token, {}});
             auto const remove = merovingian::homeserver::handle_local_http_request(
                 runtime, {"POST", "/_merovingian/admin/media/remove/" + first_media_id, token, "operator removal"});
             auto const removed_download = merovingian::homeserver::handle_local_http_request(
-                runtime, {"GET", "/_matrix/media/v3/download/example.org/" + first_media_id, {}, {}});
+                runtime, {"GET", "/_matrix/client/v1/media/download/example.org/" + first_media_id, token, {}});
             auto const metrics = merovingian::homeserver::handle_local_http_request(
                 runtime, {"GET", "/_merovingian/admin/media/metrics", token, {}});
 
@@ -294,7 +294,7 @@ SCENARIO("Integrated media repository restores durable blob storage after restar
             REQUIRE(restarted.started);
             auto after_restart = std::move(restarted.runtime);
             auto const downloaded = merovingian::homeserver::handle_local_http_request(
-                after_restart, {"GET", "/_matrix/media/v3/download/example.org/" + media_id, {}, {}});
+                after_restart, {"GET", "/_matrix/client/v1/media/download/example.org/" + media_id, token, {}});
 
             THEN("media metadata and blob bytes are available without re-upload")
             {
@@ -398,6 +398,89 @@ SCENARIO("Integrated media routes preserve authentication and repository status 
                 REQUIRE(missing_release.body == "media not found");
                 REQUIRE(unauthenticated_quarantine.status == 401U);
                 REQUIRE(unauthenticated_quarantine.body == "admin authentication required");
+            }
+        }
+    }
+}
+
+// --- 0.12.13 security audit, M05 --------------------------------------------
+
+SCENARIO("Legacy unauthenticated media endpoints are frozen for new uploads",
+         "[media][repository][integration][security][m05]")
+{
+    GIVEN("a running homeserver with an authenticated media upload")
+    {
+        auto started = merovingian::homeserver::start_runtime(media_test_config());
+        REQUIRE(started.started);
+        auto runtime = std::move(started.runtime);
+        auto const token = register_and_login_admin(runtime);
+
+        auto const upload = merovingian::homeserver::handle_local_http_request(
+            runtime, {"POST", "/_matrix/media/v3/upload", token, "text/plain|text/plain|clean|hello"});
+        REQUIRE(upload.status == 200U);
+        auto const media_id = media_id_from_upload_response(upload.body);
+
+        WHEN("the authenticated v1 download endpoint is used")
+        {
+            auto const v1_download = merovingian::homeserver::handle_local_http_request(
+                runtime, {"GET", "/_matrix/client/v1/media/download/example.org/" + media_id, token, {}});
+
+            THEN("the media is served")
+            {
+                REQUIRE(v1_download.status == 200U);
+                REQUIRE(v1_download.body == "text/plain|hello");
+            }
+        }
+
+        WHEN("the legacy unauthenticated v3 download and thumbnail endpoints are used")
+        {
+            auto const v3_download = merovingian::homeserver::handle_local_http_request(
+                runtime, {"GET", "/_matrix/media/v3/download/example.org/" + media_id, {}, {}});
+            auto const v3_thumbnail = merovingian::homeserver::handle_local_http_request(
+                runtime, {"GET",
+                          "/_matrix/media/v3/thumbnail/example.org/" + media_id + "?width=32&height=32&method=crop",
+                          {},
+                          {}});
+
+            THEN("both legacy endpoints fail closed to 404 for post-upgrade uploads")
+            {
+                REQUIRE(v3_download.status == 404U);
+                REQUIRE(v3_download.body == "media not found");
+                REQUIRE(v3_thumbnail.status == 404U);
+                REQUIRE(v3_thumbnail.body == "thumbnail not found");
+            }
+        }
+    }
+}
+
+SCENARIO("Integrated media uploads receive random, non-sequential media IDs",
+         "[media][repository][integration][security][m05]")
+{
+    GIVEN("a running homeserver")
+    {
+        auto started = merovingian::homeserver::start_runtime(media_test_config());
+        REQUIRE(started.started);
+        auto runtime = std::move(started.runtime);
+        auto const token = register_and_login_admin(runtime);
+
+        WHEN("two small uploads are made")
+        {
+            auto const first = merovingian::homeserver::handle_local_http_request(
+                runtime, {"POST", "/_matrix/media/v3/upload", token, "text/plain|text/plain|clean|hi"});
+            auto const second = merovingian::homeserver::handle_local_http_request(
+                runtime, {"POST", "/_matrix/media/v3/upload", token, "text/plain|text/plain|clean|ho"});
+            auto const first_id = media_id_from_upload_response(first.body);
+            auto const second_id = media_id_from_upload_response(second.body);
+
+            THEN("the media IDs are different and not derived from content or a counter")
+            {
+                REQUIRE(first.status == 200U);
+                REQUIRE(second.status == 200U);
+                REQUIRE_FALSE(first_id.empty());
+                REQUIRE_FALSE(second_id.empty());
+                REQUIRE(first_id != second_id);
+                REQUIRE(first_id.size() == 22U);
+                REQUIRE(second_id.size() == 22U);
             }
         }
     }

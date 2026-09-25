@@ -24,9 +24,9 @@
 // |  in test_client_server.cpp and test_auth_client_server_api.cpp.         |
 // +-------------------------------------------------------------------------+
 
-#include "../support/master_key.hpp"
 #include "../federation_signing_test_support.hpp"
 #include "../support/json_test_support.hpp"
+#include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/config/config.hpp"
@@ -4421,16 +4421,16 @@ SCENARIO("A suspended account may use only the key endpoints the spec permits",
                 // Not in the spec's permitted list: this publishes the account's
                 // own device identity and one-time keys, which is participation,
                 // not verification.
-                REQUIRE(suspended_errcode("POST", "/_matrix/client/v3/keys/upload",
-                                          R"({"device_keys":{}})") == "M_USER_SUSPENDED");
+                REQUIRE(suspended_errcode("POST", "/_matrix/client/v3/keys/upload", R"({"device_keys":{}})") ==
+                        "M_USER_SUSPENDED");
             }
 
             THEN("claiming one-time keys is refused")
             {
                 // Claiming an OTK opens an Olm session, which is a precursor to
                 // sending, not to verifying.
-                REQUIRE(suspended_errcode("POST", "/_matrix/client/v3/keys/claim",
-                                          R"({"one_time_keys":{}})") == "M_USER_SUSPENDED");
+                REQUIRE(suspended_errcode("POST", "/_matrix/client/v3/keys/claim", R"({"one_time_keys":{}})") ==
+                        "M_USER_SUSPENDED");
             }
 
             THEN("reading device-list changes is refused")
@@ -7061,8 +7061,10 @@ SCENARIO("POST /media/v3/upload stores media and returns content_uri", "[conform
 }
 
 // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixmediav3downloadservernamemediaid
-// MUST return 200 with media content when the media ID exists.
-SCENARIO("GET /media/v3/download/{serverName}/{mediaId} returns uploaded media", "[conformance][client-server][media]")
+// Legacy /_matrix/media/v3/download is frozen for media uploaded after the
+// authenticated-media upgrade; newly uploaded media returns 404.
+SCENARIO("GET /media/v3/download/{serverName}/{mediaId} returns 404 for newly uploaded media",
+         "[conformance][client-server][media]")
 {
     GIVEN("a running client-server with uploaded media")
     {
@@ -7095,12 +7097,11 @@ SCENARIO("GET /media/v3/download/{serverName}/{mediaId} returns uploaded media",
         WHEN("GET /media/v3/download/{serverName}/{mediaId} is called with the uploaded media ID")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime, {"GET", download_target, token, {}});
+                started.runtime, {"GET", download_target, {}, {}});
 
-            THEN("the server returns 200 with the media content")
+            THEN("the server returns 404 because new uploads are hidden from the legacy endpoint")
             {
-                REQUIRE(response.response.status == 200U);
-                REQUIRE(!response.response.body.empty());
+                REQUIRE(response.response.status == 404U);
             }
         }
     }
@@ -7197,8 +7198,9 @@ SCENARIO("GET /media/v3/preview_url returns 404 M_UNRECOGNIZED (implementation g
 }
 
 // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#get_matrixmediav3thumbnailservernamemediaid
-// MUST return 200 with thumbnail content when a thumbnail exists for the media ID.
-SCENARIO("GET /media/v3/thumbnail/{serverName}/{mediaId} returns thumbnail for uploaded media",
+// Legacy /_matrix/media/v3/thumbnail is frozen for media uploaded after the
+// authenticated-media upgrade; newly uploaded media returns 404.
+SCENARIO("GET /media/v3/thumbnail/{serverName}/{mediaId} returns 404 for newly uploaded media",
          "[conformance][client-server][media]")
 {
     GIVEN("a running client-server with uploaded image media")
@@ -7233,13 +7235,9 @@ SCENARIO("GET /media/v3/thumbnail/{serverName}/{mediaId} returns thumbnail for u
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"GET", thumbnail_target, token, {}});
 
-            THEN("the server returns 200 with thumbnail content or 404 if no thumbnail was generated")
+            THEN("the server returns 404 because new uploads are hidden from the legacy endpoint")
             {
-                // The server generates thumbnails for image content types on upload.
-                // If a thumbnail exists, the response is 200 with image data.
-                // If no thumbnail was generated (e.g., small images), the response is 404.
-                // Either way, the route must not return M_UNRECOGNIZED.
-                REQUIRE((response.response.status == 200U || response.response.status == 404U));
+                REQUIRE(response.response.status == 404U);
             }
         }
     }
@@ -9081,8 +9079,8 @@ SCENARIO("POST /rooms/{roomId}/join accepts a valid third_party_signed join",
 
         auto const keypair = merovingian::crypto::generate_ed25519_keypair();
         REQUIRE(keypair.has_value());
-        auto const secret_key =
-            std::string{reinterpret_cast<char const*>(keypair->secret_key.bytes().data()), keypair->secret_key.bytes().size()};
+        auto const secret_key = std::string{reinterpret_cast<char const*>(keypair->secret_key.bytes().data()),
+                                            keypair->secret_key.bytes().size()};
         auto const public_key_b64 = merovingian::events::matrix_base64_from_bytes(
             {reinterpret_cast<char const*>(keypair->public_key.data()), keypair->public_key.size()});
 
@@ -16355,7 +16353,7 @@ SCENARIO("Media downloads carry the spec's content-security headers", "[conforma
 
         auto const mxc_prefix = std::string_view{"mxc://"};
         auto const path = std::string_view{*content_uri}.substr(mxc_prefix.size());
-        auto const download_target = "/_matrix/media/v3/download/" + std::string{path};
+        auto const download_target = "/_matrix/client/v1/media/download/" + std::string{path};
 
         WHEN("the media is downloaded")
         {
@@ -16423,7 +16421,7 @@ SCENARIO("Media downloads of non-inline-safe types are served as attachments",
 
         auto const mxc_prefix = std::string_view{"mxc://"};
         auto const path = std::string_view{*content_uri}.substr(mxc_prefix.size());
-        auto const download_target = "/_matrix/media/v3/download/" + std::string{path};
+        auto const download_target = "/_matrix/client/v1/media/download/" + std::string{path};
 
         WHEN("the media is downloaded")
         {
@@ -16551,13 +16549,16 @@ SCENARIO("A deactivated account cannot refresh its session",
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
         REQUIRE(merovingian::homeserver::handle_client_server_request(
-                    started.runtime,
-                    {"POST", "/_matrix/client/v3/register",
-                     {}, merovingian::tests::registration_json("carol", "CorrectHorse7!")})
+                    started.runtime, {"POST",
+                                      "/_matrix/client/v3/register",
+                                      {},
+                                      merovingian::tests::registration_json("carol", "CorrectHorse7!")})
                     .response.status == 200U);
         auto const login = merovingian::homeserver::handle_client_server_request(
             started.runtime,
-            {"POST", "/_matrix/client/v3/login", {},
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
              R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@carol:example.org"},)"
              R"("password":"CorrectHorse7!","device_id":"CAROLDEV","refresh_token":true})"});
         REQUIRE(login.response.status == 200U);
@@ -16580,8 +16581,8 @@ SCENARIO("A deactivated account cannot refresh its session",
             REQUIRE(deactivated.response.status == 200U);
 
             auto const refreshed = merovingian::homeserver::handle_client_server_request(
-                started.runtime, {"POST", "/_matrix/client/v3/refresh", {},
-                                  R"({"refresh_token":")" + refresh + R"("})"});
+                started.runtime,
+                {"POST", "/_matrix/client/v3/refresh", {}, R"({"refresh_token":")" + refresh + R"("})"});
 
             THEN("the refresh is refused rather than minting a new credential")
             {
@@ -16602,9 +16603,10 @@ SCENARIO("A locked-out login returns M_LIMIT_EXCEEDED with a retry delay",
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
         REQUIRE(merovingian::homeserver::handle_client_server_request(
-                    started.runtime,
-                    {"POST", "/_matrix/client/v3/register",
-                     {}, merovingian::tests::registration_json("dave", "CorrectHorse7!")})
+                    started.runtime, {"POST",
+                                      "/_matrix/client/v3/register",
+                                      {},
+                                      merovingian::tests::registration_json("dave", "CorrectHorse7!")})
                     .response.status == 200U);
 
         WHEN("the per-account failure threshold is exceeded")
@@ -16612,7 +16614,9 @@ SCENARIO("A locked-out login returns M_LIMIT_EXCEEDED with a retry delay",
             auto const attempt_login = [&started]() {
                 return merovingian::homeserver::handle_client_server_request(
                     started.runtime,
-                    {"POST", "/_matrix/client/v3/login", {},
+                    {"POST",
+                     "/_matrix/client/v3/login",
+                     {},
                      R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@dave:example.org"},)"
                      R"("password":"WrongPassword1!"})"});
             };

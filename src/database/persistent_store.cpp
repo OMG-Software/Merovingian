@@ -2563,17 +2563,21 @@ namespace
     {
         return false;
     }
-    if (!record_and_persist(store, record_statement("insert_media",
-                                                    "INSERT INTO media VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
-                                                    {
-                                                        {media.media_id,                       false},
-                                                        {media.owner_user_id,                  false},
-                                                        {media.content_type,                   false},
-                                                        {std::to_string(media.size_bytes),     false},
-                                                        {media.hash_algorithm,                 false},
-                                                        {media.digest,                         false},
-                                                        {media.quarantined ? "true" : "false", false},
-                                                        {media.removed ? "true" : "false",     false}
+    if (!record_and_persist(store,
+                            record_statement("insert_media",
+                                             "INSERT INTO media (media_id, owner_user_id, content_type, size_bytes, "
+                                             "hash_algorithm, digest, quarantined, removed, legacy_endpoint_visible) "
+                                             "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+                                             {
+                                                 {media.media_id,                                   false},
+                                                 {media.owner_user_id,                              false},
+                                                 {media.content_type,                               false},
+                                                 {std::to_string(media.size_bytes),                 false},
+                                                 {media.hash_algorithm,                             false},
+                                                 {media.digest,                                     false},
+                                                 {media.quarantined ? "true" : "false",             false},
+                                                 {media.removed ? "true" : "false",                 false},
+                                                 {media.legacy_endpoint_visible ? "true" : "false", false}
     })))
     {
         return false;

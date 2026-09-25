@@ -120,6 +120,25 @@ rejected fetches are counted and audited.The private / loopback filter reuses th
   exactly two parts are present. A `Location` redirect part may carry an empty
   body.
 
+## Authenticated media and legacy endpoint freeze (M05)
+
+Local uploads are assigned 128-bit random, URL-safe media IDs: 16 bytes of
+CSPRNG output encoded as 22 unpadded base64url characters (`[A-Za-z0-9_-]`).
+The same content uploaded twice receives different IDs because deduplication
+happens at the blob level, not the record level. IDs are checked for
+uniqueness against the repository before acceptance, and the upload fails
+closed if the generator cannot produce a safe ID.
+
+The legacy `/_matrix/media/v3/download` and `/thumbnail` routes are
+unauthenticated. To prevent new uploads from being enumerable or retrieved
+without a token, every new upload is persisted with
+`legacy_endpoint_visible = false`. The legacy routes treat that value as a
+404, while authenticated `/_matrix/client/v1/media/download` and
+`/thumbnail` routes continue to serve the media. Pre-upgrade rows default to
+`legacy_endpoint_visible = 'true'` via migration 016, so existing
+unauthenticated links keep working. See
+[ADR-0068](adr/0068-random-media-ids-and-legacy-endpoint-freeze.md).
+
 ## Encrypted media is never scannable
 
 **AV scanning cannot inspect the content of media in encrypted rooms, under

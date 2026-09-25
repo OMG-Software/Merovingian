@@ -99,11 +99,39 @@ namespace
         repository.metrics.stored_bytes = stored_bytes;
     }
 
-    [[nodiscard]] auto make_media_id(LocalMediaRepository& repository, std::string_view digest) -> std::string
+    // M05: media IDs must be unpredictable. 16 bytes (128 bits) of CSPRNG
+    // output, encoded with URL-safe base64 (no padding), gives 22 characters
+    // from the allowed set A-Z a-z 0-9 - _. A fresh ID is checked against the
+    // repository to rule out the astronomically unlikely collision.
+    [[nodiscard]] auto make_media_id(LocalMediaRepository& repository) -> std::string
     {
-        auto const sequence = repository.next_media_sequence++;
-        auto const prefix = digest.substr(0U, std::min<std::size_t>(12U, digest.size()));
-        return "m" + std::to_string(sequence) + "_" + std::string{prefix};
+        auto constexpr random_bytes = std::size_t{16U};
+        auto constexpr max_attempts = std::size_t{10U};
+
+        for (auto attempt = std::size_t{0U}; attempt < max_attempts; ++attempt)
+        {
+            auto const bytes = crypto::secure_random_bytes(random_bytes);
+            if (!bytes.has_value())
+            {
+                continue;
+            }
+            auto const encoded = crypto::base64_urlsafe_encode(
+                std::string_view{reinterpret_cast<char const*>(bytes->data()), bytes->size()});
+            if (!encoded.has_value())
+            {
+                continue;
+            }
+            if (!media_id_is_safe(*encoded))
+            {
+                continue;
+            }
+            if (find_record(repository, *encoded) != nullptr)
+            {
+                continue;
+            }
+            return *encoded;
+        }
+        return {};
     }
 
     [[nodiscard]] auto make_storage_id(std::string_view digest, std::uint64_t size_bytes) -> std::string
@@ -236,8 +264,8 @@ namespace
         return total;
     }
 
-    [[nodiscard]] auto live_bytes_for_owner(LocalMediaRepository const& repository, std::string_view owner_user_id)
-        noexcept -> std::uint64_t
+    [[nodiscard]] auto live_bytes_for_owner(LocalMediaRepository const& repository,
+                                            std::string_view owner_user_id) noexcept -> std::uint64_t
     {
         auto total = std::uint64_t{0U};
         for (auto const& record : repository.records)
@@ -379,7 +407,6 @@ auto restore_local_media_repository(LocalMediaRepository& repository, std::vecto
     repository.records = std::move(records);
     repository.blobs = std::move(blobs);
     repository.thumbnails.clear();
-    repository.next_media_sequence = static_cast<std::uint64_t>(repository.records.size()) + 1U;
     for (auto const& record : repository.records)
     {
         record_thumbnail(repository, record);
@@ -488,12 +515,12 @@ auto upload_local_media(LocalMediaRepository& repository, std::string_view serve
         !capacity_reason.empty())
     {
         ++repository.metrics.uploads_rejected;
-        log_diagnostic("upload.rejected", {
-                                              {"owner",  request.owner_user_id, false},
-                                              {"reason", capacity_reason,       false}
+        log_diagnostic("upload.rejected",
+                       {
+                           {"owner",  request.owner_user_id, false},
+                           {"reason", capacity_reason,       false}
         });
-        return {false,       507U,  {},    {},    content_type, size_bytes, "blake2b", digest, false, false,
-                capacity_reason};
+        return {false, 507U, {}, {}, content_type, size_bytes, "blake2b", digest, false, false, capacity_reason};
     }
     if (blob == nullptr)
     {
@@ -515,7 +542,34 @@ auto upload_local_media(LocalMediaRepository& repository, std::string_view serve
     }
 
     auto record = LocalMediaRecord{};
-    record.media_id = make_media_id(repository, digest);
+    record.media_id = make_media_id(repository);
+    if (record.media_id.empty())
+    {
+        // This is only reachable if the CSPRNG or base64 encoder failed
+        // repeatedly. Roll back the blob reference we just added.
+        if (--blob->ref_count == 0U)
+        {
+            blob->bytes.clear();
+            blob->bytes.shrink_to_fit();
+        }
+        ++repository.metrics.uploads_rejected;
+        log_diagnostic("upload.rejected",
+                       {
+                           {"owner",  request.owner_user_id,        false},
+                           {"reason", "media id generation failed", false}
+        });
+        return {false,
+                500U,
+                {},
+                {},
+                content_type,
+                size_bytes,
+                "blake2b",
+                digest,
+                false,
+                false,
+                "media id generation failed"};
+    }
     record.owner_user_id = request.owner_user_id;
     record.content_type = content_type;
     record.size_bytes = size_bytes;
@@ -525,6 +579,8 @@ auto upload_local_media(LocalMediaRepository& repository, std::string_view serve
     record.state = decision.disposition == MediaDisposition::quarantine ? LocalMediaState::quarantined
                                                                         : LocalMediaState::available;
     record.quarantine_reason = decision.reason;
+    // New uploads are invisible to the legacy unauthenticated endpoints.
+    record.legacy_endpoint_visible = false;
     auto const media_id = record.media_id;
     repository.records.push_back(std::move(record));
     record_thumbnail(repository, repository.records.back());
@@ -558,8 +614,8 @@ auto upload_local_media(LocalMediaRepository& repository, std::string_view serve
     };
 }
 
-auto download_local_media(LocalMediaRepository& repository, std::string_view server_name, std::string_view media_id)
-    -> LocalMediaDownloadResult
+auto download_local_media(LocalMediaRepository& repository, std::string_view server_name, std::string_view media_id,
+                          bool legacy_endpoint) -> LocalMediaDownloadResult
 {
     std::ignore = server_name;
     log_diagnostic("download.dispatch", {
@@ -577,7 +633,8 @@ auto download_local_media(LocalMediaRepository& repository, std::string_view ser
     }
 
     auto const* record = find_local_media_record(repository, media_id);
-    if (record == nullptr || record->state == LocalMediaState::removed)
+    if (record == nullptr || record->state == LocalMediaState::removed ||
+        (legacy_endpoint && !record->legacy_endpoint_visible))
     {
         ++repository.metrics.downloads_blocked;
         log_diagnostic("download.rejected",

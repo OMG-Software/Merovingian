@@ -408,6 +408,8 @@ struct PersistentLocalMedia final
     std::string digest{};
     bool quarantined{false};
     bool removed{false};
+    // See media::LocalMediaRecord::legacy_endpoint_visible.
+    bool legacy_endpoint_visible{true};
 };
 
 struct PersistentRemoteMedia final

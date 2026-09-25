@@ -1,5 +1,21 @@
 ## 0.12.13
 
+- **FIXED: predictable media IDs and unauthenticated legacy media endpoints
+  (MEDIUM, security-audit finding M05).** Local media IDs were minted from a
+  counter and content-digest prefix, making them enumerable, and the deprecated
+  `/_matrix/media/v3/download` and `/thumbnail` endpoints remained reachable for
+  every upload. `upload_local_media` now mints 16-byte (128-bit) CSPRNG IDs
+  encoded as 22-character URL-safe base64 strings; each upload gets a distinct
+  ID even when the same blob is deduplicated. New uploads set
+  `legacy_endpoint_visible = false`, so the unauthenticated v3 routes return
+  `404 M_NOT_FOUND` while authenticated `/_matrix/client/v1/media/download` and
+  `/thumbnail` routes continue to serve them. Pre-upgrade rows default to
+  `legacy_endpoint_visible = 'true'` via migration 016, preserving existing links.
+  Tests: `tests/unit/test_media_repository.cpp` (`[m05]`),
+  `tests/integration/test_media_repository_security.cpp` (`[m05]`). See
+  [ADR-0068](docs/adr/0068-random-media-ids-and-legacy-endpoint-freeze.md),
+  `docs/media-repository.md`, and `docs/database-persistence.md`.
+
 - **FIXED: membership-path receipt checks (ADR-0064 phase B2).**
   `send_join` / `send_leave` / `send_knock` now run the same receipt checks as
   `/send`: a content-hash mismatch redacts instead of rejecting; the event is

@@ -774,7 +774,7 @@ namespace
         // M-02: build the URL from the certificate identity, not the resolved
         // target; pinned addresses still route the connection to the latter.
         auto url = remote_media_download_url(resolution.tls_server_name.empty() ? resolution.resolved_host
-                                                                                 : resolution.tls_server_name,
+                                                                                : resolution.tls_server_name,
                                              resolution.resolved_port, origin_server, media_id);
         // Mandatory per spec when falling back to the deprecated endpoint: tells
         // the remote server not to itself recurse into fetching the media from
@@ -981,6 +981,7 @@ namespace
                                                                                      result.digest,
                                                                                      result.quarantined,
                                                                                      false,
+                                                                                     false,
                                                                                  });
     persist_blob_for_media(runtime, result.media_id);
     log_diagnostic(result.quarantined ? "upload.quarantined" : "upload.accepted",
@@ -1005,7 +1006,7 @@ namespace
 }
 
 [[nodiscard]] auto download_local_media(HomeserverRuntime& runtime, std::string_view server_name,
-                                        std::string_view media_id) -> OperationResult
+                                        std::string_view media_id, bool legacy_endpoint) -> OperationResult
 {
     auto const policy = media_policy_decision(runtime, media_id);
     if (!policy.allowed)
@@ -1022,7 +1023,7 @@ namespace
         return fetch_remote_media_live(runtime, server_name, media_id);
     }
 
-    auto const result = media::download_local_media(runtime.media_repository, server_name, media_id);
+    auto const result = media::download_local_media(runtime.media_repository, server_name, media_id, legacy_endpoint);
     if (!result.ok)
     {
         log_diagnostic("download.rejected", {
@@ -1042,7 +1043,8 @@ namespace
 
 [[nodiscard]] auto download_local_media_thumbnail(HomeserverRuntime& runtime, std::string_view server_name,
                                                   std::string_view media_id, std::uint32_t width, std::uint32_t height,
-                                                  media::ThumbnailMethod method) -> OperationResult
+                                                  media::ThumbnailMethod method, bool legacy_endpoint)
+    -> OperationResult
 {
     auto const policy = media_policy_decision(runtime, media_id);
     if (!policy.allowed)
@@ -1078,7 +1080,8 @@ namespace
     }
 
     auto const* record = media::find_local_media_record(runtime.media_repository, media_id);
-    if (record == nullptr || record->state != media::LocalMediaState::available)
+    if (record == nullptr || record->state != media::LocalMediaState::available ||
+        (legacy_endpoint && !record->legacy_endpoint_visible))
     {
         log_diagnostic("thumbnail.not_found",
                        {

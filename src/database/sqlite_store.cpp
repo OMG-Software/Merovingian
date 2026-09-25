@@ -599,12 +599,13 @@ namespace
                load_rows(
                    connection,
                    "SELECT media_id, owner_user_id, content_type, size_bytes, hash_algorithm, digest, quarantined, "
-                   "removed FROM media",
+                   "removed, legacy_endpoint_visible FROM media",
                    [&store](sqlite3_stmt& row) {
                        store.local_media.push_back({column_text(row, 0), column_text(row, 1), column_text(row, 2),
                                                     parse_u64(column_text(row, 3)), column_text(row, 4),
                                                     column_text(row, 5), text_is_true(column_text(row, 6)),
-                                                    text_is_true(column_text(row, 7))});
+                                                    text_is_true(column_text(row, 7)),
+                                                    text_is_true(column_text(row, 8))});
                    }) &&
                load_rows(connection,
                          "SELECT storage_id, hash_algorithm, digest, size_bytes, bytes, ref_count FROM media_blobs",

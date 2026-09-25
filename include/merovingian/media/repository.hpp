@@ -51,6 +51,12 @@ struct LocalMediaRecord final
     std::string storage_id{};
     LocalMediaState state{LocalMediaState::available};
     std::string quarantine_reason{};
+    // True when the media was uploaded before the authenticated-media upgrade
+    // and may still be served by the legacy unauthenticated v3 endpoints.
+    // New uploads are minted with false, so /_matrix/media/v3/download and
+    // /thumbnail fail closed to 404 while /_matrix/client/v1/media/... remains
+    // available (Matrix v1.19 authenticated media, security audit M05).
+    bool legacy_endpoint_visible{true};
 };
 
 struct MediaRepositoryMetrics final
@@ -80,7 +86,6 @@ struct LocalMediaRepository final
     std::vector<LocalMediaBlob> blobs{};
     std::vector<LocalMediaThumbnail> thumbnails{};
     MediaRepositoryMetrics metrics{};
-    std::uint64_t next_media_sequence{1U};
 };
 
 struct LocalMediaUploadRequest final
@@ -180,7 +185,8 @@ auto restore_local_media_repository(LocalMediaRepository& repository, std::vecto
 [[nodiscard]] auto upload_local_media(LocalMediaRepository& repository, std::string_view server_name,
                                       LocalMediaUploadRequest const& request) -> LocalMediaUploadResult;
 [[nodiscard]] auto download_local_media(LocalMediaRepository& repository, std::string_view server_name,
-                                        std::string_view media_id) -> LocalMediaDownloadResult;
+                                        std::string_view media_id, bool legacy_endpoint = false)
+    -> LocalMediaDownloadResult;
 [[nodiscard]] auto quarantine_local_media(LocalMediaRepository& repository, std::string_view media_id,
                                           std::string_view reason) -> LocalMediaAdminResult;
 [[nodiscard]] auto release_local_media(LocalMediaRepository& repository, std::string_view media_id)

@@ -590,6 +590,24 @@ remaining work before PostgreSQL-backed production operation.
   `tests/integration/test_join_room_flow.cpp` covers the federated-join
   seeding end to end; `tests/unit/test_sync_handler.cpp` covers a
   resolution-driven reactivation reaching an incremental `/sync` client.
+- **M05 authenticated-media storage (schema version `16`, migration
+  `migrations/016_media_legacy_endpoint_visibility.sql`,
+  [ADR-0068](adr/0068-random-media-ids-and-legacy-endpoint-freeze.md)).**
+  The `media` table gains a `legacy_endpoint_visible` column (`TEXT NOT NULL
+  DEFAULT 'true'`) via an `ALTER TABLE` migration, keeping the v1 `media`
+  table definition historically intact exactly like v14's `users.deactivated`
+  addition. New local uploads are stored with `legacy_endpoint_visible = false`
+  (see `docs/media-repository.md`); the unauthenticated
+  `/_matrix/media/v3/download` and `/thumbnail` routes treat a `false` value
+  as a 404, while authenticated `/_matrix/client/v1/media/...` routes ignore it
+  and serve the media. Existing rows default to `'true'`, so pre-upgrade
+  unauthenticated links keep working. The runtime migration path uses the
+  compiled catalog in `src/database/migration.cpp` (upgrade step version
+  `16` "media_legacy_endpoint_visibility"; downgrade step version `15`
+  "drop_media_legacy_endpoint_visibility"); `schema::current_schema_version()`
+  returns `16U`. Adding a column to the `media` table does not affect the
+  federation worker table classification: `media` remains in
+  `worker_never_reads_tables`, so the worker allowlist needs no change.
 - `/sync` calls `database::ensure_sync_stream_id_ahead_of()` when the client's
   `since` token is ahead of the server's counter. This recovers live deployments
   whose counter rolled back below a stored token (for example, when the watermark

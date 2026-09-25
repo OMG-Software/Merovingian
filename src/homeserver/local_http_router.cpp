@@ -3501,7 +3501,7 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         {
             return response(404U, "route not found");
         }
-        auto const result = download_local_media(runtime, (*parts)[0], (*parts)[1]);
+        auto const result = download_local_media(runtime, (*parts)[0], (*parts)[1], true);
         return response_from_media_operation(result);
     }
     auto constexpr thumbnail_prefix = std::string_view{"/_matrix/media/v3/thumbnail/"};
@@ -3514,7 +3514,7 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         }
         auto const params = parse_thumbnail_params(request.target);
         auto const result = download_local_media_thumbnail(runtime, (*parts)[0], (*parts)[1], params.width,
-                                                           params.height, params.method);
+                                                           params.height, params.method, true);
         return response_from_media_operation(result);
     }
     auto constexpr v1_thumbnail_prefix = std::string_view{"/_matrix/client/v1/media/thumbnail/"};
@@ -3527,7 +3527,7 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         }
         auto const params = parse_thumbnail_params(request.target);
         auto const result = download_local_media_thumbnail(runtime, (*parts)[0], (*parts)[1], params.width,
-                                                           params.height, params.method);
+                                                           params.height, params.method, false);
         return response_from_media_operation(result);
     }
     auto constexpr v1_download_prefix = std::string_view{"/_matrix/client/v1/media/download/"};
@@ -3538,7 +3538,7 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         {
             return response(404U, "route not found");
         }
-        auto const result = download_local_media(runtime, (*parts)[0], (*parts)[1]);
+        auto const result = download_local_media(runtime, (*parts)[0], (*parts)[1], false);
         return response_from_media_operation(result);
     }
     auto constexpr quarantine_prefix = std::string_view{"/_merovingian/admin/media/quarantine/"};

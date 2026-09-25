@@ -579,3 +579,118 @@ SCENARIO("An uncapped media repository keeps its previous unbounded behaviour", 
         }
     }
 }
+
+// --- 0.12.13 security audit, M05 --------------------------------------------
+//
+// Legacy /_matrix/media/v3/download and /thumbnail endpoints are unauthenticated
+// and used predictable media IDs. The fix mints 128-bit random, URL-safe media
+// IDs and freezes the legacy endpoints for media uploaded after the authenticated
+// media upgrade.
+
+[[nodiscard]] auto media_id_is_url_safe_base64(std::string_view media_id) noexcept -> bool
+{
+    if (media_id.size() != 22U)
+    {
+        return false;
+    }
+    for (auto const c : media_id)
+    {
+        if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_'))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+SCENARIO("Local media repository mints unpredictable, URL-safe media IDs", "[media][repository][security][m05]")
+{
+    GIVEN("a configured local media repository")
+    {
+        auto repository = test_repository();
+
+        WHEN("two distinct uploads are made")
+        {
+            auto const first = merovingian::media::upload_local_media(
+                repository, "example.org", {"@alice:example.org", "text/plain", "text/plain", "first", true});
+            auto const second = merovingian::media::upload_local_media(
+                repository, "example.org", {"@alice:example.org", "text/plain", "text/plain", "second", true});
+
+            THEN("each media ID is 22 URL-safe base64 characters and the two are different")
+            {
+                REQUIRE(first.ok);
+                REQUIRE(second.ok);
+                REQUIRE(media_id_is_url_safe_base64(first.media_id));
+                REQUIRE(media_id_is_url_safe_base64(second.media_id));
+                REQUIRE(first.media_id != second.media_id);
+            }
+        }
+
+        WHEN("the same content is uploaded twice")
+        {
+            auto const first = merovingian::media::upload_local_media(
+                repository, "example.org", {"@alice:example.org", "text/plain", "text/plain", "hello", true});
+            auto const second = merovingian::media::upload_local_media(
+                repository, "example.org", {"@alice:example.org", "text/plain", "text/plain", "hello", true});
+
+            THEN("the blob is deduplicated but the media IDs remain distinct")
+            {
+                REQUIRE(first.ok);
+                REQUIRE(second.ok);
+                REQUIRE(second.deduplicated);
+                REQUIRE(first.media_id != second.media_id);
+                REQUIRE(repository.blobs.size() == 1U);
+            }
+        }
+    }
+}
+
+SCENARIO("Legacy unauthenticated media endpoints are frozen for new uploads", "[media][repository][security][m05]")
+{
+    GIVEN("a configured local media repository with a fresh upload")
+    {
+        auto repository = test_repository();
+        auto const uploaded = merovingian::media::upload_local_media(
+            repository, "example.org", {"@alice:example.org", "text/plain", "text/plain", "hello", true});
+        REQUIRE(uploaded.ok);
+
+        WHEN("the authenticated v1 endpoint requests the media")
+        {
+            auto const authenticated =
+                merovingian::media::download_local_media(repository, "example.org", uploaded.media_id, false);
+
+            THEN("the bytes are served")
+            {
+                REQUIRE(authenticated.ok);
+                REQUIRE(authenticated.status == 200U);
+            }
+        }
+
+        WHEN("the legacy unauthenticated v3 endpoint requests the same media")
+        {
+            auto const legacy =
+                merovingian::media::download_local_media(repository, "example.org", uploaded.media_id, true);
+
+            THEN("the endpoint is frozen and returns a 404")
+            {
+                REQUIRE_FALSE(legacy.ok);
+                REQUIRE(legacy.status == 404U);
+                REQUIRE(legacy.reason == "media not found");
+            }
+        }
+
+        WHEN("a pre-upgrade record is explicitly marked visible to legacy endpoints")
+        {
+            REQUIRE(!repository.records.empty());
+            repository.records.front().legacy_endpoint_visible = true;
+            auto const legacy =
+                merovingian::media::download_local_media(repository, "example.org", uploaded.media_id, true);
+
+            THEN("the legacy endpoint serves it, preserving backward compatibility for old uploads")
+            {
+                REQUIRE(legacy.ok);
+                REQUIRE(legacy.status == 200U);
+            }
+        }
+    }
+}

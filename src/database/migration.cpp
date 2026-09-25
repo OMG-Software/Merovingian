@@ -526,6 +526,23 @@ auto downgrade_initial_schema_migration() -> MigrationStep
     return {15U, "event_graph_state", std::move(statements), MigrationDirection::upgrade};
 }
 
+// v16: M05 authenticated-media upgrade (ADR-0068). Adds a boolean marker to
+// each media row so legacy unauthenticated `/_matrix/media/v3/download` and
+// `/thumbnail` endpoints can be frozen for uploads created after this upgrade
+// while authenticated `/_matrix/client/v1/media/...` routes keep serving them.
+// The column is added by ALTER rather than being baked into the v1 media table
+// definition, keeping the v1 CREATE TABLE historically intact exactly like
+// v14's `users.deactivated` addition.
+[[nodiscard]] auto upgrade_media_legacy_endpoint_visibility_migration() -> MigrationStep
+{
+    auto statements = std::vector<PreparedStatement>{};
+    statements.push_back(PreparedStatement{
+        "add_legacy_endpoint_visible_column",
+        "ALTER TABLE media ADD COLUMN legacy_endpoint_visible TEXT NOT NULL DEFAULT 'true'",
+        {}});
+    return {16U, "media_legacy_endpoint_visibility", std::move(statements), MigrationDirection::upgrade};
+}
+
 auto upgrade_migration_catalog() -> std::vector<MigrationStep>
 {
     return {initial_schema_migration(),
@@ -542,7 +559,19 @@ auto upgrade_migration_catalog() -> std::vector<MigrationStep>
             upgrade_login_tokens_migration(),
             upgrade_appservice_txn_cursor_migration(),
             upgrade_user_deactivation_migration(),
-            upgrade_event_graph_state_migration()};
+            upgrade_event_graph_state_migration(),
+            upgrade_media_legacy_endpoint_visibility_migration()};
+}
+
+// v16 -> v15: drop the media legacy-endpoint visibility column added by v16.
+[[nodiscard]] auto downgrade_media_legacy_endpoint_visibility_migration() -> MigrationStep
+{
+    auto statements = std::vector<PreparedStatement>{};
+    statements.push_back(PreparedStatement{
+        "drop_legacy_endpoint_visible_column",
+        "ALTER TABLE media DROP COLUMN legacy_endpoint_visible",
+        {}});
+    return {15U, "drop_media_legacy_endpoint_visibility", std::move(statements), MigrationDirection::downgrade};
 }
 
 // v15 -> v14: drop the three v15 tables, the event_edges_prev_event_id
@@ -673,7 +702,8 @@ auto upgrade_migration_catalog() -> std::vector<MigrationStep>
 
 auto downgrade_migration_catalog() -> std::vector<MigrationStep>
 {
-    return {downgrade_event_graph_state_migration(),
+    return {downgrade_media_legacy_endpoint_visibility_migration(),
+            downgrade_event_graph_state_migration(),
             downgrade_user_deactivation_migration(),
             downgrade_appservice_txn_cursor_migration(),
             downgrade_login_tokens_migration(),

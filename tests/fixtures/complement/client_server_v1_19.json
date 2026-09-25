@@ -469,7 +469,8 @@
     },
     {
       "method": "GET",
-      "path": "/_matrix/media/v3/download/example.org/{{media_id}}",
+      "path": "/_matrix/client/v1/media/download/example.org/{{media_id}}",
+      "auth_from": "refreshed_token",
       "expect_status": 200
     },
     {

@@ -2590,11 +2590,11 @@ SCENARIO("Client-server admin safety routes manage persisted policy rules", "[ho
             auto const list = merovingian::homeserver::handle_client_server_request(
                 runtime, {"GET", "/_matrix/client/v3/admin/safety/policy_rules", token, {}});
             auto const blocked_download = merovingian::homeserver::handle_client_server_request(
-                runtime, {"GET", "/_matrix/media/v3/download/example.org/" + content_uri, token, {}});
+                runtime, {"GET", "/_matrix/client/v1/media/download/example.org/" + content_uri, token, {}});
             auto const del = merovingian::homeserver::handle_client_server_request(
                 runtime, {"DELETE", "/_matrix/client/v3/admin/safety/policy_rules/media/" + content_uri, token, {}});
             auto const unblocked_download = merovingian::homeserver::handle_client_server_request(
-                runtime, {"GET", "/_matrix/media/v3/download/example.org/" + content_uri, token, {}});
+                runtime, {"GET", "/_matrix/client/v1/media/download/example.org/" + content_uri, token, {}});
 
             THEN("the rule is durable and immediately changes the media workflow")
             {
@@ -5682,19 +5682,15 @@ SCENARIO("Media download returns raw bytes with Content-Type and ignores query p
         auto const media_id = json_value(upload.response.body, "\"content_uri\":\"mxc://example.org/");
         REQUIRE(!media_id.empty());
 
-        WHEN("the v3 download endpoint is called with ?allow_redirect=true")
+        WHEN("the legacy v3 download endpoint is called with ?allow_redirect=true")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 runtime,
                 {"GET", "/_matrix/media/v3/download/example.org/" + media_id + "?allow_redirect=true", token, {}});
 
-            THEN("the response is 200 with the raw bytes and a matching Content-Type header")
+            THEN("the response is 404 because new uploads are not visible on the legacy endpoint")
             {
-                REQUIRE(response.response.status == 200U);
-                REQUIRE(response.response.body == uploaded_bytes);
-                REQUIRE(!response.response.body.empty());
-                REQUIRE(response.response.body.find('|') == std::string::npos);
-                REQUIRE(response_header(response.response, "Content-Type") == "text/plain");
+                REQUIRE(response.response.status == 404U);
             }
         }
 
