@@ -94,13 +94,15 @@ auto seed_room_with_genesis_state_group(HomeserverRuntime& runtime, std::string 
     auto const member_bob_id = room_id + ":member:bob";
 
     auto const make_json = [&](std::string_view type, std::string_view state_key, std::string_view sender,
-                               canonicaljson::Object content, std::int64_t depth, std::int64_t ts) -> std::string {
+                               canonicaljson::Object content, std::int64_t depth, std::int64_t ts,
+                               std::string_view event_id) -> std::string {
         auto hashes = canonicaljson::Object{};
         hashes.push_back(canonicaljson::make_member("sha256", canonicaljson::Value{std::string{"hash"}}));
         auto obj = canonicaljson::Object{};
         obj.push_back(canonicaljson::make_member("auth_events", canonicaljson::Value{canonicaljson::Array{}}));
         obj.push_back(canonicaljson::make_member("content", canonicaljson::Value{std::move(content)}));
         obj.push_back(canonicaljson::make_member("depth", canonicaljson::Value{depth}));
+        obj.push_back(canonicaljson::make_member("event_id", canonicaljson::Value{std::string{event_id}}));
         obj.push_back(canonicaljson::make_member("hashes", canonicaljson::Value{std::move(hashes)}));
         obj.push_back(canonicaljson::make_member("origin_server_ts", canonicaljson::Value{ts}));
         obj.push_back(canonicaljson::make_member("prev_events", canonicaljson::Value{canonicaljson::Array{}}));
@@ -119,7 +121,7 @@ auto seed_room_with_genesis_state_group(HomeserverRuntime& runtime, std::string 
     create_content.push_back(
         canonicaljson::make_member("room_version", canonicaljson::Value{std::string{room_version}}));
     auto const create_json =
-        make_json("m.room.create", "", "@admin:local.example.org", std::move(create_content), 0, 1);
+        make_json("m.room.create", "", "@admin:local.example.org", std::move(create_content), 0, 1, create_id);
     store.events.push_back({create_id, room_id, "@admin:local.example.org", create_json, 0U, 0U, {}, {}, {}});
     store.state.push_back({room_id, "m.room.create", "", create_id});
 
@@ -128,14 +130,15 @@ auto seed_room_with_genesis_state_group(HomeserverRuntime& runtime, std::string 
     auto pl_users = canonicaljson::Object{};
     pl_users.push_back(canonicaljson::make_member("@admin:local.example.org", canonicaljson::Value{std::int64_t{100}}));
     pl_content.push_back(canonicaljson::make_member("users", canonicaljson::Value{std::move(pl_users)}));
-    auto const pl_json = make_json("m.room.power_levels", "", "@admin:local.example.org", std::move(pl_content), 1, 2);
+    auto const pl_json =
+        make_json("m.room.power_levels", "", "@admin:local.example.org", std::move(pl_content), 1, 2, pl_id);
     store.events.push_back({pl_id, room_id, "@admin:local.example.org", pl_json, 1U, 0U, {}, {}, {}});
     store.state.push_back({room_id, "m.room.power_levels", "", pl_id});
 
     auto member_content = canonicaljson::Object{};
     member_content.push_back(canonicaljson::make_member("membership", canonicaljson::Value{std::string{"join"}}));
     auto const member_json = make_json("m.room.member", "@admin:local.example.org", "@admin:local.example.org",
-                                       std::move(member_content), 2, 3);
+                                       std::move(member_content), 2, 3, member_id);
     store.events.push_back({member_id, room_id, "@admin:local.example.org", member_json, 2U, 0U, {}, {}, {}});
     store.state.push_back({room_id, "m.room.member", "@admin:local.example.org", member_id});
     store.memberships.push_back({room_id, "@admin:local.example.org", "join", 0U});
@@ -143,7 +146,7 @@ auto seed_room_with_genesis_state_group(HomeserverRuntime& runtime, std::string 
     auto member_bob_content = canonicaljson::Object{};
     member_bob_content.push_back(canonicaljson::make_member("membership", canonicaljson::Value{std::string{"join"}}));
     auto const member_bob_json = make_json("m.room.member", "@bob:remote.example.org", "@bob:remote.example.org",
-                                           std::move(member_bob_content), 3, 4);
+                                           std::move(member_bob_content), 3, 4, member_bob_id);
     store.events.push_back({member_bob_id, room_id, "@bob:remote.example.org", member_bob_json, 3U, 0U, {}, {}, {}});
     store.state.push_back({room_id, "m.room.member", "@bob:remote.example.org", member_bob_id});
     store.memberships.push_back({room_id, "@bob:remote.example.org", "join", 0U});
@@ -518,7 +521,7 @@ inline auto run_body_aware_dispatch_tls_server(merovingian::net::TcpAcceptor& ac
     for (auto const& json : event_jsons)
     {
         auto parsed = merovingian::canonicaljson::parse_lossless(json);
-        REQUIRE(parsed.error != merovingian::canonicaljson::ParseError::none);
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
         auth_chain.push_back(std::move(parsed.value));
     }
     auto obj = merovingian::canonicaljson::Object{};
@@ -1849,7 +1852,12 @@ SCENARIO("ingest_pdu_event verifies a /state_ids snapshot state event via /event
             };
             auto const genesis_auth_chain =
                 std::vector<std::string>{lookup_json(create_id), lookup_json(pl_id), lookup_json(member_bob_id)};
-            auto const state_ids_body = make_state_ids_response({historical_state_id}, auth_event_ids);
+            // /state_ids returns the complete resolved state at the target event,
+            // not just the single state event that changed. The auth_chain is the
+            // chain needed to authenticate those state events.
+            auto const snapshot_pdu_ids =
+                std::vector<std::string>{create_id, pl_id, member_bob_id, historical_state_id};
+            auto const state_ids_body = make_state_ids_response(snapshot_pdu_ids, auth_event_ids);
             auto const historical_state_body =
                 make_event_transaction_response(historical_state_pdu.json, remote_server);
             auto const mid_event_body = make_event_transaction_response(mid_event.json, remote_server);

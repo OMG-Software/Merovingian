@@ -70,6 +70,24 @@
   `tests/integration/test_pdu_ingestion_backfill_flow.cpp`
   (`[pdu_ingestion][backfill][conformance]`).
 
+- **FIXED: `/state_ids` fallback now uses spec-conformant `/event_auth` for
+  historical state events (HIGH, ADR-0069 option A).** Snapshot state events
+  whose `prev_events` have no recorded state groups are no longer rejected
+  outright. Instead, when the local state-before is unavailable,
+  `backfill_state_ids_snapshot` falls back to
+  `GET /_matrix/federation/v1/event_auth/{roomId}/{eventId}` to fetch the full
+  auth chain, verifies and stores each returned PDU against its own
+  `auth_events`, then stores the snapshot event as an auth-events-only outlier
+  whose after-state includes the auth-chain state entries. Snapshot
+  materialisation uses a separate 100-call outbound budget and a 1000-event
+  cap so that a large legitimate room does not exhaust the general PDU backfill
+  budget. Fail-closed checks remain: the fallback is only attempted for snapshot
+  state events, only when their `prev_events` truly lack state groups, and
+  only after the auth-chain PDUs verify. Test:
+  `tests/integration/test_pdu_ingestion_backfill_flow.cpp`
+  (`[pdu_ingestion][backfill][conformance]`). See
+  [ADR-0069](docs/adr/0069-spec-conformant-state-ids-fallback-via-event-auth.md).
+
 - **FIXED: push gateway and identity server clients skipped SSRF filtering on
   address resolution (MEDIUM).** `push_gateway_client.cpp` and
   `identity_client.cpp` were calling

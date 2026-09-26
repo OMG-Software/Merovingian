@@ -2378,8 +2378,21 @@ namespace
     // remote-claimed snapshot and the work we will do to materialise it.
     constexpr auto k_max_state_ids_per_pdu = std::size_t{1000U};
     constexpr auto k_max_auth_chain_ids_per_pdu = std::size_t{1000U};
-    constexpr auto k_max_state_snapshot_events_per_pdu = std::size_t{100U};
+    // ADR-0069 option A: real rooms routinely have more than 100 state events,
+    // so the snapshot materialisation cap must be sized for real rooms while
+    // still bounding a malicious response. The per-event fetches are counted
+    // against a separate snapshot budget below, not the general PDU backfill
+    // budget, so a large but legitimate snapshot does not starve other gaps.
+    constexpr auto k_max_state_snapshot_events_per_pdu = std::size_t{1000U};
     constexpr auto k_max_backfill_recursion_depth = std::size_t{2U};
+
+    // ADR-0069 option A: separate budget for outbound calls made while
+    // materialising a /state_ids snapshot. This covers /event/{id} fetches for
+    // the named snapshot and auth-chain events plus /event_auth calls for
+    // historical state events, and is independent of the general PDU backfill
+    // budget so that one large room does not exhaust the cap for the whole
+    // inbound transaction.
+    constexpr auto k_max_snapshot_outbound_calls = std::size_t{100U};
 
     // Returns true when the store has an event with this event_id and it has a
     // recorded after-state group (so it can serve as a prev_event for state-
@@ -2388,6 +2401,29 @@ namespace
     [[nodiscard]] auto event_has_state_group(database::PersistentStore const& store, std::string_view event_id) -> bool
     {
         return database::find_event_state_group(store, event_id).has_value();
+    }
+
+    // Returns true when every prev_event of the parsed event has a recorded
+    // state group. Used by the /state_ids fallback to decide whether a
+    // verification failure is due to a missing state-before (ADR-0069 option A)
+    // or some other reason.
+    [[nodiscard]] auto prev_events_have_state_groups(database::PersistentStore const& store,
+                                                     rooms::RoomVersionPolicy const& policy,
+                                                     std::string_view event_json) -> bool
+    {
+        auto const envelope_opt = federation::parse_inbound_pdu_envelope(std::string{event_json}, policy.id);
+        if (!envelope_opt.has_value())
+        {
+            return false;
+        }
+        for (auto const& id : envelope_opt->prev_event_ids)
+        {
+            if (!event_has_state_group(store, id))
+            {
+                return false;
+            }
+        }
+        return true;
     }
 
     [[nodiscard]] auto array_member(canonicaljson::Object const& object, std::string_view key) noexcept
@@ -2556,6 +2592,45 @@ namespace
         return std::nullopt;
     }
 
+    // Spec: GET /_matrix/federation/v1/event_auth/{roomId}/{eventId} returns an
+    // object with an "auth_chain" array of PDUs. Extract each PDU as canonical
+    // JSON and return them in order; reject malformed responses.
+    [[nodiscard]] auto extract_pdus_from_auth_chain_response(std::string_view body)
+        -> std::optional<std::vector<std::string>>
+    {
+        if (body.empty() || body.front() != '{')
+        {
+            return std::nullopt;
+        }
+        auto const parsed = canonicaljson::parse_json(body);
+        if (parsed.error != canonicaljson::ParseError::none)
+        {
+            return std::nullopt;
+        }
+        auto const* root = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+        if (root == nullptr)
+        {
+            return std::nullopt;
+        }
+        auto const* auth_chain = array_member(*root, "auth_chain");
+        if (auth_chain == nullptr)
+        {
+            return std::nullopt;
+        }
+        auto result = std::vector<std::string>{};
+        result.reserve(auth_chain->size());
+        for (auto const& pdu : *auth_chain)
+        {
+            auto const serialized = canonicaljson::serialize_canonical(pdu);
+            if (serialized.error != canonicaljson::CanonicalJsonError::none)
+            {
+                return std::nullopt;
+            }
+            result.push_back(std::move(serialized.output));
+        }
+        return result;
+    }
+
     [[nodiscard]] auto fetch_event_by_id(HomeserverRuntime& runtime, std::string_view room_id, std::string_view origin,
                                          std::string_view event_id, std::size_t& outbound_calls)
         -> std::optional<std::string>
@@ -2580,6 +2655,35 @@ namespace
             return std::nullopt;
         }
         ++outbound_calls;
+        return extract_pdu_from_event_response(body);
+    }
+
+    // Snapshot-phase variant of fetch_event_by_id. Uses the separate snapshot
+    // budget (ADR-0069 option A) instead of the general PDU backfill budget.
+    [[nodiscard]] auto fetch_snapshot_event_by_id(HomeserverRuntime& runtime, std::string_view room_id,
+                                                  std::string_view origin, std::string_view event_id,
+                                                  std::size_t& snapshot_calls) -> std::optional<std::string>
+    {
+        if (snapshot_calls >= k_max_snapshot_outbound_calls)
+        {
+            return std::nullopt;
+        }
+        auto const [key_id, secret_key] = signing_material_for_backfill(runtime);
+        if (secret_key.empty())
+        {
+            return std::nullopt;
+        }
+        auto tx = federation::make_outbound_transaction(
+            std::string{origin}, "GET", "/_matrix/federation/v1/event/" + core::percent_encode_path_component(event_id),
+            runtime.config.server().server_name, "");
+        auto const [ok, body] = perform_sync_outbound_call(
+            runtime, room_id, tx, key_id, secret_key, "federation.backfill.snapshot_event_fetch_failed",
+            runtime.federation.config.remote_timeout_seconds, 16U * 1024U * 1024U);
+        if (!ok)
+        {
+            return std::nullopt;
+        }
+        ++snapshot_calls;
         return extract_pdu_from_event_response(body);
     }
 
@@ -2661,6 +2765,39 @@ namespace
         return std::make_pair(std::move(*pdu_ids), std::move(*auth_chain_ids));
     }
 
+    // Spec: GET /_matrix/federation/v1/event_auth/{roomId}/{eventId} returns the
+    // full auth chain for an event as an array of PDUs. This is used by the
+    // /state_ids fallback to verify historical state events whose prev_events
+    // have no recorded state groups (ADR-0069 option A).
+    [[nodiscard]] auto fetch_event_auth(HomeserverRuntime& runtime, std::string_view room_id, std::string_view origin,
+                                        std::string_view event_id, std::size_t& snapshot_calls)
+        -> std::optional<std::vector<std::string>>
+    {
+        if (snapshot_calls >= k_max_snapshot_outbound_calls)
+        {
+            return std::nullopt;
+        }
+        auto const [key_id, secret_key] = signing_material_for_backfill(runtime);
+        if (secret_key.empty())
+        {
+            return std::nullopt;
+        }
+        auto const path = std::string{"/_matrix/federation/v1/event_auth/"} +
+                          core::percent_encode_path_component(room_id) + "/" +
+                          core::percent_encode_path_component(event_id);
+        auto tx = federation::make_outbound_transaction(std::string{origin}, "GET", path,
+                                                        runtime.config.server().server_name, "");
+        auto const [ok, body] = perform_sync_outbound_call(
+            runtime, room_id, tx, key_id, secret_key, "federation.backfill.event_auth_failed",
+            runtime.federation.config.remote_timeout_seconds, 16U * 1024U * 1024U);
+        if (!ok)
+        {
+            return std::nullopt;
+        }
+        ++snapshot_calls;
+        return extract_pdus_from_auth_chain_response(body);
+    }
+
     [[nodiscard]] auto sender_domain_from_user_id(std::string_view user_id) noexcept -> std::string_view
     {
         auto const at = user_id.find('@');
@@ -2681,8 +2818,8 @@ namespace
     [[nodiscard]] auto verify_and_store_backfilled_event(
         HomeserverRuntime& runtime, std::string_view room_id, std::string_view origin, std::string_view event_json,
         rooms::RoomVersionPolicy const& policy,
-        std::optional<std::vector<database::PersistentStateGroupStateEntry>> const& forced_state_before = std::nullopt)
-        -> bool
+        std::optional<std::vector<database::PersistentStateGroupStateEntry>> const& forced_state_before = std::nullopt,
+        bool allow_auth_events_only = false) -> bool
     {
         std::ignore = origin;
         if (event_json.empty() || event_json.front() != '{')
@@ -2703,6 +2840,32 @@ namespace
         {
             return false;
         }
+
+        // ADR-0069 option A: if the event is already in the store we do not need
+        // to re-verify it during backfill. This lets locally-created genesis
+        // events returned in an /event_auth auth chain be accepted even though
+        // they were signed with this server's own key, not a remote key. The
+        // snapshot-building phase still enforces room and rejected-status checks.
+        // We match on the raw event_id field from the JSON rather than the
+        // reference-hash-derived event_id, because test fixtures and some
+        // historical events may carry a stable textual event_id that does not
+        // match the computed reference hash.
+        auto const* raw_obj = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+        auto const* raw_event_id = raw_obj == nullptr ? nullptr : string_member(*raw_obj, "event_id");
+        if (raw_event_id != nullptr)
+        {
+            auto const stripe = std::hash<std::string>{}(std::string{room_id}) % room_mutex_stripe_count;
+            auto stripe_guard = std::unique_lock{runtime.room_stripe_mutexes[stripe]};
+            auto global_guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+            if (std::ranges::any_of(runtime.database.persistent_store.events,
+                                    [&](database::PersistentEvent const& evt) {
+                                        return evt.event_id == *raw_event_id;
+                                    }))
+            {
+                return true;
+            }
+        }
+
         auto effective_pdu = parsed.value;
         auto stored_json = std::string{event_json};
         if (!events::verify_pdu_content_hash(effective_pdu))
@@ -2816,6 +2979,17 @@ namespace
                 compute_state_before(runtime.database.persistent_store, room_id, policy, envelope.prev_event_ids);
             if (!computed.ok)
             {
+                // ADR-0069 option A: historical state events pulled in by the
+                // /state_ids fallback may have prev_events whose state groups are
+                // not recorded locally. In that case we authorise and store the
+                // event against its own auth_events alone, treating the state
+                // before it as empty. This is only permitted for snapshot state
+                // events after their full auth chain has been fetched and
+                // verified via /event_auth.
+                if (allow_auth_events_only)
+                {
+                    return std::vector<database::PersistentStateGroupStateEntry>{};
+                }
                 return std::nullopt;
             }
             return computed.state;
@@ -2826,22 +3000,48 @@ namespace
         }
         auto const& state_before = *state_before_entries;
 
-        auto state_before_map = build_auth_event_map_from_entries(
-            runtime.database.persistent_store, state_before, envelope.sender,
-            envelope.state_key.value_or(std::string{}), envelope.event_type, third_party_invite_token);
-        fill_create_from_room_state(state_before_map, runtime.database.persistent_store, room_id);
-        auto const state_before_decision =
-            events::authorize_event_against_auth_events(effective_pdu, policy, state_before_map);
+        auto state_before_map = events::AuthEventMap{};
+        auto state_before_decision = events::EventAuthorizationDecision{};
+        if (allow_auth_events_only && state_before.empty())
+        {
+            // ADR-0069 option A: snapshot state events (and their /event_auth chain)
+            // whose previous events have no recorded state groups are authorised
+            // against their own auth_events, because no local state-before is
+            // available. The auth_events check above has already passed.
+            state_before_map = auth_events_map;
+            state_before_decision = auth_events_decision;
+        }
+        else
+        {
+            state_before_map = build_auth_event_map_from_entries(
+                runtime.database.persistent_store, state_before, envelope.sender,
+                envelope.state_key.value_or(std::string{}), envelope.event_type, third_party_invite_token);
+            fill_create_from_room_state(state_before_map, runtime.database.persistent_store, room_id);
+            state_before_decision =
+                events::authorize_event_against_auth_events(effective_pdu, policy, state_before_map);
+        }
         if (!state_before_decision.allowed)
         {
             outcome = BackfillOutcome::rejected;
             outcome_reason = "event auth denied against state before the event: " + state_before_decision.reason;
         }
 
-        auto const state_after =
-            outcome == BackfillOutcome::rejected
-                ? state_before
-                : compute_state_after(state_before, envelope.event_id, envelope.event_type, envelope.state_key);
+        auto const state_after = [&]() -> std::vector<database::PersistentStateGroupStateEntry> {
+            if (outcome == BackfillOutcome::rejected)
+            {
+                return state_before;
+            }
+            // ADR-0069 option A: when the state-before is unavailable, the
+            // recorded state-after is the event's own auth_events state entries
+            // plus the event itself. This gives descendant events enough context
+            // (create, power_levels, sender membership) to be verified against
+            // this outlier as their state-before.
+            auto const state_after_input =
+                (allow_auth_events_only && state_before.empty())
+                    ? state_entries_from_named_events(runtime.database.persistent_store, envelope.auth_event_ids)
+                    : state_before;
+            return compute_state_after(state_after_input, envelope.event_id, envelope.event_type, envelope.state_key);
+        }();
 
         auto const stripe = std::hash<std::string>{}(std::string{room_id}) % room_mutex_stripe_count;
         auto stripe_guard = std::unique_lock{runtime.room_stripe_mutexes[stripe]};
@@ -2910,12 +3110,14 @@ namespace
         return true;
     }
 
-    // ADR-0064 phase C: /state_ids fallback. When /get_missing_events and
-    // per-event fetches cannot close the gap, ask the origin for the resolved
-    // state at a missing prev_event, fetch and verify the named state and auth
-    // events, then verify and store the missing event using that verified
-    // snapshot as its state-before. Returns true when the target event was
-    // stored.
+    // ADR-0064 phase C / ADR-0069 option A: /state_ids fallback. When
+    // /get_missing_events and per-event fetches cannot close the gap, ask the
+    // origin for the resolved state at a missing prev_event. Fetch and verify
+    // the named state and auth events; for historical state events whose
+    // prev_events have no recorded state groups, fall back to /event_auth to
+    // obtain their full auth chain and store them as auth-events-only outliers.
+    // Finally verify and store the missing event using the verified snapshot as
+    // its state-before. Returns true when the target event was stored.
     [[nodiscard]] auto backfill_state_ids_snapshot(HomeserverRuntime& runtime, std::string_view room_id,
                                                    std::string_view origin, std::string_view target_event_id,
                                                    rooms::RoomVersionPolicy const& policy, std::size_t& outbound_calls,
@@ -2944,6 +3146,7 @@ namespace
 
         auto needed_ids = std::vector<std::string>{};
         needed_ids.reserve(pdu_ids.size() + auth_chain_ids.size());
+        auto snapshot_state_ids = std::unordered_set<std::string>{};
         {
             auto seen = std::unordered_set<std::string>{};
             for (auto const& id : pdu_ids)
@@ -2951,6 +3154,7 @@ namespace
                 if (id != target_event_id && seen.insert(id).second)
                 {
                     needed_ids.push_back(id);
+                    snapshot_state_ids.insert(id);
                 }
             }
             for (auto const& id : auth_chain_ids)
@@ -2961,6 +3165,11 @@ namespace
                 }
             }
         }
+
+        // ADR-0069 option A: snapshot materialisation gets its own outbound budget
+        // so that verifying a large legitimate state snapshot does not exhaust
+        // the general per-PDU backfill budget.
+        auto snapshot_calls = std::size_t{0U};
 
         if (needed_ids.size() > k_max_state_snapshot_events_per_pdu)
         {
@@ -2981,18 +3190,72 @@ namespace
                     continue;
                 }
             }
-            if (outbound_calls >= k_max_backfill_outbound_calls)
+            if (snapshot_calls >= k_max_snapshot_outbound_calls)
             {
                 return false;
             }
-            auto const json = fetch_event_by_id(runtime, room_id, origin, id, outbound_calls);
+            auto const json = fetch_snapshot_event_by_id(runtime, room_id, origin, id, snapshot_calls);
             if (!json.has_value())
             {
                 return false;
             }
-            if (!verify_and_store_backfilled_event(runtime, room_id, origin, *json, policy))
+            if (verify_and_store_backfilled_event(runtime, room_id, origin, *json, policy))
             {
-                LOG_WARNING("backfill_state_ids_snapshot: snapshot event failed verification; room_id=" +
+                continue;
+            }
+
+            // ADR-0069 option A: a snapshot state event whose prev_events have no
+            // recorded state groups is a normal historical gap, not a failure.
+            // Fetch the full auth chain via /event_auth, verify and store each
+            // returned PDU against its own auth_events alone, then retry the
+            // snapshot event as an auth-events-only outlier. If this still fails,
+            // or if the event is not a snapshot state event, the snapshot is
+            // rejected fail-closed.
+            if (!snapshot_state_ids.contains(id))
+            {
+                LOG_WARNING("backfill_state_ids_snapshot: auth-chain event failed verification; room_id=" +
+                            std::string{room_id} + " event_id=" + id);
+                return false;
+            }
+            // Only spend an /event_auth call when the failure is plausibly due to
+            // a missing state-before. If all prev_events have state groups, the
+            // failure is for another reason (forged signature, bad auth_events,
+            // etc.) and the snapshot must be rejected immediately.
+            auto prev_events_known = false;
+            {
+                auto const stripe = std::hash<std::string>{}(std::string{room_id}) % room_mutex_stripe_count;
+                auto stripe_guard = std::unique_lock{runtime.room_stripe_mutexes[stripe]};
+                auto global_guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
+                prev_events_known = prev_events_have_state_groups(runtime.database.persistent_store, policy, *json);
+            }
+            if (prev_events_known)
+            {
+                LOG_WARNING(
+                    "backfill_state_ids_snapshot: snapshot event failed verification despite known state-before; "
+                    "room_id=" +
+                    std::string{room_id} + " event_id=" + id);
+                return false;
+            }
+            auto const auth_pdus = fetch_event_auth(runtime, room_id, origin, id, snapshot_calls);
+            if (!auth_pdus.has_value())
+            {
+                LOG_WARNING("backfill_state_ids_snapshot: /event_auth fallback failed; room_id=" +
+                            std::string{room_id} + " event_id=" + id);
+                return false;
+            }
+            for (auto const& auth_json : *auth_pdus)
+            {
+                if (!verify_and_store_backfilled_event(runtime, room_id, origin, auth_json, policy, std::nullopt, true))
+                {
+                    LOG_WARNING("backfill_state_ids_snapshot: auth-chain PDU failed verification; room_id=" +
+                                std::string{room_id} + " snapshot_event_id=" + id);
+                    return false;
+                }
+            }
+            if (!verify_and_store_backfilled_event(runtime, room_id, origin, *json, policy, std::nullopt, true))
+            {
+                LOG_WARNING("backfill_state_ids_snapshot: snapshot event failed verification after /event_auth "
+                            "fallback; room_id=" +
                             std::string{room_id} + " event_id=" + id);
                 return false;
             }
@@ -3066,11 +3329,11 @@ namespace
             }
         }
 
-        if (outbound_calls >= k_max_backfill_outbound_calls)
+        if (snapshot_calls >= k_max_snapshot_outbound_calls)
         {
             return false;
         }
-        auto const target_json = fetch_event_by_id(runtime, room_id, origin, target_event_id, outbound_calls);
+        auto const target_json = fetch_snapshot_event_by_id(runtime, room_id, origin, target_event_id, snapshot_calls);
         if (!target_json.has_value())
         {
             return false;
