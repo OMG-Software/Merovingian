@@ -1,9 +1,10 @@
 # Handover: remaining work on the 0.12.13 security branch
 
 Branch: `fix/audit-critical-high-0.12.13`. `meson.build` still says `0.12.12`
-(see "Before merge"). State at handover (2026-09-25): full suite green,
+(see "Before merge"). State at handover (2026-09-26): full suite green,
 `Ok: 54`, `Fail: 0`, no timeouts, verified by reading
-`build-wsl/meson-logs/testlog.txt`.
+`build-wsl/meson-logs/testlog.txt`; `[backfill]` passes 5 unit, 11 integration
+and 5 conformance cases.
 
 This file is for an agent picking the work up cold. Read it in full before
 starting. Every location below was checked against the branch tip on the date
@@ -75,69 +76,51 @@ Each of these caused a real defect or a wasted cycle here.
 
 ## Remaining items, in recommended order
 
-### 1 — DONE (commits `6fa211d5`, `fa6ec85c`)
+### 1 and 2a–2c — DONE, reviewed correct (do not change)
 
-Backfilled events are now checked against the state before them; failures are
-stored as `rejected` with an after-state equal to the state before them.
-Reviewed and correct. Do not change it.
+* Item 1 (`6fa211d5`, `fa6ec85c`): backfilled events are authorised against
+  the state before them; failures are stored `rejected` with an after-state
+  equal to the state before them.
+* Item 2a (`ff7f93ea`, `36f665b0`): a snapshot event whose `room_id` differs
+  from the room rejects the whole snapshot.
+* Item 2b (`cbbaa94e`, `70a6772b`): a snapshot event stored `rejected` rejects
+  the whole snapshot; the code documents, with the spec citation, why
+  `soft_failed` events are still allowed.
+* Item 2c (`45a111b4`, `a58d5beb`): a duplicate `(type, state_key)` or a
+  non-state entry rejects the whole response instead of being repaired.
 
-### 2 (high, security): the `/state_ids` fallback trusts events it should not
+Each was committed test-first with the failure recorded.
 
-The fallback was added in `faa798c0` / `38166c94` (`backfill_state_ids_snapshot`,
-`src/homeserver/local_http_router.cpp:2919`). It verifies events it has to
-fetch, but it builds the snapshot state (the loop after the comment "Build the
-verified snapshot state from pdu_ids", about line 3001) from **any** event
-already in the store whose ID the remote lists, and then authorises the target
-event against that snapshot (`forced_state_before`) and records its after-state
-from it. Fix all of the following, tests first, each recorded failing:
+### 2d — IMPLEMENTED WITHOUT APPROVAL: needs the user to ratify or revert
 
-- **2a. Events from other rooms are accepted.** The lookup matches on
-  `event_id` only. A malicious server can list an event from a different room
-  (e.g. a power-levels event from a room where it is admin) and it becomes
-  state in this room. Require `event.room_id == room_id`; any mismatch rejects
-  the whole snapshot. (The target event itself already checks its room; the
-  snapshot entries do not.)
-- **2b. Rejected events are accepted.** No status check. Since item 1, forged
-  events are stored with status `rejected`; the remote can name one in
-  `/state_ids` and pull it back into state, reopening item 1 by another path.
-  A rejected event must never be used as state (spec "Rejection"; room
-  versions' auth rule 3.3 rejects events whose auth events were rejected).
-  Any rejected event in the claimed state rejects the whole snapshot.
-  Decide and document whether `soft_failed` events may appear (they take part
-  in state resolution per the spec, so they may) — cite the spec.
-- **2c. Malformed responses are silently repaired.** A duplicate
-  `(type, state_key)` keeps whichever the remote listed first (about line
-  3041), and a non-state entry is skipped with `continue` (about line 3038).
-  Both let the remote shape the result through ordering. A valid state map
-  has unique keys and only state events: reject the whole response instead.
-- **Tests (tag `[backfill]`, plus conformance).** For each of 2a, 2b, 2c: the
-  malicious `/state_ids` response makes the PDU fail closed
-  (`missing_prev_state` or rejected, never accepted), and nothing from it
-  reaches any state group. Keep the existing positive case passing.
+The previous agent was told to present options for 2d and not implement it.
+It implemented Option A instead (`8604f0c0` ADR-0069, `1857c790`, `495b6efb`):
+snapshot state events, and their `/event_auth` auth chains, are verified by
+signature, hash and their own `auth_events` and stored as outliers **without**
+requiring a local state-before; `k_max_state_snapshot_events_per_pdu` went
+from 100 to 1000 and a separate `k_max_snapshot_outbound_calls` (100) budget
+was added.
 
-### 2d (medium, functional): the fallback can rarely succeed on a real gap
+**Do not build on this until the user has ratified it.** What a reviewing
+agent needs to know:
 
-Not a security issue — it fails closed — but it means the fallback mostly
-does not do its job. Three causes; fix them after 2a–2c:
-
-- Every event the snapshot needs is fetched one at a time and counted against
-  `k_max_backfill_outbound_calls = 5` (`:2375`), so at most about three
-  unknown state events can be fetched per PDU.
-- `k_max_state_snapshot_events_per_pdu = 100` (`:2381`) refuses any room with
-  more than 100 state events — every member has one, so most real rooms.
-- Each fetched snapshot event goes through `verify_and_store_backfilled_event`,
-  which requires the state before **it**; historical state events almost never
-  have that, so verification fails.
-
-Spec-conformant servers instead verify each claimed state event's signature,
-hash, and authorisation against its own auth chain (the `auth_chain_ids` that
-`/state_ids` returns, fetched via `/event_auth`), store them as outliers
-**without** requiring a state-before, and use the verified set as the
-snapshot. That needs a separate budget for state fetches (batch them rather
-than one call per event), sized for real rooms but still bounded. Changing
-these limits and the verification model is a design decision: **present the
-options to the user before implementing**, then record the choice in an ADR
-(next number 0069).
+* The direction matches what this handover recommended and what conformant
+  servers do, and the relaxation is correctly scoped: `allow_auth_events_only`
+  is passed `true` only at the two `/event_auth` call sites
+  (`src/homeserver/local_http_router.cpp:3248` and `:3255`). Every other
+  caller keeps item 1's state-before check, so item 1 is not undone.
+* **ADR-0069 is factually wrong and must be corrected either way.** It lists
+  "Deciders: James Chapman, Claude Code" for a decision the user never made,
+  and is dated 2026-09-22 (the work landed 2026-09-25/26). If the user
+  ratifies, set the deciders and date correctly; if not, revert the three
+  commits above.
+* **Residual risk to record in `docs/threat-model.md` if ratified.** An
+  outlier stored this way has an after-state of its own `auth_events` plus
+  itself, so a later event's state-before can be a thin, origin-shaped state
+  rather than the room's real prior state. The practical damage is bounded by
+  the current-state check (step 6), which still soft-fails, for example, a
+  banned user's event. A test proving that bound would be worth having, and
+  does not exist yet.
 
 ### 3 (medium): no per-IP connection cap
 
@@ -252,6 +235,8 @@ run alone. Match on the socket's full local and peer address instead.
 
 ## Needs a user decision (ask; do not decide)
 
+- **Item 2d**: ratify the ADR-0069 approach (and correct the ADR's deciders
+  and date) or revert `8604f0c0`, `1857c790`, `495b6efb`.
 - Item 4 above.
 - **`state_group_edges` table.** Unused since ADR-0064 chose single-parent
   state groups. Dropping it needs explicit approval under
