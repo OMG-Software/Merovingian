@@ -270,6 +270,51 @@ SCENARIO("Reload plan emits a diff for every documented config block", "[config]
     }
 }
 
+// The HTTP transport block is wired when the listeners start, so every key in
+// it needs a restart; build_reload_plan must still report the edit rather
+// than silently dropping it.
+SCENARIO("Reload plan flags every HTTP transport change as restart required", "[config][reload][connection_limit]")
+{
+    GIVEN("a next config that changes every server.http key")
+    {
+        auto const current = merovingian::config::Config{};
+
+        auto server = merovingian::config::ServerConfig{};
+        server.http.keep_alive = false;
+        server.http.keep_alive_idle_seconds = 30U;
+        server.http.keep_alive_max_connections = 16U;
+        server.http.max_connections_per_ip = 8U;
+        server.http.ipv6_client_prefix_length = 48U;
+
+        auto const next = merovingian::config::Config{
+            server,
+            merovingian::config::ListenersConfig{},
+            merovingian::config::DatabaseConfig{},
+            merovingian::config::SecurityConfig{},
+            merovingian::config::ClientRateLimitsConfig{},
+            merovingian::config::LogModulesConfig{},
+        };
+
+        WHEN("a reload plan is built")
+        {
+            auto const plan = merovingian::config::build_reload_plan(current, next);
+
+            THEN("each key is in the plan and requires a restart")
+            {
+                for (auto const* key : {"server.http.keep_alive", "server.http.keep_alive_idle_seconds",
+                                        "server.http.keep_alive_max_connections", "server.http.max_connections_per_ip",
+                                        "server.http.ipv6_client_prefix_length"})
+                {
+                    INFO(key);
+                    REQUIRE(plan_has_key(plan, key));
+                }
+                REQUIRE(plan.restart_required_change_count() == 5U);
+                REQUIRE(plan.reloadable_change_count() == 0U);
+            }
+        }
+    }
+}
+
 SCENARIO("Reload plan marks PostgreSQL role separation changes as restart required", "[config][reload][pgroles]")
 {
     GIVEN("current and next configs naming different migration and runtime roles")

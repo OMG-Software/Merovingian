@@ -99,6 +99,15 @@ federation worker's table allowlist, or a source-tree test fails).
 * **D3: deferred** to a separate cleanup branch; tracked in
   `docs/todos/capability-gaps.md`.
 
+Further answers from the user on 2026-09-27, in writing:
+
+* **Item 1:** default per-IP connection cap 64
+  (`server.http.max_connections_per_ip`); addresses in
+  `server.trusted_proxies` are exempt from the accept-time cap.
+* **Item 4 addition:** `effective_client_ip` must take the rightmost
+  `X-Forwarded-For` entry that is not a trusted proxy, not the leftmost
+  (which the client controls when the proxy appends to the header).
+
 The original text of each decision follows for context.
 
 ### D1. Ratify or revert the `/state_ids` fallback rework

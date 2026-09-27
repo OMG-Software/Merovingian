@@ -164,6 +164,7 @@ shell = find_program('sh')
       'unit/test_hardening_self_check.cpp',
       'unit/test_homeserver_vertical_slice.cpp',
       'unit/test_http_connection_guard.cpp',
+      'unit/test_http_connection_limiter.cpp',
       'unit/test_http_keep_alive.cpp',
       'unit/test_http_rate_limit.cpp',
       'unit/test_http_rate_limit_tiers.cpp',

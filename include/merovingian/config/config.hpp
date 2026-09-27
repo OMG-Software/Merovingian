@@ -51,11 +51,21 @@ struct CorsConfig final
 //                             connection occupies a main-pool worker thread,
 //                             so the cap bounds how many workers a client can
 //                             tie up. Range 1..4096; restart required.
+//   max_connections_per_ip  — open connections one client key may hold on
+//                             the client and federation listeners, decided at
+//                             accept time (ADR-0072). Addresses listed in
+//                             server.trusted_proxies are exempt. Range
+//                             1..65535; restart required.
+//   ipv6_client_prefix_length — prefix length IPv6 clients are grouped by for
+//                             per-client limits (the connection cap and the
+//                             rate limiter). Range 1..128; restart required.
 struct HttpTransportConfig final
 {
     bool keep_alive{true};
     std::uint32_t keep_alive_idle_seconds{15U};
     std::uint32_t keep_alive_max_connections{8U};
+    std::uint32_t max_connections_per_ip{64U};
+    std::uint8_t ipv6_client_prefix_length{64U};
 };
 
 struct TurnServerConfig final

@@ -2,12 +2,13 @@
 
 #include "merovingian/config/config_parser.hpp"
 
-#include <algorithm>
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <cstdint>
 #include <limits>
 #include <string>
+#include <utility>
 #include <vector>
 
 SCENARIO("Key-value config parser preserves secure defaults for empty input", "[config][parser]")
@@ -636,6 +637,66 @@ SCENARIO("Key-value config parser still rejects i64 values beyond the representa
     }
 }
 
+SCENARIO("Key-value config parser applies the per-client connection limits", "[config][parser][connection_limit]")
+{
+    GIVEN("no per-client connection keys")
+    {
+        auto const result = merovingian::config::parse_key_value_config(std::string{});
+
+        THEN("the cap is 64 connections and IPv6 clients are grouped by /64")
+        {
+            REQUIRE(result.config.server().http.max_connections_per_ip == 64U);
+            REQUIRE(result.config.server().http.ipv6_client_prefix_length == 64U);
+        }
+    }
+
+    GIVEN("config input overriding both keys")
+    {
+        auto const input = std::string{"server.http.max_connections_per_ip=16\n"
+                                       "server.http.ipv6_client_prefix_length=56\n"};
+
+        WHEN("the config is parsed")
+        {
+            auto const result = merovingian::config::parse_key_value_config(input);
+
+            THEN("the values are applied")
+            {
+                REQUIRE(result.findings.empty());
+                REQUIRE(result.config.server().http.max_connections_per_ip == 16U);
+                REQUIRE(result.config.server().http.ipv6_client_prefix_length == 56U);
+                REQUIRE(merovingian::config::is_valid(result.config));
+            }
+        }
+    }
+
+    GIVEN("out-of-range values")
+    {
+        auto const inputs = std::vector<std::pair<std::string, std::string>>{
+            {"server.http.max_connections_per_ip=0\n",      "server.http.max_connections_per_ip"   },
+            {"server.http.max_connections_per_ip=65536\n",  "server.http.max_connections_per_ip"   },
+            {"server.http.ipv6_client_prefix_length=0\n",   "server.http.ipv6_client_prefix_length"},
+            {"server.http.ipv6_client_prefix_length=129\n", "server.http.ipv6_client_prefix_length"},
+        };
+
+        WHEN("each is parsed")
+        {
+            THEN("each is rejected with a finding and the default is kept")
+            {
+                for (auto const& [input, field] : inputs)
+                {
+                    INFO(input);
+                    auto const result = merovingian::config::parse_key_value_config(input);
+                    REQUIRE(std::ranges::any_of(result.findings, [&](auto const& finding) {
+                        return finding.field == field;
+                    }));
+                    REQUIRE(result.config.server().http.max_connections_per_ip == 64U);
+                    REQUIRE(result.config.server().http.ipv6_client_prefix_length == 64U);
+                }
+            }
+        }
+    }
+}
+
 SCENARIO("Key-value config parser applies the HTTP keep-alive transport policy", "[config][parser][keep-alive]")
 {
     GIVEN("config input overriding the keep-alive transport keys")
@@ -777,8 +838,7 @@ SCENARIO("Key-value config parser rejects malformed resource capacity limits", "
     {
         WHEN("the config is parsed")
         {
-            auto const result =
-                merovingian::config::parse_key_value_config("listeners.max_queued_connections=lots\n");
+            auto const result = merovingian::config::parse_key_value_config("listeners.max_queued_connections=lots\n");
 
             THEN("the key is reported rather than quietly falling back to the default")
             {
@@ -839,8 +899,7 @@ SCENARIO("Key-value config parser accepts the full unsigned 64-bit range for a r
                 // Overflowing to zero would read as "no limit" -- the opposite
                 // of what the operator asked for.
                 REQUIRE(result.findings.empty());
-                REQUIRE(result.config.security().media.max_records ==
-                        std::numeric_limits<std::uint64_t>::max());
+                REQUIRE(result.config.security().media.max_records == std::numeric_limits<std::uint64_t>::max());
             }
         }
     }
