@@ -5,16 +5,16 @@
 # Server identity
 # server.name is the Matrix server name used in user IDs and federation.
 # public_baseurl is the HTTPS URL clients use to reach this homeserver.
-# trusted_proxies is a comma-separated list of reverse-proxy IPs that sanitize
-# X-Forwarded-For before passing traffic to Merovingian.  When a request
-# arrives from a trusted proxy, the rate limiter uses the leftmost
-# X-Forwarded-For value as the effective client IP instead of the raw peer
-# address.  Without this setting, all clients share one rate-limit bucket
-# (the proxy IP) and a single active Matrix client can exhaust the cap for
-# everyone.  For a typical same-host nginx/Apache/Traefik/HAProxy deployment:
+# trusted_proxies is a comma-separated list of reverse-proxy IPs whose
+# X-Forwarded-For entries are believed.  When a request arrives from a trusted
+# proxy, the rate limiter walks X-Forwarded-For from the right past trusted
+# proxies and uses the first other entry as the client IP (ADR-0073), so a
+# proxy that appends (nginx $proxy_add_x_forwarded_for) is safe: whatever the
+# client itself sent on the left is ignored.  Without this setting, all
+# clients share one rate-limit bucket (the proxy IP) and a single active
+# Matrix client can exhaust the cap for everyone.  For a typical same-host
+# nginx/Apache/Traefik/HAProxy deployment:
 #   server.trusted_proxies=127.0.0.1
-# The proxy MUST overwrite X-Forwarded-For with the direct peer IP it
-# received — never append to client-supplied values (see docs/configuration.md).
 server.name=matrix.example.org
 server.public_baseurl=https://matrix.example.org
 server.trusted_proxies=127.0.0.1

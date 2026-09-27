@@ -75,6 +75,7 @@
 * [0070 - Events verified only against their auth_events carry no state](0070-event-auth-outliers-carry-no-state.md)
 * [0071 - Main re-verifies PDUs relayed by the federation worker](0071-main-re-verifies-pdus-relayed-by-the-federation-worker.md)
 * [0072 - Per-IP connection cap at accept time](0072-per-ip-connection-cap-at-accept-time.md)
+* [0073 - The client address is the rightmost untrusted X-Forwarded-For entry](0073-client-address-is-the-rightmost-untrusted-x-forwarded-for-entry.md)
 
 ## Rejected Records
 

@@ -109,6 +109,17 @@
   (`[event_auth_outlier]`, and the updated `[backfill][conformance]` scenario).
   See [ADR-0070](docs/adr/0070-event-auth-outliers-carry-no-state.md).
 
+- **FIXED: IPv6 clients could escape rate limits within one /64, and a client
+  could pick its own bucket through X-Forwarded-For (LOW and MEDIUM, audit
+  item 4, ADR-0073).** Rate-limit buckets now group IPv6 clients by
+  `server.http.ipv6_client_prefix_length` (default /64; IPv4 unchanged), for
+  both the client-server rate limiter and the federation key-resolution
+  budget. Behind a trusted proxy the client is now the rightmost
+  `X-Forwarded-For` entry that is not itself a trusted proxy, with every
+  header line read as one list; before, the leftmost entry was used, which
+  the client controls when the proxy appends to the header. Tests:
+  `tests/unit/test_client_server.cpp` (`[rate_limit_keys]`).
+
 - **FIXED: redaction kept content keys the room version's algorithm drops
   (LOW, audit item 3).** The redacted form feeds the reference hash, so each
   of these gave affected events a different event ID from other servers:

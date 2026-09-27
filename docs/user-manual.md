@@ -371,7 +371,7 @@ change them.
 |---|---|---|
 | `server.name` | `example.org` | **Required.** The Matrix server name used in user IDs and federation. Must match the host part served by your reverse proxy. The shipped `config/merovingian.conf.example` sets `example.org`. |
 | `server.public_baseurl` | `https://matrix.example.org` | **Required.** The HTTPS URL clients use. Must be HTTPS. |
-| `server.trusted_proxies` | (empty) | **Required behind a reverse proxy.** Comma-separated list of proxy IPs whose `X-Forwarded-For` header is trusted for rate limiting. Without this, every client shares one per-IP bucket. The shipped example sets `127.0.0.1`. |
+| `server.trusted_proxies` | (empty) | **Required behind a reverse proxy.** Comma-separated list of proxy IPs whose `X-Forwarded-For` header is trusted for rate limiting. Without this, every client shares one per-IP bucket. The client is the rightmost `X-Forwarded-For` entry that is not itself a trusted proxy (ADR-0073), so a proxy may append to the header or overwrite it; list every proxy hop you control. The shipped example sets `127.0.0.1`. |
 
 #### CORS policy — `server.cors.*`
 

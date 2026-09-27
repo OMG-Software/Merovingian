@@ -568,6 +568,15 @@ threat it closes; the controls above are the standing defences these reinforce.
   `federation::ip_address_is_valid()` (strict `inet_pton`-based IPv4/IPv6
   literal check) before trusting it; a missing or malformed value falls back
   to the direct peer address instead.
+- **A client choosing its own rate-limit bucket through X-Forwarded-For
+  (0.12.13 audit item 4, ADR-0073):** the limiter still used the *leftmost*
+  entry, which the client controls whenever a trusted proxy appends to the
+  header rather than overwriting it, so a client could prefix a fresh valid
+  address to each request and never be limited. It now walks the list from
+  the right past trusted proxies, and reads every header line as one list.
+  In the same change IPv6 clients are grouped by
+  `server.http.ipv6_client_prefix_length` (default /64), since one site is
+  handed a whole /64 and could otherwise rotate addresses within it.
 - **Admin media routes accepted unsanitized media IDs from the raw path
   suffix (2026-07 audit):** the `/_merovingian/admin/media/{quarantine,
   release,remove}` routes passed the raw path suffix directly as the media

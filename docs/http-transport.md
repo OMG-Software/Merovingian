@@ -610,15 +610,26 @@ homeserver with a proxy that enforces it.
 
 ### Trusted-proxy client IP resolution
 
-When the direct TCP peer's address is listed in `server.trusted_proxies`, the
-client-server rate limiter keys on the leftmost non-empty value in
-`X-Forwarded-For` instead of the peer address, so the entire downstream
-network isn't collapsed into one bucket. That value is validated as a real
+When the direct TCP peer's address is listed in `server.trusted_proxies`,
+`effective_client_ip` reads every `X-Forwarded-For` line, in order, as one
+list and walks it from the right past entries that are themselves trusted
+proxies; the first other entry is the client (ADR-0073). Each proxy appends
+the address it received the request from, so only the entries written by
+trusted proxies can be believed: the leftmost entries are whatever the
+client sent, and never choose the bucket. That entry is validated as a real
 IPv4 or IPv6 literal (`federation::ip_address_is_valid()`) before it is
 trusted — a trusted proxy is only trusted to forward its own view of the
 client address correctly, not to hand the server an arbitrary string. If the
-header is missing, empty, or not a valid IP literal, the limiter falls back to
-the direct peer address rather than trusting it verbatim. Without this check,
+header is missing, or that entry is not a valid IP literal, the limiter falls
+back to the direct peer address rather than trusting it verbatim.
+
+`rate_limit_client_key` then reduces the address with
+`http::client_address_key`, so IPv6 clients are grouped by
+`server.http.ipv6_client_prefix_length` (default /64; IPv4 is keyed as is).
+The client-server rate limiter and the federation key-resolution budget both
+key on it.
+
+Without the literal check,
 an attacker able to reach a trusted proxy (or a proxy that fails to overwrite
 an inbound `X-Forwarded-For` header) could rotate through malformed
 pseudo-IP values to mint a fresh rate-limit bucket per request and defeat
