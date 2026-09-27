@@ -1489,9 +1489,12 @@ namespace
     REQUIRE(policy != nullptr);
     auto auth_events = merovingian::events::AuthEventMap{};
     auth_events.create = merovingian::canonicaljson::parse_lossless(make_create_event("@alice:example.org")).value;
+    // @alice holds power 100 explicitly: only room v12 gives the creator
+    // infinite power, and rule 4.3.5.2 requires the authorising user to have
+    // invite power (50 here) in every version.
     auth_events.power_levels =
         merovingian::canonicaljson::parse_lossless(
-            make_power_levels_event("@alice:example.org", 50, 50, 50, 50, 0, 50, 0, "@moderator:example.org", 100))
+            make_power_levels_event("@alice:example.org", 50, 50, 50, 50, 0, 50, 0, "@alice:example.org", 100))
             .value;
     auth_events.join_rules =
         merovingian::canonicaljson::parse_lossless(make_join_rules_event(std::string{join_rule})).value;
