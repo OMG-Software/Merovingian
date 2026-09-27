@@ -19,6 +19,7 @@
 #include <chrono>
 #include <filesystem>
 #include <string>
+#include <thread>
 
 namespace
 {
@@ -169,6 +170,133 @@ SCENARIO("SQLite-backed homeserver runtime survives restart with users sessions 
                 // guest_access and m.room.encryption (for private_chat preset),
                 // before the additional message event is sent.
                 REQUIRE(restarted_runtime.homeserver.database.persistent_store.events.size() == 8U);
+            }
+        }
+
+        std::filesystem::remove(sqlite_path);
+    }
+}
+
+namespace
+{
+
+// Registers `localpart` and logs in with refresh-token consent (so the access
+// token carries an expiry); returns the login response body.
+[[nodiscard]] auto register_and_login_with_refresh(merovingian::homeserver::ClientServerRuntime& runtime,
+                                                   std::string const& localpart) -> std::string
+{
+    REQUIRE(
+        merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/register",
+             {},
+             std::string{R"({"username":")"} + localpart +
+                 R"(","password":"CorrectHorse7!","auth":{"type":"m.login.registration_token","token":"test-registration-token"}})"})
+            .response.status == 200U);
+    auto const login = merovingian::homeserver::handle_client_server_request(
+        runtime, {"POST",
+                  "/_matrix/client/v3/login",
+                  {},
+                  std::string{R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@)"} + localpart +
+                      R"(:example.org"},"password":"CorrectHorse7!","device_id":"LIFE1","refresh_token":true})"});
+    REQUIRE(login.response.status == 200U);
+    return login.response.body;
+}
+
+[[nodiscard]] auto json_string_field(std::string const& body, std::string const& field) -> std::string
+{
+    auto const key = "\"" + field + "\":\"";
+    auto const start = body.find(key);
+    REQUIRE(start != std::string::npos);
+    auto const value_start = start + key.size();
+    auto const end = body.find('"', value_start);
+    REQUIRE(end != std::string::npos);
+    return body.substr(value_start, end - value_start);
+}
+
+} // namespace
+
+// An access token issued with an expiry must still expire after a restart.
+// Hydration used to rebuild each in-memory session without its expires_at,
+// so after any restart every access token was valid forever (found while
+// doing 0.12.13 audit item 6).
+SCENARIO("SQLite-backed runtime still expires access tokens after a restart",
+         "[database][sqlite][homeserver][integration][session_restart]")
+{
+    GIVEN("a runtime whose access tokens live for one second")
+    {
+        auto const sqlite_path = unique_sqlite_path();
+        std::filesystem::remove(sqlite_path);
+        auto config = sqlite_registration_enabled_config(sqlite_path);
+        config.security().access_token_lifetime_ms = 1000LL;
+
+        WHEN("a token is issued, the runtime restarts, and the token's lifetime passes")
+        {
+            auto access_token = std::string{};
+            {
+                auto started = merovingian::homeserver::start_client_server(config);
+                REQUIRE(started.started);
+                access_token =
+                    json_string_field(register_and_login_with_refresh(started.runtime, "expiring"), "access_token");
+                REQUIRE(merovingian::homeserver::handle_client_server_request(
+                            started.runtime, {"GET", "/_matrix/client/v3/account/whoami", access_token, {}})
+                            .response.status == 200U);
+            }
+            auto restarted = merovingian::homeserver::start_client_server(config);
+            REQUIRE(restarted.started);
+            std::this_thread::sleep_for(std::chrono::milliseconds{1500});
+            auto const whoami = merovingian::homeserver::handle_client_server_request(
+                restarted.runtime, {"GET", "/_matrix/client/v3/account/whoami", access_token, {}});
+
+            THEN("the expired token is refused")
+            {
+                REQUIRE(whoami.response.status == 401U);
+            }
+        }
+
+        std::filesystem::remove(sqlite_path);
+    }
+}
+
+// ADR-0074: a refresh whose response was lost can be retried even across a
+// restart, because the new tokens' link to the refresh token they replace is
+// persisted (migration 017).
+SCENARIO("SQLite-backed runtime lets a lost refresh be retried after a restart",
+         "[database][sqlite][homeserver][integration][refresh_rotation]")
+{
+    GIVEN("a user who refreshed once before the runtime restarted, and never saw the response")
+    {
+        auto const sqlite_path = unique_sqlite_path();
+        std::filesystem::remove(sqlite_path);
+        auto const config = sqlite_registration_enabled_config(sqlite_path);
+        auto refresh_token = std::string{};
+        {
+            auto started = merovingian::homeserver::start_client_server(config);
+            REQUIRE(started.started);
+            refresh_token =
+                json_string_field(register_and_login_with_refresh(started.runtime, "rotating"), "refresh_token");
+            REQUIRE(merovingian::homeserver::handle_client_server_request(
+                        started.runtime, {"POST",
+                                          "/_matrix/client/v3/refresh",
+                                          {},
+                                          std::string{R"({"refresh_token":")"} + refresh_token + R"("})"})
+                        .response.status == 200U);
+        }
+
+        WHEN("the runtime restarts and the client retries the refresh with the same token")
+        {
+            auto restarted = merovingian::homeserver::start_client_server(config);
+            REQUIRE(restarted.started);
+            auto const retried = merovingian::homeserver::handle_client_server_request(
+                restarted.runtime, {"POST",
+                                    "/_matrix/client/v3/refresh",
+                                    {},
+                                    std::string{R"({"refresh_token":")"} + refresh_token + R"("})"});
+
+            THEN("the retry succeeds")
+            {
+                REQUIRE(retried.response.status == 200U);
             }
         }
 
@@ -371,13 +499,13 @@ SCENARIO("Persistent homeserver runtime bootstraps a fresh migrated schema", "[d
                 REQUIRE(merovingian::homeserver::database_has_table(started.runtime.database, "device_keys"));
                 REQUIRE(merovingian::homeserver::database_has_table(started.runtime.database, "key_backup_sessions"));
                 REQUIRE(merovingian::homeserver::database_has_table(started.runtime.database, "admin_actions"));
-                REQUIRE(started.runtime.database.persistent_store.schema.applied_migrations.size() == 16U);
+                REQUIRE(started.runtime.database.persistent_store.schema.applied_migrations.size() == 17U);
                 REQUIRE(started.runtime.database.persistent_store.schema.applied_migrations.front().direction ==
                         merovingian::database::MigrationDirection::upgrade);
                 REQUIRE(started.runtime.database.persistent_store.schema.applied_migrations.front().name ==
                         "initial_schema");
                 REQUIRE(started.runtime.database.persistent_store.schema.applied_migrations.back().name ==
-                        "media_legacy_endpoint_visibility");
+                        "token_rotation_lineage");
             }
         }
     }
@@ -401,7 +529,7 @@ SCENARIO("Persistent homeserver startup is idempotent for an already migrated sc
                 REQUIRE(started.started);
                 REQUIRE(started.runtime.database.persistent_store.schema.version ==
                         merovingian::database::current_schema_version());
-                REQUIRE(started.runtime.database.persistent_store.schema.applied_migrations.size() == 16U);
+                REQUIRE(started.runtime.database.persistent_store.schema.applied_migrations.size() == 17U);
             }
         }
     }

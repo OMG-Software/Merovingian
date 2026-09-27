@@ -536,11 +536,30 @@ auto downgrade_initial_schema_migration() -> MigrationStep
 [[nodiscard]] auto upgrade_media_legacy_endpoint_visibility_migration() -> MigrationStep
 {
     auto statements = std::vector<PreparedStatement>{};
-    statements.push_back(PreparedStatement{
-        "add_legacy_endpoint_visible_column",
-        "ALTER TABLE media ADD COLUMN legacy_endpoint_visible TEXT NOT NULL DEFAULT 'true'",
-        {}});
+    statements.push_back(
+        PreparedStatement{"add_legacy_endpoint_visible_column",
+                          "ALTER TABLE media ADD COLUMN legacy_endpoint_visible TEXT NOT NULL DEFAULT 'true'",
+                          {}});
     return {16U, "media_legacy_endpoint_visibility", std::move(statements), MigrationDirection::upgrade};
+}
+
+// v17: refresh-token rotation lineage (0.12.13 audit item 6, ADR-0074). Each
+// refresh and access token minted by POST /refresh records the refresh token it
+// replaced, so the old one stays valid until the new pair is first used (Matrix
+// v1.19 CS API, POST /refresh) and is revoked then. Columns are added by ALTER,
+// keeping the v1 CREATE TABLEs historically intact.
+[[nodiscard]] auto upgrade_token_rotation_lineage_migration() -> MigrationStep
+{
+    auto statements = std::vector<PreparedStatement>{};
+    statements.push_back(
+        PreparedStatement{"add_refresh_token_predecessor_column",
+                          "ALTER TABLE refresh_tokens ADD COLUMN predecessor_hash TEXT NOT NULL DEFAULT ''",
+                          {}});
+    statements.push_back(
+        PreparedStatement{"add_access_token_predecessor_column",
+                          "ALTER TABLE access_tokens ADD COLUMN predecessor_refresh_hash TEXT NOT NULL DEFAULT ''",
+                          {}});
+    return {17U, "token_rotation_lineage", std::move(statements), MigrationDirection::upgrade};
 }
 
 auto upgrade_migration_catalog() -> std::vector<MigrationStep>
@@ -560,7 +579,19 @@ auto upgrade_migration_catalog() -> std::vector<MigrationStep>
             upgrade_appservice_txn_cursor_migration(),
             upgrade_user_deactivation_migration(),
             upgrade_event_graph_state_migration(),
-            upgrade_media_legacy_endpoint_visibility_migration()};
+            upgrade_media_legacy_endpoint_visibility_migration(),
+            upgrade_token_rotation_lineage_migration()};
+}
+
+// v17 -> v16: drop the token-rotation lineage columns added by v17.
+[[nodiscard]] auto downgrade_token_rotation_lineage_migration() -> MigrationStep
+{
+    auto statements = std::vector<PreparedStatement>{};
+    statements.push_back(PreparedStatement{
+        "drop_access_token_predecessor_column", "ALTER TABLE access_tokens DROP COLUMN predecessor_refresh_hash", {}});
+    statements.push_back(PreparedStatement{
+        "drop_refresh_token_predecessor_column", "ALTER TABLE refresh_tokens DROP COLUMN predecessor_hash", {}});
+    return {16U, "drop_token_rotation_lineage", std::move(statements), MigrationDirection::downgrade};
 }
 
 // v16 -> v15: drop the media legacy-endpoint visibility column added by v16.
@@ -568,9 +599,7 @@ auto upgrade_migration_catalog() -> std::vector<MigrationStep>
 {
     auto statements = std::vector<PreparedStatement>{};
     statements.push_back(PreparedStatement{
-        "drop_legacy_endpoint_visible_column",
-        "ALTER TABLE media DROP COLUMN legacy_endpoint_visible",
-        {}});
+        "drop_legacy_endpoint_visible_column", "ALTER TABLE media DROP COLUMN legacy_endpoint_visible", {}});
     return {15U, "drop_media_legacy_endpoint_visibility", std::move(statements), MigrationDirection::downgrade};
 }
 
@@ -702,7 +731,8 @@ auto upgrade_migration_catalog() -> std::vector<MigrationStep>
 
 auto downgrade_migration_catalog() -> std::vector<MigrationStep>
 {
-    return {downgrade_media_legacy_endpoint_visibility_migration(),
+    return {downgrade_token_rotation_lineage_migration(),
+            downgrade_media_legacy_endpoint_visibility_migration(),
             downgrade_event_graph_state_migration(),
             downgrade_user_deactivation_migration(),
             downgrade_appservice_txn_cursor_migration(),

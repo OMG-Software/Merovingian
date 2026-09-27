@@ -193,6 +193,10 @@ struct PersistentAccessToken final
     // find_session and the refresh-token lookup so an expired token is rejected
     // even when not revoked, forcing the refresh/re-login flow.
     std::optional<std::chrono::system_clock::time_point> expires_at{};
+    // For an access token minted by POST /refresh: the hash of the refresh
+    // token that was presented. Its first use revokes that refresh token
+    // (ADR-0074). Empty for tokens minted any other way.
+    std::string predecessor_refresh_hash{};
 };
 
 struct PersistentRefreshToken final
@@ -202,6 +206,10 @@ struct PersistentRefreshToken final
     std::string token_hash{};
     bool revoked{false};
     std::optional<std::chrono::system_clock::time_point> expires_at{};
+    // For a refresh token minted by POST /refresh: the hash of the refresh
+    // token it replaces, which stays valid until this pair is first used
+    // (ADR-0074). Empty for tokens minted at login.
+    std::string predecessor_hash{};
 };
 
 // A stored server signing-key row.

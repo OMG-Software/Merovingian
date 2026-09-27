@@ -677,13 +677,14 @@ namespace
         return false;
     }
     if (!record_and_persist(store, record_statement("insert_access_token",
-                                                    "INSERT INTO access_tokens VALUES ($1, $2, $3, $4, $5)",
+                                                    "INSERT INTO access_tokens VALUES ($1, $2, $3, $4, $5, $6)",
                                                     {
                                                         {token.user_id,                     false},
                                                         {token.device_id,                   false},
                                                         {token.token_hash,                  true },
                                                         {token.revoked ? "true" : "false",  false},
-                                                        {expires_at_text(token.expires_at), false}
+                                                        {expires_at_text(token.expires_at), false},
+                                                        {token.predecessor_refresh_hash,    true }
     })))
     {
         return false;
@@ -699,13 +700,14 @@ namespace
         return false;
     }
     if (!record_and_persist(store, record_statement("insert_refresh_token",
-                                                    "INSERT INTO refresh_tokens VALUES ($1, $2, $3, $4, $5)",
+                                                    "INSERT INTO refresh_tokens VALUES ($1, $2, $3, $4, $5, $6)",
                                                     {
                                                         {token.token_hash,                  true },
                                                         {token.user_id,                     false},
                                                         {token.device_id,                   false},
                                                         {token.revoked ? "true" : "false",  false},
-                                                        {expires_at_text(token.expires_at), false}
+                                                        {expires_at_text(token.expires_at), false},
+                                                        {token.predecessor_hash,            true }
     })))
     {
         return false;
@@ -737,13 +739,14 @@ namespace
         }));
     }
     statements.push_back(record_statement("insert_access_token",
-                                          "INSERT INTO access_tokens VALUES ($1, $2, $3, $4, $5)",
+                                          "INSERT INTO access_tokens VALUES ($1, $2, $3, $4, $5, $6)",
                                           {
                                               {token.user_id,                     false},
                                               {token.device_id,                   false},
                                               {token.token_hash,                  true },
                                               {token.revoked ? "true" : "false",  false},
-                                              {expires_at_text(token.expires_at), false}
+                                              {expires_at_text(token.expires_at), false},
+                                              {token.predecessor_refresh_hash,    true }
     }));
     if (!commit_persistent_transaction(store, statements))
     {
