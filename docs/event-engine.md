@@ -586,6 +586,23 @@ fetches them from that origin before retrying the PDU.
   after-state group (`accepted=false`). Outliers participate in later state
   resolution and can become `prev_events` for subsequent PDUs, but they never
   become forward extremities on their own.
+* If a `prev_event` still has no state group, `backfill_state_ids_snapshot`
+  asks the origin for `GET /_matrix/federation/v1/state_ids/{roomId}` at that
+  event (at most 1000 IDs in each list, and its own budget of 100 outbound
+  calls). Every named event not already stored is fetched and verified. A
+  snapshot state event whose own `prev_events` have no state is verified
+  instead through `GET /_matrix/federation/v1/event_auth/{roomId}/{eventId}`,
+  against its own `auth_events` only (ADR-0069). The snapshot is refused if it
+  names an event from another room, a `rejected` event, a non-state event, or
+  a duplicate `(type, state_key)`. The missing event is then authorised against
+  the verified snapshot as its state-before.
+* An event verified only against its own `auth_events` has an unknown
+  state-before, so it is stored as an outlier **with no state group**
+  (ADR-0070). A PDU that names it as a `prev_event` therefore triggers the
+  `/state_ids` fallback at that event rather than being authorised against a
+  state derived from the event's `auth_events`. Once a verified state before a
+  stored group-less event is known and the event passes auth against it, it
+  gains a state group and keeps its status.
 * If references remain missing after the capped attempt, the original PDU still
   returns `missing_prev_state` and is not applied. Fail-closed is preserved;
   backfill only turns a *resolvable* gap into accepted history.

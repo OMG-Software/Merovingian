@@ -83,7 +83,20 @@ federation worker's table allowlist, or a source-tree test fails).
   names an event from another room, an event already stored `rejected`, a
   duplicate `(type, state_key)`, or a non-state event.
 
-## Decisions waiting on a human (ask your user; do not decide these yourself)
+## Decisions (answered by the user in writing on 2026-09-27)
+
+* **D1: ratified with a tightening.** Events verified only through
+  `/event_auth` carry no state group (ADR-0070). Done: ADR-0069's deciders and
+  date corrected, ADR-0064's inaccurate "Deciders" line removed at the user's
+  direction, tests under `[event_auth_outlier]`.
+* **D2: main re-verifies relayed PDU signatures with its own
+  `remote_key_resolver`** (cache first, network fetch on a miss with the locks
+  released). Passing key material from the worker was rejected: a compromised
+  worker would supply both the key and the signature.
+* **D3: deferred** to a separate cleanup branch; tracked in
+  `docs/todos/capability-gaps.md`.
+
+The original text of each decision follows for context.
 
 ### D1. Ratify or revert the `/state_ids` fallback rework
 

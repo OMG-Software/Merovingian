@@ -1526,6 +1526,22 @@ threats they represent, and the mitigations now in place:
   any check are dropped; if the cap is reached or references remain missing,
   the original PDU still returns `missing_prev_state` and is not applied, so
   unverified data never authorises a PDU.
+- **`/state_ids` fallback (ADR-0069, ADR-0070):** when those fetches cannot
+  close the gap, the origin is asked for the state at the missing event. Every
+  named event is verified before use, and the snapshot is refused if it names
+  an event from another room, a `rejected` event, a non-state event or a
+  duplicate `(type, state_key)`. A snapshot state event with no local
+  state-before is verified through `/event_auth` against its own `auth_events`
+  only.
+- **Threat considered and closed (ADR-0070):** as first implemented, such an
+  event was given an after-state of its own `auth_events` plus itself. A later
+  PDU naming it as a `prev_event` was then authorised against a thin state the
+  origin chose, rather than the room's state before it, leaving only the
+  current-state check and state resolution to stop, for example, a banned
+  user's event. Such an event now carries no state group, so a PDU building on
+  it must first obtain a verified state at it, or is held as
+  `missing_prev_state`. Test: `[event_auth_outlier]` in
+  `tests/integration/test_pdu_ingestion_backfill_flow.cpp`.
 - **Residual risk, unchanged by phase C:** the membership-acceptor path
   (`send_join`/`send_leave`/`send_knock`) does not backfill missing
   references yet; a membership PDU with a gap still fails closed as

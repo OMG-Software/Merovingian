@@ -1,8 +1,11 @@
 # Spec-conformant PDU ingestion with delta state groups
 
 * Status: accepted
-* Deciders: James Chapman
 * Date: 2026-09-22
+
+Record note: this ADR previously named "Deciders: James Chapman", which was
+not accurate; the line was removed on 2026-09-27. The date is the ADR's first
+commit (`42e80be9`).
 
 Technical Story: 0.12.13 security audit. State resolution v2 was fixed
 (ADR-0063) but never ran in production: nothing set
@@ -208,7 +211,9 @@ This bounds the work a malicious or delayed origin can drive: an inbound PDU
 with a gap cannot trigger more than five outbound federation calls or fetch
 more than twenty events through `/get_missing_events`. The `/state_ids`
 fallback adds caps on response size and on the number of snapshot events we
-will materialise (100). The rejected alternatives — hold the PDU indefinitely
+will materialise (1000), with its own budget of 100 outbound calls
+(ADR-0069). An event verified there only against its own `auth_events`
+carries no recorded state (ADR-0070). The rejected alternatives — hold the PDU indefinitely
 or reject it outright — are documented above under "Pros and Cons of the
 Options"; they would partition the server from rooms whose history arrives late
 or via a different path.

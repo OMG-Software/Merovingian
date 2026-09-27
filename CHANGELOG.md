@@ -77,8 +77,8 @@
   `backfill_state_ids_snapshot` falls back to
   `GET /_matrix/federation/v1/event_auth/{roomId}/{eventId}` to fetch the full
   auth chain, verifies and stores each returned PDU against its own
-  `auth_events`, then stores the snapshot event as an auth-events-only outlier
-  whose after-state includes the auth-chain state entries. Snapshot
+  `auth_events`, then stores the snapshot event as an outlier (amended by
+  ADR-0070 below: it carries no recorded state). Snapshot
   materialisation uses a separate 100-call outbound budget and a 1000-event
   cap so that a large legitimate room does not exhaust the general PDU backfill
   budget. Fail-closed checks remain: the fallback is only attempted for snapshot
@@ -87,6 +87,27 @@
   `tests/integration/test_pdu_ingestion_backfill_flow.cpp`
   (`[pdu_ingestion][backfill][conformance]`). See
   [ADR-0069](docs/adr/0069-spec-conformant-state-ids-fallback-via-event-auth.md).
+  ADR-0069 has been corrected: it named deciders and a date (2026-09-22) that
+  were not accurate. It was ratified on 2026-09-27 with the ADR-0070
+  amendment. ADR-0064's inaccurate "Deciders" line was removed, and its
+  snapshot cap text now matches the code (1000 events, 100-call budget).
+
+- **FIXED: an event verified only against its own `auth_events` no longer
+  lends a state to later events (MEDIUM, ADR-0070).** The `/event_auth` path
+  above gave each such event an after-state of its own `auth_events` plus
+  itself, so a later PDU naming it as a `prev_event` was authorised against a
+  thin state the origin chose, rather than the room's state before it (spec
+  receipt check 5). Such an event now carries no state group, and a PDU
+  building on it triggers a fresh `/state_ids` fallback at that event. It is
+  held as `missing_prev_state` if the origin cannot supply that state. A stored
+  event without a state group (an `/event_auth` outlier, or one older than
+  ADR-0064's state groups) gains one when a later fallback supplies a verified
+  state before it and it passes auth against that state. Snapshot
+  materialisation now skips every already-stored event, so such outliers are
+  not re-fetched on each snapshot. Tests:
+  `tests/integration/test_pdu_ingestion_backfill_flow.cpp`
+  (`[event_auth_outlier]`, and the updated `[backfill][conformance]` scenario).
+  See [ADR-0070](docs/adr/0070-event-auth-outliers-carry-no-state.md).
 
 - **FIXED: push gateway and identity server clients skipped SSRF filtering on
   address resolution (MEDIUM).** `push_gateway_client.cpp` and

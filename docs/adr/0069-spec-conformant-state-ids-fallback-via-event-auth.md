@@ -1,8 +1,14 @@
 # Spec-conformant /state_ids fallback via /event_auth
 
-* Status: accepted
-* Deciders: James Chapman, Claude Code
-* Date: 2026-09-22
+* Status: accepted, amended by [ADR-0070](0070-event-auth-outliers-carry-no-state.md)
+* Deciders: James Chapman
+* Date: 2026-09-27
+
+Record note: this ADR was first committed on 2026-09-26 with the date
+2026-09-22 and "Deciders: James Chapman, Claude Code". Neither was right. The
+implementation (commits `8604f0c0`, `1857c790`, `495b6efb`) landed on
+2026-09-25 and 2026-09-26 without a human decision. It was ratified on
+2026-09-27, together with the amendment recorded in ADR-0070.
 
 ## Context and Problem Statement
 
@@ -63,7 +69,8 @@ federation backfill path.
   spec's `/event_auth` endpoint is designed to supply exactly the events
   needed to authorize an event, and the origin already chooses the snapshot
   it returns. A malicious origin can still only supply events it can sign for
-  the room.
+  the room. Such an event carries no recorded state, so no later event is
+  authorised against it as a state-before (ADR-0070).
 * The implementation is more complex than Option B or C.
 
 ## Links

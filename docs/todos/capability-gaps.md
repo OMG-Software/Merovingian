@@ -176,6 +176,18 @@ a user decision on worker signature re-verification, ten low items, and the
 pre-merge checklist — is written up for pickup in
 [`audit-0.12.13-handover.md`](audit-0.12.13-handover.md).
 
+## DEFERRED: drop the unused `state_group_edges` table
+
+`state_group_edges` (created by migration 001) has been unused since ADR-0064
+chose single-parent delta state groups (`state_groups.prev_state_group_id`).
+Dropping it needs a migration, which `migrations/AGENTS.md` requires explicit
+approval for. The user chose on 2026-09-27 (decision D3 of the 0.12.13
+handover) to defer the drop to a separate cleanup branch rather than add it to
+the 0.12.13 security branch. When done: a numbered migration that drops the
+table, its removal from `src/database/schema.cpp`, from the worker table
+classification test (`tests/unit/test_worker_db_uri.cpp`), and from
+`docs/database-persistence.md`.
+
 ## RESOLVED (0.12.13, branch `fix/audit-critical-high-0.12.13`): membership-path receipt checks
 
 **State: the implementation is complete, the failing test fixtures have been
