@@ -3041,10 +3041,50 @@ namespace
         auto stripe_guard = std::unique_lock{runtime.room_stripe_mutexes[stripe]};
         auto global_guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
 
-        if (std::ranges::any_of(runtime.database.persistent_store.events, [&](database::PersistentEvent const& evt) {
+        auto const record_state_group = [&](std::vector<database::PersistentStateGroupStateEntry> const& after) {
+            auto const group =
+                forced_state_before.has_value()
+                    ? record_event_state_with_parent(runtime.database.persistent_store, room_id, envelope.event_id,
+                                                     envelope.prev_event_ids, std::nullopt, after, false)
+                    : record_event_state(runtime.database.persistent_store, room_id, envelope.event_id,
+                                         envelope.prev_event_ids, after, false);
+            if (!group.has_value())
+            {
+                LOG_WARNING("State-group bookkeeping failed for backfilled outlier; event_id=" + envelope.event_id +
+                            " room_id=" + std::string{room_id});
+            }
+        };
+
+        auto const existing =
+            std::ranges::find_if(runtime.database.persistent_store.events, [&](database::PersistentEvent const& evt) {
                 return evt.event_id == envelope.event_id;
-            }))
+            });
+        if (existing != runtime.database.persistent_store.events.end())
         {
+            // Room versions 1 and 2 do not derive event IDs from content, so a
+            // matching ID alone does not prove it is the same event.
+            if (existing->room_id != room_id)
+            {
+                return false;
+            }
+            // ADR-0070: an event already stored with no state group (an
+            // /event_auth outlier, or an event older than ADR-0064's state
+            // groups) gains one once the state before it is known and it
+            // passes auth against that state. It keeps its stored status. One
+            // that fails is left without state, so nothing can build on it.
+            if (!state_after.has_value() || existing->status == "rejected" ||
+                event_has_state_group(runtime.database.persistent_store, envelope.event_id))
+            {
+                return true;
+            }
+            if (outcome == BackfillOutcome::rejected)
+            {
+                LOG_WARNING("Stored event failed auth against its now-known state-before; left without state; "
+                            "event_id=" +
+                            envelope.event_id + " room_id=" + std::string{room_id} + " reason=" + outcome_reason);
+                return false;
+            }
+            record_state_group(*state_after);
             return true;
         }
 
@@ -3091,17 +3131,7 @@ namespace
 
         if (state_after.has_value())
         {
-            auto const group =
-                forced_state_before.has_value()
-                    ? record_event_state_with_parent(runtime.database.persistent_store, room_id, envelope.event_id,
-                                                     envelope.prev_event_ids, std::nullopt, *state_after, false)
-                    : record_event_state(runtime.database.persistent_store, room_id, envelope.event_id,
-                                         envelope.prev_event_ids, *state_after, false);
-            if (!group.has_value())
-            {
-                LOG_WARNING("State-group bookkeeping failed for backfilled outlier; event_id=" + envelope.event_id +
-                            " room_id=" + std::string{room_id});
-            }
+            record_state_group(*state_after);
         }
         std::ignore = sync_stream_id;
         return true;
@@ -3182,7 +3212,16 @@ namespace
                 auto const stripe = std::hash<std::string>{}(std::string{room_id}) % room_mutex_stripe_count;
                 auto stripe_guard = std::unique_lock{runtime.room_stripe_mutexes[stripe]};
                 auto global_guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
-                if (event_has_state_group(runtime.database.persistent_store, id))
+                // Already stored: it was verified when stored, or was created
+                // here. ADR-0070: an /event_auth outlier has no state group,
+                // so testing for one would re-fetch and re-verify it on every
+                // later snapshot that names it. The snapshot is built below
+                // from the stored copies, which are checked for room, rejected
+                // status and state-event shape there.
+                if (std::ranges::any_of(runtime.database.persistent_store.events,
+                                        [&](database::PersistentEvent const& evt) {
+                                            return evt.event_id == id;
+                                        }))
                 {
                     continue;
                 }
