@@ -2969,8 +2969,7 @@ namespace
         auto outcome = BackfillOutcome::accepted;
         auto outcome_reason = std::string{};
 
-        auto const state_before_entries =
-            [&]() -> std::optional<std::vector<database::PersistentStateGroupStateEntry>> {
+        auto const known_state_before = [&]() -> std::optional<std::vector<database::PersistentStateGroupStateEntry>> {
             if (forced_state_before.has_value())
             {
                 return *forced_state_before;
@@ -2979,35 +2978,29 @@ namespace
                 compute_state_before(runtime.database.persistent_store, room_id, policy, envelope.prev_event_ids);
             if (!computed.ok)
             {
-                // ADR-0069 option A: historical state events pulled in by the
-                // /state_ids fallback may have prev_events whose state groups are
-                // not recorded locally. In that case we authorise and store the
-                // event against its own auth_events alone, treating the state
-                // before it as empty. This is only permitted for snapshot state
-                // events after their full auth chain has been fetched and
-                // verified via /event_auth.
-                if (allow_auth_events_only)
-                {
-                    return std::vector<database::PersistentStateGroupStateEntry>{};
-                }
                 return std::nullopt;
             }
             return computed.state;
         }();
-        if (!state_before_entries.has_value())
+        // ADR-0069: historical state events pulled in by the /state_ids
+        // fallback may have prev_events whose state groups are not recorded
+        // locally. Only for events fetched through /event_auth may we then
+        // store the event on the strength of its own auth_events alone.
+        // ADR-0070: the state before such an event stays unknown, so it is
+        // stored as a true outlier with no after-state (see below).
+        auto const state_before_known = known_state_before.has_value();
+        if (!state_before_known && !allow_auth_events_only)
         {
             return false;
         }
-        auto const& state_before = *state_before_entries;
+        auto const state_before = known_state_before.value_or(std::vector<database::PersistentStateGroupStateEntry>{});
 
         auto state_before_map = events::AuthEventMap{};
         auto state_before_decision = events::EventAuthorizationDecision{};
-        if (allow_auth_events_only && state_before.empty())
+        if (!state_before_known)
         {
-            // ADR-0069 option A: snapshot state events (and their /event_auth chain)
-            // whose previous events have no recorded state groups are authorised
-            // against their own auth_events, because no local state-before is
-            // available. The auth_events check above has already passed.
+            // No local state-before is available; the auth_events check above
+            // has already passed and is the only check that can run.
             state_before_map = auth_events_map;
             state_before_decision = auth_events_decision;
         }
@@ -3026,21 +3019,22 @@ namespace
             outcome_reason = "event auth denied against state before the event: " + state_before_decision.reason;
         }
 
-        auto const state_after = [&]() -> std::vector<database::PersistentStateGroupStateEntry> {
+        // ADR-0070: with no known state-before there is no after-state to
+        // record. Deriving one from the event's own auth_events would hand any
+        // descendant a thin, origin-chosen state-before instead of the room's
+        // real prior state; a PDU that builds on this outlier must fetch the
+        // state at it instead (collect_missing_pdu_references treats a
+        // prev_event with no state group as missing).
+        auto const state_after = [&]() -> std::optional<std::vector<database::PersistentStateGroupStateEntry>> {
+            if (!state_before_known)
+            {
+                return std::nullopt;
+            }
             if (outcome == BackfillOutcome::rejected)
             {
                 return state_before;
             }
-            // ADR-0069 option A: when the state-before is unavailable, the
-            // recorded state-after is the event's own auth_events state entries
-            // plus the event itself. This gives descendant events enough context
-            // (create, power_levels, sender membership) to be verified against
-            // this outlier as their state-before.
-            auto const state_after_input =
-                (allow_auth_events_only && state_before.empty())
-                    ? state_entries_from_named_events(runtime.database.persistent_store, envelope.auth_event_ids)
-                    : state_before;
-            return compute_state_after(state_after_input, envelope.event_id, envelope.event_type, envelope.state_key);
+            return compute_state_after(state_before, envelope.event_id, envelope.event_type, envelope.state_key);
         }();
 
         auto const stripe = std::hash<std::string>{}(std::string{room_id}) % room_mutex_stripe_count;
@@ -3095,16 +3089,19 @@ namespace
         }
         database::apply_store_event_with_state(runtime.database.persistent_store, *prepared);
 
-        auto const group =
-            forced_state_before.has_value()
-                ? record_event_state_with_parent(runtime.database.persistent_store, room_id, envelope.event_id,
-                                                 envelope.prev_event_ids, std::nullopt, state_after, false)
-                : record_event_state(runtime.database.persistent_store, room_id, envelope.event_id,
-                                     envelope.prev_event_ids, state_after, false);
-        if (!group.has_value())
+        if (state_after.has_value())
         {
-            LOG_WARNING("State-group bookkeeping failed for backfilled outlier; event_id=" + envelope.event_id +
-                        " room_id=" + std::string{room_id});
+            auto const group =
+                forced_state_before.has_value()
+                    ? record_event_state_with_parent(runtime.database.persistent_store, room_id, envelope.event_id,
+                                                     envelope.prev_event_ids, std::nullopt, *state_after, false)
+                    : record_event_state(runtime.database.persistent_store, room_id, envelope.event_id,
+                                         envelope.prev_event_ids, *state_after, false);
+            if (!group.has_value())
+            {
+                LOG_WARNING("State-group bookkeeping failed for backfilled outlier; event_id=" + envelope.event_id +
+                            " room_id=" + std::string{room_id});
+            }
         }
         std::ignore = sync_stream_id;
         return true;
