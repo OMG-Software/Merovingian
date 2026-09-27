@@ -2768,15 +2768,15 @@ namespace
         // When remote_addr is empty (test-only paths that skip the
         // transport layer) we fall back to "unknown" so per-route
         // caps still apply.  When the direct peer is a configured
-        // trusted proxy we look for the leftmost X-Forwarded-For
-        // address instead, so the bucket isolates each downstream
-        // client rather than collapsing all traffic through the
-        // proxy into a single bucket.
-        auto const& trusted_proxies = rt.homeserver.config.server().trusted_proxies;
+        // trusted proxy the client is the rightmost X-Forwarded-For
+        // entry that is not a trusted proxy, so the bucket isolates
+        // each downstream client rather than collapsing all traffic
+        // through the proxy into a single bucket.
         // Single implementation shared with the federation key-resolution budget
-        // (see local_http_router.hpp): both need trusted-proxy resolution for the
-        // same reason, and two copies would be free to drift apart.
-        auto const effective_ip = effective_client_ip(req, trusted_proxies);
+        // (see local_http_router.hpp): both need trusted-proxy resolution and
+        // IPv6-prefix grouping for the same reason, and two copies would be
+        // free to drift apart.
+        auto const effective_ip = rate_limit_client_key(req, rt.homeserver.config.server());
         // Per-IP bucket keyed by (effective_ip, normalised_route) so
         // different endpoints get independent counters and route
         // templates (e.g. /rooms/{roomId}/send) coalesce into the

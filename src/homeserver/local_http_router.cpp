@@ -31,6 +31,7 @@
 #include "merovingian/homeserver/runtime_signing_key_store.hpp"
 #include "merovingian/homeserver/space_hierarchy.hpp"
 #include "merovingian/homeserver/state_bookkeeping.hpp"
+#include "merovingian/http/client_address.hpp"
 #include "merovingian/media/repository.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
@@ -859,7 +860,7 @@ namespace
     // Pipe-delimited federation auth token used by integration-test fixtures:
     // origin|key_id|signature|destination|now_ts|canonical_json_verified.
     [[nodiscard]] auto parse_signed_federation_request(LocalHttpRequest const& request,
-                                                       std::vector<std::string> const& trusted_proxies)
+                                                       config::ServerConfig const& server)
         -> std::optional<federation::SignedFederationRequest>
     {
         auto const fields = split_pipe_6(request.access_token);
@@ -885,8 +886,9 @@ namespace
         signed_request.body = request.body;
         // Budgets pre-authentication remote-key resolution (#487); see
         // SignedFederationRequest::remote_addr. Resolved through trusted_proxies
-        // for the same reason as the federation_proxy path.
-        signed_request.remote_addr = effective_client_ip(request, trusted_proxies);
+        // and IPv6-prefix grouping for the same reason as the federation_proxy
+        // path.
+        signed_request.remote_addr = rate_limit_client_key(request, server);
         return signed_request;
     }
 
@@ -3902,12 +3904,17 @@ auto effective_client_ip(LocalHttpRequest const& request, std::vector<std::strin
         // every such caller shares one bucket instead of bypassing the limit.
         return "unknown";
     }
-    auto const is_trusted = std::ranges::find(trusted_proxies, raw) != trusted_proxies.end();
-    if (!is_trusted)
+    auto const is_trusted = [&trusted_proxies](std::string_view address) {
+        return std::ranges::find(trusted_proxies, address) != trusted_proxies.end();
+    };
+    if (!is_trusted(raw))
     {
         return raw;
     }
-    // Case-insensitive header name comparison per RFC 7230.
+
+    // Every X-Forwarded-For line, in order, forms one comma-separated list
+    // (RFC 9110 §5.3). Header names compare case-insensitively.
+    auto entries = std::vector<std::string_view>{};
     for (auto const& header : request.headers)
     {
         auto lower = header.name;
@@ -3918,28 +3925,56 @@ auto effective_client_ip(LocalHttpRequest const& request, std::vector<std::strin
         {
             continue;
         }
-        auto value = std::string_view{header.value};
-        auto const comma = value.find(',');
-        auto first = comma == std::string_view::npos ? value : value.substr(0U, comma);
-        while (!first.empty() && first.front() == ' ')
+        auto remaining = std::string_view{header.value};
+        while (true)
         {
-            first.remove_prefix(1U);
+            auto const comma = remaining.find(',');
+            auto entry = remaining.substr(0U, comma);
+            while (!entry.empty() && (entry.front() == ' ' || entry.front() == '\t'))
+            {
+                entry.remove_prefix(1U);
+            }
+            while (!entry.empty() && (entry.back() == ' ' || entry.back() == '\t'))
+            {
+                entry.remove_suffix(1U);
+            }
+            entries.push_back(entry);
+            if (comma == std::string_view::npos)
+            {
+                break;
+            }
+            remaining.remove_prefix(comma + 1U);
         }
-        while (!first.empty() && first.back() == ' ')
+    }
+
+    // 0.12.13 audit item 4 (decided by the user on 2026-09-27): each proxy
+    // appends the address it received the request from, so only the entries
+    // written by trusted proxies can be believed. Walk from the right past
+    // trusted proxies; the first entry that is not one is the client. The
+    // leftmost entries are whatever the client itself sent and never choose
+    // the key. A trusted proxy is trusted to report an address, not an
+    // arbitrary string: a malformed entry at that position falls back to the
+    // direct peer, so spoofed values cannot mint fresh rate-limit buckets.
+    for (auto it = entries.rbegin(); it != entries.rend(); ++it)
+    {
+        if (is_trusted(*it))
         {
-            first.remove_suffix(1U);
+            continue;
         }
-        // A trusted proxy is trusted to report its own view of the client
-        // address, not to hand us an arbitrary string. A malformed or non-literal
-        // value falls through to the direct peer below, so an attacker cannot
-        // rotate spoofed X-Forwarded-For values to defeat per-IP limiting.
-        if (!first.empty() && federation::ip_address_is_valid(first))
-        {
-            return std::string{first};
-        }
-        break;
+        return federation::ip_address_is_valid(*it) ? std::string{*it} : raw;
+    }
+    // Every entry is a trusted proxy: the leftmost one originated the request.
+    if (!entries.empty() && federation::ip_address_is_valid(entries.front()))
+    {
+        return std::string{entries.front()};
     }
     return raw;
+}
+
+auto rate_limit_client_key(LocalHttpRequest const& request, config::ServerConfig const& server) -> std::string
+{
+    return http::client_address_key(effective_client_ip(request, server.trusted_proxies),
+                                    server.http.ipv6_client_prefix_length);
 }
 
 auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
@@ -4053,7 +4088,7 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
     }
     if (starts_with(request.target, "/_matrix/federation/"))
     {
-        auto signed_request = parse_signed_federation_request(request, runtime.config.server().trusted_proxies);
+        auto signed_request = parse_signed_federation_request(request, runtime.config.server());
         if (!signed_request.has_value())
         {
             log_diagnostic("federation.auth.rejected",

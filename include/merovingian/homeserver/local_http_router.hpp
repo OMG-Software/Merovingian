@@ -27,9 +27,7 @@ struct LocalHttpRequest final
     // Source IP address of the direct TCP peer (e.g. "192.0.2.1" or
     // "::1"). Set by the HTTP acceptor from getpeername(). Empty in
     // tests that do not exercise transport-level peer resolution.
-    // When the peer is a configured trusted proxy, `allow()` replaces
-    // this value with the leftmost X-Forwarded-For address before
-    // constructing the per-IP rate-limit bucket key.
+    // Per-IP limits never key on it directly: see rate_limit_client_key.
     std::string remote_addr{};
     // #323: when sig_verified is true, the X-Matrix request signature was
     // already verified by the main process over the authenticated IPC channel
@@ -57,16 +55,23 @@ struct LocalHttpResponse final
 
 // Resolves the client address to attribute a request to, honouring
 // `server.trusted_proxies`: when the direct TCP peer is a configured trusted
-// proxy, the leftmost valid IP literal in X-Forwarded-For is used instead, so a
-// per-IP bucket isolates each downstream caller rather than collapsing everything
-// arriving through the proxy into one. Returns "unknown" when no peer address is
-// available (test paths that skip the transport layer), never an empty string, so
-// callers cannot accidentally treat "no address" as "no limit".
-//
-// Shared by the client-server rate limiter and the federation key-resolution
-// budget. Both need it for the same reason: behind the reverse-proxy deployment
-// the shipped example config describes, every caller's direct peer is 127.0.0.1.
+// proxy, X-Forwarded-For (every header line, in order, as one list) is walked
+// from the right past trusted proxies and the first other entry is the client
+// (0.12.13 audit item 4). The leftmost entries are whatever the client sent and
+// never decide. A malformed entry at that position falls back to the direct
+// peer. Returns "unknown" when no peer address is available (test paths that
+// skip the transport layer), never an empty string, so callers cannot
+// accidentally treat "no address" as "no limit".
 [[nodiscard]] auto effective_client_ip(LocalHttpRequest const& request, std::vector<std::string> const& trusted_proxies)
+    -> std::string;
+
+// The key a per-IP limit counts a request under: effective_client_ip reduced
+// by http::client_address_key, so IPv6 clients are grouped by
+// server.http.ipv6_client_prefix_length. Shared by the client-server rate
+// limiter and the federation key-resolution budget: behind the reverse-proxy
+// deployment the shipped example config describes, every caller's direct
+// peer is 127.0.0.1.
+[[nodiscard]] auto rate_limit_client_key(LocalHttpRequest const& request, config::ServerConfig const& server)
     -> std::string;
 
 [[nodiscard]] auto handle_local_http_request(HomeserverRuntime& runtime, LocalHttpRequest const& request)
