@@ -796,6 +796,7 @@ struct PersistentStore final
         , forward_extremities{other.forward_extremities}
         , prepared_statements{other.prepared_statements}
         , prepared_statements_mutex{std::make_unique<std::mutex>()}
+        , server_signing_keys_mutex{std::make_unique<std::mutex>()}
         , next_sync_stream_id{other.next_sync_stream_id}
         , event_stream_watermark{other.event_stream_watermark}
     {
@@ -860,6 +861,7 @@ struct PersistentStore final
         forward_extremities = other.forward_extremities;
         prepared_statements = other.prepared_statements;
         prepared_statements_mutex = std::make_unique<std::mutex>();
+        server_signing_keys_mutex = std::make_unique<std::mutex>();
         next_sync_stream_id = other.next_sync_stream_id;
         event_stream_watermark = other.event_stream_watermark;
         return *this;
@@ -936,6 +938,14 @@ struct PersistentStore final
     // stripe locks because audit-vector access is independent of any room.
     // Wrapped in unique_ptr so PersistentStore remains moveable.
     mutable std::unique_ptr<std::mutex> prepared_statements_mutex{std::make_unique<std::mutex>()};
+    // Guards server_signing_keys. The remote-key resolver stores and reads
+    // keys from federation relay threads and from backfill, both with the
+    // runtime mutex released, so after start-up hydration every access goes
+    // through store_server_signing_key, find_server_signing_key or
+    // snapshot_server_signing_keys, which take this lock. It is never held
+    // across a database write or a network call. Wrapped in unique_ptr so
+    // PersistentStore remains moveable.
+    mutable std::unique_ptr<std::mutex> server_signing_keys_mutex{std::make_unique<std::mutex>()};
     // Monotonic stream id used by /sync surfaces (to_device, device_list
     // changes, presence). Incremented before each new row is persisted so
     // the row's stream_id strictly exceeds every previous one and clients
@@ -1030,6 +1040,10 @@ struct RoomReloadSnapshot final
 [[nodiscard]] auto store_server_signing_key(PersistentStore& store, PersistentServerSigningKey key) -> bool;
 [[nodiscard]] auto find_server_signing_key(PersistentStore const& store, std::string_view server_name,
                                            std::string_view key_id) -> std::optional<PersistentServerSigningKey>;
+// A copy of every stored signing key, taken under server_signing_keys_mutex.
+// Callers that iterate the keys use this rather than the vector itself.
+[[nodiscard]] auto snapshot_server_signing_keys(PersistentStore const& store)
+    -> std::vector<PersistentServerSigningKey>;
 [[nodiscard]] auto store_federation_destination(PersistentStore& store, PersistentFederationDestination destination)
     -> bool;
 [[nodiscard]] auto store_federation_transaction(PersistentStore& store, PersistentFederationTransaction transaction)

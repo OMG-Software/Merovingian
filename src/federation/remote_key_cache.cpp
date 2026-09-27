@@ -374,7 +374,7 @@ auto find_cached_remote_key(database::PersistentStore const& store, std::string_
 auto find_any_cached_remote_key(database::PersistentStore const& store, std::string_view server_name)
     -> std::optional<FederationKeyRecord>
 {
-    for (auto const& persistent : store.server_signing_keys)
+    for (auto const& persistent : database::snapshot_server_signing_keys(store))
     {
         if (persistent.server_name != server_name)
         {

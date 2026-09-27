@@ -1023,6 +1023,7 @@ namespace
     {
         return false;
     }
+    auto const lock = std::lock_guard{*store.server_signing_keys_mutex};
     auto const existing =
         std::ranges::find_if(store.server_signing_keys, [&key](PersistentServerSigningKey const& row) {
             return row.server_name == key.server_name && row.key_id == key.key_id;
@@ -1044,12 +1045,19 @@ namespace
 [[nodiscard]] auto find_server_signing_key(PersistentStore const& store, std::string_view server_name,
                                            std::string_view key_id) -> std::optional<PersistentServerSigningKey>
 {
+    auto const lock = std::lock_guard{*store.server_signing_keys_mutex};
     auto const existing =
         std::ranges::find_if(store.server_signing_keys, [server_name, key_id](PersistentServerSigningKey const& key) {
             return key.server_name == server_name && key.key_id == key_id;
         });
     return existing == store.server_signing_keys.end() ? std::nullopt
                                                        : std::optional<PersistentServerSigningKey>{*existing};
+}
+
+[[nodiscard]] auto snapshot_server_signing_keys(PersistentStore const& store) -> std::vector<PersistentServerSigningKey>
+{
+    auto const lock = std::lock_guard{*store.server_signing_keys_mutex};
+    return store.server_signing_keys;
 }
 
 [[nodiscard]] auto store_federation_destination(PersistentStore& store, PersistentFederationDestination destination)
