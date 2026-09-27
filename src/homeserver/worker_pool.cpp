@@ -627,6 +627,27 @@ auto federation_worker_shard_for(std::string_view room_id, std::uint32_t shards)
     return static_cast<std::size_t>(fnv1a_32(room_id) % shards);
 }
 
+auto handle_pdu_ingest_request(HomeserverRuntime& runtime, std::string_view request_json)
+    -> federation::PduIngestionResult
+{
+    // #450 TRUST BOUNDARY: the envelope here is relayed from the worker, which
+    // is responsible for having already run federation::authorize_federation_pdu()
+    // (Ed25519 signature verification via its own remote_key_resolver) before
+    // ever sending this IPC frame. pdu_sink below re-checks authorization and
+    // content-hash but does not repeat signature verification — main trusts
+    // the worker's prior check. See docs/threat-model.md, "Main does not
+    // re-verify PDU Ed25519 signatures before persisting".
+    auto const env = deserialize_pdu_ingest(request_json);
+    if (!runtime.federation.pdu_sink)
+    {
+        return {federation::PduIngestionStatus::internal_error, "pdu_sink not wired"};
+    }
+    // The default sink reserves stream_ordering internally and returns it in
+    // accepted_stream_ordering. It also publishes the sync notification, so the
+    // worker path only forwards the result back to the shard that owns this room.
+    return runtime.federation.pdu_sink(env);
+}
+
 auto handle_membership_ingest_request(HomeserverRuntime& runtime, std::string_view request_json) -> std::string
 {
     // send_join/send_leave/send_knock accepted by a worker must be persisted
@@ -963,32 +984,10 @@ WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRunt
             auto const ch = ptr->channel_snapshot();
             if (type == "pdu_ingest")
             {
-                // #450 TRUST BOUNDARY: `env` here is relayed from the worker,
-                // which is responsible for having already run
-                // federation::authorize_federation_pdu() (Ed25519 signature
-                // verification via its own remote_key_resolver) before ever
-                // sending this IPC frame. pdu_sink below re-checks
-                // authorization and content-hash but does not repeat
-                // signature verification — main trusts the worker's prior
-                // check. See docs/threat-model.md, "Main does not re-verify
-                // PDU Ed25519 signatures before persisting".
-                auto const env = deserialize_pdu_ingest(json);
-                if (!submit_limited(handler_pool_, ch, [this, ch, id, env]() {
+                auto const room_id = json_get_str(json, "room_id");
+                if (!submit_limited(handler_pool_, ch, [this, ch, id, room_id, json = std::move(json)]() mutable {
                         auto const guard = InFlightGuard{ch.get()};
-                        auto result = federation::PduIngestionResult{};
-                        if (runtime_.federation.pdu_sink)
-                        {
-                            // The default sink reserves stream_ordering internally and
-                            // returns it in accepted_stream_ordering. It also publishes
-                            // the sync notification, so the worker path only forwards
-                            // the result back to the shard that owns this room.
-                            result = runtime_.federation.pdu_sink(env);
-                        }
-                        else
-                        {
-                            result.status = federation::PduIngestionStatus::internal_error;
-                            result.reason = "pdu_sink not wired";
-                        }
+                        auto const result = handle_pdu_ingest_request(runtime_, json);
                         if (result.status == federation::PduIngestionStatus::accepted)
                         {
                             // Push the just-committed event back down to whichever
@@ -1004,7 +1003,7 @@ WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRunt
                             // room landing back on that shard would otherwise omit
                             // this event. See docs/architecture.md, "Federation
                             // worker room staleness".
-                            notify_room_changed(env.room_id);
+                            notify_room_changed(room_id);
                         }
                         ch->send_response(id, serialize_pdu_ingest_result(result));
                     }))

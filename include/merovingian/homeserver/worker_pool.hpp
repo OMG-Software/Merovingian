@@ -3,6 +3,7 @@
 #pragma once
 
 #include "merovingian/config/config.hpp"
+#include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/worker_supervisor.hpp"
 #include "merovingian/http/outbound_client.hpp"
@@ -23,6 +24,14 @@ struct HomeserverRuntime;
 // Non-room requests pass an empty room_id and are always routed to shard 0.
 // Uses FNV-1a 32-bit: shard = fnv1a_32(room_id) % shards.
 [[nodiscard]] auto federation_worker_shard_for(std::string_view room_id, std::uint32_t shards) noexcept -> std::size_t;
+
+// Handles a "pdu_ingest" IPC request (a worker relaying a PDU from an inbound
+// /send transaction so it is persisted through main's pdu_sink). Exposed as a
+// free function for the same test-seam reason handle_membership_ingest_request
+// is. Takes the wire JSON a worker sends and returns the ingestion result;
+// WorkerPool serializes it and, on acceptance, notifies the owning shard.
+[[nodiscard]] auto handle_pdu_ingest_request(HomeserverRuntime& runtime, std::string_view request_json)
+    -> federation::PduIngestionResult;
 
 // Handles a "membership_ingest" IPC request (a worker relaying a send_join /
 // send_leave / send_knock acceptance so it persists through main's own
