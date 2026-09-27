@@ -8,6 +8,7 @@
 // |  sign-back channel, and in-process fallback when the worker is down.    |
 // +-------------------------------------------------------------------------+
 
+#include "../federation_signing_test_support.hpp"
 #include "../support/master_key.hpp"
 #include "../support/membership_fixture_support.hpp"
 #include "../support/temp_directory.hpp"
@@ -349,9 +350,57 @@ struct IpcTestChannelPair final
     return out;
 }
 
-// Build a canonical m.room.member event JSON with a valid content hash so it
-// passes the PDU receipt checks run by membership_acceptor. Signatures are
-// omitted: the worker-relay path is already past signature verification.
+// Events relayed by a worker are signed as their sender's server with this
+// seed, and relay_key_resolver() gives main that server's matching key: main
+// re-verifies every relayed PDU's signature itself (ADR-0071).
+constexpr auto relay_key_seed = "federation-worker-flow-relay-seed";
+constexpr auto relay_key_id = "ed25519:auto";
+
+[[nodiscard]] auto server_of(std::string_view user_id) -> std::string
+{
+    auto const colon = user_id.find(':');
+    return colon == std::string_view::npos ? std::string{} : std::string{user_id.substr(colon + 1U)};
+}
+
+// Hashes and signs `unsigned_event_json` as the server `sender` belongs to.
+[[nodiscard]] auto sign_as_sender(std::string_view unsigned_event_json, std::string_view sender) -> std::string
+{
+    auto signed_json = merovingian::federation::test::make_signed_event_json(unsigned_event_json, server_of(sender),
+                                                                             relay_key_id, relay_key_seed, "10");
+    REQUIRE(!signed_json.empty());
+    return signed_json;
+}
+
+// The event ID a signed room-version-10 event hashes to.
+[[nodiscard]] auto event_id_of(std::string const& signed_event_json) -> std::string
+{
+    auto const envelope = merovingian::federation::parse_inbound_pdu_envelope(signed_event_json, "10");
+    REQUIRE(envelope.has_value());
+    return envelope->event_id;
+}
+
+// Main's key resolver in these scenarios: every server's key is the one
+// derived from relay_key_seed.
+[[nodiscard]] auto relay_key_resolver()
+{
+    return [](std::string_view server_name,
+              std::string_view key_id) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+        if (key_id != relay_key_id)
+        {
+            return std::nullopt;
+        }
+        auto remote = merovingian::federation::FederationRemoteRuntime{};
+        remote.server_name = std::string{server_name};
+        remote.signing_key = {std::string{server_name}, relay_key_id, 0U,
+                              merovingian::federation::test::keypair_from_seed(relay_key_seed).public_key};
+        remote.discovery.server_name = std::string{server_name};
+        return remote;
+    };
+}
+
+// Build an m.room.member event JSON, hashed and signed as the sender's server,
+// so it passes main's signature re-verification and the PDU receipt checks run
+// by membership_acceptor.
 [[nodiscard]] auto make_membership_event_json(std::string_view room_id, std::string_view sender,
                                               std::string_view state_key, std::string_view membership,
                                               std::vector<std::string> const& prev_events,
@@ -386,15 +435,9 @@ struct IpcTestChannelPair final
     }
     obj.push_back(canonicaljson::make_member("auth_events", canonicaljson::Value{std::move(auth_arr)}));
 
-    auto const hash = events::make_content_hash(canonicaljson::Value{obj});
-    REQUIRE(hash.error.empty());
-    auto hashes = canonicaljson::Object{};
-    hashes.push_back(canonicaljson::make_member("sha256", canonicaljson::Value{hash.sha256}));
-    obj.push_back(canonicaljson::make_member("hashes", canonicaljson::Value{std::move(hashes)}));
-
     auto const serialized = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(obj)});
     REQUIRE(serialized.error == canonicaljson::CanonicalJsonError::none);
-    return serialized.output;
+    return sign_as_sender(serialized.output, sender);
 }
 
 } // namespace
@@ -720,6 +763,7 @@ SCENARIO("handle_membership_ingest_request persists a worker-relayed federated j
         auto& runtime = started.runtime;
         merovingian::homeserver::wire_federation_callbacks(runtime);
         REQUIRE(runtime.federation.membership_acceptor);
+        runtime.federation.remote_key_resolver = relay_key_resolver();
 
         auto const room_id = std::string{"!membership-room:example.com"};
         // membership_acceptor runs the room's authorization rules before it
@@ -791,10 +835,9 @@ SCENARIO("handle_membership_ingest_request persists a worker-relayed federated j
             auto const event_json = make_membership_event_json(room_id, sender, sender, "join", join_prev_events,
                                                                join_auth_events, 5, 1234);
             auto const request_json =
-                std::string{
-                    R"({"type":"membership_ingest","endpoint":"send_join","event_id":"$placeholder-event-id")"} +
-                R"(,"room_id":")" + room_id + R"(","room_version":"10","sender":")" + sender +
-                R"(","event_type":"m.room.member","state_key":")" + sender +
+                std::string{R"({"type":"membership_ingest","endpoint":"send_join","event_id":")"} +
+                event_id_of(event_json) + R"(")" + R"(,"room_id":")" + room_id + R"(","room_version":"10","sender":")" +
+                sender + R"(","event_type":"m.room.member","state_key":")" + sender +
                 R"(","origin_server_ts":1234,"depth":5,"auth_event_ids":)" + json_id_array(join_auth_events) +
                 R"(,"prev_event_ids":)" + json_id_array(join_prev_events) + R"(,"signatures":[],"json":)" +
                 [&] {
@@ -865,19 +908,17 @@ SCENARIO("handle_membership_ingest_request rejects a relayed join for a room mai
         auto& runtime = started.runtime;
         merovingian::homeserver::wire_federation_callbacks(runtime);
         REQUIRE(runtime.federation.membership_acceptor);
+        runtime.federation.remote_key_resolver = relay_key_resolver();
 
         WHEN("a membership_ingest request targets a room that was never stored")
         {
             auto const room_id = std::string{"!never-stored:example.com"};
             auto const sender = std::string{"@remote:matrix.example.org"};
-            auto const event_json = std::string{R"({"room_id":")"} + room_id + R"(","sender":")" + sender +
-                                    R"(","origin_server_ts":1234,"type":"m.room.member",)" + R"("state_key":")" +
-                                    sender + R"(","content":{"membership":"join"}})";
+            auto const event_json = make_membership_event_json(room_id, sender, sender, "join", {}, {}, 0, 1234);
             auto const request_json =
-                std::string{
-                    R"({"type":"membership_ingest","endpoint":"send_join","event_id":"$placeholder-event-id")"} +
-                R"(,"room_id":")" + room_id + R"(","room_version":"10","sender":")" + sender +
-                R"(","event_type":"m.room.member","state_key":")" + sender +
+                std::string{R"({"type":"membership_ingest","endpoint":"send_join","event_id":")"} +
+                event_id_of(event_json) + R"(")" + R"(,"room_id":")" + room_id + R"(","room_version":"10","sender":")" +
+                sender + R"(","event_type":"m.room.member","state_key":")" + sender +
                 R"(","origin_server_ts":1234,"depth":0,"auth_event_ids":[],"prev_event_ids":[],"signatures":[],)" +
                 R"("json":)" + ipc_escape_json_string(event_json) + "}";
 
@@ -1325,6 +1366,7 @@ SCENARIO("handle_invite_ingest_request persists a worker-relayed federated invit
         auto& runtime = started.runtime;
         merovingian::homeserver::wire_federation_callbacks(runtime);
         REQUIRE(runtime.federation.invite_handler);
+        runtime.federation.remote_key_resolver = relay_key_resolver();
 
         auto const target_user = std::string{"@local:"} + config.server().server_name;
         // invite_handler's local_user_exists() checks HomeserverRuntime::database.users
@@ -1337,9 +1379,8 @@ SCENARIO("handle_invite_ingest_request persists a worker-relayed federated invit
         {
             auto const room_id = std::string{"!invite-room:matrix.example.org"};
             auto const sender = std::string{"@remote:matrix.example.org"};
-            auto const event_json = std::string{R"({"room_id":")"} + room_id + R"(","sender":")" + sender +
-                                    R"(","origin_server_ts":1234,"type":"m.room.member",)" + R"("state_key":")" +
-                                    target_user + R"(","content":{"membership":"invite"}})";
+            auto const event_json = make_membership_event_json(room_id, sender, target_user, "invite", {"$remote-prev"},
+                                                               {"$remote-create"}, 5, 1234);
 
             // Mirror ipc::ipc_json_str's escaping for the embedded event JSON,
             // same as the membership_ingest scenario above does.
@@ -1358,7 +1399,7 @@ SCENARIO("handle_invite_ingest_request persists a worker-relayed federated invit
             };
 
             auto const request_json = std::string{R"({"type":"invite_ingest","room_id":)"} + escape(room_id) +
-                                      R"(,"event_id":"$placeholder-event-id","room_version":"10",)" +
+                                      R"(,"event_id":)" + escape(event_id_of(event_json)) + R"(,"room_version":"10",)" +
                                       R"("invite_event_json":)" + escape(event_json) +
                                       R"(,"invite_room_state_json":[]})";
 
@@ -1414,6 +1455,7 @@ SCENARIO("handle_invite_ingest_request rejects a federated invite to a user this
         auto& runtime = started.runtime;
         merovingian::homeserver::wire_federation_callbacks(runtime);
         REQUIRE(runtime.federation.invite_handler);
+        runtime.federation.remote_key_resolver = relay_key_resolver();
         // Deliberately do NOT register target_user in runtime.database.users.
 
         WHEN("an invite_ingest request targets a user who was never registered locally")
@@ -1421,14 +1463,13 @@ SCENARIO("handle_invite_ingest_request rejects a federated invite to a user this
             auto const room_id = std::string{"!invite-room-404:matrix.example.org"};
             auto const sender = std::string{"@remote:matrix.example.org"};
             auto const target_user = std::string{"@nobody:"} + config.server().server_name;
-            auto const event_json = std::string{R"({"room_id":")"} + room_id + R"(","sender":")" + sender +
-                                    R"(","origin_server_ts":1234,"type":"m.room.member",)" + R"("state_key":")" +
-                                    target_user + R"(","content":{"membership":"invite"}})";
+            auto const event_json = make_membership_event_json(room_id, sender, target_user, "invite", {"$remote-prev"},
+                                                               {"$remote-create"}, 5, 1234);
 
             auto const request_json =
                 std::string{R"({"type":"invite_ingest","room_id":)"} + ipc_escape_json_string(room_id) +
-                R"(,"event_id":"$placeholder-event-id","room_version":"10",)" + R"("invite_event_json":)" +
-                ipc_escape_json_string(event_json) + R"(,"invite_room_state_json":[]})";
+                R"(,"event_id":)" + ipc_escape_json_string(event_id_of(event_json)) + R"(,"room_version":"10",)" +
+                R"("invite_event_json":)" + ipc_escape_json_string(event_json) + R"(,"invite_room_state_json":[]})";
 
             auto const response_json = merovingian::homeserver::handle_invite_ingest_request(runtime, request_json);
 

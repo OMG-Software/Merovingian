@@ -11,8 +11,10 @@
 #include "merovingian/crypto/master_key.hpp"
 #include "merovingian/events/event_signer.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
+#include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/membership_endpoints.hpp"
 #include "merovingian/federation/transactions.hpp"
+#include "merovingian/homeserver/request_lock.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/ipc/channel.hpp"
 #include "merovingian/ipc/federation_ipc_frames.hpp"
@@ -612,6 +614,132 @@ namespace
         return body;
     }
 
+    // ADR-0071 (0.12.13, decision D2): main does not trust a worker's claim
+    // that a relayed PDU was signed by its sender's server. A compromised
+    // worker could otherwise inject events impersonating any sender the room's
+    // state authorises. Everything below runs before the relay handlers take
+    // runtime.mutex, because resolving a key may go to the network.
+
+    // The room version main itself records for the room; the worker's claim is
+    // used only for a room main does not hold (an invite to a remote room),
+    // and "12" when neither is known, matching inbound_request.cpp.
+    [[nodiscard]] auto relayed_room_version(HomeserverRuntime& runtime, std::string_view room_id,
+                                            std::string_view claimed) -> std::string
+    {
+        auto version = std::string{};
+        if (runtime.federation.room_version_resolver)
+        {
+            auto guard = std::unique_lock{runtime.mutex};
+            version = runtime.federation.room_version_resolver(room_id);
+        }
+        if (version.empty())
+        {
+            version = std::string{claimed};
+        }
+        return version.empty() ? std::string{"12"} : version;
+    }
+
+    [[nodiscard]] auto server_name_of(std::string_view user_id) noexcept -> std::string_view
+    {
+        auto const colon = user_id.find(':');
+        return colon == std::string_view::npos ? std::string_view{} : user_id.substr(colon + 1U);
+    }
+
+    // Verifies the signature of the server the event's sender belongs to
+    // (server-server-api.md, "Validating hashes and signatures on received
+    // events"), with a key main resolves through its own remote_key_resolver.
+    // The same check the worker ran (federation::authorize_federation_pdu), but
+    // never on the worker's word.
+    struct RelayedSignature final
+    {
+        // The event ID the signed event hashes to; empty when refused.
+        std::string event_id{};
+        std::string refusal{};
+    };
+
+    [[nodiscard]] auto verify_relayed_event_signature(HomeserverRuntime& runtime, std::string_view event_json,
+                                                      std::string const& room_version) -> RelayedSignature
+    {
+        auto pdu = federation::parse_federation_pdu(event_json, [&room_version](std::string_view) {
+            return room_version;
+        });
+        if (pdu.event_id.empty())
+        {
+            return {{}, "relayed event is not a valid PDU"};
+        }
+        pdu.room_version = room_version;
+        auto const sender_server = server_name_of(pdu.sender);
+        auto const signature = std::ranges::find_if(pdu.signatures, [sender_server](auto const& sig) {
+            return sig.server_name == sender_server;
+        });
+        if (sender_server.empty() || signature == pdu.signatures.end())
+        {
+            return {{}, "relayed event has no signature from its sender's server"};
+        }
+        if (!runtime.federation.remote_key_resolver)
+        {
+            return {{}, "remote key resolver not wired"};
+        }
+        auto const remote = [&]() {
+            auto const unlocked = RuntimeLockRelease{};
+            std::ignore = unlocked;
+            return runtime.federation.remote_key_resolver(sender_server, signature->key_id);
+        }();
+        auto const key = remote.has_value() ? std::optional<federation::FederationKeyRecord>{remote->signing_key}
+                                            : std::optional<federation::FederationKeyRecord>{};
+        auto const now_ms = static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+                .count());
+        auto const decision = federation::authorize_federation_pdu(pdu, sender_server, key, now_ms);
+        if (!decision.accepted)
+        {
+            return {{}, "relayed event failed signature verification: " + decision.reason};
+        }
+        return {pdu.event_id, {}};
+    }
+
+    struct RelayedEnvelope final
+    {
+        // Set only when the frame passed; otherwise `refusal` says why.
+        std::optional<federation::InboundPduEnvelope> envelope{};
+        std::string refusal{};
+    };
+
+    // Rebuilds the envelope from the verified event JSON rather than taking
+    // the worker's separately framed fields, and refuses a frame that
+    // disagrees with the event it carries. Only the transport origin (used to
+    // choose where to backfill from; anything fetched there is verified
+    // again) is taken from the frame.
+    [[nodiscard]] auto reverify_relayed_envelope(HomeserverRuntime& runtime,
+                                                 federation::InboundPduEnvelope const& frame) -> RelayedEnvelope
+    {
+        auto const room_version = relayed_room_version(runtime, frame.room_id, frame.room_version);
+        auto const signature = verify_relayed_event_signature(runtime, frame.json, room_version);
+        if (!signature.refusal.empty())
+        {
+            return {std::nullopt, signature.refusal};
+        }
+        auto envelope = federation::parse_inbound_pdu_envelope(frame.json, room_version);
+        if (!envelope.has_value())
+        {
+            return {std::nullopt, "relayed event is not a valid PDU envelope"};
+        }
+        if (envelope->event_id != frame.event_id || envelope->event_id != signature.event_id ||
+            envelope->room_id != frame.room_id)
+        {
+            return {std::nullopt, "relayed frame does not match the signed event it carries"};
+        }
+        envelope->origin = frame.origin;
+        envelope->room_version = room_version;
+        return {std::move(envelope), {}};
+    }
+
+    auto log_relay_refused(std::string_view type, std::string_view event_id, std::string_view reason) -> void
+    {
+        LOG_WARNING("Refused a PDU relayed by a federation worker; type=" + std::string{type} +
+                    " event_id=" + std::string{event_id} + " reason=" + std::string{reason});
+    }
+
 } // namespace
 
 auto federation_worker_shard_for(std::string_view room_id, std::uint32_t shards) noexcept -> std::size_t
@@ -630,22 +758,25 @@ auto federation_worker_shard_for(std::string_view room_id, std::uint32_t shards)
 auto handle_pdu_ingest_request(HomeserverRuntime& runtime, std::string_view request_json)
     -> federation::PduIngestionResult
 {
-    // #450 TRUST BOUNDARY: the envelope here is relayed from the worker, which
-    // is responsible for having already run federation::authorize_federation_pdu()
-    // (Ed25519 signature verification via its own remote_key_resolver) before
-    // ever sending this IPC frame. pdu_sink below re-checks authorization and
-    // content-hash but does not repeat signature verification — main trusts
-    // the worker's prior check. See docs/threat-model.md, "Main does not
-    // re-verify PDU Ed25519 signatures before persisting".
-    auto const env = deserialize_pdu_ingest(request_json);
+    // TRUST BOUNDARY (ADR-0071): the frame comes from the worker, the process
+    // most exposed to hostile input. Main re-verifies the event's signature
+    // with its own key resolver and rebuilds the envelope from the verified
+    // event before pdu_sink sees it.
+    auto const frame = deserialize_pdu_ingest(request_json);
     if (!runtime.federation.pdu_sink)
     {
         return {federation::PduIngestionStatus::internal_error, "pdu_sink not wired"};
     }
+    auto const relayed = reverify_relayed_envelope(runtime, frame);
+    if (!relayed.envelope.has_value())
+    {
+        log_relay_refused("pdu_ingest", frame.event_id, relayed.refusal);
+        return {federation::PduIngestionStatus::rejected_invalid, relayed.refusal};
+    }
     // The default sink reserves stream_ordering internally and returns it in
     // accepted_stream_ordering. It also publishes the sync notification, so the
     // worker path only forwards the result back to the shard that owns this room.
-    return runtime.federation.pdu_sink(env);
+    return runtime.federation.pdu_sink(*relayed.envelope);
 }
 
 auto handle_membership_ingest_request(HomeserverRuntime& runtime, std::string_view request_json) -> std::string
@@ -658,19 +789,27 @@ auto handle_membership_ingest_request(HomeserverRuntime& runtime, std::string_vi
     // sync_notifier->publish itself on success, so unlike pdu_ingest this does
     // not need to publish separately.
     auto const endpoint = federation_endpoint_from_string(json_get_str(request_json, "endpoint"));
-    auto const env = deserialize_pdu_ingest(request_json);
+    auto const frame = deserialize_pdu_ingest(request_json);
     auto result = federation::MembershipAcceptResult{};
+    if (!runtime.federation.membership_acceptor)
+    {
+        result.status = 501U;
+        result.reason = "membership_acceptor not wired";
+        return serialize_membership_ingest_result(result);
+    }
+    // TRUST BOUNDARY (ADR-0071): verified before the runtime lock is taken,
+    // because resolving the sender's key may go to the network.
+    auto const relayed = reverify_relayed_envelope(runtime, frame);
+    if (!relayed.envelope.has_value())
+    {
+        log_relay_refused("membership_ingest", frame.event_id, relayed.refusal);
+        result.status = 403U;
+        result.reason = relayed.refusal;
+        return serialize_membership_ingest_result(result);
+    }
     {
         auto guard = std::unique_lock{runtime.mutex};
-        if (runtime.federation.membership_acceptor)
-        {
-            result = runtime.federation.membership_acceptor(endpoint, env.room_id, {}, env);
-        }
-        else
-        {
-            result.status = 501U;
-            result.reason = "membership_acceptor not wired";
-        }
+        result = runtime.federation.membership_acceptor(endpoint, relayed.envelope->room_id, {}, *relayed.envelope);
     }
     return serialize_membership_ingest_result(result);
 }
@@ -720,17 +859,32 @@ auto handle_invite_ingest_request(HomeserverRuntime& runtime, std::string_view r
     // not need to publish separately either.
     auto const request = deserialize_invite_ingest(request_json);
     auto result = federation::InviteAcceptResult{};
+    if (!runtime.federation.invite_handler)
+    {
+        result.status = 501U;
+        result.reason = "invite_handler not wired";
+        return serialize_invite_ingest_result(result);
+    }
+    // TRUST BOUNDARY (ADR-0071): verified before the runtime lock is taken.
+    // invite_handler reads the event itself from invite_event_json but files
+    // it under the frame's event_id, so that must be the ID the signed event
+    // hashes to.
+    auto const room_version = relayed_room_version(runtime, request.room_id, request.room_version);
+    auto const signature = verify_relayed_event_signature(runtime, request.invite_event_json, room_version);
+    auto const refusal = !signature.refusal.empty() ? signature.refusal
+                         : signature.event_id != request.event_id
+                             ? std::string{"relayed frame does not match the signed event it carries"}
+                             : std::string{};
+    if (!refusal.empty())
+    {
+        log_relay_refused("invite_ingest", request.event_id, refusal);
+        result.status = 403U;
+        result.reason = refusal;
+        return serialize_invite_ingest_result(result);
+    }
     {
         auto guard = std::unique_lock{runtime.mutex};
-        if (runtime.federation.invite_handler)
-        {
-            result = runtime.federation.invite_handler(request);
-        }
-        else
-        {
-            result.status = 501U;
-            result.reason = "invite_handler not wired";
-        }
+        result = runtime.federation.invite_handler(request);
     }
     return serialize_invite_ingest_result(result);
 }
