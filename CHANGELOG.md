@@ -109,6 +109,19 @@
   (`[event_auth_outlier]`, and the updated `[backfill][conformance]` scenario).
   See [ADR-0070](docs/adr/0070-event-auth-outliers-carry-no-state.md).
 
+- **FIXED: redaction kept content keys the room version's algorithm drops
+  (LOW, audit item 3).** The redacted form feeds the reference hash, so each
+  of these gave affected events a different event ID from other servers:
+  `m.room.aliases` kept `aliases` through v10 (rooms/v6.md removed it; now
+  v1–v5 only); `m.room.member` kept `join_authorised_via_users_server` in
+  every version (now v9+; v8 keeps only `membership`); and
+  `m.room.third_party_invite` kept `signed` (no version lists that event
+  type; now stripped to `{}`). Two existing conformance scenarios in
+  `tests/conformance/test_redaction_conformance.cpp` required the old
+  behaviour and were corrected with spec citations, with the user's
+  approval. Event IDs already stored are not recomputed. Test:
+  `[redaction_versions]` (15 version/type combinations).
+
 - **FIXED: join rules not gated by room version; `knock_restricted` joins
   refused (LOW, audit item 2).** The join path accepted only `restricted`
   and the non-spec `restricted_v2`, so a legitimate `knock_restricted` join

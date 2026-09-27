@@ -26,7 +26,14 @@ Implemented now:
 - room-version policy registry for all stable room versions (v1-v12) used by
   version-aware auth, redaction, and state-resolution lookups
 - room-version policy shape for event format, redaction rules, auth rules, state resolution, and event ID format
-- redaction with room-version-dependent top-level and event-content key retention
+- redaction with room-version-dependent top-level and event-content key retention.
+  Beyond the `RedactionRules` buckets (v1–v7, v8–v10, v11+), two
+  `RoomVersionPolicy` flags carry finer rules: `redaction_keeps_aliases`
+  (m.room.aliases keeps `aliases` in v1–v5 only; rooms/v6.md removed it) and
+  `redaction_keeps_join_authorisation` (m.room.member keeps
+  `join_authorised_via_users_server` from v9). No version keeps any
+  m.room.third_party_invite content (0.12.13; the redacted form feeds the
+  reference hash, so a divergence here changes event IDs)
 - `origin_server_ts` uses wall-clock Unix-epoch milliseconds per Matrix spec
 - event depth is persisted in the database and survives server restarts
 - full Matrix v6+ event authorization rules (14-step algorithm per spec
