@@ -348,6 +348,7 @@ shell = find_program('sh')
       'integration/test_seccomp_sqlite_flow.cpp',
       'integration/test_secret_file_validation_flow.cpp',
       'integration/test_server_startup_hardening_flow.cpp',
+      'integration/test_worker_relay_signature_flow.cpp',
       'integration/test_state_groups_flow.cpp',
       'integration/test_sliding_sync_flow.cpp',
       'integration/test_sync_complement_fixture.cpp',
