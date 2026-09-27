@@ -84,6 +84,15 @@ struct RoomVersionPolicy final
     bool knock_join_rule{false};
     bool restricted_join_rule{false};
     bool knock_restricted_join_rule{false};
+    // Redaction details finer than the RedactionRules buckets. The redacted
+    // form feeds the reference hash, so each must match the version exactly.
+    //   redaction_keeps_aliases — m.room.aliases keeps "aliases" (v1-v5;
+    //                             rooms/v6.md removed it).
+    //   redaction_keeps_join_authorisation — m.room.member keeps
+    //                             "join_authorised_via_users_server" (v9+;
+    //                             v8 keeps only "membership").
+    bool redaction_keeps_aliases{false};
+    bool redaction_keeps_join_authorisation{false};
 };
 
 [[nodiscard]] auto known_room_versions() -> std::vector<RoomVersionPolicy>;

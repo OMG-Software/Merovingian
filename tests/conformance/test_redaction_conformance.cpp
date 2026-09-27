@@ -660,12 +660,16 @@ SCENARIO("Redaction: m.room.history_visibility preserves history_visibility in a
 }
 
 // ---------------------------------------------------------------------------
-// Spec: m.room.aliases — preserved in v1–v10, NOT preserved in v11+
-// v10: aliases preserved; v11: not listed → stripped
+// Spec: m.room.aliases — preserved in v1–v5 only.
+// URL:  ../../docs/matrix-v1.19-spec/rooms/v6.md#redactions ("All significant
+//       meaning for m.room.aliases has been removed from the redaction
+//       algorithm"); the v10 and v11 content allow-lists have no
+//       m.room.aliases entry, so aliases is stripped in both.
+// Corrected in 0.12.13 (audit item 3, approved by the user): this scenario
+// previously required v10 to keep aliases.
 // ---------------------------------------------------------------------------
 
-SCENARIO("Redaction: m.room.aliases preserves aliases in v10 but strips it in v11",
-         "[conformance][redaction][v10][v11][aliases]")
+SCENARIO("Redaction: m.room.aliases strips aliases in v10 and v11", "[conformance][redaction][v10][v11][aliases]")
 {
     GIVEN("an m.room.aliases event")
     {
@@ -680,10 +684,10 @@ SCENARIO("Redaction: m.room.aliases preserves aliases in v10 but strips it in v1
             auto const result_v10 = redact_event(event_json, "10");
             auto const result_v11 = redact_event(event_json, "11");
 
-            THEN("aliases is preserved in v10 but stripped in v11")
+            THEN("aliases is stripped in both versions")
             {
-                // Spec (v1-v10): m.room.aliases preserves aliases from content.
-                REQUIRE(has_field(result_v10, "aliases"));
+                // Spec MUST (v6+): m.room.aliases is not in the content allow-list.
+                REQUIRE_FALSE(has_field(result_v10, "aliases"));
                 REQUIRE_FALSE(has_field(result_v10, "extra"));
                 // Spec (v11+): m.room.aliases is no longer listed; the aliases field is stripped.
                 REQUIRE_FALSE(has_field(result_v11, "aliases"));
@@ -693,11 +697,16 @@ SCENARIO("Redaction: m.room.aliases preserves aliases in v10 but strips it in v1
 }
 
 // ---------------------------------------------------------------------------
-// Spec: m.room.third_party_invite — signed preserved in all versions
-// URL:  ../../docs/matrix-v1.19-spec/rooms/v10.md#redactions
+// Spec: m.room.third_party_invite — no content key is preserved in any version.
+// URL:  ../../docs/matrix-v1.19-spec/rooms/v10.md#redactions and
+//       ../../docs/matrix-v1.19-spec/rooms/v11.md#redactions: neither
+//       content allow-list names m.room.third_party_invite. v11's "signed"
+//       rule is for the third_party_invite key of m.room.member.
+// Corrected in 0.12.13 (audit item 3, approved by the user): this scenario
+// previously required signed to be kept.
 // ---------------------------------------------------------------------------
 
-SCENARIO("Redaction: m.room.third_party_invite preserves signed from content",
+SCENARIO("Redaction: m.room.third_party_invite keeps no content keys",
          "[conformance][redaction][all-versions][third-party-invite]")
 {
     GIVEN("an m.room.third_party_invite event")
@@ -714,11 +723,11 @@ SCENARIO("Redaction: m.room.third_party_invite preserves signed from content",
             auto const result_v10 = redact_event(event_json, "10");
             auto const result_v11 = redact_event(event_json, "11");
 
-            THEN("signed is preserved in both versions; other content fields are stripped")
+            THEN("every content field is stripped in both versions")
             {
-                // Spec MUST: m.room.third_party_invite preserves signed from content.
-                REQUIRE(has_field(result_v10, "signed"));
-                REQUIRE(has_field(result_v11, "signed"));
+                // Spec MUST: m.room.third_party_invite is not in the content allow-list.
+                REQUIRE_FALSE(has_field(result_v10, "signed"));
+                REQUIRE_FALSE(has_field(result_v11, "signed"));
                 // display_name, public_key, and key_validity_url are stripped.
                 REQUIRE_FALSE(has_field(result_v10, "display_name"));
                 REQUIRE_FALSE(has_field(result_v11, "display_name"));
