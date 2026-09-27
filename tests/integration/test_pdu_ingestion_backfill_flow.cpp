@@ -11,7 +11,7 @@
 // Tags: [pdu_ingestion][backfill].
 
 #include "../federation_signing_test_support.hpp"
-#include "../support/master_key.hpp"
+#include "../support/remote_room_fixture.hpp"
 #include "../support/tls_mock_server.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
@@ -48,176 +48,10 @@ using merovingian::federation::InboundPduEnvelope;
 using merovingian::federation::PduIngestionStatus;
 using merovingian::homeserver::HomeserverRuntime;
 
-constexpr auto remote_server = "remote.example.org";
-constexpr auto remote_key_id = "ed25519:auto";
-constexpr auto remote_key_seed = "pdu-backfill-test-remote-seed";
-constexpr auto local_server = "local.example.org";
-constexpr auto room_version = "10";
-
-[[nodiscard]] auto unique_sqlite_path() -> std::filesystem::path
-{
-    auto const now = std::chrono::steady_clock::now().time_since_epoch().count();
-    return std::filesystem::temp_directory_path() / ("merovingian-pdu-backfill-" + std::to_string(now) + ".sqlite3");
-}
-
-[[nodiscard]] auto config_with_sqlite(std::filesystem::path const& path) -> merovingian::config::Config
-{
-    auto server = merovingian::config::ServerConfig{};
-    server.server_name = local_server;
-
-    auto database = merovingian::config::DatabaseConfig{};
-    database.backend = merovingian::config::DatabaseBackend::sqlite;
-    database.sqlite_path = path.string();
-
-    auto security = merovingian::config::SecurityConfig{};
-    security.secrets.master_key_file = merovingian::tests::shared_master_key_file();
-    security.federation.enabled = true;
-
-    return {server,   merovingian::config::ListenersConfig{},        database,
-            security, merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{}};
-}
-
-// Seeds a room whose genesis (create/power_levels/member) is recorded as both
-// current state and an ADR-0064 phase-A state group, matching
-// tests/unit/test_pdu_ingestion_state_groups.cpp's fixture.
-auto seed_room_with_genesis_state_group(HomeserverRuntime& runtime, std::string const& room_id) -> void
-{
-    using namespace merovingian;
-
-    auto& store = runtime.database.persistent_store;
-    auto& local = runtime.database.rooms;
-
-    store.rooms.push_back({room_id, "@admin:local.example.org"});
-    local.push_back({room_id, "@admin:local.example.org", {}, {}, false});
-
-    auto const create_id = room_id + ":create";
-    auto const pl_id = room_id + ":pl";
-    auto const member_id = room_id + ":member";
-    auto const member_bob_id = room_id + ":member:bob";
-
-    auto const make_json = [&](std::string_view type, std::string_view state_key, std::string_view sender,
-                               canonicaljson::Object content, std::int64_t depth, std::int64_t ts,
-                               std::string_view event_id) -> std::string {
-        auto hashes = canonicaljson::Object{};
-        hashes.push_back(canonicaljson::make_member("sha256", canonicaljson::Value{std::string{"hash"}}));
-        auto obj = canonicaljson::Object{};
-        obj.push_back(canonicaljson::make_member("auth_events", canonicaljson::Value{canonicaljson::Array{}}));
-        obj.push_back(canonicaljson::make_member("content", canonicaljson::Value{std::move(content)}));
-        obj.push_back(canonicaljson::make_member("depth", canonicaljson::Value{depth}));
-        obj.push_back(canonicaljson::make_member("event_id", canonicaljson::Value{std::string{event_id}}));
-        obj.push_back(canonicaljson::make_member("hashes", canonicaljson::Value{std::move(hashes)}));
-        obj.push_back(canonicaljson::make_member("origin_server_ts", canonicaljson::Value{ts}));
-        obj.push_back(canonicaljson::make_member("prev_events", canonicaljson::Value{canonicaljson::Array{}}));
-        obj.push_back(canonicaljson::make_member("room_id", canonicaljson::Value{std::string{room_id}}));
-        obj.push_back(canonicaljson::make_member("sender", canonicaljson::Value{std::string{sender}}));
-        obj.push_back(canonicaljson::make_member("state_key", canonicaljson::Value{std::string{state_key}}));
-        obj.push_back(canonicaljson::make_member("type", canonicaljson::Value{std::string{type}}));
-        auto const serialized = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(obj)});
-        REQUIRE(serialized.error == canonicaljson::CanonicalJsonError::none);
-        return serialized.output;
-    };
-
-    auto create_content = canonicaljson::Object{};
-    create_content.push_back(
-        canonicaljson::make_member("creator", canonicaljson::Value{std::string{"@admin:local.example.org"}}));
-    create_content.push_back(
-        canonicaljson::make_member("room_version", canonicaljson::Value{std::string{room_version}}));
-    auto const create_json =
-        make_json("m.room.create", "", "@admin:local.example.org", std::move(create_content), 0, 1, create_id);
-    store.events.push_back({create_id, room_id, "@admin:local.example.org", create_json, 0U, 0U, {}, {}, {}});
-    store.state.push_back({room_id, "m.room.create", "", create_id});
-
-    auto pl_content = canonicaljson::Object{};
-    pl_content.push_back(canonicaljson::make_member("state_default", canonicaljson::Value{std::int64_t{0}}));
-    auto pl_users = canonicaljson::Object{};
-    pl_users.push_back(canonicaljson::make_member("@admin:local.example.org", canonicaljson::Value{std::int64_t{100}}));
-    pl_content.push_back(canonicaljson::make_member("users", canonicaljson::Value{std::move(pl_users)}));
-    auto const pl_json =
-        make_json("m.room.power_levels", "", "@admin:local.example.org", std::move(pl_content), 1, 2, pl_id);
-    store.events.push_back({pl_id, room_id, "@admin:local.example.org", pl_json, 1U, 0U, {}, {}, {}});
-    store.state.push_back({room_id, "m.room.power_levels", "", pl_id});
-
-    auto member_content = canonicaljson::Object{};
-    member_content.push_back(canonicaljson::make_member("membership", canonicaljson::Value{std::string{"join"}}));
-    auto const member_json = make_json("m.room.member", "@admin:local.example.org", "@admin:local.example.org",
-                                       std::move(member_content), 2, 3, member_id);
-    store.events.push_back({member_id, room_id, "@admin:local.example.org", member_json, 2U, 0U, {}, {}, {}});
-    store.state.push_back({room_id, "m.room.member", "@admin:local.example.org", member_id});
-    store.memberships.push_back({room_id, "@admin:local.example.org", "join", 0U});
-
-    auto member_bob_content = canonicaljson::Object{};
-    member_bob_content.push_back(canonicaljson::make_member("membership", canonicaljson::Value{std::string{"join"}}));
-    auto const member_bob_json = make_json("m.room.member", "@bob:remote.example.org", "@bob:remote.example.org",
-                                           std::move(member_bob_content), 3, 4, member_bob_id);
-    store.events.push_back({member_bob_id, room_id, "@bob:remote.example.org", member_bob_json, 3U, 0U, {}, {}, {}});
-    store.state.push_back({room_id, "m.room.member", "@bob:remote.example.org", member_bob_id});
-    store.memberships.push_back({room_id, "@bob:remote.example.org", "join", 0U});
-
-    auto const genesis_state = std::vector<database::PersistentStateGroupStateEntry>{
-        {"", "m.room.create",       "",                         create_id    },
-        {"", "m.room.power_levels", "",                         pl_id        },
-        {"", "m.room.member",       "@admin:local.example.org", member_id    },
-        {"", "m.room.member",       "@bob:remote.example.org",  member_bob_id},
-    };
-    auto const group_id =
-        database::create_or_reuse_state_group(store, room_id, room_id + ":genesis-group", std::nullopt, genesis_state);
-    REQUIRE(group_id.has_value());
-    REQUIRE(database::set_event_state_group(store, create_id, *group_id));
-    REQUIRE(database::set_event_state_group(store, pl_id, *group_id));
-    REQUIRE(database::set_event_state_group(store, member_id, *group_id));
-    REQUIRE(database::set_event_state_group(store, member_bob_id, *group_id));
-    REQUIRE(database::update_forward_extremities(store, room_id, member_id, {}, true));
-}
-
-[[nodiscard]] auto make_remote_event_json(std::string const& room_id, std::string const& type,
-                                          std::optional<std::string> const& state_key, std::string const& sender,
-                                          merovingian::canonicaljson::Object content,
-                                          std::vector<std::string> const& prev_event_ids,
-                                          std::vector<std::string> const& auth_event_ids, std::int64_t depth,
-                                          std::int64_t ts, std::string_view key_seed = remote_key_seed) -> std::string
-{
-    auto prev = canonicaljson::Array{};
-    for (auto const& id : prev_event_ids)
-    {
-        prev.push_back(canonicaljson::Value{id});
-    }
-    auto auth = canonicaljson::Array{};
-    for (auto const& id : auth_event_ids)
-    {
-        auth.push_back(canonicaljson::Value{id});
-    }
-
-    auto obj = canonicaljson::Object{};
-    obj.push_back(canonicaljson::make_member("type", canonicaljson::Value{type}));
-    if (state_key.has_value())
-    {
-        obj.push_back(canonicaljson::make_member("state_key", canonicaljson::Value{*state_key}));
-    }
-    obj.push_back(canonicaljson::make_member("room_id", canonicaljson::Value{room_id}));
-    obj.push_back(canonicaljson::make_member("sender", canonicaljson::Value{sender}));
-    obj.push_back(canonicaljson::make_member("content", canonicaljson::Value{std::move(content)}));
-    obj.push_back(canonicaljson::make_member("origin_server_ts", canonicaljson::Value{ts}));
-    obj.push_back(canonicaljson::make_member("depth", canonicaljson::Value{depth}));
-    obj.push_back(canonicaljson::make_member("prev_events", canonicaljson::Value{std::move(prev)}));
-    obj.push_back(canonicaljson::make_member("auth_events", canonicaljson::Value{std::move(auth)}));
-
-    auto const serialized = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(obj)});
-    REQUIRE(serialized.error == canonicaljson::CanonicalJsonError::none);
-
-    return merovingian::federation::test::make_signed_event_json(serialized.output, remote_server, remote_key_id,
-                                                                 key_seed, room_version);
-}
-
-[[nodiscard]] auto make_remote_message_json(std::string const& room_id, std::vector<std::string> const& prev_event_ids,
-                                            std::vector<std::string> const& auth_event_ids, std::int64_t depth,
-                                            std::int64_t ts) -> std::string
-{
-    auto content = canonicaljson::Object{};
-    content.push_back(canonicaljson::make_member("msgtype", canonicaljson::Value{std::string{"m.text"}}));
-    content.push_back(canonicaljson::make_member("body", canonicaljson::Value{std::string{"backfill test"}}));
-    return make_remote_event_json(room_id, "m.room.message", std::nullopt, "@bob:remote.example.org",
-                                  std::move(content), prev_event_ids, auth_event_ids, depth, ts);
-}
+// The room fixture, remote-signed event builders and the remote server's key
+// live in tests/support/remote_room_fixture.hpp, shared with the worker relay
+// signature tests.
+using namespace merovingian::tests::remote_room;
 
 [[nodiscard]] auto make_remote_event_pdu(std::string const& room_id, std::string const& type,
                                          std::optional<std::string> const& state_key, std::string const& sender,
@@ -297,17 +131,6 @@ auto seed_strict_power_levels(HomeserverRuntime& runtime, std::string const& roo
     REQUIRE(group.has_value());
     REQUIRE(homeserver::recompute_current_state(store, room_id, *policy));
     return strict_pl_id;
-}
-
-[[nodiscard]] auto remote_runtime() -> merovingian::federation::FederationRemoteRuntime
-{
-    auto remote = merovingian::federation::FederationRemoteRuntime{};
-    remote.server_name = remote_server;
-    remote.signing_key = {remote_server, remote_key_id, 0U,
-                          merovingian::federation::test::keypair_from_seed(remote_key_seed).public_key};
-    remote.discovery.server_name = remote_server;
-    remote.trust.reputation_score = 100U;
-    return remote;
 }
 
 [[nodiscard]] auto get_missing_events_response(std::string const& event_json) -> std::string
