@@ -13655,6 +13655,127 @@ SCENARIO("POST /user_directory/search returns matching users", "[conformance][cl
     }
 }
 
+namespace
+{
+
+// user_ids of a /user_directory/search response, and its "limited" flag.
+struct DirectoryResult final
+{
+    std::vector<std::string> user_ids{};
+    bool limited{false};
+};
+
+[[nodiscard]] auto search_directory(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token,
+                                    std::string const& body) -> DirectoryResult
+{
+    auto const response = merovingian::homeserver::handle_client_server_request(
+        runtime, {"POST", "/_matrix/client/v3/user_directory/search", token, body});
+    REQUIRE(response.response.status == 200U);
+    auto const parsed = parse_object(response.response.body);
+    auto const* results = object_member_as_array(parsed, "results");
+    REQUIRE(results != nullptr);
+    auto const* limited = bool_member(parsed, "limited");
+    REQUIRE(limited != nullptr);
+    auto result = DirectoryResult{{}, *limited};
+    for (auto const& entry : *results)
+    {
+        auto const* object = std::get_if<merovingian::canonicaljson::Object>(&entry.storage());
+        REQUIRE(object != nullptr);
+        auto const* user_id = string_member(*object, "user_id");
+        REQUIRE(user_id != nullptr);
+        result.user_ids.push_back(*user_id);
+    }
+    return result;
+}
+
+} // namespace
+
+// 0.12.13 audit item 5: a deactivated account can never log in again, so the
+// directory must not offer it as someone to contact.
+SCENARIO("POST /user_directory/search does not return deactivated accounts",
+         "[conformance][client-server][account-management][user_directory]")
+{
+    GIVEN("two users, one of whom has deactivated their account")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+        auto const bob_token = register_and_login(started.runtime, "bob");
+        std::ignore = register_and_login(started.runtime, "bobby");
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"POST",
+                                      "/_matrix/client/v3/account/deactivate",
+                                      bob_token,
+                                      R"({"auth":{"type":"m.login.password","password":"CorrectHorse7!"}})",
+                                      {}})
+                    .response.status == 200U);
+
+        WHEN("the directory is searched for a term both user IDs match")
+        {
+            auto const result = search_directory(started.runtime, token, R"({"search_term":"bob"})");
+
+            THEN("only the active account is returned")
+            {
+                REQUIRE(std::ranges::find(result.user_ids, "@bob:example.org") == result.user_ids.end());
+                REQUIRE(std::ranges::find(result.user_ids, "@bobby:example.org") != result.user_ids.end());
+            }
+        }
+    }
+}
+
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3user_directorysearch
+// Request "limit": "The maximum number of results to return. Defaults to 10."
+// Response "limited": "Indicates if the result list has been truncated by the
+// limit."
+SCENARIO("POST /user_directory/search returns at most limit results and reports truncation",
+         "[conformance][client-server][account-management][user_directory]")
+{
+    GIVEN("eleven users whose IDs match one search term")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+        for (auto index = 0; index < 11; ++index)
+        {
+            std::ignore = register_and_login(started.runtime, "match" + std::to_string(index));
+        }
+
+        WHEN("the search asks for at most 3 results")
+        {
+            auto const result = search_directory(started.runtime, token, R"({"search_term":"match","limit":3})");
+
+            THEN("3 are returned and the list is reported as truncated")
+            {
+                // Spec MUST: no more than limit results; limited reports truncation.
+                REQUIRE(result.user_ids.size() == 3U);
+                REQUIRE(result.limited);
+            }
+        }
+
+        WHEN("the search gives no limit")
+        {
+            auto const result = search_directory(started.runtime, token, R"({"search_term":"match"})");
+
+            THEN("the default of 10 applies and the list is reported as truncated")
+            {
+                REQUIRE(result.user_ids.size() == 10U);
+                REQUIRE(result.limited);
+            }
+        }
+
+        WHEN("the limit is larger than the number of matches")
+        {
+            auto const result = search_directory(started.runtime, token, R"({"search_term":"match","limit":50})");
+
+            THEN("every match is returned and the list is not truncated")
+            {
+                REQUIRE(result.user_ids.size() == 11U);
+                REQUIRE_FALSE(result.limited);
+            }
+        }
+    }
+}
+
 // ============================================================================
 // 25     Room upgrade — POST /rooms/{roomId}/upgrade
 // ============================================================================
