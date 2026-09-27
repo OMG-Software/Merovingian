@@ -12,11 +12,14 @@ namespace
 {
 
     // Fields after `stable`: create_event_is_room_id (MSC4291),
-    // privilege_room_creators (MSC4289), power_levels_require_integers.
-    // The first two are room-v12 features; v1-v11 leave them disabled. The last
-    // is set from v10 onwards: v1-v9 accept string-encoded integer power levels
-    // for backwards compatibility (rooms/v10.md, "Values in m.room.power_levels
-    // events must be integers").
+    // privilege_room_creators (MSC4289), power_levels_require_integers,
+    // knock_join_rule, restricted_join_rule, knock_restricted_join_rule.
+    // The first two are room-v12 features; v1-v11 leave them disabled.
+    // power_levels_require_integers is set from v10 onwards: v1-v9 accept
+    // string-encoded integer power levels for backwards compatibility
+    // (rooms/v10.md, "Values in m.room.power_levels events must be integers").
+    // The join rules arrive in v7 (knock), v8 (restricted) and v10
+    // (knock_restricted).
     constexpr auto policies = std::array{
         RoomVersionPolicy{"1", EventFormat::room_v1_v2, RedactionRules::room_v1_v7, AuthRules::room_v1,
                           StateResolutionAlgorithm::v1, EventIdFormat::reference_hash, true, false, false},
@@ -31,19 +34,24 @@ namespace
         RoomVersionPolicy{"6", EventFormat::room_v3_plus, RedactionRules::room_v1_v7, AuthRules::room_v6_plus,
                           StateResolutionAlgorithm::v2, EventIdFormat::reference_hash, true, false, false},
         RoomVersionPolicy{"7", EventFormat::room_v3_plus, RedactionRules::room_v1_v7, AuthRules::room_v6_plus,
-                          StateResolutionAlgorithm::v2, EventIdFormat::reference_hash, true, false, false},
+                          StateResolutionAlgorithm::v2, EventIdFormat::reference_hash, true, false, false, false, true},
         // Room v8 introduced restricted joins (MSC3083): the allow field in
         // m.room.join_rules content is now preserved through redaction.
         RoomVersionPolicy{"8", EventFormat::room_v3_plus, RedactionRules::room_v8_v10, AuthRules::room_v6_plus,
-                          StateResolutionAlgorithm::v2, EventIdFormat::reference_hash, true, false, false},
+                          StateResolutionAlgorithm::v2, EventIdFormat::reference_hash, true, false, false, false, true,
+                          true},
         RoomVersionPolicy{"9", EventFormat::room_v3_plus, RedactionRules::room_v8_v10, AuthRules::room_v6_plus,
-                          StateResolutionAlgorithm::v2, EventIdFormat::reference_hash, true, false, false},
+                          StateResolutionAlgorithm::v2, EventIdFormat::reference_hash, true, false, false, false, true,
+                          true},
         RoomVersionPolicy{"10", EventFormat::room_v3_plus, RedactionRules::room_v8_v10, AuthRules::room_v6_plus,
-                          StateResolutionAlgorithm::v2, EventIdFormat::reference_hash, true, false, false, true},
+                          StateResolutionAlgorithm::v2, EventIdFormat::reference_hash, true, false, false, true, true,
+                          true, true},
         RoomVersionPolicy{"11", EventFormat::room_v3_plus, RedactionRules::room_v11_plus, AuthRules::room_v6_plus,
-                          StateResolutionAlgorithm::v2, EventIdFormat::reference_hash, true, false, false, true},
+                          StateResolutionAlgorithm::v2, EventIdFormat::reference_hash, true, false, false, true, true,
+                          true, true},
         RoomVersionPolicy{"12", EventFormat::room_v3_plus, RedactionRules::room_v11_plus, AuthRules::room_v12,
-                          StateResolutionAlgorithm::v2_1, EventIdFormat::reference_hash, true, true, true, true},
+                          StateResolutionAlgorithm::v2_1, EventIdFormat::reference_hash, true, true, true, true, true,
+                          true, true},
     };
 
 } // namespace

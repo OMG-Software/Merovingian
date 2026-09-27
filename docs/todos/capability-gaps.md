@@ -70,7 +70,7 @@ When adding a capability, record what is *missing* as explicitly as what works.
 | `POST /_matrix/client/v3/createRoom` | `spec-covered` | Broader conformance fixtures. |
 | `POST /_matrix/client/v3/rooms/{roomId}/join` | `spec-covered` | Federation-aware joins. |
 | `POST /_matrix/client/v3/join/{roomIdOrAlias}` | `spec-covered` | Room-alias resolution, `?server_name` hint, federation-aware joins. |
-| `POST /_matrix/client/v3/rooms/{roomId}/send` | `spec-covered` | Restricted and restricted_v2 join rule evaluation, and third-party invite auth (rule 4.3.1), landed in `events/authorization.cpp`. |
+| `POST /_matrix/client/v3/rooms/{roomId}/send` | `spec-covered` | Restricted (v8+) and knock_restricted (v10+) join rule evaluation, gated by room version (0.12.13; the non-spec restricted_v2 is no longer accepted), and third-party invite auth (rule 4.3.1), landed in `events/authorization.cpp`. |
 | `PUT /_matrix/client/v3/user/{userId}/account_data/{type}` | `spec-covered` | Room-scoped account data (`/rooms/{roomId}/account_data/{type}`). |
 | `GET/PUT/DELETE /_matrix/client/v3/user/{userId}/rooms/{roomId}/tags[/{tag}]` | `spec-covered` | Room tagging via `m.tag` account data; `order` doubles supported in general JSON parser. |
 | Push rule CRUD | `spec-covered` | Writable push-rule CRUD (PUT/DELETE/enabled/actions). Rules are stored and served correctly, but nothing evaluates them against the event stream — see `GET /pushers` below and the Push notifications capability row. |

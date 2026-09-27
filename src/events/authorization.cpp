@@ -1148,19 +1148,23 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
                 return make_denied("5", "user was not invited to this invite-only room");
             }
 
-            // knock join rule: knocked users can join if invited
-            if (join_rule == "knock")
+            // knock join rule (room v7+): "If the join_rule is invite or knock
+            // then allow if membership state is invite or join."
+            if (join_rule == "knock" && policy.knock_join_rule)
             {
                 if (membership_at_least_one_of(target_current_membership,
                                                {MembershipState::invite, MembershipState::join}))
                 {
                     return make_allowed("5");
                 }
-                return make_denied("5", "user was not invited to knock-restricted room");
+                return make_denied("5", "user was not invited to a knock room");
             }
 
-            // restricted / restricted_v2 join rules
-            if (join_rule == "restricted" || join_rule == "restricted_v2")
+            // restricted (room v8+) and knock_restricted (room v10+), rule
+            // 4.3.5: "If the join_rule is restricted or knock_restricted". A
+            // join rule the room version does not define is rejected below.
+            if ((join_rule == "restricted" && policy.restricted_join_rule) ||
+                (join_rule == "knock_restricted" && policy.knock_restricted_join_rule))
             {
                 if (membership_at_least_one_of(target_current_membership,
                                                {MembershipState::invite, MembershipState::join}))
@@ -1200,7 +1204,7 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
                 return make_allowed("5");
             }
 
-            return make_denied("5", "unknown join rule");
+            return make_denied("5", "join rule not defined by this room version");
         }
 
         // Step 5: knock membership — Spec § Authorization Rules, rule 5.
@@ -1212,6 +1216,12 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
         //   • the room join_rule is "knock" or "knock_restricted"
         if (requested == MembershipState::knock)
         {
+            // Room versions before 7 define no knock membership: "Otherwise,
+            // the membership is unknown. Reject."
+            if (!policy.knock_join_rule)
+            {
+                return make_denied("5", "knock membership not defined by this room version");
+            }
             if (!target_is_sender)
             {
                 return make_denied("5", "cannot knock on behalf of another user");
@@ -1234,7 +1244,10 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
                     knock_join_rule = *rule;
                 }
             }
-            if (knock_join_rule == "knock" || knock_join_rule == "knock_restricted")
+            // v7-v9: "anything other than knock, reject"; v10+: "anything other
+            // than knock or knock_restricted, reject".
+            if (knock_join_rule == "knock" ||
+                (knock_join_rule == "knock_restricted" && policy.knock_restricted_join_rule))
             {
                 return make_allowed("5");
             }

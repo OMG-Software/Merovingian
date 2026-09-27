@@ -109,6 +109,18 @@
   (`[event_auth_outlier]`, and the updated `[backfill][conformance]` scenario).
   See [ADR-0070](docs/adr/0070-event-auth-outliers-carry-no-state.md).
 
+- **FIXED: join rules not gated by room version; `knock_restricted` joins
+  refused (LOW, audit item 2).** The join path accepted only `restricted`
+  and the non-spec `restricted_v2`, so a legitimate `knock_restricted` join
+  in a v10+ room was refused (rooms/v10.md rule 4.3.5: "If the join_rule is
+  restricted or knock_restricted"). Each join rule is now recognised only in
+  the versions that define it: `knock` from v7, `restricted` from v8,
+  `knock_restricted` from v10, for both joins and knocks. `restricted_v2` and
+  any rule the version does not define are rejected, and a `knock`
+  membership is rejected before v7. New `RoomVersionPolicy` flags carry the
+  table. Test: `tests/conformance/test_event_auth_rules.cpp`
+  (`[join_rule_versions]`, 17 version/rule combinations).
+
 - **FIXED: no per-IP connection cap (MEDIUM, audit item 1, ADR-0072).** One
   host could fill the global connection budget with connections held just
   under the slow-request thresholds. Both accept loops now refuse a

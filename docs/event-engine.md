@@ -120,6 +120,13 @@ Implemented now:
 - restricted-room join auth accepts a valid
   `content.join_authorised_via_users_server` when the named resident user is
   joined and has sufficient invite power
+- each join rule is recognised only in the room versions that define it
+  (`RoomVersionPolicy::knock_join_rule` v7+, `restricted_join_rule` v8+,
+  `knock_restricted_join_rule` v10+). From v10, `knock_restricted` joins
+  follow the restricted rule (rules 4.3.5) and knocks accept `knock` or
+  `knock_restricted`; before v7 a `knock` membership is rejected. A join rule
+  the version does not define, including the non-spec `restricted_v2`, falls
+  through to "Otherwise, reject" (0.12.13)
 - self-leave (`membership: "leave"`, sender matches state_key) is only
   authorized when the sender's current membership is `invite`, `join`, or
   `knock` — a banned or never-joined user cannot self-leave (which would

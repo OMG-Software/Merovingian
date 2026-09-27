@@ -72,6 +72,18 @@ struct RoomVersionPolicy final
     // Spec: ../../docs/matrix-v1.19-spec/rooms/v10.md
     //       "Values in m.room.power_levels events must be integers"
     bool power_levels_require_integers{false};
+    // Which join rules the version's authorization rules define. A join rule
+    // a version does not define falls through to "Otherwise, reject".
+    //   knock            — rooms/v7.md: joins ("invite or knock") and the
+    //                      knock membership.
+    //   restricted       — rooms/v8.md: restricted joins via
+    //                      join_authorised_via_users_server.
+    //   knock_restricted — rooms/v10.md: joins ("restricted or
+    //                      knock_restricted") and knocks ("knock or
+    //                      knock_restricted").
+    bool knock_join_rule{false};
+    bool restricted_join_rule{false};
+    bool knock_restricted_join_rule{false};
 };
 
 [[nodiscard]] auto known_room_versions() -> std::vector<RoomVersionPolicy>;
