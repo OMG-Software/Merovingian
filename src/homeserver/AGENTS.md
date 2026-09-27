@@ -92,6 +92,17 @@ default-constructed and assigned in order to survive it.
 See [`docs/http-transport.md`](../../docs/http-transport.md) "Request lock and
 blocking network calls".
 
+## Federation worker relays are untrusted input
+
+A frame from the federation worker is input from the process most exposed to
+hostile traffic, not a verified fact. Every worker-to-main relay that carries a
+PDU (`pdu_ingest`, `membership_ingest`, `invite_ingest` in `worker_pool.cpp`)
+re-verifies the sender server's signature with main's own
+`remote_key_resolver` and rebuilds the envelope from the verified event before
+anything is persisted (ADR-0071). Do it before taking `runtime.mutex`: resolving
+a key may go to the network. A new relay that carries a PDU follows the same
+pattern.
+
 ## Body size limits
 
 - **Default cap**: `rt.limits.max_body_bytes` (64 KiB) — applied at the top of the dispatch function

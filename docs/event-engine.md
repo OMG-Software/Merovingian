@@ -442,8 +442,8 @@ a hard rejection, and rejected (rather than redacted) a content-hash
 mismatch. Phase B2 runs the spec's six-step "Checks performed on receipt of
 a PDU" in order (steps 1–2, format and signature, are unchanged — format
 validation stays in `parse_inbound_pdu_envelope`/`authorize_federation_pdu`,
-and main does not re-verify signatures; see "Main does not re-verify PDU
-Ed25519 signatures before persisting" below):
+run before `ingest_pdu_event`; for a PDU relayed by a federation worker, main
+re-verifies the signature itself before ingestion, ADR-0071):
 
 - **Step 3 (hash).** `events::verify_pdu_content_hash` failing no longer
   rejects the event. `events::redact_event` (the room version's redaction

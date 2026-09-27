@@ -3474,20 +3474,13 @@ namespace
 
 } // namespace
 
-// #450 TRUST BOUNDARY: this function (main's pdu_sink) re-checks
-// authorization and content-hash integrity below, but it does NOT
-// independently re-verify the PDU's Ed25519 signature against the sender's
-// published key — that already happened once, before this ever runs, at
-// federation::authorize_federation_pdu() (inbound_request.cpp) using a
-// remote_key_resolver-fetched key. Whether this call came directly from the
-// same-process federation path or was relayed from the federation worker
-// over IPC (see worker_pool.cpp's pdu_ingest handler), main trusts that
-// prior verification rather than repeating it. See docs/threat-model.md,
-// "Main does not re-verify PDU Ed25519 signatures before persisting" for the
-// accepted-risk rationale (worker cannot forge peer identity, holds no
-// signing secret; re-verifying here would need the raw PDU + a
-// main-side-resolved key, a larger shape change than this LOW-severity gap
-// warrants).
+// Signature verification (receipt step 2) is the caller's job, done before
+// this function takes any lock because resolving a key may go to the network:
+// federation::authorize_federation_pdu() in inbound_request.cpp on the
+// same-process path, and handle_pdu_ingest_request() in worker_pool.cpp, with
+// main's own remote_key_resolver, for a PDU relayed by a federation worker
+// (ADR-0071). This function re-checks authorization and content-hash
+// integrity.
 auto ingest_pdu_event(HomeserverRuntime& runtime, federation::InboundPduEnvelope const& envelope)
     -> federation::PduIngestionResult
 {

@@ -339,32 +339,22 @@ threat it closes; the controls above are the standing defences these reinforce.
   signed value never crosses IPC is deferred (requires a `build_outbound_request`
   provider-abstraction refactor) for minimal additional security value.
 
-  **Main does not re-verify PDU Ed25519 signatures before persisting (#450,
-  accepted residual gap):** main's `pdu_sink` (wired in
-  `homeserver/local_http_router.cpp::ingest_pdu_event`, invoked directly for
-  same-process federation and relayed from the worker via
-  `homeserver/worker_pool.cpp`'s `pdu_ingest` IPC handler) runs
-  `events::authorize_event_against_auth_events` and
-  `events::verify_pdu_content_hash`, but does not independently re-run Ed25519
-  signature verification against the sender's published key. The worker is the
-  sole signature-verification boundary for the relay path
-  (`federation::authorize_federation_pdu` with a resolver-fetched key, in
-  `federation/inbound_request.cpp`, called before the transaction handler
-  invokes `pdu_sink`). This is consistent with the residual worker-trust model
-  above — the worker cannot forge a peer's identity and holds no signing
-  secret — but it means main, which holds the signing secret and owns the
-  authoritative store, trusts the worker's prior verification rather than
-  checking cryptographically for itself. If the worker's `remote_key_resolver`
-  is ever unwired, or a future bug relays before verifying, or the worker
-  process is compromised, main would persist a forged PDU into the event
-  graph. Accepted as a defense-in-depth gap rather than fixed with independent
-  re-verification: doing so would require plumbing the raw PDU and a
-  main-side-resolved remote key through to `ingest_pdu_event` (a different
-  shape than the `InboundPduEnvelope` it receives today), which is a larger
-  structural change than this gap's severity (LOW) warrants. Revisit if the
-  worker's trust model changes (e.g. #319/#323-style hardening is ever
-  weakened) or if `InboundPduEnvelope` gains a verified-signature carrier as
-  part of unrelated work.
+  **Main re-verifies the signature of every PDU a worker relays (#450,
+  resolved in 0.12.13, ADR-0071).** Until 0.12.13 main trusted the worker's
+  signature check: a compromised worker, or a future bug that relayed before
+  verifying, could have made main persist events impersonating any sender the
+  room's state authorised. Now `homeserver/worker_pool.cpp`'s
+  `handle_pdu_ingest_request`, `handle_membership_ingest_request` and
+  `handle_invite_ingest_request` each verify the signature of the sender's
+  server (`federation::authorize_federation_pdu`, the check the worker runs)
+  with a key main resolves through its own `remote_key_resolver`, before any
+  runtime lock is taken. The `/send` and membership envelopes are rebuilt from
+  the verified event rather than from the worker's separately framed fields,
+  and a frame whose event ID disagrees with the signed event is refused. The
+  worker's PostgreSQL role cannot write the key cache (ADR-0062), so a key
+  main uses is one main fetched or cached itself. Residual: the frame's
+  transport `origin` is still the worker's claim; it only chooses where main
+  backfills from, and everything fetched there is verified again.
 
 - **Signing secret in federation worker address space (v0.10.2):**
   in Phase 1 the worker loaded the server signing secret from the database, so a

@@ -109,6 +109,27 @@
   (`[event_auth_outlier]`, and the updated `[backfill][conformance]` scenario).
   See [ADR-0070](docs/adr/0070-event-auth-outliers-carry-no-state.md).
 
+- **FIXED: main trusted the federation worker's signature check on relayed
+  PDUs (MEDIUM, ADR-0071, threat-model #450).** A compromised worker could make
+  main persist events impersonating any sender the room's state authorised.
+  `pdu_ingest`, `membership_ingest` and `invite_ingest` now verify the sender
+  server's signature with main's own `remote_key_resolver`, before the runtime
+  lock is taken, and `/send` and membership envelopes are rebuilt from the
+  verified event instead of the worker's framed fields; a frame whose event ID
+  disagrees with the signed event is refused. The worker-flow fixtures that
+  relayed unsigned events under a placeholder event ID now sign as the
+  sender's server. Tests: `tests/integration/test_worker_relay_signature_flow.cpp`
+  (`[worker_relay_signature]`), `tests/integration/test_federation_worker_flow.cpp`.
+
+- **FIXED: data race on the server signing-key cache (HIGH, found while doing
+  the item above).** `PersistentStore::server_signing_keys` was an unguarded
+  vector written by the remote-key resolver from the inbound path's parallel
+  key fan-out and from backfill, both without the runtime mutex, while other
+  threads read it. A concurrent store/lookup test crashed with SIGSEGV in 4 of
+  4 runs. The vector now has its own mutex, and readers that iterate use
+  `snapshot_server_signing_keys`. Test: `tests/unit/test_database_persistence.cpp`
+  (`[signing-key][concurrency]`, also clean under ThreadSanitizer).
+
 - **FIXED: push gateway and identity server clients skipped SSRF filtering on
   address resolution (MEDIUM).** `push_gateway_client.cpp` and
   `identity_client.cpp` were calling

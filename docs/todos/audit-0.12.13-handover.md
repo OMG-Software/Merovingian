@@ -92,7 +92,10 @@ federation worker's table allowlist, or a source-tree test fails).
 * **D2: main re-verifies relayed PDU signatures with its own
   `remote_key_resolver`** (cache first, network fetch on a miss with the locks
   released). Passing key material from the worker was rejected: a compromised
-  worker would supply both the key and the signature.
+  worker would supply both the key and the signature. Done (ADR-0071), for all
+  three PDU-bearing relays, together with the signing-key cache race it
+  exposed; tests under `[worker_relay_signature]` and
+  `[signing-key][concurrency]`.
 * **D3: deferred** to a separate cleanup branch; tracked in
   `docs/todos/capability-gaps.md`.
 

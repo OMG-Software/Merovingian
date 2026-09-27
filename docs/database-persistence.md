@@ -105,6 +105,13 @@ remaining work before PostgreSQL-backed production operation.
   (`crypto::constant_time_equal`, backed by `sodium_memcmp`) for the access and
   refresh token lookups, so a database-equivalent match does not branch on the
   fixed-length hash bytes.
+- `PersistentStore::server_signing_keys` has its own lock,
+  `server_signing_keys_mutex` (0.12.13). The remote-key resolver stores and
+  reads keys from federation relay threads and from backfill with the runtime
+  mutex released, so after start-up hydration the vector is touched only
+  through `store_server_signing_key`, `find_server_signing_key` and
+  `snapshot_server_signing_keys` (a copy for callers that iterate). The lock is
+  never held across the database write or a network call.
 - Binary payload columns are `BLOB` (#448): `media_blobs.bytes` holds raw media
   content and `server_signing_keys.secret_key` holds encrypted key material
   (`BLOB NOT NULL DEFAULT ''`, empty = no secret persisted). Both were folded

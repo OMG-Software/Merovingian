@@ -402,6 +402,15 @@ quickly finding everything a given `AGENTS.md` file contributed.
   still has a real effect.
   Source: `src/federation/AGENTS.md`.
 
+- **Main re-verifies every PDU a federation worker relays, with its own key resolver,
+  before the runtime lock is taken, and builds the envelope from the verified event rather
+  than the worker's framed fields.** A new worker-to-main relay that carries a PDU must do
+  the same (`handle_pdu_ingest_request` in `src/homeserver/worker_pool.cpp` is the pattern).
+  Why: the worker is the process most exposed to hostile input. Until 0.12.13 main trusted
+  its signature check, so a compromised worker could inject events impersonating any
+  sender the room authorised (ADR-0071, `docs/threat-model.md` #450).
+  Source: `src/homeserver/AGENTS.md`.
+
 - **Never relay a remote server's answer about users to a client unfiltered. Keep only
   the users you asked that server about, and only records that describe the user they are
   filed under.** For E2EE keys, go through `federation::accept_remote_key_query_response()`.
@@ -871,7 +880,7 @@ For finding everything a specific file contributed, without re-reading the whole
 | `src/identity/AGENTS.md` | Identity Service client |
 | `src/http/AGENTS.md` | HTTP and network boundary |
 | `src/net/AGENTS.md` | Memory safety; HTTP and network boundary |
-| `src/homeserver/AGENTS.md` | HTTP and network boundary |
+| `src/homeserver/AGENTS.md` | HTTP and network boundary; Federation |
 | `src/media/AGENTS.md` | HTTP and network boundary; Media |
 | `src/database/AGENTS.md` | Database |
 | `migrations/AGENTS.md` | Database |

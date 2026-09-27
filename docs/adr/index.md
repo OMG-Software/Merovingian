@@ -73,6 +73,7 @@
 * [0068 - Random media IDs and a per-row legacy-endpoint freeze marker](0068-random-media-ids-and-legacy-endpoint-freeze.md)
 * [0069 - Spec-conformant /state_ids fallback via /event_auth](0069-spec-conformant-state-ids-fallback-via-event-auth.md) — amended by ADR-0070
 * [0070 - Events verified only against their auth_events carry no state](0070-event-auth-outliers-carry-no-state.md)
+* [0071 - Main re-verifies PDUs relayed by the federation worker](0071-main-re-verifies-pdus-relayed-by-the-federation-worker.md)
 
 ## Rejected Records
 
