@@ -1576,8 +1576,9 @@ SCENARIO("Auth rules admit each join rule only in the room versions that define 
                                          << row.membership << ", invited " << row.invited << ", authorised "
                                          << row.authorised);
                     // Spec MUST: the version's own rule list decides the outcome.
-                    REQUIRE(authorize_membership_under_join_rule(row.version, row.join_rule, row.membership,
-                                                                 row.invited, row.authorised) == row.allowed);
+                    // CHECK, not REQUIRE, so a failure reports every row.
+                    CHECK(authorize_membership_under_join_rule(row.version, row.join_rule, row.membership, row.invited,
+                                                               row.authorised) == row.allowed);
                 }
             }
         }
