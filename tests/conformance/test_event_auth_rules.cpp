@@ -1464,6 +1464,126 @@ SCENARIO("Auth rules allow a restricted-room join when join_authorised_via_users
     }
 }
 
+namespace
+{
+
+// Authorizes @bob's join (or knock) under `version` with the given join rule.
+// `invited` gives @bob a current invite; `authorised` names @alice (joined,
+// with invite power) in content.join_authorised_via_users_server.
+[[nodiscard]] auto authorize_membership_under_join_rule(std::string_view version, std::string_view join_rule,
+                                                        std::string_view membership, bool invited, bool authorised)
+    -> bool
+{
+    auto const content = authorised ? std::string{"{\"membership\":\""} + std::string{membership} +
+                                          "\",\"join_authorised_via_users_server\":\"@alice:example.org\"}"
+                                    : std::string{"{\"membership\":\""} + std::string{membership} + "\"}";
+    auto const event_json =
+        std::string{"{\"type\":\"m.room.member\",\"state_key\":\"@bob:example.org\",\"sender\":\"@bob:example.org\","
+                    "\"room_id\":\"!room:example.org\",\"content\":"} +
+        content +
+        ",\"origin_server_ts\":3,\"depth\":2,\"prev_events\":[],\"auth_events\":[],"
+        "\"hashes\":{\"sha256\":\"hash\"}}";
+    auto const parsed = merovingian::canonicaljson::parse_lossless(event_json);
+    REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+    auto const* policy = merovingian::rooms::find_room_version_policy(version);
+    REQUIRE(policy != nullptr);
+    auto auth_events = merovingian::events::AuthEventMap{};
+    auth_events.create = merovingian::canonicaljson::parse_lossless(make_create_event("@alice:example.org")).value;
+    auth_events.power_levels =
+        merovingian::canonicaljson::parse_lossless(
+            make_power_levels_event("@alice:example.org", 50, 50, 50, 50, 0, 50, 0, "@moderator:example.org", 100))
+            .value;
+    auth_events.join_rules =
+        merovingian::canonicaljson::parse_lossless(make_join_rules_event(std::string{join_rule})).value;
+    if (invited)
+    {
+        auth_events.target_member = merovingian::canonicaljson::parse_lossless(
+                                        make_member_event("@alice:example.org", "@bob:example.org", "invite"))
+                                        .value;
+    }
+    if (authorised)
+    {
+        auth_events.authorising_user_member = merovingian::canonicaljson::parse_lossless(
+                                                  make_member_event("@alice:example.org", "@alice:example.org", "join"))
+                                                  .value;
+    }
+    return merovingian::events::authorize_event_against_auth_events(parsed.value, *policy, auth_events).allowed;
+}
+
+} // namespace
+
+// Spec: Matrix room versions v6, v7, v8, v9, v10 — Authorization rules,
+// m.room.member, membership join (rule 4.3) and knock (rule 4.7).
+// URL: ../../docs/matrix-v1.19-spec/rooms/v10.md
+//
+// v6: "If the join_rule is invite then allow if membership state is invite or
+// join. If the join_rule is public, allow. Otherwise, reject." v7 adds knock to
+// the invite clause; v8 and v9 add "If the join_rule is restricted"; v10
+// changes it to "If the join_rule is restricted or knock_restricted". A knock
+// (v7+) is rejected if "the join_rule is anything other than knock" (v7-v9),
+// "anything other than knock or knock_restricted" (v10+). restricted_v2 is not
+// a join rule in any version.
+SCENARIO("Auth rules admit each join rule only in the room versions that define it",
+         "[events][auth][membership][join-rules][conformance][join_rule_versions]")
+{
+    struct Case final
+    {
+        char const* version;
+        char const* join_rule;
+        char const* membership;
+        bool invited;
+        bool authorised;
+        bool allowed;
+    };
+    // clang-format off
+    auto const cases = std::vector<Case>{
+        // v10 rule 4.3.5: knock_restricted behaves as restricted.
+        {"10", "knock_restricted", "join",  false, true,  true },
+        {"10", "knock_restricted", "join",  true,  false, true },
+        {"10", "knock_restricted", "join",  false, false, false},
+        {"11", "knock_restricted", "join",  false, true,  true },
+        {"12", "knock_restricted", "join",  false, true,  true },
+        // v8/v9 know restricted but not knock_restricted.
+        {"9",  "restricted",       "join",  false, true,  true },
+        {"9",  "knock_restricted", "join",  false, true,  false},
+        {"8",  "knock_restricted", "join",  true,  false, false},
+        // v7 knows neither.
+        {"7",  "restricted",       "join",  false, true,  false},
+        {"7",  "knock",            "join",  true,  false, true },
+        // v6 has no knock join rule.
+        {"6",  "knock",            "join",  true,  false, false},
+        // restricted_v2 is not a spec join rule.
+        {"12", "restricted_v2",    "join",  false, true,  false},
+        {"10", "restricted_v2",    "join",  true,  false, false},
+        // Knocks: v7-v9 need knock; v10+ accept knock_restricted too.
+        {"9",  "knock_restricted", "knock", false, false, false},
+        {"9",  "knock",            "knock", false, false, true },
+        {"10", "knock_restricted", "knock", false, false, true },
+        // v6 has no knock membership.
+        {"6",  "knock",            "knock", false, false, false},
+    };
+    // clang-format on
+
+    GIVEN("a room with a given version and join rule")
+    {
+        WHEN("@bob's membership event is authorized under each combination")
+        {
+            THEN("it is allowed exactly when that version's rules allow it")
+            {
+                for (auto const& row : cases)
+                {
+                    INFO("room version " << row.version << ", join_rule " << row.join_rule << ", membership "
+                                         << row.membership << ", invited " << row.invited << ", authorised "
+                                         << row.authorised);
+                    // Spec MUST: the version's own rule list decides the outcome.
+                    REQUIRE(authorize_membership_under_join_rule(row.version, row.join_rule, row.membership,
+                                                                 row.invited, row.authorised) == row.allowed);
+                }
+            }
+        }
+    }
+}
+
 SCENARIO("Auth rules allow a kicked user to rejoin an invite-only room after a new invite",
          "[events][auth][membership][join-rules]")
 {
