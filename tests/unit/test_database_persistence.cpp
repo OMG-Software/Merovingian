@@ -15,8 +15,10 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <latch>
 #include <optional>
 #include <string>
+#include <thread>
 #include <type_traits>
 #include <vector>
 
@@ -2386,6 +2388,95 @@ SCENARIO("Server signing keys are looked up by server identity and key ID", "[da
                 REQUIRE(found_b->server_name == "server-b.org");
                 REQUIRE(found_b->public_key == "public-key-b");
                 REQUIRE_FALSE(not_found.has_value());
+            }
+        }
+    }
+}
+
+// The remote-key resolver stores and reads server signing keys from worker
+// relay threads and backfill with the runtime mutex released, so the store's
+// signing-key accessors must be safe to call concurrently (0.12.13, D2).
+SCENARIO("Server signing keys can be stored and looked up from many threads at once",
+         "[database][persistence][signing-key][concurrency]")
+{
+    GIVEN("an opened persistent store and writer and reader threads released together")
+    {
+        auto opened = merovingian::database::open_persistent_store();
+        REQUIRE(opened.ok);
+        auto& store = opened.store;
+
+        constexpr auto writer_count = std::size_t{4U};
+        constexpr auto reader_count = std::size_t{4U};
+        constexpr auto keys_per_writer = std::size_t{500U};
+        auto const server_for = [](std::size_t writer) {
+            return "server-" + std::to_string(writer) + ".org";
+        };
+        auto const key_id_for = [](std::size_t index) {
+            return "ed25519:k" + std::to_string(index);
+        };
+
+        WHEN("every writer stores its own keys while readers look keys up")
+        {
+            auto start = std::latch{static_cast<std::ptrdiff_t>(writer_count + reader_count)};
+            auto store_failures = std::vector<std::size_t>(writer_count, 0U);
+            auto torn_reads = std::vector<std::size_t>(reader_count, 0U);
+            {
+                auto threads = std::vector<std::jthread>{};
+                for (auto writer = std::size_t{0U}; writer < writer_count; ++writer)
+                {
+                    threads.emplace_back([&, writer]() {
+                        start.arrive_and_wait();
+                        for (auto index = std::size_t{0U}; index < keys_per_writer; ++index)
+                        {
+                            if (!merovingian::database::store_server_signing_key(
+                                    store, {server_for(writer), key_id_for(index),
+                                            "public-" + std::to_string(writer) + "-" + std::to_string(index),
+                                            32503680000000ULL}))
+                            {
+                                ++store_failures[writer];
+                            }
+                        }
+                    });
+                }
+                for (auto reader = std::size_t{0U}; reader < reader_count; ++reader)
+                {
+                    threads.emplace_back([&, reader]() {
+                        start.arrive_and_wait();
+                        for (auto index = std::size_t{0U}; index < keys_per_writer; ++index)
+                        {
+                            auto const writer = index % writer_count;
+                            auto const found = merovingian::database::find_server_signing_key(store, server_for(writer),
+                                                                                              key_id_for(index));
+                            if (found.has_value() &&
+                                found->public_key != "public-" + std::to_string(writer) + "-" + std::to_string(index))
+                            {
+                                ++torn_reads[reader];
+                            }
+                        }
+                    });
+                }
+            }
+
+            THEN("every key is stored exactly once and no reader saw another key's value")
+            {
+                for (auto const failures : store_failures)
+                {
+                    REQUIRE(failures == 0U);
+                }
+                for (auto const torn : torn_reads)
+                {
+                    REQUIRE(torn == 0U);
+                }
+                for (auto writer = std::size_t{0U}; writer < writer_count; ++writer)
+                {
+                    for (auto index = std::size_t{0U}; index < keys_per_writer; ++index)
+                    {
+                        auto const found = merovingian::database::find_server_signing_key(store, server_for(writer),
+                                                                                          key_id_for(index));
+                        REQUIRE(found.has_value());
+                    }
+                }
+                REQUIRE(store.server_signing_keys.size() == writer_count * keys_per_writer);
             }
         }
     }
