@@ -228,6 +228,44 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected positive integer");
             }
         }
+        else if (key == "server.http.max_connections_per_ip")
+        {
+            try
+            {
+                auto const parsed = std::stoul(std::string{value});
+                if (parsed == 0U || parsed > 65535U)
+                {
+                    add_parse_finding(findings, std::string{key}, "expected an integer in 1..65535");
+                }
+                else
+                {
+                    server.http.max_connections_per_ip = static_cast<std::uint32_t>(parsed);
+                }
+            }
+            catch (...)
+            {
+                add_parse_finding(findings, std::string{key}, "expected an integer in 1..65535");
+            }
+        }
+        else if (key == "server.http.ipv6_client_prefix_length")
+        {
+            try
+            {
+                auto const parsed = std::stoul(std::string{value});
+                if (parsed == 0U || parsed > 128U)
+                {
+                    add_parse_finding(findings, std::string{key}, "expected an integer in 1..128");
+                }
+                else
+                {
+                    server.http.ipv6_client_prefix_length = static_cast<std::uint8_t>(parsed);
+                }
+            }
+            catch (...)
+            {
+                add_parse_finding(findings, std::string{key}, "expected an integer in 1..128");
+            }
+        }
         else if (key == "server.turn.server")
         {
             server.turn.server = std::string{value};

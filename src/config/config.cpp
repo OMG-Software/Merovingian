@@ -614,6 +614,16 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
                 {"server.http.keep_alive_max_connections", "keep-alive parked-connection cap must be 1..4096"});
         }
     }
+    // Per-client connection limits (ADR-0072). The parser already rejects
+    // out-of-range text; this catches a Config built in code.
+    if (http_transport.max_connections_per_ip == 0U || http_transport.max_connections_per_ip > 65535U)
+    {
+        findings.push_back({"server.http.max_connections_per_ip", "per-IP connection cap must be 1..65535"});
+    }
+    if (http_transport.ipv6_client_prefix_length == 0U || http_transport.ipv6_client_prefix_length > 128U)
+    {
+        findings.push_back({"server.http.ipv6_client_prefix_length", "IPv6 client prefix length must be 1..128"});
+    }
 
     // TURN configuration: if a server is supplied the operator must also
     // provide credentials so the endpoint can issue usable credentials.

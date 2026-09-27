@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "merovingian/http/connection_limiter.hpp"
 
-#include <tuple>
 #include <utility>
 
 namespace merovingian::http
@@ -31,24 +30,48 @@ ConnectionLimiter::Slot::~Slot()
 
 auto ConnectionLimiter::try_acquire(std::string key, std::uint32_t cap) -> std::optional<Slot>
 {
-    std::ignore = cap;
+    auto const lock = std::lock_guard{m_mutex};
+    auto& count = m_counts[key];
+    if (count >= cap)
+    {
+        if (count == 0U)
+        {
+            // A cap of 0 must not leave an empty entry behind.
+            m_counts.erase(key);
+        }
+        return std::nullopt;
+    }
+    ++count;
     return Slot{*this, std::move(key)};
 }
 
 auto ConnectionLimiter::active(std::string_view key) const -> std::uint32_t
 {
-    std::ignore = key;
-    return 0U;
+    auto const lock = std::lock_guard{m_mutex};
+    auto const it = m_counts.find(std::string{key});
+    return it == m_counts.end() ? 0U : it->second;
 }
 
 auto ConnectionLimiter::tracked_keys() const -> std::size_t
 {
-    return 0U;
+    auto const lock = std::lock_guard{m_mutex};
+    return m_counts.size();
 }
 
 auto ConnectionLimiter::release(std::string const& key) noexcept -> void
 {
-    std::ignore = key;
+    auto const lock = std::lock_guard{m_mutex};
+    auto const it = m_counts.find(key);
+    if (it == m_counts.end())
+    {
+        return;
+    }
+    if (it->second <= 1U)
+    {
+        m_counts.erase(it);
+        return;
+    }
+    --it->second;
 }
 
 } // namespace merovingian::http

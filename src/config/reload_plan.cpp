@@ -109,6 +109,31 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
         add_change(plan, "server.trusted_proxies");
     }
 
+    // The HTTP transport block is wired when the listeners start; every key
+    // is restart-required (reload_policy.cpp), but an edit must still show.
+    auto const& current_http = current.server().http;
+    auto const& next_http = next.server().http;
+    if (current_http.keep_alive != next_http.keep_alive)
+    {
+        add_change(plan, "server.http.keep_alive");
+    }
+    if (current_http.keep_alive_idle_seconds != next_http.keep_alive_idle_seconds)
+    {
+        add_change(plan, "server.http.keep_alive_idle_seconds");
+    }
+    if (current_http.keep_alive_max_connections != next_http.keep_alive_max_connections)
+    {
+        add_change(plan, "server.http.keep_alive_max_connections");
+    }
+    if (current_http.max_connections_per_ip != next_http.max_connections_per_ip)
+    {
+        add_change(plan, "server.http.max_connections_per_ip");
+    }
+    if (current_http.ipv6_client_prefix_length != next_http.ipv6_client_prefix_length)
+    {
+        add_change(plan, "server.http.ipv6_client_prefix_length");
+    }
+
     if (current.listeners().client.bind != next.listeners().client.bind)
     {
         add_change(plan, "listeners.client.bind");
