@@ -492,7 +492,10 @@ auto hydrate_local_database(LocalDatabase& database) -> void
     database.sessions.reserve(database.persistent_store.access_tokens.size());
     for (auto const& token : database.persistent_store.access_tokens)
     {
-        database.sessions.push_back({token.user_id, token.device_id, token.token_hash, token.revoked});
+        // Every field, including the expiry: dropping it here made every
+        // access token valid forever after a restart.
+        database.sessions.push_back({token.user_id, token.device_id, token.token_hash, token.revoked, token.expires_at,
+                                     token.predecessor_refresh_hash});
     }
 
     database.rooms.reserve(database.persistent_store.rooms.size());
