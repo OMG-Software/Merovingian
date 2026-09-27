@@ -3337,6 +3337,168 @@ SCENARIO("POST /refresh returns a new access_token and refresh_token", "[conform
     }
 }
 
+namespace
+{
+
+struct TokenPair final
+{
+    std::uint16_t status{0U};
+    std::string access_token{};
+    std::string refresh_token{};
+};
+
+[[nodiscard]] auto token_pair_from(merovingian::homeserver::DispatchResult const& result) -> TokenPair
+{
+    auto pair = TokenPair{result.response.status, {}, {}};
+    if (result.response.status == 200U)
+    {
+        auto const body = parse_object(result.response.body);
+        auto const* access = string_member(body, "access_token");
+        auto const* refresh = string_member(body, "refresh_token");
+        REQUIRE(access != nullptr);
+        REQUIRE(refresh != nullptr);
+        pair.access_token = *access;
+        pair.refresh_token = *refresh;
+    }
+    return pair;
+}
+
+[[nodiscard]] auto login_with_refresh(merovingian::homeserver::ClientServerRuntime& runtime,
+                                      std::string const& localpart) -> TokenPair
+{
+    REQUIRE(merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST",
+                          "/_matrix/client/v3/register",
+                          {},
+                          merovingian::tests::registration_json(localpart, "CorrectHorse7!")})
+                .response.status == 200U);
+    auto const pair = token_pair_from(merovingian::homeserver::handle_client_server_request(
+        runtime, {"POST",
+                  "/_matrix/client/v3/login",
+                  {},
+                  std::string{R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@)"} + localpart +
+                      R"(:example.org"},"password":"CorrectHorse7!","device_id":"RDEV","refresh_token":true})"}));
+    REQUIRE(pair.status == 200U);
+    return pair;
+}
+
+[[nodiscard]] auto refresh_with(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token)
+    -> TokenPair
+{
+    return token_pair_from(merovingian::homeserver::handle_client_server_request(
+        runtime, {"POST", "/_matrix/client/v3/refresh", {}, std::string{R"({"refresh_token":")"} + token + R"("})"}));
+}
+
+[[nodiscard]] auto whoami_status(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& access)
+    -> std::uint16_t
+{
+    return merovingian::homeserver::handle_client_server_request(
+               runtime, {"GET", "/_matrix/client/v3/account/whoami", access, {}})
+        .response.status;
+}
+
+} // namespace
+
+// Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3refresh
+// "The old refresh token remains valid until the new access token or refresh
+// token is used, at which point the old refresh token is revoked." And
+// (#oauth-20-api, refresh tokens): the homeserver "MUST ensure that the client
+// is able to retry the refresh request in the case that the response to the
+// request is lost", and "SHOULD consider that the session is compromised if an
+// old, invalidated refresh token is used, and SHOULD revoke the session."
+// 0.12.13 audit item 6.
+SCENARIO("POST /refresh can be retried when its response is lost",
+         "[conformance][client-server][session][refresh_rotation]")
+{
+    GIVEN("a user logged in with a refresh token")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const login = login_with_refresh(started.runtime, "rotate1");
+
+        WHEN("the refresh response never reaches the client and it refreshes again with the same token")
+        {
+            auto const lost = refresh_with(started.runtime, login.refresh_token);
+            auto const retried = refresh_with(started.runtime, login.refresh_token);
+
+            THEN("the retry succeeds and its access token works")
+            {
+                // Spec MUST: the client is able to retry a refresh whose response was lost.
+                REQUIRE(lost.status == 200U);
+                REQUIRE(retried.status == 200U);
+                REQUIRE(whoami_status(started.runtime, retried.access_token) == 200U);
+            }
+        }
+    }
+}
+
+SCENARIO("Using the new tokens after POST /refresh retires the old refresh token",
+         "[conformance][client-server][session][refresh_rotation]")
+{
+    GIVEN("a user who has refreshed once")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const login = login_with_refresh(started.runtime, "rotate2");
+        auto const first = refresh_with(started.runtime, login.refresh_token);
+        REQUIRE(first.status == 200U);
+
+        WHEN("the new access token is used")
+        {
+            REQUIRE(whoami_status(started.runtime, first.access_token) == 200U);
+            auto const old_again = refresh_with(started.runtime, login.refresh_token);
+
+            THEN("the old refresh token no longer works")
+            {
+                // Spec MUST: the old refresh token is revoked once the new access token is used.
+                REQUIRE(old_again.status == 401U);
+            }
+        }
+
+        WHEN("the new refresh token is used")
+        {
+            auto const second = refresh_with(started.runtime, first.refresh_token);
+            REQUIRE(second.status == 200U);
+            auto const old_again = refresh_with(started.runtime, login.refresh_token);
+
+            THEN("the old refresh token no longer works")
+            {
+                // Spec MUST: the old refresh token is revoked once the new refresh token is used.
+                REQUIRE(old_again.status == 401U);
+            }
+        }
+    }
+}
+
+SCENARIO("Presenting a retired refresh token revokes the session",
+         "[conformance][client-server][session][refresh_rotation][security]")
+{
+    GIVEN("a session that has rotated its refresh token twice")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const login = login_with_refresh(started.runtime, "rotate3");
+        auto const first = refresh_with(started.runtime, login.refresh_token);
+        REQUIRE(first.status == 200U);
+        auto const second = refresh_with(started.runtime, first.refresh_token);
+        REQUIRE(second.status == 200U);
+        REQUIRE(whoami_status(started.runtime, second.access_token) == 200U);
+
+        WHEN("someone presents the first, long-retired refresh token")
+        {
+            auto const replay = refresh_with(started.runtime, login.refresh_token);
+
+            THEN("it is refused and the whole session, including the current tokens, is revoked")
+            {
+                REQUIRE(replay.status == 401U);
+                // Spec SHOULD: an old, invalidated refresh token means the session is compromised.
+                REQUIRE(whoami_status(started.runtime, second.access_token) == 401U);
+                REQUIRE(refresh_with(started.runtime, second.refresh_token).status == 401U);
+            }
+        }
+    }
+}
+
 // --- POST /_matrix/client/v3/refresh — advertised TTL matches enforced TTL ---
 // Spec: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3refresh
 //
