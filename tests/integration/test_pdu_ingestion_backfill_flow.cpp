@@ -29,6 +29,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdint>
@@ -2028,63 +2029,125 @@ SCENARIO("ingest_pdu_event does not authorise a PDU against the auth_events of a
         };
         auto const genesis_auth_chain =
             std::vector<std::string>{lookup_json(create_id), lookup_json(pl_id), lookup_json(member_bob_id)};
-        auto const state_ids_body = make_state_ids_response(
+        using merovingian::tests::tls_mock::json_http_response;
+        using PathResponses = std::vector<std::pair<std::string, std::string>>;
+        auto const ok = [](std::string const& body) {
+            return json_http_response("200 OK", body);
+        };
+        auto const not_found = json_http_response("404 Not Found", R"({"errcode":"M_NOT_FOUND","error":"not found"})");
+        // Serves `responses` for exactly one ingestion, then joins the mock so
+        // `requests` is read on this thread only after the mock has finished.
+        auto const ingest_with_origin = [&](InboundPduEnvelope const& pdu, PathResponses const& responses,
+                                            std::vector<std::string>& requests) {
+            auto server_thread = std::thread{[&]() {
+                run_body_aware_dispatch_tls_server(acceptor, tls_context, responses, &requests);
+            }};
+            auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
+            std::ignore = join_server;
+            return merovingian::homeserver::ingest_pdu_event(runtime, pdu);
+        };
+        auto const count_requests = [](std::vector<std::string> const& requests, std::string_view prefix) {
+            return static_cast<std::size_t>(std::ranges::count_if(requests, [&](std::string const& req) {
+                return req.find(prefix) != std::string::npos;
+            }));
+        };
+
+        auto const snapshot_with_outlier_body = make_state_ids_response(
             std::vector<std::string>{create_id, pl_id, member_bob_id, historical_state_id}, auth_event_ids);
         auto const historical_state_body = make_event_transaction_response(historical_state_pdu.json, remote_server);
         auto const mid_event_body = make_event_transaction_response(mid_event.json, remote_server);
-        auto const not_found = merovingian::tests::tls_mock::json_http_response(
-            "404 Not Found", R"({"errcode":"M_NOT_FOUND","error":"not found"})");
-        // The first six responses serve the first PDU's /state_ids fallback.
-        // The origin then declines to describe the state at the outlier, so the
-        // second PDU's backfill (three calls) finds nothing.
-        auto const path_responses = std::vector<std::pair<std::string, std::string>>{
-            {"POST /_matrix/federation/v1/get_missing_events/",
-             merovingian::tests::tls_mock::json_http_response("200 OK", make_empty_get_missing_events_response())},
-            {"GET /_matrix/federation/v1/event/",
-             merovingian::tests::tls_mock::json_http_response("200 OK", mid_event_body)},
-            {"GET /_matrix/federation/v1/state_ids/",
-             merovingian::tests::tls_mock::json_http_response("200 OK", state_ids_body)},
-            {"GET /_matrix/federation/v1/event/",
-             merovingian::tests::tls_mock::json_http_response("200 OK", historical_state_body)},
-            {"GET /_matrix/federation/v1/event_auth/",
-             merovingian::tests::tls_mock::json_http_response("200 OK", make_event_auth_response(genesis_auth_chain))},
-            {"GET /_matrix/federation/v1/event/",
-             merovingian::tests::tls_mock::json_http_response("200 OK", mid_event_body)},
-            {"POST /_matrix/federation/v1/get_missing_events/", not_found},
-            {"GET /_matrix/federation/v1/event/", not_found},
-            {"GET /_matrix/federation/v1/state_ids/", not_found},
-        };
-        auto captured_requests = std::vector<std::string>{};
-        auto server_thread = std::thread{[&]() {
-            run_body_aware_dispatch_tls_server(acceptor, tls_context, path_responses, &captured_requests);
-        }};
-        auto join_server = std::optional<merovingian::tests::tls_mock::ScopedThreadJoin>{std::in_place, server_thread};
 
-        auto const first_result = merovingian::homeserver::ingest_pdu_event(runtime, first_pdu);
+        auto first_requests = std::vector<std::string>{};
+        auto const first_result = ingest_with_origin(
+            first_pdu,
+            PathResponses{
+                {"POST /_matrix/federation/v1/get_missing_events/", ok(make_empty_get_missing_events_response())    },
+                {"GET /_matrix/federation/v1/event/",               ok(mid_event_body)                              },
+                {"GET /_matrix/federation/v1/state_ids/",           ok(snapshot_with_outlier_body)                  },
+                {"GET /_matrix/federation/v1/event/",               ok(historical_state_body)                       },
+                {"GET /_matrix/federation/v1/event_auth/",          ok(make_event_auth_response(genesis_auth_chain))},
+                {"GET /_matrix/federation/v1/event/",               ok(mid_event_body)                              },
+        },
+            first_requests);
         REQUIRE(first_result.status == PduIngestionStatus::accepted);
+        REQUIRE(count_requests(first_requests, "GET /_matrix/federation/v1/event_auth/") == 1U);
 
         WHEN("a PDU naming that outlier as its only prev_event is ingested and the origin cannot supply its state")
         {
-            auto const second_result = merovingian::homeserver::ingest_pdu_event(runtime, second_pdu);
-            // Join the mock before reading captured_requests on this thread.
-            join_server.reset();
+            auto requests = std::vector<std::string>{};
+            auto const result = ingest_with_origin(second_pdu,
+                                                   PathResponses{
+                                                       {"POST /_matrix/federation/v1/get_missing_events/", not_found},
+                                                       {"GET /_matrix/federation/v1/event/",               not_found},
+                                                       {"GET /_matrix/federation/v1/state_ids/",           not_found},
+            },
+                                                   requests);
 
             THEN("the PDU is held for missing state rather than accepted on the outlier's auth_events")
             {
-                REQUIRE(second_result.status == PduIngestionStatus::missing_prev_state);
+                REQUIRE(result.status == PduIngestionStatus::missing_prev_state);
             }
 
             THEN("the server asked the origin for the state at the outlier")
             {
-                auto state_ids_requests = std::size_t{0U};
-                for (auto const& req : captured_requests)
-                {
-                    if (req.find("GET /_matrix/federation/v1/state_ids/") != std::string::npos)
-                    {
-                        ++state_ids_requests;
-                    }
-                }
-                REQUIRE(state_ids_requests == 2U);
+                REQUIRE(count_requests(requests, "GET /_matrix/federation/v1/state_ids/") == 1U);
+            }
+        }
+
+        WHEN("a PDU naming that outlier as its only prev_event is ingested and the origin supplies its state")
+        {
+            // The state before the topic event: the genesis state.
+            auto const state_before_outlier_body =
+                make_state_ids_response(std::vector<std::string>{create_id, pl_id, member_bob_id}, auth_event_ids);
+            auto requests = std::vector<std::string>{};
+            auto const result = ingest_with_origin(
+                second_pdu,
+                PathResponses{
+                    {"POST /_matrix/federation/v1/get_missing_events/", ok(make_empty_get_missing_events_response())},
+                    {"GET /_matrix/federation/v1/event/",               ok(historical_state_body)                   },
+                    {"GET /_matrix/federation/v1/state_ids/",           ok(state_before_outlier_body)               },
+                    {"GET /_matrix/federation/v1/event/",               ok(historical_state_body)                   },
+            },
+                requests);
+
+            THEN("the PDU is accepted")
+            {
+                REQUIRE(result.status == PduIngestionStatus::accepted);
+            }
+
+            THEN("the outlier now has a recorded state group")
+            {
+                REQUIRE(merovingian::database::find_event_state_group(runtime.database.persistent_store,
+                                                                      historical_state_id)
+                            .has_value());
+            }
+        }
+
+        WHEN("a later /state_ids snapshot names the stored outlier again")
+        {
+            auto const later_mid_event = make_remote_message_pdu(room_id, {historical_state_id}, auth_event_ids, 6, 40);
+            auto const third_pdu = make_remote_message_pdu(room_id, {later_mid_event.event_id}, auth_event_ids, 7, 41);
+            auto const later_mid_body = make_event_transaction_response(later_mid_event.json, remote_server);
+            auto requests = std::vector<std::string>{};
+            auto const result = ingest_with_origin(
+                third_pdu,
+                PathResponses{
+                    {"POST /_matrix/federation/v1/get_missing_events/", ok(make_empty_get_missing_events_response())},
+                    {"GET /_matrix/federation/v1/event/",               ok(later_mid_body)                          },
+                    {"GET /_matrix/federation/v1/state_ids/",           ok(snapshot_with_outlier_body)              },
+                    {"GET /_matrix/federation/v1/event/",               ok(later_mid_body)                          },
+            },
+                requests);
+
+            THEN("the PDU is accepted")
+            {
+                REQUIRE(result.status == PduIngestionStatus::accepted);
+            }
+
+            THEN("the stored outlier is not fetched or verified through /event_auth again")
+            {
+                REQUIRE(count_requests(requests, "GET /_matrix/federation/v1/event_auth/") == 0U);
+                REQUIRE(requests.size() == 4U);
             }
         }
 
