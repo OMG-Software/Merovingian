@@ -109,6 +109,20 @@
   (`[event_auth_outlier]`, and the updated `[backfill][conformance]` scenario).
   See [ADR-0070](docs/adr/0070-event-auth-outliers-carry-no-state.md).
 
+- **FIXED: no per-IP connection cap (MEDIUM, audit item 1, ADR-0072).** One
+  host could fill the global connection budget with connections held just
+  under the slow-request thresholds. Both accept loops now refuse a
+  connection, before reading a byte or starting a TLS handshake, once its
+  client holds `server.http.max_connections_per_ip` (new, default 64)
+  connections. IPv6 clients are grouped by `server.http.ipv6_client_prefix_length`
+  (new, default 64). Addresses in `server.trusted_proxies` are exempt. The
+  slot is RAII and travels with the connection through every hand-off.
+  `--plan-config-reload` now reports every `server.http.*` change (it
+  reported none before), all restart-required. Tests:
+  `tests/unit/test_http_connection_limiter.cpp`,
+  `tests/unit/test_config_parser.cpp`, `tests/unit/test_config_reload_plan.cpp`,
+  `tests/integration/test_http_server_listener_flow.cpp` (`[connection_limit]`).
+
 - **FIXED: main trusted the federation worker's signature check on relayed
   PDUs (MEDIUM, ADR-0071, threat-model #450).** A compromised worker could make
   main persist events impersonating any sender the room's state authorised.

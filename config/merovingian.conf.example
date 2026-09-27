@@ -58,6 +58,17 @@ server.cors.max_age=86400
 server.http.keep_alive=true
 server.http.keep_alive_idle_seconds=15
 server.http.keep_alive_max_connections=8
+# Per-client connection cap (ADR-0072). One client address may hold at most
+# max_connections_per_ip (1..65535) open connections on the client and
+# federation listeners; a further connection is closed at accept time, before
+# a byte is read or a TLS handshake starts. IPv6 clients are grouped by
+# ipv6_client_prefix_length (1..128), since one site is usually handed a whole
+# /64; the rate limiter uses the same grouping. Addresses in
+# server.trusted_proxies are exempt: behind a reverse proxy every client
+# arrives from the proxy's address, so limit connections per client at the
+# proxy. Restart required.
+server.http.max_connections_per_ip=64
+server.http.ipv6_client_prefix_length=64
 
 # Identity Service API — third-party identifiers (3PIDs: email, msisdn)
 # Governs 3PID invites, bind, unbind and requestToken. All of it is OFF until

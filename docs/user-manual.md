@@ -406,10 +406,19 @@ each parked connection holds one request-pool worker thread, so
 | `server.http.keep_alive` | `true` | Set `false` to restore strict one-request-per-connection behaviour (e.g. in front of a proxy that pools upstream connections itself). |
 | `server.http.keep_alive_idle_seconds` | `15` | Idle window per kept-alive connection, seconds, 1..300. Raise for chatty API clients that re-use connections; lower to free worker threads sooner. |
 | `server.http.keep_alive_max_connections` | `8` | Process-wide cap on connections parked awaiting a next request, 1..4096. Beyond the cap the server answers `Connection: close`. Raise only alongside a larger request pool. |
+| `server.http.max_connections_per_ip` | `64` | Open connections one client may hold on the client and federation listeners, 1..65535. A further connection is closed at accept time, before a byte is read or a TLS handshake starts. Raise if many users share one NAT address. |
+| `server.http.ipv6_client_prefix_length` | `64` | Prefix length IPv6 clients are grouped by for the connection cap and the per-IP rate limiter, 1..128. `128` counts each address separately; a shorter prefix groups a whole allocation. |
 
-The parser rejects idle windows outside 1..300 seconds and caps outside
-1..4096. These keys are read when the listeners start and are **not**
+The parser rejects idle windows outside 1..300 seconds, parked-connection caps
+outside 1..4096, per-IP caps outside 1..65535 and prefix lengths outside
+1..128. These keys are read when the listeners start and are **not**
 hot-reloadable — a change to any `server.http.*` key requires a restart.
+
+**Behind a reverse proxy**, every client arrives from the proxy's address, so
+addresses listed in `server.trusted_proxies` are exempt from the per-IP
+connection cap. Limit connections per client at the proxy (for example nginx
+`limit_conn`); the per-IP rate limiter still applies to the forwarded client
+address.
 
 #### TURN server — `server.turn.*`
 

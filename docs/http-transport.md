@@ -145,6 +145,35 @@ Configuration (`server.http.*`, restart required — read when listeners start):
 | `server.http.keep_alive` | `true` | Enable persistent connections. `false` restores one-request-per-connection. |
 | `server.http.keep_alive_idle_seconds` | `15` | Idle window per parked connection, 1..300. |
 | `server.http.keep_alive_max_connections` | `8` | Process-wide cap on connections parked awaiting a request, 1..4096. Each parked connection occupies a main-pool worker thread. |
+| `server.http.max_connections_per_ip` | `64` | Open connections one client key may hold, 1..65535 (see below). |
+| `server.http.ipv6_client_prefix_length` | `64` | Prefix length IPv6 clients are grouped by, 1..128. |
+
+### Per-client connection cap (ADR-0072)
+
+Connection admission used to be bounded only by the global queue depth and
+the global parked keep-alive cap, so one host could open connections just
+under the slow-request thresholds, fill the global budget and lock everyone
+else out; the per-IP rate limiter only runs once a request has been parsed.
+
+Both accept loops (`serve_http` and `serve_tls_http`, which serve the client
+and federation listeners) now call `admit_connection` straight after
+`accept4`. The peer address is reduced to a key by
+`http::client_address_key` (IPv4 as-is, IPv4-mapped IPv6 as the IPv4 address,
+other IPv6 masked to `server.http.ipv6_client_prefix_length`), and
+`http::ConnectionLimiter` admits the connection only while that key holds
+fewer than `server.http.max_connections_per_ip` connections. A refused socket
+is closed before a byte is read or a TLS handshake starts, and a
+`connection.per_ip_cap_reached` diagnostic is logged (without the address).
+
+The admitted connection's `ConnectionLimiter::Slot` is RAII. It travels with
+the fd in `ConnectionContext` and in every pool task that takes the fd over
+(the sync-pool long-poll and the keep-alive continuation), as a shared pointer
+only because those tasks are copyable `std::function`s; the slot is released
+when the last task holding the connection finishes, on every path.
+
+Addresses listed in `server.trusted_proxies` are exempt: a reverse proxy
+carries many clients over its own address, and per-client limiting there is
+the proxy's job.
 
 Direct `serve_one_http_connection` callers (tests, one-off embeds) keep the
 historical one-request-per-call contract: with no owning pool the policy

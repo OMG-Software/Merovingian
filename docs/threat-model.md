@@ -1123,6 +1123,21 @@ threat it closes; the controls above are the standing defences these reinforce.
   is in flight; it is released the moment the next request's first bytes
   arrive, so the cap bounds parked threads, not active requests.
 
+- **One host filling the global connection budget (0.12.13 audit item 1,
+  ADR-0072).** Admission was bounded only by the global queue depth and the
+  global parked keep-alive cap, and the per-IP rate limiter runs only once a
+  request is parsed, so one host could open connections just under the
+  slow-request thresholds and lock every other client out. Both accept loops
+  now admit a connection only while its client key (IPv6 grouped by
+  `server.http.ipv6_client_prefix_length`, default /64) holds fewer than
+  `server.http.max_connections_per_ip` (default 64) connections, and close a
+  refused socket before reading a byte or starting a TLS handshake. The slot
+  is RAII and released on every path that closes the connection.
+  **Residual:** addresses in `server.trusted_proxies` are exempt, so behind a
+  reverse proxy the per-client connection limit is the proxy's job; and many
+  distinct hosts can still share out the global budget — the cap bounds one
+  host's share, not a distributed flood.
+
 - **Outbound Application Service API transaction delivery is deliberately
   NOT SSRF-filtered the way federation/push/identity outbound calls are
   (v0.12.1, routed).** `appservice::AppserviceClient` (`src/appservice/
