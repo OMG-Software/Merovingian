@@ -1981,7 +1981,6 @@ SCENARIO("ingest_pdu_event verifies a /state_ids snapshot state event via /event
 // event may skip that only when it is the very event already stored, not
 // merely one whose "event_id" field names a stored event: the field is the
 // origin's to write, and from room v3 an event's ID is its reference hash.
-
 SCENARIO("An /event_auth entry reusing a stored event's ID with different content is verified, not trusted",
          "[pdu_ingestion][backfill][event_auth_forged_id]")
 {
@@ -2063,14 +2062,14 @@ SCENARIO("An /event_auth entry reusing a stored event's ID with different conten
                 return id + ":json";
             };
             // The chain's copy of Bob's membership keeps the stored event's
-            // "event_id" but not its content: it grants Bob power it never
-            // had, and nobody signed it. Only an event identical to the
-            // stored one may skip verification.
+            // "event_id" but not its content: it turns the join into a ban, a
+            // field the signature covers, so its signature no longer verifies.
+            // Only an event identical to the stored one may skip verification.
             auto forged_member_bob = lookup_json(member_bob_id);
             auto const membership_at = forged_member_bob.find(R"("membership":"join")");
             REQUIRE(membership_at != std::string::npos);
             forged_member_bob.replace(membership_at, std::string_view{R"("membership":"join")"}.size(),
-                                      R"("displayname":"forged","membership":"join")");
+                                      R"("membership":"ban")");
             auto const genesis_auth_chain =
                 std::vector<std::string>{lookup_json(create_id), lookup_json(pl_id), forged_member_bob};
             // /state_ids returns the complete resolved state at the target event,
