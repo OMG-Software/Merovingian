@@ -27,10 +27,9 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
    (fails auth against current state) is stored and takes part in state resolution, but must never
    reach a client timeline, become a forward extremity, or drive membership/push side effects.
    Implemented in `homeserver::ingest_pdu_event` (`src/homeserver/local_http_router.cpp`, ADR-0064
-   phase B2) for the `/send` transaction path; see `docs/event-engine.md`, "Phase B2". **Not yet
-   implemented** for the membership-acceptor path (`send_join`/`send_leave`/`send_knock`
-   acceptance below) — it does not run the auth_events/state-before/current-state three-way check
-   and still hard-rejects a content-hash mismatch instead of redacting it.
+   phase B2) for the `/send` transaction path, and in the membership acceptor for
+   `send_join`/`send_leave`/`send_knock` (the same auth_events / state-before / current-state
+   checks, redacting on a content-hash mismatch); see `docs/event-engine.md`, "Phase B2".
 
 6. **Never relay a remote server's answer about users unfiltered.** Keep only the users that
    server was asked about, and only records that describe the user they are filed under. For

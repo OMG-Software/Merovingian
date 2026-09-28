@@ -116,7 +116,7 @@ When adding a capability, record what is *missing* as explicitly as what works.
 | `GET /_matrix/federation/v1/media/download/{mediaId}` inbound (serving our media to remote servers) | `spec-covered` | Authenticated by `X-Matrix` request signatures and served from the main process media repository as a `multipart/mixed` response per Matrix v1.19. Conformance coverage added for 200, 404, 451, missing-provider 501, and percent-decoded `mediaId`. The federation worker is bypassed because it has no access to the local media store. |
 | `GET /_matrix/federation/v1/media/download/{mediaId}` outbound (fetching remote media) | `spec-covered` | Tries the authenticated endpoint first, falls back to the deprecated v3 endpoint on 404, and follows `Location` redirects via an SSRF-safe resolver with pinned addresses (v0.11.5). |
 | `GET /_matrix/federation/v1/openid/userinfo` | `spec-covered` | Redeems a token minted by the client-server `POST /user/{userId}/openid/request_token` (see the Client-server table), returning `{"sub": "<user_id>"}`. Per spec this endpoint requires no authentication and is not rate-limited, so it is dispatched entirely outside the X-Matrix signed-request path — alongside `GET /_matrix/key/v2/server` — rather than through `federation::handle_inbound_federation_request`. An unknown or expired token gets the identical `401 M_UNKNOWN_TOKEN` response so a caller cannot distinguish the two. Conformance-covered, including that an ordinary client-server access token is rejected here. |
-| Soft-fail on receipt of a PDU (SS API "Checks performed on receipt of a PDU") | `spec-covered` | 0.12.13 (ADR-0064 phase B2): `ingest_pdu_event` now runs auth against the PDU's own `auth_events` and the state before the event (reject on failure) followed by auth against current state (soft-fail, not reject, on failure). A soft-failed event is stored, given an after-state group, and takes part in state resolution, but is never a forward extremity and is excluded from every client-facing timeline (`/sync`, sliding sync, `/messages`, `/context`, `/event/{eventId}`, search); a soft-failed state event resolution later admits into current state is still delivered in the state section. See `docs/event-engine.md` "Phase B2" and `tests/unit/test_pdu_ingestion_auth_checks.cpp`. **Residual gap:** the membership-acceptor path (`send_join`/`send_leave`/`send_knock` acceptance) does not run this check yet — see `src/federation/AGENTS.md`. |
+| Soft-fail on receipt of a PDU (SS API "Checks performed on receipt of a PDU") | `spec-covered` | 0.12.13 (ADR-0064 phase B2): `ingest_pdu_event` now runs auth against the PDU's own `auth_events` and the state before the event (reject on failure) followed by auth against current state (soft-fail, not reject, on failure). A soft-failed event is stored, given an after-state group, and takes part in state resolution, but is never a forward extremity and is excluded from every client-facing timeline (`/sync`, sliding sync, `/messages`, `/context`, `/event/{eventId}`, search); a soft-failed state event resolution later admits into current state is still delivered in the state section. See `docs/event-engine.md` "Phase B2" and `tests/unit/test_pdu_ingestion_auth_checks.cpp`. The membership-acceptor path (`send_join`/`send_leave`/`send_knock` acceptance) runs the same checks (0.12.13). |
 
 ### Application Service API
 
@@ -176,33 +176,24 @@ PDU signatures (ADR-0071), the per-IP connection cap, and the eleven low items
 with the listener-test flake — is finished; see the `CHANGELOG.md` 0.12.13
 section. Only D3 (below) was deferred.
 
-## OPEN (found on the 0.12.13 branch, not fixed there)
+## OPEN: restricted-room joins through this server as the resident
 
-Receipt checks (server-server-api.md, "Validating hashes and signatures on
-received events"):
+Found on the 0.12.13 branch (2026-09-28), not fixed there. When a remote user
+joins a room this server hosts through a restricted-room condition, the
+resident server must put `join_authorised_via_users_server` (a local user
+able to invite) in the `make_join` template, sign the resulting event in
+`send_join`, and answer `M_UNABLE_TO_AUTHORISE_JOIN` or
+`M_UNABLE_TO_GRANT_JOIN` when it cannot (server-server-api.md, `make_join`
+and `send_join`; auth rule "restricted"). None of this is implemented: the
+template never carries the field, so such joins fail the auth rules. Joins by
+invite, and joins this server makes into remote restricted rooms, are
+unaffected. Status: `not-started`.
 
-* **Room versions 1 and 2:** the spec also requires a signature from the
-  domain in the `event_id` when it differs from the sender's server.
-  `federation::authorize_federation_pdu` checks the sender's server only. This
-  sits with the unimplemented v1/v2 event-ID format noted in the "Rooms,
-  events, and sync" row above.
-* **Key validity against `origin_server_ts`:** "any keys that are known to
-  have expired prior to the event's `origin_server_ts` are ignored" (and
-  `valid_until_ts` MUST be ignored for room versions 1 to 4).
-  `authorize_federation_pdu` compares `valid_until_ts` with a caller-supplied
-  `now_ts`, and the backfill caller passes 0, which skips the check.
-
-Backfill (`src/homeserver/local_http_router.cpp`):
-
-* A `GET /_matrix/federation/v1/event/{eventId}` response is not checked to be
-  the requested event before it is verified and stored.
-* `verify_and_store_backfilled_event` returns "stored" without verifying when
-  the JSON's raw `event_id` field names an event already in the store. Nothing
-  is written on that path, but the raw field is origin-controlled and differs
-  from the reference-hash ID in room versions 3 and later.
-
-Dead code: `events::select_auth_events` and the `AuthChain` helpers are used
-only by tests.
+The other findings recorded here on the 0.12.13 branch (v1/v2 event-ID
+signatures, key validity against `origin_server_ts`, `/event/{eventId}` ID
+checks, the raw-`event_id` backfill shortcut, dead `select_auth_events` /
+`AuthChain` helpers) were fixed on that branch; see `CHANGELOG.md` 0.12.13
+and ADR-0075 and ADR-0076.
 
 ## DEFERRED: drop the unused `state_group_edges` table
 

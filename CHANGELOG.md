@@ -1,5 +1,21 @@
 ## 0.12.13
 
+- **REMOVED: dead `select_auth_events` and `AuthChain` helpers.** They had no
+  production callers, and `select_auth_events` named `m.room.join_rules` for
+  every membership, against the spec. Their three scenarios, the last in
+  `tests/conformance/test_event_authorization.cpp`, went with them and the
+  file was removed. The rules they encoded are now covered against the code
+  that creates events: the v12 create-event exclusion in
+  `[auth_events_selection]`, and the third-party invite rule in the
+  `third_party_signed` join scenario (`[3pid]`).
+
+- **DOCS: stale "membership path lacks receipt checks" statements corrected.**
+  `src/federation/AGENTS.md` rule 5 and the capability-gaps soft-fail row
+  still said `send_join`/`send_leave`/`send_knock` skipped the three receipt
+  checks; they have run them since ADR-0064 phase B2 on this branch. A newly
+  found gap, restricted-room joins through this server as the resident, is
+  recorded in `docs/todos/capability-gaps.md`.
+
 - **FIXED: leaves, kicks and bans named `m.room.join_rules` in their
   `auth_events` (MEDIUM, federation).** Auth events selection names
   `join_rules` for a membership of join, invite or knock only, and auth rule
@@ -235,9 +251,9 @@
   `power_level_allows`) and the three conformance scenarios in
   `tests/conformance/test_event_authorization.cpp` that exercised only them.
   The auth rules the server enforces are
-  `authorize_event_against_auth_events`. Still dead and not removed (outside
-  the item): `select_auth_events` and the `AuthChain` helpers, used only by
-  tests.
+  `authorize_event_against_auth_events`. The remaining dead helpers,
+  `select_auth_events` and `AuthChain`, were removed later on this branch (see
+  below).
 
 - **FIXED: refresh-token rotation broke lost-response retries and never
   detected reuse (MEDIUM, audit item 6, ADR-0074, migration 017).** Per the
