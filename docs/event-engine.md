@@ -602,7 +602,9 @@ fetches them from that origin before retrying the PDU.
   cannot yet be computed, so it cannot safely serve as an anchor for another
   event. Because of that, the `/get_missing_events` results are handled in
   ascending `depth` order, not in the order the origin listed them, so a
-  parent is stored before any child that names it.
+  parent is stored before any child that names it. An
+  `/event/{eventId}` response (per-reference or `/state_ids` snapshot) is kept
+  only if its ID, computed under the room version, is the one requested.
 * A verified event is stored as `status == "outlier"` with a recorded
   after-state group (`accepted=false`). Outliers participate in later state
   resolution and can become `prev_events` for subsequent PDUs, but they never

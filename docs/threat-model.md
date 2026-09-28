@@ -1560,7 +1560,10 @@ threats they represent, and the mitigations now in place:
   individual missing references, with a hard cap of 5 outbound calls per PDU.
   Each returned event is verified independently — content hash, signature,
   `auth_events` selection, and auth against its own `auth_events` — before it
-  is stored as an outlier with a recorded after-state group. Events that fail
+  is stored as an outlier with a recorded after-state group. An
+  `/event/{eventId}` answer must be the requested event (its computed ID must
+  match; 0.12.13), so an origin cannot use the fetch to plant an unrelated,
+  validly signed event. Events that fail
   any check are dropped; if the cap is reached or references remain missing,
   the original PDU still returns `missing_prev_state` and is not applied, so
   unverified data never authorises a PDU.

@@ -1,5 +1,14 @@
 ## 0.12.13
 
+- **FIXED: backfill stored whatever an `/event/{eventId}` fetch returned
+  (LOW).** Both fetchers (per missing reference, and for `/state_ids`
+  snapshots) verified and stored the returned event without checking it was
+  the one requested, so an origin could plant any validly signed event of its
+  choosing. The returned event's ID, computed under the room version, must now
+  equal the requested ID; otherwise it is dropped. Test:
+  `tests/integration/test_pdu_ingestion_backfill_flow.cpp`
+  (`[event_id_mismatch]`).
+
 - **FIXED: room version 3 event IDs used the wrong base64 alphabet.** rooms/v3.md
   defines the event ID as the reference hash in standard Unpadded Base64; only
   v4 moved to URL-safe. Every version used URL-safe, so any v3 event whose hash
