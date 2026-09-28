@@ -204,7 +204,13 @@ namespace
 
     [[nodiscard]] auto real_create_ruleset(std::uint64_t handled_access_fs) -> int
     {
-        auto const attr = RulesetAttr{.handled_access_fs = handled_access_fs, .handled_access_net = 0U};
+        // Value-initialise, then set the fields this code knows. Newer kernel
+        // headers add members (scoped, quiet_access_*), which a designated
+        // initializer would have to name to satisfy -Wmissing-field-initializers,
+        // and the kernel requires every byte it does not understand to be zero.
+        auto attr = RulesetAttr{};
+        attr.handled_access_fs = handled_access_fs;
+        attr.handled_access_net = 0U;
         return static_cast<int>(::syscall(__NR_landlock_create_ruleset, &attr, sizeof(attr), 0U));
     }
 
@@ -527,6 +533,7 @@ auto apply_worker_landlock(std::vector<LandlockPathRule> const& rules, bool allo
     return {.accepted = true, .applied = true, .critical_warning = false, .reason = {}};
 #else
     std::ignore = rules;
+    std::ignore = ops;
     if (allow_without_landlock)
     {
         return {.accepted = true,
