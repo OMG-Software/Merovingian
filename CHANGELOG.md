@@ -109,6 +109,17 @@
   (`[event_auth_outlier]`, and the updated `[backfill][conformance]` scenario).
   See [ADR-0070](docs/adr/0070-event-auth-outliers-carry-no-state.md).
 
+- **FIXED: the federation worker could start without its IPC socket (LOW,
+  audit item 8).** With main's stdin closed, the IPC socket pair came back as
+  fds 0 and 3, so the child's end already sat on the fixed child fd 3 and the
+  spawn's `adddup2(3, 3)` was a same-fd `dup2`, which some libcs treat as a
+  no-op that leaves `FD_CLOEXEC` set. The new `make_worker_ipc_socketpair`
+  moves the child's end past fds 3 to 5 first, as `make_worker_secret_pipe`
+  already did for the secret pipes (the two now share one helper), and
+  `spawn_and_connect` uses it. Test: `tests/unit/test_worker_supervisor.cpp`
+  (`[worker_ipc_fd]`), which closes stdin in a forked child on the real kernel.
+  See `docs/hardening.md`.
+
 - **DOCS: underscores from an old find-and-replace removed from
   `docs/hardening.md` (audit item 11).** Headings and prose such as
   "Cross_platform", "Build_time" and "Out_of_process" now read with hyphens;

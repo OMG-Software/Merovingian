@@ -240,7 +240,14 @@ database role applies (ADR-0062 part 2, see below) — the read end of a third
 one-shot pipe carrying that role's connection URI at file descriptor 5
 (`--db-uri-fd`). All three are placed by `posix_spawn_file_actions_adddup2`,
 which clears `FD_CLOEXEC` only on the child's copies. Every other fd is
-`FD_CLOEXEC` and does not survive the exec.
+`FD_CLOEXEC` and does not survive the exec. None of the three sources is
+allowed to sit on fd 3, 4 or 5 in main: when one does (for example the socket
+pair returns fds 0 and 3 because main runs with stdin closed),
+`make_worker_ipc_socketpair` and `make_worker_secret_pipe` first move it past
+fd 5 with `F_DUPFD_CLOEXEC`. A source already on its own target would make
+the `adddup2` a same-fd `dup2`, which some libcs treat as a no-op that leaves
+`FD_CLOEXEC` set, and the worker would start without that fd; a source on
+another target would be overwritten before its own `dup2` ran.
 
 The channel is hardened against a local attacker who gains access to a
 separate process on the same host:
