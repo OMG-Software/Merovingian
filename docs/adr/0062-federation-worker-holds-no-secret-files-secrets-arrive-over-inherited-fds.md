@@ -606,7 +606,7 @@ worker's own config copy — see `platform::LandlockPathRule::required`:
   and to files the worker would otherwise open by path.
 * `docs/threat-model.md`, "Operator master key reachable from the federation
   worker"
-* `docs/hardening.md`, "Out_of_process federation worker IPC security"
+* `docs/hardening.md`, "Out-of-process federation worker IPC security"
 * `docs/crypto-boundary.md`
 * `docs/database-persistence.md`, "Federation worker least-privilege role"
   (part 2)

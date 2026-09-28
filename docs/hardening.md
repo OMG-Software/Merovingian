@@ -3,49 +3,49 @@
 This document describes the hardening defences Merovingian applies at build
 _time_, at startup, and while serving traffic. It covers defences that are
 cross_platform_ and defences that are _platform_specific_ (Linux, FreeBSD,
-NetBSD, OpenBSD, and the portable/service_manager profile).
+NetBSD, OpenBSD, and the portable/service-manager profile).
 
 For open hardening work and production-gating status, see
 [`todos/capability-gaps.md`](todos/capability-gaps.md).
 
-## Cross_platform defences
+## Cross-platform defences
 
 These defences are present on every supported platform, either inside the
-binary or in the service_manager configuration that ships with the packages.
+binary or in the service-manager configuration that ships with the packages.
 
-### Build_time toolchain hardening
+### Build-time toolchain hardening
 
-`meson.build` adds the following compile_and_link hardening whenever
+`meson.build` adds the following compile-and-link hardening whenever
 `-Dhardening=true` is set (the default for packages):
 
 | Defence | Where it lives | Notes |
 | --- | --- | --- |
 | Stack protector | `hardening_compile_flags` (`-fstack-protector-strong`) | Compiler inserts stack canaries. |
 | Stack clash protection | `hardening_compile_flags` (`-fstack-clash-protection`) | Guards against stack clash attacks. |
-| Control_flow protection | `hardening_compile_flags` (`-fcf-protection=full`) | CET/IBT on x86_64. |
+| Control-flow protection | `hardening_compile_flags` (`-fcf-protection=full`) | CET/IBT on x86_64. |
 | FORTIFY_SOURCE | `hardening_compile_flags` (`-D_FORTIFY_SOURCE=3`) when `optimization != '0'` | Checked libc wrappers. |
 | Hidden visibility | `hardening_compile_flags` (`-fvisibility=hidden`) | Limits ELF symbol exposure. |
-| Trivial auto_var init | `hardening_compile_flags` (`-ftrivial-auto-var-init=zero`) | Uninitialised locals are zeroed. |
-| Position_independent executable | `hardening_compile_flags` (`-fPIE`) and link args (`-pie`) | Enables ASLR. |
-| No_exec stack | `hardening_link_flags` (`-Wl,-z,noexecstack`) | ELF GNU_STACK note is non_executable. |
+| Trivial auto-var init | `hardening_compile_flags` (`-ftrivial-auto-var-init=zero`) | Uninitialised locals are zeroed. |
+| Position-independent executable | `hardening_compile_flags` (`-fPIE`) and link args (`-pie`) | Enables ASLR. |
+| No-exec stack | `hardening_link_flags` (`-Wl,-z,noexecstack`) | ELF GNU_STACK note is non-executable. |
 | RELRO + BIND_NOW | `hardening_link_flags` (`-Wl,-z,relro -Wl,-z,now`) on GNU/Linux | Full RELRO; dynamic relocations resolved at load time. |
-| Static PIE fallback | `scripts/build-static-linux.sh` (`-static-pie`) | Fully static, position_independent musl build for Linux. |
+| Static PIE fallback | `scripts/build-static-linux.sh` (`-static-pie`) | Fully static, position-independent musl build for Linux. |
 
-The startup hardening self_check probes the same flags at runtime:
+The startup hardening self-check probes the same flags at runtime:
 
 * `compiler hardening` checks for `__SSP__`/`__SSP_STRONG__`/`__SSP_ALL__`,
   `_FORTIFY_SOURCE > 0`, and `__PIE__`/`__pie__`.
 * `linker hardening`, `PIE`, and `RELRO` parse `/proc/self/exe` on Linux to
   confirm `PT_GNU_RELRO`, `DT_BIND_NOW`, and `PT_GNU_STACK` without `PF_X`.
-  Static or non_ELF builds report `unknown` rather than `disabled`.
+  Static or non-ELF builds report `unknown` rather than `disabled`.
 
 ### C++ memory and type safety
 
-The project uses C++26 with strict rules that reduce memory_safety bugs:
+The project uses C++26 with strict rules that reduce memory-safety bugs:
 
 * RAII everywhere; no raw `new`/`delete`, `malloc`/`free`.
 * Smart pointers for dynamic ownership; references preferred over pointers.
-* `core::FileDescriptor` is a move_only RAII wrapper that closes its fd on
+* `core::FileDescriptor` is a move-only RAII wrapper that closes its fd on
   destruction and provides `set_cloexec()`.
 * `core::SecretBuffer` holds signing-key material mlocked via `sodium_mlock`
   on construction and wiped on destruction with `sodium_munlock` (which
@@ -53,31 +53,31 @@ The project uses C++26 with strict rules that reduce memory_safety bugs:
   elide, unlike the prior `std::ranges::fill` dead store). Custom move-ctor
   and move-assign transfer the mlock to the destination and wipe the source,
   so the secret is never duplicated and never left pinned in a moved-from
-  object. It is move_only and non_copyable. `src/core` links libsodium.
+  object. It is move-only and non-copyable. `src/core` links libsodium.
 
 ### Cryptographic boundary
 
 All cryptography is delegated to libsodium. The project does not implement its
 own primitives.
 
-* `sodium_init()` is wrapped in per_module `static` `sodium_is_ready()` helpers
+* `sodium_init()` is wrapped in per-module `static` `sodium_is_ready()` helpers
   so it is called once and failures are checked (`src/events/event_signer.cpp`,
   `src/homeserver/auth_service.cpp`, `src/crypto/secret_box.cpp`, etc.).
 * Passwords and the registration token are hashed with Argon2id
   (`crypto_pwhash_str` / `crypto_pwhash_str_verify`).
-* Access_token HMAC and signing_secret encryption keys are derived from the
-  operator's master key with domain_separated libsodium generic hashes
+* Access-token HMAC and signing-secret encryption keys are derived from the
+  operator's master key with domain-separated libsodium generic hashes
   (`crypto_generichash`).
 * The Ed25519 server signing secret is stored encrypted at rest via
   `crypto::secret_box_encrypt` (XSalsa20-Poly1305 with a random nonce).
-* Constant_time comparison for fixed_size values uses `sodium_memcmp`. Variable
-  length secrets are compared by hashing both inputs with a domain_separated
-  `crypto_generichash` context and then comparing the fixed_size digests with
+* Constant-time comparison for fixed-size values uses `sodium_memcmp`. Variable
+  length secrets are compared by hashing both inputs with a domain-separated
+  `crypto_generichash` context and then comparing the fixed-size digests with
   `sodium_memcmp`, so the comparison does not leak the secret length.
-* Short_lived plaintext secrets are pinned while in use with `sodium_mlock` /
+* Short-lived plaintext secrets are pinned while in use with `sodium_mlock` /
   `sodium_munlock` and overwritten with zeros before release
-  (`src/homeserver/auth_service.cpp` registration_token handling).
-* The seccomp_bpf allowlist permits `mlock`, `munlock`, `mlockall`,
+  (`src/homeserver/auth_service.cpp` registration-token handling).
+* The seccomp-bpf allowlist permits `mlock`, `munlock`, `mlockall`,
   `munlockall`, and `getrandom` so libsodium can lock pages and fetch entropy.
 
 ### Configuration and secret file permissions
@@ -89,7 +89,7 @@ POSIX metadata:
 * Configuration and TLS certificate files must be regular files without group
   or other write or any execute bit (`is_secure_config_file`).
 * Secret files (master key, TLS private key, registration token) must be
-  regular owner_read_only, non_executable files with no group/other access
+  regular owner-read-only, non-executable files with no group/other access
   (`is_secure_secret_file`). Until 0.12.5 the predicate did not actually check
   `owner_write`, so `0600` was accepted despite this line; it now enforces what
   it documents, and operators upgrading from an earlier release need a one-time
@@ -171,15 +171,15 @@ identical to an existing one. See
 
 ### Signal handling and graceful shutdown
 
-`src/net/shutdown_signal.cpp` installs a self_pipe and SIGINT/SIGTERM handlers.
-The handler does only signal_safe work: it writes one byte to the pipe and sets
+`src/net/shutdown_signal.cpp` installs a self-pipe and SIGINT/SIGTERM handlers.
+The handler does only signal-safe work: it writes one byte to the pipe and sets
 an atomic flag. The main thread unblocks `poll()` and initiates clean shutdown.
-`SIGPIPE` is ignored so a worker that dies mid_request cannot terminate the
+`SIGPIPE` is ignored so a worker that dies mid-request cannot terminate the
 parent.
 
-### Out_of_process thumbnail worker sandbox
+### Out-of-process thumbnail worker sandbox
 
-The main server **never** decodes untrusted image bytes in_process. It spawns
+The main server **never** decodes untrusted image bytes in-process. It spawns
 `merovingian-thumbnail-worker` via `fork()`/`execv()` (`src/media/thumbnailer.cpp`
 and `src/media/thumbnail_worker_main.cpp`):
 
@@ -228,7 +228,7 @@ and `src/media/thumbnail_worker_main.cpp`):
 * The worker rejects images whose width or height exceeds 4096 and whose pixel
   count exceeds the request's `max_pixels`.
 
-### Out_of_process federation worker IPC security
+### Out-of-process federation worker IPC security
 
 When federation is enabled, `merovingian-server` spawns `merovingian-fed-worker`
 and communicates through an `AF_UNIX SOCK_STREAM` socket pair created with
@@ -417,24 +417,24 @@ separate process on the same host:
   over the IPC channel; only the main process writes to the persistent store
   and advances the authoritative `stream_ordering` counter.
 
-## Platform_specific defences
+## Platform-specific defences
 
 ### Linux
 
-Linux receives the richest set of in_process controls.
+Linux receives the richest set of in-process controls.
 
 | Defence | Implementation | Notes |
 | --- | --- | --- |
-| seccomp_bpf syscall allowlist | `src/platform/seccomp_hardening.cpp` | Installed in `main.cpp` before listeners bind and inside the thumbnail worker. |
+| seccomp-bpf syscall allowlist | `src/platform/seccomp_hardening.cpp` | Installed in `main.cpp` before listeners bind and inside the thumbnail worker. |
 | Architecture guard | `src/platform/seccomp_hardening.cpp` | Filter starts with an `AUDIT_ARCH_X86_64` or `AUDIT_ARCH_AARCH64` guard and fails closed on unsupported architectures. |
-| Fail_closed default | `src/platform/seccomp_hardening.cpp` | Unlisted syscalls return `SECCOMP_RET_KILL_PROCESS`. |
+| Fail-closed default | `src/platform/seccomp_hardening.cpp` | Unlisted syscalls return `SECCOMP_RET_KILL_PROCESS`. |
 | No new privileges | `prctl(PR_SET_NO_NEW_PRIVS, 1, ...)` | Applied by `apply_seccomp_filter()` and `apply_runtime_hardening_controls()`. |
 | Capability bounding set drop | `apply_linux_capability_bounding_set()` | Calls `prctl(PR_CAPBSET_DROP, cap, ...)` for every capability. |
 | Core dump policy | `apply_linux_core_dump_policy()` | `setrlimit(RLIMIT_CORE, {0, 0})` and `prctl(PR_SET_DUMPABLE, 0)`. |
-| Self_check probes | `src/platform/hardening_self_check.cpp` | Confirms `Seccomp: 2`, `PR_GET_NO_NEW_PRIVS`, and `RLIMIT_CORE == 0`. |
+| Self-check probes | `src/platform/hardening_self_check.cpp` | Confirms `Seccomp: 2`, `PR_GET_NO_NEW_PRIVS`, and `RLIMIT_CORE == 0`. |
 | systemd sandboxing | `packaging/systemd/merovingian.service` | `PrivateTmp=true`, `ProtectSystem=strict`, `ProtectHome=true`, `NoNewPrivileges=true`, `CapabilityBoundingSet=`, `SystemCallArchitectures=native`, `MemoryDenyWriteExecute=true`, etc. |
 
-The seccomp_bpf filter is deliberately narrow: it allows only the syscalls the
+The seccomp-bpf filter is deliberately narrow: it allows only the syscalls the
 runtime actually needs. The filter is installed in `main.cpp` before
 `start_client_server` is called, so the database layer (SQLite) runs under the
 filter from its first access onwards.
@@ -567,10 +567,10 @@ profile:
 * requires that the hardening plan documents privilege drop, filesystem
   restrictions, resource limits, memory locking, random source, and signal
   handling;
-* applies **no** kernel_specific syscalls itself;
+* applies **no** kernel-specific syscalls itself;
 * relies on the service manager to drop privileges and confine the filesystem.
 
-## Startup hardening self_check
+## Startup hardening self-check
 
 `src/platform/hardening_self_check.cpp` is invoked from `src/main.cpp` after all
 platform hardening controls have been applied (seccomp-bpf, Linux capability
@@ -604,7 +604,7 @@ advertises:
 
 Hardening is exercised by automated tests:
 
-* `tests/unit/test_seccomp_hardening.cpp` asserts the fail_closed default action,
+* `tests/unit/test_seccomp_hardening.cpp` asserts the fail-closed default action,
   the architecture guard, that SQLite journal syscalls are allowed, that
   privilege-mutation syscalls (chmod, fchmod, fchmodat, umask, mkdir, truncate) remain denied,
   and that `clone3` (435), `close_range` (436), and `faccessat2` (439) are always present in
@@ -612,7 +612,7 @@ Hardening is exercised by automated tests:
 * `tests/unit/test_file_descriptor.cpp` exercises `FileDescriptor::set_cloexec()`
   and `close_all_file_descriptors_except()`.
 * `tests/unit/test_media_thumbnailer.cpp` covers the CLOEXEC pipe path and the
-  sandboxed worker round_trip.
+  sandboxed worker round-trip.
 * `tests/unit/test_runtime_hardening.cpp` validates profile accept/reject logic,
   including (0.12.1) `worker_hardening_unavailable_decision()` — the pure,
   syscall-free decision builder `apply_worker_hardening()` falls back to on
@@ -667,7 +667,7 @@ in-process syscalls:
   (systemd/OpenRC/FreeBSD rc.d) enforces filesystem restrictions; the
   Merovingian hardening profile documents these requirements. The
   **federation worker** is the exception: as of ADR-0062 part 3 (0.12.13) it
-  applies its own in-process Landlock ruleset (see "Out_of_process federation
+  applies its own in-process Landlock ruleset (see "Out-of-process federation
   worker IPC security" above) — the worker is the more exposed, more
   frequently restarted process, so it gets an in-process control the main
   process still relies on the service manager for.

@@ -54,7 +54,7 @@ Each `IpcChannel` runs two threads (`docs/architecture.md`, "IPC reader/dispatch
 
 ## Key docs
 
-- `docs/hardening.md` — "Out_of_process federation worker IPC security"
+- `docs/hardening.md` — "Out-of-process federation worker IPC security"
 - `docs/crypto-boundary.md` — IPC key derivation and cipher
 - [ADR-0027](../../docs/adr/0027-bound-the-connection-queue-but-not-the-ipc-queue.md) ·
   [ADR-0043](../../docs/adr/0043-base64-encode-ipc-response-bodies.md)

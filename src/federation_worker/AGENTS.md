@@ -114,7 +114,7 @@ the seccomp profile denies the `ptrace` it needs.
 ## Key docs
 
 - `docs/architecture.md` — "Federation worker consistency model", "IPC reader/dispatch split"
-- `docs/hardening.md` — "Out_of_process federation worker IPC security"
+- `docs/hardening.md` — "Out-of-process federation worker IPC security"
 - `docs/threat-model.md` — "Operator master key reachable from the federation worker"
 - [ADR-0015](../../docs/adr/0015-keep-the-signing-secret-out-of-the-federation-worker.md) ·
   [ADR-0041](../../docs/adr/0041-refuse-to-start-the-federation-worker-unsandboxed.md) ·

@@ -109,6 +109,13 @@
   (`[event_auth_outlier]`, and the updated `[backfill][conformance]` scenario).
   See [ADR-0070](docs/adr/0070-event-auth-outliers-carry-no-state.md).
 
+- **DOCS: underscores from an old find-and-replace removed from
+  `docs/hardening.md` (audit item 11).** Headings and prose such as
+  "Cross_platform", "Build_time" and "Out_of_process" now read with hyphens;
+  identifiers in code spans are untouched. The three documents that cite the
+  "Out-of-process federation worker IPC security" heading were updated to
+  match.
+
 - **REMOVED: dead authorization code (audit item 7).**
   `events::authorize_event` and `events::membership_policy_allows` had no
   production callers and did not follow the spec for bans and knocks. They
