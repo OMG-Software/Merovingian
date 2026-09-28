@@ -109,6 +109,17 @@
   (`[event_auth_outlier]`, and the updated `[backfill][conformance]` scenario).
   See [ADR-0070](docs/adr/0070-event-auth-outliers-carry-no-state.md).
 
+- **REMOVED: dead authorization code (audit item 7).**
+  `events::authorize_event` and `events::membership_policy_allows` had no
+  production callers and did not follow the spec for bans and knocks. They
+  were deleted with the helpers only they used (`auth_rule_hook_name`,
+  `power_level_allows`) and the three conformance scenarios in
+  `tests/conformance/test_event_authorization.cpp` that exercised only them.
+  The auth rules the server enforces are
+  `authorize_event_against_auth_events`. Still dead and not removed (outside
+  the item): `select_auth_events` and the `AuthChain` helpers, used only by
+  tests.
+
 - **FIXED: refresh-token rotation broke lost-response retries and never
   detected reuse (MEDIUM, audit item 6, ADR-0074, migration 017).** Per the
   spec, the presented refresh token now stays valid until the new access or
