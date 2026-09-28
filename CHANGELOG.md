@@ -109,6 +109,11 @@
   (`[event_auth_outlier]`, and the updated `[backfill][conformance]` scenario).
   See [ADR-0070](docs/adr/0070-event-auth-outliers-carry-no-state.md).
 
+- **REFACTOR: no raw pointer in the worker IPC in-flight guard (audit item
+  10).** `InFlightGuard` in `src/homeserver/worker_pool.cpp` now holds an
+  `ipc::IpcChannel&` instead of a pointer, per the project's no-raw-pointers
+  rule. The channel was already never null there. No behaviour change.
+
 - **FIXED: backfill dropped `/get_missing_events` children listed before
   their parents (LOW, audit item 9).** A backfilled event is authorised against
   the state before it, which needs its `prev_events` stored first, but the
