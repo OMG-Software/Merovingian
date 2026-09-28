@@ -13463,27 +13463,50 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         auto const body = canonicaljson::parse_lossless(req.body);
         auto const* body_obj = std::get_if<canonicaljson::Object>(&body.value.storage());
         auto const* search_term = (body_obj != nullptr) ? string_member(*body_obj, "search_term") : nullptr;
+        // Spec: "limit — The maximum number of results to return. Defaults to
+        // 10." and "limited — Indicates if the result list has been truncated
+        // by the limit." A negative limit returns nothing.
+        auto const* limit_value = (body_obj != nullptr) ? object_member(*body_obj, "limit") : nullptr;
+        auto const* limit_int = limit_value != nullptr ? std::get_if<std::int64_t>(&limit_value->storage()) : nullptr;
+        auto const limit =
+            limit_int != nullptr ? static_cast<std::size_t>(std::max<std::int64_t>(*limit_int, 0)) : std::size_t{10U};
         auto results = canonicaljson::Array{};
+        auto limited = false;
         if (search_term != nullptr && !search_term->empty())
         {
+            auto const& store = rt.homeserver.database.persistent_store;
             auto const term_lower = to_lower(*search_term);
-            for (auto const& profile : rt.homeserver.database.persistent_store.profiles)
+            for (auto const& profile : store.profiles)
             {
-                if (to_lower(profile.displayname).find(term_lower) != std::string::npos ||
-                    to_lower(profile.user_id).find(term_lower) != std::string::npos)
+                if (to_lower(profile.displayname).find(term_lower) == std::string::npos &&
+                    to_lower(profile.user_id).find(term_lower) == std::string::npos)
                 {
-                    auto user_obj = canonicaljson::Object{};
-                    user_obj.push_back(json_member("user_id", json_str(profile.user_id)));
-                    user_obj.push_back(json_member("display_name", json_str(profile.displayname)));
-                    user_obj.push_back(json_member("avatar_url", json_str(profile.avatar_url)));
-                    results.push_back(canonicaljson::Value{std::move(user_obj)});
+                    continue;
                 }
+                // 0.12.13 audit item 5: a deactivated account can never log in
+                // again, so it is not offered as someone to contact.
+                if (std::ranges::any_of(store.users, [&profile](database::PersistentUser const& account) {
+                        return account.user_id == profile.user_id && account.deactivated;
+                    }))
+                {
+                    continue;
+                }
+                if (results.size() == limit)
+                {
+                    limited = true;
+                    break;
+                }
+                auto user_obj = canonicaljson::Object{};
+                user_obj.push_back(json_member("user_id", json_str(profile.user_id)));
+                user_obj.push_back(json_member("display_name", json_str(profile.displayname)));
+                user_obj.push_back(json_member("avatar_url", json_str(profile.avatar_url)));
+                results.push_back(canonicaljson::Value{std::move(user_obj)});
             }
         }
         return dispatch_resp(req, rt, 200U,
                              json_serialize(json_obj({
                                  json_member("results", json_arr(std::move(results))),
-                                 json_member("limited", json_bool(false)),
+                                 json_member("limited", json_bool(limited)),
                              })));
     }
 
