@@ -1153,7 +1153,18 @@ namespace
             auto const* room_version = rooms::find_room_version_policy(room_ver);
             if (room_version == nullptr)
             {
-                return {500U, homeserver::matrix_error("M_UNKNOWN", "room version policy is unavailable")};
+                // Spec (PUT /v2/invite, 400): M_INCOMPATIBLE_ROOM_VERSION, with
+                // room_version "Required if the errcode is
+                // M_INCOMPATIBLE_ROOM_VERSION". Covers the unsupported room
+                // versions 1 and 2 (ADR-0076), which is also what a v1 invite for
+                // a room we do not know resolves to.
+                auto err = canonicaljson::Object{};
+                err.push_back(canonicaljson::make_member(
+                    "errcode", canonicaljson::Value{std::string{"M_INCOMPATIBLE_ROOM_VERSION"}}));
+                err.push_back(canonicaljson::make_member("room_version", canonicaljson::Value{room_ver}));
+                err.push_back(canonicaljson::make_member(
+                    "error", canonicaljson::Value{std::string{"Room version not supported"}}));
+                return {400U, serialize_response_object(std::move(err))};
             }
             auto const event_id = events::make_reference_hash_event_id(parsed_event.value, *room_version);
             auto pdu = FederationPdu{};
@@ -1989,22 +2000,10 @@ auto authorize_federation_pdu(FederationPdu const& pdu, [[maybe_unused]] std::st
         {
             return make_decision(false, 400U, "PDU JSON is not canonical-parseable");
         }
-        // rooms/v5.md, "Signing key validity period": the key's
-        // valid_until_ts MUST be at least the event's origin_server_ts.
-        // Versions 1-4 ignore valid_until_ts (ADR-0075).
-        if (!room_version->ignores_key_validity)
+        auto const validity = check_signing_key_valid_for_event(*key, parsed.value, *room_version);
+        if (!validity.accepted)
         {
-            auto const* root = std::get_if<canonicaljson::Object>(&parsed.value.storage());
-            auto const* ts_value = root == nullptr ? nullptr : find_canonical_member(*root, "origin_server_ts");
-            auto const* ts = ts_value == nullptr ? nullptr : std::get_if<std::int64_t>(&ts_value->storage());
-            if (ts == nullptr || *ts < 0)
-            {
-                return make_decision(false, 400U, "PDU origin_server_ts is missing or invalid");
-            }
-            if (key->valid_until_ts < static_cast<std::uint64_t>(*ts))
-            {
-                return make_decision(false, 403U, "sender domain signing key expired before the event was sent");
-            }
+            return validity;
         }
         auto const& public_key = key->public_key_bytes;
         auto verifier = FederationEd25519Verifier{};
@@ -2024,6 +2023,30 @@ auto authorize_federation_pdu(FederationPdu const& pdu, [[maybe_unused]] std::st
     }
     // Event-authorization rules (authorize_event_against_auth_events) are enforced
     // in the pdu_sink before persistence — see local_http_router.cpp wire_federation_callbacks_impl.
+    return make_decision(true, 200U, {});
+}
+
+auto check_signing_key_valid_for_event(FederationKeyRecord const& key, canonicaljson::Value const& event,
+                                       rooms::RoomVersionPolicy const& room_version) -> FederationDecision
+{
+    // rooms/v5.md, "Signing key validity period": the key's valid_until_ts
+    // MUST be at least the event's origin_server_ts. Versions 1-4 ignore
+    // valid_until_ts (ADR-0075).
+    if (room_version.ignores_key_validity)
+    {
+        return make_decision(true, 200U, {});
+    }
+    auto const* root = std::get_if<canonicaljson::Object>(&event.storage());
+    auto const* ts_value = root == nullptr ? nullptr : find_canonical_member(*root, "origin_server_ts");
+    auto const* ts = ts_value == nullptr ? nullptr : std::get_if<std::int64_t>(&ts_value->storage());
+    if (ts == nullptr || *ts < 0)
+    {
+        return make_decision(false, 400U, "PDU origin_server_ts is missing or invalid");
+    }
+    if (key.valid_until_ts < static_cast<std::uint64_t>(*ts))
+    {
+        return make_decision(false, 403U, "sender domain signing key expired before the event was sent");
+    }
     return make_decision(true, 200U, {});
 }
 

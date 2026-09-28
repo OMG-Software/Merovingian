@@ -1030,14 +1030,14 @@ SCENARIO("Join event prepared for send_join must carry a content hash", "[events
 // URL: ../../docs/matrix-v1.19-spec/rooms/index.md
 //
 // A conformant server MUST support the stable room versions it advertises in its
-// server capabilities. Versions 10, 11, and 12 are the stable modern versions;
-// legacy versions (1-9) SHOULD NOT be supported by new implementations.
+// server capabilities. This server supports v3 to v12; v1 and v2 are not
+// supported (ADR-0076), and the spec lets a server choose.
 SCENARIO("Room version registry exposes stable modern room versions", "[rooms]")
 {
     GIVEN("known and unsupported room-version IDs")
     {
         auto constexpr known_version = "12";
-        auto constexpr legacy_stable_version = "1";
+        auto constexpr legacy_stable_version = "3";
         auto constexpr unknown_version = "13";
 
         WHEN("room-version support is checked")
@@ -1048,7 +1048,10 @@ SCENARIO("Room version registry exposes stable modern room versions", "[rooms]")
 
             THEN("stable versions are supported and unknown versions are rejected")
             {
-                // Spec MUST: room versions 1 through 12 are stable in Matrix v1.19.
+                // Room versions 1 through 12 are stable in Matrix v1.19; this
+                // server supports 3 through 12 (ADR-0076).
+                REQUIRE_FALSE(merovingian::rooms::room_version_is_supported("1"));
+                REQUIRE_FALSE(merovingian::rooms::room_version_is_supported("2"));
                 REQUIRE(merovingian::rooms::room_version_is_supported("10"));
                 REQUIRE(merovingian::rooms::room_version_is_supported("11"));
                 REQUIRE(known_supported);
@@ -1087,9 +1090,9 @@ SCENARIO("Room-version fixtures pin Matrix v10 v11 and v12 policy differences", 
                 REQUIRE(room_v10 != nullptr);
                 REQUIRE(room_v11 != nullptr);
                 REQUIRE(room_v12 != nullptr);
-                // Spec MUST: the registry contains all stable versions; this fixture
-                // inspects the v10-v12 subset in detail.
-                REQUIRE(fixtures.size() == 12U);
+                // The registry holds every supported stable version (v3-v12,
+                // ADR-0076); this fixture inspects the v10-v12 subset in detail.
+                REQUIRE(fixtures.size() == 10U);
                 REQUIRE(room_v10->stable);
                 REQUIRE(room_v11->stable);
                 REQUIRE(room_v12->stable);

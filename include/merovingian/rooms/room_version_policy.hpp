@@ -10,7 +10,6 @@ namespace merovingian::rooms
 
 enum class EventFormat : unsigned char
 {
-    room_v1_v2,
     room_v3_plus,
 };
 
@@ -30,7 +29,6 @@ enum class AuthRules : unsigned char
 
 enum class StateResolutionAlgorithm : unsigned char
 {
-    v1,
     v2,
     // Room v12 (MSC4289/MSC4291): state resolution v2.1 — the iterative auth
     // checks algorithm starts from an empty state map instead of the

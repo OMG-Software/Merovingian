@@ -420,10 +420,11 @@ SCENARIO("All registered room versions are marked stable", "[rooms][versions][co
             }
         }
 
-        THEN("the stable set includes exactly all 12 spec-defined versions")
+        THEN("the stable set includes exactly the 10 supported spec-defined versions")
         {
-            // Spec: v1–v12 are the currently stable versions.
-            REQUIRE(versions.size() == 12U);
+            // Spec: v1–v12 are the currently stable versions; this server
+            // supports v3–v12 (ADR-0076).
+            REQUIRE(versions.size() == 10U);
         }
     }
 }

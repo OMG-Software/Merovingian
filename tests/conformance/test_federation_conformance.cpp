@@ -749,12 +749,18 @@ SCENARIO("invite v2 into a room of an unsupported version is refused as incompat
 //
 // Legacy path. The resident server MUST respond 200. Response format differs
 // from v2: the event is returned as a bare JSON value, not wrapped in an object.
+// A v1 invite implies room version 1 or 2 unless the room's version is known
+// locally; v1 and v2 are not supported (ADR-0076), so the room here is known
+// to be v12.
 SCENARIO("invite v1 processes inbound invite and returns signed event", "[federation][conformance][invite_v1]")
 {
-    GIVEN("a runtime with invite_handler wired")
+    GIVEN("a runtime with invite_handler wired and the room known to be version 12")
     {
         auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
         merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
+        runtime.room_version_resolver = [](std::string_view) {
+            return std::string{"12"};
+        };
 
         auto invite_invoked = std::make_shared<bool>(false);
         runtime.invite_handler =
@@ -2847,10 +2853,10 @@ SCENARIO("parse_inbound_pdu_envelope rejects a PDU with an unknown room version"
 // Room versions 1-10 preserve the top-level "origin" key through redaction;
 // v11+ strip it, so an event signed under v1 rules that carries "origin" does
 // not verify under v12 rules. That difference is what these scenarios pin.
-SCENARIO("invite v1 verifies the invite event under room version 1, not 12", "[federation][conformance][invite_v1]")
+SCENARIO("invite v1 for a room of unknown version is refused, not verified under room version 12",
+         "[federation][conformance][invite_v1][v1_v2_unsupported]")
 {
-    GIVEN("a runtime with invite_handler wired and no local knowledge of the "
-          "room version")
+    GIVEN("a runtime with invite_handler wired and no local knowledge of the room version")
     {
         auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
         merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
@@ -2863,11 +2869,7 @@ SCENARIO("invite v1 verifies the invite event under room version 1, not 12", "[f
             return {true, 200U, {}, "{}"};
         };
 
-        // The top-level "origin" key survives v1/v2 redaction and is stripped by
-        // v11+ redaction, so the signature only verifies under the version whose
-        // rules produced it.
         auto const unsigned_json = std::string{"{\"type\":\"m.room.member\",\"room_id\":\""} + std::string{room_id} +
-                                   "\",\"origin\":\"" + origin +
                                    "\",\"sender\":\"@remote:remote.example.org\",\"state_key\":\"@local:"
                                    "local.example.org\",\"content\":{"
                                    "\"membership\":\"invite\"},\"depth\":1,\"origin_server_ts\":1,\"prev_"
@@ -2875,79 +2877,24 @@ SCENARIO("invite v1 verifies the invite event under room version 1, not 12", "[f
         auto const event_id = std::string{"$invite_event:"} + origin;
         auto const target = "/_matrix/federation/v1/invite/" + std::string{room_id} + "/" + event_id;
 
-        WHEN("the invite event is signed under room version 1 rules")
-        {
-            auto const signed_body =
-                merovingian::federation::test::make_signed_event_json(unsigned_json, origin, key_id, key_seed, "1");
-            auto const response = merovingian::federation::handle_inbound_federation_request(
-                runtime, signed_put_request(origin, key_id, key_seed, target, signed_body));
-
-            THEN("the invite is accepted because v1/v2 rules were assumed")
-            {
-                // Spec MUST: a v1 invite request is treated as room version 1 or 2.
-                REQUIRE(response.status == 200U);
-                REQUIRE(*invite_invoked);
-            }
-        }
-
-        AND_WHEN("the invite event is signed under room version 12 rules instead")
+        WHEN("a v1 invite arrives, even one signed under room version 12 rules")
         {
             auto const signed_body =
                 merovingian::federation::test::make_signed_event_json(unsigned_json, origin, key_id, key_seed, "12");
             auto const response = merovingian::federation::handle_inbound_federation_request(
                 runtime, signed_put_request(origin, key_id, key_seed, target, signed_body));
 
-            THEN("the invite is rejected because v12 rules are not what a v1 invite "
-                 "implies")
+            THEN("it is refused as incompatible: a v1 invite implies room version 1 or 2")
             {
-                // The event fails its signature check because the reference hash
-                // and redaction rules differ between v1 and v12, so it goes down
-                // the ordinary PDU-rejection path: 403 with M_INVALID_PARAM, the
-                // same refusal every failed inbound PDU gets. Do NOT relax this to
-                // accept v12 signing -- doing so restores the hard-coded
-                // room-version default this test exists to prevent.
-                REQUIRE(response.status == 403U);
-                REQUIRE(response.body.find("M_INVALID_PARAM") != std::string::npos);
+                // Spec: "Servers which receive a v1 invite request must assume
+                // that the room version is either 1 or 2." Neither is supported
+                // (ADR-0076), so the invite is refused with the v2 invite's
+                // M_INCOMPATIBLE_ROOM_VERSION. Do NOT fall back to verifying it
+                // as v12 -- that restores the hard-coded room-version default
+                // this scenario exists to prevent.
+                REQUIRE(response.status == 400U);
+                REQUIRE(response.body.find("M_INCOMPATIBLE_ROOM_VERSION") != std::string::npos);
                 REQUIRE_FALSE(*invite_invoked);
-            }
-        }
-    }
-
-    GIVEN("a runtime that does know the room's actual version")
-    {
-        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
-        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
-        runtime.room_version_resolver = []([[maybe_unused]] std::string_view queried_room_id) -> std::string {
-            return "12";
-        };
-
-        auto invite_invoked = std::make_shared<bool>(false);
-        runtime.invite_handler =
-            [invite_invoked]([[maybe_unused]] merovingian::federation::InviteRequest const& request)
-            -> merovingian::federation::InviteAcceptResult {
-            *invite_invoked = true;
-            return {true, 200U, {}, "{}"};
-        };
-
-        WHEN("a v1 invite arrives for that room signed under its real version")
-        {
-            auto const unsigned_json = std::string{"{\"type\":\"m.room.member\",\"room_id\":\""} +
-                                       std::string{room_id} + "\",\"origin\":\"" + origin +
-                                       "\",\"sender\":\"@remote:remote.example.org\",\"state_key\":\"@local:"
-                                       "local.example.org\",\"content\":{"
-                                       "\"membership\":\"invite\"},\"depth\":1,\"origin_server_ts\":1,"
-                                       "\"prev_events\":[],\"auth_events\":[]}";
-            auto const signed_body =
-                merovingian::federation::test::make_signed_event_json(unsigned_json, origin, key_id, key_seed, "12");
-            auto const event_id = std::string{"$invite_event:"} + origin;
-            auto const target = "/_matrix/federation/v1/invite/" + std::string{room_id} + "/" + event_id;
-            auto const response = merovingian::federation::handle_inbound_federation_request(
-                runtime, signed_put_request(origin, key_id, key_seed, target, signed_body));
-
-            THEN("the resolved room version is used rather than the v1/v2 fallback")
-            {
-                REQUIRE(response.status == 200U);
-                REQUIRE(*invite_invoked);
             }
         }
     }

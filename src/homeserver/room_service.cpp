@@ -3274,6 +3274,19 @@ auto filter_verified_send_join_events(HomeserverRuntime& runtime, canonicaljson:
         {
             continue;
         }
+        // ADR-0075: from room v5 the key must still be valid at the event's
+        // origin_server_ts, the same rule every received event is held to.
+        auto const validity = federation::check_signing_key_valid_for_event(*resolved_key, entry, policy);
+        if (!validity.accepted)
+        {
+            log_diagnostic("room.join.state_event_rejected",
+                           {
+                               {"sender_domain", std::string{dom}, false},
+                               {"reason",        validity.reason,  false}
+            },
+                           observability::LogEventSeverity::warning);
+            continue;
+        }
         auto const verification = events::verify_event_signature(
             entry, policy, events::SigningKeyId{resolved_key->server_name, resolved_key->key_id},
             crypto::Ed25519PublicKey{resolved_key->public_key_bytes}, *runtime.crypto_provider);

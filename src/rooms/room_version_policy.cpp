@@ -19,25 +19,15 @@ namespace
     //   redaction_keeps_aliases: v1-v5 (rooms/v6.md removed m.room.aliases
     //     from the redaction algorithm).
     //   redaction_keeps_join_authorisation: v9+ (rooms/v9.md).
-    //   ignores_key_validity: v1-v4 (server-server-api.md, valid_until_ts "MUST be
+    //   ignores_key_validity: v3-v4 (server-server-api.md, valid_until_ts "MUST be
     //     ignored in room versions 1, 2, 3, and 4"; rooms/v5.md enforces it).
+    //
+    // Room versions 1 and 2 are deliberately absent: they are not supported
+    // (ADR-0076). Their event ID is carried in the event ($localpart:domain)
+    // and needs a signature from the event ID's domain, v1 has its own state
+    // resolution algorithm, and none of that was ever implemented. An absent
+    // version is refused on every path (createRoom, joins, invites, PDUs).
     constexpr auto policies = std::array{
-        RoomVersionPolicy{.id = "1",
-                          .event_format = EventFormat::room_v1_v2,
-                          .redaction_rules = RedactionRules::room_v1_v7,
-                          .auth_rules = AuthRules::room_v1,
-                          .state_resolution = StateResolutionAlgorithm::v1,
-                          .stable = true,
-                          .redaction_keeps_aliases = true,
-                          .ignores_key_validity = true},
-        RoomVersionPolicy{.id = "2",
-                          .event_format = EventFormat::room_v1_v2,
-                          .redaction_rules = RedactionRules::room_v1_v7,
-                          .auth_rules = AuthRules::room_v1,
-                          .state_resolution = StateResolutionAlgorithm::v2,
-                          .stable = true,
-                          .redaction_keeps_aliases = true,
-                          .ignores_key_validity = true},
         RoomVersionPolicy{.id = "3",
                           .redaction_rules = RedactionRules::room_v1_v7,
                           .auth_rules = AuthRules::room_v1,

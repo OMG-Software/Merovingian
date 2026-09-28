@@ -10,6 +10,7 @@
 #include "merovingian/federation/transactions.hpp"
 #include "merovingian/media/repository.hpp"
 #include "merovingian/observability/observability.hpp"
+#include "merovingian/rooms/room_version_policy.hpp"
 
 #include <chrono>
 #include <cstdint>
@@ -405,6 +406,15 @@ auto upsert_remote(FederationRuntimeState& runtime, FederationRemoteRuntime remo
 // (cache_remote_server_keys, 7 days after the fetch).
 [[nodiscard]] auto authorize_federation_pdu(FederationPdu const& pdu, std::string_view expected_origin,
                                             std::optional<FederationKeyRecord> const& key) -> FederationDecision;
+
+// The signing-key validity rule on its own, for every path that verifies an
+// event's signature: from room v5 `key.valid_until_ts` MUST be at least the
+// event's origin_server_ts (rooms/v5.md, "Signing key validity period");
+// versions 1-4 ignore valid_until_ts. Accepted, or a 400 (no integer
+// origin_server_ts) or 403 (key expired before the event was sent). ADR-0075.
+[[nodiscard]] auto check_signing_key_valid_for_event(FederationKeyRecord const& key, canonicaljson::Value const& event,
+                                                     rooms::RoomVersionPolicy const& room_version)
+    -> FederationDecision;
 // Parses a raw PDU string (JSON or comma-delimited) into a FederationPdu.
 // When version_resolver is provided it is called with the parsed room_id to
 // determine the room version for event-ID computation; pdu.room_version is

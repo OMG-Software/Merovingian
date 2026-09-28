@@ -621,6 +621,11 @@ SCENARIO("Inbound federation handles non-transaction endpoints with PDU validati
             result.signed_event_json = request.invite_event_json;
             return result;
         };
+        // A v1 invite implies room version 1 or 2 unless the room's version is
+        // known locally; v1 and v2 are not supported (ADR-0076).
+        runtime.room_version_resolver = [](std::string_view) {
+            return std::string{"12"};
+        };
         auto request = signed_request(origin, key_id, token, invite_event_json);
         request.target = "/_matrix/federation/v1/invite/!room1:example.org/$event1:example.org";
         request.signature = merovingian::federation::make_federation_signature(
