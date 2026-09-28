@@ -1,5 +1,23 @@
 ## 0.12.13
 
+- **FIXED: event signing-key validity checked against the wrong time (MEDIUM,
+  ADR-0075).** `authorize_federation_pdu` rejected a PDU when its sender's key
+  had expired *now*, in every room version, and backfill skipped the check.
+  The spec measures it against the event itself: from room v5 the key's
+  `valid_until_ts` MUST be at least the event's `origin_server_ts`
+  (rooms/v5.md), and versions 1 to 4 MUST ignore `valid_until_ts`. Every path
+  (`/send`, membership and invite endpoints, backfill, and main's
+  re-verification of worker relays) now applies that rule; an event sent after
+  its key expired is refused, and an old event whose key has expired since is
+  accepted. A fetched key is cached for at most 7 days
+  (`min(valid_until_ts, fetched_at + 7 days)`, rooms/v5.md), which also bounds
+  the resolver's stale-key fallback. Test fixtures whose keys expired before
+  their own events were sent were given realistic validity, and one unit
+  scenario that required the current-time rejection was corrected with the
+  user's approval. Tests: `tests/conformance/test_pdu_signature_conformance.cpp`
+  (`[key_validity]`). See `docs/threat-model.md` for the residual (backdated
+  events within a key's capped validity).
+
 - **FIXED: predictable media IDs and unauthenticated legacy media endpoints
   (MEDIUM, security-audit finding M05).** Local media IDs were minted from a
   counter and content-digest prefix, making them enumerable, and the deprecated

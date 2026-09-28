@@ -384,7 +384,10 @@ quickly finding everything a given `AGENTS.md` file contributed.
   Source: `src/federation/AGENTS.md`.
 
 - **Fetch remote server keys via `remote_key_cache.hpp` — never trust a key the remote
-  server supplies inline. The cache fetches from `/_matrix/key/v2/server` and enforces TTL.**
+  server supplies inline. The cache fetches from `/_matrix/key/v2/server` and trusts a key for
+  at most 7 days after the fetch. From room v5 an event's signing key must be valid at the
+  event's own `origin_server_ts`, not the current time; v1-v4 ignore `valid_until_ts`
+  (ADR-0075).**
   A key past its `valid_until_ts` must not be used to authenticate a *new* PDU or request —
   the cache's stale-key fallback exists only so callers can distinguish "known but
   unreachable" from "never seen," not to authenticate new traffic.

@@ -77,6 +77,7 @@
 * [0072 - Per-IP connection cap at accept time](0072-per-ip-connection-cap-at-accept-time.md)
 * [0073 - The client address is the rightmost untrusted X-Forwarded-For entry](0073-client-address-is-the-rightmost-untrusted-x-forwarded-for-entry.md)
 * [0074 - Refresh tokens retire on first use of their successor](0074-refresh-tokens-retire-on-first-use-of-their-successor.md)
+* [0075 - Event signing-key validity is judged at the event's origin_server_ts](0075-event-signing-key-validity-is-judged-at-origin-server-ts.md)
 
 ## Rejected Records
 

@@ -628,7 +628,18 @@ threat it closes; the controls above are the standing defences these reinforce.
   after a compromise and the old server became unreachable, an attacker
   holding the old private key could keep forging PDU signatures
   indefinitely. Fixed by rejecting PDUs verified against a key whose
-  `valid_until_ts` has passed as of the request's `now_ts`.
+  `valid_until_ts` has passed as of the request's `now_ts`. **Superseded in
+  0.12.13 by [ADR-0075](adr/0075-event-signing-key-validity-is-judged-at-origin-server-ts.md):**
+  that check compared with the current time, which the spec does not ask for
+  (it rejected valid historical events, and v1-v4 events on a field the spec
+  says MUST be ignored), and backfill skipped it. From room v5 a key must now
+  be valid at the event's own `origin_server_ts`, and a fetched key is cached
+  for at most 7 days (`min(valid_until_ts, fetched_at + 7 days)`, rooms/v5.md).
+  **Residual:** `origin_server_ts` is chosen by the sender, so someone holding
+  an old private key can still sign events backdated to within that key's
+  capped validity while its server is unreachable. The spec accepts this;
+  such events still have to pass the auth rules against the state before
+  them and against current state.
 - **Media content-sniffing was a no-op, defeating the declared/actual MIME
   mismatch quarantine (2026-07 audit):** `client_server.cpp` built the
   internal upload pipe body by copying the client-declared `Content-Type`
