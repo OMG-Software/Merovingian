@@ -1897,6 +1897,55 @@ SCENARIO("filter_verified_send_join_events drops an event with an invalid signat
     }
 }
 
+// Spec: rooms/v5.md "Signing key validity period" (unchanged through v12):
+// "When validating event signatures, servers MUST enforce the valid_until_ts
+// property from a key request is at least as large as the origin_server_ts for
+// the event being validated." A send_join response is validated the same way
+// as any other received event (ADR-0075).
+SCENARIO("filter_verified_send_join_events drops an event signed by a key that expired before it was sent",
+         "[homeserver][federation][send_join][security][key_validity]")
+{
+    GIVEN("a room v10 state array with one event sent at origin_server_ts 1000")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const room_id = std::string{"!room:matrix.example.org"};
+        auto const bob = std::string{"@bob:"} + remote_origin;
+        auto const policy = *merovingian::rooms::find_room_version_policy("10");
+        auto array = merovingian::canonicaljson::Array{};
+        array.push_back(signed_member_event(room_id, bob, remote_origin, remote_key_id, remote_key_seed, policy));
+
+        for (auto const valid_until : {std::uint64_t{999U}, std::uint64_t{1000U}})
+        {
+            WHEN("the sender's genuine key is valid until " + std::to_string(valid_until))
+            {
+                runtime.federation.remote_key_resolver =
+                    [valid_until](
+                        std::string_view server_name,
+                        std::string_view key_id) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+                    if (server_name != remote_origin || key_id != remote_key_id)
+                    {
+                        return std::nullopt;
+                    }
+                    auto remote = remote_for(remote_origin, remote_key_id, remote_key_seed);
+                    remote.signing_key.valid_until_ts = valid_until;
+                    return remote;
+                };
+                auto const filtered =
+                    merovingian::homeserver::filter_verified_send_join_events(runtime, array, policy, local_server);
+
+                THEN("the event is kept only if the key was valid when it was sent")
+                {
+                    // Spec MUST: valid_until_ts at least as large as origin_server_ts.
+                    REQUIRE(filtered.size() == (valid_until >= 1000U ? 1U : 0U));
+                }
+            }
+        }
+    }
+}
+
 SCENARIO("filter_verified_send_join_events drops an event whose sender-domain key cannot be resolved",
          "[homeserver][federation][send_join][security]")
 {

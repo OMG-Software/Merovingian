@@ -380,7 +380,8 @@ constexpr auto relay_key_id = "ed25519:auto";
 }
 
 // Main's key resolver in these scenarios: every server's key is the one
-// derived from relay_key_seed.
+// derived from relay_key_seed, valid until 2100-01-01 (from room v5 a key
+// must still be valid at each event's origin_server_ts, ADR-0075).
 [[nodiscard]] auto relay_key_resolver()
 {
     return [](std::string_view server_name,
@@ -391,7 +392,7 @@ constexpr auto relay_key_id = "ed25519:auto";
         }
         auto remote = merovingian::federation::FederationRemoteRuntime{};
         remote.server_name = std::string{server_name};
-        remote.signing_key = {std::string{server_name}, relay_key_id, 0U,
+        remote.signing_key = {std::string{server_name}, relay_key_id, 4'102'444'800'000U,
                               merovingian::federation::test::keypair_from_seed(relay_key_seed).public_key};
         remote.discovery.server_name = std::string{server_name};
         return remote;
