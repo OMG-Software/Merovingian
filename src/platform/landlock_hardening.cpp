@@ -55,8 +55,6 @@ namespace
     constexpr std::uint64_t k_access_fs_refer = 1ULL << 13U;    // ABI 2 (Linux 5.19)
     constexpr std::uint64_t k_access_fs_truncate = 1ULL << 14U; // ABI 3 (Linux 6.2)
 
-    [[nodiscard]] auto access_rights_for(LandlockAccess access, int abi) noexcept -> std::uint64_t;
-
 } // namespace
 
 auto landlock_handled_access_fs(int abi) noexcept -> std::uint64_t
@@ -117,10 +115,13 @@ auto landlock_access_for_inode(std::uint64_t requested, bool is_directory) noexc
     return requested & file_level_access;
 }
 
+#ifdef __linux__
+// Used only when a ruleset is built, which is Linux-only; defining it
+// elsewhere trips -Wunused-function under -Werror (FreeBSD, NetBSD).
 namespace
 {
 
-    auto access_rights_for(LandlockAccess access, int abi) noexcept -> std::uint64_t
+    [[nodiscard]] auto access_rights_for(LandlockAccess access, int abi) noexcept -> std::uint64_t
     {
         switch (access)
         {
@@ -135,6 +136,7 @@ namespace
     }
 
 } // namespace
+#endif // __linux__
 
 #ifdef __linux__
 namespace
