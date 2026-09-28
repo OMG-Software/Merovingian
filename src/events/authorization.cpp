@@ -26,31 +26,9 @@ namespace merovingian::events
 namespace
 {
 
-    [[nodiscard]] auto auth_rule_name(rooms::AuthRules rules) noexcept -> char const*
-    {
-        switch (rules)
-        {
-        case rooms::AuthRules::room_v1:
-            return "room_v1";
-        case rooms::AuthRules::room_v6_plus:
-            return "room_v6_plus";
-        case rooms::AuthRules::room_v12:
-            // Distinct hook for auditability: v12 adds creator privilege (MSC4289)
-            // and implicit create (MSC4291) on top of the v6+ rule base.
-            return "room_v12";
-        }
-
-        return "unknown";
-    }
-
     [[nodiscard]] auto requires_power_levels(std::string_view event_type) noexcept -> bool
     {
         return event_type != "m.room.create";
-    }
-
-    [[nodiscard]] auto requires_membership(std::string_view event_type) noexcept -> bool
-    {
-        return event_type == "m.room.member";
     }
 
     [[nodiscard]] auto object_member(canonicaljson::Object const& object, std::string_view key) noexcept
@@ -773,11 +751,6 @@ auto effective_sender_power(canonicaljson::Value const& power_levels, std::strin
     return 0;
 }
 
-auto auth_rule_hook_name(rooms::RoomVersionPolicy const& policy) -> std::string
-{
-    return std::string{"auth_rules."} + auth_rule_name(policy.auth_rules);
-}
-
 auto membership_name(MembershipState membership) noexcept -> char const*
 {
     switch (membership)
@@ -797,53 +770,6 @@ auto membership_name(MembershipState membership) noexcept -> char const*
     }
 
     return "unknown";
-}
-
-auto power_level_allows(PowerLevelPolicy policy) noexcept -> bool
-{
-    return policy.sender_power >= policy.required_power;
-}
-
-auto membership_policy_allows(MembershipPolicy policy) -> EventAuthorizationDecision
-{
-    if (policy.target_is_restricted)
-    {
-        return {false, "membership", "4", "target membership is restricted"};
-    }
-    if (policy.requested_membership == MembershipState::join && policy.target_is_sender)
-    {
-        return {true, "membership", "4", {}};
-    }
-    if (policy.requested_membership == MembershipState::invite)
-    {
-        if (policy.sender_power >= policy.invite_power)
-        {
-            return {true, "membership", "4", {}};
-        }
-        return {false, "membership", "4", "insufficient power to invite"};
-    }
-    if (policy.requested_membership == MembershipState::restricted)
-    {
-        if (policy.sender_power >= policy.restrict_power)
-        {
-            return {true, "membership", "4", {}};
-        }
-        return {false, "membership", "4", "insufficient power to restrict membership"};
-    }
-    if (policy.requested_membership == MembershipState::leave)
-    {
-        if (policy.target_is_sender)
-        {
-            return {true, "membership", "4", {}};
-        }
-        if (policy.sender_power >= policy.remove_power)
-        {
-            return {true, "membership", "4", {}};
-        }
-        return {false, "membership", "4", "insufficient power to remove another member"};
-    }
-
-    return {false, "membership", "4", "membership transition is not allowed"};
 }
 
 auto parse_membership_state(std::string_view membership) noexcept -> std::optional<MembershipState>
@@ -934,32 +860,6 @@ auto extract_power_level_key(canonicaljson::Value const& power_levels_event, std
     // smuggle its value in under an event-type name and, for example, drop the
     // effective ban level to zero (#487).
     return default_value;
-}
-
-auto authorize_event(rooms::RoomVersionPolicy const& policy, EventAuthorizationRequest const& request)
-    -> EventAuthorizationDecision
-{
-    auto const rule_hook = auth_rule_hook_name(policy);
-    if (policy.id != request.room_version)
-    {
-        return {false, rule_hook, "0", "room version mismatch"};
-    }
-    if (request.event_type.empty())
-    {
-        return {false, rule_hook, "0", "event type is required"};
-    }
-    if (!power_level_allows(request.power_level))
-    {
-        return {false, rule_hook, "0", "insufficient power level"};
-    }
-    if (requires_membership(request.event_type))
-    {
-        auto membership_decision = membership_policy_allows(request.membership);
-        membership_decision.rule_hook = rule_hook;
-        return membership_decision;
-    }
-
-    return {true, rule_hook, "0", {}};
 }
 
 auto authorize_event_against_auth_events(canonicaljson::Value const& event, rooms::RoomVersionPolicy const& policy,

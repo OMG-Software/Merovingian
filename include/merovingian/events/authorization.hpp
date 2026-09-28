@@ -98,12 +98,7 @@ struct AuthChain final
     std::vector<std::string> event_ids{};
 };
 
-[[nodiscard]] auto auth_rule_hook_name(rooms::RoomVersionPolicy const& policy) -> std::string;
 [[nodiscard]] auto membership_name(MembershipState membership) noexcept -> char const*;
-[[nodiscard]] auto power_level_allows(PowerLevelPolicy policy) noexcept -> bool;
-[[nodiscard]] auto membership_policy_allows(MembershipPolicy policy) -> EventAuthorizationDecision;
-[[nodiscard]] auto authorize_event(rooms::RoomVersionPolicy const& policy, EventAuthorizationRequest const& request)
-    -> EventAuthorizationDecision;
 [[nodiscard]] auto authorize_event_against_auth_events(canonicaljson::Value const& event,
                                                        rooms::RoomVersionPolicy const& policy,
                                                        AuthEventMap const& auth_events) -> EventAuthorizationDecision;
