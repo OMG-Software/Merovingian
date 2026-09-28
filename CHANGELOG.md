@@ -1,5 +1,16 @@
 ## 0.12.13
 
+- **FIXED: build failures on newer Linux kernel headers and on the BSDs.**
+  `landlock_ruleset_attr` gained members (`scoped`, `quiet_access_*`) that the
+  designated initializer in `landlock_hardening.cpp` left out under `-Werror`;
+  it is now value-initialised, so every byte the kernel does not understand is
+  zero, as the kernel requires. `client_address.cpp` now includes
+  `<sys/socket.h>` for `AF_INET`/`AF_INET6` (FreeBSD, OpenBSD), and the
+  Landlock ops table is marked unused off Linux (NetBSD). CI test fixes: the
+  decoder hardening scenarios assert the sanitizer build's own contract (it
+  skips `RLIMIT_AS` and the seccomp filter), and the PostgreSQL role scenarios
+  make only the newest migration pending, not a gap.
+
 - **REMOVED: dead `select_auth_events` and `AuthChain` helpers.** They had no
   production callers, and `select_auth_events` named `m.room.join_rules` for
   every membership, against the spec. Their three scenarios, the last in
