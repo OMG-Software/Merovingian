@@ -7947,6 +7947,77 @@ SCENARIO("POST /createRoom accepts every supported stable room version v3 throug
     }
 }
 
+// Spec: Matrix Server-Server API v1.19
+// Section: Auth events selection
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#auth-events-selection
+//
+// For m.room.member: "If membership is join, invite or knock, the current
+// m.room.join_rules event, if any." Auth rule 3.2 (rooms/v12.md and earlier):
+// "If there are entries whose type and state_key don't match those specified
+// by the auth events selection algorithm ..., reject." A leave or ban naming
+// m.room.join_rules is therefore rejected by every conformant server.
+SCENARIO("Locally created membership events name m.room.join_rules only for join, invite and knock",
+         "[conformance][client-server][rooms][auth_events_selection]")
+{
+    GIVEN("a public room created by Alice, which Bob joins")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const alice = logged_in_token(started.runtime);
+        auto const bob = register_and_login(started.runtime, "bob");
+        auto const room_id = create_public_room(started.runtime, alice);
+        auto const& store = started.runtime.homeserver.database.persistent_store;
+        auto const join_rules = std::ranges::find_if(store.state, [&](auto const& s) {
+            return s.room_id == room_id && s.event_type == "m.room.join_rules" && s.state_key.empty();
+        });
+        REQUIRE(join_rules != store.state.end());
+        auto const join_rules_id = join_rules->event_id;
+        auto const names_join_rules = [&](merovingian::canonicaljson::Object const& event) {
+            auto const* auth_events = object_member_as_array(event, "auth_events");
+            REQUIRE(auth_events != nullptr);
+            return std::ranges::any_of(*auth_events, [&](merovingian::canonicaljson::Value const& id) {
+                auto const* text = std::get_if<std::string>(&id.storage());
+                return text != nullptr && *text == join_rules_id;
+            });
+        };
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/join", bob, "{}"})
+                    .response.status == 200U);
+        auto const bob_join = current_membership_event(store, room_id, "@bob:example.org");
+
+        WHEN("Bob leaves")
+        {
+            REQUIRE(merovingian::homeserver::handle_client_server_request(
+                        started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/leave", bob, "{}"})
+                        .response.status == 200U);
+            auto const bob_leave = current_membership_event(store, room_id, "@bob:example.org");
+
+            THEN("the join names m.room.join_rules and the leave does not")
+            {
+                // Spec MUST: join_rules only for join, invite or knock.
+                REQUIRE(names_join_rules(bob_join));
+                REQUIRE_FALSE(names_join_rules(bob_leave));
+            }
+        }
+
+        WHEN("Alice bans Bob")
+        {
+            REQUIRE(merovingian::homeserver::handle_client_server_request(
+                        started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/ban", alice,
+                                          R"({"user_id":"@bob:example.org"})"})
+                        .response.status == 200U);
+            auto const bob_ban = current_membership_event(store, room_id, "@bob:example.org");
+
+            THEN("the ban does not name m.room.join_rules")
+            {
+                // Spec MUST: join_rules only for join, invite or knock.
+                REQUIRE_FALSE(names_join_rules(bob_ban));
+            }
+        }
+    }
+}
+
 // Spec: Matrix Client-Server API v1.19
 // Endpoint: POST /_matrix/client/v3/createRoom, room_version
 // URL: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3createroom
