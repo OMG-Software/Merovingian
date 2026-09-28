@@ -1564,9 +1564,11 @@ namespace
             {
                 tmpl.membership = "knock";
             }
-            // Populate auth_events: m.room.join_rules, m.room.power_levels, and
-            // the joining user's current membership (e.g. their invite event).
-            // For room versions < 12, m.room.create is also included per spec.
+            // Populate auth_events: m.room.power_levels, the user's current
+            // membership (e.g. their invite event), and m.room.join_rules for a
+            // join or knock only — auth events selection names join_rules for
+            // join, invite and knock, and auth rule 3.2 rejects a leave that
+            // carries it. For room versions < 12, m.room.create is also included.
             // In room version 12 (MSC4291 / create_event_is_room_id) the create
             // event is the room ID itself and MUST NOT appear in any event's
             // auth_events — Synapse asserts this and crashes with 500 if it does.
@@ -1579,7 +1581,8 @@ namespace
                     continue;
                 }
                 if ((include_create_in_auth && s.event_type == "m.room.create") ||
-                    s.event_type == "m.room.join_rules" || s.event_type == "m.room.power_levels" ||
+                    (s.event_type == "m.room.join_rules" && tmpl.membership != "leave") ||
+                    s.event_type == "m.room.power_levels" ||
                     (s.event_type == "m.room.member" && s.state_key == user_id))
                 {
                     tmpl.auth_events.push_back(s.event_id);
