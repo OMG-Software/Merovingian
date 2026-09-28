@@ -11,6 +11,7 @@
 #include <string_view>
 #include <vector>
 
+#include <merovingian/database/migration.hpp>
 #include <merovingian/database/persistent_store.hpp>
 #include <merovingian/database/postgresql_store.hpp>
 #include <merovingian/database/schema.hpp>
@@ -1039,6 +1040,13 @@ namespace
 // apply. Migrations are not written idempotently, so the column migration 14
 // adds is dropped alongside its schema_migrations row; re-applying the
 // migration is what restores both.
+// Leaves exactly the newest migration pending: runs that migration's own
+// downgrade step from the catalog and forgets its row. Undoing an older one
+// (this used to hard-code version 14) leaves a gap that the planner rightly
+// refuses ("migration versions must be contiguous") once newer migrations
+// exist, and the damaged schema then fails every later scenario. Idempotent:
+// Catch2 re-runs a WHEN once per leaf section, so a second call must find the
+// migration already pending rather than undo it twice.
 [[nodiscard]] auto make_migration_pending(std::string_view uri) -> bool
 {
     auto connection = merovingian::database::open_postgresql_connection(uri);
@@ -1046,11 +1054,37 @@ namespace
     {
         return false;
     }
-    auto const dropped = connection.connection.execute(
-        {"drop_deactivated_column", "ALTER TABLE users DROP COLUMN IF EXISTS deactivated", {}});
+    auto const newest = merovingian::database::current_schema_version();
+    auto const newest_row = connection.connection.execute(
+        {"newest_migration_row",
+         "SELECT count(*) FROM schema_migrations WHERE version = '" + std::to_string(newest) + "'",
+         {}});
+    if (!newest_row.ok || newest_row.rows.size() != 1U || newest_row.rows.front().empty())
+    {
+        return false;
+    }
+    if (newest_row.rows.front().front() == "0")
+    {
+        return true;
+    }
+    auto const downgrades = merovingian::database::downgrade_migration_catalog();
+    auto const undo = std::ranges::find_if(downgrades, [newest](merovingian::database::MigrationStep const& step) {
+        return step.version + 1U == newest;
+    });
+    if (undo == downgrades.end())
+    {
+        return false;
+    }
+    for (auto const& statement : undo->statements)
+    {
+        if (!connection.connection.execute(statement).ok)
+        {
+            return false;
+        }
+    }
     auto const removed = connection.connection.execute(
-        {"forget_migration_row", "DELETE FROM schema_migrations WHERE version = '14'", {}});
-    return dropped.ok && removed.ok;
+        {"forget_migration_row", "DELETE FROM schema_migrations WHERE version = '" + std::to_string(newest) + "'", {}});
+    return removed.ok;
 }
 
 } // namespace
