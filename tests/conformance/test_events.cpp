@@ -35,6 +35,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -1650,6 +1651,63 @@ SCENARIO("Reference hash event ID uses URL-safe base64", "[events][signing][fede
                 REQUIRE(encoded.find('+') == std::string::npos);
                 REQUIRE(encoded.find('/') == std::string::npos);
                 REQUIRE(encoded.find('=') == std::string::npos);
+            }
+        }
+    }
+}
+
+// Spec: Matrix Room Version 3, "Event IDs"; Room Version 4, "Event IDs"
+// URL: ../../docs/matrix-v1.19-spec/rooms/v3.md
+// URL: ../../docs/matrix-v1.19-spec/rooms/v4.md
+//
+// v3: "The event ID is the reference hash of the event encoded using Unpadded
+// Base64, prefixed with $." v4 is "the same as room version 3, however using
+// URL-safe base64 to generate the event ID." v3 and v4 share the redaction
+// algorithm, so the same event has the same reference hash in both; only the
+// alphabet differs ('+' and '/' in v3, '-' and '_' from v4).
+SCENARIO("Room version 3 event IDs use standard unpadded base64; version 4 and later use URL-safe",
+         "[events][event-id][conformance][v3_event_id]")
+{
+    GIVEN("an event whose reference hash needs a character outside the shared base64 alphabet")
+    {
+        auto const* v3 = merovingian::rooms::find_room_version_policy("3");
+        auto const* v4 = merovingian::rooms::find_room_version_policy("4");
+        REQUIRE(v3 != nullptr);
+        REQUIRE(v4 != nullptr);
+
+        // Vary the body until the v4 ID contains '-' or '_', so the two
+        // alphabets must give different strings.
+        auto v3_id = std::string{};
+        auto v4_id = std::string{};
+        for (auto attempt = 0; attempt < 64; ++attempt)
+        {
+            auto const json = std::string{R"({"auth_events":[],"content":{"body":"b)"} + std::to_string(attempt) +
+                              R"(","msgtype":"m.text"},"depth":2,"hashes":{"sha256":"aGFzaA"},)"
+                              R"("origin_server_ts":1,"prev_events":[],"room_id":"!r:example.org",)"
+                              R"("sender":"@a:example.org","type":"m.room.message"})";
+            auto const parsed = merovingian::canonicaljson::parse_lossless(json);
+            REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+            v4_id = merovingian::events::make_reference_hash_event_id(parsed.value, *v4).event_id;
+            v3_id = merovingian::events::make_reference_hash_event_id(parsed.value, *v3).event_id;
+            if (v4_id.find_first_of("-_") != std::string::npos)
+            {
+                break;
+            }
+        }
+        REQUIRE(v4_id.find_first_of("-_") != std::string::npos);
+
+        WHEN("the two IDs are compared")
+        {
+            auto expected_v3 = v4_id;
+            std::ranges::replace(expected_v3, '-', '+');
+            std::ranges::replace(expected_v3, '_', '/');
+
+            THEN("the v3 ID is the same hash in the standard alphabet")
+            {
+                // Spec MUST: v3 uses Unpadded Base64 (standard alphabet).
+                REQUIRE(v3_id == expected_v3);
+                // Spec MUST: v4 uses URL-safe base64.
+                REQUIRE(v4_id.find_first_of("+/") == std::string::npos);
             }
         }
     }
