@@ -42,6 +42,34 @@ namespace
         return {core::FileDescriptor{fds[0]}, core::FileDescriptor{fds[1]}};
     }
 
+    // Moves `fd` above every fixed child fd number in `reserved` when it sits
+    // on one of them, keeping it close-on-exec. A source already on a
+    // posix_spawn_file_actions_adddup2 target would either be clobbered before
+    // its own dup2 runs or, if it is that dup2's own target, become a same-fd
+    // dup2 — which some libcs treat as a no-op that leaves FD_CLOEXEC set.
+    // Relocating past the highest reserved number places it above all of them,
+    // since fd allocation is contiguous from the lowest available number.
+    [[nodiscard]] auto relocate_off_reserved_fds(core::FileDescriptor fd, std::span<int const> reserved,
+                                                 char const* what) -> core::FileDescriptor
+    {
+        if (std::ranges::none_of(reserved, [&fd](int number) {
+                return fd.get() == number;
+            }))
+        {
+            return fd;
+        }
+        auto const highest_reserved = *std::ranges::max_element(reserved);
+        auto const relocated = ::fcntl(fd.get(), F_DUPFD_CLOEXEC, highest_reserved + 1);
+        if (relocated < 0)
+        {
+            throw std::runtime_error{std::string{"ipc: failed to relocate "} + what + ": " + ::strerror(errno)};
+        }
+        fd.reset(relocated);
+        return fd;
+    }
+
+    constexpr auto worker_fixed_fds = std::array<int, 3>{kWorkerIpcFd, kWorkerIpcKeyFd, kWorkerDbUriFd};
+
 } // namespace
 
 WorkerSupervisor::WorkerSupervisor(std::string worker_path, std::string config_path,
@@ -81,31 +109,11 @@ auto make_worker_secret_pipe(std::span<std::uint8_t const> secret, std::span<int
     {
         throw std::runtime_error{"ipc: failed to create worker secret pipe: " + std::string{::strerror(errno)}};
     }
-    auto read_end = core::FileDescriptor{secret_fds[0]};
+    // Keep the read end off every reserved (fixed child) fd number, or the
+    // worker could lose the secret (see relocate_off_reserved_fds).
+    auto read_end =
+        relocate_off_reserved_fds(core::FileDescriptor{secret_fds[0]}, reserved_fds, "worker secret pipe fd");
     auto write_end = core::FileDescriptor{secret_fds[1]};
-
-    // Keep the read end off every reserved (fixed child) fd number. Landing
-    // on one that a later adddup2 targets would either be clobbered before
-    // its own dup2 runs, or — if it happens to already be the same fd the
-    // caller's own adddup2 targets — become a same-fd dup2, which some libcs
-    // treat as a no-op that leaves FD_CLOEXEC set, so the worker would lose
-    // the secret. Relocating unconditionally past the highest reserved fd
-    // places it strictly above every one of them, since fd allocation is
-    // contiguous from the lowest available number.
-    auto const needs_relocation = std::ranges::any_of(reserved_fds, [&read_end](int reserved) {
-        return read_end.get() == reserved;
-    });
-    if (needs_relocation)
-    {
-        auto const highest_reserved = *std::ranges::max_element(reserved_fds);
-        auto const relocated = ::fcntl(read_end.get(), F_DUPFD_CLOEXEC, highest_reserved + 1);
-        if (relocated < 0)
-        {
-            throw std::runtime_error{"ipc: failed to relocate worker secret pipe fd: " +
-                                     std::string{::strerror(errno)}};
-        }
-        read_end.reset(relocated);
-    }
 
     // Auth keys and connection URIs are both far below PIPE_BUF, so this
     // write never blocks on an unread pipe; the loop only covers EINTR and
@@ -132,7 +140,10 @@ auto make_worker_secret_pipe(std::span<std::uint8_t const> secret, std::span<int
 
 auto make_worker_ipc_socketpair() -> std::pair<core::FileDescriptor, core::FileDescriptor>
 {
-    return make_ipc_socketpair();
+    auto [server, client] = make_ipc_socketpair();
+    // 0.12.13 audit item 8: with stdin closed the pair is fds 0 and 3, and the
+    // child's end on kWorkerIpcFd would make its adddup2 a same-fd dup2.
+    return {std::move(server), relocate_off_reserved_fds(std::move(client), worker_fixed_fds, "worker IPC socket fd")};
 }
 
 auto make_worker_key_pipe(std::span<std::uint8_t const> key) -> core::FileDescriptor
@@ -347,7 +358,7 @@ auto WorkerSupervisor::spawn_and_connect() -> void
             "ipc: worker IPC auth key material is missing or the wrong size; cannot authenticate worker IPC channel"};
     }
 
-    auto [server_fd, client_fd] = make_ipc_socketpair();
+    auto [server_fd, client_fd] = make_worker_ipc_socketpair();
 
     // Hand the already-derived auth key to the worker over a second inherited
     // fd (finding N1): the worker must never open the master key file itself,
