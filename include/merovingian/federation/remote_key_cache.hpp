@@ -66,13 +66,11 @@ class CachedServerDiscovery;
 // before expiry so verifications never trip on a key that is about to expire.
 [[nodiscard]] auto remote_key_needs_refresh(std::uint64_t valid_until_ts, std::uint64_t now_ts) noexcept -> bool;
 
-// Persists every verify key in the response under
-// `database::PersistentServerSigningKey`. Returns false if any single key
-// fails to persist; the caller is expected to log and continue.
-[[nodiscard]] auto cache_remote_server_keys(database::PersistentStore& store, RemoteKeyResponse const& response)
-    -> bool;
-
-// As above, for a response fetched at `fetched_at_ms`.
+// Persists every verify key in the response, fetched at `fetched_at_ms`, under
+// `database::PersistentServerSigningKey`. Each key's valid_until_ts is stored
+// as the lesser of the published value and `fetched_at_ms` + 7 days
+// (rooms/v5.md, "Signing key validity period"). Returns false if any single
+// key fails to persist; the caller is expected to log and continue.
 [[nodiscard]] auto cache_remote_server_keys(database::PersistentStore& store, RemoteKeyResponse const& response,
                                             std::uint64_t fetched_at_ms) -> bool;
 

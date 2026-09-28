@@ -2911,7 +2911,7 @@ namespace
             return false;
         }
         auto const signature_decision =
-            federation::authorize_federation_pdu(pdu, std::string{sender_domain}, remote->signing_key, 0U);
+            federation::authorize_federation_pdu(pdu, std::string{sender_domain}, remote->signing_key);
         if (!signature_decision.accepted)
         {
             return false;

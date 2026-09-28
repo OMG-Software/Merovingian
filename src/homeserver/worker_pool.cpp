@@ -684,10 +684,7 @@ namespace
         }();
         auto const key = remote.has_value() ? std::optional<federation::FederationKeyRecord>{remote->signing_key}
                                             : std::optional<federation::FederationKeyRecord>{};
-        auto const now_ms = static_cast<std::uint64_t>(
-            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
-                .count());
-        auto const decision = federation::authorize_federation_pdu(pdu, sender_server, key, now_ms);
+        auto const decision = federation::authorize_federation_pdu(pdu, sender_server, key);
         if (!decision.accepted)
         {
             return {{}, "relayed event failed signature verification: " + decision.reason};

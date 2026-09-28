@@ -93,6 +93,11 @@ struct RoomVersionPolicy final
     //                             v8 keeps only "membership").
     bool redaction_keeps_aliases{false};
     bool redaction_keeps_join_authorisation{false};
+    // Room versions 1-4 ignore a signing key's valid_until_ts when checking an
+    // event's signatures. From v5 the key MUST still be valid at the event's
+    // origin_server_ts (rooms/v5.md, "Signing key validity period"). Off by
+    // default, so a version that forgets to set it enforces the check.
+    bool ignores_key_validity{false};
 };
 
 [[nodiscard]] auto known_room_versions() -> std::vector<RoomVersionPolicy>;

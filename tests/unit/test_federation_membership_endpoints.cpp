@@ -39,7 +39,8 @@ namespace
 {
     auto remote = merovingian::federation::FederationRemoteRuntime{};
     remote.server_name = origin;
-    remote.signing_key = {origin, key_id, 2000U, merovingian::federation::test::keypair_from_seed(key_seed).public_key};
+    remote.signing_key = {origin, key_id, 4'102'444'800'000U,
+                          merovingian::federation::test::keypair_from_seed(key_seed).public_key};
     remote.discovery.server_name = origin;
     remote.discovery.well_known_host = origin;
     remote.discovery.resolved_host = origin;
@@ -677,39 +678,42 @@ SCENARIO("Send_join auth_chain contains only state events", "[federation][member
 // honour an arbitrarily large value. The parser handed the raw parsed value
 // straight to the injected BackfillProvider, so a remote could ask for the
 // whole room in a single request. The parser now clamps it server-side.
-SCENARIO(
-    "Backfill query parser clamps an oversized limit to the server maximum",
-    "[federation][backfill][routing][security]") {
-  GIVEN("backfill queries carrying zero, in-range, boundary, and oversized "
-        "limits") {
-    WHEN("each is parsed") {
-      auto const zero = merovingian::federation::parse_backfill_query(
-          "/_matrix/federation/v1/backfill/!room:example.org?v=$e1&limit=0");
-      auto const in_range = merovingian::federation::parse_backfill_query(
-          "/_matrix/federation/v1/backfill/!room:example.org?v=$e1&limit=50");
-      auto const at_maximum = merovingian::federation::parse_backfill_query(
-          "/_matrix/federation/v1/backfill/!room:example.org?v=$e1&limit=100");
-      auto const oversized = merovingian::federation::parse_backfill_query(
-          "/_matrix/federation/v1/backfill/"
-          "!room:example.org?v=$e1&limit=999999");
-      auto const enormous = merovingian::federation::parse_backfill_query(
-          "/_matrix/federation/v1/backfill/"
-          "!room:example.org?v=$e1&limit=18446744073709551615");
+SCENARIO("Backfill query parser clamps an oversized limit to the server maximum",
+         "[federation][backfill][routing][security]")
+{
+    GIVEN("backfill queries carrying zero, in-range, boundary, and oversized "
+          "limits")
+    {
+        WHEN("each is parsed")
+        {
+            auto const zero = merovingian::federation::parse_backfill_query(
+                "/_matrix/federation/v1/backfill/!room:example.org?v=$e1&limit=0");
+            auto const in_range = merovingian::federation::parse_backfill_query(
+                "/_matrix/federation/v1/backfill/!room:example.org?v=$e1&limit=50");
+            auto const at_maximum = merovingian::federation::parse_backfill_query(
+                "/_matrix/federation/v1/backfill/!room:example.org?v=$e1&limit=100");
+            auto const oversized =
+                merovingian::federation::parse_backfill_query("/_matrix/federation/v1/backfill/"
+                                                              "!room:example.org?v=$e1&limit=999999");
+            auto const enormous =
+                merovingian::federation::parse_backfill_query("/_matrix/federation/v1/backfill/"
+                                                              "!room:example.org?v=$e1&limit=18446744073709551615");
 
-      THEN("in-range limits pass through and anything above the maximum is "
-           "clamped") {
-        REQUIRE(zero.has_value());
-        REQUIRE(zero->limit == 0U);
-        REQUIRE(in_range.has_value());
-        REQUIRE(in_range->limit == 50U);
-        REQUIRE(at_maximum.has_value());
-        REQUIRE(at_maximum->limit == 100U);
-        // The provider must never see an unbounded request count.
-        REQUIRE(oversized.has_value());
-        REQUIRE(oversized->limit == 100U);
-        REQUIRE(enormous.has_value());
-        REQUIRE(enormous->limit == 100U);
-      }
+            THEN("in-range limits pass through and anything above the maximum is "
+                 "clamped")
+            {
+                REQUIRE(zero.has_value());
+                REQUIRE(zero->limit == 0U);
+                REQUIRE(in_range.has_value());
+                REQUIRE(in_range->limit == 50U);
+                REQUIRE(at_maximum.has_value());
+                REQUIRE(at_maximum->limit == 100U);
+                // The provider must never see an unbounded request count.
+                REQUIRE(oversized.has_value());
+                REQUIRE(oversized->limit == 100U);
+                REQUIRE(enormous.has_value());
+                REQUIRE(enormous->limit == 100U);
+            }
+        }
     }
-  }
 }

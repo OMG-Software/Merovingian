@@ -33,6 +33,9 @@ namespace
     // Refresh slack: re-fetch when within this window of expiry so verifications
     // don't race the cutoff. Five minutes matches the federation clock-skew bound.
     auto constexpr refresh_slack_ms = std::uint64_t{5U * 60U * 1000U};
+    // rooms/v5.md, "Signing key validity period": a fetched key is trusted for
+    // at most 7 days before it must be fetched again.
+    auto constexpr max_key_trust_ms = std::uint64_t{7U * 24U * 60U * 60U * 1000U};
 
     [[nodiscard]] auto find_member(canonicaljson::Object const& object, std::string_view key) noexcept
         -> canonicaljson::Value const*
@@ -327,12 +330,18 @@ auto remote_key_needs_refresh(std::uint64_t valid_until_ts, std::uint64_t now_ts
     return (valid_until_ts - now_ts) <= refresh_slack_ms;
 }
 
-auto cache_remote_server_keys(database::PersistentStore& store, RemoteKeyResponse const& response) -> bool
+auto cache_remote_server_keys(database::PersistentStore& store, RemoteKeyResponse const& response,
+                              std::uint64_t fetched_at_ms) -> bool
 {
     if (response.server_name.empty() || response.valid_until_ts == 0U)
     {
         return false;
     }
+    // rooms/v5.md: "Servers MUST use the lesser of valid_until_ts and 7 days
+    // into the future when determining if a key is valid." Capping at the
+    // fetch forces a refetch within 7 days, so a key its owner has withdrawn
+    // stops being trusted (ADR-0075).
+    auto const valid_until_ts = std::min(response.valid_until_ts, fetched_at_ms + max_key_trust_ms);
     auto all_ok = true;
     for (auto const& verify_key : response.verify_keys)
     {
@@ -340,7 +349,7 @@ auto cache_remote_server_keys(database::PersistentStore& store, RemoteKeyRespons
             response.server_name,
             verify_key.key_id,
             verify_key.public_key_base64,
-            response.valid_until_ts,
+            valid_until_ts,
         };
         if (!database::store_server_signing_key(store, std::move(persistent)))
         {
@@ -348,13 +357,6 @@ auto cache_remote_server_keys(database::PersistentStore& store, RemoteKeyRespons
         }
     }
     return all_ok;
-}
-
-auto cache_remote_server_keys(database::PersistentStore& store, RemoteKeyResponse const& response,
-                              std::uint64_t fetched_at_ms) -> bool
-{
-    std::ignore = fetched_at_ms;
-    return cache_remote_server_keys(store, response);
 }
 
 auto find_cached_remote_key(database::PersistentStore const& store, std::string_view server_name,
@@ -489,7 +491,7 @@ namespace
                                  {"key_count",   std::to_string(fetched.response.verify_keys.size()), false},
                                  {"valid_until", std::to_string(fetched.response.valid_until_ts),     false}
                 });
-                std::ignore = cache_remote_server_keys(store, fetched.response);
+                std::ignore = cache_remote_server_keys(store, fetched.response, now);
                 auto refreshed = find_cached_remote_key(store, server_name, key_id);
                 if (refreshed.has_value() && discovery.discovery_allowed)
                 {

@@ -105,7 +105,7 @@ auto constexpr remote_key_seed = "invite-join-test-seed";
 {
     auto remote = merovingian::federation::FederationRemoteRuntime{};
     remote.server_name = remote_origin;
-    remote.signing_key = {remote_origin, remote_key_id, 2000U,
+    remote.signing_key = {remote_origin, remote_key_id, 4'102'444'800'000U,
                           merovingian::federation::test::keypair_from_seed(remote_key_seed).public_key};
     remote.discovery.server_name = remote_origin;
     remote.discovery.well_known_host = remote_origin;
@@ -182,11 +182,10 @@ auto constexpr remote_key_seed = "invite-join-test-seed";
     auto const auth_json = json_id_array(auth_events);
     auto const prev_json = json_id_array(prev_events);
 
-    auto const unsigned_json = std::string{"{\"type\":\"m.room.member\",\"room_id\":\""} + room_id +
-                               "\",\"sender\":\"" + sender + "\",\"state_key\":\"" + sender +
-                               "\",\"content\":{\"membership\":\"join\"},\"depth\":6," +
-                               "\"origin_server_ts\":2000,\"prev_events\":" + prev_json +
-                               ",\"auth_events\":" + auth_json + "}";
+    auto const unsigned_json =
+        std::string{"{\"type\":\"m.room.member\",\"room_id\":\""} + room_id + "\",\"sender\":\"" + sender +
+        "\",\"state_key\":\"" + sender + "\",\"content\":{\"membership\":\"join\"},\"depth\":6," +
+        "\"origin_server_ts\":2000,\"prev_events\":" + prev_json + ",\"auth_events\":" + auth_json + "}";
 
     return merovingian::federation::test::make_signed_event_json(unsigned_json, remote_origin, remote_key_id,
                                                                  remote_key_seed, "12");
@@ -232,9 +231,8 @@ auto plant_invite_event(merovingian::homeserver::HomeserverRuntime& runtime, std
     pdu.json =
         std::string{"{\"type\":\"m.room.member\",\"state_key\":\""} + invited_user_id +
         "\",\"content\":{\"membership\":\"invite\"},\"room_id\":\"" + room_id + "\",\"sender\":\"" + sender_user_id +
-        "\",\"event_id\":\"" + invite_event_id + "\",\"depth\":5,\"prev_events\":" +
-        json_id_array(prev_events) + ",\"auth_events\":" + json_id_array(auth_events) +
-        ",\"hashes\":{\"sha256\":\"x\"},\"origin_server_ts\":1000}";
+        "\",\"event_id\":\"" + invite_event_id + "\",\"depth\":5,\"prev_events\":" + json_id_array(prev_events) +
+        ",\"auth_events\":" + json_id_array(auth_events) + ",\"hashes\":{\"sha256\":\"x\"},\"origin_server_ts\":1000}";
     pdu.depth = 5U;
     pdu.stream_ordering = runtime.database.next_stream_ordering++;
     auto state = std::optional<database::PersistentStateEvent>{
@@ -244,8 +242,8 @@ auto plant_invite_event(merovingian::homeserver::HomeserverRuntime& runtime, std
 
     auto const state_before = homeserver::compute_state_before(store, room_id, *policy, prev_events);
     REQUIRE(state_before.ok);
-    auto const state_after = homeserver::compute_state_after(state_before.state, invite_event_id, "m.room.member",
-                                                              invited_user_id);
+    auto const state_after =
+        homeserver::compute_state_after(state_before.state, invite_event_id, "m.room.member", invited_user_id);
     auto const group = homeserver::record_event_state(store, room_id, invite_event_id, prev_events, state_after, true);
     REQUIRE(group.has_value());
     REQUIRE(homeserver::recompute_current_state(store, room_id, *policy));
@@ -423,10 +421,10 @@ SCENARIO("send_join auth_chain includes the invite event when the join PDU refer
         // This simulates what a conformant remote server (e.g. Synapse) sends
         // after receiving a make_join template with the correct auth_events.
         auto const& fixture_store = runtime.database.persistent_store;
-        auto const join_auth_ids = merovingian::tests::fixture_auth_event_ids(fixture_store, room_id, remote_user, true);
+        auto const join_auth_ids =
+            merovingian::tests::fixture_auth_event_ids(fixture_store, room_id, remote_user, true);
         auto const join_body = make_signed_join_body(
-            room_id, remote_user, join_auth_ids,
-            merovingian::tests::fixture_prev_event_ids(fixture_store, room_id));
+            room_id, remote_user, join_auth_ids, merovingian::tests::fixture_prev_event_ids(fixture_store, room_id));
 
         WHEN("the remote server calls send_join with the join PDU")
         {
@@ -722,10 +720,10 @@ SCENARIO("send_join response body includes the required members_omitted field",
 
         auto const join_event_id = std::string{"$join_eve:remote.example.org"};
         auto const& fixture_store = runtime.database.persistent_store;
-        auto const join_auth_ids = merovingian::tests::fixture_auth_event_ids(fixture_store, room_id, remote_user, true);
+        auto const join_auth_ids =
+            merovingian::tests::fixture_auth_event_ids(fixture_store, room_id, remote_user, true);
         auto const join_body = make_signed_join_body(
-            room_id, remote_user, join_auth_ids,
-            merovingian::tests::fixture_prev_event_ids(fixture_store, room_id));
+            room_id, remote_user, join_auth_ids, merovingian::tests::fixture_prev_event_ids(fixture_store, room_id));
 
         WHEN("the remote server calls send_join with omit_members=true")
         {
@@ -1153,10 +1151,10 @@ SCENARIO("send_join response includes origin, non-empty state, and non-empty aut
 
         auto const join_event_id = std::string{"$join_kate:remote.example.org"};
         auto const& fixture_store = runtime.database.persistent_store;
-        auto const join_auth_ids = merovingian::tests::fixture_auth_event_ids(fixture_store, room_id, remote_user, true);
+        auto const join_auth_ids =
+            merovingian::tests::fixture_auth_event_ids(fixture_store, room_id, remote_user, true);
         auto const join_body = make_signed_join_body(
-            room_id, remote_user, join_auth_ids,
-            merovingian::tests::fixture_prev_event_ids(fixture_store, room_id));
+            room_id, remote_user, join_auth_ids, merovingian::tests::fixture_prev_event_ids(fixture_store, room_id));
 
         WHEN("the remote server calls send_join")
         {
@@ -1238,10 +1236,10 @@ SCENARIO("send_join state array reflects pre-join room state with membership inv
 
         auto const join_event_id = std::string{"$join_liam:remote.example.org"};
         auto const& fixture_store = runtime.database.persistent_store;
-        auto const join_auth_ids = merovingian::tests::fixture_auth_event_ids(fixture_store, room_id, remote_user, true);
+        auto const join_auth_ids =
+            merovingian::tests::fixture_auth_event_ids(fixture_store, room_id, remote_user, true);
         auto const join_body = make_signed_join_body(
-            room_id, remote_user, join_auth_ids,
-            merovingian::tests::fixture_prev_event_ids(fixture_store, room_id));
+            room_id, remote_user, join_auth_ids, merovingian::tests::fixture_prev_event_ids(fixture_store, room_id));
 
         WHEN("the remote server calls send_join")
         {
@@ -1771,7 +1769,7 @@ namespace
 {
     auto remote = merovingian::federation::FederationRemoteRuntime{};
     remote.server_name = server_name;
-    remote.signing_key = {server_name, key_id, 2000U,
+    remote.signing_key = {server_name, key_id, 4'102'444'800'000U,
                           merovingian::federation::test::keypair_from_seed(seed).public_key};
     remote.discovery.server_name = server_name;
     remote.trust.reputation_score = 100U;

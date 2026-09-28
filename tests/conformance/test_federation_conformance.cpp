@@ -2687,7 +2687,7 @@ SCENARIO("authorize_federation_pdu accepts a signed member PDU for every stable 
                 pdu.json = envelope->json;
                 pdu.room_version = envelope->room_version;
 
-                auto const decision = merovingian::federation::authorize_federation_pdu(pdu, origin, key_record, 1000U);
+                auto const decision = merovingian::federation::authorize_federation_pdu(pdu, origin, key_record);
 
                 THEN("the PDU is accepted")
                 {

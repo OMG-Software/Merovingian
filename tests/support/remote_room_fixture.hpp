@@ -205,12 +205,13 @@ inline auto seed_room_with_genesis_state_group(homeserver::HomeserverRuntime& ru
                                   prev_event_ids, auth_event_ids, depth, ts, key_seed);
 }
 
-// The remote server's genuine published signing key.
+// The remote server's genuine published signing key. Valid until 2100-01-01:
+// from room v5 a key must still be valid at each event's origin_server_ts.
 [[nodiscard]] inline auto remote_runtime() -> federation::FederationRemoteRuntime
 {
     auto remote = federation::FederationRemoteRuntime{};
     remote.server_name = remote_server;
-    remote.signing_key = {remote_server, remote_key_id, 0U,
+    remote.signing_key = {remote_server, remote_key_id, 4'102'444'800'000U,
                           federation::test::keypair_from_seed(remote_key_seed).public_key};
     remote.discovery.server_name = remote_server;
     remote.trust.reputation_score = 100U;

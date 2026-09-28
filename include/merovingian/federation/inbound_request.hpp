@@ -396,17 +396,15 @@ auto upsert_remote(FederationRuntimeState& runtime, FederationRemoteRuntime remo
     -> bool;
 [[nodiscard]] auto authorize_federation_pdu(FederationPdu const& pdu, std::string_view expected_origin)
     -> FederationDecision;
+// Verifies the sender server's signature on `pdu` with `key`. From room
+// version 5 the key must also be valid at the event's own origin_server_ts
+// (`key.valid_until_ts >= origin_server_ts`, rooms/v5.md "Signing key validity
+// period"); versions 1-4 ignore valid_until_ts. The current time plays no
+// part: a key that has expired since the event was sent still verifies it
+// (ADR-0075). How long a cached key is trusted is bounded where it is cached
+// (cache_remote_server_keys, 7 days after the fetch).
 [[nodiscard]] auto authorize_federation_pdu(FederationPdu const& pdu, std::string_view expected_origin,
                                             std::optional<FederationKeyRecord> const& key) -> FederationDecision;
-// Same as above, but additionally rejects when `key` carries a non-zero
-// `valid_until_ts` that has passed as of `now_ts`. A remote key resolver may
-// hand back a stale cached key (see remote_key_cache.cpp `cache.stale_fallback`)
-// when it cannot reach the remote to refresh; that stale key must not be used
-// to admit new PDUs. Pass `now_ts == 0` to skip the expiry check (e.g. tests
-// with no wall-clock context).
-[[nodiscard]] auto authorize_federation_pdu(FederationPdu const& pdu, std::string_view expected_origin,
-                                            std::optional<FederationKeyRecord> const& key, std::uint64_t now_ts)
-    -> FederationDecision;
 // Parses a raw PDU string (JSON or comma-delimited) into a FederationPdu.
 // When version_resolver is provided it is called with the parsed room_id to
 // determine the room version for event-ID computation; pdu.room_version is

@@ -1020,7 +1020,7 @@ namespace
             }
 
             // Signature verification (Ed25519 + key validity).
-            auto const pdu_decision = authorize_federation_pdu(pdu, request.origin, key_for_pdu, request.now_ts);
+            auto const pdu_decision = authorize_federation_pdu(pdu, request.origin, key_for_pdu);
             if (!pdu_decision.accepted)
             {
                 audit_federation(runtime, "federation.membership_rejected", request.origin, request.target,
@@ -1192,7 +1192,7 @@ namespace
             }
 
             // Signature verification.
-            auto const pdu_decision = authorize_federation_pdu(pdu, request.origin, key_for_pdu, request.now_ts);
+            auto const pdu_decision = authorize_federation_pdu(pdu, request.origin, key_for_pdu);
             if (!pdu_decision.accepted)
             {
                 audit_federation(runtime, "federation.invite_rejected", request.origin, request.target,
@@ -1945,17 +1945,11 @@ auto federation_remote_is_known(FederationRuntimeState const& runtime, std::stri
 
 auto authorize_federation_pdu(FederationPdu const& pdu, std::string_view expected_origin) -> FederationDecision
 {
-    return authorize_federation_pdu(pdu, expected_origin, std::nullopt, 0U);
-}
-
-auto authorize_federation_pdu(FederationPdu const& pdu, std::string_view expected_origin,
-                              std::optional<FederationKeyRecord> const& key) -> FederationDecision
-{
-    return authorize_federation_pdu(pdu, expected_origin, key, 0U);
+    return authorize_federation_pdu(pdu, expected_origin, std::nullopt);
 }
 
 auto authorize_federation_pdu(FederationPdu const& pdu, [[maybe_unused]] std::string_view expected_origin,
-                              std::optional<FederationKeyRecord> const& key, std::uint64_t now_ts) -> FederationDecision
+                              std::optional<FederationKeyRecord> const& key) -> FederationDecision
 {
     if (pdu.event_id.empty() || pdu.room_id.empty() || pdu.event_type.empty() || pdu.sender.empty())
     {
@@ -1982,15 +1976,6 @@ auto authorize_federation_pdu(FederationPdu const& pdu, [[maybe_unused]] std::st
     {
         return make_decision(false, 403U, "sender domain signing key unavailable");
     }
-    // Fail-closed: the remote key resolver falls back to a stale cached key when
-    // it cannot reach the remote to refresh (remote_key_cache.cpp `cache.stale_fallback`).
-    // That fallback exists so callers can distinguish "known but unreachable" from
-    // "never seen", not so a PDU can be admitted on an expired key. Reject rather
-    // than verify with a key that is known to be past its published validity.
-    if (now_ts != 0U && key->valid_until_ts != 0U && now_ts > key->valid_until_ts)
-    {
-        return make_decision(false, 403U, "sender domain signing key has expired");
-    }
     auto const room_ver = pdu.room_version.empty() ? std::string{"12"} : pdu.room_version;
     auto const* room_version = rooms::find_room_version_policy(room_ver);
     if (room_version == nullptr)
@@ -2003,6 +1988,23 @@ auto authorize_federation_pdu(FederationPdu const& pdu, [[maybe_unused]] std::st
         if (parsed.error != canonicaljson::ParseError::none)
         {
             return make_decision(false, 400U, "PDU JSON is not canonical-parseable");
+        }
+        // rooms/v5.md, "Signing key validity period": the key's
+        // valid_until_ts MUST be at least the event's origin_server_ts.
+        // Versions 1-4 ignore valid_until_ts (ADR-0075).
+        if (!room_version->ignores_key_validity)
+        {
+            auto const* root = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+            auto const* ts_value = root == nullptr ? nullptr : find_canonical_member(*root, "origin_server_ts");
+            auto const* ts = ts_value == nullptr ? nullptr : std::get_if<std::int64_t>(&ts_value->storage());
+            if (ts == nullptr || *ts < 0)
+            {
+                return make_decision(false, 400U, "PDU origin_server_ts is missing or invalid");
+            }
+            if (key->valid_until_ts < static_cast<std::uint64_t>(*ts))
+            {
+                return make_decision(false, 403U, "sender domain signing key expired before the event was sent");
+            }
         }
         auto const& public_key = key->public_key_bytes;
         auto verifier = FederationEd25519Verifier{};
@@ -2792,7 +2794,7 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
                 }
             }
         }
-        auto const pdu_decision = authorize_federation_pdu(pdu, request.origin, key_for_pdu, request.now_ts);
+        auto const pdu_decision = authorize_federation_pdu(pdu, request.origin, key_for_pdu);
         if (!pdu_decision.accepted)
         {
             ++remote.trust.consecutive_failures;
