@@ -168,13 +168,41 @@ Wired for message events and membership transitions, gated behind
 | Debug logging | `runtime-wired` | Per-module level filtering, wall-clock rate limits, and structured diagnostics with `request_id`/`trace_id`/`span_id` fields landed in 0.5.0/0.8.11. Remaining: formal log-format stability commitment. |
 | `/_merovingian/admin/accounts/{userId}`, `/_merovingian/admin/review/{targetType}/{targetId}`, `/_merovingian/admin/shutdown` | `not-started` | Declared in `observability::admin_routes()` (`src/observability/observability.cpp`) but `match_admin_route()` is never called from dispatch — `homeserver/local_http_router.cpp` handles only health, metrics, `media/metrics`, audit, and media quarantine/release/remove. These three routes are unreachable dead declarations, not live endpoints. |
 
-## OUTSTANDING (0.12.13): remaining security-audit work
+## RESOLVED (0.12.13): remaining security-audit work
 
-The remaining work on this branch — a backfill security gap and the
-unbuilt `/state_ids` fallback of ADR-0064 phase C, the per-IP connection cap,
-a user decision on worker signature re-verification, ten low items, and the
-pre-merge checklist — is written up for pickup in
-[`audit-0.12.13-handover.md`](audit-0.12.13-handover.md).
+Every item in [`audit-0.12.13-handover.md`](audit-0.12.13-handover.md) —
+the backfill fallback and its ADR-0070 tightening, main re-verifying relayed
+PDU signatures (ADR-0071), the per-IP connection cap, and the eleven low items
+with the listener-test flake — is finished; see the `CHANGELOG.md` 0.12.13
+section. Only D3 (below) was deferred.
+
+## OPEN (found on the 0.12.13 branch, not fixed there)
+
+Receipt checks (server-server-api.md, "Validating hashes and signatures on
+received events"):
+
+* **Room versions 1 and 2:** the spec also requires a signature from the
+  domain in the `event_id` when it differs from the sender's server.
+  `federation::authorize_federation_pdu` checks the sender's server only. This
+  sits with the unimplemented v1/v2 event-ID format noted in the "Rooms,
+  events, and sync" row above.
+* **Key validity against `origin_server_ts`:** "any keys that are known to
+  have expired prior to the event's `origin_server_ts` are ignored" (and
+  `valid_until_ts` MUST be ignored for room versions 1 to 4).
+  `authorize_federation_pdu` compares `valid_until_ts` with a caller-supplied
+  `now_ts`, and the backfill caller passes 0, which skips the check.
+
+Backfill (`src/homeserver/local_http_router.cpp`):
+
+* A `GET /_matrix/federation/v1/event/{eventId}` response is not checked to be
+  the requested event before it is verified and stored.
+* `verify_and_store_backfilled_event` returns "stored" without verifying when
+  the JSON's raw `event_id` field names an event already in the store. Nothing
+  is written on that path, but the raw field is origin-controlled and differs
+  from the reference-hash ID in room versions 3 and later.
+
+Dead code: `events::select_auth_events` and the `AuthChain` helpers are used
+only by tests.
 
 ## DEFERRED: drop the unused `state_group_edges` table
 

@@ -4,11 +4,9 @@
 **Written:** 2026-09-27. The session that produced this work has ended; nobody
 from it is available to answer questions. This file is the complete record.
 
-**Verified state at handover** (full run 2026-09-26, read from
-`build-wsl/meson-logs/testlog.txt`): `Ok: 54`, `Fail: 0`, no timeouts.
-`[backfill]` passes 5 unit, 11 integration and 5 conformance cases. Working
-tree clean. 91 commits ahead of `origin/main`. `meson.build` still says
-`0.12.12` — the version bump is part of "Before merge".
+**State:** every remaining item below is finished and the version is bumped
+to `0.12.13` (2026-09-28). The final full run and the pull request are left; see
+"Before merge".
 
 **No pull request has been opened.**
 
@@ -213,117 +211,24 @@ Every one of these cost real time here.
 
 ---
 
-## Remaining work, in recommended order
+## Remaining work
 
-### 1 (medium): no per-IP connection cap
+None. Items 1 to 11 and the pre-existing listener flake were finished on this
+branch on 2026-09-27 and 2026-09-28; each is described, with its tests, in the
+`CHANGELOG.md` 0.12.13 section, so their write-ups were removed from this
+file. D3 stays deferred (see `docs/todos/capability-gaps.md`).
 
-Connection admission is bounded only by a global queue depth and a global
-parked keep-alive cap. One host can open connections just below the slowloris
-thresholds, fill the global budget and lock everyone else out; the per-IP rate
-limiter only runs after a request is parsed.
-
-Where: `src/net/thread_pool.cpp`, the accept loops
-(`src/homeserver/http_server.cpp`, `src/net/`), and `effective_client_ip` in
-`src/homeserver/local_http_router.cpp` for how the client address is derived.
-At accept time you see the peer address, which is the proxy's when a reverse
-proxy is in front — handle that deliberately, document it, and make the cap
-configurable (classified in `src/config/reload_policy.cpp` /
-`reload_plan.cpp`). Group IPv6 by /64, sharing code with item 3. Release the
-slot with an RAII guard.
-
-Tests: connections from one address beyond the cap are refused while another
-address still connects; closing frees a slot; error paths cannot leak a slot.
-Concurrency scenarios must assert on the main thread only — Catch2 assertions
-are not thread-safe.
-
-### 2 (low): `knock_restricted` rejected on the direct-join path
-
-`src/events/authorization.cpp` accepts only `restricted` and `restricted_v2`
-on the join path. Spec rooms/v10.md rule 5.5: "If the `join_rule` is
-`restricted` or `knock_restricted`". Fails closed, so legitimate joins are
-refused. Add a conformance test citing the rule.
-
-### 3 (low): `m.room.aliases` redaction wrong for room versions 6 and 7
-
-`src/events/redaction.cpp` keeps `aliases` for every version before v11.
-rooms/v6.md removed `m.room.aliases` from the redaction algorithm, so for v6
-and v7 the content must be stripped to `{}`. Otherwise our redacted form, and
-therefore the reference hash, differs from other servers'. The `room_v1_v7`
-bucket is coarser than the spec here. Conformance tests for v5 (keeps
-`aliases`), v6 and v7 (strip).
-
-### 4 (low): IPv6 clients can escape rate limits within one /64
-
-Rate-limit buckets use the literal client address (`effective_client_ip`).
-Group IPv6 by /64 with a configurable prefix. Tests: two addresses in one /64
-share a bucket; different /64s do not; IPv4 unchanged.
-
-### 5 (low): user directory search returns deactivated users
-
-`POST /_matrix/client/v3/user_directory/search` in
-`src/homeserver/client_server.cpp`. Exclude deactivated accounts. Returning
-every local user is allowed by the spec, so do not change that without asking.
-
-### 6 (low): no refresh-token reuse detection
-
-`refresh_local_session`, `src/homeserver/auth_service.cpp`. When an
-already-rotated refresh token is presented again, revoke the whole session
-lineage. Not a spec requirement; defence in depth.
-
-### 7 (low): dead authorization code
-
-`membership_policy_allows` and `authorize_event` in
-`src/events/authorization.cpp` have no production callers and look wrong for
-ban and knock. Confirm with `grep`, then delete them and their tests rather
-than fixing them.
-
-### 8 (low, reliability): the worker can start without its IPC fd
-
-`src/homeserver/worker_supervisor.cpp` does
-`adddup2(client_fd, kWorkerIpcFd)`. If the socketpair returns
-`client_fd == 3`, that is a same-fd `dup2`, which some libcs treat as a no-op
-that leaves `FD_CLOEXEC` set, so the worker starts with no IPC socket.
-Relocate the fd off the fixed numbers first, as `make_worker_secret_pipe`
-does.
-
-### 9 (low): backfill processes fetched events in response order
-
-`backfill_missing_pdu_references` handles `/get_missing_events` results in the
-order the remote returned them. A child arriving before its parent has no
-state-before yet and is dropped: safe, but it wastes usable events. Sort by
-`depth` ascending before verifying and storing.
-
-### 10 (low, project rule): raw pointer in the IPC in-flight guard
-
-`struct InFlightGuard` in `src/homeserver/worker_pool.cpp` stores
-`ipc::IpcChannel*`. Safe as written (the captured `shared_ptr` keeps the
-channel alive) but it breaks "no raw pointers, prefer references". Make it a
-reference member.
-
-### 11 (low, cosmetic): underscores in `docs/hardening.md`
-
-Headings and text read "Cross_platform", "Build_time",
-"Position_independent" and similar, from an old find-and-replace. Replace with
-hyphens and check no link anchor depends on the old spelling. This one also
-exists on `main`.
-
-### Pre-existing flake (not caused by this branch)
-
-`tests/integration/test_http_server_listener_flow.cpp` asserts `FD_CLOEXEC` on
-an accepted socket it locates by scanning `/proc/self/fd` for a matching port;
-under parallel load it can match a different descriptor. It passes when run
-alone. Match on the socket's full local and peer address instead.
+Found while doing them and not fixed here (tracked in
+`docs/todos/capability-gaps.md`, "OPEN (found on the 0.12.13 branch)"):
+receipt-check gaps for room versions 1 and 2 and for key validity, `/event/{id}`
+responses not checked against the requested ID, the raw-`event_id` shortcut
+in backfill, and dead `select_auth_events` / `AuthChain` helpers.
 
 ## Before merge
 
-1. Resolve D1 (and ideally D2 and D3) with the user.
-2. Bump the version to `0.12.13` everywhere `docs/versioning.md` lists
-   (`meson.build` still says `0.12.12`). The bump happens once per branch, at
-   merge time.
-3. Make sure the `CHANGELOG.md` 0.12.13 section covers every item finished,
-   and remove resolved entries from this file and from
-   `docs/todos/capability-gaps.md`.
-4. Run the full suite one last time and read the counts.
-5. Open the pull request with the headings `AGENTS.md` requires: Summary, What
+Steps 1 to 3 (decisions, version bump, CHANGELOG and todo clean-up) are
+done. What is left:
+
+1. Open the pull request with the headings `AGENTS.md` requires: Summary, What
    changed, Why it changed, CI tests (modified tests and new tests listed
    separately).
