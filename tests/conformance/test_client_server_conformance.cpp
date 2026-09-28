@@ -7999,6 +7999,25 @@ SCENARIO("Locally created membership events name m.room.join_rules only for join
                 REQUIRE(names_join_rules(bob_join));
                 REQUIRE_FALSE(names_join_rules(bob_leave));
             }
+
+            THEN("neither names the room v12 create event")
+            {
+                // rooms/v12.md: "The m.room.create event MUST NOT be selected
+                // for auth_events on events."
+                auto const create = std::ranges::find_if(store.state, [&](auto const& s) {
+                    return s.room_id == room_id && s.event_type == "m.room.create";
+                });
+                REQUIRE(create != store.state.end());
+                for (auto const* event : {&bob_join, &bob_leave})
+                {
+                    auto const* auth_events = object_member_as_array(*event, "auth_events");
+                    REQUIRE(auth_events != nullptr);
+                    REQUIRE(std::ranges::none_of(*auth_events, [&](merovingian::canonicaljson::Value const& id) {
+                        auto const* text = std::get_if<std::string>(&id.storage());
+                        return text != nullptr && *text == create->event_id;
+                    }));
+                }
+            }
         }
 
         WHEN("Alice bans Bob")
@@ -9385,6 +9404,42 @@ SCENARIO("POST /rooms/{roomId}/join accepts a valid third_party_signed join",
                 auto const* rid = string_member(body, "room_id");
                 REQUIRE(rid != nullptr);
                 REQUIRE(*rid == room_id);
+            }
+
+            // Spec (server-server-api.md, Auth events selection): for an invite
+            // whose content has third_party_invite, "the current
+            // m.room.third_party_invite event with state_key matching
+            // content.third_party_invite.signed.token".
+            THEN("the invite it created names the matching m.room.third_party_invite in auth_events")
+            {
+                REQUIRE(response.response.status == 200U);
+                auto const& store = started.runtime.homeserver.database.persistent_store;
+                auto const third_party_invite = std::ranges::find_if(store.state, [&](auto const& s) {
+                    return s.room_id == room_id && s.event_type == "m.room.third_party_invite" &&
+                           s.state_key == invite_token;
+                });
+                REQUIRE(third_party_invite != store.state.end());
+                auto const invite = std::ranges::find_if(store.events, [&](auto const& e) {
+                    if (e.room_id != room_id)
+                    {
+                        return false;
+                    }
+                    auto const event = parse_object(e.json);
+                    auto const* type = string_member(event, "type");
+                    auto const* state_key = string_member(event, "state_key");
+                    auto const* content = object_member_as_object(event, "content");
+                    auto const* membership = content == nullptr ? nullptr : string_member(*content, "membership");
+                    return type != nullptr && *type == "m.room.member" && state_key != nullptr &&
+                           *state_key == "@bob:example.org" && membership != nullptr && *membership == "invite";
+                });
+                REQUIRE(invite != store.events.end());
+                auto const invite_event = parse_object(invite->json);
+                auto const* auth_events = object_member_as_array(invite_event, "auth_events");
+                REQUIRE(auth_events != nullptr);
+                REQUIRE(std::ranges::any_of(*auth_events, [&](merovingian::canonicaljson::Value const& id) {
+                    auto const* text = std::get_if<std::string>(&id.storage());
+                    return text != nullptr && *text == third_party_invite->event_id;
+                }));
             }
         }
     }
