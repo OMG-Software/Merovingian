@@ -815,6 +815,95 @@ SCENARIO("Backfill stores a /get_missing_events child that the remote lists befo
 }
 
 // Spec: Matrix Server-Server API v1.19
+// Endpoint / Section: GET /_matrix/federation/v1/event/{eventId}
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#get_matrixfederationv1eventeventid
+//
+// "Retrieves a single event." The response is the origin's claim to be the
+// requested event; an event with another ID answers a question nobody asked
+// and must not be stored as if it did (it could be anything the origin wants
+// pulled into this server's store).
+SCENARIO("Backfill drops an /event/{eventId} response that is not the requested event",
+         "[pdu_ingestion][backfill][event_id_mismatch]")
+{
+    GIVEN("a fresh runtime seeded with a room genesis state group")
+    {
+        auto const path = unique_sqlite_path();
+        std::filesystem::remove(path);
+        auto started = merovingian::homeserver::start_runtime(config_with_sqlite(path));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+
+        auto const room_id = std::string{"!backfill-event-id-mismatch:local.example.org"};
+        seed_room_with_genesis_state_group(runtime, room_id);
+        auto const create_id = room_id + ":create";
+        auto const pl_id = room_id + ":pl";
+        auto const member_id = room_id + ":member";
+        auto const member_bob_id = room_id + ":member:bob";
+        auto const auth_event_ids = std::vector<std::string>{create_id, pl_id, member_bob_id};
+
+        auto const missing = make_remote_message_pdu(room_id, {member_id}, auth_event_ids, 3, 10);
+        auto const substitute = make_remote_message_pdu(room_id, {member_id}, auth_event_ids, 3, 11);
+        REQUIRE(substitute.event_id != missing.event_id);
+        auto const pdu = make_remote_message_pdu(room_id, {missing.event_id}, auth_event_ids, 4, 20);
+
+        AND_GIVEN("a sending server that answers /event/{missing} with a different, validly signed event")
+        {
+            auto certificate = merovingian::tests::tls_mock::write_test_tls_certificate("localhost");
+            auto tls_context_result = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
+                                                                                       certificate.private_key_file);
+            REQUIRE(tls_context_result.ok());
+            auto tls_context = std::move(*tls_context_result.context);
+            auto acceptor = merovingian::net::TcpAcceptor{};
+            REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+            auto const port = acceptor.bound_port();
+            REQUIRE(port > 0U);
+
+            runtime.test_forced_outbound_resolution[remote_server] =
+                merovingian::homeserver::TestOnlyForcedOutboundResolution{
+                    "localhost", port, {"127.0.0.1"}, certificate.certificate_pem};
+            runtime.federation.remote_key_resolver = genuine_key_resolver();
+
+            auto const not_found = merovingian::tests::tls_mock::json_http_response(
+                "404 Not Found", R"({"errcode":"M_NOT_FOUND","error":"not found"})");
+            auto const responses = std::vector<std::pair<std::string, std::string>>{
+                {"POST /_matrix/federation/v1/get_missing_events/",
+                 merovingian::tests::tls_mock::json_http_response("200 OK", make_empty_get_missing_events_response())},
+                {"GET /_matrix/federation/v1/event/",
+                 merovingian::tests::tls_mock::json_http_response(
+                     "200 OK", make_event_transaction_response(substitute.json, std::string{remote_server}))},
+                {"GET /_matrix/federation/v1/state_ids/", not_found},
+            };
+            auto server_thread = std::thread{[&]() {
+                run_body_aware_dispatch_tls_server(acceptor, tls_context, responses, nullptr);
+            }};
+            auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
+            std::ignore = join_server;
+
+            WHEN("a PDU naming the missing event is ingested")
+            {
+                auto const result = merovingian::homeserver::ingest_pdu_event(runtime, pdu);
+
+                THEN("the substitute event is not stored")
+                {
+                    REQUIRE(std::ranges::none_of(runtime.database.persistent_store.events,
+                                                 [&](merovingian::database::PersistentEvent const& e) {
+                                                     return e.event_id == substitute.event_id;
+                                                 }));
+                }
+
+                THEN("the PDU is not accepted, its prev_event still missing")
+                {
+                    REQUIRE(result.status != PduIngestionStatus::accepted);
+                }
+            }
+
+            std::filesystem::remove(path);
+        }
+    }
+}
+
+// Spec: Matrix Server-Server API v1.19
 // Endpoint / Section: Backfilling and retrieving missing events
 // URL: ../../docs/matrix-v1.19-spec/server-server-api.md#backfilling-and-retrieving-missing-events
 //
