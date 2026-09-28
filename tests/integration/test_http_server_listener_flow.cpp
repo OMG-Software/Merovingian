@@ -114,8 +114,11 @@ auto send_all_tls(SSL& connection, std::string_view data) -> bool
 }
 
 #if defined(__linux__)
-// Finds the server-side fd for the still-open connection `client_fd` made.
-// There is no production hook that exposes the accepted fd directly, so this
+// Finds the server-side fd for the still-open connection `client_fd` made:
+// the socket whose local address is the client's peer and whose peer is the
+// client's local address, both address and port. Matching the port alone
+// found any socket in this process that happened to share it (a flake under
+// parallel load). There is no production hook that exposes the accepted fd directly, so this
 // scans the process's own fd table — reliable as long as the connection is
 // still open when called, which the caller ensures by holding the request
 // incomplete. Linux-only: relies on /proc/self/fd, which isn't guaranteed on
@@ -129,7 +132,17 @@ auto send_all_tls(SSL& connection, std::string_view data) -> bool
     {
         return -1;
     }
-    auto const client_local_port = ntohs(client_local.sin_port);
+    auto client_peer = sockaddr_in{};
+    auto client_peer_len = socklen_t{sizeof(client_peer)};
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+    if (::getpeername(client_fd, reinterpret_cast<sockaddr*>(&client_peer), &client_peer_len) != 0)
+    {
+        return -1;
+    }
+    auto const same_endpoint = [](sockaddr_in const& lhs, sockaddr_in const& rhs) {
+        return lhs.sin_family == AF_INET && rhs.sin_family == AF_INET && lhs.sin_port == rhs.sin_port &&
+               lhs.sin_addr.s_addr == rhs.sin_addr.s_addr;
+    };
     auto* dir = ::opendir("/proc/self/fd");
     if (dir == nullptr)
     {
@@ -148,14 +161,18 @@ auto send_all_tls(SSL& connection, std::string_view data) -> bool
         {
             continue;
         }
+        auto local = sockaddr_in{};
+        auto local_len = socklen_t{sizeof(local)};
         auto peer = sockaddr_in{};
         auto peer_len = socklen_t{sizeof(peer)};
         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
-        if (::getpeername(candidate, reinterpret_cast<sockaddr*>(&peer), &peer_len) != 0)
+        if (::getsockname(candidate, reinterpret_cast<sockaddr*>(&local), &local_len) != 0 ||
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+            ::getpeername(candidate, reinterpret_cast<sockaddr*>(&peer), &peer_len) != 0)
         {
             continue;
         }
-        if (peer.sin_family == AF_INET && ntohs(peer.sin_port) == client_local_port)
+        if (same_endpoint(local, client_peer) && same_endpoint(peer, client_local))
         {
             found = candidate;
             break;

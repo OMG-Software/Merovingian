@@ -109,6 +109,15 @@
   (`[event_auth_outlier]`, and the updated `[backfill][conformance]` scenario).
   See [ADR-0070](docs/adr/0070-event-auth-outliers-carry-no-state.md).
 
+- **TEST: flaky `FD_CLOEXEC` check on accepted sockets fixed.** The listener
+  integration test found the server's end of its connection by scanning
+  `/proc/self/fd` for a socket whose peer port matched, so under parallel load
+  it could inspect an unrelated socket that shared the port. It now matches
+  the full local and peer address, and the scenario plants such a lookalike
+  (a non-close-on-exec socket on a lower fd) to prove the match holds. Test:
+  `tests/integration/test_http_server_listener_flow.cpp` ("marks accepted
+  client sockets close-on-exec").
+
 - **REFACTOR: no raw pointer in the worker IPC in-flight guard (audit item
   10).** `InFlightGuard` in `src/homeserver/worker_pool.cpp` now holds an
   `ipc::IpcChannel&` instead of a pointer, per the project's no-raw-pointers
