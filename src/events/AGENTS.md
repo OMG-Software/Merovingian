@@ -18,15 +18,14 @@ Spec authority: ../../docs/matrix-v1.19-spec/server-server-api.md
 
 | Room version | Event ID format |
 |---|---|
-| v1–v2 | `$localpart:server` |
+| v1–v2 | `$localpart:server` (not supported, ADR-0076) |
 | v3+ | `$` + unpadded base64url(SHA-256(reference hash of redacted event)) |
 
 Always use `event_id.hpp` — never construct an event ID manually.
 
 `event_id.hpp` implements only the reference-hash format (`make_reference_hash_event_id()`,
-`EventIdFormat::reference_hash`). Room versions 1 and 2 are registered in
-`rooms/room_version_policy.cpp`, but their `$localpart:server` format is not implemented and
-`EventFormat::room_v1_v2` is never consumed — see `docs/todos/capability-gaps.md`.
+`EventIdFormat::reference_hash`). Room versions 1 and 2, whose `$localpart:server` format this
+is, are not supported and are absent from `rooms/room_version_policy.cpp` (ADR-0076).
 
 ## Canonical JSON is required for signing and hashing
 

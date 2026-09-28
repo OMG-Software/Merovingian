@@ -3863,10 +3863,10 @@ namespace
             candidates = cap_join_candidates(std::move(candidates), runtime.federation.config.join_max_candidates);
         }
         wire_federation_callbacks(runtime);
-        // Advertise every room version this server actually implements (v1-v12,
-        // rooms::room_version_policy.cpp — the single source of truth, enforced by
-        // tests/conformance/test_room_version_table_conformance.cpp's "MUST be able
-        // to participate in rooms of all stable versions"). A resident server picks
+        // Advertise every room version this server actually implements (v3-v12;
+        // v1 and v2 are not supported, ADR-0076). rooms::room_version_policy.cpp
+        // is the single source of truth, pinned by
+        // tests/conformance/test_room_version_table_conformance.cpp. A resident server picks
         // a room's actual version from this list and replies 400
         // M_INCOMPATIBLE_ROOM_VERSION if none match — so a hardcoded {"10","11","12"}
         // here made every join fail against any room not on those three versions,

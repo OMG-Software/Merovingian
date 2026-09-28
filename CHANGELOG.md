@@ -1,5 +1,28 @@
 ## 0.12.13
 
+- **CHANGED: room versions 1 and 2 are no longer supported (ADR-0076).** They
+  were advertised and creatable, but their event-ID format (`$localpart:domain`
+  carried in the event), the signature they require from the event ID's
+  domain, and v1's state resolution algorithm were never implemented, so every
+  v1/v2 event got a wrong event ID. Both are removed from the room version
+  registry and refused everywhere: `createRoom` answers 400
+  `M_UNSUPPORTED_ROOM_VERSION`, they are no longer in `m.room_versions` or the
+  outbound `make_join` `ver` list, and an invite into one (including a v1
+  invite for a room whose version is not known locally, which the spec says
+  implies v1 or v2) answers 400 `M_INCOMPATIBLE_ROOM_VERSION` with
+  `room_version` instead of a 500. Tests that counted twelve versions or
+  used v1 as a supported version were corrected with the user's approval; the
+  scenarios that used v1 to exercise the original auth rules now use v3, which
+  shares them. Tests: `[v1_v2_unsupported]` (conformance and unit
+  capabilities).
+
+- **FIXED: `send_join` response events were not held to the signing-key
+  validity rule (ADR-0075).** `filter_verified_send_join_events` verified
+  signatures without checking that the key was valid at each event's
+  `origin_server_ts`. Both it and `authorize_federation_pdu` now use one
+  function, `check_signing_key_valid_for_event`. Test:
+  `tests/unit/test_federation_invite_join.cpp` (`[key_validity]`).
+
 - **FIXED: event signing-key validity checked against the wrong time (MEDIUM,
   ADR-0075).** `authorize_federation_pdu` rejected a PDU when its sender's key
   had expired *now*, in every room version, and backfill skipped the check.

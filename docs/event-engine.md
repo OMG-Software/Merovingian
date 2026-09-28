@@ -23,8 +23,11 @@ Implemented now:
   checking, and provider-backed verification against the signed payload
 - runtime-created room events now receive Matrix content hashes,
   reference-hash event IDs, and Ed25519 signatures before persistence
-- room-version policy registry for all stable room versions (v1-v12) used by
-  version-aware auth, redaction, and state-resolution lookups
+- room-version policy registry for the supported stable room versions (v3-v12)
+  used by version-aware auth, redaction, and state-resolution lookups. Versions
+  1 and 2 are not supported and are refused on every path (ADR-0076): their
+  event ID travels in the event rather than being a reference hash, and was
+  never implemented
 - room-version policy shape for event format, redaction rules, auth rules, state resolution, and event ID format
 - redaction with room-version-dependent top-level and event-content key retention.
   Beyond the `RedactionRules` buckets (v1–v7, v8–v10, v11+), two

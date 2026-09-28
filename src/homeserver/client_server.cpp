@@ -11113,7 +11113,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     if (req.method == "GET" && req.target == "/_matrix/client/v3/capabilities")
     {
         // Advertise every room version rooms::room_version_policy.cpp actually
-        // implements (v1-v12), not a hardcoded subset — clients use this list to
+        // implements (v3-v12; v1 and v2 are not supported, ADR-0076), not a hardcoded subset — clients use this list to
         // decide which versions are valid for room creation/upgrade, and a stale
         // list here is the same class of bug as the outbound make_join fix:
         // claiming less support than the server actually has.
