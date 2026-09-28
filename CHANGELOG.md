@@ -109,6 +109,14 @@
   (`[event_auth_outlier]`, and the updated `[backfill][conformance]` scenario).
   See [ADR-0070](docs/adr/0070-event-auth-outliers-carry-no-state.md).
 
+- **FIXED: backfill dropped `/get_missing_events` children listed before
+  their parents (LOW, audit item 9).** A backfilled event is authorised against
+  the state before it, which needs its `prev_events` stored first, but the
+  results were handled in the order the origin sent them. They are now handled
+  in ascending `depth` order (ties keep the response order). Test:
+  `tests/integration/test_pdu_ingestion_backfill_flow.cpp`
+  (`[backfill_depth_order]`). See `docs/event-engine.md`.
+
 - **FIXED: the federation worker could start without its IPC socket (LOW,
   audit item 8).** With main's stdin closed, the IPC socket pair came back as
   fds 0 and 3, so the child's end already sat on the fixed child fd 3 and the

@@ -595,7 +595,9 @@ fetches them from that origin before retrying the PDU.
   authorisation against its own `auth_events`. A fetched event whose own
   `prev_events` still lack state groups is dropped; its own state-before
   cannot yet be computed, so it cannot safely serve as an anchor for another
-  event.
+  event. Because of that, the `/get_missing_events` results are handled in
+  ascending `depth` order, not in the order the origin listed them, so a
+  parent is stored before any child that names it.
 * A verified event is stored as `status == "outlier"` with a recorded
   after-state group (`accepted=false`). Outliers participate in later state
   resolution and can become `prev_events` for subsequent PDUs, but they never
