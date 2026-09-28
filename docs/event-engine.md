@@ -7,8 +7,8 @@ canonical JSON.
 
 Implemented now:
 
-- Matrix reference-hash event IDs for modern room versions using SHA-256 and
-  URL-safe unpadded Base64
+- Matrix reference-hash event IDs using SHA-256 and unpadded Base64: the
+  standard alphabet in room v3, URL-safe from v4
 - Matrix content-hash calculation that removes `unsigned`, `signatures`, and
   `hashes` before canonical JSON hashing
 - federated join and leave templates replace any existing `hashes` object
@@ -257,7 +257,9 @@ and `docs/crypto-boundary.md`.
 event after removing `unsigned`, `signatures`, and `hashes`. `make_reference_hash`
 redacts the event, removes `unsigned` and `signatures`, canonicalizes, and
 calculates the SHA-256 reference hash. `make_reference_hash_event_id` prefixes
-the URL-safe unpadded Base64 reference hash with `$` for modern room versions.
+the unpadded Base64 reference hash with `$`: URL-safe from room v4, the standard
+alphabet in v3 (`RoomVersionPolicy::event_id_url_safe_base64`, rooms/v3.md).
+`make_reference_hash` itself always returns the URL-safe form.
 
 The redaction algorithm is room-version specific, so every entry point takes the
 event's own `RoomVersionPolicy` — including `make_content_hash_id`, which until

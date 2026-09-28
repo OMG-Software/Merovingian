@@ -19,7 +19,8 @@ Spec authority: ../../docs/matrix-v1.19-spec/server-server-api.md
 | Room version | Event ID format |
 |---|---|
 | v1–v2 | `$localpart:server` (not supported, ADR-0076) |
-| v3+ | `$` + unpadded base64url(SHA-256(reference hash of redacted event)) |
+| v3 | `$` + unpadded standard base64 of the reference hash (`+`, `/`) |
+| v4+ | `$` + unpadded URL-safe base64 of the reference hash (`-`, `_`) |
 
 Always use `event_id.hpp` — never construct an event ID manually.
 

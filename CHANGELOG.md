@@ -1,5 +1,12 @@
 ## 0.12.13
 
+- **FIXED: room version 3 event IDs used the wrong base64 alphabet.** rooms/v3.md
+  defines the event ID as the reference hash in standard Unpadded Base64; only
+  v4 moved to URL-safe. Every version used URL-safe, so any v3 event whose hash
+  contained `+` or `/` (most of them) got an ID other servers do not compute.
+  `RoomVersionPolicy::event_id_url_safe_base64` is now false for v3 only. Test:
+  `tests/conformance/test_events.cpp` (`[v3_event_id]`).
+
 - **CHANGED: room versions 1 and 2 are no longer supported (ADR-0076).** They
   were advertised and creatable, but their event-ID format (`$localpart:domain`
   carried in the event), the signature they require from the event ID's
