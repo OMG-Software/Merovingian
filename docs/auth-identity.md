@@ -45,7 +45,20 @@ production-gated.
   `validated_at` metadata plus, for IS-bound 3PIDs, the stored `client_secret` and
   `sid` (migration `007`) needed to drive a mode-2 remote unbind.
 - Access-token hashes are durable and hydrate back into runtime sessions after
-  restart.
+  restart, with their expiry (before 0.12.13 hydration dropped `expires_at`,
+  so every access token was valid forever after a restart).
+- **Refresh rotation follows the spec (0.12.13, ADR-0074).** `POST /refresh`
+  does not revoke the presented refresh token: "The old refresh token remains
+  valid until the new access token or refresh token is used, at which point
+  the old refresh token is revoked", so a client whose response was lost can
+  retry. The new access and refresh tokens record the refresh token they
+  replaced (`predecessor_refresh_hash` / `predecessor_hash`, migration `017`);
+  the first successful use of either revokes it (`authenticated_user` for the
+  access token, `refresh_local_session` for the refresh token). A retry with
+  the same token supersedes the unused earlier pair. Presenting a refresh
+  token that has been invalidated — by a completed rotation, logout, or a
+  password change — revokes the device's whole session (spec SHOULD) and
+  writes an `auth.refresh.reuse_detected` audit row.
 - Refresh-token hashes are persisted, rotated, and revoked on single-device
   logout, global logout, device deletion, or password change with
   `logout_devices: true` (spec default) without storing plaintext token

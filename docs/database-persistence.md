@@ -597,6 +597,18 @@ remaining work before PostgreSQL-backed production operation.
   `tests/integration/test_join_room_flow.cpp` covers the federated-join
   seeding end to end; `tests/unit/test_sync_handler.cpp` covers a
   resolution-driven reactivation reaching an incremental `/sync` client.
+- **Token rotation lineage (schema version `17`, migration
+  `migrations/017_token_rotation_lineage.sql`, ADR-0074).** `refresh_tokens`
+  gains `predecessor_hash` and `access_tokens` gains
+  `predecessor_refresh_hash` (both `TEXT NOT NULL DEFAULT ''`, via `ALTER
+  TABLE`). A token pair minted by `POST /refresh` records the hash of the
+  refresh token it replaced, which stays valid until the pair is first used
+  (see `docs/auth-identity.md`). Both backends store and hydrate the columns;
+  `database::revoke_refresh_tokens_with_predecessor` supersedes an unused
+  pair when a refresh is retried. The downgrade step drops both columns.
+  Hydration (`homeserver::hydrate_local_database`) also copies each access
+  token's `expires_at` into its session; before 0.12.13 it did not, so
+  expiry was not enforced after a restart.
 - **M05 authenticated-media storage (schema version `16`, migration
   `migrations/016_media_legacy_endpoint_visibility.sql`,
   [ADR-0068](adr/0068-random-media-ids-and-legacy-endpoint-freeze.md)).**

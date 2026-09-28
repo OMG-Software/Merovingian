@@ -76,6 +76,7 @@
 * [0071 - Main re-verifies PDUs relayed by the federation worker](0071-main-re-verifies-pdus-relayed-by-the-federation-worker.md)
 * [0072 - Per-IP connection cap at accept time](0072-per-ip-connection-cap-at-accept-time.md)
 * [0073 - The client address is the rightmost untrusted X-Forwarded-For entry](0073-client-address-is-the-rightmost-untrusted-x-forwarded-for-entry.md)
+* [0074 - Refresh tokens retire on first use of their successor](0074-refresh-tokens-retire-on-first-use-of-their-successor.md)
 
 ## Rejected Records
 

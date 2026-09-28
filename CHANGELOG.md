@@ -109,6 +109,31 @@
   (`[event_auth_outlier]`, and the updated `[backfill][conformance]` scenario).
   See [ADR-0070](docs/adr/0070-event-auth-outliers-carry-no-state.md).
 
+- **FIXED: refresh-token rotation broke lost-response retries and never
+  detected reuse (MEDIUM, audit item 6, ADR-0074, migration 017).** Per the
+  spec, the presented refresh token now stays valid until the new access or
+  refresh token is first used, so a client whose `/refresh` response was lost
+  can retry (before, it was logged out). Presenting a refresh token that has
+  been invalidated revokes the device's whole session and is audited as
+  `auth.refresh.reuse_detected`. Migration 017 adds
+  `refresh_tokens.predecessor_hash` and
+  `access_tokens.predecessor_refresh_hash`. One unit scenario that required
+  single-use refresh tokens was corrected with the spec citation, with the
+  user's approval. Tests: `[refresh_rotation]` (conformance and integration),
+  `tests/unit/test_homeserver_auth_service.cpp`.
+
+- **FIXED: access tokens never expired after a restart (HIGH, found while
+  doing item 6).** Hydration rebuilt each in-memory session without its
+  `expires_at`, and authentication reads only the session. Test:
+  `tests/integration/test_persistent_homeserver_flow.cpp` (`[session_restart]`).
+
+- **FIXED: the user directory returned deactivated accounts and ignored
+  `limit` (LOW, audit item 5).** `POST /user_directory/search` now skips
+  deactivated local accounts, returns at most `limit` results (spec default
+  10) and sets `limited` when it truncated the list; it always said `false`
+  before. Test: `tests/conformance/test_client_server_conformance.cpp`
+  (`[user_directory]`).
+
 - **FIXED: IPv6 clients could escape rate limits within one /64, and a client
   could pick its own bucket through X-Forwarded-For (LOW and MEDIUM, audit
   item 4, ADR-0073).** Rate-limit buckets now group IPv6 clients by

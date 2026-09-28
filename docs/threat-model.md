@@ -300,6 +300,19 @@ threat it closes; the controls above are the standing defences these reinforce.
   refresh-token lookup reject expired tokens (audit reason `token expired`),
   forcing re-login/refresh. The advertised `expires_in_ms` now reads from the
   configured access-token lifetime so advertised == enforced.
+  **Regressed across restarts until 0.12.13:** `hydrate_local_database`
+  rebuilt each session without its `expires_at`, and `find_session` reads only
+  the session, so after any restart every access token was valid forever
+  again. Hydration now copies every field (test `[session_restart]`).
+
+- **Stolen refresh token used alongside the legitimate client (0.12.13,
+  audit item 6, ADR-0074):** rotation revoked the presented refresh token at
+  once — which also broke the spec's guarantee that a client whose response
+  was lost can retry — and nothing noticed an invalidated token being
+  presented again. Now the old token stays valid until the new pair is first
+  used, and presenting a refresh token that has been invalidated revokes the
+  device's whole session (the spec's SHOULD), so whichever party presents a
+  retired token ends the session for both and forces re-authentication.
 
 - **`SecretBuffer` wipe was elidable and moves left residue (#276):** the
   destructor used `std::ranges::fill(m_buffer, 0U)`, a dead store the compiler

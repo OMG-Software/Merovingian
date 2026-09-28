@@ -11,7 +11,12 @@ NNN_snake_case_description.sql
 
 `NNN` is a zero-padded three-digit integer: `001`, `002`, ..., `010`, `011`, ...
 The next migration number is always `max(existing) + 1`.
-Current highest: `015`.
+Current highest: `017`. Schema version `16` (`016_media_legacy_endpoint_visibility.sql`)
+ALTERs `legacy_endpoint_visible` onto `media` (ADR-0068). Schema version `17`
+(`017_token_rotation_lineage.sql`) ALTERs `predecessor_hash` onto
+`refresh_tokens` and `predecessor_refresh_hash` onto `access_tokens` so a
+refreshed token pair records the refresh token it replaced (ADR-0074); it adds
+no table, so the federation worker allowlist classification is unchanged.
 
 Schema version `2` introduced the `sync_stream_watermark` table via
 `002_sync_stream_watermark.sql` to support live pre-production deployments that
