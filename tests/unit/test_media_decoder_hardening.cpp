@@ -79,11 +79,11 @@ SCENARIO("decoder hardening fails closed when RLIMIT_AS cannot be set", "[media]
         auto ops = all_succeeding_ops();
         auto rlimit_as_attempted = false;
         ops.set_resource_limit = [&rlimit_as_attempted](int resource, std::uint64_t /*value*/) {
-            if (resource == RLIMIT_AS)
+            if (resource == merovingian::media::decoder_memory_limit_resource())
             {
                 rlimit_as_attempted = true;
             }
-            return resource != RLIMIT_AS;
+            return resource != merovingian::media::decoder_memory_limit_resource();
         };
 
         WHEN("the decoder worker hardens")
@@ -107,7 +107,7 @@ SCENARIO("decoder hardening fails closed when RLIMIT_AS cannot be set", "[media]
                 {
                     REQUIRE(rlimit_as_attempted);
                     REQUIRE_FALSE(result.accepted);
-                    REQUIRE(result.failed_control == "setrlimit(RLIMIT_AS)");
+                    REQUIRE(result.failed_control == merovingian::media::decoder_memory_limit_name());
                 }
             }
         }

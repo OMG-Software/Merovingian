@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <string_view>
 
 namespace merovingian::media
 {
@@ -56,6 +57,13 @@ struct DecoderHardeningOps final
 // so apply_decoder_hardening() and callers agree on which steps apply
 // without duplicating the detection macros.
 [[nodiscard]] auto decoder_hardening_is_sanitizer_build() noexcept -> bool;
+
+// The resource limit that caps the decoder's memory, and how a failure to set
+// it is named in DecoderHardeningResult::failed_control. RLIMIT_AS where the
+// platform defines it; OpenBSD has no RLIMIT_AS, so there it is RLIMIT_DATA,
+// which on OpenBSD also bounds anonymous mmap (how its malloc allocates).
+[[nodiscard]] auto decoder_memory_limit_resource() noexcept -> int;
+[[nodiscard]] auto decoder_memory_limit_name() noexcept -> std::string_view;
 
 // Applies the fail-closed hardening sequence the sandboxed thumbnail decoder
 // worker must complete before it reads any input: self-imposed resource

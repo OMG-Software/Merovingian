@@ -106,6 +106,24 @@ auto decoder_hardening_is_sanitizer_build() noexcept -> bool
 #endif
 }
 
+auto decoder_memory_limit_resource() noexcept -> int
+{
+#if defined(RLIMIT_AS)
+    return RLIMIT_AS;
+#else
+    return RLIMIT_DATA;
+#endif
+}
+
+auto decoder_memory_limit_name() noexcept -> std::string_view
+{
+#if defined(RLIMIT_AS)
+    return "setrlimit(RLIMIT_AS)";
+#else
+    return "setrlimit(RLIMIT_DATA)";
+#endif
+}
+
 auto apply_decoder_hardening(DecoderHardeningOps const& ops) -> DecoderHardeningResult
 {
     auto const sanitizer_build = decoder_hardening_is_sanitizer_build();
@@ -116,9 +134,9 @@ auto apply_decoder_hardening(DecoderHardeningOps const& ops) -> DecoderHardening
         // memory that a tight RLIMIT_AS would make un-mmap-able; the
         // instrumented worker would die before decoding. Skipped here (CI
         // only) — production builds always keep the cap.
-        if (!ops.set_resource_limit(RLIMIT_AS, max_address_space))
+        if (!ops.set_resource_limit(decoder_memory_limit_resource(), max_address_space))
         {
-            return {.accepted = false, .failed_control = "setrlimit(RLIMIT_AS)"};
+            return {.accepted = false, .failed_control = std::string{decoder_memory_limit_name()}};
         }
     }
     if (!ops.set_resource_limit(RLIMIT_CPU, max_cpu_seconds(sanitizer_build)))
