@@ -615,7 +615,10 @@ fetches them from that origin before retrying the PDU.
   calls). Every named event not already stored is fetched and verified. A
   snapshot state event whose own `prev_events` have no state is verified
   instead through `GET /_matrix/federation/v1/event_auth/{roomId}/{eventId}`,
-  against its own `auth_events` only (ADR-0069). The snapshot is refused if it
+  against its own `auth_events` only (ADR-0069). An `/event_auth` entry skips
+  verification only if it is the very event already stored under its
+  `"event_id"` field (equal reference hash); a matching field alone proves
+  nothing, since the origin writes it. The snapshot is refused if it
   names an event from another room, a `rejected` event, a non-state event, or
   a duplicate `(type, state_key)`. The missing event is then authorised against
   the verified snapshot as its state-before.

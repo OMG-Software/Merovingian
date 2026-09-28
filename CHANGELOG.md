@@ -1,5 +1,15 @@
 ## 0.12.13
 
+- **FIXED: a backfilled event naming a stored event's ID skipped verification
+  (LOW).** `verify_and_store_backfilled_event` treated any event whose JSON
+  `"event_id"` field named a stored event as already verified. The field is the
+  origin's to write, so a forged `/event_auth` chain entry reusing a stored
+  event's ID, with a membership the signature does not cover, was accepted and
+  let an unverified snapshot through. The shortcut now also requires the stored
+  event to be the same event (equal reference hash). Test:
+  `tests/integration/test_pdu_ingestion_backfill_flow.cpp`
+  (`[event_auth_forged_id]`).
+
 - **FIXED: backfill stored whatever an `/event/{eventId}` fetch returned
   (LOW).** Both fetchers (per missing reference, and for `/state_ids`
   snapshots) verified and stored the returned event without checking it was
