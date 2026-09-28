@@ -2594,6 +2594,35 @@ namespace
         return std::nullopt;
     }
 
+    // The PDU a GET /_matrix/federation/v1/event/{eventId} response carries,
+    // provided it is the event that was asked for: its ID, computed under the
+    // room's version, must equal `requested_event_id`. Anything else is the
+    // origin answering a question nobody asked and is dropped rather than
+    // stored.
+    [[nodiscard]] auto requested_pdu_from_event_response(std::string_view body, std::string_view requested_event_id,
+                                                         rooms::RoomVersionPolicy const& policy)
+        -> std::optional<std::string>
+    {
+        auto json = extract_pdu_from_event_response(body);
+        if (!json.has_value())
+        {
+            return std::nullopt;
+        }
+        auto const parsed = canonicaljson::parse_lossless(*json);
+        if (parsed.error != canonicaljson::ParseError::none)
+        {
+            return std::nullopt;
+        }
+        auto const id = events::make_reference_hash_event_id(parsed.value, policy);
+        if (!id.error.empty() || id.event_id != requested_event_id)
+        {
+            LOG_WARNING("Backfill dropped an /event response that is not the requested event: requested=" +
+                        std::string{requested_event_id} + " returned=" + id.event_id);
+            return std::nullopt;
+        }
+        return json;
+    }
+
     // Spec: GET /_matrix/federation/v1/event_auth/{roomId}/{eventId} returns an
     // object with an "auth_chain" array of PDUs. Extract each PDU as canonical
     // JSON and return them in order; reject malformed responses.
@@ -2634,8 +2663,8 @@ namespace
     }
 
     [[nodiscard]] auto fetch_event_by_id(HomeserverRuntime& runtime, std::string_view room_id, std::string_view origin,
-                                         std::string_view event_id, std::size_t& outbound_calls)
-        -> std::optional<std::string>
+                                         std::string_view event_id, rooms::RoomVersionPolicy const& policy,
+                                         std::size_t& outbound_calls) -> std::optional<std::string>
     {
         if (outbound_calls >= k_max_backfill_outbound_calls)
         {
@@ -2657,14 +2686,15 @@ namespace
             return std::nullopt;
         }
         ++outbound_calls;
-        return extract_pdu_from_event_response(body);
+        return requested_pdu_from_event_response(body, event_id, policy);
     }
 
     // Snapshot-phase variant of fetch_event_by_id. Uses the separate snapshot
     // budget (ADR-0069 option A) instead of the general PDU backfill budget.
     [[nodiscard]] auto fetch_snapshot_event_by_id(HomeserverRuntime& runtime, std::string_view room_id,
                                                   std::string_view origin, std::string_view event_id,
-                                                  std::size_t& snapshot_calls) -> std::optional<std::string>
+                                                  rooms::RoomVersionPolicy const& policy, std::size_t& snapshot_calls)
+        -> std::optional<std::string>
     {
         if (snapshot_calls >= k_max_snapshot_outbound_calls)
         {
@@ -2686,7 +2716,7 @@ namespace
             return std::nullopt;
         }
         ++snapshot_calls;
-        return extract_pdu_from_event_response(body);
+        return requested_pdu_from_event_response(body, event_id, policy);
     }
 
     // Parses a JSON object response and returns the string array under `key`,
@@ -3232,7 +3262,7 @@ namespace
             {
                 return false;
             }
-            auto const json = fetch_snapshot_event_by_id(runtime, room_id, origin, id, snapshot_calls);
+            auto const json = fetch_snapshot_event_by_id(runtime, room_id, origin, id, policy, snapshot_calls);
             if (!json.has_value())
             {
                 return false;
@@ -3371,7 +3401,8 @@ namespace
         {
             return false;
         }
-        auto const target_json = fetch_snapshot_event_by_id(runtime, room_id, origin, target_event_id, snapshot_calls);
+        auto const target_json =
+            fetch_snapshot_event_by_id(runtime, room_id, origin, target_event_id, policy, snapshot_calls);
         if (!target_json.has_value())
         {
             return false;
@@ -3461,7 +3492,7 @@ namespace
             {
                 break;
             }
-            auto const json = fetch_event_by_id(runtime, room_id, envelope.origin, id, outbound_calls);
+            auto const json = fetch_event_by_id(runtime, room_id, envelope.origin, id, policy, outbound_calls);
             if (json.has_value() && verify_and_store_backfilled_event(runtime, room_id, envelope.origin, *json, policy))
             {
                 stored_any = true;
@@ -3473,7 +3504,7 @@ namespace
             {
                 break;
             }
-            auto const json = fetch_event_by_id(runtime, room_id, envelope.origin, id, outbound_calls);
+            auto const json = fetch_event_by_id(runtime, room_id, envelope.origin, id, policy, outbound_calls);
             if (json.has_value() && verify_and_store_backfilled_event(runtime, room_id, envelope.origin, *json, policy))
             {
                 stored_any = true;
