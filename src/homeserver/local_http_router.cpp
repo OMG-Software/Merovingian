@@ -2873,26 +2873,39 @@ namespace
             return false;
         }
 
-        // ADR-0069 option A: if the event is already in the store we do not need
-        // to re-verify it during backfill. This lets locally-created genesis
-        // events returned in an /event_auth auth chain be accepted even though
-        // they were signed with this server's own key, not a remote key. The
-        // snapshot-building phase still enforces room and rejected-status checks.
-        // We match on the raw event_id field from the JSON rather than the
-        // reference-hash-derived event_id, because test fixtures and some
-        // historical events may carry a stable textual event_id that does not
-        // match the computed reference hash.
-        auto const* raw_obj = std::get_if<canonicaljson::Object>(&parsed.value.storage());
-        auto const* raw_event_id = raw_obj == nullptr ? nullptr : string_member(*raw_obj, "event_id");
-        if (raw_event_id != nullptr)
+        // ADR-0069 option A: an event this server already stores need not be
+        // verified again. This lets locally-created genesis events returned in
+        // an /event_auth auth chain through, though they carry this server's
+        // signature rather than a remote one; such rows are found by the JSON's
+        // "event_id" field (fixtures and older rows use textual IDs). The field
+        // is the origin's to write and proves nothing on its own, so the stored
+        // event must also be the very same event: its reference hash, which
+        // binds the full content through the content hash, must equal this
+        // one's (0.12.13). Events without the field (every v3+ PDU) are not
+        // short-circuited here: a stored outlier must still reach the promotion
+        // below when a snapshot supplies its state (ADR-0070).
+        auto const supplied_hash = events::make_reference_hash(parsed.value, policy);
+        if (supplied_hash.error.empty())
         {
+            auto const* raw_obj = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+            auto const* raw_event_id = raw_obj == nullptr ? nullptr : string_member(*raw_obj, "event_id");
             auto const stripe = std::hash<std::string>{}(std::string{room_id}) % room_mutex_stripe_count;
             auto stripe_guard = std::unique_lock{runtime.room_stripe_mutexes[stripe]};
             auto global_guard = std::unique_lock<RuntimeMutex>{runtime.mutex};
-            if (std::ranges::any_of(runtime.database.persistent_store.events,
-                                    [&](database::PersistentEvent const& evt) {
-                                        return evt.event_id == *raw_event_id;
-                                    }))
+            auto const same_stored_event = [&](database::PersistentEvent const& evt) {
+                if (raw_event_id == nullptr || evt.event_id != *raw_event_id)
+                {
+                    return false;
+                }
+                auto const stored = canonicaljson::parse_lossless(evt.json);
+                if (stored.error != canonicaljson::ParseError::none)
+                {
+                    return false;
+                }
+                auto const stored_hash = events::make_reference_hash(stored.value, policy);
+                return stored_hash.error.empty() && stored_hash.sha256 == supplied_hash.sha256;
+            };
+            if (std::ranges::any_of(runtime.database.persistent_store.events, same_stored_event))
             {
                 return true;
             }
