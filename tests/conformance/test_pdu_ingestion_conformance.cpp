@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "../support/master_key.hpp"
+#include "../support/remote_room_fixture.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/config/config.hpp"
@@ -343,6 +344,59 @@ SCENARIO("send_join: a joining event with a mismatched content hash is redacted 
                 });
                 REQUIRE(stored != events.end());
                 REQUIRE(stored->status == "accepted");
+            }
+        }
+
+        std::filesystem::remove(path);
+    }
+}
+
+// Spec: Matrix Server-Server API v1.19
+// Section: Auth events selection; GET /make_join, /make_leave, /make_knock
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#auth-events-selection
+//
+// For m.room.member: "If membership is join, invite or knock, the current
+// m.room.join_rules event, if any." Auth rule 3.2 rejects an event whose
+// auth_events hold an entry the selection does not name, so a make_leave
+// template naming m.room.join_rules yields a leave every conformant server,
+// this one included, rejects.
+SCENARIO("Membership templates name m.room.join_rules for join and knock but not for leave",
+         "[federation][conformance][membership][auth_events_selection]")
+{
+    GIVEN("a room with a join_rules event and the federation callbacks wired")
+    {
+        namespace fixture = merovingian::tests::remote_room;
+        auto const path = fixture::unique_sqlite_path("merovingian-template-auth-");
+        std::filesystem::remove(path);
+        auto started = merovingian::homeserver::start_runtime(fixture::config_with_sqlite(path));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const room_id = std::string{"!template-auth:local.example.org"};
+        fixture::seed_room_with_genesis_state_group(runtime, room_id);
+        auto const join_rules_id = room_id + ":join_rules";
+        runtime.database.persistent_store.state.push_back({room_id, "m.room.join_rules", "", join_rules_id});
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+        REQUIRE(runtime.federation.membership_template_provider);
+
+        auto const names_join_rules = [&](merovingian::federation::FederationEndpoint endpoint) {
+            auto const tmpl =
+                runtime.federation.membership_template_provider(endpoint, room_id, "@carol:remote.example.org", {});
+            REQUIRE(tmpl.has_value());
+            return std::ranges::find(tmpl->auth_events, join_rules_id) != tmpl->auth_events.end();
+        };
+
+        WHEN("templates are built for each membership")
+        {
+            auto const join = names_join_rules(merovingian::federation::FederationEndpoint::make_join);
+            auto const knock = names_join_rules(merovingian::federation::FederationEndpoint::make_knock);
+            auto const leave = names_join_rules(merovingian::federation::FederationEndpoint::make_leave);
+
+            THEN("only join and knock name m.room.join_rules")
+            {
+                // Spec MUST: join_rules only for join, invite or knock.
+                REQUIRE(join);
+                REQUIRE(knock);
+                REQUIRE_FALSE(leave);
             }
         }
 
