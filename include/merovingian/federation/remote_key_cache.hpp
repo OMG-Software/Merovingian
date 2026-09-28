@@ -72,6 +72,10 @@ class CachedServerDiscovery;
 [[nodiscard]] auto cache_remote_server_keys(database::PersistentStore& store, RemoteKeyResponse const& response)
     -> bool;
 
+// As above, for a response fetched at `fetched_at_ms`.
+[[nodiscard]] auto cache_remote_server_keys(database::PersistentStore& store, RemoteKeyResponse const& response,
+                                            std::uint64_t fetched_at_ms) -> bool;
+
 // Looks up a cached verify key by (server_name, key_id), returning the
 // federation-shaped key record consumed by request and PDU verification.
 [[nodiscard]] auto find_cached_remote_key(database::PersistentStore const& store, std::string_view server_name,

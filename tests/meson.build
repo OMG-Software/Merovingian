@@ -280,6 +280,7 @@ shell = find_program('sh')
       'conformance/test_key_publication_conformance.cpp',
       'conformance/test_pdu_format_conformance.cpp',
       'conformance/test_pdu_ingestion_conformance.cpp',
+      'conformance/test_pdu_signature_conformance.cpp',
       'conformance/test_presence_conformance.cpp',
       'conformance/test_push_notifications_conformance.cpp',
       'conformance/test_notifications_conformance.cpp',

@@ -350,6 +350,13 @@ auto cache_remote_server_keys(database::PersistentStore& store, RemoteKeyRespons
     return all_ok;
 }
 
+auto cache_remote_server_keys(database::PersistentStore& store, RemoteKeyResponse const& response,
+                              std::uint64_t fetched_at_ms) -> bool
+{
+    std::ignore = fetched_at_ms;
+    return cache_remote_server_keys(store, response);
+}
+
 auto find_cached_remote_key(database::PersistentStore const& store, std::string_view server_name,
                             std::string_view key_id) -> std::optional<FederationKeyRecord>
 {
