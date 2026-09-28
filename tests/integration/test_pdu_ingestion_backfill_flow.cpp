@@ -708,6 +708,113 @@ SCENARIO("A backfilled state event passing auth_events and state-before is store
 }
 
 // Spec: Matrix Server-Server API v1.19
+// Endpoint / Section: Checks performed on receipt of a PDU, step 5
+// URL: ../../docs/matrix-v1.19-spec/server-server-api.md#checks-performed-on-receipt-of-a-pdu
+//
+// A backfilled event is authorised against the state before it, which needs
+// its prev_events stored first. The /get_missing_events response order is the
+// remote's choice, so a child listed before its parent must still be stored
+// once the parent is (0.12.13 audit item 9: results are handled by ascending
+// depth, not response order).
+SCENARIO("Backfill stores a /get_missing_events child that the remote lists before its parent",
+         "[pdu_ingestion][backfill][backfill_depth_order]")
+{
+    GIVEN("a fresh runtime seeded with a room genesis state group")
+    {
+        auto const path = unique_sqlite_path();
+        std::filesystem::remove(path);
+        auto started = merovingian::homeserver::start_runtime(config_with_sqlite(path));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+
+        auto const room_id = std::string{"!backfill-depth-order:local.example.org"};
+        seed_room_with_genesis_state_group(runtime, room_id);
+        auto const create_id = room_id + ":create";
+        auto const pl_id = room_id + ":pl";
+        auto const member_id = room_id + ":member";
+        auto const member_bob_id = room_id + ":member:bob";
+        auto const auth_event_ids = std::vector<std::string>{create_id, pl_id, member_bob_id};
+
+        auto const parent = make_remote_message_pdu(room_id, {member_id}, auth_event_ids, 3, 10);
+        auto const child = make_remote_message_pdu(room_id, {parent.event_id}, auth_event_ids, 4, 11);
+        auto const pdu = make_remote_message_pdu(room_id, {child.event_id}, auth_event_ids, 5, 20);
+
+        AND_GIVEN("a sending server whose /get_missing_events lists the child first and serves nothing else")
+        {
+            auto certificate = merovingian::tests::tls_mock::write_test_tls_certificate("localhost");
+            auto tls_context_result = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
+                                                                                       certificate.private_key_file);
+            REQUIRE(tls_context_result.ok());
+            auto tls_context = std::move(*tls_context_result.context);
+            auto acceptor = merovingian::net::TcpAcceptor{};
+            REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+            auto const port = acceptor.bound_port();
+            REQUIRE(port > 0U);
+
+            runtime.test_forced_outbound_resolution[remote_server] =
+                merovingian::homeserver::TestOnlyForcedOutboundResolution{
+                    "localhost", port, {"127.0.0.1"}, certificate.certificate_pem};
+
+            runtime.federation.remote_key_resolver =
+                [](std::string_view server_name,
+                   std::string_view key_id) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+                if (server_name != remote_server || key_id != remote_key_id)
+                {
+                    return std::nullopt;
+                }
+                return remote_runtime();
+            };
+
+            auto events = canonicaljson::Array{};
+            for (auto const* json : {&child.json, &parent.json})
+            {
+                auto parsed = canonicaljson::parse_lossless(*json);
+                REQUIRE(parsed.error == canonicaljson::ParseError::none);
+                events.push_back(std::move(parsed.value));
+            }
+            auto body = canonicaljson::Object{};
+            body.push_back(canonicaljson::make_member("events", canonicaljson::Value{std::move(events)}));
+            auto const serialized = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(body)});
+            REQUIRE(serialized.error == canonicaljson::CanonicalJsonError::none);
+
+            auto const not_found = merovingian::tests::tls_mock::json_http_response(
+                "404 Not Found", R"({"errcode":"M_NOT_FOUND","error":"not found"})");
+            auto const responses = std::vector<std::pair<std::string, std::string>>{
+                {"POST /_matrix/federation/v1/get_missing_events/",
+                 merovingian::tests::tls_mock::json_http_response("200 OK", serialized.output)},
+                {"GET /_matrix/federation/v1/event/", not_found},
+                {"GET /_matrix/federation/v1/state_ids/", not_found},
+            };
+            auto server_thread = std::thread{[&]() {
+                run_body_aware_dispatch_tls_server(acceptor, tls_context, responses, nullptr);
+            }};
+            auto const join_server = merovingian::tests::tls_mock::ScopedThreadJoin{server_thread};
+            std::ignore = join_server;
+
+            WHEN("a PDU building on the child is ingested")
+            {
+                auto const result = merovingian::homeserver::ingest_pdu_event(runtime, pdu);
+
+                THEN("the PDU is accepted")
+                {
+                    REQUIRE(result.status == PduIngestionStatus::accepted);
+                }
+
+                THEN("both the parent and the child are stored with a state group")
+                {
+                    auto const& store = runtime.database.persistent_store;
+                    REQUIRE(merovingian::database::find_event_state_group(store, parent.event_id).has_value());
+                    REQUIRE(merovingian::database::find_event_state_group(store, child.event_id).has_value());
+                }
+            }
+
+            std::filesystem::remove(path);
+        }
+    }
+}
+
+// Spec: Matrix Server-Server API v1.19
 // Endpoint / Section: Backfilling and retrieving missing events
 // URL: ../../docs/matrix-v1.19-spec/server-server-api.md#backfilling-and-retrieving-missing-events
 //
