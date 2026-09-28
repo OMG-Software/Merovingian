@@ -4,6 +4,7 @@
 #include "../support/registration_token.hpp"
 #include "../support/temp_directory.hpp"
 #include "merovingian/config/config.hpp"
+#include "merovingian/core/file_descriptor.hpp"
 #include "merovingian/core/socket_handle.hpp"
 #include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/homeserver/http_server.hpp"
@@ -113,16 +114,22 @@ auto send_all_tls(SSL& connection, std::string_view data) -> bool
 }
 
 #if defined(__linux__)
-// Finds the server-side fd for a still-open accepted connection by matching
-// its peer port against `client_local_port` (the connecting client socket's
-// own local port, i.e. the port the server sees as its peer). There is no
-// production hook that exposes the accepted fd directly, so this scans the
-// process's own fd table — reliable as long as the connection is still open
-// when called, which the caller ensures by holding the request incomplete.
-// Linux-only: relies on /proc/self/fd, which isn't guaranteed on the
-// project's supported BSDs (see the SCENARIO below that uses this).
-[[nodiscard]] auto find_accepted_socket_fd(std::uint16_t client_local_port) -> int
+// Finds the server-side fd for the still-open connection `client_fd` made.
+// There is no production hook that exposes the accepted fd directly, so this
+// scans the process's own fd table — reliable as long as the connection is
+// still open when called, which the caller ensures by holding the request
+// incomplete. Linux-only: relies on /proc/self/fd, which isn't guaranteed on
+// the project's supported BSDs (see the SCENARIO below that uses this).
+[[nodiscard]] auto find_accepted_socket_fd(int client_fd) -> int
 {
+    auto client_local = sockaddr_in{};
+    auto client_local_len = socklen_t{sizeof(client_local)};
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+    if (::getsockname(client_fd, reinterpret_cast<sockaddr*>(&client_local), &client_local_len) != 0)
+    {
+        return -1;
+    }
+    auto const client_local_port = ntohs(client_local.sin_port);
     auto* dir = ::opendir("/proc/self/fd");
     if (dir == nullptr)
     {
@@ -590,6 +597,12 @@ SCENARIO("merovingian-server marks accepted client sockets close-on-exec",
                 }
             } server_thread_guard{shutdown, server_thread};
 
+            // Held open across the connect and the accept, then freed so the
+            // lookalike socket below lands on an fd number below the accepted
+            // one and the fd-table scan meets it first.
+            auto low_fd_reservation = merovingian::core::FileDescriptor{::open("/dev/null", O_RDONLY | O_CLOEXEC)};
+            REQUIRE(low_fd_reservation.valid());
+
             auto const client_fd = connect_loopback(port);
             REQUIRE(client_fd >= 0);
 
@@ -611,13 +624,48 @@ SCENARIO("merovingian-server marks accepted client sockets close-on-exec",
             // to wait on directly.
             for (auto attempt = 0; attempt < 200 && accepted_fd < 0; ++attempt)
             {
-                accepted_fd = find_accepted_socket_fd(client_local_port);
+                accepted_fd = find_accepted_socket_fd(client_fd);
                 if (accepted_fd < 0)
                 {
                     std::this_thread::sleep_for(std::chrono::milliseconds{5});
                 }
             }
             REQUIRE(accepted_fd >= 0);
+
+            // A lookalike: another socket in this process, not close-on-exec,
+            // whose peer port equals the client's local port but on another
+            // loopback address. Under a parallel run any socket can look like
+            // this; a scan that matched on the peer port alone picked it up.
+            auto lookalike_listener =
+                merovingian::core::FileDescriptor{::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0)};
+            REQUIRE(lookalike_listener.valid());
+            auto lookalike_address = sockaddr_in{};
+            lookalike_address.sin_family = AF_INET;
+            lookalike_address.sin_port = htons(client_local_port);
+            REQUIRE(::inet_pton(AF_INET, "127.0.0.2", &lookalike_address.sin_addr) == 1);
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+            REQUIRE(::bind(lookalike_listener.get(), reinterpret_cast<sockaddr const*>(&lookalike_address),
+                           sizeof(lookalike_address)) == 0);
+            REQUIRE(::listen(lookalike_listener.get(), 1) == 0);
+            low_fd_reservation.reset();
+            auto lookalike = merovingian::core::FileDescriptor{::socket(AF_INET, SOCK_STREAM, 0)};
+            REQUIRE(lookalike.valid());
+            REQUIRE(lookalike.get() < accepted_fd);
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+            REQUIRE(::connect(lookalike.get(), reinterpret_cast<sockaddr const*>(&lookalike_address),
+                              sizeof(lookalike_address)) == 0);
+
+            accepted_fd = find_accepted_socket_fd(client_fd);
+            REQUIRE(accepted_fd >= 0);
+
+            auto found_local = sockaddr_in{};
+            auto found_local_len = socklen_t{sizeof(found_local)};
+            auto found_peer = sockaddr_in{};
+            auto found_peer_len = socklen_t{sizeof(found_peer)};
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+            REQUIRE(::getsockname(accepted_fd, reinterpret_cast<sockaddr*>(&found_local), &found_local_len) == 0);
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+            REQUIRE(::getpeername(accepted_fd, reinterpret_cast<sockaddr*>(&found_peer), &found_peer_len) == 0);
 
             auto const flags = ::fcntl(accepted_fd, F_GETFD, 0);
             REQUIRE(flags >= 0);
@@ -628,6 +676,14 @@ SCENARIO("merovingian-server marks accepted client sockets close-on-exec",
             auto reader = PlainResponseReader{};
             std::ignore = receive_response(client_fd, reader);
             ::close(client_fd);
+
+            THEN("the socket inspected is the server's end of the client's connection")
+            {
+                REQUIRE(ntohs(found_local.sin_port) == port);
+                REQUIRE(found_local.sin_addr.s_addr == client_local.sin_addr.s_addr);
+                REQUIRE(ntohs(found_peer.sin_port) == client_local_port);
+                REQUIRE(found_peer.sin_addr.s_addr == client_local.sin_addr.s_addr);
+            }
 
             THEN("the accepted socket carries FD_CLOEXEC")
             {
@@ -685,18 +741,12 @@ SCENARIO("merovingian-server keeps accepted plain-HTTP sockets non-blocking",
             auto const client_fd = connect_loopback(port);
             REQUIRE(client_fd >= 0);
 
-            auto client_local = sockaddr_in{};
-            auto client_local_len = socklen_t{sizeof(client_local)};
-            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
-            REQUIRE(::getsockname(client_fd, reinterpret_cast<sockaddr*>(&client_local), &client_local_len) == 0);
-            auto const client_local_port = ntohs(client_local.sin_port);
-
             REQUIRE(send_all(client_fd, "GET /no-such-route HTTP/1.1\r\nHost: localhost\r\n"));
 
             auto accepted_fd = -1;
             for (auto attempt = 0; attempt < 200 && accepted_fd < 0; ++attempt)
             {
-                accepted_fd = find_accepted_socket_fd(client_local_port);
+                accepted_fd = find_accepted_socket_fd(client_fd);
                 if (accepted_fd < 0)
                 {
                     std::this_thread::sleep_for(std::chrono::milliseconds{5});
