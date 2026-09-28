@@ -27,7 +27,6 @@ Every test in this directory directly encodes a **MUST** or **SHOULD** from the 
 | `test_canonicaljson_serializer.cpp` | [Appendices § Canonical JSON](../../docs/matrix-v1.19-spec/appendices.md#canonical-json) |
 | `test_client_server_conformance.cpp` | [Client-Server API](../../docs/matrix-v1.19-spec/client-server-api.md) |
 | `test_event_auth_rules.cpp` | [Auth Rules](../../docs/matrix-v1.19-spec/server-server-api.md#authorisation-rules) |
-| `test_event_authorization.cpp` | [Auth Rules — Authorisation](../../docs/matrix-v1.19-spec/server-server-api.md#authorisation-rules) |
 | `test_event_graph_conformance.cpp` | [SS API § Retrieving events](../../docs/matrix-v1.19-spec/server-server-api.md#retrieving-events) (`/state/{roomId}`, `/state_ids/{roomId}`) · [§ Backfilling and retrieving missing events](../../docs/matrix-v1.19-spec/server-server-api.md#backfilling-and-retrieving-missing-events) (`/backfill/{roomId}`) |
 | `test_event_relationships_conformance.cpp` | [CS API § Event Relationships](../../docs/matrix-v1.19-spec/client-server-api.md#forming-relationships-between-events) |
 | `test_events.cpp` | [SS API § Event Signing](../../docs/matrix-v1.19-spec/server-server-api.md#signing-events) · [§ Content Hash](../../docs/matrix-v1.19-spec/server-server-api.md#calculating-the-content-hash-for-an-event) |

@@ -26,11 +26,6 @@ namespace merovingian::events
 namespace
 {
 
-    [[nodiscard]] auto requires_power_levels(std::string_view event_type) noexcept -> bool
-    {
-        return event_type != "m.room.create";
-    }
-
     [[nodiscard]] auto object_member(canonicaljson::Object const& object, std::string_view key) noexcept
         -> canonicaljson::Value const*
     {
@@ -1586,73 +1581,6 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
     }
 
     return make_allowed("14");
-}
-
-auto select_auth_events(EventAuthorizationRequest const& request) -> AuthEventSelection
-{
-    auto selection = AuthEventSelection{};
-
-    // v12 (MSC4291): the create event is implicit in the room ID and MUST NOT be
-    // listed in auth_events. For all earlier room versions create is always required.
-    // Spec: ../../docs/matrix-v1.19-spec/rooms/v12.md
-    auto const* policy = rooms::find_room_version_policy(request.room_version);
-    auto const create_is_implicit = (policy != nullptr && policy->create_event_is_room_id);
-
-    if (!create_is_implicit)
-    {
-        selection.required.push_back({AuthEventKind::create, "m.room.create", ""});
-    }
-
-    if (requires_power_levels(request.event_type))
-    {
-        selection.required.push_back({AuthEventKind::power_levels, "m.room.power_levels", ""});
-    }
-    if (request.event_type == "m.room.member")
-    {
-        selection.required.push_back({AuthEventKind::join_rules, "m.room.join_rules", ""});
-        selection.required.push_back({AuthEventKind::member, "m.room.member", request.state_key});
-    }
-    if (request.membership.third_party_invite)
-    {
-        selection.required.push_back(
-            {AuthEventKind::third_party_invite, "m.room.third_party_invite", request.state_key});
-    }
-
-    return selection;
-}
-
-auto auth_event_kind_name(AuthEventKind kind) noexcept -> char const*
-{
-    switch (kind)
-    {
-    case AuthEventKind::create:
-        return "create";
-    case AuthEventKind::power_levels:
-        return "power_levels";
-    case AuthEventKind::join_rules:
-        return "join_rules";
-    case AuthEventKind::member:
-        return "member";
-    case AuthEventKind::third_party_invite:
-        return "third_party_invite";
-    }
-
-    return "unknown";
-}
-
-auto auth_chain_contains(AuthChain const& chain, std::string_view event_id) noexcept -> bool
-{
-    return std::ranges::any_of(chain.event_ids, [event_id](std::string const& existing) {
-        return existing == event_id;
-    });
-}
-
-auto append_auth_chain_event(AuthChain& chain, std::string_view event_id) -> void
-{
-    if (!event_id.empty() && !auth_chain_contains(chain, event_id))
-    {
-        chain.event_ids.push_back(std::string{event_id});
-    }
 }
 
 } // namespace merovingian::events

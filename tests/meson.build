@@ -264,7 +264,6 @@ shell = find_program('sh')
       'conformance/test_client_server_conformance.cpp',
       'conformance/test_3pid_invite_conformance.cpp',
       'conformance/test_event_auth_rules.cpp',
-      'conformance/test_event_authorization.cpp',
       'conformance/test_event_graph_conformance.cpp',
       'conformance/test_event_relationships_conformance.cpp',
       'conformance/test_events.cpp',
