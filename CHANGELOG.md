@@ -1,5 +1,17 @@
 ## 0.12.13
 
+- **FIXED: leaves, kicks and bans named `m.room.join_rules` in their
+  `auth_events` (MEDIUM, federation).** Auth events selection names
+  `join_rules` for a membership of join, invite or knock only, and auth rule
+  3.2 rejects any `auth_events` entry the selection does not name. Every
+  leave, kick and ban this server created, and every leave built from its
+  `make_leave` template, carried it and was therefore rejected by conformant
+  servers (and, for remote leaves, by this server). Both
+  `auth_events_for_room` and the membership template now follow the
+  selection. Tests: `[auth_events_selection]` in
+  `tests/conformance/test_client_server_conformance.cpp` and
+  `tests/conformance/test_pdu_ingestion_conformance.cpp`.
+
 - **FIXED: a backfilled event naming a stored event's ID skipped verification
   (LOW).** `verify_and_store_backfilled_event` treated any event whose JSON
   `"event_id"` field named a stored event as already verified. The field is the

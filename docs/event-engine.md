@@ -479,7 +479,11 @@ re-verifies the signature itself before ingestion, ADR-0071):
   power_levels, the sender's own member event, and for `m.room.member`
   additionally the target member, join_rules, third_party_invite, and the
   restricted-join authorising member, each conditioned on the requested
-  membership). v12 (MSC4291, rooms/v12.md rule 3.2) is a hard **MUST NOT**:
+  membership; join_rules only for join, invite and knock). Events this
+  server creates follow the same list (`auth_events_for_room`, and the
+  `make_join`/`make_leave`/`make_knock` templates), since a conformant server
+  rejects any entry it does not name (0.12.13: leaves and bans used to carry
+  join_rules). v12 (MSC4291, rooms/v12.md rule 3.2) is a hard **MUST NOT**:
   the create event is implicit in the room ID, and a v12 event naming it in
   `auth_events` is rejected, not merely warned about — this is enforced
   exactly as written, with no leniency for a "harmless" redundant reference.
