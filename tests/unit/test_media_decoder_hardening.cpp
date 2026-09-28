@@ -77,7 +77,12 @@ SCENARIO("decoder hardening fails closed when RLIMIT_AS cannot be set", "[media]
     GIVEN("hardening ops where setrlimit fails only for RLIMIT_AS")
     {
         auto ops = all_succeeding_ops();
-        ops.set_resource_limit = [](int resource, std::uint64_t /*value*/) {
+        auto rlimit_as_attempted = false;
+        ops.set_resource_limit = [&rlimit_as_attempted](int resource, std::uint64_t /*value*/) {
+            if (resource == RLIMIT_AS)
+            {
+                rlimit_as_attempted = true;
+            }
             return resource != RLIMIT_AS;
         };
 
@@ -85,10 +90,25 @@ SCENARIO("decoder hardening fails closed when RLIMIT_AS cannot be set", "[media]
         {
             auto const result = merovingian::media::apply_decoder_hardening(ops);
 
-            THEN("hardening is not accepted and RLIMIT_AS is named as the failed control")
+            // Sanitizer builds deliberately skip RLIMIT_AS (their shadow memory
+            // needs the address space; see decoder_hardening.cpp). Each build
+            // type is held to its own contract.
+            if (merovingian::media::decoder_hardening_is_sanitizer_build())
             {
-                REQUIRE_FALSE(result.accepted);
-                REQUIRE(result.failed_control == "setrlimit(RLIMIT_AS)");
+                THEN("a sanitizer build never attempts RLIMIT_AS, so its failure cannot matter")
+                {
+                    REQUIRE_FALSE(rlimit_as_attempted);
+                    REQUIRE(result.accepted);
+                }
+            }
+            else
+            {
+                THEN("hardening is not accepted and RLIMIT_AS is named as the failed control")
+                {
+                    REQUIRE(rlimit_as_attempted);
+                    REQUIRE_FALSE(result.accepted);
+                    REQUIRE(result.failed_control == "setrlimit(RLIMIT_AS)");
+                }
             }
         }
     }
@@ -234,7 +254,9 @@ SCENARIO("decoder hardening fails closed when the decoder seccomp filter cannot 
     GIVEN("hardening ops where installing the decoder seccomp filter fails")
     {
         auto ops = all_succeeding_ops();
-        ops.apply_seccomp_filter = [] {
+        auto seccomp_attempted = false;
+        ops.apply_seccomp_filter = [&seccomp_attempted] {
+            seccomp_attempted = true;
             return false;
         };
 
@@ -242,10 +264,24 @@ SCENARIO("decoder hardening fails closed when the decoder seccomp filter cannot 
         {
             auto const result = merovingian::media::apply_decoder_hardening(ops);
 
-            THEN("hardening is not accepted and the seccomp filter is named as the failed control")
+            // Sanitizer builds deliberately skip the seccomp filter (their
+            // runtimes need syscalls it denies; see decoder_hardening.cpp).
+            if (merovingian::media::decoder_hardening_is_sanitizer_build())
             {
-                REQUIRE_FALSE(result.accepted);
-                REQUIRE(result.failed_control == "apply_decoder_seccomp_filter");
+                THEN("a sanitizer build never installs the filter, so its failure cannot matter")
+                {
+                    REQUIRE_FALSE(seccomp_attempted);
+                    REQUIRE(result.accepted);
+                }
+            }
+            else
+            {
+                THEN("hardening is not accepted and the seccomp filter is named as the failed control")
+                {
+                    REQUIRE(seccomp_attempted);
+                    REQUIRE_FALSE(result.accepted);
+                    REQUIRE(result.failed_control == "apply_decoder_seccomp_filter");
+                }
             }
         }
     }
