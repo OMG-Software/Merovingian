@@ -130,6 +130,11 @@ auto make_worker_secret_pipe(std::span<std::uint8_t const> secret, std::span<int
     return read_end;
 }
 
+auto make_worker_ipc_socketpair() -> std::pair<core::FileDescriptor, core::FileDescriptor>
+{
+    return make_ipc_socketpair();
+}
+
 auto make_worker_key_pipe(std::span<std::uint8_t const> key) -> core::FileDescriptor
 {
     auto const reserved = std::array<int, 2>{kWorkerIpcFd, kWorkerIpcKeyFd};

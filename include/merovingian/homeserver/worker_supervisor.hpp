@@ -13,6 +13,7 @@
 #include <span>
 #include <string>
 #include <thread>
+#include <utility>
 
 namespace merovingian::homeserver
 {
@@ -162,6 +163,16 @@ inline constexpr int kWorkerDbUriFd{5};
 // including on empty `secret`.
 [[nodiscard]] auto make_worker_secret_pipe(std::span<std::uint8_t const> secret, std::span<int const> reserved_fds)
     -> core::FileDescriptor;
+
+// Creates the AF_UNIX socket pair for a worker's IPC channel: {server end for
+// main, client end for the child}. Both are close-on-exec in this process,
+// and the client end never occupies a fixed child fd number (kWorkerIpcFd,
+// kWorkerIpcKeyFd, kWorkerDbUriFd): posix_spawn_file_actions_adddup2 onto
+// kWorkerIpcFd from a source already numbered kWorkerIpcFd is a same-fd dup2,
+// which some libcs treat as a no-op that leaves FD_CLOEXEC set, so the worker
+// would start without its IPC socket. That happens when main runs with its
+// stdin closed: socketpair then returns fds 0 and 3.
+[[nodiscard]] auto make_worker_ipc_socketpair() -> std::pair<core::FileDescriptor, core::FileDescriptor>;
 
 // Creates the pipe that hands the worker its IPC auth key — see
 // make_worker_secret_pipe. Reserves kWorkerIpcFd and kWorkerIpcKeyFd.

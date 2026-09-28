@@ -1,18 +1,23 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "merovingian/core/file_descriptor.hpp"
 #include "merovingian/homeserver/worker_env.hpp"
 #include "merovingian/homeserver/worker_supervisor.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstdlib>
+#include <set>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <vector>
 
 #include <fcntl.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 namespace
@@ -226,7 +231,8 @@ SCENARIO("The worker child environment provides a default PATH when the parent h
 // cleared would inherit the pipe carrying the IPC auth key. The fd is made
 // inheritable only in the child, by posix_spawn_file_actions_adddup2 onto
 // kWorkerIpcKeyFd.
-SCENARIO("The worker key pipe stays close-on-exec in the parent", "[federation][worker-supervisor][security][worker_key_fd]")
+SCENARIO("The worker key pipe stays close-on-exec in the parent",
+         "[federation][worker-supervisor][security][worker_key_fd]")
 {
     GIVEN("32 bytes of IPC auth key material")
     {
@@ -260,6 +266,71 @@ SCENARIO("The worker key pipe stays close-on-exec in the parent", "[federation][
                 REQUIRE(count == static_cast<ssize_t>(key.size()));
                 REQUIRE(std::vector<std::uint8_t>(buffer.begin(), buffer.begin() + count) == key);
                 REQUIRE(::read(read_end.get(), buffer.data(), buffer.size()) == 0);
+            }
+        }
+    }
+}
+
+// 0.12.13 audit item 8. With main's stdin closed, socketpair() returns fds 0
+// and 3, so the child's end would already be kWorkerIpcFd and the adddup2
+// placing it there becomes a same-fd dup2 — which some libcs treat as a no-op
+// that leaves FD_CLOEXEC set, starting the worker without its IPC socket. Real
+// kernel descriptors, in a forked child so the test binary's own fd table and
+// stdin are untouched; the child reports through its exit code.
+SCENARIO("The worker IPC socket pair keeps the child's end off the fixed fd numbers even with stdin closed",
+         "[federation][worker-supervisor][security][worker_ipc_fd]")
+{
+    GIVEN("a process whose stdin and every descriptor above stderr are closed")
+    {
+        WHEN("the supervisor creates the worker's IPC socket pair there")
+        {
+            auto const pid = ::fork();
+            REQUIRE(pid >= 0);
+            if (pid == 0)
+            {
+                merovingian::core::close_all_file_descriptors_except(std::set<int>{});
+                std::ignore = ::close(STDIN_FILENO);
+                auto code = 0;
+                try
+                {
+                    auto const [server, client] = merovingian::homeserver::make_worker_ipc_socketpair();
+                    auto const fixed = std::array<int, 3>{merovingian::homeserver::kWorkerIpcFd,
+                                                          merovingian::homeserver::kWorkerIpcKeyFd,
+                                                          merovingian::homeserver::kWorkerDbUriFd};
+                    if (std::ranges::find(fixed, client.get()) != fixed.end())
+                    {
+                        code = 10; // the child's end is on a fixed fd number
+                    }
+                    else if ((::fcntl(client.get(), F_GETFD) & FD_CLOEXEC) == 0 ||
+                             (::fcntl(server.get(), F_GETFD) & FD_CLOEXEC) == 0)
+                    {
+                        code = 11; // an end lost close-on-exec in the parent
+                    }
+                    else
+                    {
+                        auto const byte = char{'x'};
+                        auto received = char{0};
+                        if (::write(server.get(), &byte, 1U) != 1 || ::read(client.get(), &received, 1U) != 1 ||
+                            received != 'x')
+                        {
+                            code = 12; // the ends are not a connected pair
+                        }
+                    }
+                }
+                catch (...)
+                {
+                    code = 13;
+                }
+                ::_exit(code);
+            }
+
+            THEN("the child's end is not on a fixed fd number and both ends are connected and close-on-exec")
+            {
+                auto status = 0;
+                REQUIRE(::waitpid(pid, &status, 0) == pid);
+                REQUIRE(WIFEXITED(status));
+                // 10: on a fixed fd; 11: lost FD_CLOEXEC; 12: not connected; 13: threw.
+                REQUIRE(WEXITSTATUS(status) == 0);
             }
         }
     }
