@@ -6,7 +6,11 @@
   it is now value-initialised, so every byte the kernel does not understand is
   zero, as the kernel requires. `client_address.cpp` now includes
   `<sys/socket.h>` for `AF_INET`/`AF_INET6` (FreeBSD, OpenBSD), and the
-  Landlock ops table is marked unused off Linux (NetBSD). CI test fixes: the
+  Landlock ops table and its access-rights helper are compiled on Linux only
+  (FreeBSD, NetBSD). OpenBSD has no `RLIMIT_AS`, so the thumbnail decoder's
+  memory cap is `RLIMIT_DATA` there, which on OpenBSD also bounds anonymous
+  `mmap` (`media::decoder_memory_limit_resource()`); skipping the cap would
+  have weakened a fail-closed control. CI test fixes: the
   decoder hardening scenarios assert the sanitizer build's own contract (it
   skips `RLIMIT_AS` and the seccomp filter), and the PostgreSQL role scenarios
   make only the newest migration pending, not a gap.

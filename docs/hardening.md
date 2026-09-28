@@ -215,6 +215,8 @@ and `src/media/thumbnail_worker_main.cpp`):
   * `RLIMIT_CORE` = 0;
   * `RLIMIT_NOFILE` = 16;
   * `RLIMIT_AS` = 768 MiB in production builds (skipped under sanitizers);
+    OpenBSD has no `RLIMIT_AS`, so there the same cap is `RLIMIT_DATA`, which
+    on OpenBSD also bounds anonymous `mmap` (how its `malloc` allocates);
   * `platform::apply_decoder_seccomp_filter()` is installed in production
     builds (skipped under sanitizers) — the decoder's own allowlist, not the
     general server filter and not `apply_worker_seccomp_filter()`; see
@@ -555,7 +557,8 @@ apply via `rc.d` scripts.
 
 * The portable `setrlimit` gates are validated by the BSD hardening profile, and
   the thumbnail worker applies `RLIMIT_CPU`, `RLIMIT_FSIZE`, `RLIMIT_CORE`,
-  `RLIMIT_NOFILE`, and `RLIMIT_AS`.
+  `RLIMIT_NOFILE`, and `RLIMIT_AS` (`RLIMIT_DATA` on OpenBSD, which has no
+  `RLIMIT_AS`).
 * The thumbnail worker fd sweep uses the capped `fcntl(F_GETFD)` fallback on
   every BSD instead of walking `/dev/fd`.
 * Service-manager scripts apply the privilege drop and filesystem restrictions:
