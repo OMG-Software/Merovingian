@@ -386,17 +386,14 @@ namespace
     // manual release at the bottom of the lambda would leak on the error path).
     struct InFlightGuard final
     {
-        ipc::IpcChannel* channel{nullptr};
-        explicit InFlightGuard(ipc::IpcChannel* ch) noexcept
+        ipc::IpcChannel& channel;
+        explicit InFlightGuard(ipc::IpcChannel& ch) noexcept
             : channel{ch}
         {
         }
         ~InFlightGuard() noexcept
         {
-            if (channel != nullptr)
-            {
-                channel->release_in_flight();
-            }
+            channel.release_in_flight();
         }
         InFlightGuard(InFlightGuard const&) = delete;
         auto operator=(InFlightGuard const&) -> InFlightGuard& = delete;
@@ -1140,7 +1137,7 @@ WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRunt
             {
                 auto const room_id = json_get_str(json, "room_id");
                 if (!submit_limited(handler_pool_, ch, [this, ch, id, room_id, json = std::move(json)]() mutable {
-                        auto const guard = InFlightGuard{ch.get()};
+                        auto const guard = InFlightGuard{*ch};
                         auto const result = handle_pdu_ingest_request(runtime_, json);
                         if (result.status == federation::PduIngestionStatus::accepted)
                         {
@@ -1168,7 +1165,7 @@ WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRunt
             else if (type == "membership_ingest")
             {
                 if (!submit_limited(handler_pool_, ch, [this, ch, id, json = std::move(json)]() mutable {
-                        auto const guard = InFlightGuard{ch.get()};
+                        auto const guard = InFlightGuard{*ch};
                         ch->send_response(id, handle_membership_ingest_request(runtime_, json));
                     }))
                 {
@@ -1178,7 +1175,7 @@ WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRunt
             else if (type == "edu_ingest")
             {
                 if (!submit_limited(handler_pool_, ch, [this, ch, id, json = std::move(json)]() mutable {
-                        auto const guard = InFlightGuard{ch.get()};
+                        auto const guard = InFlightGuard{*ch};
                         ch->send_response(id, handle_edu_ingest_request(runtime_, json));
                     }))
                 {
@@ -1188,7 +1185,7 @@ WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRunt
             else if (type == "invite_ingest")
             {
                 if (!submit_limited(handler_pool_, ch, [this, ch, id, json = std::move(json)]() mutable {
-                        auto const guard = InFlightGuard{ch.get()};
+                        auto const guard = InFlightGuard{*ch};
                         ch->send_response(id, handle_invite_ingest_request(runtime_, json));
                     }))
                 {
@@ -1198,7 +1195,7 @@ WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRunt
             else if (type == "otk_claim_ingest")
             {
                 if (!submit_limited(handler_pool_, ch, [this, ch, id, json = std::move(json)]() mutable {
-                        auto const guard = InFlightGuard{ch.get()};
+                        auto const guard = InFlightGuard{*ch};
                         ch->send_response(id, handle_otk_claim_ingest_request(runtime_, json));
                     }))
                 {
@@ -1208,7 +1205,7 @@ WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRunt
             else if (type == "user_devices_ingest")
             {
                 if (!submit_limited(handler_pool_, ch, [this, ch, id, json = std::move(json)]() mutable {
-                        auto const guard = InFlightGuard{ch.get()};
+                        auto const guard = InFlightGuard{*ch};
                         ch->send_response(id, handle_user_devices_ingest_request(runtime_, json));
                     }))
                 {
@@ -1218,7 +1215,7 @@ WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRunt
             else if (type == "device_keys_query_ingest")
             {
                 if (!submit_limited(handler_pool_, ch, [this, ch, id, json = std::move(json)]() mutable {
-                        auto const guard = InFlightGuard{ch.get()};
+                        auto const guard = InFlightGuard{*ch};
                         ch->send_response(id, handle_device_keys_query_ingest_request(runtime_, json));
                     }))
                 {
@@ -1228,7 +1225,7 @@ WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRunt
             else if (type == "profile_query_ingest")
             {
                 if (!submit_limited(handler_pool_, ch, [this, ch, id, json = std::move(json)]() mutable {
-                        auto const guard = InFlightGuard{ch.get()};
+                        auto const guard = InFlightGuard{*ch};
                         ch->send_response(id, handle_profile_query_ingest_request(runtime_, json));
                     }))
                 {
@@ -1238,7 +1235,7 @@ WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRunt
             else if (type == "event_query_ingest")
             {
                 if (!submit_limited(handler_pool_, ch, [this, ch, id, json = std::move(json)]() mutable {
-                        auto const guard = InFlightGuard{ch.get()};
+                        auto const guard = InFlightGuard{*ch};
                         ch->send_response(id, handle_event_query_ingest_request(runtime_, json));
                     }))
                 {
@@ -1250,7 +1247,7 @@ WorkerPool::WorkerPool(config::FederationWorkerConfig const& cfg, HomeserverRunt
                 auto const key_id = json_get_str(json, "key_id");
                 auto const canonical = json_get_str(json, "canonical_json");
                 if (!submit_limited(handler_pool_, ch, [this, ch, id, key_id, canonical]() {
-                        auto const flight_guard = InFlightGuard{ch.get()};
+                        auto const flight_guard = InFlightGuard{*ch};
                         auto result = crypto::SignatureResult{};
                         {
                             auto lock = std::unique_lock{runtime_.mutex};
