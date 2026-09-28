@@ -5,7 +5,9 @@
 from it is available to answer questions. This file is the complete record.
 
 **State:** every remaining item below is finished and the version is bumped
-to `0.12.13` (2026-09-28). The final full run and the pull request are left; see
+to `0.12.13` (2026-09-28). Final full run 2026-09-28 at commit `9a40f66f`, read
+from `build-wsl/meson-logs/testlog.txt`: `Ok: 54`, `Fail: 0`, no timeouts.
+Only the pull request is left; see
 "Before merge".
 
 **No pull request has been opened.**
@@ -226,8 +228,8 @@ in backfill, and dead `select_auth_events` / `AuthChain` helpers.
 
 ## Before merge
 
-Steps 1 to 3 (decisions, version bump, CHANGELOG and todo clean-up) are
-done. What is left:
+Steps 1 to 4 (decisions, version bump, CHANGELOG and todo clean-up, final
+full run) are done. What is left:
 
 1. Open the pull request with the headings `AGENTS.md` requires: Summary, What
    changed, Why it changed, CI tests (modified tests and new tests listed
