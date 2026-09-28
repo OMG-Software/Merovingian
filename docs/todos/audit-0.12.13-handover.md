@@ -220,11 +220,15 @@ branch on 2026-09-27 and 2026-09-28; each is described, with its tests, in the
 `CHANGELOG.md` 0.12.13 section, so their write-ups were removed from this
 file. D3 stays deferred (see `docs/todos/capability-gaps.md`).
 
-Found while doing them and not fixed here (tracked in
-`docs/todos/capability-gaps.md`, "OPEN (found on the 0.12.13 branch)"):
-receipt-check gaps for room versions 1 and 2 and for key validity, `/event/{id}`
-responses not checked against the requested ID, the raw-`event_id` shortcut
-in backfill, and dead `select_auth_events` / `AuthChain` helpers.
+The findings made while doing them were then fixed on this branch too
+(2026-09-28): key validity judged at `origin_server_ts` with a 7-day cache cap
+(ADR-0075), room versions 1 and 2 no longer supported (ADR-0076), room v3
+event IDs in standard base64, `/event/{eventId}` answers checked against the
+requested ID, the raw-`event_id` backfill shortcut limited to the same stored
+event, `join_rules` no longer named in leave and ban `auth_events`, and the
+dead `select_auth_events` / `AuthChain` helpers removed. One gap found then
+remains open, in `docs/todos/capability-gaps.md`: restricted-room joins
+through this server as the resident.
 
 ## Before merge
 
