@@ -538,15 +538,34 @@ SCENARIO("refresh_local_session issues a new access token from a valid refresh t
             }
         }
 
-        WHEN("the same refresh token is used a second time")
+        // Corrected in 0.12.13 (audit item 6, approved by the user): this
+        // scenario required refresh tokens to be single-use at once. Spec
+        // (client-server-api.md, POST /refresh): "The old refresh token remains
+        // valid until the new access token or refresh token is used, at which
+        // point the old refresh token is revoked."
+        WHEN("the same refresh token is used again before the new tokens are used")
         {
             auto const first = merovingian::homeserver::refresh_local_session(runtime, issued.value);
             REQUIRE(first.ok);
-            auto const second = merovingian::homeserver::refresh_local_session(runtime, issued.value);
+            auto const retry = merovingian::homeserver::refresh_local_session(runtime, issued.value);
 
-            THEN("the second use is rejected — refresh tokens are single-use")
+            THEN("the retry succeeds, as it must when the first response was lost")
             {
-                REQUIRE_FALSE(second.ok);
+                REQUIRE(retry.ok);
+            }
+        }
+
+        WHEN("the same refresh token is used again after the new refresh token has been used")
+        {
+            auto const first = merovingian::homeserver::refresh_local_session(runtime, issued.value);
+            REQUIRE(first.ok);
+            auto const second = merovingian::homeserver::refresh_local_session(runtime, first.refresh_token);
+            REQUIRE(second.ok);
+            auto const reuse = merovingian::homeserver::refresh_local_session(runtime, issued.value);
+
+            THEN("the reuse is rejected")
+            {
+                REQUIRE_FALSE(reuse.ok);
             }
         }
     }

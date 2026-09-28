@@ -1031,6 +1031,10 @@ struct RoomReloadSnapshot final
 [[nodiscard]] auto revoke_refresh_tokens_for_user(PersistentStore& store, std::string_view user_id) -> std::size_t;
 [[nodiscard]] auto revoke_refresh_tokens_for_device(PersistentStore& store, std::string_view user_id,
                                                     std::string_view device_id) -> std::size_t;
+// ADR-0074: revokes the refresh tokens minted from `predecessor_hash` by an
+// earlier POST /refresh whose response the client never received.
+[[nodiscard]] auto revoke_refresh_tokens_with_predecessor(PersistentStore& store, std::string_view predecessor_hash)
+    -> std::size_t;
 // M-05: revokes every access and refresh token for `user_id` except those of
 // `keep_device_id`. Used by the password-change logout_devices flow to drop the
 // user's other sessions while keeping the caller's own alive.

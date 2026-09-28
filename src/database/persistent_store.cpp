@@ -908,6 +908,36 @@ namespace
     return revoked;
 }
 
+[[nodiscard]] auto revoke_refresh_tokens_with_predecessor(PersistentStore& store, std::string_view predecessor_hash)
+    -> std::size_t
+{
+    if (predecessor_hash.empty())
+    {
+        return 0U;
+    }
+    if (!record_and_persist(store,
+                            record_statement("revoke_refresh_tokens_with_predecessor",
+                                             "UPDATE refresh_tokens SET revoked = $1 WHERE predecessor_hash = $2",
+                                             {
+                                                 {"true",                        false},
+                                                 {std::string{predecessor_hash}, true }
+    })))
+    {
+        return 0U;
+    }
+    auto revoked = std::size_t{0U};
+    for (auto& token : store.refresh_tokens)
+    {
+        if (!token.predecessor_hash.empty() && crypto::constant_time_equal(token.predecessor_hash, predecessor_hash) &&
+            !token.revoked)
+        {
+            token.revoked = true;
+            ++revoked;
+        }
+    }
+    return revoked;
+}
+
 // M-05: revokes every access and refresh token belonging to `user_id` EXCEPT
 // those of `keep_device_id`.
 //
