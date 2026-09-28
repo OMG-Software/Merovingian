@@ -5,7 +5,7 @@
 from it is available to answer questions. This file is the complete record.
 
 **State:** every remaining item below is finished and the version is bumped
-to `0.12.13` (2026-09-28). Final full run 2026-09-28 at commit `9a40f66f`, read
+to `0.12.13` (2026-09-28). Final full run 2026-09-28 at commit `029311bb`, read
 from `build-wsl/meson-logs/testlog.txt`: `Ok: 54`, `Fail: 0`, no timeouts.
 Only the pull request is left; see
 "Before merge".
