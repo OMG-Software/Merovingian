@@ -1015,15 +1015,21 @@ namespace
     // Per the Matrix spec v1.19 Sec. 4.4 auth_events, only specific event types
     // belong in auth_events depending on the event being composed:
     //   m.room.create:  none
-    //   m.room.member:  {create, power_levels, join_rules, sender_member, target_member}
+    //   m.room.member:  {create, power_levels, sender_member, target_member}, plus
+    //                   join_rules only when the membership is join, invite or
+    //                   knock (auth rule 3.2 rejects any entry the selection does
+    //                   not name, so a leave or ban carrying it is rejected)
     //   all others:      {create, power_levels, sender_member}
     // Room v12 (MSC4291) excludes create from auth_events (implied by room ID).
     // Synapse rejects events that include unrelated auth_events (e.g. join_rules
     // in a history_visibility event) with "unexpected auth_event".
     [[nodiscard]] auto auth_events_for_room(database::PersistentStore const& store, std::string_view room_id,
-                                            std::string_view event_type, std::string_view target_state_key,
-                                            std::string_view sender, bool exclude_create) -> std::vector<std::string>
+                                            std::string_view event_type, std::string_view membership,
+                                            std::string_view target_state_key, std::string_view sender,
+                                            bool exclude_create) -> std::vector<std::string>
     {
+        auto const names_join_rules =
+            event_type == "m.room.member" && (membership == "join" || membership == "invite" || membership == "knock");
         if (event_type == "m.room.create")
         {
             return {};
@@ -1050,7 +1056,7 @@ namespace
             }
             if (state.event_type == "m.room.join_rules" && state.state_key.empty())
             {
-                if (event_type == "m.room.member")
+                if (names_join_rules)
                 {
                     event_ids.push_back(state.event_id);
                 }
@@ -1348,7 +1354,10 @@ namespace
         auto const create_defines_room_id = policy->create_event_is_room_id;
         auto const omit_room_id = event_type == "m.room.create" && create_defines_room_id;
         auto const prev_events = previous_events_for_room(runtime.database.persistent_store, room_id);
-        auto auth_events = auth_events_for_room(runtime.database.persistent_store, room_id, event_type,
+        auto const membership = event_type == "m.room.member"
+                                    ? events::extract_content_membership(canonicaljson::Value{*input})
+                                    : std::string{};
+        auto auth_events = auth_events_for_room(runtime.database.persistent_store, room_id, event_type, membership,
                                                 event_state_key.value_or(""), sender, create_defines_room_id);
         // 3PID invite member events must list the matching m.room.third_party_invite
         // event in auth_events. auth_events_for_room does not inspect content, so
