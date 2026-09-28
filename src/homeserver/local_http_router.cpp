@@ -3380,6 +3380,34 @@ namespace
         return verify_and_store_backfilled_event(runtime, room_id, origin, *target_json, policy, snapshot_state);
     }
 
+    // Returns `events` ordered by ascending `depth`, keeping the response order
+    // among equal depths. An event whose envelope does not parse sorts last; it
+    // will fail verification anyway.
+    [[nodiscard]] auto order_by_ascending_depth(std::vector<std::string> const& events,
+                                                rooms::RoomVersionPolicy const& policy) -> std::vector<std::string>
+    {
+        struct DepthKeyed
+        {
+            std::uint64_t depth{};
+            std::string json{};
+        };
+        auto keyed = std::vector<DepthKeyed>{};
+        keyed.reserve(events.size());
+        for (auto const& json : events)
+        {
+            auto const envelope = federation::parse_inbound_pdu_envelope(json, policy.id);
+            keyed.push_back({envelope.has_value() ? envelope->depth : std::numeric_limits<std::uint64_t>::max(), json});
+        }
+        std::ranges::stable_sort(keyed, std::ranges::less{}, &DepthKeyed::depth);
+        auto ordered = std::vector<std::string>{};
+        ordered.reserve(keyed.size());
+        for (auto& entry : keyed)
+        {
+            ordered.push_back(std::move(entry.json));
+        }
+        return ordered;
+    }
+
     // ADR-0064 phase C: fetch missing prev_events / auth_events from the sending
     // server, verify each returned event, and store the verified events as
     // outliers with state groups so a later ingestion attempt can resolve state.
@@ -3412,7 +3440,10 @@ namespace
             ++outbound_calls;
             if (fetched.has_value())
             {
-                for (auto const& json : *fetched)
+                // A backfilled event needs its prev_events' state groups, so
+                // parents must be stored before children; the response order
+                // is the remote's choice (0.12.13 audit item 9).
+                for (auto const& json : order_by_ascending_depth(*fetched, policy))
                 {
                     if (verify_and_store_backfilled_event(runtime, room_id, envelope.origin, json, policy))
                     {
