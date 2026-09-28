@@ -1778,7 +1778,8 @@ SCENARIO("Auth rules v1-v5: cross-domain sender is allowed when m.federate is ab
         auto const parsed = merovingian::canonicaljson::parse_lossless(msg_json);
         REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
 
-        auto const* policy_v1 = merovingian::rooms::find_room_version_policy("1");
+        // v3 uses the original (room v1) auth rules; v1 itself is not supported (ADR-0076).
+        auto const* policy_v1 = merovingian::rooms::find_room_version_policy("3");
         REQUIRE(policy_v1 != nullptr);
 
         auto auth_events = merovingian::events::AuthEventMap{};
@@ -1817,7 +1818,8 @@ SCENARIO("Auth rules v1-v5: cross-domain sender is rejected when m.federate is f
         auto const parsed = merovingian::canonicaljson::parse_lossless(msg_json);
         REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
 
-        auto const* policy_v1 = merovingian::rooms::find_room_version_policy("1");
+        // v3 uses the original (room v1) auth rules; v1 itself is not supported (ADR-0076).
+        auto const* policy_v1 = merovingian::rooms::find_room_version_policy("3");
         REQUIRE(policy_v1 != nullptr);
 
         auto auth_events = merovingian::events::AuthEventMap{};
@@ -1867,7 +1869,8 @@ SCENARIO("Auth rules v1: create event is allowed when the room_id and sender sha
         auto const parsed = merovingian::canonicaljson::parse_lossless(create_json);
         REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
 
-        auto const* policy_v1 = merovingian::rooms::find_room_version_policy("1");
+        // v3 uses the original (room v1) auth rules; v1 itself is not supported (ADR-0076).
+        auto const* policy_v1 = merovingian::rooms::find_room_version_policy("3");
         REQUIRE(policy_v1 != nullptr);
         auto auth_events = merovingian::events::AuthEventMap{};
 
@@ -2090,7 +2093,9 @@ SCENARIO("Auth rules: room version policies exist for all stable versions", "[ev
 {
     GIVEN("a request for each stable Matrix room version")
     {
-        auto constexpr stable_versions = std::array<char const*, 10>{"1", "2", "3", "4", "5", "6", "7", "8", "9", "10"};
+        // v1 and v2 are not supported (ADR-0076).
+        auto constexpr stable_versions =
+            std::array<char const*, 10>{"3", "4", "5", "6", "7", "8", "9", "10", "11", "12"};
 
         WHEN("each version policy is looked up")
         {

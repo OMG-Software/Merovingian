@@ -97,7 +97,7 @@ SCENARIO("Redaction keeps each content key only in the room versions whose algor
     auto constexpr third_party = R"({"display_name":"d","public_key":"k","signed":{"token":"t"}})";
     // clang-format off
     auto const cases = std::vector<Case>{
-        {"1",  "m.room.aliases",            aliases,     R"({"aliases":["#a:x"]})"},
+        {"3",  "m.room.aliases",            aliases,     R"({"aliases":["#a:x"]})"},
         {"5",  "m.room.aliases",            aliases,     R"({"aliases":["#a:x"]})"},
         {"6",  "m.room.aliases",            aliases,     R"({})"},
         {"7",  "m.room.aliases",            aliases,     R"({})"},

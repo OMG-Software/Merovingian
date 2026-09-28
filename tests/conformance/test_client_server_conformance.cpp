@@ -7905,11 +7905,12 @@ SCENARIO("POST /createRoom with public_chat preset does not produce an encrypted
 // Spec: Matrix v1.19 — Room Versions
 // URL: ../../docs/matrix-v1.19-spec/rooms/index.md
 //
-// A server MUST support all stable room versions v1 through v12. This scenario
+// The server supports the stable room versions v3 through v12 (v1 and v2 are
+// not supported, ADR-0076; the spec lets a server choose). This scenario
 // exercises the runtime path: POST /createRoom with an explicit room_version,
 // followed by GET /rooms/{roomId}/state/m.room.create/ to verify the create
 // event records the requested version.
-SCENARIO("POST /createRoom accepts every stable room version v1 through v12",
+SCENARIO("POST /createRoom accepts every supported stable room version v3 through v12",
          "[conformance][client-server][rooms][room-versions]")
 {
     GIVEN("a running client-server and a logged-in user")
@@ -7918,7 +7919,7 @@ SCENARIO("POST /createRoom accepts every stable room version v1 through v12",
         REQUIRE(started.started);
         auto const token = logged_in_token(started.runtime);
 
-        for (auto const* version : {"1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"})
+        for (auto const* version : {"3", "4", "5", "6", "7", "8", "9", "10", "11", "12"})
         {
             WHEN("POST /createRoom requests room version " + std::string{version})
             {
@@ -7940,6 +7941,44 @@ SCENARIO("POST /createRoom accepts every stable room version v1 through v12",
                     auto const* room_version = string_member(state_body, "room_version");
                     REQUIRE(room_version != nullptr);
                     REQUIRE(*room_version == version);
+                }
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.19
+// Endpoint: POST /_matrix/client/v3/createRoom, room_version
+// URL: ../../docs/matrix-v1.19-spec/client-server-api.md#post_matrixclientv3createroom
+//
+// "If provided, the homeserver will return a 400 error with the errcode
+// M_UNSUPPORTED_ROOM_VERSION if it does not support the room version."
+// Room versions 1 and 2 are not supported (ADR-0076).
+SCENARIO("POST /createRoom refuses room versions 1 and 2 as unsupported",
+         "[conformance][client-server][rooms][room-versions][v1_v2_unsupported]")
+{
+    GIVEN("a running client-server and a logged-in user")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+
+        for (auto const* version : {"1", "2"})
+        {
+            WHEN("POST /createRoom requests room version " + std::string{version})
+            {
+                auto const request_body = std::string{"{\"room_version\":\""} + version + "\"}";
+                auto const create = merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"POST", "/_matrix/client/v3/createRoom", token, request_body});
+
+                THEN("the server returns 400 M_UNSUPPORTED_ROOM_VERSION")
+                {
+                    // Spec MUST: 400 M_UNSUPPORTED_ROOM_VERSION for an unsupported version.
+                    REQUIRE(create.response.status == 400U);
+                    auto const body = parse_object(create.response.body);
+                    auto const* errcode = string_member(body, "errcode");
+                    REQUIRE(errcode != nullptr);
+                    REQUIRE(*errcode == "M_UNSUPPORTED_ROOM_VERSION");
                 }
             }
         }

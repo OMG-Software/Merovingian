@@ -60,8 +60,8 @@ namespace
     return config;
 }
 
-[[nodiscard]] auto remote_for(std::string const& origin, std::string const& key_id,
-                              std::string const& key_seed) -> merovingian::federation::FederationRemoteRuntime
+[[nodiscard]] auto remote_for(std::string const& origin, std::string const& key_id, std::string const& key_seed)
+    -> merovingian::federation::FederationRemoteRuntime
 {
     auto remote = merovingian::federation::FederationRemoteRuntime{};
     remote.server_name = origin;
@@ -94,8 +94,8 @@ namespace
 }
 
 [[nodiscard]] auto signed_put_request(std::string const& origin, std::string const& key_id, std::string const& key_seed,
-                                      std::string const& target,
-                                      std::string const& body) -> merovingian::federation::SignedFederationRequest
+                                      std::string const& target, std::string const& body)
+    -> merovingian::federation::SignedFederationRequest
 {
     auto request = merovingian::federation::SignedFederationRequest{};
     request.method = "PUT";
@@ -113,8 +113,8 @@ namespace
 }
 
 [[nodiscard]] auto signed_post_request(std::string const& origin, std::string const& key_id,
-                                       std::string const& key_seed, std::string const& target,
-                                       std::string const& body) -> merovingian::federation::SignedFederationRequest
+                                       std::string const& key_seed, std::string const& target, std::string const& body)
+    -> merovingian::federation::SignedFederationRequest
 {
     auto request = merovingian::federation::SignedFederationRequest{};
     request.method = "POST";
@@ -244,8 +244,8 @@ SCENARIO("Federation version endpoint is served without authentication",
 // verify_pdu_content_hash passes. The membership parameter selects
 // "join", "leave", or "knock".
 [[nodiscard]] auto make_signed_member_pdu(std::string const& room_id_arg, std::string const& sender,
-                                          std::string const& membership,
-                                          std::string_view room_ver = "12") -> std::string
+                                          std::string const& membership, std::string_view room_ver = "12")
+    -> std::string
 {
     auto const unsigned_json = std::string{"{\"type\":\"m.room.member\",\"room_id\":\""} + room_id_arg +
                                "\",\"sender\":\"" + sender + "\",\"state_key\":\"" + sender +
@@ -258,8 +258,8 @@ SCENARIO("Federation version endpoint is served without authentication",
 // Build a properly signed v2 invite body wrapping a signed m.room.member
 // invite event from the remote server.
 [[nodiscard]] auto make_signed_v2_invite_body(std::string const& room_id_arg, std::string const& sender,
-                                              std::string const& state_key,
-                                              std::string_view room_ver = "12") -> std::string
+                                              std::string const& state_key, std::string_view room_ver = "12")
+    -> std::string
 {
     auto const unsigned_json = std::string{"{\"type\":\"m.room.member\",\"room_id\":\""} + room_id_arg +
                                "\",\"sender\":\"" + sender + "\",\"state_key\":\"" + state_key +
@@ -272,8 +272,8 @@ SCENARIO("Federation version endpoint is served without authentication",
 }
 
 // Navigate a JSON object and return a pointer to the Value for `key`.
-[[nodiscard]] auto json_get(merovingian::canonicaljson::Object const& obj,
-                            std::string const& key) -> merovingian::canonicaljson::Value const*
+[[nodiscard]] auto json_get(merovingian::canonicaljson::Object const& obj, std::string const& key)
+    -> merovingian::canonicaljson::Value const*
 {
     for (auto const& m : obj)
         if (m.key == key)
@@ -676,6 +676,67 @@ SCENARIO("invite v2 processes inbound invite and returns signed event", "[federa
                 // Spec MUST: HTTP 200.
                 REQUIRE(response.status == 200U);
                 REQUIRE(*invite_invoked);
+            }
+        }
+    }
+}
+
+// Spec: Matrix Server-Server API v1.19
+// Endpoint: PUT /_matrix/federation/v2/invite/{roomId}/{eventId}, 400 response
+// ../../docs/matrix-v1.19-spec/server-server-api.md#put_matrixfederationv2inviteroomideventid
+//
+// A 400 with errcode M_INCOMPATIBLE_ROOM_VERSION carries "room_version: The
+// version of the room. Required if the errcode is M_INCOMPATIBLE_ROOM_VERSION."
+// Room versions 1 and 2 are not supported (ADR-0076), so an invite into one is
+// refused with that error rather than processed or failed with a 5xx.
+SCENARIO("invite v2 into a room of an unsupported version is refused as incompatible",
+         "[federation][conformance][invite_v2][v1_v2_unsupported]")
+{
+    for (auto const* version : {"1", "2"})
+    {
+        GIVEN("a runtime with invite_handler wired and a v2 invite naming room version " + std::string{version})
+        {
+            auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+            merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
+            auto invite_invoked = std::make_shared<bool>(false);
+            runtime.invite_handler =
+                [invite_invoked]([[maybe_unused]] merovingian::federation::InviteRequest const& request)
+                -> merovingian::federation::InviteAcceptResult {
+                *invite_invoked = true;
+                return {true, 200U, {}, "{}"};
+            };
+
+            // The event is well formed and signed; only the declared version is
+            // one this server does not support.
+            auto body = make_signed_v2_invite_body(std::string{room_id}, "@remote:remote.example.org",
+                                                   "@local:local.example.org");
+            auto const declared = std::string{R"({"room_version":"12")"};
+            REQUIRE(body.starts_with(declared));
+            body.replace(0U, declared.size(), std::string{R"({"room_version":")"} + version + "\"");
+
+            WHEN("the invite is dispatched")
+            {
+                auto const event_id = std::string{"$invite_event:"} + origin;
+                auto const target = "/_matrix/federation/v2/invite/" + std::string{room_id} + "/" + event_id;
+                auto const request = signed_put_request(origin, key_id, key_seed, target, body);
+                auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
+
+                THEN("the server answers 400 M_INCOMPATIBLE_ROOM_VERSION naming the room version")
+                {
+                    // Spec: 400 M_INCOMPATIBLE_ROOM_VERSION with room_version.
+                    REQUIRE(response.status == 400U);
+                    auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
+                    REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+                    auto const* obj = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                    REQUIRE(obj != nullptr);
+                    auto const* errcode = json_get(*obj, "errcode");
+                    REQUIRE(errcode != nullptr);
+                    REQUIRE(std::get<std::string>(errcode->storage()) == "M_INCOMPATIBLE_ROOM_VERSION");
+                    auto const* room_version = json_get(*obj, "room_version");
+                    REQUIRE(room_version != nullptr);
+                    REQUIRE(std::get<std::string>(room_version->storage()) == version);
+                    REQUIRE_FALSE(*invite_invoked);
+                }
             }
         }
     }
@@ -2636,7 +2697,7 @@ SCENARIO("parse_inbound_pdu_envelope accepts a signed member PDU for every stabl
 {
     GIVEN("the set of stable Matrix room versions")
     {
-        auto const versions = std::array{"1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"};
+        auto const versions = std::array{"3", "4", "5", "6", "7", "8", "9", "10", "11", "12"};
 
         for (auto const* version : versions)
         {
@@ -2667,7 +2728,7 @@ SCENARIO("authorize_federation_pdu accepts a signed member PDU for every stable 
     {
         auto const key_record = key_record_for_origin();
 
-        auto const versions = std::array{"1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"};
+        auto const versions = std::array{"3", "4", "5", "6", "7", "8", "9", "10", "11", "12"};
 
         for (auto const* version : versions)
         {
