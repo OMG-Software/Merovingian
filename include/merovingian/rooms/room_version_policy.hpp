@@ -96,6 +96,9 @@ struct RoomVersionPolicy final
     // origin_server_ts (rooms/v5.md, "Signing key validity period"). Off by
     // default, so a version that forgets to set it enforces the check.
     bool ignores_key_validity{false};
+    // Room v3 event IDs are the reference hash in standard Unpadded Base64
+    // (rooms/v3.md); v4 onwards use URL-safe base64 (rooms/v4.md).
+    bool event_id_url_safe_base64{true};
 };
 
 [[nodiscard]] auto known_room_versions() -> std::vector<RoomVersionPolicy>;

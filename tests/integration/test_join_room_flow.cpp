@@ -407,11 +407,13 @@ auto constexpr resident_key_seed = "join-room-flow-resident-seed";
     };
 }
 
+// The resident server's key, valid until 2100-01-01: from room v5 a key must
+// still be valid at each event's origin_server_ts (ADR-0075).
 [[nodiscard]] auto resident_remote_runtime() -> merovingian::federation::FederationRemoteRuntime
 {
     auto remote = merovingian::federation::FederationRemoteRuntime{};
     remote.server_name = resident_server;
-    remote.signing_key = {resident_server, resident_key_id, 0U,
+    remote.signing_key = {resident_server, resident_key_id, 4'102'444'800'000U,
                           merovingian::federation::test::keypair_from_seed(resident_key_seed).public_key};
     remote.discovery.server_name = resident_server;
     remote.trust.reputation_score = 100U;
