@@ -49,7 +49,7 @@ must start with that test.
 | 6 | Outbound requests and SSRF (discovery, push, identity, appservice, remote media) | done: 1 high, 3 medium, 4 low |
 | 7 | Cryptography, key management and worker IPC | done: 1 high, 1 medium, 4 low |
 | 8 | Process isolation and platform hardening (workers, seccomp, sandboxes) | done: 1 high, 2 medium, 5 low |
-| 9 | Media repository and thumbnailer | pending |
+| 9 | Media repository and thumbnailer | done: 5 medium, 3 low |
 | 10 | Database, persistence and migrations | pending |
 | 11 | Configuration, observability, logging and packaging | pending |
 
@@ -2083,4 +2083,219 @@ filter first.
 
 - Not examined: `src/platform/elf_probe.cpp`, BSD pledge and Capsicum behaviour beyond a
   static read, and the OpenRC and BSD `rc.d` scripts.
+
+---
+
+## Area 9 — Media repository and thumbnailer
+
+**Result:** 8 findings confirmed: 5 medium, 3 low. The verifier also re-found OUT-7,
+independently.
+
+**Design facts that remove whole attack classes:**
+- Blobs live in memory and in the database, not on the filesystem, so path traversal
+  and filename collisions do not apply.
+- The stored `Content-Type` is always the server-sniffed type, from png, jpeg, gif, pdf,
+  text/plain or octet-stream. Stored SVG or HTML XSS is therefore not reachable.
+- Media IDs are 128-bit random values from the CSPRNG.
+- The federation multipart boundary is random.
+- The decoder uses libpng's simplified API and turbojpeg, with no C++ frames between a
+  `setjmp` and its `longjmp`.
+
+**Prior fixes that hold:**
+- 0.12.5 #8.
+- M05 random IDs.
+- M-09 / #448.
+- #443/#444 (media ID shapes).
+- #445 (markup sniffed as text).
+- #449, for the target size.
+- #418.
+- The 0.12.13 decoder hardening.
+
+**Regressed:** the M05 legacy freeze (MED-1).
+
+### MED-1 — The freeze on legacy unauthenticated media downloads is lost on every restart
+
+- **Severity:** medium (upper end) · **Attacker:** A1 holding an mxc URI · **Verdict:**
+  confirmed and re-checked by the orchestrator; adjusted from high because the spec says
+  SHOULD
+- **Location:**
+  - `src/homeserver/runtime.cpp:124-153` (`hydrate_media_repository`)
+  - `include/merovingian/media/repository.hpp:59` (default `true`)
+  - `src/media/repository.cpp:637`, `src/homeserver/media_service.cpp:1084`
+- **Spec:** "servers SHOULD "freeze" the deprecated, unauthenticated, endpoints to prevent
+  newly-uploaded media from being downloaded … any media uploaded *after* (or *during*)
+  the freeze SHOULD only be accessible through the new, authenticated, endpoints."
+- **Rule:** ADR-0068 ("the freeze survives any backup/restore"),
+  `docs/media-repository.md:135`, `docs/database-persistence.md:618`.
+- **Path:**
+  1. An upload stores `legacy_endpoint_visible=false`, and the loaders read it back.
+  2. Hydration never copies the flag, so after a restart every record has the struct
+     default `true`.
+  3. `GET /_matrix/media/v3/download|thumbnail/…` is served before authentication and
+     passes the check.
+- **Impact:** after any restart, all media uploaded since the upgrade can be downloaded
+  without a token. No test covers restart.
+- **Fix:**
+  - Copy the flag in hydration.
+  - Make the struct default `false`, failing closed.
+  - Add a restart test.
+- **Test:** GIVEN a post-upgrade upload WHEN the runtime restarts from the same database
+  THEN `GET /_matrix/media/v3/download/{s}/{id}` returns 404 AND the v1 authenticated
+  route returns 200.
+
+### MED-2 — Quarantined remote media is served anyway, and its bytes leak into error bodies
+
+- **Severity:** medium · **Attacker:** A1 or A2 requesting; A3 or A7 supplying the content
+  · **Verdict:** confirmed
+- **Location:**
+  - `src/media/repository.cpp:586-616`, `:865-880`
+  - `src/homeserver/media_service.cpp:501-505`, `:1055-1074`
+  - `src/homeserver/local_http_router.cpp:422-425`
+  - `src/homeserver/client_server.cpp:7550-7554`
+- **Rule:** the default `remote_fetch_media_policy` is `quarantine`, meaning "held for
+  admin review" (`config.hpp:415-419`).
+- **Path:**
+  1. A quarantined upload returns `ok=true` with status 202.
+  2. Remote fetch passes that on with the bytes. Nothing checks the `quarantined` flag.
+  3. Thumbnail requests accept any 2xx, so they decode the held image and serve a 200
+     thumbnail.
+  4. Download requests turn the 202 into `dispatch_err(202, "M_UNKNOWN", "<ct>|<raw
+     bytes>")`. The held content is embedded in the JSON error body, and remote
+     downloads are broken on the default policy.
+- **Fix:**
+  - Carry `quarantined` through the remote-fetch result and refuse to return bytes when it
+    is set.
+  - Never put payload bytes in an error string.
+  - Require exactly 200 in the thumbnail path.
+- **Test:** GIVEN the quarantine policy and a remote serving a valid PNG WHEN v1 download
+  and v1 thumbnail are requested THEN neither response contains image bytes or a 2xx
+  status.
+
+### MED-3 — Re-uploading content an admin removed corrupts its database row, and a later removal does not erase it
+
+- **Severity:** medium (integrity; moderation) · **Attacker:** A2 · **Verdict:** confirmed
+- **Location:**
+  - `src/media/repository.cpp:60-66`, `:386-392`, `:522-535`, `:763-795`
+  - `src/homeserver/media_service.cpp:49-62`, `:1093`
+  - `src/database/persistent_store.cpp:2690`
+- **Path:**
+  1. Removal leaves a dead blob (ref 0, bytes cleared).
+  2. A re-upload of the same bytes appends a second blob with the same `storage_id`.
+  3. `find_local_media_blob` returns the first match, which is the dead blob.
+  4. Persistence then upserts the dead blob over the database row, so the live bytes are
+     never stored. After a restart the re-upload returns 500.
+  5. Thumbnails fail immediately.
+  6. A later admin removal decrements the dead blob, so the live copy is never erased from
+     memory or the database.
+- **Fix:**
+  - Keep one blob per `storage_id`, reviving or reusing the dead one.
+  - Make every lookup consider only live blobs.
+- **Test:** GIVEN media removed and then re-uploaded WHEN the runtime restarts THEN it
+  downloads intact AND WHEN the re-upload is removed THEN its bytes are cleared in memory
+  and in the database.
+
+### MED-5 — `allow_remote` is ignored and server names are compared exactly, so the server can fetch from itself
+
+- **Severity:** medium · **Attacker:** A1 (reachable on the default configuration through
+  OUT-7) · **Verdict:** confirmed; whether the loop actually forms is rated likely
+- **Location:** `src/homeserver/media_service.cpp:770-783`, `:1017`, `:1055`;
+  `src/homeserver/local_http_router.cpp:1109-1135`
+- **Spec:** "`allow_remote` … Indicates to the server that it should not attempt to fetch
+  the media if it is deemed remote. This is to prevent routing loops where the server
+  contacts itself."
+- **Path:**
+  1. A request for `/_matrix/media/v3/download/EXAMPLE.com/<id>`, or
+     `example.com:8448`, is treated as remote.
+  2. Discovery resolves to this server, which fetches from itself.
+  3. The fallback carries `?allow_remote=false`, but the parameter is never read inbound,
+     so the chain can repeat. Each hop holds a worker for up to 120 s.
+- **Fix:**
+  - Honour `allow_remote=false` on inbound download and thumbnail requests.
+  - Canonicalise server names (lowercase, default port) before comparing.
+  - Reject discovery results that resolve to this server's own listener.
+- **Test:** GIVEN `?allow_remote=false` or a case variant of the local name WHEN media is
+  requested THEN no outbound request is made and the response is 404.
+
+### MED-6 — Media quotas default to unlimited, and blobs are held twice in memory
+
+- **Severity:** medium (a documented default, but its consequence is not) · **Attacker:** A2
+  · **Verdict:** confirmed
+- **Location:**
+  - `include/merovingian/config/config.hpp:396-406`
+  - `src/homeserver/runtime.cpp:145-149`
+  - `src/database/persistent_store.cpp:2718-2727`
+  - `src/media/repository.cpp:60-83`
+- **Detail:**
+  - `max_total_size`, `max_size_per_user` and `max_records` all default to no limit.
+    0.12.5 finding 19 was fixed as opt-in only.
+  - Every blob is held in `repository.blobs` and again in `store.media_blobs`.
+  - One account can store about 1 GB a minute per IP (50 MiB × 20 per minute), which is
+    about 2 GB of RAM.
+- **Fix:**
+  - Ship non-zero default caps.
+  - Stop keeping blob bytes in the persistent-store mirror.
+  - Index records and blobs.
+- **Test:** GIVEN the default configuration WHEN one user exceeds the default per-user
+  quota THEN the upload gets 507.
+
+### MED-4 — Thumbnail generation runs under the global runtime mutex
+
+- **Severity:** low · **Attacker:** A2, or A1 through MED-1 · **Verdict:** adjusted from
+  medium (decoding is bounded by the 4.1-megapixel cap and the media rate tier)
+- **Location:** `src/homeserver/local_http_router.cpp:4063-4070`;
+  `src/homeserver/media_service.cpp:825-870`
+- **Detail:**
+  - The decoder fork and exec, pipe I/O and decode, up to a 10 s timeout, all run with the
+    lock held.
+  - There is no thumbnail cache, so every request re-forks.
+  - This contradicts the project convention of releasing the mutex for slow work
+    (`docs/threat-model.md` ~1090).
+- **Fix:**
+  - Copy the bytes, release the lock around `generate_thumbnail`, and re-acquire.
+  - Add an LRU thumbnail cache and a per-user concurrency cap.
+- **Test:** GIVEN a decoder stub that sleeps 5 s WHEN a thumbnail request and a
+  `/versions` request run concurrently THEN `/versions` completes first.
+
+### MED-7 — Federation media download skips the trust-and-safety media policy
+
+- **Severity:** low · **Attacker:** A3 · **Verdict:** confirmed
+- **Location:** `src/homeserver/local_http_router.cpp:2243-2246`;
+  `src/homeserver/media_service.cpp:64-75`
+- **Detail:** only record state (quarantined or removed) is enforced. Media policy rules
+  and the policy-server hook apply to client routes only.
+- **Fix:** route the federation provider through `media_policy_decision`.
+- **Test:** GIVEN a media policy rule blocking ID X WHEN a signed federation request
+  downloads X THEN the response is 403 or 404.
+
+### MED-8 — The thumbnail worker's crop path can request an enormous intermediate image
+
+- **Severity:** low (contained by the sandbox) · **Attacker:** A2 · **Verdict:** confirmed
+- **Location:** `src/media/thumbnail_worker_main.cpp:178-185`, `:248-266`, `:345-361`
+- **Detail:**
+  - The crop fill is `max(target, source × ratio)` with no pixel budget.
+  - A 1×4096 source cropped to 1000×4096 asks for about 16 GB. `resize` throws and there
+    is no `try`, so the worker terminates.
+- **Fix:**
+  - Budget the fill in 64-bit arithmetic, or crop and scale in a single pass.
+  - Catch exceptions in the worker's `main`.
+- **Test:** GIVEN a 4096×1 PNG WHEN a 1×2048 crop is requested THEN the worker returns a
+  clean error.
+
+### Area 9 — hardening notes
+
+- Declared types that cannot be sniffed (video, audio, WebP, docx, `text/plain;
+  charset=…`) mismatch the sniffed type. They are silently quarantined, answered 200 with
+  a content URI, and then return 451 forever.
+- `make_multipart_boundary` falls back to a constant boundary if the RNG fails
+  (`repository.cpp:679-682`). The response should fail instead.
+- `media_id_is_safe` permits NUL, control characters and backslash.
+- Quarantine and removal apply per record, not per content hash, so re-uploading
+  quarantined bytes produces an available ID.
+- The federation `/media/thumbnail` endpoint and the `/download/{server}/{id}/{fileName}`
+  route do not exist.
+
+### Area 9 — coverage gaps
+
+- Not examined: the parent-side handling of a thumbnail worker crash, the `RLIMIT_AS`
+  value, and how the JSON serializer handles invalid UTF-8 in `dispatch_err`.
 
