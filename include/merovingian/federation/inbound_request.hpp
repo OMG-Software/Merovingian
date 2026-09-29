@@ -237,6 +237,14 @@ struct KeyResolutionBucket final
     std::chrono::steady_clock::time_point window_start{};
 };
 
+// Per-source-IP window of failed X-Matrix signature checks (FED-4, ADR-0081).
+struct BadSignatureBucket final
+{
+    std::string source{};
+    std::uint32_t failures_seen{0U};
+    std::chrono::steady_clock::time_point window_start{};
+};
+
 // Negative cache entry: an origin whose key resolution failed, remembered until
 // `expires_at` so repeats of the same name are cheap.
 struct KeyResolutionFailure final
@@ -285,6 +293,10 @@ struct FederationRuntimeState final
     // budget exists to prevent.
     std::deque<KeyResolutionBucket> key_resolution_buckets{};
     std::deque<KeyResolutionFailure> key_resolution_failures{};
+    // Failed-signature budget per source address. Pre-authentication like the
+    // containers above, so capped with FIFO eviction (kMaxBadSignatureBuckets
+    // in inbound_request.cpp).
+    std::deque<BadSignatureBucket> bad_signature_buckets{};
     // Resolutions currently in flight process-wide. Guarded by `mutex`; the
     // resolver call itself runs unlocked, so this is incremented before the
     // call and decremented after by a scope guard.

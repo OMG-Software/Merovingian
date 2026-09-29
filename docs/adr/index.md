@@ -79,6 +79,7 @@
 * [0075 - Event signing-key validity is judged at the event's origin_server_ts](0075-event-signing-key-validity-is-judged-at-origin-server-ts.md)
 * [0076 - Room versions 1 and 2 are not supported](0076-room-versions-1-and-2-are-not-supported.md)
 * [0078 - The federation worker never signs](0078-the-federation-worker-never-signs.md)
+* [0081 - Failed inbound signatures are never charged to the claimed origin](0081-failed-inbound-signatures-are-never-charged-to-the-claimed-origin.md)
 * [0082 - No thread may start before process hardening; seccomp filters are installed with TSYNC](0082-no-thread-may-start-before-process-hardening-seccomp-is-installed-with-tsync.md)
 
 ## Rejected Records

@@ -63,6 +63,14 @@ struct RuntimeFederationConfig final
     http::RateLimitPolicy key_resolution_per_ip_rate{10U, 60U};
     std::uint32_t key_resolution_max_in_flight{8U};
     std::uint32_t key_resolution_failure_ttl_seconds{300U};
+    // Bad X-Matrix signatures tolerated per source address per window (FED-4,
+    // ADR-0081). The claimed origin of a request whose signature fails is
+    // unauthenticated, so the failure is charged here, to the address the
+    // transport saw, and never to the origin's trust record. Beyond the budget
+    // the address is answered 429 M_LIMIT_EXCEEDED before any signature work.
+    // Fixed at this default: not an operator setting, so a misconfiguration
+    // cannot switch the bound off.
+    http::RateLimitPolicy bad_signature_per_ip_rate{30U, 60U};
 };
 
 struct FederationServerPolicyDecision final

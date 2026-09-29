@@ -375,6 +375,16 @@ quickly finding everything a given `AGENTS.md` file contributed.
   after body processing.
   Source: `src/federation/AGENTS.md`.
 
+- **Never charge a failed X-Matrix signature to the origin the request names.**
+  Why: until the signature verifies, the claimed origin is whatever the sender wrote.
+  Incrementing that origin's `consecutive_failures` (the original H-04 design) let three
+  unauthenticated packets trip `remote_trust_policy` for a real peer and, because only an
+  accepted request reset the count, lock it out until restart (FED-4). A bad signature is
+  charged to the source network address instead (429 `M_LIMIT_EXCEEDED` beyond the
+  budget), and the origin-level backoff is written only after a verified signature and
+  decays after a 5-minute quiet period. See ADR-0081.
+  Source: `src/federation/AGENTS.md`, `docs/adr/0081-failed-inbound-signatures-are-never-charged-to-the-claimed-origin.md`.
+
 - **Verify every inbound PDU's signature against the sending server's published key before
   it enters the event graph. Unverified events must be silently dropped, not persisted.**
   Why: without this, any peer (or a relay forwarding on another server's behalf) could

@@ -1440,7 +1440,24 @@ threats they represent, and the mitigations now in place:
   breaker never fired. Mitigation: the consecutive-failure count survives any
   transaction in which a PDU failed a trust check; only a clean transaction
   resets it. Room-ACL denials are excluded, being local policy rather than peer
-  misbehaviour.
+  misbehaviour. These failures follow a verified signature; the resulting backoff
+  decays after 5 quiet minutes (see the FED-4 entry below).
+- **Forged X-Matrix requests locked a real peer out of federation until restart
+  (FED-4).** The H-04 fix charged a failed signature to the *claimed*
+  origin's `consecutive_failures`. The origin in an `X-Matrix` header is
+  unauthenticated until the signature verifies, so three forged packets naming a
+  peer tripped `remote_trust_policy` (which runs before the signature check) for
+  every genuine request from it, and nothing ever reset the count. Mitigation: a
+  failed signature is never charged to the claimed origin (ADR-0081). It is
+  counted per source address (`bad_signature_per_ip_rate`, 30 per 60 s; excess is
+  answered 429 `M_LIMIT_EXCEEDED` for that address only, before any signature
+  work; capped, FIFO-evicted, pre-authentication container). The per-origin
+  `consecutive_failures` is now written only by failures that follow a verified
+  signature (malformed or oversize transactions, forged relayed PDUs), and the
+  resulting backoff lapses after `remote_backoff_decay_window` (5 minutes of
+  quiet) instead of persisting until restart. Residual risk: an attacker
+  sharing a source address with a real peer (CGNAT, or a reverse proxy with
+  `trusted_proxies` unset) throttles that address, not the named origin.
 - **Debug logs retained full event content.** The event signer logged the
   canonical signing payload and the signed event JSON under field names the
   redactor did not recognise, and the legacy `LOG_*` macros bypassed the

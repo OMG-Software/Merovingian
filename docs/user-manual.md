@@ -790,6 +790,19 @@ federation partner intermittently fails to join, look for
 `key_resolution.throttled` at warning level — it names the origin and which
 budget denied it.
 
+A request whose `X-Matrix` signature fails is charged to the **source address**
+(after `trusted_proxies` and IPv6-prefix grouping, as above), never to the origin
+it names, because that origin is unauthenticated until the signature verifies.
+Beyond 30 failed signatures per 60 seconds from one address (a fixed limit, not
+a config key), that address is answered `429 M_LIMIT_EXCEEDED` with a
+`federation.rate_limited` audit event, and other addresses are unaffected. A
+real peer that shares an address with a sender of forged requests, including
+every peer behind a reverse proxy that has no `trusted_proxies` configured,
+shares that budget. Separately, an origin that sends malformed transactions or
+forged relayed PDUs after a valid signature is backed off after three
+consecutive failures; the backoff lapses after five minutes without a further
+failure.
+
 Rate values use `N/Ws` or `N/Wm` syntax (e.g. `300/60s`). The six `per_origin_*`
 and transaction keys are reloadable. An origin that exceeds a bucket gets `429 M_LIMIT_EXCEEDED` for
 the transaction and a `federation.rate_limited` audit event; invalid

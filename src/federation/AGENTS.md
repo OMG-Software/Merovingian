@@ -14,6 +14,14 @@ Federation is the highest-risk surface: **all input comes from untrusted remote 
 2. **Verify every inbound PDU's signature** against the sending server's published key before
    allowing it to enter the event graph. Unverified events must be silently dropped (not persisted).
 
+   A failed signature is NEVER charged to the claimed origin's `RemoteTrustState`: the origin
+   is unauthenticated until the signature verifies, so doing so lets any sender lock a real
+   peer out (FED-4, ADR-0081). Charge it to the source address
+   (`SignedFederationRequest::remote_addr`, budget `bad_signature_per_ip_rate`, 429
+   `M_LIMIT_EXCEEDED`). Write `consecutive_failures` only through
+   `record_remote_trust_failure()` and only after the signature has verified; the backoff
+   it feeds decays after `remote_backoff_decay_window` (5 minutes).
+
 3. **Fetch remote server keys via `remote_key_cache.hpp`** — never trust a key the remote server
    supplies inline. The key cache fetches from `/_matrix/key/v2/server` and trusts a key for at
    most 7 days after the fetch (`min(valid_until_ts, fetched_at + 7 days)`). From room v5 an event's
