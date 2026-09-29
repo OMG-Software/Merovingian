@@ -45,7 +45,7 @@ must start with that test.
 | 2 | Client-Server authorisation and room access control | done: 4 high, 4 medium, 4 low |
 | 3 | HTTP transport, TLS and request-level DoS | done: 3 high, 3 medium, 2 low |
 | 4 | Federation inbound (X-Matrix, PDU ingestion, keys, backfill, membership) | done: 1 critical, 5 high, 3 medium, 3 low |
-| 5 | Event engine (auth rules, state resolution, redaction, canonical JSON) | pending |
+| 5 | Event engine (auth rules, state resolution, redaction, canonical JSON) | done: 5 high, 4 medium, 3 low |
 | 6 | Outbound requests and SSRF (discovery, push, identity, appservice, remote media) | pending |
 | 7 | Cryptography, key management and worker IPC | pending |
 | 8 | Process isolation and platform hardening (workers, seccomp, sandboxes) | pending |
@@ -1218,4 +1218,269 @@ for FED-2 was corrected. One sub-claim of FED-6 was refuted.
   `dispatch_worker.cpp`, the worker event loop beyond provider wiring, and media
   federation download.
 - Unrouted, not audited: `/publicRooms`, `/timestamp_to_event` and `/openid/userinfo`.
+
+---
+
+## Area 5 — Event engine (auth rules, state resolution, redaction, canonical JSON)
+
+**Result:** 12 findings confirmed: 5 high, 4 medium, 3 low. None refuted; 5 were adjusted
+downward.
+
+**Why these matter:** every finding is a divergence from the spec algorithm. When this
+server accepts an event that conformant servers reject, or resolves state differently,
+the room splits, and the local view of power levels and bans is wrong.
+
+**Prior fixes that hold:**
+- H-05, H-06, L-14 and L-15.
+- H-07 holds for `users` and scalar keys, but not for the `events` map (EVT-11).
+- #487 rule fixes: scalar power level 9.5, create validation, the `@` state-key rule,
+  third-party-invite signatures, and v12 creators in `users`.
+
+### EVT-1 — Auth rule "`join_authorised_via_users_server` must be signed by that user's server" is not enforced
+
+- **Severity:** high · **Attacker:** A3 · **Verdict:** confirmed
+- **Location:**
+  - `src/events/authorization.cpp:1069-1099`
+  - `src/federation/inbound_request.cpp:1962-2020`
+  - `src/federation/security.cpp:260-284`
+  - `src/homeserver/room_service.cpp:3299`
+- **Spec:** `rooms/v8.md` rule 4.2 (v9–v11 rule 4.2, v12 rule 5.2): "If `content` has a
+  `join_authorised_via_users_server` property: 1. If the event is not validly signed by
+  the homeserver of the user ID denoted by the key, reject."
+- **Path:**
+  1. The restricted-join branch checks only that the named user is joined and has invite
+     power. The authoriser receives no signature material.
+  2. PDU verification checks only the sender server's signature.
+  3. No code path verifies a signature keyed on `join_authorised_via_users_server`.
+- **Impact:** any remote server can join its users to any restricted or
+  `knock_restricted` room by naming any joined member with invite power (the default
+  invite level is 0). The room's `allow` conditions are bypassed.
+- **Fix:**
+  - At PDU receipt and in `send_join`, require a valid signature from the named user's
+    server whenever the key is present, and fail closed if that server's key cannot be
+    fetched.
+  - Record the verified result on the event so that state-resolution re-authorisation
+    uses it.
+- **Test:** GIVEN a v10 restricted room with `@admin:us` joined WHEN a join from
+  `@evil:a3` names `@admin:us` and is signed only by a3 THEN it is rejected AND the same
+  join also signed by `us` is accepted.
+
+### EVT-2 — `m.room.power_levels` events are not held to `events["m.room.power_levels"]`
+
+- **Severity:** high · **Attacker:** A3, or a local moderator · **Verdict:** confirmed
+  (orchestrator re-checked)
+- **Location:** `src/events/authorization.cpp:1343-1503`; the return at `:1490-1503` uses
+  `state_default` only.
+- **Spec:**
+  - `rooms/v12.md` rule 8 (v11 rule 7): "If the event type's *required power level* is
+    greater than the `sender`'s power level, reject."
+  - The required level is "listed explicitly in the `events` section or given by either
+    `state_default` or `events_default`."
+- **Path:**
+  1. In a default room, power-level events require level 100 and `state_default` is 50.
+  2. A level-50 moderator sends a power-levels change within the bounds of rule 9 or 10,
+     such as lowering `kick`, raising `users_default`, or promoting users below 50.
+  3. The code compares only against `state_default` and allows it.
+- **Existing test:** `tests/conformance/test_event_auth_rules.cpp` (scenario "Auth rules
+  allow a power_levels change where both old and new scalar values are within the
+  sender's power", around `:3060-3090`) asserts the non-conformant result and must be
+  corrected.
+- **Impact:** moderators can rewrite the power-level map where the spec says only admins
+  can. Conformant servers reject these events, so the room diverges.
+- **Fix:** compute the required level (the `events[type]` value, else `state_default`)
+  before the power-levels-specific rules.
+- **Test:** GIVEN `events{"m.room.power_levels":100}`, `state_default` 50 and a sender at
+  50 WHEN the sender changes `users_default` THEN the event is rejected.
+
+### EVT-3 — With three or more state groups, a conflicted key lands in both maps and the last group wins
+
+- **Severity:** high · **Attacker:** A3 (controls `prev_events`) and organic forks ·
+  **Verdict:** confirmed (orchestrator traced the loop)
+- **Location:** `src/events/state_resolution.cpp:929-955`, `:1503-1506`
+- **Spec:** "If a given key *K* is present in every *Si* with the same value *V* in each
+  state map, then the pair (*K*, *V*) belongs to the *unconflicted state map*. Otherwise,
+  *V* belongs to the *conflicted state set*."
+- **Path:** for the groups `[K=A]`, `[K=B]`, `[K=A]`:
+  1. The first group inserts A.
+  2. The second group moves K to `conflicted`.
+  3. The third group finds K absent from `unconflicted` and re-inserts A.
+  4. Step 5 then overwrites the resolved value with the "unconflicted" one.
+  - The same happens for `A,B,B` and `A,B,C`: whichever group comes last wins.
+- **Impact:** for keys present in every fork (power levels, join rules, each member),
+  resolution is replaced by prev-event order. A ban in one of three forks can be dropped.
+  No test uses more than two groups.
+- **Fix:** build `key → set(event_id)` with a per-key group count. A key is unconflicted
+  only if it appears in every group with exactly one ID.
+- **Test:** GIVEN three groups with `member(@u)` as join, ban, join WHEN partitioned THEN
+  the key is only conflicted AND the result does not depend on group order.
+
+### EVT-4 — Reverse topological power ordering is a plain sort, not a topological sort
+
+- **Severity:** high · **Attacker:** A3 · **Verdict:** confirmed (orchestrator
+  re-checked)
+- **Location:** `src/events/state_resolution.cpp:960-999`
+- **Spec:** "the lexicographically smallest topological ordering based on the DAG formed
+  by auth events … sorting the events using Kahn's algorithm for topological sorting, and
+  at each step selecting, among all the candidate vertices, the smallest vertex using the
+  above comparison relation."
+- **Path:**
+  1. `std::stable_sort` orders by power, then timestamp, then ID, ignoring auth-event
+     dependencies between candidates.
+  2. Example: an admin's ban cites a moderator's earlier kick as an auth event. The ban
+     is applied first, then the kick is re-applied over it, and the ban is lost.
+- **Fix:** Kahn's algorithm over the auth DAG restricted to the set, choosing the minimum
+  ready vertex by (power descending, timestamp ascending, event ID ascending).
+- **Test:** GIVEN conflicted events where the higher-power event cites the lower-power one
+  in `auth_events` WHEN they are ordered THEN the cited event comes first.
+
+### EVT-6 — Negative user power levels are replaced by `users_default`
+
+- **Severity:** high · **Attacker:** A2 or A3 (a muted user) · **Verdict:** confirmed
+  (orchestrator re-checked)
+- **Location:** `src/events/authorization.cpp:148-154` (-1 used as the "absent" value),
+  `:831`, `:1442-1446`, `:1462-1466`
+- **Spec:** "If a `user_id` is in the `users` list, then that `user_id` has the associated
+  power level"; `users_default` applies to users "not mentioned in the `users` key". The
+  allowed range is `[-(2**53)+1, (2**53)-1]`.
+- **Detail:**
+  - A user set to -1 (the usual client "mute") gets `users_default`, so their messages
+    pass `events_default` 0.
+  - If `users_default` is higher, a muted user is effectively promoted.
+  - The same value feeds the kick, ban, invite and power-level target rules.
+- **Fix:** return `std::optional<int64_t>` from the `users` lookup and fall back only when
+  the user is absent.
+- **Test:** GIVEN `users{"@u":-1}` and `events_default` 0 WHEN @u sends a message THEN it
+  is denied.
+
+### EVT-5 — Mainline ordering sees only the events inside the submitted state groups
+
+- **Severity:** medium · **Attacker:** A3 · **Verdict:** adjusted from high
+- **Location:** `src/events/state_resolution.cpp:106-138`, `:1246`, `:1489`;
+  `src/homeserver/state_bookkeeping.cpp:186`, `:312`
+- **Spec:** "Repeatedly fetch *Pi+1*, the `m.room.power_levels` event in the `auth_events`
+  of *Pi*".
+- **Detail:**
+  - `power_levels_auth_ancestor` only searches the state-group index and never uses
+    `event_lookup`, so the mainline collapses to the current power-levels event.
+  - Events based on older power levels are then ordered by timestamp, which the sender
+    controls.
+  - Iterative auth checks still gate each event, so the effect is divergence, not
+    bypass.
+- **Fix:** walk the mainline through the `AuthChainEventSource`, failing closed if an
+  event is missing.
+- **Test:** GIVEN a power-levels chain P2→P1→P0 where only P2 is in the groups WHEN the
+  mainline is ordered THEN events based on P0 and P1 get positions 2 and 1.
+
+### EVT-7 — v11 and v12 creator logic reads `content.creator`, which those versions removed
+
+- **Severity:** medium · **Attacker:** A3 / organic · **Verdict:** adjusted from high
+- **Location:** `src/events/authorization.cpp:739-745`, `:1010-1017`, `:1292-1299`;
+  `src/homeserver/room_service.cpp:2469`
+- **Spec:** `rooms/v11.md`: "The `content` of a `m.room.create` event no longer has a
+  `creator` property"; "If the only previous event is an `m.room.create` and the
+  `state_key` is the sender of the `m.room.create`, allow."
+- **Detail:**
+  - For v11 and v12 rooms created elsewhere, the creator's first join and first
+    power-levels event fail when re-authorised locally (state-resolution auth
+    difference, backfill).
+  - Locally created rooms always include `creator`, which is why the conformance
+    fixtures (`test_event_auth_rules.cpp:17-63`) do not catch this.
+- **Fix:**
+  - For v11+, derive the creator from the create event's sender, plus
+    `additional_creators` in v12.
+  - Require `prev_events == [create]` for the bootstrap join.
+  - Stop writing `creator` for v11+.
+- **Test:** GIVEN a v11 create event without `creator` WHEN the creator's join with
+  `prev_events=[create]` is authorised THEN it is allowed.
+
+### EVT-8 — In v12 power ordering, room creators rank at the default power level
+
+- **Severity:** medium · **Attacker:** A3 · **Verdict:** confirmed
+- **Location:** `src/events/state_resolution.cpp:558-604`, `:624-633`
+- **Detail:**
+  - v12 events never list the create event in `auth_events`, so `context->create` is
+    null.
+  - `user_is_room_creator` returns false, so a creator's actions are ordered as if the
+    creator had default power instead of infinite power.
+  - The auth check itself derives the create event from the room ID correctly.
+- **Fix:** pass the create event derived from the room ID into `power_level_from_event`
+  for v12.
+- **Test:** GIVEN a v12 room where a creator's ban and an admin's power-levels edit
+  conflict WHEN ordered THEN the creator's event is first.
+
+### EVT-9 — The conflicted-state-subgraph walk enumerates paths without memoisation and fails closed
+
+- **Severity:** medium (availability) · **Attacker:** A3, and large legitimate v12 rooms
+  · **Verdict:** confirmed
+- **Location:** `src/events/state_resolution.cpp:424-488`;
+  `include/merovingian/events/limits.hpp:63`
+- **Detail:**
+  - A recursive DFS with no visited set shares one 20 000-visit budget across all start
+    nodes.
+  - When the budget runs out, resolution fails, `compute_state_before` returns not-ok,
+    and `recompute_current_state` leaves state unchanged.
+  - A v12 room with a persistent fork can therefore stop applying bans and power-level
+    changes.
+- **Fix:** compute the subgraph as the intersection of "reachable from a conflicted
+  event" and "reaches a conflicted event" with memoised DAG traversal, and cap distinct
+  events only.
+- **Test:** GIVEN a 30-rung power-levels ladder and 100 conflicted member events WHEN v12
+  resolution runs THEN it resolves within the distinct-event cap.
+
+### EVT-11 — String-valued levels in the `events` map are ignored in v3–v9
+
+- **Severity:** low (upper end) · **Attacker:** A3 · **Verdict:** adjusted from medium
+- **Location:** `src/events/authorization.cpp:1538`, `:1573`
+- **Spec:** `rooms/v9.md`: string encoding "includes the nested values within the
+  `events`, `notifications` and `users` properties."
+- **Fix:** use `power_level_member(..., allow_strings)` at both sites.
+- **Test:** GIVEN a v9 room with `events{"m.room.topic":"100"}` WHEN a user at level 50
+  sets the topic THEN it is denied.
+
+### EVT-10 — A non-object `content.third_party_invite` is treated as absent
+
+- **Severity:** low · **Attacker:** A3 with invite power · **Verdict:** adjusted from medium
+- **Location:** `src/events/authorization.cpp:1157-1164`
+- **Spec:** "If `content.third_party_invite` does not have a `signed` property, reject."
+- **Fix:** enter the third-party branch whenever the key is present.
+- **Test:** GIVEN a sender with invite power WHEN an invite carries
+  `third_party_invite: "x"` THEN it is denied.
+
+### EVT-12 — Smaller rule divergences
+
+- **Severity:** low · **Verdict:** (a) and (c) confirmed, (b) documented, (d) not verified
+- **(a) Missing v3–v5 `m.room.aliases` rule.** `rooms/v3.md`: "If sender's domain doesn't
+  match `state_key`, reject. 3. Otherwise, allow." It is absent from
+  `authorization.cpp`.
+- **(b) A creator with no member event is treated as joined.**
+  `src/events/authorization.cpp:1292-1299`. This deviation is documented in
+  `docs/event-engine.md:119`.
+- **(c) Rejected auth events are not refused.** Rule "If there are entries which were
+  themselves rejected under the checks performed on receipt of a PDU, reject" is not
+  checked in `validate_auth_events_selection`
+  (`src/homeserver/local_http_router.cpp:~365-400`) or in the resolver's
+  `find_own_auth_event` (`src/events/state_resolution.cpp:646-681`).
+- **(d) v3–v5 are stricter than the spec on scalar power-level values.** This fails
+  closed.
+- **Also noted by the verifier:** rule 4.2 applies to any membership that carries the key,
+  but the code reads the key only in the restricted-join branch.
+
+### Area 5 — hardening notes
+
+- `resolve_state()` (`state_resolution.cpp:849-905`) is a v1-style depth-ordered resolver.
+  It is exported but unused. Remove it so it cannot be wired to a v3+ room.
+- `redact_event` copies `content` unredacted when `type` is not a string
+  (`redaction.cpp:180`). Return an error instead.
+- `parse_lossless` is strict for every room version. `rooms/v6.md` says v3–v5 events
+  "might not be fully compliant", so one float in a v3–v5 room blocks everything that
+  descends from it.
+- `StateKeyHash` combines unseeded `std::hash` values with XOR. It is bounded by the
+  10 000-key cap.
+
+### Area 5 — coverage gaps
+
+- Not read closely: `canonicaljson/value.cpp`, and the yyjson handling of lone `\u`
+  surrogates.
+- Spec sections "Checks performed on receipt of a PDU" and "Soft failure" were compared
+  only as far as the callers audited in Area 4.
 
