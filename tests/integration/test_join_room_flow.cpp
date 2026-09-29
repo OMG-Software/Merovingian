@@ -33,6 +33,7 @@
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/config/config.hpp"
+#include "merovingian/core/socket_handle.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/events/event_id.hpp"
 #include "merovingian/events/event_signer.hpp"
@@ -259,10 +260,12 @@ auto run_resident_server(merovingian::net::TcpAcceptor& acceptor,
         {
             return;
         }
+        // Owns the accepted descriptor: TlsConnection only borrows it, so without
+        // this every served connection stayed open for the rest of the run.
+        auto const owned_client_fd = merovingian::core::SocketHandle{client_fd};
         auto tls_result = merovingian::homeserver::accept_tls_connection(tls_context, client_fd, 5000);
         if (!tls_result.connection.has_value())
         {
-            ::close(client_fd);
             continue;
         }
         auto& connection = *tls_result.connection;

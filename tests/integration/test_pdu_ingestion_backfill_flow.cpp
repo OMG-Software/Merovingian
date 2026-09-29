@@ -17,6 +17,7 @@
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/config/config.hpp"
+#include "merovingian/core/socket_handle.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/federation/inbound_request.hpp"
@@ -216,10 +217,12 @@ inline auto run_body_aware_tls_server(merovingian::net::TcpAcceptor& acceptor,
     {
         return;
     }
+    // Owns the accepted descriptor: TlsConnection only borrows it, so without
+    // this every served connection stayed open for the rest of the run.
+    auto const owned_client_fd = merovingian::core::SocketHandle{client_fd};
     auto tls_result = merovingian::homeserver::accept_tls_connection(tls_context, client_fd, 5000);
     if (!tls_result.connection.has_value())
     {
-        ::close(client_fd);
         return;
     }
     auto& connection = *tls_result.connection;
@@ -248,10 +251,12 @@ inline auto run_body_aware_dispatch_tls_server(merovingian::net::TcpAcceptor& ac
         {
             return;
         }
+        // Owns the accepted descriptor: TlsConnection only borrows it, so without
+        // this every served connection stayed open for the rest of the run.
+        auto const owned_client_fd = merovingian::core::SocketHandle{client_fd};
         auto tls_result = merovingian::homeserver::accept_tls_connection(tls_context, client_fd, 5000);
         if (!tls_result.connection.has_value())
         {
-            ::close(client_fd);
             continue;
         }
         auto& connection = *tls_result.connection;

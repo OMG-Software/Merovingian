@@ -1940,11 +1940,12 @@ SCENARIO("a TLS read returns on its deadline when the peer sends an incomplete r
                 {
                     return;
                 }
+                // Owns the accepted descriptor: TlsConnection only borrows it.
+                auto const owned_accepted = merovingian::core::SocketHandle{accepted};
                 auto accepted_result =
                     merovingian::homeserver::accept_tls_connection(*tls_context.context, accepted, io_timeout_ms);
                 if (!accepted_result.ok())
                 {
-                    ::close(accepted);
                     return;
                 }
                 handshake_ok = true;
