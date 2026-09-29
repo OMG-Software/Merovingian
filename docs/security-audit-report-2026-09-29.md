@@ -47,7 +47,7 @@ must start with that test.
 | 4 | Federation inbound (X-Matrix, PDU ingestion, keys, backfill, membership) | done: 1 critical, 5 high, 3 medium, 3 low |
 | 5 | Event engine (auth rules, state resolution, redaction, canonical JSON) | done: 5 high, 4 medium, 3 low |
 | 6 | Outbound requests and SSRF (discovery, push, identity, appservice, remote media) | done: 1 high, 3 medium, 4 low |
-| 7 | Cryptography, key management and worker IPC | pending |
+| 7 | Cryptography, key management and worker IPC | done: 1 high, 1 medium, 4 low |
 | 8 | Process isolation and platform hardening (workers, seccomp, sandboxes) | pending |
 | 9 | Media repository and thumbnailer | pending |
 | 10 | Database, persistence and migrations | pending |
@@ -1692,4 +1692,189 @@ glibc's handling in an isolated scratch environment.
   retry logic.
 - Not verified: resolver behaviour on the BSDs for names containing `@`. The direct-path
   variant of OUT-1 may also work there.
+
+---
+
+## Area 7 — Cryptography, key management and worker IPC
+
+**Result:** 6 findings confirmed: 1 high, 1 medium, 4 low. Refuted: half of CRY-5, and
+the claim that `sodium_init` is unchecked.
+
+**What holds:**
+- The IPC handshake and framing. The authentication MAC binds a role byte and both
+  ephemeral public keys, and is verified before key derivation.
+- Keys are separated per direction with `crypto_kx`. Secretstream provides ordering and
+  replay protection, and accepts `TAG_MESSAGE` only.
+- The IPC socket is a `socketpair` passed with `CLOEXEC`.
+- No non-CSPRNG randomness is used anywhere.
+- `sodium_init` is called lazily and checked, failing closed, on every use.
+- Prior fixes L-07, M-07, H-05, and the 0.12.5 findings 1, 2, 3, 5, 20 and 21, still
+  hold.
+- N1 (the worker holds no master-key file) and #419, #432 and #433 still hold.
+
+### CRY-1 — The main process signs arbitrary bytes with any held key when the federation worker asks
+
+- **Severity:** high · **Attacker:** A5 · **Verdict:** confirmed (orchestrator re-checked the
+  handler)
+- **Location:**
+  - `src/homeserver/worker_pool.cpp:1242-1262`
+  - `src/crypto/runtime_multikey_ed25519_provider.cpp:24-41`
+  - `src/ipc/ipc_ed25519_provider.cpp:111-125`
+  - `src/federation_worker/worker_event_loop.cpp:599`, `:607`
+- **Rule:**
+  - `src/federation_worker/AGENTS.md` rule 1.
+  - ADR-0015: "A compromised worker can request signatures but cannot exfiltrate the
+    signing key. That is the entire point of the split".
+  - `docs/threat-model.md:372-379` presents the split as the fix for "a compromised worker
+    could forge federation signatures".
+- **Path:**
+  1. A compromised worker sends
+     `{"type":"sign_request","key_id":"ed25519:…","canonical_json":"<any bytes>"}`.
+  2. Main's handler signs whatever it is given with whichever held key is named,
+     including retired keys. There is no domain tag, no allowlist of request shapes, no
+     key pinning and no binding to an operation main started. The only limit is the
+     per-channel in-flight cap of 256.
+  3. The handler also holds the global `runtime_.mutex` while it signs. Frames can be
+     about 87 MiB (see CRY-2), so it doubles as a lock-hold DoS.
+- **Production need:** none.
+  - Outbound X-Matrix requests are signed in main (`room_service.cpp:1725-1746`: "the
+    Ed25519 secret never crosses the IPC boundary"), and so are invites.
+  - `/_matrix/key/v2/server` is served by main.
+  - The worker installs the IPC provider only so that it can skip loading the key
+    (`runtime.cpp:729-733`).
+- **Impact:**
+  - A compromised worker, the process that is most exposed, can mint valid signatures
+    as this server: forged PDUs "from" any local user, forged X-Matrix requests, and
+    forged key responses.
+  - It still has outbound network access, so it can deliver them to any peer.
+  - ADR-0071's re-verification does not help, because the forgeries go to third parties,
+    not through main.
+  - The documentation understates this. The oracle appears once, as an ADR-0015
+    consequence, and rests on a "must produce signatures" premise the code contradicts.
+- **Fix:**
+  - Remove the `sign_request` frame, `IpcEd25519Provider` and the worker's
+    `signing_override`, and give the worker a provider that refuses every request.
+  - If worker-originated signing is ever needed, accept only typed requests. Main then
+    builds the payload itself from validated fields, pins the active key, and refuses
+    anything shaped like an event.
+  - Correct ADR-0015 with a superseding ADR, and correct the threat model.
+- **Test:** GIVEN a connected worker channel WHEN it sends `sign_request` containing a
+  serialised PDU or arbitrary bytes THEN the response is an error with no signature AND
+  the runtime lock is not taken.
+
+### CRY-2 — A compromised worker can exhaust main's memory through the IPC dispatch queue
+
+- **Severity:** medium · **Attacker:** A5 · **Verdict:** confirmed
+- **Location:**
+  - `src/ipc/channel.cpp:57-65`, `:157-171`, `:228-231`, `:397-490`
+  - `include/merovingian/ipc/channel.hpp:211`
+  - `src/homeserver/worker_pool.cpp:436-450`, `:1119-1126`
+- **Rule:** ADR-0065 says a flooding worker "can only occupy `ipc_max_in_flight_requests`
+  slots per channel, capping memory regardless of how fast it sends frames". That is not
+  true of the queue.
+- **Path:**
+  1. The reader thread decrypts and parses each frame, then appends it to an unbounded
+     `std::deque`.
+  2. The in-flight cap applies only after a frame is dequeued.
+  3. The per-frame cap is sized for main-to-worker `send_join` responses (about 87 MiB at
+     the default `join_response_max_size`), but it is applied in both directions.
+  4. `raw_send_exact` blocks, with no send timeout. A worker that stops reading
+     therefore stalls the dispatcher and handler threads while the reader keeps queueing.
+     `handler_pool_` is shared across shards.
+- **Impact:**
+  - The sandboxed process can OOM-kill the process it is sandboxed from.
+  - Even without the queue, 256 in-flight frames of 87 MiB allow about 22 GiB to be
+    retained.
+- **Fix:**
+  - Bound the queue by count and by bytes, and apply backpressure or mark the channel
+    unhealthy when it is full.
+  - Add a send timeout.
+  - Use a small frame cap for worker-to-main requests.
+  - Make the in-flight cap byte-aware.
+- **Test:** GIVEN a peer that sends maximum-size frames and never reads WHEN the queue
+  reaches its cap THEN the channel is marked unhealthy or reading stops, and resident
+  memory stays bounded.
+
+### CRY-3 — The master key's length is not enforced
+
+- **Severity:** low (needs both a low-entropy key from the operator and a database leak) ·
+  **Verdict:** adjusted from medium
+- **Location:** `src/crypto/master_key.cpp:31-100`; `src/crypto/secret_box.cpp:67-82`;
+  `src/crypto/token_key.cpp:72-88`; `src/crypto/ipc_auth_key.cpp:67-82`;
+  `tests/unit/test_crypto.cpp:816-834`
+- **Detail:**
+  - Any length from 1 to 4096 bytes is accepted. The existing test accepts 24 bytes.
+  - `docs/user-manual.md:614` and `:2139` describe a 32-byte key.
+  - Subkeys are a single BLAKE2b keyed by a public label, with no stretching. A
+    passphrase-style key therefore lets someone holding the database brute-force the
+    encrypted signing secret offline.
+- **Fix:**
+  - Require at least 32 bytes and refuse an all-zero file.
+  - Derive subkeys with `crypto_kdf_derive_from_key`.
+  - Update the test.
+- **Test:** GIVEN a master-key file of 24 bytes WHEN the server starts THEN startup is
+  refused with a message naming the 32-byte minimum.
+
+### CRY-4 — `SecretBuffer` page locking is unreliable, and derived keys are not locked
+
+- **Severity:** low · **Attacker:** A6 (swap or raw memory) · **Verdict:** confirmed
+- **Location:**
+  - `src/core/secret_buffer.cpp:19-42`, `:76-95`
+  - `src/crypto/master_key.cpp:53`, `:85`, `:138-141`
+  - `src/homeserver/auth_service.cpp:121-149`
+- **Detail:**
+  - The backing store is a `std::vector` on the ordinary heap, locked with
+    `sodium_mlock`.
+  - `munlock` is page-granular and not reference-counted. Destroying one buffer, such as
+    the 4096-byte scratch buffer in `load_master_key_material`, therefore unlocks
+    neighbouring secrets on the same page, while their `is_locked()` still reports
+    true.
+  - The secret-box, token-HMAC and IPC-auth keys live in plain `std::array` caches.
+  - `sodium_malloc` is not used anywhere.
+- **Fix:** back `SecretBuffer` and the derived-key caches with `sodium_malloc`.
+- **Test:** GIVEN two live `SecretBuffer`s on one page WHEN one is destroyed THEN the other
+  stays locked.
+
+### CRY-5 — Registration validation secrets are compared with `!=`
+
+- **Severity:** low (a project-rule violation; not practically exploitable) ·
+  **Verdict:** adjusted. The `mutual_rooms` half is refuted: the compared value only
+  selects an offset the caller could reach by paging.
+- **Location:** `src/homeserver/client_server.cpp:1814`, `:1840`
+- **Rule:** `docs/security-coding-rules.md:205`: "Always use constant-time comparison for
+  secrets".
+- **Fix:** use `crypto::constant_time_equal` (hash, then compare), or key sessions by a
+  hash of `client_secret`.
+- **Test:** GIVEN a session WHEN a `client_secret` is presented THEN it is compared with
+  the constant-time helper.
+
+### CRY-6 — Token issuance falls back to an unkeyed hash if the master key becomes unavailable
+
+- **Severity:** low · **Verdict:** confirmed (hardening)
+- **Location:** `src/homeserver/auth_service.cpp:244-277`;
+  `docs/crypto-boundary.md:218-220`
+- **Detail:**
+  - When the key derivation fails at runtime, for example because the key file was
+    replaced or has become unreadable, newly issued tokens are silently hashed without a
+    key.
+  - `docs/crypto-boundary.md` still describes a no-master-key mode, which no longer
+    exists since 0.12.5.
+- **Fix:** fail issuance with 503 instead, and correct the document.
+- **Test:** GIVEN the master key becomes unreadable after start WHEN a token is issued
+  THEN issuance fails and no unkeyed digest is stored.
+
+### Area 7 — hardening notes
+
+- The mutual-rooms pagination key is derived from the Ed25519 signing secret
+  (`runtime.cpp:773-784`), which crosses key purposes. Its MAC input also concatenates
+  fields with no separator (`client_server.cpp:3216-3220`).
+- Retired signing-key secrets stay in the database indefinitely.
+- A channel that becomes unhealthy while its worker process stays alive is never
+  respawned, so that shard answers 503 until the worker exits.
+
+### Area 7 — coverage gaps
+
+- Not audited: the frame serialisers in `federation_ipc_frames.cpp`, and TLS private-key
+  handling.
+- The thumbnail-worker pipe framing was skimmed only; see Area 9.
 
