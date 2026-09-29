@@ -46,7 +46,7 @@ must start with that test.
 | 3 | HTTP transport, TLS and request-level DoS | done: 3 high, 3 medium, 2 low |
 | 4 | Federation inbound (X-Matrix, PDU ingestion, keys, backfill, membership) | done: 1 critical, 5 high, 3 medium, 3 low |
 | 5 | Event engine (auth rules, state resolution, redaction, canonical JSON) | done: 5 high, 4 medium, 3 low |
-| 6 | Outbound requests and SSRF (discovery, push, identity, appservice, remote media) | pending |
+| 6 | Outbound requests and SSRF (discovery, push, identity, appservice, remote media) | done: 1 high, 3 medium, 4 low |
 | 7 | Cryptography, key management and worker IPC | pending |
 | 8 | Process isolation and platform hardening (workers, seccomp, sandboxes) | pending |
 | 9 | Media repository and thumbnailer | pending |
@@ -1483,4 +1483,213 @@ the room splits, and the local view of power levels and bans is wrong.
   surrogates.
 - Spec sections "Checks performed on receipt of a PDU" and "Soft failure" were compared
   only as far as the callers audited in Area 4.
+
+---
+
+## Area 6 — Outbound requests and SSRF
+
+**Result:** 8 findings confirmed: 1 high, 3 medium, 4 low. Two of them came from the
+verifier. The verifier corrected the mechanism of OUT-1, reproducing libcurl's and
+glibc's handling in an isolated scratch environment.
+
+**Prior fixes and controls that hold:**
+- M-06: the literal-discovery opt-in has no production caller.
+- Redirects are refused (`FOLLOWLOCATION=0`).
+- Outbound requests use https only.
+- Header and body caps.
+- The push gateway URL, path and `enabled` gates.
+- The identity-server allowlist: clients cannot supply an arbitrary base URL.
+- `/preview_url` is not implemented, so it is no SSRF surface.
+
+### OUT-7 — `security.media.remote_fetch_enabled=false` does not stop remote media fetches
+
+- **Severity:** high
+- **Attacker:** A1
+- **Verdict:** found by the verifier; confirmed by the orchestrator. The verifier rated
+  it medium and the orchestrator raised it (see Impact).
+- **Location:**
+  - `src/homeserver/media_service.cpp:705-746` (`fetch_remote_media_live`), `:1008-1023`,
+    `:1063`
+  - `src/media/repository.cpp:807`, `:827`
+  - `include/merovingian/config/config.hpp:422`
+- **Rule:** `docs/user-manual.md:899` describes the flag as the "Opt-in for live remote
+  media fetching". It defaults to off.
+- **Path:**
+  1. `GET /_matrix/media/v3/download/{server}/{id}` is served before authentication.
+  2. It reaches `fetch_remote_media_live`. That function runs server discovery, the
+     federation media request (up to `max_upload_bytes + 4096`, 120 s total) and the
+     legacy fallback.
+  3. The flag is checked only in `media::fetch_remote_media`, after the bytes have
+     arrived, and the result is then discarded.
+  4. Nothing under `src/homeserver/` reads the flag.
+- **Impact:**
+  - On the default configuration, any unauthenticated caller can make the server
+    connect to an arbitrary server and download up to about 50 MiB.
+  - Each request holds a main-pool worker for up to about 150 s, so 8 such requests
+    stall the server (compare HTTP-1).
+  - It makes OUT-1 and OUT-2 reachable on the default configuration.
+- **Fix:**
+  - Check the flag at the top of `fetch_remote_media_live` and in the thumbnail path,
+    before any discovery.
+  - Run remote fetches outside the main pool, with an in-flight cap.
+- **Test:** GIVEN `remote_fetch_enabled=false` WHEN an unauthenticated client requests
+  `/_matrix/media/v3/download/remote.example/abc` THEN no discovery or outbound call
+  occurs and the response is 404.
+
+### OUT-1 — Server names containing `@`, `?` or `#` defeat address pinning
+
+- **Severity:** medium · **Attacker:** A1 · **Verdict:** adjusted (mechanism corrected)
+- **Location:**
+  - `src/federation/security.cpp:121-125` (weak `server_name_is_valid`)
+  - `src/federation/server_discovery.cpp:294-304`, `:530-649`
+  - `src/http/outbound_client.cpp:187-223`, `:410-442`, `:713-729`
+  - `src/federation/outbound_transaction.cpp:45-63`
+  - `src/federation/remote_key_cache.cpp:213-226`
+- **Spec:** `appendices.md` Server Name: `dns-char = DIGIT / ALPHA / "-" / "."`.
+- **Project rule:** `src/http/AGENTS.md` says pinning through `CURLOPT_RESOLVE` keeps the
+  SSRF policy "the single source of truth".
+- **Path:**
+  1. Three entry points accept such a name, all before authentication:
+     - the X-Matrix `origin="x@evil.example"` header, which triggers key resolution
+       before the signature is checked;
+     - `GET /directory/room/%23a%3Ax%40evil.example`;
+     - the media download path (with OUT-7).
+  2. `federation::server_name_is_valid` accepts `@ ? # \ %`. The strict
+     `auth::server_name_is_valid` (`src/auth/identity.cpp:252`) is not used here.
+  3. glibc `getaddrinfo` refuses these names, so the direct and `.well-known` steps fail.
+     `res_query` does send `_matrix-fed._tcp.x@evil.example`, so SRV is the working
+     vector.
+  4. The attacker's DNS answers SRV with a public target and port P. Only that target
+     is SSRF-checked and pinned.
+  5. The URL becomes `https://x@evil.example:P/…`, and the pin key is
+     `x@evil.example:P`.
+  6. libcurl treats `x` as userinfo and `evil.example` as the host, so the pin never
+     matches. curl then resolves the name through system DNS, which the attacker answers
+     with an internal address.
+  7. No connect-time check exists: there is no `OPENSOCKETFUNCTION`, and seccomp permits
+     `connect`.
+- **Impact:**
+  - A pre-authentication blind TCP connect plus a TLS ClientHello to an
+    attacker-chosen internal host and port.
+  - The TLS name check fails, so no data comes back. It still works as an internal
+    port-scan and timing oracle.
+  - Cloud metadata endpoints are plain HTTP and cannot be reached.
+- **Fix:**
+  - Apply the strict server-name grammar at every entry point and in `discover_server`.
+  - In `OutboundClient`, derive the pin host and port with libcurl's URL API (CURLU),
+    and refuse any authority containing `@ ? # \`.
+  - Add a connect-time address check (`CURLOPT_OPENSOCKETFUNCTION`) as defence in depth.
+- **Test:**
+  - GIVEN an `OutboundRequest` to `https://x@example.org/p` WHEN it is performed THEN it
+    returns `invalid_url` and no socket opens.
+  - GIVEN X-Matrix `origin="a@b.example"` THEN no discovery occurs.
+
+### OUT-2 — A remote media redirect's `Location` is validated by one parser and connected by another
+
+- **Severity:** medium · **Attacker:** A7 (reachable on the default configuration through
+  OUT-7) · **Verdict:** confirmed
+- **Location:** `src/homeserver/media_service.cpp:153-208`, `:660-668`, `:924-944`;
+  `src/http/outbound_client.cpp:197-198`
+- **Path:**
+  1. `parse_https_authority` stops at `/`, `?` or `#`, and SSRF-checks and pins the host
+     it finds.
+  2. The raw `Location` is then passed to `OutboundClient`, whose parser stops only at
+     `/`.
+  3. For `https://rebind.example#x`, the pin key never matches, and curl re-resolves the
+     host. That DNS-rebinding window reaches internal addresses on port 443.
+- **Fix:** parse once, then build the request from the parsed parts; OUT-1's
+  `OutboundClient` fix also closes this.
+- **Test:** GIVEN a redirect to `https://a.example#x` whose second lookup returns
+  127.0.0.1 WHEN the fetch runs THEN no connection reaches 127.0.0.1.
+
+### OUT-4 — Remote media is re-fetched and stored on every request, with no cache and no eviction
+
+- **Severity:** medium (when `remote_fetch_enabled=true`) · **Attacker:** A1 · **Verdict:**
+  confirmed
+- **Location:** `src/homeserver/media_service.cpp:479`, `:1017-1023`;
+  `src/media/repository.cpp:289-302`, `:540-560`;
+  `include/merovingian/config/config.hpp:396-404`
+- **Detail:**
+  - There is no lookup by (origin, mediaId), so each request fetches again and appends a
+    record.
+  - The default quotas are unlimited, so memory grows until the process runs out.
+  - With quotas configured, remote media fills them and local uploads are refused with
+    507.
+- **Fix:**
+  - Give remote media its own cache keyed by (origin, mediaId), with LRU or TTL eviction
+    and a budget separate from local uploads.
+  - Rate-limit remote fetches per client and per origin.
+- **Test:** GIVEN remote fetch enabled WHEN the same remote media is requested 1000 times
+  THEN at most one record exists and the origin sees one fetch within the TTL.
+
+### OUT-3 — One user's stalled push gateways consume the global push-delivery cap
+
+- **Severity:** low (push is off by default; drop-at-cap is documented in ADR-0028 and
+  ADR-0029) · **Attacker:** A2 · **Verdict:** adjusted from medium
+- **Location:** `src/homeserver/room_service.cpp:5621-5636`, `:5716-5779`;
+  `src/homeserver/client_server.cpp:10910-10960`
+- **Detail:**
+  - The number of pushers a user can register is uncapped.
+  - Each delivery calls up to 10 pushers in sequence, each with a 30 s timeout.
+  - 128 such tasks exhaust the global cap, after which every user's pushes are dropped.
+- **Fix:**
+  - Give each user an in-flight cap.
+  - Break the circuit to a stalled gateway host.
+  - Cap the number of pushers per user.
+- **Test:** GIVEN one user with 10 stalled gateways WHEN another user's event is sent THEN
+  that delivery is still dispatched.
+
+### OUT-5 — libcurl honours proxy environment variables, which bypass pinning
+
+- **Severity:** low (needs control of the operator's environment) · **Verdict:** confirmed
+- **Location:** `src/http/outbound_client.cpp:410-442`
+- **Fix:** set `CURLOPT_PROXY=""` and `CURLOPT_NOPROXY="*"` explicitly, and fail closed if
+  either cannot be set.
+- **Test:** GIVEN `https_proxy` pointing at a local listener WHEN a pinned request runs
+  THEN the listener receives no connection.
+
+### OUT-6 — The server-discovery cache is unbounded
+
+- **Severity:** low · **Attacker:** A1 · **Verdict:** confirmed
+- **Location:** `src/federation/cached_server_discovery.cpp:24-50`
+- **Fix:** cap the cache size, sweep expired entries, and never cache names that fail
+  the strict grammar.
+- **Test:** GIVEN a cap of N WHEN N+1 names are discovered THEN at most N remain.
+
+### OUT-8 — `security.federation.deny_ip_ranges` is validated but never applied
+
+- **Severity:** low (the documentation over-promises) · **Verdict:** found by the
+  verifier, confirmed by the orchestrator
+- **Location:** `src/config/config.cpp:962-969`; `src/federation/runtime_federation.cpp:64`;
+  `src/federation/security.cpp:40-160` (hard-coded ranges); `docs/threat-model.md:723`,
+  `:786`
+- **Fix:** apply the configured ranges in `address_set_allowed`, or remove the setting
+  and correct the threat model.
+- **Test:** GIVEN `deny_ip_ranges` containing 203.0.113.0/24 WHEN a destination resolves
+  into it THEN discovery is refused.
+
+### Area 6 — hardening notes
+
+- **Ranges the built-in deny list does not block:**
+  - IPv4: 192.0.0.0/24, 192.0.2.0/24, 198.18.0.0/15, 198.51.100.0/24, 203.0.113.0/24 and
+    192.88.99.0/24.
+  - IPv6: `::/96`, `fec0::/10`, `2002::/16` (6to4 with an embedded private address),
+    Teredo `2001::/32` and `64:ff9b:1::/48`.
+  - Treat IPv4-embedded IPv6 forms by their embedded address.
+- An IPv6-literal server name cannot federate, because `parse_request_host_port` splits
+  at the first `:`.
+- Inbound requests from servers delegated to port 8008 are refused
+  (`server_discovery.cpp:204`).
+- `.well-known` redirects are refused, and the cache TTL is a fixed 60 s. The spec says
+  redirects "should be followed" and recommends a 24 h TTL.
+- `allow_remote=false` is ignored on client download and thumbnail requests.
+- The `get_missing_events` outbound path does not percent-encode `room_id`
+  (`local_http_router.cpp:2680`).
+
+### Area 6 — coverage gaps
+
+- Read only in part: the worker IPC path for outbound requests, and `dispatch_worker.cpp`
+  retry logic.
+- Not verified: resolver behaviour on the BSDs for names containing `@`. The direct-path
+  variant of OUT-1 may also work there.
 
