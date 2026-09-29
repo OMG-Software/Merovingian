@@ -1,3 +1,11 @@
+## 0.12.14
+
+- **DOCS: second full security audit (September 2026).**
+  `docs/security-audit-report-2026-09-29.md` records a sequential,
+  area-by-area audit of every high-risk surface against the Matrix v1.19
+  spec, with each finding independently verified. It
+  records findings only; no production code changed.
+
 ## 0.12.13
 
 - **FIXED: build failures on newer Linux kernel headers and on the BSDs.**
